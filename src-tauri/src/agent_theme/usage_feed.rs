@@ -242,9 +242,12 @@
 //! ——一次网络抖动即把 usage-data.js 的节拍拖住 15 秒；也绝不进 1 秒速度
 //! 旁路（大小文件分工铁律：旁路只带速度，不带额度/聚合字段）。查询成功
 //! 后原子写出（.tmp + rename）几十字节的
-//! `window.__ZBAR_QUOTA__ = {"v":1,"ts":<查询成功时刻ms>,"h5":<5小时窗口
-//! 剩余%>,"wk":<周窗口剩余%>}`；剩余 = 100 − 已用百分比（clamp 0..100）；
-//! 窗口缺失（接口未返回该窗口）为 null，渲染端隐藏对应段；**查询失败
+//! `window.__ZBAR_QUOTA__ = {"v":2,"ts":<查询成功时刻ms>,"h5":<5小时窗口
+//! 剩余%>,"wk":<周窗口剩余%>,"h5rs":<5小时窗口重置时刻ms>,"wkrs":<周窗口
+//! 重置时刻ms>}`（V31 起契约 v:2，新增 h5rs/wkrs 重置时间戳，接口
+//! nextResetTime 毫秒直取）；剩余 = 100 − 已用百分比（clamp 0..100）；
+//! 窗口缺失（接口未返回该窗口）时该窗口的剩余与重置时间戳一并 null，
+//! 渲染端隐藏对应段（倒计时不出现括号）；**查询失败
 //! 静默保留上次文件内容**（未登录/网络异常属常态，不刷日志）。线程启停
 //! 挂点与导出线程完全一致（start/stop 同点触发，句柄幂等模式同款；安装
 //! 状态每周期复核，皮肤异常还原时自动退出）。
@@ -745,13 +748,21 @@ fn quota_query_once() {
         let dir = store::app_dir(TARGET_APP_ID)?;
         fs::create_dir_all(&dir).map_err(|e| format!("创建主题目录失败: {e}"))?;
         // 剩余 = 100 − 已用百分比（0-100），clamp 防接口异常值；窗口缺失
-        // （接口未返回该窗口）为 null，渲染端隐藏对应段
+        // （接口未返回该窗口）为 null，渲染端隐藏对应段。V31 起同窗口的
+        // 重置时间戳随 h5rs/wkrs 一并写出：取自同一 QuotaLimit 的
+        // next_reset_time（接口毫秒时间戳，与 ts 同单位，无需换算），窗口
+        // 缺失一并为 null（渲染端该窗口不加倒计时括号段）
         let remain = |used: Option<&crate::quota::QuotaLimit>| -> Option<i64> {
             used.map(|l| (100 - l.percentage as i64).clamp(0, 100))
+        };
+        let reset_ms = |used: Option<&crate::quota::QuotaLimit>| -> Option<i64> {
+            used.and_then(|l| l.next_reset_time)
         };
         let js = render_quota_js(
             remain(quota.hour5.as_ref()),
             remain(quota.weekly.as_ref()),
+            reset_ms(quota.hour5.as_ref()),
+            reset_ms(quota.weekly.as_ref()),
             chrono::Utc::now().timestamp_millis(),
         );
         let target = dir.join(store::USAGE_QUOTA_FILE);
@@ -765,17 +776,28 @@ fn quota_query_once() {
 }
 
 /// 渲染额度小文件内容（几十字节）。契约键名与 inject::USAGE_JS 消费端
-/// 一字不差，勿改：`window.__ZBAR_QUOTA__ = {"v":1,"ts":<查询成功时刻ms>,
-/// "h5":<5小时窗口剩余%>,"wk":<周窗口剩余%>}`；窗口缺失为 null。
-fn render_quota_js(hour5_remain: Option<i64>, weekly_remain: Option<i64>, ts_ms: i64) -> String {
+/// 一字不差，勿改：`window.__ZBAR_QUOTA__ = {"v":2,"ts":<查询成功时刻ms>,
+/// "h5":<5小时窗口剩余%>,"wk":<周窗口剩余%>,"h5rs":<5小时窗口重置时刻ms>,
+/// "wkrs":<周窗口重置时刻ms>}`；窗口缺失为 null（V31 起契约 v:2，新增
+/// h5rs/wkrs 重置时间戳——接口 nextResetTime 直取已是毫秒，与 ts 同单位，
+/// 渲染端据此在剩余百分比后追加重置倒计时括号段）。
+fn render_quota_js(
+    hour5_remain: Option<i64>,
+    weekly_remain: Option<i64>,
+    hour5_reset_ms: Option<i64>,
+    weekly_reset_ms: Option<i64>,
+    ts_ms: i64,
+) -> String {
     let opt = |v: Option<i64>| match v {
         Some(t) => t.to_string(),
         None => "null".to_string(),
     };
     format!(
-        "window.__ZBAR_QUOTA__ = {{\"v\":1,\"ts\":{ts_ms},\"h5\":{},\"wk\":{}}};\n",
+        "window.__ZBAR_QUOTA__ = {{\"v\":2,\"ts\":{ts_ms},\"h5\":{},\"wk\":{},\"h5rs\":{},\"wkrs\":{}}};\n",
         opt(hour5_remain),
-        opt(weekly_remain)
+        opt(weekly_remain),
+        opt(hour5_reset_ms),
+        opt(weekly_reset_ms)
     )
 }
 
@@ -3104,20 +3126,35 @@ mod tests {
 
     #[test]
     fn 额度小文件_窄契约与窗口缺失形态() {
-        // V27 额度旁路契约：v:1 + ts + h5/wk（剩余百分比），几十字节，
-        // 与 usage-data.js / usage-speed.js 完全独立
-        let js = render_quota_js(Some(22), Some(7), 12345);
+        // V31 额度旁路契约：v:2 + ts + h5/wk（剩余百分比）+ h5rs/wkrs（窗口
+        // 重置时刻 ms），几十字节，与 usage-data.js / usage-speed.js 完全独立
+        let js = render_quota_js(
+            Some(22),
+            Some(7),
+            Some(1_700_000_000_000),
+            Some(1_700_600_000_000),
+            12345,
+        );
         assert_eq!(
             js,
-            "window.__ZBAR_QUOTA__ = {\"v\":1,\"ts\":12345,\"h5\":22,\"wk\":7};\n",
+            "window.__ZBAR_QUOTA__ = {\"v\":2,\"ts\":12345,\"h5\":22,\"wk\":7,\"h5rs\":1700000000000,\"wkrs\":1700600000000};\n",
             "{js}"
         );
-        // 窗口缺失（接口未返回该窗口）→ null，渲染端隐藏对应段
-        let js_null = render_quota_js(None, Some(0), 1);
+        // 窗口缺失（接口未返回该窗口）→ 剩余与重置时间戳一并 null，渲染端
+        // 隐藏对应段（倒计时不出现括号）
+        let js_null = render_quota_js(None, Some(0), None, Some(9), 1);
         assert_eq!(
             js_null,
-            "window.__ZBAR_QUOTA__ = {\"v\":1,\"ts\":1,\"h5\":null,\"wk\":0};\n",
+            "window.__ZBAR_QUOTA__ = {\"v\":2,\"ts\":1,\"h5\":null,\"wk\":0,\"h5rs\":null,\"wkrs\":9};\n",
             "{js_null}"
+        );
+        // 窗口在而接口未给 nextResetTime（旧接口刚刷新的短窗口常态）→ 仅
+        // 重置时间戳为 null，剩余正常写出，渲染端该窗口无倒计时段
+        let js_rs_null = render_quota_js(Some(22), Some(0), None, None, 1);
+        assert_eq!(
+            js_rs_null,
+            "window.__ZBAR_QUOTA__ = {\"v\":2,\"ts\":1,\"h5\":22,\"wk\":0,\"h5rs\":null,\"wkrs\":null};\n",
+            "{js_rs_null}"
         );
     }
 

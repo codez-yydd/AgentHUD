@@ -1152,7 +1152,19 @@ pub const EFFECTS_JS_VERSION: u32 = 5;
 /// V30：仅渲染端微调，数据契约零改动——额度行 bottom 负偏移 -16 →
 /// -20；缓存命中率自会话条 ⟲ 段挪至底部额度行「缓存 88.7%」段
 /// （renderQuotaBar 接收 anchor 按会话条同款双口径自算，分母 0 隐藏）。
-pub const USAGE_JS_VERSION: u32 = 30;
+/// V31：底部额度行追加窗口重置倒计时，额度契约 v:1 → v:2——
+/// usage-quota.js 新增 h5rs/wkrs（5h/周窗口下一次重置时刻 ms，数据端取
+/// 接口 nextResetTime 直取无换算，窗口缺失 null）；渲染端 5h/周余段后
+/// 追加括号纯时长（"额度 5h 余89%（2h35m） · 周余93%（5d2h）"），倒计时
+/// 段以无 class 独立 span 恒继承灰白行色（阈值变色只属于剩余百分比）；
+/// loadQuota 与 renderQuotaBar 版本闸放行 v:1/v:2 平滑过渡；倒计时基于
+/// Date.now() 随 renderAll 每拍重算、全串比对零 DOM 机制不变；无新增开
+/// 关（随 usage_quota_bar 显隐）。
+/// V32：仅渲染端微调，数据契约零改动（usage-quota.js v:2 不变）——
+/// 底部额度行扁平化去括号：zh 词表额度段「5h 余」→「5h 」、周段
+/// 「周余」→「每周 」，倒计时段去括号返回裸时长并由渲染端前置半角
+/// 空格，行形 "额度 5h 65% 3h02m · 每周 93% 6d21h · 缓存 88.7%"。
+pub const USAGE_JS_VERSION: u32 = 32;
 
 /// 桌面像素宠物脚本 pet.js 的版本化落盘标记。
 /// 版本头写在模板首行注释（ZBAR-THEME-V 标记，提取器与

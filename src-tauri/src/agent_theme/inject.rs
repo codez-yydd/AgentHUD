@@ -692,15 +692,66 @@ pub const EFFECTS_JS: &str = r#"// =============================================
 /// syncComposerPad 按两个开关独立叠加（全关还原基数 26px）。
 /// V30 起额度行 bottom 负偏移再加深至 -20，缓存命中率自会话条 ⟲ 段挪
 /// 至底部额度行「缓存 88.7%」段（分母 0 隐藏，数据端零改动）。
+/// V31 起底部额度行追加窗口重置倒计时（额度契约 v:1 → v:2）：
+/// usage-quota.js 新增 h5rs/wkrs（5h/周窗口下一次重置时刻 ms，数据端取
+/// 接口 nextResetTime 直取无换算，窗口缺失 null），渲染端 5h/周余段后追
+/// 加括号纯时长（"额度 5h 余89%（2h35m） · 周余93%（5d2h） · 缓存
+/// 88.7%"），格式 <1h "35m" / <24h "2h35m" / ≥24h "5d2h"（天/时/分英文
+/// 单位中英文通用）；倒计时段以无 class 独立 span 恒继承灰白行色，阈值
+/// 变色只属于剩余百分比（<30 黄 / <10 红）不扩展到倒计时；版本闸放行
+/// v:1/v:2（升级过渡期残留旧文件无倒计时段自然过渡）；倒计时基于
+/// Date.now() 随 renderAll 每拍重算、全串比对零 DOM 机制不变；无新增开
+/// 关（随 usage_quota_bar 显隐），V29 删除的时间戳尾段不复活。
+/// V32 起底部额度行扁平化去括号（纯渲染端微调，数据契约与 V31 一
+/// 致）：zh 词表额度段「5h 余」→「5h 」、周段「周余」→「每周 」
+/// （与 en 同款尾随空格），倒计时段去括号直接返回纯时长、由渲染端前
+/// 置半角空格紧随百分比，行形 "额度 5h 65% 3h02m · 每周 93% 6d21h
+/// · 缓存 88.7%"（en "Quota 5h 65% 3h02m · wk 93% 6d21h · cache
+/// 88.7%"）；seg.sub 通道、rs 缺失/过期不加段与阈值变色边界原样保留。
 /// 数据源为本目录下 usage-data.js（键名契约见 usage_feed 模块头；每轮
 /// 条匹配键为 umid 字段）与 usage-quota.js（V27 额度旁路）。版本化落盘
 /// （头部 ZBAR-THEME-V 标记，见 store::ensure_versioned_template）。风格
 /// 与 effects.js 同款：自愈、静默失败、空值防御；DOM 选择器集中在头部
 /// 常量，便于实机比对调整。
 pub const USAGE_JS: &str = r#"// ============================================================
-// ZBAR-THEME-V30
+// ZBAR-THEME-V32
 // ZBar Agent 对话页用量统计条（由 ZBar 落盘并随版本升级覆盖）
 // ============================================================
+// V32 变更（底部额度行扁平化去括号，纯渲染端微调——数据契约与 V31
+//   完全一致，usage-quota.js v:2 不变）：
+//   a) 词表精简：zh 额度段「5h 余」→「5h 」、周段「周余」→「每周 」
+//      （与 en 词表同款尾随空格，对齐参考样式的「标签 + 裸数值」扁平
+//      风格；en 词表不变），行形 "额度 5h 65% 3h02m · 每周 93% 6d21h
+//      · 缓存 88.7%"（en "Quota 5h 65% 3h02m · wk 93% 6d21h · cache
+//      88.7%"）；
+//   b) 倒计时段去括号：quotaCountdownOf 不再按语言包全角/半角括号，
+//      直接返回纯时长裸值紧随百分比；
+//   c) 渲染同步：renderQuotaLine 在 sub span 之前插入半角空格 text
+//      node，renderQuotaBar 全串比对拼接同步为 t + " " + sub——DOM
+//      与比对串逐字一致，零 DOM 机制不变；seg.sub 通道、rs 缺失/过期
+//      不加段、倒计时不参与阈值变色等 V31 机制原样保留。
+// V31 变更（底部额度行追加窗口重置倒计时 + 额度契约 v:1 → v:2）：
+//   a) 数据契约升级：usage-quota.js 由 {v:1,ts,h5,wk} 升至
+//      {v:2,ts,h5,wk,h5rs,wkrs}——h5rs/wkrs 为 5h/周窗口的下一次重置
+//      时刻（毫秒，与 ts 同单位，数据端取自接口 nextResetTime 直取无
+//      换算；窗口缺失为 null）；
+//   b) 版本兼容放宽：loadQuota 与 renderQuotaBar 的版本闸同时放行
+//      v:1/v:2——升级过渡期本地残留的 v:1 文件照常消费（无 h5rs/wkrs，
+//      不出现倒计时段，行为与升级前完全一致），额度线程 60s 内写出
+//      v:2 后倒计时自然生效；
+//   c) 倒计时渲染：5h/周余段后追加括号包裹的纯时长——"额度 5h 余
+//      89%（2h35m） · 周余93%（5d2h） · 缓存 88.7%"。fmtResetCountdown
+//      格式化剩余毫秒（<1h → "35m"；<24h → "2h35m"；≥24h → "5d2h"，
+//      天/时/分英文单位中英文 locale 通用，不进词表）；括号随行内既有
+//      语言判定（zh 全角 / en 半角）。倒计时段进 seg.sub，由
+//      renderQuotaLine 以无 class 独立 span 渲染、恒继承灰白行色——阈
+//      值变色只属于剩余百分比（<30 黄 / <10 红），绝不扩展到倒计时；
+//      rs 缺失/非法/已过期（<= now）该窗口不加括号段；
+//   d) 每拍新鲜与零开销：倒计时基于 Date.now() 随 renderAll 主路径每
+//      拍重算（额度数据仍 60s 写盘 / 30s 重载、隐藏降频 60s 不变），
+//      「全串比对无变化零 DOM 操作」机制原样保留（倒计时分钟级变化之
+//      间零开销）；V29 删除的时间戳尾段不复活、无新增开关（倒计时随
+//      usage_quota_bar 开关显隐），行保持单行右对齐小字。
 // V30 变更（额度行微调 + 缓存命中率挪位，数据端零改动）：
 //   a) 额度行 bottom 负偏移 -16 → -20（QUOTA_BAR_BOTTOM_PX），贴卡观
 //      感再加深；
@@ -1357,11 +1408,12 @@ pub const USAGE_JS: &str = r#"// ===============================================
    *   （"· 均 38.4 · 快 71.6 · 慢 12.4"）共用同一组标签；
    * - sep：标签与数值间是否插空格（中文紧邻"均38"，英文插空格"avg 38"）；
    * - latest / n：tooltip 的"最近/latest"与样本数单位"笔/requests"；
-   * - quotaLead/quota5h/quotaWk：V28 独立额度行（zh "额度 5h 余78% ·
-   *   周余93%"，en "Quota 5h 78% · wk 93%"）；V29 删除 updated 更新时
+   * - quotaLead/quota5h/quotaWk：V28 独立额度行（zh 初版 "额度 5h 余78%
+   *   · 周余93%"，en "Quota 5h 78% · wk 93%"）；V29 删除 updated 更新时
    *   间戳尾段词（时间戳整体下线）；V30 起行尾再补 cachePct「缓存」
-   *   段（当前会话命中率，zh "缓存" / en "cache"），行形 "额度 5h 余
-   *   89% · 周余93% · 缓存 88.7%"。
+   *   段（当前会话命中率，zh "缓存" / en "cache"）；V32 扁平化去括号，
+   *   zh 改 "5h " / "每周 "（与 en 同款尾随空格，「标签 + 裸数值」），
+   *   行形 "额度 5h 65% 3h02m · 每周 93% 6d21h · 缓存 88.7%"。
    * en 词表保留为完整对照（判定三信号全为 zh 命中，见 LANG_ZH），后续
    * 若需放开英文界面或测试驱动可直接切换 */
   var WORDS = {
@@ -1373,8 +1425,8 @@ pub const USAGE_JS: &str = r#"// ===============================================
       latest: "最近",
       n: "笔",
       quotaLead: "额度",
-      quota5h: "5h 余",
-      quotaWk: "周余",
+      quota5h: "5h ",
+      quotaWk: "每周 ",
       cachePct: "缓存"
     },
     en: {
@@ -1800,7 +1852,9 @@ pub const USAGE_JS: &str = r#"// ===============================================
    *      null，V28 起独立额度行整行隐藏（无内容可显示），加载失败保
    *      留上次额度 ---- */
   var quotaLoading = false;
-  var quotaData = null; /* { v:1, ts, h5, wk }；h5/wk 可为 null（窗口缺失） */
+  var quotaData = null; /* { v:1|2, ts, h5, wk, h5rs, wkrs }；h5/wk 与
+      h5rs/wkrs 可为 null（窗口缺失）；V31 契约 v:2 新增重置时间戳，
+      v:1 为升级过渡期残留旧文件（无倒计时段） */
 
   function loadQuota() {
     if (quotaLoading || !quotaUrl) return;
@@ -1813,8 +1867,10 @@ pub const USAGE_JS: &str = r#"// ===============================================
       quotaLoading = false;
       try {
         var q = window.__ZBAR_QUOTA__;
-        /* 版本不符视为无效数据，保留上次额度（与数据/速度旁路同款） */
-        if (!q || q.v !== 1) return;
+        /* 版本不符视为无效数据，保留上次额度（与数据/速度旁路同款）；
+         * V31 放行 v:1/v:2——升级过渡期残留 v:1 照常消费（无倒计时段），
+         * 额度线程写出 v:2 后自然生效 */
+        if (!q || (q.v !== 1 && q.v !== 2)) return;
         quotaData = q;
         scheduleRender();
       } catch (e) {
@@ -1938,6 +1994,31 @@ pub const USAGE_JS: &str = r#"// ===============================================
     if (remain < QUOTA_LOW_REMAIN) return "zbar-usage-quota-low";
     if (remain < QUOTA_MID_REMAIN) return "zbar-usage-quota-mid";
     return "";
+  }
+
+  /* V31 窗口重置倒计时格式化（输入剩余毫秒差）：纯时长、天/时/分英文
+   * 单位中英文 locale 通用（不进词表）——<1h → "35m"；<24h → "2h35m"；
+   * ≥24h → "5d2h"。仅由 quotaCountdownOf 消费（rs <= now 的窗口不入段，
+   * 不会出现 0 值形态，防御性返回空串） */
+  function fmtResetCountdown(msLeft) {
+    if (typeof msLeft !== "number" || !isFinite(msLeft) || msLeft <= 0) return "";
+    var mins = Math.floor(msLeft / 60000);
+    if (mins < 60) return mins + "m";
+    var hours = Math.floor(mins / 60);
+    if (hours < 24) return hours + "h" + (mins % 60) + "m";
+    return Math.floor(hours / 24) + "d" + (hours % 24) + "h";
+  }
+
+  /* V31 重置倒计时段（结果进 seg.sub，由 renderQuotaLine 以无 class
+   * 独立 span 渲染、恒继承灰白行色——阈值变色只属于剩余百分比，绝不扩
+   * 展到倒计时）：rs 缺失/非法/已过期（<= now）返回空串（该窗口不加
+   * 倒计时段），有效返回纯时长（不进词表）；V32 起扁平化去括号——
+   * 直接返回裸时长紧随百分比，前置半角空格由渲染端补 */
+  function quotaCountdownOf(rs, now) {
+    if (typeof rs !== "number" || !isFinite(rs) || rs <= now) return "";
+    var body = fmtResetCountdown(rs - now);
+    if (!body) return "";
+    return body;
   }
 
   /* V27 缓存命中率：cr / (cr + 非缓存输入)，保留一位小数；分母为 0
@@ -2849,10 +2930,14 @@ pub const USAGE_JS: &str = r#"// ===============================================
    * 关热重载都直接生效，不依赖会话条渲染节奏。开关经
    * --zbar-usage-quota-bar（variables.css 渲染 1/0，缺失视为开启，与
    * session/turn/model 开关同惯例）。页面隐藏降频 60s 的额度重载节拍
-   * （QUOTA_POLL_HIDDEN_MS）不变。V30：新增 anchor 入参（renderAll 主
-   * 路径把锚点一并传入）——周余段之后追加当前会话缓存命中率「缓存
-   * NN%」段（renderSessionBar 同款双口径自算，不依赖会话条；分母 0
-   * 不入段），额度行不再只承载账号级额度 ---- */
+ * （QUOTA_POLL_HIDDEN_MS）不变。V30：新增 anchor 入参（renderAll 主
+ * 路径把锚点一并传入）——周段之后追加当前会话缓存命中率「缓存
+ * NN%」段（renderSessionBar 同款双口径自算，不依赖会话条；分母 0
+ * 不入段），额度行不再只承载账号级额度。V31：5h/周段追加重置倒计
+ * 时段（seg.sub → quotaCountdownOf，无 class 独立 span 灰白继承
+ * 行色；rs 缺失/已过期不加段），版本闸放行 v:1/v:2。V32：扁平化去
+ * 括号，行形 "额度 5h 65% 3h02m · 每周 93% 6d21h · 缓存 88.7%"
+ * （en "Quota 5h 65% 3h02m · wk 93% 6d21h · cache 88.7%"）---- */
   var quotaBar = null; /* 已挂载的额度行元素（跨渲染复用，幂等更新） */
   var quotaMountWarned = false; /* 挂载异常一次性告警标志（同会话条
     mountWarned 的 V14 模式：此前类问题曾被 catch 静默吞掉无从发现） */
@@ -2906,27 +2991,38 @@ pub const USAGE_JS: &str = r#"// ===============================================
       removeQuotaBar();
       return;
     }
-    var qd = quotaData && quotaData.v === 1 ? quotaData : null;
-    /* 段对象 {t, c} 机制与会话条 segs 同款：h5/wk 任一缺失（接口未返
-     * 回该窗口）只隐藏对应段，无空白分隔符残留；剩余 <30 黄、<10 红，
-     * 充足继承行色（quotaClassOf 返回空）。查询未成功（quotaData 为
-     * null，数据端从未写出文件）或两窗口全缺失 → 无内容可显示，整行
-     * 隐藏（不渲染空行/占位）。额度绝不进 2s 大文件与 1s 速度旁路，
-     * 随 30s 额度拍自然刷新 */
+    /* V31 版本闸放行 v:1/v:2：升级过渡期本地残留 v:1 文件（无 h5rs/wkrs）
+     * 照常显示、无倒计时段，额度线程 60s 内写出 v:2 自然生效 */
+    var qd =
+      quotaData && (quotaData.v === 1 || quotaData.v === 2) ? quotaData : null;
+    /* 段对象 {t, c, sub} 机制与会话条 segs 同款（V31 sub 为可选倒计时段，
+     * V32 起为去括号的裸时长）：h5/wk 任一缺失（接口未返回该窗口）只隐
+     * 藏对应段，无空白分隔符残留；剩余 <30 黄、<10 红，充足继承行色
+     * （quotaClassOf 返回空）；倒计时段由 quotaCountdownOf 生成（rs 缺失
+     * /非法/已过期返回空串 → 该窗口无倒计时段），以无 class 独立 span
+     * 渲染恒继承灰白行色。查询
+     * 未成功（quotaData 为 null，数据端从未写出文件）或两窗口全缺失 →
+     * 无内容可显示，整行隐藏（不渲染空行/占位）。额度绝不进 2s 大文件
+     * 与 1s 速度旁路，随 30s 额度拍自然刷新；倒计时基于 Date.now() 每拍
+     * 重算（本函数由 renderAll 主路径每拍调用），分钟级变化之间由全串比
+     * 对保证零 DOM 操作 */
     var segs = [];
+    var nowMs = Date.now();
     if (qd && typeof qd.h5 === "number" && isFinite(qd.h5)) {
       segs.push({
         t: W.quotaLead + " " + W.quota5h + Math.round(qd.h5) + "%",
+        sub: quotaCountdownOf(qd.h5rs, nowMs),
         c: quotaClassOf(qd.h5)
       });
     }
     if (qd && typeof qd.wk === "number" && isFinite(qd.wk)) {
       segs.push({
         t: W.quotaWk + Math.round(qd.wk) + "%",
+        sub: quotaCountdownOf(qd.wkrs, nowMs),
         c: quotaClassOf(qd.wk)
       });
     }
-    /* V30：周余段之后追加当前会话缓存命中率「缓存 NN%」段（灰白继承
+    /* V30：每周段之后追加当前会话缓存命中率「缓存 NN%」段（灰白继承
      * 行色，c 为空串不高亮）——参考图底部行口径，命中率自会话条 ⟲ 段
      * 挪入本行。双口径计算照抄 renderSessionBar（V21：sess 全量合计行
      * 命中即消费 sess 行，否则 totals + runTotals 回退叠加），anchor 由
@@ -2951,11 +3047,13 @@ pub const USAGE_JS: &str = r#"// ===============================================
       return;
     }
     /* V29：更新时间戳尾段删除（fmtClock + 词表 updated + 专用样式一并
-     * 移除——实机上增加行宽与视觉噪音，参考图里价值有限），行内容精
-     * 简为 "额度 5h 余89% · 周余93%" */
+     * 移除——实机上增加行宽与视觉噪音，参考图里价值有限）；V31 起 5h/
+     * 周段带 sub 倒计时段，全串比对纳入 sub（倒计时每拍重算、分钟级变
+     * 化之间零 DOM）；V32 起 sub 前置半角空格（扁平化去括号，与 DOM 侧
+     * 空格 text node 逐字一致） */
     var text = "";
     for (var qi = 0; qi < segs.length; qi++) {
-      text += (qi ? " · " : "") + segs[qi].t;
+      text += (qi ? " · " : "") + segs[qi].t + (segs[qi].sub ? " " + segs[qi].sub : "");
     }
     var bar = ensureQuotaBar();
     try {
@@ -3003,6 +3101,16 @@ pub const USAGE_JS: &str = r#"// ===============================================
       if (segs[qj].c) sp.className = segs[qj].c;
       sp.textContent = segs[qj].t;
       line.appendChild(sp);
+      /* V31 倒计时段（seg.sub；V32 起扁平化去括号）：先补半角空格
+       * text node 再挂无 class 独立 span（与百分比 span 平级、不嵌套）
+       * 恒继承灰白行色——阈值变色只属于剩余百分比，空格不入百分比
+       * span；sub 缺失时零额外节点 */
+      if (segs[qj].sub) {
+        line.appendChild(document.createTextNode(" "));
+        var sq = document.createElement("span");
+        sq.textContent = segs[qj].sub;
+        line.appendChild(sq);
+      }
     }
   }
 
@@ -4666,9 +4774,21 @@ mod tests {
         // 会话条 ⟲ 段命中率后缀移除，改由额度行新增「缓存 NN%」段承载
         // ——renderQuotaBar 接收 anchor、按 renderSessionBar 同款双口
         // 径算当前会话命中率，分母 0 不入段；数据端零改动）
-        assert!(USAGE_JS.contains("ZBAR-THEME-V30"));
-        assert!(!USAGE_JS.contains("ZBAR-THEME-V29"), "版本头应已升到 V30");
-        assert!(!USAGE_JS.contains("ZBAR-THEME-V28"), "版本头不应回退");
+        // V31（底部额度行追加窗口重置倒计时，额度契约 v:1 → v:2：
+        // usage-quota.js 新增 h5rs/wkrs 重置时刻 ms；5h/周余段追加括号
+        // 纯时长 "（2h35m）"，fmtResetCountdown/quotaCountdownOf + seg.sub
+        // 无 class 独立 span 灰白继承行色；loadQuota 与 renderQuotaBar
+        // 版本闸放行 v:1/v:2 平滑过渡；倒计时 Date.now() 每拍重算，全串
+        // 比对零 DOM 机制不变）
+        // V32（底部额度行扁平化去括号，纯渲染端微调、数据契约零改动：
+        // zh 词表「5h 余」→ "5h "、「周余」→ "每周 "；quotaCountdownOf
+        // 去括号返回裸时长，renderQuotaLine 在 sub span 前插半角空格
+        // text node、全串比对同步 t + " " + sub；seg.sub 通道与阈值变
+        // 色边界不变）
+        assert!(USAGE_JS.contains("ZBAR-THEME-V32"));
+        assert!(!USAGE_JS.contains("ZBAR-THEME-V31"), "版本头应已升到 V32");
+        assert!(!USAGE_JS.contains("ZBAR-THEME-V30"), "版本头不应回退");
+        assert!(!USAGE_JS.contains("ZBAR-THEME-V29"), "版本头不应回退");
         assert!(!USAGE_JS.contains("ZBAR-THEME-V27"), "版本头不应回退");
         assert!(!USAGE_JS.contains("ZBAR-THEME-V26"), "版本头不应回退");
         assert!(!USAGE_JS.contains("ZBAR-THEME-V25"), "版本头不应回退");
@@ -4695,7 +4815,8 @@ mod tests {
         assert!(!speed_loader_body.contains("dataUrl"));
         // V27 额度旁路：独立小文件 + 独立 loader + 独立低频节拍（30s，
         // 隐藏降频 60s），绝不进大文件/速度旁路；消费 window.__ZBAR_QUOTA__
-        // 且版本不符保留上次额度
+        // 且版本不符保留上次额度；V31 起版本闸放行 v:1/v:2（升级过渡期
+        // 残留 v:1 照常消费，写出 v:2 后自然生效）
         assert!(USAGE_JS.contains("usage-quota.js"), "应定位额度小文件");
         assert!(USAGE_JS.contains("var QUOTA_LOADER_ID = \"zbar-usage-quota-loader\""));
         assert!(USAGE_JS.contains("var QUOTA_POLL_MS = 30000"));
@@ -4709,9 +4830,9 @@ mod tests {
         let quota_loader_body = &USAGE_JS[quota_lo..quota_hi];
         assert!(
             quota_loader_body.contains("window.__ZBAR_QUOTA__")
-                && quota_loader_body.contains("q.v !== 1")
+                && quota_loader_body.contains("(q.v !== 1 && q.v !== 2)")
                 && quota_loader_body.contains("quotaData = q;"),
-            "额度 loader 应消费 __ZBAR_QUOTA__ 并做版本校验：{quota_loader_body}"
+            "额度 loader 应消费 __ZBAR_QUOTA__ 并做版本校验（V31 放行 v:1/v:2）：{quota_loader_body}"
         );
         assert!(
             !quota_loader_body.contains("dataUrl") && !quota_loader_body.contains("speedUrl"),
@@ -4747,10 +4868,10 @@ mod tests {
         );
         assert!(
             USAGE_JS.contains("quotaLead: \"额度\"")
-                && USAGE_JS.contains("quota5h: \"5h 余\"")
-                && USAGE_JS.contains("quotaWk: \"周余\"")
+                && USAGE_JS.contains("quota5h: \"5h \"")
+                && USAGE_JS.contains("quotaWk: \"每周 \"")
                 && USAGE_JS.contains("cachePct: \"缓存\""),
-            "zh 词表应含额度行标签（V29 删除更新时间词）与 V30 缓存段标签"
+            "zh 词表应含额度行标签（V32 扁平化去「余」字）与 V30 缓存段标签"
         );
         assert!(
             USAGE_JS.contains("quotaLead: \"Quota\"")
@@ -4851,7 +4972,7 @@ mod tests {
         // V30 缓存命中率段：签名带 anchor（renderAll 主路径与 sessHasData
         // 同源传入），函数体内按 renderSessionBar 同款双口径算当前会话
         // tcr/tin（sess 全量合计命中即消费 sess 行，否则 totals +
-        // runTotals 回退叠加），周余段之后追加「缓存 NN%」段（灰白不高
+        // runTotals 回退叠加），每周段之后追加「缓存 NN%」段（灰白不高
         // 亮）；分母为 0（cacheHitText 返回 "—"）不入段，不留残留
         assert!(
             USAGE_JS.contains("function renderQuotaBar(sessHasData, anchor)")
@@ -4865,7 +4986,60 @@ mod tests {
             quota_body.contains("var hit = cacheHitText(tcr, tin);")
                 && quota_body.contains("if (hit !== \"—\") {")
                 && quota_body.contains("segs.push({ t: W.cachePct + \" \" + hit, c: \"\" });"),
-            "额度行应在周余段后追加「缓存」段（灰白继承行色），分母为 0 时不入段: {quota_body}"
+            "额度行应在每周段后追加「缓存」段（灰白继承行色），分母为 0 时不入段: {quota_body}"
+        );
+        // V31/V32 窗口重置倒计时：a) 新增格式化与倒计时段函数（rs 缺失/
+        // 非法/已过期 <= now 返回空串 → 该窗口不加段；时长阶梯 <1h "35m"
+        // / <24h "2h35m" / ≥24h "5d2h"，英文单位不进词表；V32 去括号直
+        // 接返回裸时长）；b) renderQuotaBar 版本闸放行 v:1/v:2（升级过渡
+        // 期残留 v:1 无 h5rs/wkrs → 无倒计时段，行为与升级前一致）；
+        // c) 5h/周段以 seg.sub 携带倒计时段、nowMs 每拍重算，全串比对纳
+        // 入 sub（V32 起前置半角空格，零 DOM 机制保持）；d) renderQuotaLine
+        // 以无 class 独立 span 渲染 sub（与百分比 span 平级不嵌套，恒继
+        // 承灰白行色，阈值变色只属于剩余百分比）
+        assert!(
+            USAGE_JS.contains("function fmtResetCountdown")
+                && USAGE_JS.contains("function quotaCountdownOf")
+                && USAGE_JS.contains(
+                    "if (typeof rs !== \"number\" || !isFinite(rs) || rs <= now) return \"\";"
+                )
+                && USAGE_JS.contains(
+                    "if (typeof msLeft !== \"number\" || !isFinite(msLeft) || msLeft <= 0) return \"\";"
+                )
+                && USAGE_JS.contains("if (mins < 60) return mins + \"m\";")
+                && USAGE_JS.contains("if (hours < 24) return hours + \"h\" + (mins % 60) + \"m\";")
+                && USAGE_JS.contains("return Math.floor(hours / 24) + \"d\" + (hours % 24) + \"h\";")
+                && USAGE_JS.contains("return body;")
+                && !USAGE_JS.contains("（\" + body + \"）"),
+            "V31/V32 应有倒计时格式化/裸时长函数（rs 缺失或 <= now 不加段，V32 去括号、时长阶梯保留）"
+        );
+        assert!(
+            quota_body.contains("quotaData.v === 1 || quotaData.v === 2"),
+            "renderQuotaBar 版本闸应放行 v:1/v:2（升级过渡期残留 v:1 文件无倒计时段照常显示）: {quota_body}"
+        );
+        assert!(
+            quota_body.contains("var nowMs = Date.now();")
+                && quota_body.contains("sub: quotaCountdownOf(qd.h5rs, nowMs)")
+                && quota_body.contains("sub: quotaCountdownOf(qd.wkrs, nowMs)")
+                && quota_body.contains(
+                    "text += (qi ? \" · \" : \"\") + segs[qi].t + (segs[qi].sub ? \" \" + segs[qi].sub : \"\");"
+                ),
+            "5h/周段应携带重置倒计时段（V32 去括号裸时长前置空格；Date.now() 每拍重算，全串比对纳入 sub 保持零 DOM 机制）: {quota_body}"
+        );
+        let ql_lo = USAGE_JS
+            .find("function renderQuotaLine")
+            .expect("renderQuotaLine 应存在");
+        let ql_hi = USAGE_JS
+            .find("function renderAll")
+            .expect("renderAll 应存在");
+        let ql_body = &USAGE_JS[ql_lo..ql_hi];
+        assert!(
+            ql_body.contains("if (segs[qj].sub) {")
+                && ql_body.contains("line.appendChild(document.createTextNode(\" \"));")
+                && ql_body.contains("var sq = document.createElement(\"span\");")
+                && ql_body.contains("sq.textContent = segs[qj].sub;")
+                && !ql_body.contains("sq.className"),
+            "倒计时段应以半角空格 text node + 无 class 独立 span 渲染（V32 扁平化去括号；恒继承灰白行色，不随百分比三档变色；sub 缺失零额外节点）: {ql_body}"
         );
         assert!(
             quota_body.contains("if (!segs.length) {"),
