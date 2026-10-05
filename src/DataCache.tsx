@@ -255,6 +255,14 @@ function migrateSpeedEntries<
 const LEGACY_SPEED_CACHE =
   (loadCache<number>(SPEED_VERSION_CACHE_KEY) ?? 1) < SPEED_CONTRACT_VERSION;
 
+/** 迁移轮同步写开关：模块加载时判定为旧契约缓存时置 true，版本标记 effect
+ *  写完标记后复位。挂载轮的 zai/claude/kimi 持久化 effect 据此改用同步
+ *  saveCache，维持「迁移后的缓存先落盘 → 版本标记后落盘」的时序语义（进程
+ *  中途被杀时靠「版本=旧 + 缓存=已剥离」幂等重跑迁移，见版本标记 effect 注释）。
+ *  标记落盘后本会话的后续更新即恢复防抖异步写；正常路径（版本已最新）恒为
+ *  false，不受影响。 */
+let speedMigrationSyncWrite = LEGACY_SPEED_CACHE;
+
 /** provider 额度缓存老化阈值（与 120s 通用轮询同频）：面板挂载补刷判定
  *  「无缓存或缓存已老化」用（冷启动 localStorage 恢复的旧缓存也视为旧）。 */
 export const PROVIDER_QUOTA_STALE_MS = 120_000;
@@ -493,6 +501,63 @@ export interface DataCacheValue {
   refresh: () => void;
   /** 手动强制刷新 Coding Plan 额度 */
   refreshQuota: () => void;
+}
+
+// ===== 大缓存写盘防抖调度器 =====
+// 后台 30s 刷新轮里 zai/codex/claude/kimi/cursor/accountQuotas/providerQuota
+// 等大缓存陆续到达，若各自 state 变化即同步 JSON.stringify 全量写 localStorage，
+// 主线程会被反复阻塞（挂载/窗口返回时卡顿的来源之一）。这里把写盘请求合并进
+// pending Map（同 key 只保留最新值），500ms 防抖后在 requestIdleCallback 空闲期
+// 逐项落盘；页面隐藏/关闭与组件卸载时同步刷写全部 pending，保证进程被杀前
+// 不丢最近一次更新。序列化仍走 saveCache（配额超限等静默降级，行为不变），
+// 读路径不经过本调度器，恢复逻辑不受影响。
+const PERSIST_DEBOUNCE_MS = 500;
+
+const persistPending = new Map<string, unknown>();
+let persistDebounceTimer: number | null = null;
+let persistIdleHandle: number | null = null;
+
+/** 立即同步刷写全部 pending 写盘请求（兜底：hidden / beforeunload / 卸载） */
+function flushPersistNow(): void {
+  if (persistDebounceTimer !== null) {
+    clearTimeout(persistDebounceTimer);
+    persistDebounceTimer = null;
+  }
+  if (persistIdleHandle !== null) {
+    window.cancelIdleCallback(persistIdleHandle);
+    persistIdleHandle = null;
+  }
+  if (persistPending.size === 0) return;
+  const entries = Array.from(persistPending.entries());
+  persistPending.clear();
+  for (const [key, value] of entries) {
+    saveCache(key, value);
+  }
+}
+
+/** 大缓存写盘调度入口：500ms 防抖合并（同 key 只保留最新值），空闲期落盘 */
+function schedulePersist(key: string, value: unknown): void {
+  persistPending.set(key, value);
+  // 已有待触发的防抖定时器时只合并值，不重建定时器
+  if (persistDebounceTimer !== null) return;
+  persistDebounceTimer = window.setTimeout(() => {
+    persistDebounceTimer = null;
+    if (typeof window.requestIdleCallback === "function") {
+      persistIdleHandle = window.requestIdleCallback(
+        () => {
+          persistIdleHandle = null;
+          flushPersistNow();
+        },
+        // 主线程持续繁忙（如后台刷新轮的响应解析处理）时 idle 回调可能长期
+        // 不触发，timeout 保证至多 2s 强制执行一次，pending 不再完全依赖
+        // hidden/beforeunload 兜底落盘
+        { timeout: 2000 }
+      );
+    } else {
+      // 不支持 requestIdleCallback 的环境退化为宏任务，同样不阻塞渲染
+      window.setTimeout(flushPersistNow, 0);
+    }
+  }, PERSIST_DEBOUNCE_MS);
 }
 
 const Ctx = createContext<DataCacheValue | null>(null);
@@ -1689,7 +1754,11 @@ export function DataProvider({ pricing, credentialPresence, children }: Provider
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [deviceFilter, refreshZaiRange, refreshCursorRange, refreshCodexRange, refreshClaudeRange, refreshKimiRange]);
 
-  // ===== 持久化：各 state 变化即落盘，供下次冷启动各范围秒显 =====
+  // ===== 持久化：小对象（体积小，序列化无感知）state 变化即同步落盘；
+  //      大缓存（zai/cursor/codex/claude/kimi/todayDelta/accountQuotas/
+  //      providerQuota）走 500ms 防抖 + 空闲期写盘调度器（见 schedulePersist），
+  //      避免后台刷新轮里陆续到达的各路数据反复全量序列化阻塞主线程。
+  //      供下次冷启动各范围秒显 =====
   useEffect(() => {
     saveCache("zbar-preset", preset);
   }, [preset]);
@@ -1699,30 +1768,43 @@ export function DataProvider({ pricing, credentialPresence, children }: Provider
   useEffect(() => {
     saveCache("zbar-device", deviceFilter);
   }, [deviceFilter]);
+  // 大缓存防抖写盘。zai/claude/kimi 在速度契约迁移轮（speedMigrationSyncWrite）
+  // 改用同步 saveCache：迁移结果必须先于下方版本标记落盘（同一次 commit 的
+  // effect 按声明顺序同步执行，不受防抖影响），时序语义与既有约定一致；
+  // 开关仅在迁移会话为 true 且写完标记即复位，正常路径恒走防抖调度器。
   useEffect(() => {
-    saveCache("zbar-zai-cache", zaiCache);
+    if (speedMigrationSyncWrite) saveCache("zbar-zai-cache", zaiCache);
+    else schedulePersist("zbar-zai-cache", zaiCache);
   }, [zaiCache]);
   useEffect(() => {
-    saveCache("zbar-cursor-cache", cursorCache);
+    schedulePersist("zbar-cursor-cache", cursorCache);
   }, [cursorCache]);
   useEffect(() => {
-    saveCache("zbar-codex-cache", codexCache);
+    schedulePersist("zbar-codex-cache", codexCache);
   }, [codexCache]);
   useEffect(() => {
-    saveCache("zbar-claude-cache", claudeCache);
+    if (speedMigrationSyncWrite) saveCache("zbar-claude-cache", claudeCache);
+    else schedulePersist("zbar-claude-cache", claudeCache);
   }, [claudeCache]);
   useEffect(() => {
-    saveCache("zbar-kimi-cache", kimiCache);
+    if (speedMigrationSyncWrite) saveCache("zbar-kimi-cache", kimiCache);
+    else schedulePersist("zbar-kimi-cache", kimiCache);
   }, [kimiCache]);
   // 版本标记写入：必须位于 zai/claude/kimi 三个持久化 effect 之后。同一次
   // commit 的 effect 按声明顺序同步执行，挂载轮先落盘迁移后的缓存、再写
   // 版本标记；若两步之间进程被杀，只会残留「版本=旧 + 缓存=已剥离」，
   // 下次冷启动幂等重跑迁移（isLegacySpeedRow 对新契约行是无操作）。反之
   // 若先写标记，极端窗口会留下「版本=新 + localStorage 仍为旧口径速度
-  // 条目」，旧 avg_tps 会被当新契约显示。版本已最新时本 effect 幂等空操作，
-  // 正常路径无额外写入（StrictMode 双跑无害）
+  // 条目」，旧 avg_tps 会被当新契约显示。
+  // 大缓存改防抖异步写后该时序仍成立：迁移轮下三个缓存 effect 改用同步
+  // saveCache（见上方各 effect），与本 effect 的先后顺序不受防抖影响；标记
+  // 落盘后立即复位开关，本会话后续更新恢复防抖写（迁移时序使命已完成）。
+  // 版本已最新时本 effect 幂等空操作（StrictMode 双跑无害）
   useEffect(() => {
-    if (LEGACY_SPEED_CACHE) saveCache(SPEED_VERSION_CACHE_KEY, SPEED_CONTRACT_VERSION);
+    if (speedMigrationSyncWrite) {
+      saveCache(SPEED_VERSION_CACHE_KEY, SPEED_CONTRACT_VERSION);
+      speedMigrationSyncWrite = false;
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   useEffect(() => {
@@ -1732,15 +1814,32 @@ export function DataProvider({ pricing, credentialPresence, children }: Provider
     if (quota) saveCache("zbar-quota", quota);
   }, [quota]);
   useEffect(() => {
-    if (todayDelta) saveCache("zbar-today-delta", todayDelta);
+    if (todayDelta) schedulePersist("zbar-today-delta", todayDelta);
   }, [todayDelta]);
   useEffect(() => {
-    saveCache("zbar-account-quotas", accountQuotas);
+    schedulePersist("zbar-account-quotas", accountQuotas);
   }, [accountQuotas]);
   useEffect(() => {
     // ProviderQuotaEntry 不含 secret（凭证明文永不下发前端），可安全持久化
-    saveCache("zbar-provider-quota", providerQuota);
+    schedulePersist("zbar-provider-quota", providerQuota);
   }, [providerQuota]);
+  // 大缓存防抖写盘的兜底防丢：页面隐藏/关闭时同步刷写全部 pending（进程可能
+  // 随即被挂起/杀死，空闲回调不再执行）；组件卸载同理。挂载轮的迁移同步写
+  // 不经过 pending，不受影响。
+  useEffect(() => {
+    const onHidden = () => {
+      if (document.visibilityState === "hidden") flushPersistNow();
+    };
+    const onBeforeUnload = () => flushPersistNow();
+    document.addEventListener("visibilitychange", onHidden);
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => {
+      document.removeEventListener("visibilitychange", onHidden);
+      window.removeEventListener("beforeunload", onBeforeUnload);
+      // 卸载兜底：刷写尚未落盘的 pending
+      flushPersistNow();
+    };
+  }, []);
 
   // 手动刷新：刷新当前范围（z.ai + Codex + Claude + Cursor + Kimi）一次
   const refresh = useCallback(() => {

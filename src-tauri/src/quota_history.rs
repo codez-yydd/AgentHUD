@@ -8,6 +8,9 @@
 //! - 周期划分：用 weekly_reset (nextResetTime) 的变化点切分"智谱重置周期"。
 //! - 去重/限频：同账号同秒内只写一条（尾部窗口回读该账号最后一条防抖）。
 //! - 滚动保留：定期（每 24h 至多一次）删除超过保留期的行，防止文件无限增长。
+//! - 进程内缓存：load_all 以 (路径, mtime, len) 判断命中，未变时直接返回内存
+//!   副本，免去 90 天约 38MB JSONL 的反复逐行解析；本模块写入/清理成功后
+//!   同步联动缓存，磁盘文件被外部改动时自动失效重读（正确性优先）。
 
 use serde::{Deserialize, Serialize};
 use std::fs::{self, OpenOptions};
@@ -25,6 +28,103 @@ const CLEANUP_INTERVAL: Duration = Duration::from_secs(24 * 3600);
 /// 上次清理时间（None = 本进程尚未清理过）。
 /// 模块级 Mutex 节流：快照写入来自多个线程（fetch_quota / 同步 worker）。
 static LAST_CLEANUP: OnceLock<Mutex<Option<SystemTime>>> = OnceLock::new();
+
+// ===== 进程内全量快照缓存 =====
+// load_all 被对比页（60s）、今日增量（60s）、同步 worker、托盘刷新等高频调用，
+// 90 天历史约 38MB JSONL 逐行解析代价高。以 (路径, mtime, len) 三元组判断
+// 有效性——任何一方变化（本模块写入、滚动清理重写、外部改动）都自动失效重读，
+// 正确性优先于命中率。锁只保护内存结构，文件读取/解析在锁外进行（读期间不持
+// 锁，不阻塞写路径）；并发同时未命中至多多读一次，无害。
+
+/// 缓存条目：文件身份（路径 + mtime + len）+ 全量快照（按 ts 升序）。
+/// mtime/len 双 None 表示"文件不存在"的占位状态。
+struct CachedSnaps {
+    path: PathBuf,
+    mtime: Option<SystemTime>,
+    len: Option<u64>,
+    snaps: Vec<QuotaSnapshot>,
+}
+
+static SNAPS_CACHE: OnceLock<Mutex<Option<CachedSnaps>>> = OnceLock::new();
+
+fn snaps_cache() -> &'static Mutex<Option<CachedSnaps>> {
+    SNAPS_CACHE.get_or_init(|| Mutex::new(None))
+}
+
+/// 命中判断 + 克隆返回（快照条目小，全量克隆远低于 38MB 逐行解析）。
+/// 锁中毒等异常按未命中处理，退回全量重读，不影响正确性。
+fn cache_hit(
+    path: &std::path::Path,
+    mtime: Option<SystemTime>,
+    len: Option<u64>,
+) -> Option<Vec<QuotaSnapshot>> {
+    let guard = snaps_cache().lock().ok()?;
+    let c = guard.as_ref()?;
+    if c.path == path && c.mtime == mtime && c.len == len {
+        return Some(c.snaps.clone());
+    }
+    None
+}
+
+/// 写回缓存；拿不到锁只是丢一次缓存机会，下次读取重建。
+fn cache_store(path: PathBuf, mtime: Option<SystemTime>, len: Option<u64>, snaps: &[QuotaSnapshot]) {
+    if let Ok(mut guard) = snaps_cache().lock() {
+        *guard = Some(CachedSnaps {
+            path,
+            mtime,
+            len,
+            snaps: snaps.to_vec(),
+        });
+    }
+}
+
+/// 写路径联动：成功追加一条后增量更新缓存（免得下次 load_all 因 mtime/len
+/// 变化白白全量重读）。缓存为空或路径不匹配时不主动加载（留给下次读重建）。
+/// 同秒去重命中时 append_to 提前返回、不落盘，也就不会走到这里（缓存不动）。
+fn cache_after_append(path: &std::path::Path, snap: &QuotaSnapshot) {
+    let Ok(mut guard) = snaps_cache().lock() else {
+        return;
+    };
+    let Some(c) = guard.as_mut() else {
+        return;
+    };
+    if c.path != path {
+        return;
+    }
+    // stat 是单次轻量系统调用，放在锁内：多线程并发追加时后拿锁者 stat 到的
+    // 必然是最终（或更新的）文件状态，缓存 mtime/len 不会落后于已含的快照内容
+    let meta = fs::metadata(path).ok();
+    c.mtime = meta.as_ref().and_then(|m| m.modified().ok());
+    c.len = meta.as_ref().map(|m| m.len());
+    // 防重入（镜像磁盘防抖规则的防御检查）：封死「并发 load_all 全量重建已含
+    // 新行 + 本线程延迟 push」的指令级窗口——cache_store 是把磁盘完整内容整体
+    // 写入缓存，若 load_all 恰在本线程 write_all 之后、本函数拿锁之前完成了
+    // 全量重建，新快照已随全量结果进入缓存，再 push 就会产生重复条目。
+    // 故仅当缓存内该账号（account 指纹）最后一条快照严格早于新快照（不可能
+    // 已含）时才 push，否则跳过；mtime/len 已同步为磁盘现状，跳过不影响下次
+    // 命中判断。按账号而非只看全局尾条，与 append_to 的防抖口径一致：
+    // 多账号并行落盘时其他账号的更新条目不应挡住本账号的追加。
+    let already_cached = c
+        .snaps
+        .iter()
+        .rev()
+        .find(|s| s.account == snap.account)
+        .is_some_and(|s| s.ts >= snap.ts);
+    if already_cached {
+        return;
+    }
+    // 常规场景新快照 ts 为当前时刻（大于等于全部历史），push 后仍保持升序；
+    // 时钟回拨等极端场景 sort 一次兜底，当前条目量级下开销可忽略
+    c.snaps.push(snap.clone());
+    c.snaps.sort_by_key(|s| s.ts);
+}
+
+/// 缓存失效：磁盘文件被结构性改写（清理重写 / 删除）时调用，下次读取重建。
+fn cache_invalidate() {
+    if let Ok(mut guard) = snaps_cache().lock() {
+        *guard = None;
+    }
+}
 
 /// 单条额度快照（jsonl 一行）。
 /// 字段尽量与 QuotaResult 对齐，只挑有价值的几项，控制单条体积。
@@ -121,7 +221,11 @@ fn append_to(path: &std::path::Path, snap: &QuotaSnapshot) -> Result<(), String>
     buf.push_str(&line);
     buf.push('\n');
     file.write_all(buf.as_bytes())
-        .map_err(|e| format!("写入快照失败: {e}"))
+        .map_err(|e| format!("写入快照失败: {e}"))?;
+    // 成功落盘后同步增量更新进程内缓存（缓存为空/路径不匹配时为无害 no-op，
+    // 测试用临时路径不会污染真实缓存）
+    cache_after_append(path, snap);
+    Ok(())
 }
 
 /// 确保文件以换行符结尾：尾部是半截残行（进程崩溃残留）时补一个 \n，
@@ -229,7 +333,12 @@ fn try_cleanup(path: &std::path::Path) -> Result<(), String> {
     }
     out.flush().map_err(|e| format!("刷新临时文件失败: {e}"))?;
     drop(out);
-    fs::rename(&tmp, path).map_err(|e| format!("替换快照文件失败: {e}"))
+    fs::rename(&tmp, path).map_err(|e| format!("替换快照文件失败: {e}"))?;
+    // 文件被整体重写（mtime/len 变化）：作废进程内缓存，下次读取按新文件重建。
+    // 必须显式作废而不是依赖后续 append 的 cache_after_append——那个函数只会
+    // 在旧缓存基础上 push 增量，会把已被清理的过期行继续留在内存里。
+    cache_invalidate();
+    Ok(())
 }
 
 /// 回读文件尾部窗口内的全部完整快照（防抖判断用，通常几条到几十条）。
@@ -290,14 +399,36 @@ fn read_recent_entries(path: &std::path::Path) -> Result<Vec<QuotaSnapshot>, Str
 }
 
 /// 读取全部快照（按 ts 升序）。损坏的行跳过，不整体失败。
+/// 进程内缓存：文件 (路径, mtime, len) 未变时直接返回内存副本，避免高频
+/// 调用方（对比页 / 今日增量 / 同步 worker / 托盘刷新）反复全量解析。
+/// append-only 文件任何写入都会变长，mtime 精度不足的场景由 len 双重校验兜底。
 pub fn load_all() -> Result<Vec<QuotaSnapshot>, String> {
     let path = history_path()?;
     if !path.exists() {
-        return Ok(Vec::new());
+        // 文件不存在：缓存"空"占位，文件随后出现（外部新建 / 本模块 append
+        // 创建）时元数据由 None 变 Some，自动失效重读
+        let empty: Vec<QuotaSnapshot> = Vec::new();
+        cache_store(path, None, None, &empty);
+        return Ok(empty);
     }
+    // 元数据在锁外获取（IO 不持锁）
+    let meta = fs::metadata(&path).ok();
+    let mtime = meta.as_ref().and_then(|m| m.modified().ok());
+    let len = meta.as_ref().map(|m| m.len());
+    if let Some(snaps) = cache_hit(&path, mtime, len) {
+        return Ok(snaps);
+    }
+    // 未命中：全量重读（锁外 IO + 解析），完成后写回缓存
+    let snaps = read_all_from(&path)?;
+    cache_store(path, mtime, len, &snaps);
+    Ok(snaps)
+}
+
+/// 全量解析实现（原 load_all 主体）：逐行解析，损坏的行跳过，结果按 ts 升序。
+fn read_all_from(path: &std::path::Path) -> Result<Vec<QuotaSnapshot>, String> {
     let file = OpenOptions::new()
         .read(true)
-        .open(&path)
+        .open(path)
         .map_err(|e| format!("打开快照文件失败: {e}"))?;
     let reader = BufReader::new(file);
     let mut out = Vec::new();
@@ -324,6 +455,8 @@ pub fn clear_history() -> Result<(), String> {
     if path.exists() {
         fs::remove_file(&path).map_err(|e| format!("删除快照文件失败: {e}"))?;
     }
+    // 文件已删除：作废缓存，避免下次读取命中"删除前"的旧数据
+    cache_invalidate();
     Ok(())
 }
 
@@ -570,6 +703,119 @@ mod tests {
         }
     }
 
+    /// 缓存测试互斥锁：SNAPS_CACHE 是进程级静态，cache 语义用例与成功重写
+    /// 后会 cache_invalidate 的 cleanup 用例必须串行执行，否则并行断言会被
+    /// 对方的 invalidate 打断（失效本身是正确性行为，测试只需互斥）。
+    /// into_inner 容忍中毒：某用例持锁 panic 后不连坐其余缓存用例。
+    static CACHE_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    /// 进程内缓存一致性语义（全程持 CACHE_TEST_LOCK，临时路径与真实历史隔离）：
+    /// - cache_store / cache_hit：三元组（路径, mtime, len）全一致才命中，
+    ///   任一分量变化（append 变 len / 清理重写或外部改动变 mtime / 路径不同）
+    ///   均未命中——这是 load_all 二次调用不读盘与磁盘改动自动失效的机制；
+    /// - cache_invalidate：失效后 cache_hit 为 None（下次 load_all 全量重读）；
+    /// - 写路径联动：缓存为空时 append 不主动加载；已有条目时增量追加且
+    ///   元数据与磁盘一致；
+    /// - 防重入（镜像磁盘防抖规则）：缓存内该账号最后一条 ts >= 新快照 ts 时
+    ///   不 push（模拟并发 load_all 已把新行整体写入缓存的竞态窗口）；
+    ///   同 ts 不同账号不受影响；
+    /// - 同秒去重跳过（不落盘）不动缓存。
+    #[test]
+    fn cache_semantics_hit_store_append_invalidate() {
+        let _serial = CACHE_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        cache_invalidate(); // 从干净状态开始，不依赖其他用例遗留的缓存
+        let path = temp_jsonl("cache");
+        let mtime = SystemTime::UNIX_EPOCH;
+
+        // ===== 命中/未命中：三元组各分量变化 =====
+        let snaps = vec![snap_of(1_000, "A", 20), snap_of(2_000, "B", 50)];
+        cache_store(path.clone(), Some(mtime), Some(10), &snaps);
+        assert_eq!(
+            cache_hit(&path, Some(mtime), Some(10)).unwrap().len(),
+            2,
+            "三元组一致应命中"
+        );
+        assert!(
+            cache_hit(&path, Some(mtime), Some(11)).is_none(),
+            "len 变化（append 变长）应未命中"
+        );
+        assert!(
+            cache_hit(&path, Some(SystemTime::now()), Some(10)).is_none(),
+            "mtime 变化（清理重写/外部改动）应未命中"
+        );
+        assert!(
+            cache_hit(&temp_jsonl("cache-other"), Some(mtime), Some(10)).is_none(),
+            "路径不同应未命中"
+        );
+
+        // ===== invalidate 后重读：失效即未命中 =====
+        cache_invalidate();
+        assert!(snaps_cache().lock().unwrap().is_none(), "invalidate 后缓存应为空");
+        assert!(
+            cache_hit(&path, Some(mtime), Some(10)).is_none(),
+            "invalidate 后应未命中（下次 load_all 走全量重读）"
+        );
+
+        // ===== 写路径联动：缓存为空时 append 不主动加载（留给下次读重建）=====
+        append_to(&path, &snap_of(3_000, "A", 30)).unwrap();
+        assert!(
+            snaps_cache().lock().unwrap().is_none(),
+            "缓存为空时写入不主动加载"
+        );
+
+        // ===== 写路径联动：已有条目时 append 后缓存增量与磁盘一致 =====
+        cache_store(path.clone(), None, None, &[]);
+        append_to(&path, &snap_of(4_000, "A", 40)).unwrap();
+        {
+            let guard = snaps_cache().lock().unwrap();
+            let c = guard.as_ref().unwrap();
+            assert_eq!(c.snaps.len(), 1, "空占位不回填旧数据，仅追加本次新快照");
+            assert_eq!(c.snaps[0].ts, 4_000);
+            assert_eq!(c.snaps[0].weekly_pct, 40);
+            // 元数据与磁盘一致：下次 load_all 的三元组校验直接命中
+            let meta = std::fs::metadata(&path).unwrap();
+            assert_eq!(c.len, Some(meta.len()));
+            assert_eq!(c.mtime, meta.modified().ok());
+        }
+
+        // ===== 防重入：同账号 ts >= 新快照 ts 时不 push =====
+        // 模拟竞态窗口：并发 load_all 已把含 A@5000 新行的磁盘内容整体写入
+        // 缓存，随后同一快照的 cache_after_append 迟到——不得再 push 成重复条目
+        let fresh = vec![snap_of(4_000, "A", 40), snap_of(5_000, "A", 50)];
+        cache_store(path.clone(), None, None, &fresh);
+        append_to(&path, &snap_of(5_000, "A", 50)).unwrap();
+        {
+            let guard = snaps_cache().lock().unwrap();
+            assert_eq!(
+                guard.as_ref().unwrap().snaps.len(),
+                2,
+                "防重入：缓存已含同账号同 ts 快照，不得重复 push"
+            );
+        }
+        // 同 ts 不同账号不得被防重入误伤（与磁盘防抖按账号判断的口径一致）
+        append_to(&path, &snap_of(5_000, "B", 60)).unwrap();
+        {
+            let guard = snaps_cache().lock().unwrap();
+            let c = guard.as_ref().unwrap();
+            assert_eq!(c.snaps.len(), 3, "同 ts 不同账号应正常 push");
+            assert_eq!(c.snaps[2].account.as_deref(), Some("B"));
+        }
+
+        // ===== 去重跳过（不落盘）不动缓存 =====
+        append_to(&path, &snap_of(5_000, "A", 55)).unwrap(); // 同秒同账号，append_to 去重跳过
+        {
+            let guard = snaps_cache().lock().unwrap();
+            assert_eq!(
+                guard.as_ref().unwrap().snaps.len(),
+                3,
+                "去重跳过不应改动缓存"
+            );
+        }
+
+        std::fs::remove_file(&path).ok();
+        cache_invalidate(); // 归还干净状态，不影响其他用例
+    }
+
     /// 周期切分：跳变前快照预告的 weekly_reset 落在跳变后快照 ts 之前数小时
     /// （应用重置后很久才启动的场景），新周期 reset_at 应等于预告重置时刻，
     /// 否则真实重置~首条快照之间的用量会漏出所有周期
@@ -686,6 +932,9 @@ mod tests {
         );
         std::fs::write(&path, &content).unwrap();
 
+        // 持缓存测试互斥锁：try_cleanup 成功重写后会 cache_invalidate 进程级
+        // 静态缓存，与 cache 语义用例互斥执行，避免并行断言被打断
+        let _serial = CACHE_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         try_cleanup(&path).unwrap();
 
         let cleaned = std::fs::read_to_string(&path).unwrap();
