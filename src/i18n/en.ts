@@ -397,58 +397,59 @@ export const en: typeof zh = {
     "report.refresh": "Refresh report",
     // Range selection reuses the shared RangePicker (range.* dict)
     "report.allDevices": "All devices",
-    "report.loading": "Building report…",
     "report.emptyTitle": "No usage in this range",
     "report.emptyHint":
       "Make sure agents are enabled and had requests within the selected range.",
-    "report.refreshing": "Refreshing latest data…",
 
-    "report.cnyHint": "CNY converted",
-    "report.usdHint": "USD native",
-    "report.tokenHint": "Visible agents",
-    "report.requestsHint": "API calls",
-    "report.activeAgents": "Active agents",
-    "report.agentsHintOne": "Only 1 source in range",
-    "report.agentsHint": "Sources with usage in range",
+    // Per-stage loading hints (local and remote load independently)
+    "report.loadingLocal": "Loading local data…",
+    "report.loadingRemote": "Syncing remote data…",
+    "report.cachedHint": "Showing cached data, refreshing in background…",
+
+    // Agent filter (pill segments, pure frontend filtering; only agents with data)
+    "report.filter.all": "All",
+
+    // KPI cards (value on top, label below)
+    "report.kpi.tokens": "Total tokens",
+    "report.kpi.cost": "Total cost",
+    "report.kpi.requests": "Total requests",
+    "report.kpi.activeDays": "Active days",
+
+    // Activity summary strip (short labels to avoid truncation in the narrow panel)
+    "report.activity": "Activity",
+    "report.act.total": "Tokens",
+    "report.act.peakDay": "Peak",
+    // ⓘ tooltip: peak metric definition
+    "report.act.peakTip": "Highest single-day token day in range",
+    "report.act.dailyAvg": "Daily avg",
+    "report.act.streakCurrent": "Streak",
+    "report.act.streakLongest": "Best",
+    "report.act.daysUnit": "d",
+
+    // Token activity heatmap
+    "report.tokenActivity": "Token activity",
+    "report.heat.window": "Last 12 months",
+    "report.heat.daily": "Daily",
+    "report.heat.weekly": "Weekly",
+    "report.heat.cum": "Cumulative",
+    "report.heat.empty": "No token activity",
+    "report.heat.less": "Less",
+    "report.heat.more": "More",
+    // Two tooltip lines: date (+ week range / cumulative) / tokens and requests
+    "report.heat.tooltipWeek": "Week of {date}",
+    "report.heat.tooltipCum": "Cumulative to {date}",
+    "report.heat.tooltipLine": "{tokens} tokens · {n} requests",
+
+    // Usage trend bar chart
+    "report.trend.days7": "Last 7 days",
+    "report.trend.days30": "Last 30 days",
+    "report.trend.other": "Other",
+    "report.trend.allHidden": "All series hidden — click a legend item to restore",
+    "report.trend.noDaily":
+      "Current sources have no per-model daily breakdown to plot.",
 
     "report.noTrend": "No trend data to plot",
     "report.agentDist": "Agent breakdown",
-    "report.modelRank": "Top models",
-    "report.noModels": "No model breakdown available.",
-
-    "report.conclusion": "Takeaways",
-    "report.mainModel": "Main model: ",
-    "report.mainModelLine": "{model} ({agent}), {tokens} tokens.",
-    "report.peakWindow": "Peak window: ",
-    "report.peakWindowLine": "{label}, {value}.",
-    "report.unpricedWarn":
-      "{tokens} tokens are unpriced, so total cost is understated; add model prices in Pricing.",
-    "report.allPriced": "All used models are priced; costs are comparable across runs.",
-
-    "report.quotaSnapshot": "Agent quota snapshot",
-    "report.quotaScope": "Enabled agents with data",
-    "report.accountLevel": "Account-level",
-    "report.localRealtime": "Local realtime",
-    "report.quotaSourceNote":
-      "Z.ai quota comes from history snapshots; Codex, Claude and Cursor read local realtime APIs.",
-    "report.resetUnknown": "Reset time unknown",
-    "report.resetDays": "Resets in ~{n}d",
-    "report.resetHours": "Resets in ~{n}h",
-    // Short forms for countdown + exact time combined display
-    "report.resetInDays": "in ~{n}d",
-    "report.resetInHours": "in ~{n}h",
-
-    "report.q.weeklyCurrent": "This week",
-    "report.q.hour5Current": "Past 5h",
-    "report.q.weeklyPeak": "Weekly peak",
-    "report.q.hour5Peak": "5h peak",
-    "report.q.mcp": "MCP",
-    "report.q.hour5": "5h",
-    "report.q.weekly": "Week",
-    "report.q.auto": "Auto",
-    "report.q.api": "API",
-    "report.q.plan": "Plan",
-    "report.q.onDemand": "On-demand",
 
     "report.copy": "Copy",
     "report.copied": "Copied ✓",
@@ -457,10 +458,8 @@ export const en: typeof zh = {
     "report.noteCursorDaily":
       "Cursor's official usage is daily, so the hourly trend excludes it; agent totals still include it.",
 
-    "report.file.daily": "Daily-",
     "report.file.custom": "Report-",
 
-    "report.md.daily": "Daily Report",
     "report.md.custom": "Usage Report",
     "report.md.noData": "(no data)",
     "report.md.summaryLine": "Total cost {cost} | Tokens {tokens} | Requests {requests}",
@@ -468,9 +467,6 @@ export const en: typeof zh = {
     "report.md.top5": "Top 5 models",
     "report.md.modelLine": "{agent} / {model}: {cost} | {tokens} tokens",
     "report.md.tokenPeak": "Token peak: {label}, {tokens} tokens",
-    "report.md.quotaSnapshot": "Quota snapshot",
-    "report.md.quotaLine": "{label} ({scope}): [{windows}]",
-    "report.md.quotaReset": " | {text}",
     "report.md.notes": "Notes",
     "report.md.footer": "Generated by ZBar · {date}",
   } satisfies typeof report),
@@ -921,22 +917,17 @@ export const en: typeof zh = {
   ...({
     "share.button": "Share card",
     "share.title": "Generate share card",
-    "share.periodTitle": "This Week's AI Usage",
     "share.totalCost": "Total cost",
     "share.totalTokens": "Total tokens",
     "share.totalRequests": "Total requests",
     "share.topModels": "Top 5 models",
-    "share.topProjects": "Top 5 projects",
-    "share.heatTitle": "Last 7 days",
+    "share.heatTitle": "Token activity",
     "share.footer": "Generated by ZBar",
     "share.save": "Save image",
     "share.saving": "Saving…",
     "share.saved": "Saved ✓ {path}",
     "share.saveFail": "Save failed: {msg}",
     "share.close": "Close",
-    "share.loading": "Generating…",
-    "share.loadFail": "Failed to load data: {msg}",
-    "share.regenerate": "Regenerate",
   } satisfies typeof share),
 
   ...({

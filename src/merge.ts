@@ -12,6 +12,7 @@ import type {
   Stats,
   TrendBucket,
   TrendPoint,
+  TrendPointModel,
 } from "./types";
 import { lookupPrice } from "./modelName";
 
@@ -266,7 +267,8 @@ export function msToLocalLabel(msStr: string, bucket: TrendBucket): string | nul
 }
 
 /** 远端趋势桶 → 本地 TrendPoint 格式（远端无 cost，自算）。
- * label 由 ms 转成本地时区格式，便于与本地 trend 按 label 合并。 */
+ * label 由 ms 转成本地时区格式，便于与本地 trend 按 label 合并；
+ * 桶内 by_model 同步收敛为报告页模型维度柱状图所需字段。 */
 export function remoteTrendToLocal(
   remote: RemoteUsage,
   pricing: PricingConfig,
@@ -274,7 +276,7 @@ export function remoteTrendToLocal(
   bucket: TrendBucket
 ): TrendPoint[] {
   return remote.trend
-    .map((b) => {
+    .map((b): TrendPoint | null => {
       const label = msToLocalLabel(b.label, bucket);
       if (label === null) return null;
       const cost_cny = b.by_model.reduce(
@@ -311,9 +313,42 @@ export function remoteTrendToLocal(
         requests: b.requests,
         cost_cny,
         cost_usd,
+        by_model: b.by_model.map((m) => ({
+          model_id: m.model_id,
+          provider_id: m.provider_id,
+          requests: m.requests,
+          input_tokens: m.input_tokens,
+          output_tokens: m.output_tokens,
+          cache_read_tokens: m.cache_read_tokens,
+          total_tokens: m.total_tokens,
+        })),
       };
     })
     .filter((x): x is TrendPoint => x !== null);
+}
+
+/** 合并两份趋势桶内的模型聚合（provider|model 键求和；任一方缺省按空处理）。 */
+export function mergeByModel(
+  a: TrendPoint["by_model"],
+  b: TrendPoint["by_model"]
+): TrendPoint["by_model"] | undefined {
+  if ((!a || a.length === 0) && (!b || b.length === 0)) return undefined;
+  const merged = new Map<string, TrendPointModel>();
+  for (const m of [...(a ?? []), ...(b ?? [])]) {
+    const key = `${m.provider_id}|${m.model_id}`;
+    const ex = merged.get(key);
+    if (ex) {
+      ex.requests += m.requests;
+      ex.input_tokens = (ex.input_tokens ?? 0) + (m.input_tokens ?? 0);
+      ex.output_tokens = (ex.output_tokens ?? 0) + (m.output_tokens ?? 0);
+      ex.cache_read_tokens =
+        (ex.cache_read_tokens ?? 0) + (m.cache_read_tokens ?? 0);
+      ex.total_tokens += m.total_tokens;
+    } else {
+      merged.set(key, { ...m });
+    }
+  }
+  return [...merged.values()].sort((x, y) => y.total_tokens - x.total_tokens);
 }
 
 /** 合并本地趋势 + 远端趋势：按 label 匹配相加，保持本地顺序 */
@@ -341,6 +376,7 @@ export function mergeTrend(
       requests: l.requests + (r?.requests ?? 0),
       cost_cny: l.cost_cny + (r?.cost_cny ?? 0),
       cost_usd: l.cost_usd + (r?.cost_usd ?? 0),
+      by_model: mergeByModel(l.by_model, r?.by_model),
     };
   });
   for (const r of remotePts) {

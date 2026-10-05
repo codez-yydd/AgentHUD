@@ -369,6 +369,152 @@ body,
 .page-stack { display: flex; flex-direction: column; gap: 0.625rem; }
 
 /* ============================================================
+ * 报告页/图表胶囊选中态：亮色 sky 实底白字（应用通用 PillButton 风格），
+ * 暗色主题反转为白色磨砂深字（ZCode 观感，深底上更柔和）。
+ * 未选中态沿用应用通用灰白字 + 半透明槽（组件内主题类表达）。
+ * ============================================================ */
+.pill-active {
+  background: #0ea5e9;
+  color: #fff;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.15);
+}
+.dark .pill-active {
+  background: rgba(255, 255, 255, 0.85);
+  color: #16233d;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+}
+
+/* ============================================================
+ * 热力图分档色：移植 ZCode usage-heatmap token 公式
+ * （color-mix oklab + sky 混「卡片底」，暗色越大越亮、亮色越大越深）。
+ * 「卡片底」取报告页卡片实际背景的近似实体色：
+ *   亮色 = rgba(255,255,255,0.42) 卡叠面板白 ≈ #f1f5f9；
+ *   暗色 = rgba(100,116,139,0.18) 卡叠深色面板 ≈ #1e283c。
+ * 0 档为空数据日期（亮=黑 3%、暗=白 5%），1~4 档按非零样本
+ * P25/P50/P75 分位分档已改为相对峰值比例分档（ReportPanel.heatLevel）。
+ * ============================================================ */
+.heat-level-0 { background: rgba(15, 23, 42, 0.05); }
+.heat-level-1 { background: color-mix(in oklab, #0ea5e9 18%, #f1f5f9); }
+.heat-level-2 { background: color-mix(in oklab, #0ea5e9 36%, #f1f5f9); }
+.heat-level-3 { background: color-mix(in oklab, #0284c7 58%, #f1f5f9); }
+.heat-level-4 { background: color-mix(in oklab, #0369a1 82%, #f1f5f9); }
+.dark .heat-level-0 { background: rgba(255, 255, 255, 0.08); }
+.dark .heat-level-1 { background: color-mix(in oklab, #38bdf8 24%, #1e283c); }
+.dark .heat-level-2 { background: color-mix(in oklab, #38bdf8 42%, #1e283c); }
+.dark .heat-level-3 { background: color-mix(in oklab, #38bdf8 62%, #1e283c); }
+.dark .heat-level-4 { background: color-mix(in oklab, #7dd3fc 78%, #1e283c); }
+
+/* 图例中的 0 档色点单独提亮（白 16%），区别于格网里的 0 档空格（白 8%）
+   —— 空档点在卡片底上不可见会被读成「没有这一档」。声明顺序在
+   .dark .heat-level-0 之后，同特异性后者覆盖。 */
+.dark .heat-legend-empty { background: rgba(255, 255, 255, 0.16); }
+
+/* ============================================================
+ * 报告页次要文字对比度（暗色实测 2.2:1~4.2:1，低于 4.5:1 门槛）：
+ * 仅暗色提亮为白透明度体系，亮色主题保持现状不动。
+ *   .report-sub   次要文字（标签/图例说明）暗 ≈ 白 72%（≈#C4C9D2，
+ *                 叠暗色卡片底 ≈ 9:1）
+ *   .report-dim   最弱文字（月份标签/脚注/X 轴/「近 1 年」）暗 ≈ 白 66%
+ *                 （≈#B6BBC4，≈ 8:1）
+ *   .report-pill  胶囊未选中文字暗 ≈ 白 72%
+ *   .report-status状态行文字暗 ≈ sky-300（#7dd3fc，≈ 9:1）
+ * ============================================================ */
+.report-sub { color: rgba(51, 65, 85, 0.5); }
+.dark .report-sub { color: rgba(255, 255, 255, 0.72); }
+.report-dim { color: rgba(51, 65, 85, 0.42); }
+.dark .report-dim { color: rgba(255, 255, 255, 0.66); }
+.report-pill { color: rgba(51, 65, 85, 0.7); }
+.dark .report-pill { color: rgba(255, 255, 255, 0.72); }
+.report-status { color: #0369a1; }
+.dark .report-status { color: #7dd3fc; }
+
+/* 报告页底部导出栏文件名（PageFooter 内文字，暗色 slate-500 实测 2.6:1；
+   仅在报告页 scope 内覆盖，不动公共组件） */
+.report-footer-text { color: #64748b; }
+.dark .report-footer-text { color: rgba(255, 255, 255, 0.66); }
+
+/* 报告页工具行图标（toolbar-btn 为公共类，仅在报告页 scope 内覆盖提亮） */
+.dark .report-scope .toolbar-btn { color: rgba(255, 255, 255, 0.72); }
+.dark .report-scope .toolbar-btn:hover {
+  color: rgba(255, 255, 255, 0.92);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+/* 报表页壳顶部未选中 tab（暗色提至白 72% 保证 ≥4.5:1） */
+.report-tab-idle { color: rgba(51, 65, 85, 0.8); }
+.dark .report-tab-idle { color: rgba(255, 255, 255, 0.72); }
+
+/* 热力图滚动容器两侧渐隐遮罩（与左缘对称，条件渲染；16px 窄条 + 70% 处
+   全透明的陡渐变，减少对真实格子的压盖面积） */
+.heat-fade-left {
+  background: linear-gradient(to right, rgba(15, 23, 42, 0.05) 0%, transparent 70%);
+}
+.dark .heat-fade-left {
+  background: linear-gradient(to right, rgba(255, 255, 255, 0.055) 0%, transparent 70%);
+}
+.heat-fade-right {
+  background: linear-gradient(to left, rgba(15, 23, 42, 0.05) 0%, transparent 70%);
+}
+.dark .heat-fade-right {
+  background: linear-gradient(to left, rgba(255, 255, 255, 0.055) 0%, transparent 70%);
+}
+
+/* ============================================================
+ * 报告页卡片质感（仅报告页使用，不动公共 card-base）：
+ * 半透明底 + backdrop-blur 的轻微玻璃层次，顶部 1px 内高光分隔线；
+ * 亮色 = 黑 3% 底 + 深色高光线，暗色 = 白 5.5% 底 + 白 6% 高光线。
+ * 非 layered CSS，优先级高于 Tailwind 圆角工具类（圆角统一 12px）。
+ * ============================================================ */
+.report-card {
+  position: relative;
+  overflow: hidden;
+  border-radius: 12px;
+  background: rgba(15, 23, 42, 0.03);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+.report-card::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 1px;
+  background: rgba(15, 23, 42, 0.06);
+}
+.dark .report-card {
+  background: rgba(255, 255, 255, 0.055);
+}
+.dark .report-card::before {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+/* ============================================================
+ * 趋势柱状图系列色：移植 ZCode usage-chart 六色板
+ * （亮色 -600 深档保证白底对比，暗色 -400 亮档），0~5 按 token 量
+ * 依序分配，「other」为「其他」系列中性灰（双主题同色）。
+ * ============================================================ */
+.series-color-0 { background: #0284c7; }
+.series-color-1 { background: #0d9488; }
+.series-color-2 { background: #7c3aed; }
+.series-color-3 { background: #f43f5e; }
+.series-color-4 { background: #6366f1; }
+.series-color-5 { background: #0891b2; }
+.series-color-other { background: #94a3b8; }
+.dark .series-color-0 { background: #0ea5e9; }
+.dark .series-color-1 { background: #2dd4bf; }
+.dark .series-color-2 { background: #a78bfa; }
+.dark .series-color-3 { background: #fb7185; }
+.dark .series-color-4 { background: #818cf8; }
+.dark .series-color-5 { background: #22d3ee; }
+
+/* 热力图横向滚动容器：隐藏滚动条（触摸板/拖拽滚动），对齐 GitHub 窄屏观感 */
+.hide-scrollbar {
+  scrollbar-width: none;
+}
+.hide-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+/* ============================================================
  * 模型速度页：单独的轻量 dashboard 视觉层
  * ============================================================ */
 .speed-page {

@@ -82,7 +82,7 @@ export function ReportsPanel({
                 className={`whitespace-nowrap rounded-lg px-2.5 py-1 text-[10px] font-medium transition-all duration-150 ${
                   tab === item.id
                     ? "bg-sky-500/15 text-sky-700 shadow-sm"
-                    : "text-slate-600/60 hover:text-slate-800 hover:bg-slate-900/4"
+                    : "report-tab-idle hover:text-slate-800 hover:bg-slate-900/4"
                 }`}
               >
                 {item.label}

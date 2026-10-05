@@ -8,6 +8,44 @@ export function formatTokens(n: number): string {
   return String(n);
 }
 
+/**
+ * 跟随 UI 语言的 token 数量级格式化：中文用「万 / 亿」数量级
+ * （161.7亿 / 219.3万，1 亿 = 1e8、1 万 = 1e4），英文沿用 K/M/B。
+ * 负数不预期出现，按 0 以下原样返回（与 formatTokens 行为对齐）。
+ */
+export function formatTokensLocale(n: number, locale: "zh" | "en"): string {
+  const { num, unit } = formatTokensParts(n, locale);
+  return num + unit;
+}
+
+/** 数值与数量级单位拆分（KPI 数字大、单位小一档的分层排版用）：
+ *  中文 万/亿，英文 B/M/K；无数量级时 unit 为空串。 */
+export function formatTokensParts(
+  n: number,
+  locale: "zh" | "en"
+): { num: string; unit: string } {
+  if (locale === "zh") {
+    if (n >= 1e8) return { num: trimZeros(n / 1e8), unit: "亿" };
+    if (n >= 1e4) return { num: trimZeros(n / 1e4), unit: "万" };
+    return { num: String(n), unit: "" };
+  }
+  if (n >= 1_000_000_000) return { num: trimZeros(n / 1e9), unit: "B" };
+  if (n >= 1_000_000) return { num: trimZeros(n / 1e6), unit: "M" };
+  if (n >= 1_000) return { num: trimZeros(n / 1e3), unit: "K" };
+  return { num: String(n), unit: "" };
+}
+
+/** 数量级数值去掉无意义的小数尾零（1.50 → 1.5、2.00 → 2）。 */
+function trimZeros(v: number): string {
+  return v.toFixed(2).replace(/\.?0+$/, "");
+}
+
+/** 计数值（请求次数等）紧凑格式化：与 token 共用 万/亿、K/M/B 同一套台阶，
+ *  窄窗 KPI 卡内放不下全量千分位数字。 */
+export function formatCountLocale(n: number, locale: "zh" | "en"): string {
+  return formatTokensLocale(n, locale);
+}
+
 /** 格式化金额 */
 export function formatCost(n: number, currency: Currency): string {
   const symbol = currency === "cny" ? "¥" : "$";

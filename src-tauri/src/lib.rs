@@ -783,6 +783,7 @@ async fn get_codex_usage(req: CodexUsageRequest) -> Result<CodexSnapshot, String
                     requests: b.requests,
                     cost_cny: cost_usd * fx,
                     cost_usd,
+                    by_model: bucket_models(&b.by_model),
                 }
             })
             .collect();
@@ -881,6 +882,7 @@ async fn get_claude_usage(req: ClaudeUsageRequest) -> Result<ClaudeSnapshot, Str
                     requests: b.requests,
                     cost_cny: cost_usd * fx,
                     cost_usd,
+                    by_model: bucket_models(&b.by_model),
                 }
             })
             .collect();
@@ -980,6 +982,7 @@ async fn get_kimi_usage(req: KimiUsageRequest) -> Result<KimiSnapshot, String> {
                     requests: b.requests,
                     cost_cny: cost_usd * fx,
                     cost_usd,
+                    by_model: bucket_models(&b.by_model),
                 }
             })
             .collect();
@@ -1464,6 +1467,21 @@ struct TrendRequest {
     bucket: String,
 }
 
+/// 趋势图用：桶内单模型的 token 聚合（报告页「用量趋势」按模型分柱用；
+/// 花费不需要按模型下发，前端报告图只按 token 维度分系列）。
+/// input/output/cache_read 供前端在报告范围内切片聚合后按价格表
+/// 重算模型花费（导出 Markdown / 分享卡模型 TOP5 用），旧数据缺省按 0。
+#[derive(Debug, Serialize)]
+struct TrendBucketModel {
+    model_id: String,
+    provider_id: String,
+    requests: i64,
+    input_tokens: i64,
+    output_tokens: i64,
+    cache_read_tokens: i64,
+    total_tokens: i64,
+}
+
 /// 趋势图用：单个桶的汇总（含两种货币花费，前端无需再算）
 #[derive(Debug, Serialize)]
 struct TrendBucket {
@@ -1477,6 +1495,29 @@ struct TrendBucket {
     cost_cny: f64,
     /// 桶内美元花费
     cost_usd: f64,
+    /// 桶内按模型聚合（query_trend 原始结果已带，此处随桶透传给前端；
+    /// 空桶省略字段，旧前端不受影响）
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    by_model: Vec<TrendBucketModel>,
+}
+
+/// 把 query_trend 原始桶内模型聚合收敛为下发结构（留报告图与切片
+/// 成本重算所需字段）。
+fn bucket_models(
+    by_model: &[db::BucketModelStat],
+) -> Vec<TrendBucketModel> {
+    by_model
+        .iter()
+        .map(|m| TrendBucketModel {
+            model_id: m.model_id.clone(),
+            provider_id: m.provider_id.clone(),
+            requests: m.requests,
+            input_tokens: m.input_tokens,
+            output_tokens: m.output_tokens,
+            cache_read_tokens: m.cache_read_tokens,
+            total_tokens: m.total_tokens,
+        })
+        .collect()
 }
 
 /// get_trend：返回时间范围内的分桶统计，供趋势图使用。
@@ -1505,6 +1546,7 @@ async fn get_trend(req: TrendRequest) -> Result<Vec<TrendBucket>, String> {
                     requests: b.requests,
                     cost_cny: cost_usd * fx,
                     cost_usd,
+                    by_model: bucket_models(&b.by_model),
                 }
             })
             .collect();

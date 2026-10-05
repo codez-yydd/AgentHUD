@@ -112,6 +112,20 @@ export type RangePreset = "today" | "1d" | "7d" | "30d" | "custom";
 /** 趋势图分桶粒度 */
 export type TrendBucket = "hour" | "day";
 
+/** 趋势桶内单模型的 token 聚合（报告页「用量趋势」按模型分柱用；
+ *  input/output/cache_read 供前端在报告范围内切片后重算模型花费
+ *  （导出 Markdown / 分享卡模型 TOP5）；旧数据与远端旧服务可能缺省，
+ *  消费方按 0 处理） */
+export interface TrendPointModel {
+  model_id: string;
+  provider_id: string;
+  requests: number;
+  input_tokens?: number;
+  output_tokens?: number;
+  cache_read_tokens?: number;
+  total_tokens: number;
+}
+
 /** 单个桶的汇总（含两种货币花费，前端无需再算） */
 export interface TrendPoint {
   /** 桶标签："14:00"（小时）或 "08-04"（日） */
@@ -124,6 +138,9 @@ export interface TrendPoint {
   cost_cny: number;
   /** 桶内美元花费 */
   cost_usd: number;
+  /** 桶内按模型聚合（get_trend / 各 Agent usage 命令与远端桶透传；
+   *  旧数据 / 远端旧服务可能缺省，仅报告页模型维度日柱状图消费） */
+  by_model?: TrendPointModel[];
 }
 
 // ===== Coding Plan 额度查询（与 Rust quota.rs 结构一一对应） =====

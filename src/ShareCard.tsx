@@ -1,35 +1,22 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type {
-  PricingConfig,
-  Stats,
-  TrendBucket,
-  TrendPoint,
-} from "./types";
-import {
-  fetchClaudeUsage,
-  fetchCodexUsage,
-  fetchCursorUsage,
-  fetchKimiUsage,
-  fetchStats,
-  fetchTrend,
-  getCursorConfig,
-  getProjects,
-  saveShareImage,
-} from "./api";
-import { formatCost, formatTokens } from "./format";
-import { modelCost } from "./merge";
-import { foldCursorModelRows, foldModelStatRows } from "./modelName";
-import { sourceMeta, type AgentVisibility } from "./agentVisibility";
-import { BtnPrimary, BtnSecondary } from "./layout";
+import type { PricingConfig } from "./types";
+import { saveShareImage } from "./api";
+import { formatCost, formatCountLocale, formatTokensLocale } from "./format";
+import { BtnPrimary } from "./layout";
 import { useI18n } from "./i18n";
+import {
+  rangeAgentRows,
+  rangeModelRows,
+  type ShareReportData,
+} from "./ReportPanel";
 
 // ============================================================
-// 花费分享卡片：纯 Canvas 2D 手绘（零第三方依赖）。
-// 毛玻璃面板无法经 foreignObject 截图，故用实色深底渐变在 canvas 上
-// 模拟深色卡片风格；固定 2x 缩放导出保证清晰度。
+// 用量分享卡片：纯 Canvas 2D 手绘（零第三方依赖）。
+// 数据复用报告页已聚合结果（经 props 传入，不再自行拉取数据源——
+// 打开即出图），内容自上而下：品牌头 + KPI 四项 + Agent 分布 +
+// 模型 TOP5 + Token 活动热力图（与页面热力图同口径：列=周、7 行、
+// 非零样本分位四档蓝色）。
 // ============================================================
-
-const DAY_MS = 86_400_000;
 
 /** 画布逻辑宽度（实际导出为 ×2 物理像素） */
 const CARD_W = 1080;
@@ -45,6 +32,12 @@ const TEXT_SECONDARY = "#94a3b8";
 const TEXT_FAINT = "#64748b";
 const ACCENT = "#38bdf8";
 const BAR_TRACK = "rgba(148, 163, 184, 0.14)";
+/** 热力图分档色：与 index.css .dark .heat-level-1~4 同源（ZCode
+ *  usage-heatmap token：sky-400/300 按 24/42/62/78% 混卡片底的 sRGB
+ *  线性近似——canvas 无法用 CSS color-mix，分享卡为固定深底图片）。
+ *  空档与暗色 0 档一致（白 5%）。 */
+const HEAT_COLORS = ["#244b69", "#29668b", "#2e8ebf", "#68aed2"];
+const HEAT_EMPTY = "rgba(255, 255, 255, 0.05)";
 
 const FONT_STACK =
   "-apple-system, BlinkMacSystemFont, 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Segoe UI', sans-serif";
@@ -55,7 +48,23 @@ function startOfLocalDay(ms: number): number {
   return d.getTime();
 }
 
-/** 本地日期 MM-DD（与后端 day 趋势桶标签同格式） */
+/** ms 所在自然周（本地时区）的周一 0 点（与报告页同款实现）。 */
+function weekStartOf(ms: number): number {
+  const d = new Date(ms);
+  const day = d.getDay();
+  d.setDate(d.getDate() - (day === 0 ? 6 : day - 1));
+  d.setHours(0, 0, 0, 0);
+  return d.getTime();
+}
+
+/** 本地日期加 n 天（Date 日期运算，规避毫秒减法的 DST 偏移）。 */
+function addDays(ms: number, days: number): number {
+  const d = new Date(ms);
+  d.setDate(d.getDate() + days);
+  return d.getTime();
+}
+
+/** 本地日期 MM-DD（卡片日期范围展示用） */
 function mdLabel(ms: number): string {
   const d = new Date(ms);
   const p = (n: number) => String(n).padStart(2, "0");
@@ -68,239 +77,106 @@ function ymdLabel(ms: number): string {
   return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}`;
 }
 
-// ===== 卡片数据结构 =====
+// ===== 展示视图（从报告页数据派生，纯同步计算） =====
+
+interface ShareAgentRow {
+  name: string;
+  color: string;
+  tokens: number;
+  /** 占全部 token 的比例 0~1 */
+  share: number;
+}
 
 interface ShareModelRow {
   name: string;
   color: string;
   tokens: number;
-  costUsd: number;
+  /** 无有效价格时为 null（不标注花费） */
+  cost: number | null;
 }
 
-interface ShareProjectRow {
-  name: string;
-  tokens: number;
-  costUsd: number;
-}
-
-interface ShareData {
-  /** 近 7 天范围（含今天） */
+interface ShareView {
   fromMs: number;
   toMs: number;
-  /** USD→CNY 汇率（总花费人民币展示折算用，取自 Cursor 配置） */
-  fxRate: number;
-  totalCostUsd: number;
+  currency: ShareReportData["currency"];
   tokens: number;
   requests: number;
+  cost: number;
+  activeDays: number;
+  agents: ShareAgentRow[];
   models: ShareModelRow[];
-  projects: ShareProjectRow[];
-  /** 7 列热力图（按本地日对齐；全 0 时整块隐藏） */
-  heat: { label: string; tokens: number }[];
+  /** 热力图：列=周（周一起），cells 固定 7 槽（周一~周日），范围外为 null */
+  heat: { cells: ({ dayMs: number; tokens: number } | null)[] }[];
 }
 
-/** canvas 上的文案（跟随 UI 语言，渲染时由 t 汇出） */
-interface ShareTexts {
-  periodTitle: string;
-  totalCost: string;
-  totalTokens: string;
-  totalRequests: string;
-  topModels: string;
-  topProjects: string;
-  heatTitle: string;
-  footer: string;
-}
-
-/** AgentId → 后端 source 字符串（取 sourceMeta 的品牌色/名） */
-const AGENT_SOURCE_OF = {
-  zai: "zcode",
-  codex: "codex",
-  claude: "claude",
-  cursor: "cursor",
-  kimi: "kimi",
-} as const;
-
-/**
- * 拉取分享卡片数据：固定近 7 天（含今天）范围，一轮并发取全部来源后
- * 同步聚合。自拉自合（不经 DataCache 30s 轮询），未安装/未登录的
- * Agent 静默跳过，与用量报告页同款容错口径。
- */
-async function loadShareData(
-  agentVisibility: AgentVisibility,
-  pricing: PricingConfig
-): Promise<ShareData> {
-  const toMs = Date.now();
-  const fromMs = startOfLocalDay(toMs) - 6 * DAY_MS;
-  const bucket: TrendBucket = "day";
-
-  const safe = async <T,>(task: () => Promise<T>): Promise<T | null> => {
-    try {
-      return await task();
-    } catch {
-      // 未安装 / 未登录的 Agent 直接跳过，不阻断卡片生成
-      return null;
-    }
-  };
-
-  const fxRate = await safe(() => getCursorConfig()).then((c) =>
-    c && c.usd_cny_rate > 0 ? c.usd_cny_rate : 7.2
-  );
-
-  const [zaiStats, codex, claude, kimi, cursor, projects, zaiTrend] =
-    await Promise.all([
-      agentVisibility.zai
-        ? safe(() => fetchStats(fromMs, toMs))
-        : Promise.resolve(null),
-      agentVisibility.codex
-        ? safe(() => fetchCodexUsage(fromMs, toMs, bucket))
-        : Promise.resolve(null),
-      agentVisibility.claude
-        ? safe(() => fetchClaudeUsage(fromMs, toMs, bucket))
-        : Promise.resolve(null),
-      agentVisibility.kimi
-        ? safe(() => fetchKimiUsage(fromMs, toMs, bucket))
-        : Promise.resolve(null),
-      agentVisibility.cursor
-        ? safe(() => fetchCursorUsage(fromMs, toMs))
-        : Promise.resolve(null),
-      safe(() => getProjects(fromMs, toMs)),
-      agentVisibility.zai
-        ? safe(() => fetchTrend(fromMs, toMs, bucket))
-        : Promise.resolve(null),
-    ]);
-
-  // 模型行：逐 Agent 折叠变体后映射（花费按 API 价格表自算，Cursor 用官方标价）
-  const agentModelRows = (
-    stats: Stats | null,
-    agentId: keyof typeof AGENT_SOURCE_OF
-  ): ShareModelRow[] => {
-    if (!stats) return [];
-    const color = sourceMeta(AGENT_SOURCE_OF[agentId]).color;
-    return foldModelStatRows(stats.by_model).map((m) => ({
-      name: m.model_id,
-      color,
-      tokens: m.total_tokens,
-      costUsd: modelCost(
-        m.model_id,
-        m.input_tokens,
-        m.output_tokens,
-        m.cache_read_tokens,
-        pricing,
-        "usd",
-        fxRate
-      ),
-    }));
-  };
-
-  const cursorRows: ShareModelRow[] = cursor
-    ? foldCursorModelRows(cursor.by_model).map((m) => ({
-        name: m.model,
-        color: sourceMeta(AGENT_SOURCE_OF.cursor).color,
-        tokens: m.total_tokens,
-        costUsd: m.cost_usd,
-      }))
-    : [];
-
-  const allModelRows = [
-    ...agentModelRows(zaiStats, "zai"),
-    ...agentModelRows(codex?.stats ?? null, "codex"),
-    ...agentModelRows(claude?.stats ?? null, "claude"),
-    ...agentModelRows(kimi?.stats ?? null, "kimi"),
-    ...cursorRows,
-  ];
-  const models = [...allModelRows]
-    .filter((m) => m.tokens > 0 || m.costUsd > 0)
-    .sort((a, b) => b.tokens - a.tokens)
-    .slice(0, 5);
-
-  const totalCostUsd = allModelRows.reduce((s, m) => s + m.costUsd, 0);
-
-  // 合计取各来源整体口径（模型行已被 Top5 截断，不能作合计分母）
+function buildView(data: ShareReportData, pricing: PricingConfig): ShareView {
+  const { daily, currency } = data;
+  // 汇总取报告范围切片口径（daily 即切片结果，与页面 KPI 一致）
   let tokens = 0;
   let requests = 0;
-  const addOverall = (o: { total_tokens: number; requests: number } | null) => {
-    if (!o) return;
-    tokens += o.total_tokens;
-    requests += o.requests;
-  };
-  addOverall(zaiStats?.overall ?? null);
-  addOverall(codex?.stats.overall ?? null);
-  addOverall(claude?.stats.overall ?? null);
-  addOverall(kimi?.stats.overall ?? null);
-  addOverall(
-    cursor?.events
-      ? { total_tokens: cursor.events.total_tokens, requests: cursor.events.requests }
-      : null
-  );
-
-  // 可见 Agent 对应的后端 source 集合（与各 Agent 数据拉取同口径；
-  // 不在集合内的来源按不可见处理）
-  const visibleSources = new Set<string>(
-    (Object.keys(AGENT_SOURCE_OF) as (keyof typeof AGENT_SOURCE_OF)[])
-      .filter((id) => agentVisibility[id])
-      .map((id) => AGENT_SOURCE_OF[id])
-  );
-
-  // 项目 Top5：与卡片其余板块同口径，先按 Agent 可见性重算——不可见来源的
-  // token/花费从项目总计中扣除，扣除后无可见用量的项目整个丢弃，再排除未知
-  // 项目、按 API 花费降序取前五；全被过滤时项目区块整体隐藏（降级开关）。
-  // 避免把用户主动隐藏的 Agent 的项目路径与花费分享出去。
-  const projectRows: ShareProjectRow[] = (projects ?? [])
-    .map((p) => {
-      const visibleAgents = p.by_agent.filter((b) =>
-        visibleSources.has(b.source)
-      );
-      return {
-        p,
-        tokens: visibleAgents.reduce((s, b) => s + b.tokens, 0),
-        costUsd: visibleAgents.reduce((s, b) => s + b.cost_usd, 0),
-      };
-    })
-    .filter(({ p, tokens, costUsd }) => !p.is_unknown && (costUsd > 0 || tokens > 0))
-    .sort((a, b) => b.costUsd - a.costUsd)
-    .slice(0, 5)
-    .map(({ p, tokens, costUsd }) => ({
-      name: (p.display_path ?? p.key).split("/").filter(Boolean).pop() ?? p.key,
-      tokens,
-      costUsd,
-    }));
-
-  // 7 列热力图：多来源趋势按 day 标签合并 token（Cursor 官方明细为日粒度，
-  // 转成同构 TrendPoint 后直接并入）
-  const heatParts: TrendPoint[] = [
-    ...(zaiTrend ?? []),
-    ...(codex?.trend ?? []),
-    ...(claude?.trend ?? []),
-    ...(kimi?.trend ?? []),
-    ...(cursor
-      ? cursor.daily.map((d) => ({
-          label: d.date,
-          total_tokens: d.total_tokens,
-          requests: d.requests,
-          cost_cny: d.cost_usd * fxRate,
-          cost_usd: d.cost_usd,
-        }))
-      : []),
-  ];
-  const heatByLabel = new Map<string, number>();
-  for (const p of heatParts) {
-    heatByLabel.set(p.label, (heatByLabel.get(p.label) ?? 0) + p.total_tokens);
+  let cost = 0;
+  let activeDays = 0;
+  for (const d of daily) {
+    tokens += d.tokens;
+    requests += d.requests;
+    cost += currency === "cny" ? d.costCny : d.costUsd;
+    if (d.tokens > 0) activeDays += 1;
   }
-  const heat: { label: string; tokens: number }[] = [];
-  for (let i = 0; i < 7; i++) {
-    const label = mdLabel(startOfLocalDay(fromMs) + i * DAY_MS);
-    heat.push({ label, tokens: heatByLabel.get(label) ?? 0 });
+
+  const agentRows: ShareAgentRow[] = rangeAgentRows(data).map((a) => ({
+    name: a.name,
+    color: a.color,
+    tokens: a.tokens,
+    share: a.share,
+  }));
+
+  const colorOf = new Map(data.agents.map((a) => [a.id, a.color]));
+  const modelRows: ShareModelRow[] = rangeModelRows(
+    data,
+    pricing,
+    currency,
+    5
+  ).map((m) => ({
+    name: m.modelId,
+    color: colorOf.get(m.agentId) ?? "#94a3b8",
+    tokens: m.tokens,
+    cost: m.cost,
+  }));
+
+  // 热力图：固定一年视图（52 周前的周一 → 今天，约 53 列），与页面一致；
+  // 数据保留期（89 天）之外的日期 token 为 0，绘制为空档色
+  const dayTokens = new Map(daily.map((d) => [d.dayMs, d.tokens]));
+  const last = startOfLocalDay(Date.now());
+  const anchor = new Date(last);
+  anchor.setDate(anchor.getDate() - 52 * 7);
+  const first = weekStartOf(anchor.getTime());
+  const weeks: { cells: ({ dayMs: number; tokens: number } | null)[] }[] = [];
+  let cursor = first;
+  while (cursor <= last) {
+    const cells: ({ dayMs: number; tokens: number } | null)[] = [];
+    for (let i = 0; i < 7; i++) {
+      const day = addDays(cursor, i);
+      if (day < first || day > last) {
+        cells.push(null);
+      } else {
+        cells.push({ dayMs: day, tokens: dayTokens.get(day) ?? 0 });
+      }
+    }
+    weeks.push({ cells });
+    cursor = addDays(cursor, 7);
   }
 
   return {
-    fromMs,
-    toMs,
-    fxRate,
-    totalCostUsd,
+    fromMs: data.fromMs,
+    toMs: data.toMs,
+    currency,
     tokens,
     requests,
-    models,
-    projects: projectRows,
-    heat,
+    cost,
+    activeDays,
+    agents: agentRows,
+    models: modelRows,
+    heat: weeks,
   };
 }
 
@@ -372,7 +248,7 @@ function drawBarRow(
 ): void {
   const nameW = 330;
   const barX = CARD_PAD + nameW;
-  const barW = CARD_W - CARD_PAD * 2 - nameW - 220;
+  const barW = CARD_W - CARD_PAD * 2 - nameW - 260;
   const valueX = CARD_W - CARD_PAD;
 
   // 名称（圆点 + 文本）
@@ -413,34 +289,70 @@ function drawBarRow(
   ctx.textAlign = "left";
 }
 
+/** token 量 → 亮度档位：相对峰值比例阈值（≥75% 峰值、≥40% 高活、
+ *  ≥15% 日常、其余低活），与页面热力图同口径。 */
+function heatLevel(tokens: number, max: number): number {
+  if (tokens <= 0 || max <= 0) return 0;
+  if (tokens >= max * 0.75) return 4;
+  if (tokens >= max * 0.4) return 3;
+  if (tokens >= max * 0.15) return 2;
+  return 1;
+}
+
+/** 热力图月份短标签：zh "10月"，en "Oct"。 */
+function monthShortLabel(month: number, locale: "zh" | "en"): string {
+  if (locale === "zh") return `${month + 1}月`;
+  return new Date(2020, month, 1).toLocaleString("en-US", { month: "short" });
+}
+
+/** canvas 上的文案（跟随 UI 语言，渲染时由 t 汇出） */
+interface ShareTexts {
+  title: string;
+  totalCost: string;
+  totalTokens: string;
+  totalRequests: string;
+  activeDays: string;
+  activeDaysUnit: string;
+  agentsTitle: string;
+  topModels: string;
+  heatTitle: string;
+  footer: string;
+}
+
 /**
  * 绘制分享卡片。按内容计算高度并一次性设定画布尺寸（2x 物理像素），
  * 返回卡片逻辑高度。
  */
 function drawShareCard(
   canvas: HTMLCanvasElement,
-  data: ShareData,
-  texts: ShareTexts
+  view: ShareView,
+  texts: ShareTexts,
+  locale: "zh" | "en"
 ): number {
   const ctx = canvas.getContext("2d");
   if (!ctx) return 0;
 
-  const showModels = data.models.length > 0;
-  const showProjects = data.projects.length > 0;
-  const heatMax = Math.max(...data.heat.map((d) => d.tokens), 1);
-  const showHeat = data.heat.some((d) => d.tokens > 0);
+  const showAgents = view.agents.length > 0;
+  const showModels = view.models.length > 0;
+  const showHeat = view.heat.some((week) =>
+    week.cells.some((c) => c != null && c.tokens > 0)
+  );
 
   // 先按内容算高度，再一次性设定画布尺寸（重设尺寸会清空画布）
   const HEADER_H = 168;
   const METRICS_H = 188;
   const ROW_H = 62;
   const SECTION_GAP = 44;
+  const HEAT_CELL_H = 18;
+  const HEAT_GAP = 8;
+  const heatRows = view.heat.length;
+  const heatGridH = 7 * HEAT_CELL_H + 6 * HEAT_GAP;
   let contentH = CARD_PAD + HEADER_H + METRICS_H;
+  if (showAgents)
+    contentH += SECTION_GAP + 44 + view.agents.length * ROW_H + 18;
   if (showModels)
-    contentH += SECTION_GAP + 44 + data.models.length * ROW_H + 18;
-  if (showProjects)
-    contentH += SECTION_GAP + 44 + data.projects.length * ROW_H + 18;
-  if (showHeat) contentH += SECTION_GAP + 44 + 148;
+    contentH += SECTION_GAP + 44 + view.models.length * ROW_H + 18;
+  if (showHeat) contentH += SECTION_GAP + 44 + heatGridH + 44;
   const H = contentH + 96;
 
   canvas.width = CARD_W * CARD_SCALE;
@@ -469,7 +381,7 @@ function drawShareCard(
 
   ctx.textBaseline = "alphabetic";
 
-  // ===== 顶部：品牌 + 周期标题 + 日期范围 =====
+  // ===== 顶部：品牌 + 标题 + 日期范围 =====
   const headY = CARD_PAD;
 
   // 品牌徽标：渐变圆角方块 + Z 字
@@ -497,20 +409,21 @@ function drawShareCard(
 
   setFont(ctx, 54, 700);
   ctx.fillStyle = TEXT_PRIMARY;
-  ctx.fillText(texts.periodTitle, CARD_PAD, headY + 116);
+  ctx.fillText(texts.title, CARD_PAD, headY + 116);
 
   setFont(ctx, 24, 400);
   ctx.fillStyle = TEXT_SECONDARY;
   ctx.fillText(
-    `${mdLabel(data.fromMs).replace("-", ".")} – ${mdLabel(data.toMs).replace("-", ".")}`,
+    `${mdLabel(view.fromMs).replace("-", ".")} – ${mdLabel(view.toMs).replace("-", ".")}`,
     CARD_PAD,
     headY + 152
   );
 
-  // ===== 主体指标：总花费 / 总 Token / 总请求 =====
+  // ===== KPI 四项：总 Token / 总花费 / 总请求 / 活跃天数 =====
   let y = headY + HEADER_H;
   const metricY = y;
-  const colW = (CARD_W - CARD_PAD * 2) / 3;
+  const metricCols = 4;
+  const colW = (CARD_W - CARD_PAD * 2) / metricCols;
 
   roundRectPath(
     ctx,
@@ -523,103 +436,122 @@ function drawShareCard(
   ctx.fillStyle = "rgba(148, 163, 184, 0.08)";
   ctx.fill();
 
-  const metricCell = (
-    col: number,
-    label: string,
-    value: string,
-    sub?: string
-  ) => {
+  const metricCell = (col: number, label: string, value: string) => {
     const cx = CARD_PAD + col * colW;
     setFont(ctx, 20, 500);
     ctx.fillStyle = TEXT_SECONDARY;
-    ctx.fillText(label, cx + 28, metricY + 46);
-    setFont(ctx, 52, 700);
-    ctx.fillStyle = col === 0 ? ACCENT : TEXT_PRIMARY;
-    ctx.fillText(fitText(ctx, value, colW - 56), cx + 28, metricY + 104);
-    if (sub) {
-      setFont(ctx, 20, 500);
-      ctx.fillStyle = TEXT_FAINT;
-      ctx.fillText(sub, cx + 28, metricY + 136);
-    }
+    ctx.fillText(label, cx + 24, metricY + 46);
+    setFont(ctx, 46, 700);
+    ctx.fillStyle = col === 1 ? ACCENT : TEXT_PRIMARY;
+    ctx.fillText(fitText(ctx, value, colW - 44), cx + 24, metricY + 102);
   };
-  // 总花费：人民币主展示（按汇率折算，与面板展示习惯一致），美元小字附注
+  metricCell(0, texts.totalTokens, formatTokensLocale(view.tokens, locale));
+  metricCell(1, texts.totalCost, formatCost(view.cost, view.currency));
   metricCell(
-    0,
-    texts.totalCost,
-    formatCost(data.totalCostUsd * data.fxRate, "cny"),
-    formatCost(data.totalCostUsd, "usd")
+    2,
+    texts.totalRequests,
+    formatCountLocale(view.requests, locale)
   );
-  metricCell(1, texts.totalTokens, formatTokens(data.tokens));
-  metricCell(2, texts.totalRequests, formatTokens(data.requests));
+  metricCell(
+    3,
+    texts.activeDays,
+    `${view.activeDays}${texts.activeDaysUnit}`
+  );
   y += METRICS_H;
 
-  // ===== 模型 Top5 =====
+  // ===== Agent 分布横条 =====
+  if (showAgents) {
+    y += SECTION_GAP;
+    drawSectionTitle(ctx, texts.agentsTitle, y + 30);
+    y += 44;
+    view.agents.forEach((a) => {
+      drawBarRow(
+        ctx,
+        y,
+        ROW_H,
+        a.name,
+        a.color,
+        a.color,
+        a.share,
+        `${formatTokensLocale(a.tokens, locale)} · ${Math.round(a.share * 100)}%`
+      );
+      y += ROW_H;
+    });
+    y += 18;
+  }
+
+  // ===== 模型 TOP5 横条（无有效价格的模型不标花费） =====
   if (showModels) {
     y += SECTION_GAP;
     drawSectionTitle(ctx, texts.topModels, y + 30);
     y += 44;
-    const maxTokens = Math.max(...data.models.map((m) => m.tokens), 1);
-    data.models.forEach((m, i) => {
+    const maxTokens = Math.max(...view.models.map((m) => m.tokens), 1);
+    view.models.forEach((m) => {
+      const valueText =
+        m.cost != null
+          ? `${formatTokensLocale(m.tokens, locale)} · ${formatCost(m.cost, view.currency)}`
+          : formatTokensLocale(m.tokens, locale);
       drawBarRow(
         ctx,
-        y + i * ROW_H,
+        y,
         ROW_H,
         m.name,
         m.color,
         m.color,
         m.tokens / maxTokens,
-        formatTokens(m.tokens)
+        valueText
       );
+      y += ROW_H;
     });
-    y += data.models.length * ROW_H + 18;
+    y += 18;
   }
 
-  // ===== 项目 Top5 =====
-  if (showProjects) {
-    y += SECTION_GAP;
-    drawSectionTitle(ctx, texts.topProjects, y + 30);
-    y += 44;
-    const maxCost = Math.max(...data.projects.map((p) => p.costUsd), 0.000001);
-    data.projects.forEach((p, i) => {
-      drawBarRow(
-        ctx,
-        y + i * ROW_H,
-        ROW_H,
-        p.name,
-        ACCENT,
-        "#818cf8",
-        p.costUsd / maxCost,
-        formatCost(p.costUsd, "usd")
-      );
-    });
-    y += data.projects.length * ROW_H + 18;
-  }
-
-  // ===== 7 天热力图缩影 =====
+  // ===== Token 活动热力图（列=周、7 行、分位四档蓝色） =====
   if (showHeat) {
     y += SECTION_GAP;
     drawSectionTitle(ctx, texts.heatTitle, y + 30);
     y += 44;
-    const gap = 14;
-    const cols = data.heat.length;
-    const cellW = (CARD_W - CARD_PAD * 2 - gap * (cols - 1)) / cols;
-    const cellH = 96;
-    data.heat.forEach((d, i) => {
-      const cx = CARD_PAD + i * (cellW + gap);
-      const intensity = d.tokens / heatMax;
-      roundRectPath(ctx, cx, y, cellW, cellH, 12);
-      ctx.fillStyle =
-        d.tokens > 0
-          ? `rgba(56, 189, 248, ${0.18 + intensity * 0.72})`
-          : "rgba(148, 163, 184, 0.08)";
-      ctx.fill();
-      setFont(ctx, 18, 500);
-      ctx.fillStyle = TEXT_FAINT;
-      ctx.textAlign = "center";
-      ctx.fillText(d.label, cx + cellW / 2, y + cellH + 26);
-      ctx.textAlign = "left";
+
+    let heatMax = 0;
+    for (const week of view.heat) {
+      for (const cell of week.cells) {
+        if (cell && cell.tokens > heatMax) heatMax = cell.tokens;
+      }
+    }
+
+    const gridW = CARD_W - CARD_PAD * 2;
+    const cellW = (gridW - HEAT_GAP * (heatRows - 1)) / heatRows;
+    view.heat.forEach((week, ci) => {
+      week.cells.forEach((cell, ri) => {
+        if (!cell) return;
+        const cx = CARD_PAD + ci * (cellW + HEAT_GAP);
+        const cy = y + ri * (HEAT_CELL_H + HEAT_GAP);
+        const level = heatLevel(cell.tokens, heatMax);
+        roundRectPath(ctx, cx, cy, cellW, HEAT_CELL_H, 4);
+        ctx.fillStyle = level === 0 ? HEAT_EMPTY : HEAT_COLORS[level - 1];
+        ctx.fill();
+      });
     });
-    y += cellH + 52;
+    y += heatGridH;
+
+    // 月份标签：锚在月份首列左缘（与页面热力图同规则）
+    ctx.font = `500 18px ${FONT_STACK}`;
+    ctx.fillStyle = TEXT_FAINT;
+    let prevMonth = -1;
+    view.heat.forEach((week, ci) => {
+      const firstCell = week.cells.find((c) => c != null);
+      if (!firstCell) return;
+      const month = new Date(firstCell.dayMs).getMonth();
+      if (month !== prevMonth) {
+        ctx.fillText(
+          monthShortLabel(month, locale),
+          CARD_PAD + ci * (cellW + HEAT_GAP),
+          y + 26
+        );
+      }
+      prevMonth = month;
+    });
+    y += 44;
   }
 
   // ===== 底部落款 =====
@@ -643,67 +575,50 @@ function drawShareCard(
 
 interface ShareCardModalProps {
   onClose: () => void;
+  /** 报告页价格表（切片后模型花费重算用） */
   pricing: PricingConfig;
-  agentVisibility: AgentVisibility;
+  /** 报告页已聚合数据（agents/按日序列/范围/币种），打开即出图 */
+  report: ShareReportData;
 }
 
 /**
- * 分享卡片弹层：打开即生成近 7 天卡片（实时 canvas 预览），
+ * 分享卡片弹层：复用报告页已聚合结果实时 canvas 预览，
  * 「保存图片」经系统对话框写盘（用户取消返回 null，静默处理）。
  */
 export function ShareCardModal({
   onClose,
   pricing,
-  agentVisibility,
+  report,
 }: ShareCardModalProps) {
-  const { t } = useI18n();
-  const [data, setData] = useState<ShareData | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const { t, locale } = useI18n();
   const [saving, setSaving] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
-  const [nonce, setNonce] = useState(0);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+
+  const view = useMemo(() => buildView(report, pricing), [report, pricing]);
 
   const texts = useMemo<ShareTexts>(
     () => ({
-      periodTitle: t("share.periodTitle"),
+      title: t("report.title"),
       totalCost: t("share.totalCost"),
       totalTokens: t("share.totalTokens"),
       totalRequests: t("share.totalRequests"),
+      activeDays: t("report.kpi.activeDays"),
+      activeDaysUnit: t("report.act.daysUnit"),
+      agentsTitle: t("report.agentDist"),
       topModels: t("share.topModels"),
-      topProjects: t("share.topProjects"),
       heatTitle: t("share.heatTitle"),
       footer: t("share.footer"),
     }),
     [t]
   );
 
+  // 数据/文案就绪后重绘（数据同步来自 props，打开即出图）
   useEffect(() => {
-    let alive = true;
-    setLoading(true);
-    setError(null);
-    loadShareData(agentVisibility, pricing)
-      .then((d) => {
-        if (alive) setData(d);
-      })
-      .catch((e) => {
-        if (alive) setError(String(e));
-      })
-      .finally(() => {
-        if (alive) setLoading(false);
-      });
-    return () => {
-      alive = false;
-    };
-  }, [agentVisibility, pricing, nonce]);
-
-  // 数据/文案就绪后重绘（canvas 挂载于非 loading / 非 error 分支）
-  useEffect(() => {
-    if (!loading && !error && data && canvasRef.current) {
-      drawShareCard(canvasRef.current, data, texts);
+    if (canvasRef.current) {
+      drawShareCard(canvasRef.current, view, texts, locale);
     }
-  }, [data, texts, loading, error]);
+  }, [view, texts, locale]);
 
   const handleSave = () => {
     const canvas = canvasRef.current;
@@ -746,39 +661,19 @@ export function ShareCardModal({
           </button>
         </div>
         <div className="flex-1 min-h-0 overflow-y-auto rounded-xl bg-slate-950/85 p-2 overscroll-contain">
-          {loading ? (
-            <div className="py-16 text-center text-xs text-slate-400">
-              {t("share.loading")}
-            </div>
-          ) : error ? (
-            <div className="py-16 text-center text-xs text-rose-300 break-all px-4">
-              {t("share.loadFail", { msg: error })}
-            </div>
-          ) : (
-            <canvas
-              ref={canvasRef}
-              className="w-full h-auto rounded-lg"
-              aria-label={t("share.title")}
-            />
-          )}
+          <canvas
+            ref={canvasRef}
+            className="w-full h-auto rounded-lg"
+            aria-label={t("share.title")}
+          />
         </div>
         <div className="flex items-center gap-1.5 mt-2 shrink-0">
           <span className="flex-1 min-w-0 text-[9px] text-slate-600 truncate">
             {status}
           </span>
-          <BtnSecondary
-            onClick={() => {
-              setStatus(null);
-              setNonce((n) => n + 1);
-            }}
-            disabled={loading}
-            className="text-[10px]!"
-          >
-            {t("share.regenerate")}
-          </BtnSecondary>
           <BtnPrimary
             onClick={handleSave}
-            disabled={loading || saving || !!error || !data}
+            disabled={saving}
             className="text-[10px]!"
           >
             {saving ? t("share.saving") : t("share.save")}

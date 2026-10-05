@@ -27,3 +27,12 @@ export function saveCache<T>(key: string, data: T): void {
     // 忽略：QuotaExceededError、隐私模式、序列化失败等
   }
 }
+
+/** 删除指定缓存键；失败静默（缓存键结构升级时清理旧版本数据用）。 */
+export function removeCache(key: string): void {
+  try {
+    localStorage.removeItem(key);
+  } catch {
+    // 忽略：隐私模式等
+  }
+}
