@@ -533,25 +533,26 @@ function applyStaticText(): void {
 }
 
 /** 空态/列表/模型速度区/今日行四者的显隐与文案。今日合计行为窗口级
- *  汇总（Σ 各组组头今日值 = 全 agent 今日总合计），模型速度区为按模型
- *  分组的窗口速度摘要——两者都属数字信息，随 showTokens 配置隐藏（Rust
- *  侧窗口高度判定同条件，见 session_hud.rs today_visible /
- *  model_speed_visible）；仅在开启数据行、有可见会话行且各有数据时显示
- * （空态不显示，跟随列表存在）。组结构：每组一个 .hud-group 容器（组头
- *  20px + 会话行 + 该组溢出折叠行 20px），折叠行随组渲染在列表区内。
- *  圆角闭环：今日行/模型速度区/列表容器三者按最下方可见元素承担底部
- *  圆角，优先级 今日行 > 模型速度区 > 列表容器 */
+ *  汇总（Σ 各组组头今日值 = 全 agent 今日总合计）的常驻闭环行，开启数
+ *  据行且今日有数据即显示，不依赖会话列表存在（纯组头状态各组无会话
+ *  行也显示）；模型速度区为按模型分组的窗口速度摘要，统计活跃窗口内
+ *  的会话，无活跃会话时无意义，仍跟随列表存在（两者都属数字信息，随
+ *  showTokens 配置隐藏，Rust 侧窗口高度判定同条件，见 session_hud.rs
+ *  today_visible / model_speed_visible）。组结构：每组一个 .hud-group
+ *  容器（组头 20px + 会话行 + 该组溢出折叠行 20px），折叠行随组渲染在
+ *  列表区内。圆角闭环：今日行/模型速度区/列表容器三者按最下方可见元
+ *  素承担底部圆角，优先级 今日行 > 模型速度区 > 列表容器 */
 function renderShell(): void {
   if (!listEl || !emptyEl || !countEl || !todayEl || !modelsEl) return;
   const groups = snapshot?.groups ?? [];
   const totalActive = snapshot?.totalActive ?? 0;
   const today = snapshot?.todayTotal;
   const modelSpeeds = snapshot?.modelSpeeds ?? [];
-  // 可见会话行数 = Σ 各组行数（与 Rust 侧 today_visible /
-  // model_speed_visible 的 visible_sessions 同口径）
+  // 可见会话行数 = Σ 各组行数（与 Rust 侧 model_speed_visible 的
+  // visible_sessions 同口径；今日行不再依赖该值）
   const visibleRows = groups.reduce((n, g) => n + g.sessions.length, 0);
-  const showToday =
-    cfg.showTokens && visibleRows > 0 && today != null && today.total > 0;
+  // 与 Rust 侧 today_visible 同条件：今日有数据即常驻，不要求有可见会话
+  const showToday = cfg.showTokens && today != null && today.total > 0;
   // 与 Rust 侧 model_speed_visible 逐字同条件
   const showModels =
     cfg.showTokens && modelSpeeds.length > 0 && visibleRows > 0;

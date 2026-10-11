@@ -838,12 +838,13 @@ pub(crate) struct HudGroupLayout {
 /// 行高/行高栅格随 --hud-scale calc 缩放，公式同步缩放保持内容恰好铺
 /// 满、不被裁）；脏 font_scale 按默认 1.0 处理。空态 = 无任何组（与
 /// 前端 renderShell 空态判定同条件）回空态最小高（显示"暂无活跃会话"，
-/// 不为 0 高；空态不显示模型速度区与今日行——两者都跟随列表存在）；
-/// 纯汇总组（只有组头、无会话行）按组头实高正常计入。组内溢出折叠行
-/// 只在该组确实达到上限条数时出现、今日合计行仅在 today 为真（开启数
-/// 据行显示、今日有请求且有可见会话行，见 today_visible）、模型速度区
-/// 仅在 model_rows > 0（调用方传 model_speed_visible 判定后的行数，开
-/// 启数据行 + 有样本 + 有可见会话行）时计入。列表区与模型速度区各有
+/// 不为 0 高；空态即今日无请求，今日行经 today_visible 判否，模型速
+/// 度区跟随列表存在也不显示）；纯汇总组（只有组头、无会话行）按组
+/// 头实高正常计入。组内溢出折叠行只在该组确实达到上限条数时出现、
+/// 今日合计行仅在 today 为真（开启数据行显示且今日有请求即计入，见
+/// today_visible，不依赖会话列表存在）、模型速度区仅在 model_rows > 0
+/// （调用方传 model_speed_visible 判定后的行数，开启数据行 + 有样本 +
+/// 有可见会话行）时计入。列表区与模型速度区各有
 /// 1px 容器 border-bottom（分隔线/收边，CSS 无 box-sizing 包含，见
 /// HUD_LIST_BORDER_H / HUD_MODELS_BORDER_H 注释——V3 修复窗口比内容矮
 /// 1~3px 导致会话行被裁的高度 Bug）。与 session-hud.html 的 CSS 尺寸
@@ -908,12 +909,15 @@ fn hud_target_size(width: f64, height: f64) -> (f64, f64) {
 
 /// 今日合计行显隐判定（纯函数供单元测试复用，轮询线程与前端
 /// session-hud-main.ts renderShell 的 showToday 判定同条件）：开启
-/// 数据行显示（show_tokens）+ 今日有请求 + 有可见会话行（visible_
-/// sessions = Σ 各组可见会话行数；无任何可见会话行的空态不显示——
-/// 今日行跟随列表存在）。show_tokens 的语义是"不想看数字"，今日行
-/// 整行数字同理一并隐藏，窗口高度随之增减。
-fn today_visible(show_tokens: bool, today_total: i64, visible_sessions: usize) -> bool {
-    show_tokens && today_total > 0 && visible_sessions > 0
+/// 数据行显示（show_tokens）+ 今日有请求即显示。今日行是全 agent
+/// 今日总汇总（Σ 各组今日值）的常驻闭环汇总行，与当前是否有活跃
+/// 会话无关——纯组头状态（各组无会话行但今日有数据）也显示。区别
+/// 于模型速度区：速度统计的是活跃窗口内的会话，无活跃会话时无意
+/// 义，model_speed_visible 仍要求有可见会话行（跟随列表存在）。
+/// show_tokens 的语义是"不想看数字"，今日行整行数字同理一并隐藏，
+/// 窗口高度随之增减；今日无请求（today_total = 0，含空态）不显示。
+fn today_visible(show_tokens: bool, today_total: i64) -> bool {
+    show_tokens && today_total > 0
 }
 
 /// 模型速度区显隐判定（纯函数供单元测试复用，轮询线程与前端
@@ -1446,11 +1450,11 @@ fn poll_db(
             .as_ref()
             .map(|s| s.groups.iter().map(|g| g.sessions.len()).sum())
             .unwrap_or(0);
-        // 今日合计行显隐：开启数据行显示（show_tokens）+ 今日有请求 +
-        // 有可见会话行（空态不显示，今日行跟随列表存在；判定与前端
+        // 今日合计行显隐：开启数据行显示（show_tokens）+ 今日有请求即
+        // 显示（全 agent 常驻汇总行，不依赖会话列表存在；判定与前端
         // renderShell 的 showToday 一致，见 today_visible）
         let today = last_snapshot.as_ref().is_some_and(|s| {
-            today_visible(cfg.show_tokens, s.today_total.total, visible)
+            today_visible(cfg.show_tokens, s.today_total.total)
         });
         // 模型速度区行数：显隐判定与前端 renderShell 的 showModels 逐字
         // 同条件（见 model_speed_visible），不显示按 0 行计（窗口高度不
@@ -3520,8 +3524,9 @@ mod tests {
         let group = |rows: usize, folded: bool| HudGroupLayout { rows, folded };
         // 空列表：空态最小高（显示"暂无活跃会话"，不为 0 高）。空态 =
         // 无任何组（与前端 renderShell 的 groups 为空判定同条件）；空态
-        // 不显示今日行与模型速度区——但这是调用方经 today_visible /
-        // model_speed_visible 判定后传参保证的（见显隐判定用例）
+        // 不显示今日行（无组即 Σ 各组 = 0，today_visible 判否）与模型速
+        // 度区（跟随列表存在）——均为调用方判定后传参保证（见显隐判
+        // 定用例）
         assert_eq!(hud_height(&[], false, 0, 1.0), HUD_EMPTY_HEIGHT);
         assert_eq!(hud_height(&[], true, 3, 1.0), HUD_EMPTY_HEIGHT);
         // 纯汇总组（只有组头、无会话行）不是空态：组头 20px 实高正常
@@ -3535,6 +3540,19 @@ mod tests {
             hud_height(&[group(0, false), group(0, false)], false, 0, 1.0),
             30.0 + 20.0 + 20.0 + 1.0 + 8.0,
             "两个纯汇总组各占一个组头高度"
+        );
+        // 纯汇总组 + 今日行（修复后今日行不再依赖可见会话行，纯组头状
+        // 态今日有数据即计入高度）：头部 + 组头×N + 列表区边框 + 今日行
+        // + 底部留白
+        assert_eq!(
+            hud_height(&[group(0, true)], true, 0, 1.0),
+            30.0 + 20.0 + 1.0 + HUD_TODAY_H + 8.0,
+            "纯组头 + 今日行 = 头部+组头+边框+今日行+留白"
+        );
+        assert_eq!(
+            hud_height(&[group(0, false), group(0, false)], true, 0, 1.4),
+            (30.0 + 20.0 + 20.0 + 1.0 + HUD_TODAY_H + 8.0) * 1.4,
+            "两个纯汇总组 + 今日行按 font_scale 整体缩放"
         );
         // 单组：组头 + 行 × 条数 + 列表区边框 + 底部留白
         assert_eq!(
@@ -3685,12 +3703,21 @@ mod tests {
 
     #[test]
     fn 今日行显隐_跟随数据行开关() {
-        // 与前端 renderShell 的 showToday 同条件：show_tokens 关闭即整行
-        // 隐藏（不想看数字的用户今日合计也不显示，窗口高度随之收缩）
-        assert!(today_visible(true, 100, 2));
-        assert!(!today_visible(false, 100, 2), "关闭数据行时今日行一并隐藏");
-        assert!(!today_visible(true, 0, 2), "今日无请求不显示");
-        assert!(!today_visible(true, 100, 0), "空态不显示今日行");
+        // 与前端 renderShell 的 showToday 同条件：show_tokens 关闭或今日
+        // 无请求即整行隐藏（不想看数字的用户今日合计也不显示，窗口高
+        // 度随之收缩）
+        assert!(today_visible(true, 100));
+        assert!(!today_visible(false, 100), "关闭数据行时今日行一并隐藏");
+        assert!(!today_visible(true, 0), "今日无请求不显示");
+    }
+
+    #[test]
+    fn 今日行显隐_今日有数据即常驻不依赖会话列表() {
+        // 修复点：今日行是全 agent 今日总汇总的常驻闭环行。各组均无可
+        // 见会话（纯组头状态）但今日有 token 数据时仍显示——旧实现要
+        // 求"有可见会话行"，导致纯组头状态三组组头有今日值而底部总合
+        // 计行消失。新签名已无 visible_sessions 参数，本用例即该场景
+        assert!(today_visible(true, 100));
     }
 
     #[test]
