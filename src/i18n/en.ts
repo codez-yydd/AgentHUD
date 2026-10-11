@@ -796,15 +796,17 @@ export const en: typeof zh = {
     "theme.petLegend":
       "States: sleeping (ZCode idle for over 1 minute or ZBar not running) · idle (recent turn activity) · thinking (model planning, no output yet) · typing (output growing; speed tiers by token rate) · tool running (a tool is executing, e.g. command/build) · walking (heading to a new turn / waiting for the next) · celebrating (turn finished, about 3s) · failed (turn failed or cancelled, about 3s)",
 
-    // Session HUD card (standalone always-on-top overlay showing active
-    // ZCode sessions; config in session-hud.json, no skin dependency;
-    // freely resizable by dragging, height auto-fits until resized. This
-    // card only keeps the master switch, the active window and the display
-    // toggles — font size and opacity live in the overlay's own settings
-    // panel)
+    // Session HUD card (standalone always-on-top overlay showing today's
+    // active sessions grouped by agent (ZCode/Claude/Codex/Kimi/Cursor)
+    // with per-agent today totals and a grand total at the bottom; config
+    // in session-hud.json, no skin dependency; freely resizable by
+    // dragging, height auto-fits until resized, up to 3 rows per agent
+    // with in-group folding. This card only keeps the master switch, the
+    // active window and the display toggles — font size and opacity live
+    // in the overlay's own settings panel)
     "theme.hudTitle": "Session HUD",
     "theme.hudHint":
-      "A standalone transparent always-on-top overlay: the button at its top right opens a settings panel for the font size and window opacity. It shows active ZCode sessions with model, state (generating/idle) and token totals (Σ total · ↑ input · ↓ output · ⟲ cache read · × requests · speed t/s · TTFT, same convention as the in-chat session bar), one row per session sorted by recent activity; no skin required, drag to move, drag an edge to resize freely.",
+      "A standalone transparent always-on-top overlay: the button at its top right opens a settings panel for the font size and window opacity. It aggregates today's data across ZCode/Claude/Codex/Kimi/Cursor: per-agent sections show the agent's today token total (header \"Name · Today Σ\") and its active session rows (model, state, Σ/↑/↓/⟲/× totals with speed t/s · TTFT, same convention as the in-chat session bar), sorted by recent activity, up to 3 rows per agent with in-group folding; the bottom Today row is the grand total across all agents. No skin required, drag to move, drag an edge to resize freely.",
     "theme.hudEnabled": "Enable Session HUD",
     "theme.hudEnabledHint": "Master switch: off hides the overlay and stops polling",
     "theme.hudApplyFail": "Failed to apply Session HUD settings: {msg}",
@@ -815,10 +817,10 @@ export const en: typeof zh = {
     "theme.hudWindow30m": "30 min",
     "theme.hudWindowAll": "All",
     "theme.hudWindowHint":
-      "Only sessions active (model requests or sent messages) within this window are shown; \"All\" falls back to the last 24 hours, up to 5 visible rows, extras folded",
+      "Only sessions active (model requests or sent messages) within this window are shown; \"All\" falls back to the last 24 hours; up to 3 visible rows per agent, extras folded within the group",
     "theme.hudShowTokens": "Data row",
     "theme.hudShowTokensHint":
-      "Per-session totals in the session-bar convention: Σ total · ↑ input · ↓ output · ⟲ cache read · × requests · speed t/s · TTFT, plus the per-model speed rows below the list; turning it off also hides the Today total row",
+      "Per-session totals in the session-bar convention: Σ total · ↑ input · ↓ output · ⟲ cache read · × requests · speed t/s · TTFT; also shows each group header's \"Today Σ\" subtotal and the per-model speed rows below the list; turning it off hides the Today subtotals in group headers and the grand total row at the bottom",
     "theme.hudShowModel": "Model name",
     "theme.hudShowModelHint": "Show the session's most recently used model",
     "theme.currentWallpaper": "Current wallpaper",

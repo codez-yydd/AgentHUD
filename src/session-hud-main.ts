@@ -2,13 +2,16 @@
  * 会话 Token 悬浮窗宿主壳（Session HUD）。
  *
  * 与宠物窗宿主壳（pet-main.ts）同款的零 React 薄壳：不引入 panel 的
- * 组件体系（widgets/layout 为 panel 专用），列表渲染在壳内直接完成。
+ * 组件体系（widgets/layout 为 panel 专用），分组列表渲染在壳内直接完成。
  * 职责：
  * - 初始配置：invoke get_session_hud_config 读取（透明度 + 显示项 +
  *   活跃档位 + 字体缩放）；读取失败按 HTML/CSS 默认渲染（防御式，与
  *   pet 同风格）；
  * - 数据流：监听 zbar://session-hud-usage（session_hud.rs 轮询器每
- *   2 秒/速度字段 1 秒节拍推送的会话快照，内容变化才推），重建列表 DOM；
+ *   2 秒/速度字段 1 秒节拍推送的会话快照，内容变化才推），按 agent 组
+ *   （ZCode/Claude/Codex/Kimi/Cursor）重建列表 DOM——每组一个容器：
+ *   组头（agent 名 + 该 agent 今日 Σ）+ 会话行 + 组内折叠行；底部今日
+ *   行为全 agent 今日总合计（= Σ 各组组头今日值）；
  * - 参数流：监听 zbar://session-hud-params（设置卡变更 / 滑块落盘回推），
  *   即时应用透明度、显示项与字体缩放，下一轮数据到达后列表按新显示项
  *   重建；
@@ -39,8 +42,9 @@
  *   zbar://appearance-changed（setLocale/applyTheme 发出，无 payload）
  *   即时跟随：语言变化全量重渲染，主题变化纯 CSS 生效无需重渲染。
  *
- * 尺寸栅格：Rust 侧按会话条数自适应窗口高度（hud_height），页面 CSS
- * 的头部/行/折叠行/留白尺寸必须与之一一对应（见 session-hud.html 注释）。
+ * 尺寸栅格：Rust 侧按各组可见行数自适应窗口高度（hud_height），页面
+ * CSS 的头部/组头/行/组折叠行/留白尺寸必须与之一一对应（见
+ * session-hud.html 注释）。
  */
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -99,22 +103,38 @@ interface HudModelSpeed {
   samples: number;
 }
 
-/** Rust 侧 HudSnapshot */
+/** Rust 侧 HudTodayTotal（今日合计五元组，in 为 input 原值含缓存读） */
+interface HudTodayTotal {
+  in: number;
+  out: number;
+  cacheRead: number;
+  total: number;
+  reqCount: number;
+}
+
+/** Rust 侧 HudAgentGroup（单 agent 分组：组头今日 Σ + 活跃会话行） */
+interface HudAgentGroup {
+  /** agent 标识（zcode/claude/codex/kimi/cursor，显示名见 AGENT_LABELS） */
+  agent: string;
+  /** 该 agent 今日合计（cursor 仅 total 有值，其余 0） */
+  today: HudTodayTotal;
+  /** 该组活跃窗口内会话总数（含未展示的，组内折叠提示消费；cursor 恒 0） */
+  totalActive: number;
+  /** 活跃会话列表（最近活动倒序，至多 3 条；纯汇总组为空） */
+  sessions: HudSessionBrief[];
+}
+
+/** Rust 侧 HudSnapshot（v2 = 多 agent 分组契约） */
 interface HudSnapshot {
   v: number;
-  /** 窗口内活跃会话总数（含未展示的，折叠提示消费） */
+  /** 窗口内活跃会话总数（Σ 各组，头部计数消费） */
   totalActive: number;
-  sessions: HudSessionBrief[];
-  /** 今日合计（自然日本地零点起全库 model_usage；窗口级汇总，随
-   *  showTokens 配置隐藏——不想看数字的用户整行不显示；全 0 = 今日
+  /** agent 分组（有数据的组，组内最新活动降序，cursor 恒最后） */
+  groups: HudAgentGroup[];
+  /** 今日合计（Σ 各组 today = 全 agent 今日总合计，底部今日行消费；
+   *  随 showTokens 配置隐藏——不想看数字的用户整行不显示；全 0 = 今日
    *  无请求不显示该行） */
-  todayTotal: {
-    in: number;
-    out: number;
-    cacheRead: number;
-    total: number;
-    reqCount: number;
-  };
+  todayTotal: HudTodayTotal;
   /** 模型速度区（活跃窗口内按模型分组的速度摘要，最近使用降序至多
    *  3 个；空数组 = 不渲染该区，显隐与窗口高度判定同条件，见
    *  session_hud.rs model_speed_visible） */
@@ -149,8 +169,16 @@ interface Msg {
   active: (n: number) => string;
   empty: string;
   more: (n: number) => string;
+  /** 组头数据段（该 agent 今日 Σ + 请求笔数；渲染在 agent 名 span 之后
+   *  的弱化 span 内，前导分隔符由本函数给出，观感与旧 groupLine 一致） */
+  groupSum: (total: string, req: string) => string;
+  /** Cursor 纯汇总组头 title（仅今日总量，无输入/输出拆分） */
+  cursorHeadDetail: string;
   generating: string;
   idle: string;
+  /** Claude/Codex 灰点 tooltip（本地导入库聚合，无实时状态；ZCode/Kimi
+   *  有实时状态，点 tooltip 走 generating/idle） */
+  idleLocal: string;
   /** 子代理徽标 tooltip */
   subBadge: (n: number) => string;
   /** 速度位"测算中"占位 tooltip（生成中但尚无可测数据） */
@@ -188,22 +216,34 @@ interface Msg {
     min: string,
     n: number
   ) => string;
-  /** 今日合计行（窗口级汇总：今日 Σ 总量 · × 请求数） */
+  /** 今日合计行（窗口级汇总 = 全 agent 今日总合计：Σ 总量 · × 请求数） */
   todayLine: (total: string, req: string) => string;
   /** 今日合计行 title 详情（in 为 input 原值含缓存读，中性符号避免与
-   *  行内 ↑ 非缓存输入的语义混淆） */
+   *  行内 ↑ 非缓存输入的语义混淆；组头 title 复用同款拆分口径） */
   todayDetail: (inT: string, out: string, cr: string, req: string) => string;
 }
+
+/** agent 显示名（zh/en 同名；未知 agent id 原样展示兜底） */
+const AGENT_LABELS: Record<string, string> = {
+  zcode: "ZCode",
+  claude: "Claude",
+  codex: "Codex",
+  kimi: "Kimi",
+  cursor: "Cursor",
+};
 
 /** 轻量双语词典（仅悬浮窗内文案；语言偏好与主面板同键共享） */
 const MESSAGES: Record<"zh" | "en", Msg> = {
   zh: {
-    title: "ZCode 会话",
+    title: "本日活跃会话",
     active: (n: number) => `${n} 活跃`,
     empty: "暂无活跃会话",
     more: (n: number) => `还有 ${n} 个会话`,
+    groupSum: (total, req) => ` · 今日 Σ ${total} · × ${req}`,
+    cursorHeadDetail: "仅今日总量（Σ token），无输入/输出拆分",
     generating: "生成中",
     idle: "空闲",
+    idleLocal: "本地导入库聚合，无实时状态",
     subBadge: (n: number) => `${n} 个子代理在跑（已并入本会话合计）`,
     measuring: "生成中，请求完成后显示速率",
     metricsLine: (total, req, speed, ttft) =>
@@ -223,12 +263,15 @@ const MESSAGES: Record<"zh" | "en", Msg> = {
       `输入(含⟲) ${inT} · 输出 ${out} · 缓存读 ${cr} · 请求 ${req}`,
   },
   en: {
-    title: "ZCode Sessions",
+    title: "Today's Active Sessions",
     active: (n: number) => `${n} active`,
     empty: "No active sessions",
     more: (n: number) => `${n} more`,
+    groupSum: (total, req) => ` · Today Σ ${total} · × ${req}`,
+    cursorHeadDetail: "Today's total (Σ tokens) only — no input/output split",
     generating: "Generating",
     idle: "Idle",
+    idleLocal: "Aggregated from local store — no live state",
     subBadge: (n: number) => `${n} subagent(s) running (merged into totals)`,
     measuring: "Generating — rate appears once the request completes",
     metricsLine: (total, req, speed, ttft) =>
@@ -318,7 +361,6 @@ let snapshot: HudSnapshot | null = null;
 const rootEl = document.getElementById("hud-root");
 const listEl = document.getElementById("hud-list");
 const emptyEl = document.getElementById("hud-empty");
-const moreEl = document.getElementById("hud-more");
 const todayEl = document.getElementById("hud-today");
 const modelsEl = document.getElementById("hud-models");
 const countEl = document.getElementById("hud-count");
@@ -490,57 +532,49 @@ function applyStaticText(): void {
   if (emptyEl) emptyEl.textContent = msg.empty; // 数据到达前的首帧空态
 }
 
-/** 空态/列表/模型速度区/今日行/折叠行五者的显隐与文案。今日合计行
- *  为窗口级汇总（自然日本地零点起全库合计），模型速度区为按模型分组
- *  的窗口速度摘要——两者都属数字信息，随 showTokens 配置隐藏（Rust 侧
- *  窗口高度判定同条件，见 session_hud.rs today_visible /
- *  model_speed_visible）；仅在开启数据行、有可见会话且各有数据时显示
- *  （空态不显示，跟随列表存在）。圆角闭环：折叠行显示时折叠行承担
- *  底部圆角；否则最下方可见行承担，优先级 今日行 > 模型速度区 > 列表 */
+/** 空态/列表/模型速度区/今日行四者的显隐与文案。今日合计行为窗口级
+ *  汇总（Σ 各组组头今日值 = 全 agent 今日总合计），模型速度区为按模型
+ *  分组的窗口速度摘要——两者都属数字信息，随 showTokens 配置隐藏（Rust
+ *  侧窗口高度判定同条件，见 session_hud.rs today_visible /
+ *  model_speed_visible）；仅在开启数据行、有可见会话行且各有数据时显示
+ * （空态不显示，跟随列表存在）。组结构：每组一个 .hud-group 容器（组头
+ *  20px + 会话行 + 该组溢出折叠行 20px），折叠行随组渲染在列表区内。
+ *  圆角闭环：今日行/模型速度区/列表容器三者按最下方可见元素承担底部
+ *  圆角，优先级 今日行 > 模型速度区 > 列表容器 */
 function renderShell(): void {
-  if (!listEl || !emptyEl || !moreEl || !countEl || !todayEl || !modelsEl) return;
-  const sessions = snapshot?.sessions ?? [];
+  if (!listEl || !emptyEl || !countEl || !todayEl || !modelsEl) return;
+  const groups = snapshot?.groups ?? [];
   const totalActive = snapshot?.totalActive ?? 0;
   const today = snapshot?.todayTotal;
   const modelSpeeds = snapshot?.modelSpeeds ?? [];
+  // 可见会话行数 = Σ 各组行数（与 Rust 侧 today_visible /
+  // model_speed_visible 的 visible_sessions 同口径）
+  const visibleRows = groups.reduce((n, g) => n + g.sessions.length, 0);
   const showToday =
-    cfg.showTokens &&
-    sessions.length > 0 &&
-    today != null &&
-    today.total > 0;
+    cfg.showTokens && visibleRows > 0 && today != null && today.total > 0;
   // 与 Rust 侧 model_speed_visible 逐字同条件
   const showModels =
-    cfg.showTokens && modelSpeeds.length > 0 && sessions.length > 0;
+    cfg.showTokens && modelSpeeds.length > 0 && visibleRows > 0;
   // 头部计数与空态严格互斥：以可见列表为准（Rust 侧保证 total_active>0
-  // ⟹ sessions 非空，此处按列表存在性双重防御，计数绝不与"暂无活跃
-  // 会话"同屏）
+  // ⟹ 至少一组有可见会话行，此处按可见行存在性双重防御，计数绝不与
+  // "暂无活跃会话"同屏）
   countEl.textContent =
-    sessions.length > 0 && totalActive > 0 ? msg.active(totalActive) : "";
-  if (sessions.length === 0) {
+    visibleRows > 0 && totalActive > 0 ? msg.active(totalActive) : "";
+  if (groups.length === 0) {
     listEl.replaceChildren();
     listEl.classList.remove("rounded-bottom");
     emptyEl.textContent = msg.empty;
     emptyEl.classList.remove("hidden");
-    moreEl.style.display = "none";
     todayEl.style.display = "none";
     renderModels(false);
     return;
   }
   emptyEl.classList.add("hidden");
-  const overflow = totalActive - sessions.length;
-  if (overflow > 0) {
-    moreEl.textContent = msg.more(overflow);
-    moreEl.style.display = "flex";
-    listEl.classList.remove("rounded-bottom");
-    todayEl.classList.remove("rounded-bottom");
-    modelsEl.classList.remove("rounded-bottom");
-  } else {
-    moreEl.style.display = "none";
-    // 底部圆角由最下方可见行承担：今日行 > 模型速度区 > 列表
-    todayEl.classList.toggle("rounded-bottom", showToday);
-    modelsEl.classList.toggle("rounded-bottom", !showToday && showModels);
-    listEl.classList.toggle("rounded-bottom", !showToday && !showModels);
-  }
+  // 底部圆角由最下方可见元素承担：今日行 > 模型速度区 > 列表容器
+  //（组头/会话行/组折叠行都在列表容器内，圆角由容器统一承担）
+  todayEl.classList.toggle("rounded-bottom", showToday);
+  modelsEl.classList.toggle("rounded-bottom", !showToday && showModels);
+  listEl.classList.toggle("rounded-bottom", !showToday && !showModels);
   renderModels(showModels);
   if (showToday && today) {
     todayEl.textContent = msg.todayLine(
@@ -644,128 +678,215 @@ function renderModels(visible: boolean): void {
   modelsEl.style.display = rows.length > 0 ? "flex" : "none";
 }
 
-/** 重建会话行（textContent 写入外部字符串，无 innerHTML 注入面） */
+/** 重建分组列表（textContent 写入外部字符串，无 innerHTML 注入面）。
+ *  每组一个 .hud-group 容器：组头（agent 名 + 今日 Σ）+ 会话行（复用
+ *  三行制构建）+ 该组溢出折叠行（"还有 N 个会话"）。prevFields 的 key
+ *  为 `${agent}:${sessionId}`——跨源 sessionId 可能撞名，必须带 agent
+ *  前缀隔离字段级 diff 状态 */
 function renderRows(): void {
   if (!listEl) return;
-  const sessions = snapshot?.sessions ?? [];
-  const rows = sessions.map((s) => {
-    const row = document.createElement("div");
-    row.className = "hud-row";
-    row.title = `${s.project} · ${s.sessionId}`;
+  const groups = snapshot?.groups ?? [];
+  const usedKeys = new Set<string>();
+  const containers = groups.map((g) => {
+    const groupEl = document.createElement("div");
+    groupEl.className = "hud-group";
 
-    // 本帧展示字段值（存显示串：只有用户可见的变化才触发高亮）
-    const cur: FieldVals = [
-      fmtTokens(s.total),
-      fmtTokens(s.inTokens),
-      fmtTokens(s.outTokens),
-      fmtTokens(s.cacheRead),
-      String(s.reqCount).padStart(3, "0"),
-      fmtSpeed(s.speed, s.speedQuality),
-      fmtTtft(s.ttftMs),
-    ];
-    const prev = prevFields.get(s.sessionId);
-    const changed = (i: number): boolean => prev !== undefined && prev[i] !== cur[i];
-
-    // 首行：状态点 + 项目名 + 短标识 +（可选）子代理徽标 +（可选）模型
-    const top = document.createElement("div");
-    top.className = "hud-row-top";
-    const dot = document.createElement("span");
-    dot.className = `hud-dot${s.generating ? " gen" : ""}`;
-    dot.title = s.generating ? msg.generating : msg.idle;
-    const project = document.createElement("span");
-    project.className = "hud-project";
-    project.textContent = s.project;
-    const short = document.createElement("span");
-    short.className = "hud-short";
-    short.textContent = s.short;
-    top.append(dot, project, short);
-    // 子代理徽标：窗口内有活动的子代理数 >0 才占位（克制：小号淡紫）
-    if (s.subCount > 0) {
-      const sub = document.createElement("span");
-      sub.className = "hud-sub";
-      sub.textContent = `⟡${s.subCount}`;
-      sub.title = msg.subBadge(s.subCount);
-      top.append(sub);
-    }
-    // 模型集合：直接渲染全量逗号拼接串（注入版 models 口径，Rust 侧
-    // 已按最近使用降序），多模型时由 CSS 省略号自然裁切，title 给全量
-    if (cfg.showModel && s.models) {
-      const model = document.createElement("span");
-      model.className = "hud-model";
-      model.textContent = s.models;
-      model.title = s.models;
-      top.append(model);
-    }
-
-    // 行2 核心指标行 + 行3 分解行（可关，随 showTokens 整组隐藏）：
-    // 对齐注入版会话条字段序并补 TTFT。等宽补位（fmtTokens 恒定宽度 /
-    // req padStart(3) / speed、ttft padStart(4)）配合 CSS tabular-nums
-    // 保持行宽稳定；行内 nowrap + overflow hidden 由 CSS 防御极端长值。
-    // 各字段值为独立 span（分隔符是静态文本节点），变化字段挂 .hud-flash
+    // 组头：agent 显示名 + 该 agent 今日 Σ（tooltip 给输入/输出拆分；
+    // Cursor 为纯汇总组，无拆分数据，title 单独注明）。拆两个 span 拉
+    // 开层级：agent 名挂 .hud-group-name（10px 加粗主色，分组标题强于
+    // 会话行内容），今日 Σ 挂 .hud-group-sum（9px 淡色，仅数字弱化，
+    // 前导分隔符在数据段内，观感与旧整行文案一致）。今日 Σ 属数字
+    // 信息，随 showTokens 一并隐藏（关闭时组头仅 agent 名 span，与
+    // "不想看数字"语义一致；组头 20px 高度不变，不影响高度栅格）
+    const head = document.createElement("div");
+    head.className = "hud-group-head";
+    const agentName = AGENT_LABELS[g.agent] ?? g.agent;
+    const name = document.createElement("span");
+    name.className = "hud-group-name";
+    name.textContent = agentName;
+    head.append(name);
     if (cfg.showTokens) {
-      const metrics = document.createElement("div");
-      metrics.className = "hud-row-data";
-      // Σ 稍放大做视觉锚点（.hud-sigma），其余字段 9px。
-      // 速度位"测算中"占位：生成中但无窗口数据且无保持值（speed 为
-      // null）→ 呼吸动画 + tooltip（回答完成 1 秒内显示真实速率并触发
-      // 既有 flash 高亮——"–"到数值的跳变走字段级 diff）
-      const measuring =
-        s.speedState === "measuring" || (s.speed == null && s.generating);
-      const speedEl = fieldSpan(cur[5], changed(5));
-      if (measuring) {
-        speedEl.classList.add("hud-measuring");
-        speedEl.title = msg.measuring;
-      }
+      const sum = document.createElement("span");
+      sum.className = "hud-group-sum";
+      sum.textContent = msg.groupSum(
+        fmtTokens(g.today.total),
+        String(g.today.reqCount)
+      );
+      head.append(sum);
+      head.title =
+        g.agent === "cursor"
+          ? msg.cursorHeadDetail
+          : msg.todayDetail(
+              String(g.today.in),
+              String(g.today.out),
+              String(g.today.cacheRead),
+              String(g.today.reqCount)
+            );
+    }
+    groupEl.append(head);
+
+    // 会话行（三行制，字段级变化高亮）
+    for (const s of g.sessions) {
+      groupEl.append(buildSessionRow(g.agent, s, usedKeys));
+    }
+
+    // 组内折叠行：该组活跃总数超过可见行数时提示"还有 N 个"（每组一条）
+    const overflow = g.totalActive - g.sessions.length;
+    if (overflow > 0) {
+      const more = document.createElement("div");
+      more.className = "hud-more";
+      more.textContent = msg.more(overflow);
+      groupEl.append(more);
+    }
+    return groupEl;
+  });
+  listEl.replaceChildren(...containers);
+  // 清理已消失会话的 diff 状态（防 Map 随历史会话无限增长）
+  if (prevFields.size > usedKeys.size) {
+    for (const key of prevFields.keys()) {
+      if (!usedKeys.has(key)) prevFields.delete(key);
+    }
+  }
+}
+
+/** 构建单会话三行制行（项目行 + 可选核心指标行/分解行）。fieldKey 带
+ *  agent 前缀，跨源 sessionId 撞名不串档；并集写入 usedKeys 供本帧
+ *  之后的 diff 状态清理 */
+function buildSessionRow(
+  agent: string,
+  s: HudSessionBrief,
+  usedKeys: Set<string>
+): HTMLDivElement {
+  const row = document.createElement("div");
+  row.className = "hud-row";
+  row.title = `${s.project} · ${s.sessionId}`;
+  const fieldKey = `${agent}:${s.sessionId}`;
+  usedKeys.add(fieldKey);
+
+  // 本帧展示字段值（存显示串：只有用户可见的变化才触发高亮）
+  const cur: FieldVals = [
+    fmtTokens(s.total),
+    fmtTokens(s.inTokens),
+    fmtTokens(s.outTokens),
+    fmtTokens(s.cacheRead),
+    String(s.reqCount).padStart(3, "0"),
+    fmtSpeed(s.speed, s.speedQuality),
+    fmtTtft(s.ttftMs),
+  ];
+  const prev = prevFields.get(fieldKey);
+  const changed = (i: number): boolean => prev !== undefined && prev[i] !== cur[i];
+
+  // 首行：状态点 + 项目名 + 短标识 +（可选）子代理徽标 +（可选）模型
+  const top = document.createElement("div");
+  top.className = "hud-row-top";
+  // 状态点：ZCode / Kimi 组有实时生成中/空闲信号（Kimi 来自 wire.jsonl
+  // transcript.ops 的 step 状态 + 新鲜度保护，旧会话无该数据时恒空闲）；
+  // 其余非 ZCode 组无轮次信号，灰点仅为视觉对齐，tooltip 用中性说明
+  //（本地导入库聚合，非"空闲"）
+  const dot = document.createElement("span");
+  dot.className = `hud-dot${s.generating ? " gen" : ""}`;
+  dot.title =
+    agent === "zcode" || agent === "kimi"
+      ? s.generating
+        ? msg.generating
+        : msg.idle
+      : msg.idleLocal;
+  const project = document.createElement("span");
+  project.className = "hud-project";
+  project.textContent = s.project;
+  const short = document.createElement("span");
+  short.className = "hud-short";
+  short.textContent = s.short;
+  top.append(dot, project, short);
+  // 子代理徽标：窗口内有活动的子代理数 >0 才占位（克制：小号淡紫）
+  if (s.subCount > 0) {
+    const sub = document.createElement("span");
+    sub.className = "hud-sub";
+    sub.textContent = `⟡${s.subCount}`;
+    sub.title = msg.subBadge(s.subCount);
+    top.append(sub);
+  }
+  // 模型集合：直接渲染全量逗号拼接串（注入版 models 口径，Rust 侧
+  // 已按最近使用降序），多模型时由 CSS 省略号自然裁切，title 给全量
+  if (cfg.showModel && s.models) {
+    const model = document.createElement("span");
+    model.className = "hud-model";
+    model.textContent = s.models;
+    model.title = s.models;
+    top.append(model);
+  }
+
+  // 行2 核心指标行 + 行3 分解行（可关，随 showTokens 整组隐藏）：
+  // 对齐注入版会话条字段序并补 TTFT。等宽补位（fmtTokens 恒定宽度 /
+  // req padStart(3) / speed、ttft padStart(4)）配合 CSS tabular-nums
+  // 保持行宽稳定；行内 nowrap + overflow hidden 由 CSS 防御极端长值。
+  // 各字段值为独立 span（分隔符是静态文本节点），变化字段挂 .hud-flash。
+  // 分段渲染：Σ/× 恒渲染；速度段仅在有值或测算中时出现，TTFT 段仅在
+  // 有值时出现——非 ZCode 源缺哪段就整段省略（codex 无速度无 TTFT，
+  // claude/kimi 有请求平均速度无 TTFT），不再渲染 "–" 占位
+  if (cfg.showTokens) {
+    const metrics = document.createElement("div");
+    metrics.className = "hud-row-data";
+    // Σ 稍放大做视觉锚点（.hud-sigma），其余字段 9px。
+    // 速度位"测算中"占位：生成中但无窗口数据且无保持值（speed 为
+    // null）→ 呼吸动画 + tooltip（回答完成 1 秒内显示真实速率并触发
+    // 既有 flash 高亮——"–"到数值的跳变走字段级 diff）
+    const measuring =
+      s.speedState === "measuring" || (s.speed == null && s.generating);
+    const speedEl = fieldSpan(cur[5], changed(5));
+    if (measuring) {
+      speedEl.classList.add("hud-measuring");
+      speedEl.title = msg.measuring;
+    }
+    metrics.append(
+      fieldSpan(`Σ ${cur[0]}`, changed(0), "hud-sigma"),
+      document.createTextNode(" · "),
+      fieldSpan(`× ${cur[4]}`, changed(4))
+    );
+    if (s.speed != null || measuring) {
       metrics.append(
-        fieldSpan(`Σ ${cur[0]}`, changed(0), "hud-sigma"),
-        document.createTextNode(" · "),
-        fieldSpan(`× ${cur[4]}`, changed(4)),
         document.createTextNode(" · "),
         speedEl,
         // 单位放静态文本节点（flash 只作用于数字）；"测算中"占位态
         // 同样带单位（"– t/s"），与数值态行宽一致
-        document.createTextNode(" t/s"),
+        document.createTextNode(" t/s")
+      );
+    }
+    if (s.ttftMs != null) {
+      metrics.append(
         document.createTextNode(" · TTFT "),
         fieldSpan(cur[6], changed(6))
       );
-      metrics.title = msg.metricsLine(
-        String(s.total),
-        String(s.reqCount),
-        fmtSpeed(s.speed, s.speedQuality).trim(),
-        fmtTtft(s.ttftMs).trim()
-      );
-
-      const split = document.createElement("div");
-      split.className = "hud-row-data";
-      split.append(
-        document.createTextNode("↑ "),
-        fieldSpan(cur[1], changed(1)),
-        document.createTextNode("  ↓ "),
-        fieldSpan(cur[2], changed(2)),
-        document.createTextNode("  ⟲ "),
-        fieldSpan(cur[3], changed(3))
-      );
-      split.title = msg.splitLine(
-        String(s.inTokens),
-        String(s.outTokens),
-        String(s.cacheRead)
-      );
-
-      row.append(top, metrics, split);
-    } else {
-      row.append(top);
     }
-    prevFields.set(s.sessionId, cur);
-    return row;
-  });
-  listEl.replaceChildren(...rows);
-  // 清理已消失会话的 diff 状态（防 Map 随历史会话无限增长）
-  if (prevFields.size > sessions.length) {
-    const ids = new Set(sessions.map((s) => s.sessionId));
-    for (const id of prevFields.keys()) {
-      if (!ids.has(id)) prevFields.delete(id);
-    }
+    metrics.title = msg.metricsLine(
+      String(s.total),
+      String(s.reqCount),
+      fmtSpeed(s.speed, s.speedQuality).trim(),
+      fmtTtft(s.ttftMs).trim()
+    );
+
+    const split = document.createElement("div");
+    split.className = "hud-row-data";
+    split.append(
+      document.createTextNode("↑ "),
+      fieldSpan(cur[1], changed(1)),
+      document.createTextNode("  ↓ "),
+      fieldSpan(cur[2], changed(2)),
+      document.createTextNode("  ⟲ "),
+      fieldSpan(cur[3], changed(3))
+    );
+    split.title = msg.splitLine(
+      String(s.inTokens),
+      String(s.outTokens),
+      String(s.cacheRead)
+    );
+
+    row.append(top, metrics, split);
+  } else {
+    row.append(top);
   }
+  prevFields.set(fieldKey, cur);
+  return row;
 }
 
 function render(): void {
@@ -775,7 +896,7 @@ function render(): void {
 }
 
 const main = async () => {
-  if (!rootEl || !listEl || !emptyEl || !moreEl || !todayEl || !modelsEl) return;
+  if (!rootEl || !listEl || !emptyEl || !todayEl || !modelsEl) return;
   // 冷启动同步主题（语言已在模块顶层 detectMsg 读取）：读主面板写入的
   // zbar-theme 切 .dark，主面板主题切换时经下方 appearance-changed 重读
   applyHudTheme();

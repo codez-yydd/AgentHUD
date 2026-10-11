@@ -61,6 +61,11 @@ fn codex_db_path() -> Result<PathBuf, String> {
     Ok(config_dir()?.join("codex.sqlite"))
 }
 
+/// 会话窗口查询（query_window_sessions）内层活跃扫查的行数上限（窗口内
+/// 最近 N 笔请求，started_at 降序 LIMIT）：窗口内行数可能很大，以最近 N
+/// 笔为界保证查询成本有硬上限；最新会话（排序前几名）必然在内层结果中
+const WINDOW_SCAN_ROWS: i64 = 2000;
+
 /// 打开（必要时创建）导入库并确保表结构就绪。这是自有库，读写均可用。
 fn open_codex_db() -> Result<Connection, String> {
     let dir = config_dir()?;
@@ -1126,6 +1131,101 @@ pub fn query_stats(from_ms: i64, to_ms: i64) -> Result<db::Stats, String> {
     })
 }
 
+/// 会话悬浮窗（session_hud）用：查询活跃窗口内的会话行。
+///
+/// 口径与 ZCode 组一致：
+/// - 活跃判定 = `started_at >= window_start`（窗口内有 model_usage 落库）；
+/// - 行累计为会话**全生命周期**合计（外层对窗口内会话集合不再加时间
+///   过滤）：↑ = Σ max(0, input − cache_read)（SQLite 双参 MAX 逐行
+///   clamp）、↓ = Σ output、⟲ = Σ cache_read、× = 行数；
+/// - 排序按最近活动倒序（MAX(started_at) DESC），只取前 `limit` 条；
+/// - `total_active` 为窗口内 distinct 会话总数（含未展示的，供折叠
+///   提示"还有 N 个"）。
+///
+/// 项目目录取 session_meta.cwd（导入器按会话首行 session_meta 事件
+/// upsert，session_id 主键等值查；无记录为 None，目录末段由
+/// session_hud 侧解析）。查询前先增量导入（5 秒节流，未安装/失败
+/// 静默返回 Err，由调用方跳过该组）。
+pub fn query_window_sessions(
+    window_start_ms: i64,
+    limit: usize,
+) -> Result<crate::session_hud::AgentWindowSessions, String> {
+    import_incremental()?;
+    let conn = open_codex_db()?;
+    query_window_sessions_at(&conn, window_start_ms, limit)
+}
+
+/// query_window_sessions 的纯查询内核（连接注入版，供单元测试）。
+pub(crate) fn query_window_sessions_at(
+    conn: &Connection,
+    window_start_ms: i64,
+    limit: usize,
+) -> Result<crate::session_hud::AgentWindowSessions, String> {
+    // 内层子查询按 started_at 索引倒序取窗口内最近 N 笔的会话（成本
+    // 硬上限，绝不全表扫），外层对命中的会话全生命周期聚合后取最新
+    // `limit` 条
+    let sql = "SELECT model_usage.session_id,
+            MAX(model_usage.started_at),
+            COALESCE(SUM(MAX(0, model_usage.input_tokens - model_usage.cache_read_input_tokens)), 0),
+            COALESCE(SUM(model_usage.output_tokens), 0),
+            COALESCE(SUM(model_usage.cache_read_input_tokens), 0),
+            COUNT(*),
+            GROUP_CONCAT(DISTINCT model_usage.model_id),
+            (SELECT sm.cwd FROM session_meta sm
+              WHERE sm.session_id = model_usage.session_id)
+         FROM model_usage
+         WHERE model_usage.session_id IN (
+            SELECT session_id FROM model_usage
+             WHERE started_at >= ?1 ORDER BY started_at DESC LIMIT ?2
+         )
+         GROUP BY model_usage.session_id
+         ORDER BY 2 DESC
+         LIMIT ?3";
+    let mut stmt = conn
+        .prepare(sql)
+        .map_err(|e| format!("准备 Codex 会话窗口查询失败: {e}"))?;
+    let sessions = stmt
+        .query_map(
+            rusqlite::params![window_start_ms, WINDOW_SCAN_ROWS, limit as i64],
+            |row| {
+                Ok(crate::session_hud::AgentSessionBrief {
+                    session_id: row.get(0)?,
+                    last_at: row.get(1)?,
+                    in_tokens: row.get(2)?,
+                    out_tokens: row.get(3)?,
+                    cache_read: row.get(4)?,
+                    req_count: row.get(5)?,
+                    models: row.get(6)?,
+                    project: row.get(7)?,
+                    // 源数据无请求耗时（无 duration_ms 列），无速度原料
+                    speed_out_tokens: 0,
+                    speed_ms: 0.0,
+                    // codex 无生成中/TTFT/生成口径数据源（transcript 信号
+                    // 仅 kimi 有），增强字段恒默认值
+                    generating: false,
+                    ttft_ms: None,
+                    gen_out_tokens: 0,
+                    gen_ms: 0.0,
+                })
+            },
+        )
+        .map_err(|e| format!("读取 Codex 会话窗口失败: {e}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("读取 Codex 会话窗口失败: {e}"))?;
+    let total_active: usize = conn
+        .query_row(
+            "SELECT COUNT(DISTINCT session_id) FROM model_usage WHERE started_at >= ?1",
+            [window_start_ms],
+            |row| row.get::<_, i64>(0),
+        )
+        .map(|n| n.max(0) as usize)
+        .map_err(|e| format!("统计 Codex 活跃会话数失败: {e}"))?;
+    Ok(crate::session_hud::AgentWindowSessions {
+        total_active,
+        sessions,
+    })
+}
+
 /// 查询 [from_ms, to_ms) 内的分桶统计（与 db::query_trend 同思路，复用其对齐/标签函数）。
 /// bucket 为 "hour" 或 "day"。
 pub fn query_trend(
@@ -2076,5 +2176,92 @@ mod tests {
             Ok(v) => eprintln!("[test] 实时额度: {v:?}"),
             Err(e) => eprintln!("[test] 实时额度不可用（降级本地快照）: {e}"),
         }
+    }
+    /// 会话悬浮窗窗口查询（query_window_sessions_at）的 SQL 聚合口径：
+    /// 活跃判定看窗口、累计看全生命周期、项目目录来自 session_meta、
+    /// total_active 含未展示会话、limit 截断。
+    #[test]
+    fn hud_window_sessions_aggregation() {
+        let tmp = std::env::temp_dir().join(format!("zbar-codex-hudwin-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).expect("创建临时目录失败");
+        let db_path = tmp.join("codex-hudwin.sqlite");
+        let conn = Connection::open(&db_path).expect("打开临时库失败");
+        // 复用生产建表（open_codex_db 写死 ~/.zbar 路径，测试直接手建
+        // 同构最小表；列集与 query_window_sessions_at 用到的列一致）
+        conn.execute_batch(
+            "CREATE TABLE model_usage (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                event_seq INTEGER NOT NULL,
+                started_at INTEGER NOT NULL,
+                model_id TEXT NOT NULL DEFAULT '',
+                input_tokens INTEGER NOT NULL DEFAULT 0,
+                output_tokens INTEGER NOT NULL DEFAULT 0,
+                cache_read_input_tokens INTEGER NOT NULL DEFAULT 0,
+                cache_creation_input_tokens INTEGER NOT NULL DEFAULT 0,
+                reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+                computed_total_tokens INTEGER NOT NULL DEFAULT 0,
+                UNIQUE(session_id, event_seq));
+             CREATE INDEX idx_mu_started ON model_usage(started_at);
+             CREATE INDEX idx_mu_session ON model_usage(session_id);
+             CREATE TABLE session_meta (
+                session_id  TEXT PRIMARY KEY,
+                cwd         TEXT,
+                project_key TEXT,
+                captured_at INTEGER);",
+        )
+        .expect("建测试表失败");
+        let now = 2_000_000_000_000_i64;
+        let win = now - 10 * 60_000;
+        conn.execute_batch(&format!(
+            "INSERT INTO model_usage
+                (session_id, event_seq, started_at, model_id,
+                 input_tokens, output_tokens, cache_read_input_tokens)
+             VALUES
+                ('s-x', 1, {a}, 'gpt-5', 100, 3, 40),
+                ('s-x', 2, {b}, 'gpt-5', 30, 7, 50),
+                ('s-y', 1, {early}, 'gpt-5', 9000, 8000, 100),
+                ('s-y', 2, {c}, 'gpt-6', 10, 1, 0),
+                ('s-ghost', 1, {early2}, 'gpt-5', 5, 5, 0);
+             INSERT INTO session_meta (session_id, cwd, project_key, captured_at)
+             VALUES ('s-x', 'C:/work/demo', 'k', 1);",
+            a = now - 120_000,
+            b = now - 30_000,
+            c = now - 60_000,
+            early = now - 3 * 3600_000,
+            early2 = now - 5 * 3600_000,
+        ))
+        .expect("写入样例行失败");
+
+        let found = query_window_sessions_at(&conn, win, 3).expect("窗口查询失败");
+        assert_eq!(found.total_active, 2, "s-ghost 窗口外不计活跃");
+        assert_eq!(found.sessions.len(), 2);
+        assert_eq!(found.sessions[0].session_id, "s-x");
+        assert_eq!(found.sessions[1].session_id, "s-y");
+        // s-x：↑ = 60 + max(0, 30−50)=0 → 60、↓ = 10、⟲ = 90、× = 2；
+        // 项目目录来自 session_meta.cwd 原值；源无耗时列 → 速度原料恒 0
+        let s_x = &found.sessions[0];
+        assert_eq!(s_x.in_tokens, 60);
+        assert_eq!(s_x.out_tokens, 10);
+        assert_eq!(s_x.cache_read, 90);
+        assert_eq!(s_x.req_count, 2);
+        assert_eq!(s_x.models.as_deref(), Some("gpt-5"));
+        assert_eq!(s_x.project.as_deref(), Some("C:/work/demo"));
+        assert_eq!(s_x.speed_out_tokens, 0, "Codex 无 duration_ms 列");
+        assert!((s_x.speed_ms - 0.0).abs() < f64::EPSILON);
+        // s-y：全生命周期累计 + 多模型 distinct
+        let s_y = &found.sessions[1];
+        assert_eq!(s_y.in_tokens, 8910);
+        assert_eq!(s_y.models.as_deref(), Some("gpt-5,gpt-6"));
+        assert_eq!(s_y.project, None);
+
+        // limit 截断：只取最新 1 条，total_active 仍为窗口内全部
+        let found = query_window_sessions_at(&conn, win, 1).expect("limit 查询失败");
+        assert_eq!(found.total_active, 2);
+        assert_eq!(found.sessions.len(), 1);
+        assert_eq!(found.sessions[0].session_id, "s-x");
+
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }

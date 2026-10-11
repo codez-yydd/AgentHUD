@@ -1,17 +1,18 @@
-//! 会话 Token 悬浮窗（Session HUD）：独立透明置顶小窗，实时展示当前
-//! 活跃 ZCode 会话的 token 消耗（多会话列表，每会话一行）。
+//! 会话 Token 悬浮窗（Session HUD）：独立透明置顶小窗，按 agent（ZCode /
+//! Claude / Codex / Kimi / Cursor）分组展示本日活跃会话与各自今日 token
+//! 汇总，底部为全 agent 今日总合计。
 //!
-//! 数据源：ZCode 主库 ~/.zcode/cli/db/db.sqlite（只读连接，绝不写主库），
-//! 不依赖 agent_theme 的 asar 注入体系。本模块完全照搬 pet.rs 的成熟
-//! 骨架（配置持久化 / 动态建窗的平台差异处理 / run_on_main_thread 死锁
-//! 防护 / Moved 节流落盘 / Destroyed 停轮询复位 / 独立轮询线程），仅把
-//! "宠物状态摘要"换成"会话快照"。
+//! 数据源：
+//! - ZCode：主库 ~/.zcode/cli/db/db.sqlite（只读连接，绝不写主库），不
+//!   依赖 agent_theme 的 asar 注入体系；
+//! - Claude / Codex / Kimi：各自派生库（~/.zbar/*.sqlite）经
+//!   query_window_sessions + query_stats 供给活跃会话与今日合计；
+//! - Cursor：fetch_cursor_usage_totals 供今日总量（纯汇总组，无会话行）。
 //!
-//! 活跃判定口径：会话在时间窗内有 model_usage 落库（每笔模型请求完成即
-//! 写一行，实时性最好）或 message 落库（用户发消息即写，覆盖首笔请求未
-//! 返回的空窗期，两信号取并集）。默认 10 分钟，档位 5/10/30/不限（不限
-//! 仍有 24h 兜底上限，防列表无限长）。排序按最近活动时间倒序（正在生成
-//! 的会话天然在最顶部），只显示前 MAX_VISIBLE_SESSIONS 条，超出折叠。
+//! 活跃判定口径（各源一致）：会话在时间窗内有 model_usage 落库。默认
+//! 10 分钟，档位 5/10/30/不限（不限仍有 24h 兜底上限，防列表无限长）。
+//! 排序按最近活动时间倒序（正在生成的会话天然在最顶部），每组只显示
+//! 前 MAX_VISIBLE_PER_AGENT 条，超出折叠为该组的"还有 N 个"。
 //!
 //! 口径区分：活跃判定看时间窗内；展示主体是"会话树"（主会话 + 全部
 //! 子代理，注入版 V9 合计口径）——子代理活动归并到主会话（last_active
@@ -29,13 +30,15 @@
 //! 只有请求总耗时则显示带 `≈` 质量标记的请求平均速度。缺失/逆序/未来
 //! 时间不生成速度，也不沿用旧值。速度节拍只负责发现新请求，不让已有请求
 //! 随时间衰减。rollout 只服务速度展示，绝不并入 Σ/↑/↓/⟲/× 累计口径
-//!（累计以 db.sqlite model_usage 为唯一来源，防双计）。
+//!（累计以 db.sqlite model_usage 为唯一来源，防双计）。rollout 目录只
+//! 存在于 ZCode（~/.zcode/cli/rollout），速度旁路仅作用于 ZCode 组。
 //!
 //! 生成中判定：会话树内任一成员最新一轮未完成（与 usage_feed 的 runs
 //! 口径同源——turn_usage 尚无该 turn 的完成行）；成员最新 model_usage
 //! 行本身为 error/cancelled 时不判生成中（失败轮可能永不落 turn 行，
 //! 防状态点永久卡"生成中"）。子代理会话不进列表（已并入主会话），
-//! 避免内部代理行淹没用户视角的会话。
+//! 避免内部代理行淹没用户视角的会话。非 ZCode 源无生成中判定数据
+//! （rollout/turn 信号仅 ZCode 有），恒按空闲展示。
 //!
 //! 与 pet.rs 一致的铁律：
 //! - 同步 invoke 命令里创建/操作窗口必须经 app.run_on_main_thread +
@@ -101,8 +104,8 @@ pub const HUD_WINDOW_MINUTES_DEFAULT: u32 = 10;
 /// 与 24h 内有活动的会话为限
 const UNLIMITED_FALLBACK_MINUTES: u32 = 24 * 60;
 
-/// 列表最多可见会话条数，超出折叠为"还有 N 个会话"
-pub const MAX_VISIBLE_SESSIONS: usize = 5;
+/// 每组（agent）最多可见会话条数，超出折叠为该组的"还有 N 个会话"
+pub const MAX_VISIBLE_PER_AGENT: usize = 3;
 /// 活跃候选扫查上限（单信号源）：活跃查询按 last_at 降序 LIMIT，
 /// 保证取到最新的若干会话；总数统计在该上限内饱和（折叠提示的上限）
 const ACTIVITY_SCAN_LIMIT: i64 = 24;
@@ -138,9 +141,14 @@ const HUD_WINDOW_OP_TIMEOUT: Duration = Duration::from_secs(10);
 const HUD_HEADER_H: f64 = 30.0;
 const HUD_ROW_H: f64 = 56.0;
 const HUD_MORE_H: f64 = 20.0;
+/// 组头行高（逻辑 px，与折叠行/今日行同高）：每个 agent 组的标题行
+///（"ZCode · 今日 Σ x"，含该 agent 今日汇总与 tooltip 拆分），随列表
+/// 区滚动；高度公式按"组头 20 + 组内可见行"逐组计入
+const HUD_GROUP_HEAD_H: f64 = 20.0;
 /// 今日合计行高（逻辑 px，与折叠行同高）：列表下方、折叠行之上的独立
-/// 汇总行（"今日 Σ x · × n"，窗口级汇总随 show_tokens 配置隐藏；关闭
-/// 数据行显示、今日无请求或会话列表为空时不显示）
+/// 汇总行（"今日 Σ x · × n" = 全 agent 各组今日值求和，窗口级汇总随
+/// show_tokens 配置隐藏；关闭数据行显示、今日无请求或会话列表为空时
+/// 不显示）
 const HUD_TODAY_H: f64 = 20.0;
 /// 模型速度区单行高（逻辑 px，与今日行同高）：列表与今日行之间的按模型
 /// 分组速度行（每活跃模型一行，左模型名右速度），随 show_tokens 配置
@@ -814,21 +822,33 @@ fn size_epoch() -> u64 {
     HUD_SIZE_EPOCH.load(Ordering::Relaxed)
 }
 
-/// 窗口高度（逻辑 px，纯函数供单元测试复用）：头部 + 会话行 × 条数
-/// + 列表区边框 + 模型速度区行数与边框 + 今日合计行 + 折叠提示行 + 底
-/// 部留白，出口整体乘 font_scale（页面全部字号/行高/行高栅格随
-/// --hud-scale calc 缩放，公式同步缩放保持内容恰好铺满、不被裁）；脏
-/// font_scale 按默认 1.0 处理。空列表回空态最小高（显示"暂无活跃会话"，
-/// 不为 0 高；空态不显示模型速度区与今日行——两者都跟随列表存在）。
-/// 折叠提示行只在列表确实达到上限条数时出现、今日合计行仅在 today 为
-/// 真（开启数据行显示、今日有请求且有可见会话，见 today_visible）、模
-/// 型速度区仅在 model_rows > 0（调用方传 model_speed_visible 判定后的
-/// 行数，开启数据行 + 有样本 + 有可见会话）时计入。列表区与模型速度区
-/// 各有 1px 容器 border-bottom（分隔线/收边，CSS 无 box-sizing 包含，
-/// 见 HUD_LIST_BORDER_H / HUD_MODELS_BORDER_H 注释——V3 修复窗口比内
-/// 容矮 1~3px 导致会话行被裁的高度 Bug）。与 session-hud.html 的 CSS
-/// 尺寸常量一一对应。
-fn hud_height(visible_rows: usize, folded: bool, today: bool, model_rows: usize, font_scale: f64) -> f64 {
+/// 组高度布局（hud_height 入参，纯数据便于单元测试）：该组可见会话行
+/// 数与是否溢出（活跃数 > 可见数，渲染"还有 N 个"折叠行）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct HudGroupLayout {
+    /// 该组可见会话行数（≤ MAX_VISIBLE_PER_AGENT）
+    pub rows: usize,
+    /// 该组是否溢出（活跃数 > 可见数）
+    pub folded: bool,
+}
+
+/// 窗口高度（逻辑 px，纯函数供单元测试复用）：头部 + Σ每组（组头 20 +
+/// 可见会话行 × 条数 + 该组溢出折叠行）+ 列表区边框 + 模型速度区行数与
+/// 边框 + 今日合计行 + 底部留白，出口整体乘 font_scale（页面全部字号/
+/// 行高/行高栅格随 --hud-scale calc 缩放，公式同步缩放保持内容恰好铺
+/// 满、不被裁）；脏 font_scale 按默认 1.0 处理。空态 = 无任何组（与
+/// 前端 renderShell 空态判定同条件）回空态最小高（显示"暂无活跃会话"，
+/// 不为 0 高；空态不显示模型速度区与今日行——两者都跟随列表存在）；
+/// 纯汇总组（只有组头、无会话行）按组头实高正常计入。组内溢出折叠行
+/// 只在该组确实达到上限条数时出现、今日合计行仅在 today 为真（开启数
+/// 据行显示、今日有请求且有可见会话行，见 today_visible）、模型速度区
+/// 仅在 model_rows > 0（调用方传 model_speed_visible 判定后的行数，开
+/// 启数据行 + 有样本 + 有可见会话行）时计入。列表区与模型速度区各有
+/// 1px 容器 border-bottom（分隔线/收边，CSS 无 box-sizing 包含，见
+/// HUD_LIST_BORDER_H / HUD_MODELS_BORDER_H 注释——V3 修复窗口比内容矮
+/// 1~3px 导致会话行被裁的高度 Bug）。与 session-hud.html 的 CSS 尺寸
+/// 常量一一对应。
+fn hud_height(groups: &[HudGroupLayout], today: bool, model_rows: usize, font_scale: f64) -> f64 {
     let scale = if font_scale.is_finite()
         && (HUD_FONT_SCALE_RANGE.0..=HUD_FONT_SCALE_RANGE.1).contains(&font_scale)
     {
@@ -836,15 +856,27 @@ fn hud_height(visible_rows: usize, folded: bool, today: bool, model_rows: usize,
     } else {
         HUD_FONT_SCALE_DEFAULT
     };
-    let base = if visible_rows == 0 {
+    // 空态 = 无任何组（前端 renderShell 的空态判定同为 groups 为空）。
+    // 纯汇总组（只有组头、无会话行）不是空态——组头各占 20px 实高，
+    // 按正常公式计入（否则多组头内容会被压进空态高度触发列表滚动）
+    let base = if groups.is_empty() {
         HUD_EMPTY_HEIGHT
     } else {
-        let rows = visible_rows.min(MAX_VISIBLE_SESSIONS) as f64;
-        let more = folded && visible_rows >= MAX_VISIBLE_SESSIONS;
+        let list: f64 = groups
+            .iter()
+            .map(|g| {
+                HUD_GROUP_HEAD_H
+                    + g.rows.min(MAX_VISIBLE_PER_AGENT) as f64 * HUD_ROW_H
+                    + if g.folded && g.rows >= MAX_VISIBLE_PER_AGENT {
+                        HUD_MORE_H
+                    } else {
+                        0.0
+                    }
+            })
+            .sum();
         HUD_HEADER_H
-            + rows * HUD_ROW_H
+            + list
             + HUD_LIST_BORDER_H
-            + if more { HUD_MORE_H } else { 0.0 }
             + if today { HUD_TODAY_H } else { 0.0 }
             + if model_rows > 0 {
                 model_rows.min(HUD_MAX_MODEL_ROWS) as f64 * HUD_MODEL_ROW_H + HUD_MODELS_BORDER_H
@@ -876,9 +908,10 @@ fn hud_target_size(width: f64, height: f64) -> (f64, f64) {
 
 /// 今日合计行显隐判定（纯函数供单元测试复用，轮询线程与前端
 /// session-hud-main.ts renderShell 的 showToday 判定同条件）：开启
-/// 数据行显示（show_tokens）+ 今日有请求 + 有可见会话行（空态不
-/// 显示——今日行跟随列表存在）。show_tokens 的语义是"不想看数字"，
-/// 今日行整行数字同理一并隐藏，窗口高度随之增减。
+/// 数据行显示（show_tokens）+ 今日有请求 + 有可见会话行（visible_
+/// sessions = Σ 各组可见会话行数；无任何可见会话行的空态不显示——
+/// 今日行跟随列表存在）。show_tokens 的语义是"不想看数字"，今日行
+/// 整行数字同理一并隐藏，窗口高度随之增减。
 fn today_visible(show_tokens: bool, today_total: i64, visible_sessions: usize) -> bool {
     show_tokens && today_total > 0 && visible_sessions > 0
 }
@@ -886,8 +919,9 @@ fn today_visible(show_tokens: bool, today_total: i64, visible_sessions: usize) -
 /// 模型速度区显隐判定（纯函数供单元测试复用，轮询线程与前端
 /// renderShell 的 showModels 判定逐字同条件）：开启数据行显示
 ///（show_tokens）+ 窗口内有可信速度样本（model_speeds 非空）+ 有可见
-/// 会话行（空态不显示——模型速度区与今日行一样跟随列表存在）。
-/// 速度属数字信息，随 show_tokens 一并隐藏，窗口高度随之增减。
+/// 会话行（visible_sessions = Σ 各组可见会话行数；空态不显示——模型
+/// 速度区与今日行一样跟随列表存在）。速度属数字信息，随 show_tokens
+/// 一并隐藏，窗口高度随之增减。
 fn model_speed_visible(show_tokens: bool, model_count: usize, visible_sessions: usize) -> bool {
     show_tokens && model_count > 0 && visible_sessions > 0
 }
@@ -935,7 +969,7 @@ fn ensure_session_hud_window(app: &AppHandle, cfg: &SessionHudConfig) -> Result<
         cfg.width,
         cfg.height
             .or_else(|| cached_size().map(|(_, h)| h))
-            .unwrap_or_else(|| hud_height(0, false, false, 0, cfg.font_scale)),
+            .unwrap_or_else(|| hud_height(&[], false, 0, cfg.font_scale)),
     );
     let mut builder = WebviewWindowBuilder::new(
         app,
@@ -1336,9 +1370,10 @@ fn feed_loop(app: AppHandle) {
     }
 }
 
-/// DB 轮询拍（隔拍一次，等效原 2 秒周期）：读配置 → 查库构造会话快照
-/// 与会话树 → 同步 rollout 游标并增量读新样本 → 速度展示决策 → 内容
-/// 变化才 emit → 高度变化才经主线程调窗口尺寸。任何失败静默跳过本轮
+/// DB 轮询拍（隔拍一次，等效原 2 秒周期）：读配置 → 查库构造 ZCode 组
+/// 会话快照与会话树 → 同步 rollout 游标并增量读新样本 → 速度展示决策 →
+/// 追加非 ZCode 组并归一（全 agent 合计与组排序）→ 内容变化才 emit →
+/// 高度变化才经主线程调窗口尺寸。任何失败静默跳过本轮
 ///（下个周期重试），不 panic 不刷日志——ZCode 未运行/无库时事件停流，
 /// 悬浮窗保持最后内容。
 fn poll_db(
@@ -1365,7 +1400,8 @@ fn poll_db(
         // 或明确更晚时作参考。
         monitor.sync_trees(&trees, rollout_dir().as_deref());
         last_fallback.clear();
-        for s in &mut snapshot.sessions {
+        // rollout 目录只存在于 ZCode：速度旁路仅作用于 ZCode 组的会话行
+        for s in zcode_sessions_mut(&mut snapshot) {
             if let Some(tree) = monitor.tree_mut(&s.session_id) {
                 tree.observe_round(
                     s.round_key.as_deref(),
@@ -1375,7 +1411,7 @@ fn poll_db(
             }
         }
         monitor.ingest(now_ms);
-        for s in &mut snapshot.sessions {
+        for s in zcode_sessions_mut(&mut snapshot) {
             let fallback = brief_speed_snapshot(s);
             last_fallback.insert(s.session_id.clone(), fallback.clone());
             if let Some(tree) = monitor.tree_mut(&s.session_id) {
@@ -1383,6 +1419,11 @@ fn poll_db(
                 apply_speed_snapshot(s, chosen);
             }
         }
+
+        // 非 ZCode 组：派生库 / Cursor API 失败只跳过该组，不影响 ZCode
+        // 组展示；随后归一（过滤空组、全 agent 合计、组排序）
+        append_agent_groups(&mut snapshot, cfg.window_minutes, now_ms);
+        normalize_snapshot(&mut snapshot);
 
         // 变化检测：会话序列化字节不变则不 emit（与 pet.rs 同款手法，
         // 省无谓 IPC 与页面重渲染）
@@ -1394,7 +1435,7 @@ fn poll_db(
         }
         *last_snapshot = Some(snapshot);
 
-        // 高度自适应（仅"从未拖拽"模式）：会话条数（含折叠态）变化 →
+        // 高度自适应（仅"从未拖拽"模式）：各组可见行数（含组折叠态）变化 →
         // 窗口高度随之调整（乘 font_scale 与页面缩放栅格一致）。用户
         // 拖拽过（height 已持久化）→ 窗口尺寸归用户，此处只读不动；
         // 内容超高时会话列表区纵向滚动（页面 CSS flex 布局自动处理，
@@ -1403,18 +1444,13 @@ fn poll_db(
         // 轮条数变化时再试）。
         let visible = last_snapshot
             .as_ref()
-            .map(|s| s.sessions.len())
-            .unwrap_or(0)
-            .min(MAX_VISIBLE_SESSIONS);
-        let total_active = last_snapshot
-            .as_ref()
-            .map(|s| s.total_active)
+            .map(|s| s.groups.iter().map(|g| g.sessions.len()).sum())
             .unwrap_or(0);
         // 今日合计行显隐：开启数据行显示（show_tokens）+ 今日有请求 +
         // 有可见会话行（空态不显示，今日行跟随列表存在；判定与前端
         // renderShell 的 showToday 一致，见 today_visible）
         let today = last_snapshot.as_ref().is_some_and(|s| {
-            today_visible(cfg.show_tokens, s.today_total.total, s.sessions.len())
+            today_visible(cfg.show_tokens, s.today_total.total, visible)
         });
         // 模型速度区行数：显隐判定与前端 renderShell 的 showModels 逐字
         // 同条件（见 model_speed_visible），不显示按 0 行计（窗口高度不
@@ -1422,13 +1458,19 @@ fn poll_db(
         let model_rows = last_snapshot
             .as_ref()
             .map(|s| {
-                if model_speed_visible(cfg.show_tokens, s.model_speeds.len(), s.sessions.len()) {
+                if model_speed_visible(cfg.show_tokens, s.model_speeds.len(), visible) {
                     s.model_speeds.len()
                 } else {
                     0
                 }
             })
             .unwrap_or(0);
+        // 各组高度布局（组头 + 组内可见行 + 组折叠行），供 hud_height
+        // 逐组累加
+        let layouts = last_snapshot
+            .as_ref()
+            .map(|s| group_layouts(s))
+            .unwrap_or_default();
         // 用户尺寸活动期（标志置位 或 距最后用户 Resized < 宽限期，见
         // user_size_active）时跳过：自适应高度模式的每拍 set_size 会把用户
         // 拖出的高度拉回公式值（闪跳 / 拖不动）。宽限期兜住原生
@@ -1472,13 +1514,7 @@ fn poll_db(
             cfg = load_session_hud_config().clamped();
         }
         let height = cfg.height.unwrap_or_else(|| {
-            hud_height(
-                visible,
-                total_active > MAX_VISIBLE_SESSIONS,
-                today,
-                model_rows,
-                cfg.font_scale,
-            )
+            hud_height(&layouts, today, model_rows, cfg.font_scale)
         });
         // 目标尺寸经 hud_target_size 取整 + 夹取后再 set_size：LogicalSize
         // 小数（font_scale 让公式出 .25 / .75）与 min_inner_size 钳制都会
@@ -1511,6 +1547,30 @@ fn poll_db(
         Ok(())
     })();
     let _ = result; // 静默跳过本轮（库被锁超时/文件缺失等瞬态），下个周期重试
+}
+
+/// ZCode 组会话行的可变遍历（rollout 速度旁路仅作用于 ZCode 组——
+/// rollout 目录与轮次信号只存在于 ZCode）
+fn zcode_sessions_mut(
+    snapshot: &mut HudSnapshot,
+) -> impl Iterator<Item = &mut HudSessionBrief> {
+    snapshot
+        .groups
+        .iter_mut()
+        .filter(|g| g.agent == AGENT_ZCODE)
+        .flat_map(|g| g.sessions.iter_mut())
+}
+
+/// 各组高度布局（组头 + 组内可见行 + 该组溢出折叠行），hud_height 入参
+fn group_layouts(snapshot: &HudSnapshot) -> Vec<HudGroupLayout> {
+    snapshot
+        .groups
+        .iter()
+        .map(|g| HudGroupLayout {
+            rows: g.sessions.len(),
+            folded: g.total_active > g.sessions.len(),
+        })
+        .collect()
 }
 
 fn brief_speed_snapshot(brief: &HudSessionBrief) -> Option<SpeedSnapshot> {
@@ -1554,7 +1614,7 @@ fn poll_speed(
     };
     let now_ms = chrono::Utc::now().timestamp_millis();
     monitor.ingest(now_ms);
-    for s in &mut snapshot.sessions {
+    for s in zcode_sessions_mut(snapshot) {
         if let Some(tree) = monitor.tree_mut(&s.session_id) {
             let fallback = last_fallback.get(&s.session_id).cloned().flatten();
             let chosen = tree.display_speed(s.generating, fallback, now_ms);
@@ -1675,30 +1735,130 @@ pub(crate) struct HudModelSpeed {
     pub samples: i64,
 }
 
+/// agent 组标识（HudAgentGroup.agent 的取值域，前端显示名映射见
+/// session-hud-main.ts 的 AGENT_LABELS；顺序即无会话组的固定排序）
+pub(crate) const AGENT_ZCODE: &str = "zcode";
+pub(crate) const AGENT_CLAUDE: &str = "claude";
+pub(crate) const AGENT_CODEX: &str = "codex";
+pub(crate) const AGENT_KIMI: &str = "kimi";
+pub(crate) const AGENT_CURSOR: &str = "cursor";
+
+/// agent 固定序（无会话但有今日数据的组之间、组排序的同刻稳定键；
+/// cursor 恒最后）
+fn agent_order(agent: &str) -> u8 {
+    match agent {
+        AGENT_ZCODE => 0,
+        AGENT_CLAUDE => 1,
+        AGENT_CODEX => 2,
+        AGENT_KIMI => 3,
+        _ => 4,
+    }
+}
+
+/// 非 ZCode 源（Claude/Codex/Kimi）窗口活跃会话行：各源
+/// query_window_sessions 返回的原料行，session_hud 侧组装为
+/// HudSessionBrief。字段口径与 ZCode 组一致：累计为会话全生命周期
+/// 合计，in_tokens 已是 ↑ 非缓存输入（逐笔 clamp 后的 SQL 聚合值）。
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct AgentSessionBrief {
+    /// 会话 id（源内原值；Claude 为 UUID、Codex/Kimi 为其自有 id）
+    pub session_id: String,
+    /// 窗口内最近活动时刻（毫秒，排序键）
+    pub last_at: i64,
+    /// 全生命周期累计：↑ 非缓存输入（Σ max(0, input − cache_read)）
+    pub in_tokens: i64,
+    /// 全生命周期累计：↓ 输出
+    pub out_tokens: i64,
+    /// 全生命周期累计：⟲ 缓存读
+    pub cache_read: i64,
+    /// 全生命周期累计：× model_usage 行数
+    pub req_count: i64,
+    /// 模型集合（GROUP_CONCAT(DISTINCT model_id)，顺序不保证；空串
+    /// 归一为 None 由 session_hud 侧处理）
+    pub models: Option<String>,
+    /// 项目目录（claude = 会话最近一行 cwd；codex/kimi = session_meta.cwd；
+    /// 无记录为 None，目录末段由 session_hud 侧解析）
+    pub project: Option<String>,
+    /// 请求平均速度分子：仅统计 duration_ms > 0 行的 Σoutput_tokens
+    /// （与 speed_ms 同范围——NULL/0/负耗时行分子分母一并排除；codex
+    /// 无耗时来源恒 0）
+    pub speed_out_tokens: i64,
+    /// 请求平均速度分母：仅统计 duration_ms > 0 行的 Σduration_ms
+    /// （毫秒；claude 列为 REAL、kimi 为 INTEGER，统一读作 f64；codex
+    /// 恒 0）
+    pub speed_ms: f64,
+    /// 生成中实时信号：仅 kimi 有（transcript.ops 的 step.upsert running
+    /// 状态 + 10 分钟新鲜度保护，见 kimi.rs GENERATING_FRESH_MS）；
+    /// claude/codex 无该数据源构造时恒 false
+    pub generating: bool,
+    /// 最近一笔完成 step 的 TTFT（毫秒，transcript.ops llmTiming 口径）；
+    /// 仅 kimi 有，claude/codex 构造时恒 None
+    pub ttft_ms: Option<i64>,
+    /// 生成口径速度分子：仅统计 stream_ms > 0 且 output_tokens > 0 的
+    /// step 行 Σoutput（与 gen_ms 同范围，防 0 行稀释均值）；仅 kimi 有，
+    /// claude/codex 构造时恒 0
+    pub gen_out_tokens: i64,
+    /// 生成口径速度分母：同范围 step 行的 ΣllmStreamDurationMs（毫秒）；
+    /// 仅 kimi 有，claude/codex 构造时恒 0.0
+    pub gen_ms: f64,
+}
+
+/// 非 ZCode 源窗口查询结果：活跃会话行（至多 limit 条）+ 窗口内活跃
+/// 会话总数（含未展示的，供该组折叠提示"还有 N 个"）。
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct AgentWindowSessions {
+    /// 窗口内活跃会话总数（distinct session_id）
+    pub total_active: usize,
+    /// 会话行（按最近活动倒序，至多调用方 limit 条）
+    pub sessions: Vec<AgentSessionBrief>,
+}
+
+/// 单个 agent 的悬浮窗分组（组头 = agent 名 + 该 agent 今日 Σ；组体 =
+/// 活跃会话行列表）。camelCase 与前端契约一一对应。
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct HudAgentGroup {
+    /// agent 标识（AGENT_* 常量之一）
+    pub agent: String,
+    /// 该 agent 今日合计（自然日本地零点起；cursor 仅 total 有值其余 0）
+    pub today: HudTodayTotal,
+    /// 该组活跃窗口内会话总数（含未展示的，组内折叠提示"还有 N 个"；
+    /// cursor 恒 0）
+    pub total_active: usize,
+    /// 活跃会话列表（按最近活动倒序，至多 MAX_VISIBLE_PER_AGENT 条；
+    /// 纯汇总组为空）
+    pub sessions: Vec<HudSessionBrief>,
+}
+
 /// 推给悬浮窗的会话快照（事件 payload）
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct HudSnapshot {
-    /// 数据契约版本
+    /// 数据契约版本（v2 = 多 agent 分组契约）
     pub v: u8,
-    /// 窗口内活跃会话总数（含未展示的，前端折叠提示"还有 N 个"）
+    /// 窗口内活跃会话总数（Σ 各组 total_active，头部计数消费）
     pub total_active: usize,
-    /// 会话列表（按最近活动倒序，至多 MAX_VISIBLE_SESSIONS 条）
-    pub sessions: Vec<HudSessionBrief>,
-    /// 今日合计（自然日本地零点起全库 model_usage；窗口级汇总行，
-    /// 随 show_tokens 配置隐藏——前端与窗口高度判定同条件，见
-    /// today_visible；全 0 = 今日无请求，前端不显示该行）
+    /// agent 分组（有数据的组：今日有数据或窗口内有活跃会话；组内最新
+    /// 活动降序，无会话组按 agent 固定序排其后，cursor 恒最后）
+    pub groups: Vec<HudAgentGroup>,
+    /// 今日合计（Σ 各组 today = 全 agent 今日总合计，自然日本地零点起；
+    /// 窗口级汇总行，随 show_tokens 配置隐藏——前端与窗口高度判定同条
+    /// 件，见 today_visible；全 0 = 今日无请求，前端不显示该行）
     pub today_total: HudTodayTotal,
     /// 模型速度区（活跃窗口内按模型分组的速度摘要，按最近使用降序至多
     /// HUD_MAX_MODEL_ROWS 个；查询失败/老库缺列降级为空数组 → 前端不
-    /// 渲染该区，窗口高度判定同条件见 model_speed_visible）
+    /// 渲染该区，窗口高度判定同条件见 model_speed_visible。仅 ZCode
+    /// 源——rollout/时刻列仅 ZCode 有）
     pub model_speeds: Vec<HudModelSpeed>,
 }
 
-/// 查询库并构造会话快照：活跃判定（时间窗内 model_usage ∪ message）
-/// → 子代理归并主会话 → 取最新若干条 → 逐会话树聚合。任一查询失败
-/// 整体返回 Err（调用方静默跳过本轮，避免列表闪空）。同时返回展示中
-/// 的会话树成员清单（供 rollout 旁路速度源定位文件集合）。
+/// 查询 ZCode 主库并构造其 agent 组：活跃判定（时间窗内 model_usage ∪
+/// message）→ 子代理归并主会话 → 取最新若干条 → 逐会话树聚合。任一查询
+/// 失败整体返回 Err（调用方静默跳过本轮，避免列表闪空）。同时返回展示中
+/// 的会话树成员清单（供 rollout 旁路速度源定位文件集合）。快照 v2 契约
+/// 下本函数只产出 ZCode 组（today_total/total_active 即本组值），其余
+/// agent 组由 poll_db 的 append_agent_groups 追加后经 normalize_snapshot
+/// 汇总排序。
 pub(crate) fn collect_session_snapshot(
     conn: &Connection,
     window_minutes: u32,
@@ -1711,9 +1871,9 @@ pub(crate) fn collect_session_snapshot(
     {
         return Ok((
             HudSnapshot {
-                v: 1,
+                v: 2,
                 total_active: 0,
-                sessions: Vec::new(),
+                groups: Vec::new(),
                 today_total: HudTodayTotal::default(),
                 model_speeds: Vec::new(),
             },
@@ -1869,7 +2029,7 @@ pub(crate) fn collect_session_snapshot(
     let mut sessions: Vec<HudSessionBrief> = Vec::new();
     let mut trees: Vec<SessionTree> = Vec::new();
     for (session_id, directory, last_at) in ordered {
-        if sessions.len() >= MAX_VISIBLE_SESSIONS {
+        if sessions.len() >= MAX_VISIBLE_PER_AGENT {
             continue;
         }
         let tree = tree_index.tree(&session_id);
@@ -1898,16 +2058,212 @@ pub(crate) fn collect_session_snapshot(
         )?);
     }
 
+    // ZCode 组：今日合计 + 活跃会话（今日合计为该组今日值，快照级
+    // total/today_total 由 normalize_snapshot 在全部组就位后求和）
+    let today = collect_today_total(conn, today_start_ms(now_ms))?;
+    let zcode_group = HudAgentGroup {
+        agent: AGENT_ZCODE.to_string(),
+        today,
+        total_active,
+        sessions,
+    };
     Ok((
         HudSnapshot {
-            v: 1,
-            total_active,
-            sessions,
-            today_total: collect_today_total(conn, today_start_ms(now_ms))?,
+            v: 2,
+            total_active: zcode_group.total_active,
+            today_total: zcode_group.today.clone(),
+            groups: vec![zcode_group],
             model_speeds: collect_model_speeds(conn, window_start),
         },
         trees,
     ))
+}
+
+/// 非 ZCode 源今日合计组装：直接复用各源现有 query_stats 的 overall
+///（口径与主面板统一：in=input 原值、out=output、⟲=cache_read、
+/// total=computed_total_tokens、×=requests），不重写聚合 SQL。
+fn hud_today_from_overall(overall: &crate::db::OverallStat) -> HudTodayTotal {
+    HudTodayTotal {
+        in_tokens: overall.input_tokens.max(0),
+        out_tokens: overall.output_tokens.max(0),
+        cache_read: overall.cache_read_tokens.max(0),
+        total: overall.total_tokens.max(0),
+        req_count: overall.requests.max(0),
+    }
+}
+
+/// 非 ZCode 源会话行 → 悬浮窗会话行（HudSessionBrief）。agent 为该行所属
+/// 组标识（AGENT_* 常量）。非 ZCode 源无轮次完成信号（rollout/turn 仅
+/// ZCode 有）恒按空闲，但 kimi 的 generating 由 transcript.ops 的 step
+/// 状态给出（构造处已带新鲜度保护），直接透传；TTFT 同理仅 kimi 有；
+/// 速度取值优先级：kimi 生成口径优先（step llmTiming 流式时长 ÷ 输出，
+/// 可信、无 ≈ 前缀），无 step 数据（旧版 CLI/旧会话）回退请求平均换算
+/// （Σoutput ÷ Σduration × 1000，仅统计 duration_ms > 0 行，前端 ≈ 前缀），
+/// 两者皆无则无速度；无子代理归并语义（sub_count = 0）。模型集合为
+/// GROUP_CONCAT 串，剔除空段后为空则归 None；项目目录末段解析与 ZCode
+/// 同法（project_name，缺失回退 "#短标识"）。
+fn brief_from_agent_row(row: AgentSessionBrief, agent: &str) -> HudSessionBrief {
+    let short = short_session_id(&row.session_id);
+    let models = row
+        .models
+        .map(|joined| {
+            joined
+                .split(',')
+                .map(str::trim)
+                .filter(|m| !m.is_empty())
+                .collect::<Vec<_>>()
+                .join(",")
+        })
+        .filter(|joined| !joined.is_empty());
+    // 速度：生成口径（kimi，gen_* 原料分子分母同范围，先 Σ 后除防二次
+    // 平均）优先于请求平均（claude/kimi 无 step 数据时）；任一侧无有效行
+    // （codex / 全 NULL/0 耗时）则无速度。completed_at 是 rollout 择优
+    // 专用（仅 zcode），恒 None。
+    let (speed, quality) = if agent == AGENT_KIMI && row.gen_out_tokens > 0 && row.gen_ms > 0.0 {
+        (
+            Some(row.gen_out_tokens as f64 * 1000.0 / row.gen_ms),
+            Some(SpeedQuality::Generation),
+        )
+    } else if row.speed_out_tokens > 0 && row.speed_ms > 0.0 {
+        (
+            Some(row.speed_out_tokens as f64 * 1000.0 / row.speed_ms),
+            Some(SpeedQuality::RequestAverage),
+        )
+    } else {
+        (None, None)
+    };
+    HudSessionBrief {
+        session_id: row.session_id,
+        short: short.clone(),
+        project: project_name(row.project.as_deref(), &short),
+        models,
+        sub_count: 0,
+        // 生成中：仅 kimi 构造处填 true（其余源恒 false），直接透传
+        generating: row.generating,
+        last_active_at: row.last_at,
+        in_tokens: row.in_tokens.max(0),
+        out_tokens: row.out_tokens.max(0),
+        cache_read: row.cache_read.max(0),
+        total: row.in_tokens.max(0) + row.out_tokens.max(0) + row.cache_read.max(0),
+        req_count: row.req_count.max(0),
+        speed,
+        speed_quality: quality,
+        speed_completed_at: None,
+        speed_state: SpeedState::Unavailable,
+        round_key: None,
+        round_started_at: None,
+        ttft_ms: row.ttft_ms,
+    }
+}
+
+/// 组装非 ZCode 组并追加进快照（Claude/Codex/Kimi 派生库 + Cursor API）。
+/// 失败语义：单源失败只跳过该组，不影响其他组展示（未安装/未配置/网络
+/// 失败静默降级，与 lib.rs today_tray_title 同款）；会话行取每组前
+/// MAX_VISIBLE_PER_AGENT 条。今日汇总复用各源 query_stats（5 秒节流增量
+/// 导入后查派生库）；Cursor 为纯汇总组（仅今日 total，无会话行）。
+fn append_agent_groups(snapshot: &mut HudSnapshot, window_minutes: u32, now_ms: i64) {
+    // 有效窗口与 ZCode 组同口径：0（不限）也有 24h 兜底上限
+    let minutes = if window_minutes == 0 {
+        UNLIMITED_FALLBACK_MINUTES
+    } else {
+        window_minutes
+    };
+    let window_start = now_ms - minutes as i64 * 60_000;
+    let today_start = today_start_ms(now_ms);
+
+    // Claude / Codex / Kimi：活跃会话行 + 今日合计（两者独立查询，任一
+    // 成功即成组——今日查询失败时按全 0 处理，会话行仍可展示）
+    for (agent, sessions) in [
+        (
+            AGENT_CLAUDE,
+            crate::claude::query_window_sessions(window_start, MAX_VISIBLE_PER_AGENT),
+        ),
+        (
+            AGENT_CODEX,
+            crate::codex::query_window_sessions(window_start, MAX_VISIBLE_PER_AGENT),
+        ),
+        (
+            AGENT_KIMI,
+            crate::kimi::query_window_sessions(window_start, MAX_VISIBLE_PER_AGENT),
+        ),
+    ] {
+        let Ok(found) = sessions else {
+            continue; // 未安装/导入失败：静默无该组
+        };
+        let today = today_stats(agent, today_start, now_ms).unwrap_or_default();
+        snapshot.groups.push(HudAgentGroup {
+            agent: agent.to_string(),
+            today,
+            total_active: found.total_active,
+            sessions: found
+                .sessions
+                .into_iter()
+                .map(|row| brief_from_agent_row(row, agent))
+                .collect(),
+        });
+    }
+
+    // Cursor：纯汇总组（仅今日 Σ token，无输入/输出拆分、无会话行）。
+    // API 内部有 120 秒缓存，每 DB 拍调用安全。
+    if let Ok((_, tokens)) = crate::cursor::fetch_cursor_usage_totals(today_start, now_ms) {
+        snapshot.groups.push(HudAgentGroup {
+            agent: AGENT_CURSOR.to_string(),
+            today: HudTodayTotal {
+                total: tokens.max(0),
+                ..HudTodayTotal::default()
+            },
+            total_active: 0,
+            sessions: Vec::new(),
+        });
+    }
+}
+
+/// 非 ZCode 源今日合计（db::Stats.overall → HudTodayTotal）。查询失败
+/// （未安装/库忙）返回 Err，由调用方按全 0 处理。
+fn today_stats(agent: &str, today_start: i64, now_ms: i64) -> Result<HudTodayTotal, String> {
+    let stats = match agent {
+        AGENT_CLAUDE => crate::claude::query_stats(today_start, now_ms)?,
+        AGENT_CODEX => crate::codex::query_stats(today_start, now_ms)?,
+        AGENT_KIMI => crate::kimi::query_stats(today_start, now_ms)?,
+        _ => return Err(format!("未知 agent 今日统计源: {agent}")),
+    };
+    Ok(hud_today_from_overall(&stats.overall))
+}
+
+/// 快照归一（全部组就位后调用，纯逻辑便于单元测试）：
+/// - 过滤无数据组（今日无数据且窗口内无活跃会话的组不出现）；
+/// - total_active / today_total 汇总为全 agent 合计（底部今日行 = Σ 各
+///   组组头今日值，闭环）；
+/// - 组排序：有可见会话的组按组内最新 last_active_at 降序（同刻按
+///   agent 固定序稳定），无会话但有今日数据的组排其后按 agent 固定序
+///  （cursor 恒最后）。
+fn normalize_snapshot(snapshot: &mut HudSnapshot) {
+    snapshot
+        .groups
+        .retain(|g| g.today.total > 0 || g.total_active > 0);
+    snapshot.total_active = snapshot.groups.iter().map(|g| g.total_active).sum();
+    let mut today = HudTodayTotal::default();
+    for group in &snapshot.groups {
+        today.in_tokens += group.today.in_tokens;
+        today.out_tokens += group.today.out_tokens;
+        today.cache_read += group.today.cache_read;
+        today.total += group.today.total;
+        today.req_count += group.today.req_count;
+    }
+    snapshot.today_total = today;
+    snapshot.groups.sort_by(|a, b| {
+        let a_latest = a.sessions.first().map(|s| s.last_active_at);
+        let b_latest = b.sessions.first().map(|s| s.last_active_at);
+        // 有会话的组在前（buckets：Some=0 / None=1）
+        let bucket = |latest: Option<i64>| if latest.is_some() { 0 } else { 1 };
+        bucket(a_latest)
+            .cmp(&bucket(b_latest))
+            .then_with(|| match (a_latest, b_latest) {
+                (Some(x), Some(y)) => y.cmp(&x), // 组内最新活动降序
+                _ => std::cmp::Ordering::Equal,
+            })
+            .then_with(|| agent_order(&a.agent).cmp(&agent_order(&b.agent)))
+    });
 }
 
 /// 本地时区自然日零点（毫秒，纯函数供测试）：与主面板 today /
@@ -2956,6 +3312,17 @@ mod tests {
         d
     }
 
+    /// 测试辅助：取快照中 ZCode 组的会话列表（v2 契约下 collect_session_
+    /// snapshot 只产 ZCode 组；历史断言写法 `zcode_sessions(&snap)[i]` 的等价替身）
+    fn zcode_sessions(snapshot: &HudSnapshot) -> &[HudSessionBrief] {
+        snapshot
+            .groups
+            .iter()
+            .find(|g| g.agent == AGENT_ZCODE)
+            .map(|g| g.sessions.as_slice())
+            .unwrap_or(&[])
+    }
+
     /// 会话快照测试库（与 pet.rs 测试同款的 v9 形态 schema，另带
     /// computed_total_tokens / status / session.directory 列）
     fn hud_db(name: &str) -> (Connection, PathBuf) {
@@ -3142,121 +3509,151 @@ mod tests {
     #[test]
     fn 窗口高度_会话条数自适应与空态下限() {
         // 栅格锁定：与 session-hud.html 的 CSS 常量一一对应
-        //（头部 30 / 行 56 / 列表区边框 1 / 折叠行 20 / 今日行 20 /
+        //（头部 30 / 组头 20 / 行 56 / 列表区边框 1 / 折叠行 20 / 今日行 20 /
         // 模型速度行 20 + 区边框 1 / 底部留白 8 / 空态 64）
+        assert_eq!(HUD_GROUP_HEAD_H, 20.0);
         assert_eq!(HUD_ROW_H, 56.0);
         assert_eq!(HUD_TODAY_H, 20.0);
         assert_eq!(HUD_MODEL_ROW_H, 20.0);
         assert_eq!(HUD_LIST_BORDER_H, 1.0);
         assert_eq!(HUD_MODELS_BORDER_H, 1.0);
-        // 空列表：空态最小高（显示"暂无活跃会话"，不为 0 高；空态不
-        // 显示今日行与模型速度区——两者都跟随列表存在）
-        assert_eq!(hud_height(0, false, false, 0, 1.0), HUD_EMPTY_HEIGHT);
-        assert_eq!(hud_height(0, true, false, 0, 1.0), HUD_EMPTY_HEIGHT);
+        let group = |rows: usize, folded: bool| HudGroupLayout { rows, folded };
+        // 空列表：空态最小高（显示"暂无活跃会话"，不为 0 高）。空态 =
+        // 无任何组（与前端 renderShell 的 groups 为空判定同条件）；空态
+        // 不显示今日行与模型速度区——但这是调用方经 today_visible /
+        // model_speed_visible 判定后传参保证的（见显隐判定用例）
+        assert_eq!(hud_height(&[], false, 0, 1.0), HUD_EMPTY_HEIGHT);
+        assert_eq!(hud_height(&[], true, 3, 1.0), HUD_EMPTY_HEIGHT);
+        // 纯汇总组（只有组头、无会话行）不是空态：组头 20px 实高正常
+        // 计入（多组头内容压进空态高度会触发列表滚动）
         assert_eq!(
-            hud_height(0, false, true, 0, 1.0),
-            HUD_EMPTY_HEIGHT,
-            "空态不显示今日行"
+            hud_height(&[group(0, true)], false, 0, 1.0),
+            30.0 + 20.0 + 1.0 + 8.0,
+            "单组头（折叠标志在行数内不生效）= 头部+组头+边框+留白"
         );
         assert_eq!(
-            hud_height(0, false, false, 3, 1.0),
-            HUD_EMPTY_HEIGHT,
-            "空态不显示模型速度区"
+            hud_height(&[group(0, false), group(0, false)], false, 0, 1.0),
+            30.0 + 20.0 + 20.0 + 1.0 + 8.0,
+            "两个纯汇总组各占一个组头高度"
         );
-        // 头部 + 行 × 条数 + 列表区边框 + 底部留白
+        // 单组：组头 + 行 × 条数 + 列表区边框 + 底部留白
         assert_eq!(
-            hud_height(1, false, false, 0, 1.0),
-            30.0 + 56.0 + 1.0 + 8.0
+            hud_height(&[group(1, false)], false, 0, 1.0),
+            30.0 + 20.0 + 56.0 + 1.0 + 8.0
         );
         assert_eq!(
-            hud_height(3, false, false, 0, 1.0),
-            30.0 + 3.0 * 56.0 + 1.0 + 8.0
+            hud_height(&[group(3, false)], false, 0, 1.0),
+            30.0 + 20.0 + 3.0 * 56.0 + 1.0 + 8.0
         );
-        // 超出上限折叠：5 行 + 折叠提示行 + 今日行
+        // 组内溢出折叠：组头 + 3 行 + 折叠提示行 + 今日行
         assert_eq!(
-            hud_height(9, true, true, 0, 1.0),
-            30.0 + 5.0 * 56.0 + 1.0 + 20.0 + 20.0 + 8.0
+            hud_height(&[group(3, true)], true, 0, 1.0),
+            30.0 + 20.0 + 3.0 * 56.0 + 1.0 + 20.0 + 20.0 + 8.0
         );
         // 折叠标志在可见行数内不生效
         assert_eq!(
-            hud_height(2, true, false, 0, 1.0),
-            hud_height(2, false, false, 0, 1.0) + 0.0
+            hud_height(&[group(2, true)], false, 0, 1.0),
+            hud_height(&[group(2, false)], false, 0, 1.0) + 0.0
         );
         // 今日行独立叠加
         assert_eq!(
-            hud_height(2, false, true, 0, 1.0),
-            hud_height(2, false, false, 0, 1.0) + HUD_TODAY_H
+            hud_height(&[group(2, false)], true, 0, 1.0),
+            hud_height(&[group(2, false)], false, 0, 1.0) + HUD_TODAY_H
         );
         // 模型速度区：每行 20px + 区边框 1px，超过 3 行按上限 3 行计
         assert_eq!(
-            hud_height(2, false, false, 2, 1.0),
-            hud_height(2, false, false, 0, 1.0) + 2.0 * HUD_MODEL_ROW_H + HUD_MODELS_BORDER_H
+            hud_height(&[group(2, false)], false, 2, 1.0),
+            hud_height(&[group(2, false)], false, 0, 1.0)
+                + 2.0 * HUD_MODEL_ROW_H
+                + HUD_MODELS_BORDER_H
         );
         assert_eq!(
-            hud_height(2, false, false, 5, 1.0),
-            hud_height(2, false, false, 0, 1.0) + 3.0 * HUD_MODEL_ROW_H + HUD_MODELS_BORDER_H,
+            hud_height(&[group(2, false)], false, 5, 1.0),
+            hud_height(&[group(2, false)], false, 0, 1.0)
+                + 3.0 * HUD_MODEL_ROW_H
+                + HUD_MODELS_BORDER_H,
             "模型速度行数超过上限按 3 行计"
+        );
+        // 多组：逐组累加（组头各 20 + 各自行），两组无折叠
+        assert_eq!(
+            hud_height(&[group(2, false), group(1, false)], false, 0, 1.0),
+            30.0 + (20.0 + 2.0 * 56.0) + (20.0 + 56.0) + 1.0 + 8.0
+        );
+        // 多组：仅第二组溢出折叠（两组间组折叠行是每组一条）
+        assert_eq!(
+            hud_height(&[group(2, false), group(3, true)], false, 0, 1.0),
+            30.0 + (20.0 + 2.0 * 56.0) + (20.0 + 3.0 * 56.0 + 20.0) + 1.0 + 8.0
+        );
+        // 纯汇总组（无会话行，仅组头）也占一个组头高度
+        assert_eq!(
+            hud_height(&[group(1, false), group(0, false)], false, 0, 1.0),
+            30.0 + (20.0 + 56.0) + 20.0 + 1.0 + 8.0
         );
         // 字体缩放：整体等比缩放（与页面 --hud-scale 栅格一致）
         assert_eq!(
-            hud_height(2, false, false, 0, 1.4),
-            hud_height(2, false, false, 0, 1.0) * 1.4
+            hud_height(&[group(2, false)], false, 0, 1.4),
+            hud_height(&[group(2, false)], false, 0, 1.0) * 1.4
         );
         assert_eq!(
-            hud_height(2, false, false, 0, 0.8),
-            hud_height(2, false, false, 0, 1.0) * 0.8
+            hud_height(&[group(2, false)], false, 0, 0.8),
+            hud_height(&[group(2, false)], false, 0, 1.0) * 0.8
         );
         // 脏 font_scale 回退 1.0
         assert_eq!(
-            hud_height(2, false, false, 0, 3.0),
-            hud_height(2, false, false, 0, 1.0)
+            hud_height(&[group(2, false)], false, 0, 3.0),
+            hud_height(&[group(2, false)], false, 0, 1.0)
         );
         assert_eq!(
-            hud_height(2, false, false, 0, f64::NAN),
-            hud_height(2, false, false, 0, 1.0)
+            hud_height(&[group(2, false)], false, 0, f64::NAN),
+            hud_height(&[group(2, false)], false, 0, 1.0)
         );
     }
 
     #[test]
     fn 程序侧目标尺寸_取整与最小高夹取() {
+        let group = |rows: usize, folded: bool| HudGroupLayout { rows, folded };
         // 取整：font_scale（0.8~1.4 步进 0.05）让 hud_height 出 .25 / .75
-        // 等小数（95 × 1.05 = 99.75）——LogicalSize 小数到物理像素四舍五入
-        // 后回声与目标精确相等判定不成立，会被 Resized 挂点当成用户尺寸
-        // 落盘（自适应高度静默变固定尺寸），故目标先取整
+        // 等小数（单组 1 行 107 × 1.05 = 112.35）——LogicalSize 小数到物理
+        // 像素四舍五入后回声与目标精确相等判定不成立，会被 Resized 挂点
+        // 当成用户尺寸落盘（自适应高度静默变固定尺寸），故目标先取整
         assert_eq!(hud_target_size(300.0, 217.35), (300.0, 217.0));
         assert_eq!(hud_target_size(300.0, 227.7), (300.0, 228.0));
         assert_eq!(hud_target_size(300.0, 258.75), (300.0, 259.0));
-        // 与公式出口直连：3 行 × font_scale 1.05 = 217.35 → 217
+        // 与公式出口直连：单组（组头+1 行）高 115，× font_scale 1.05 =
+        // 120.75 → 取整 121，再被 min_inner_size 钳到 160
         assert_eq!(
-            hud_target_size(300.0, hud_height(3, false, false, 0, 1.05)),
-            (300.0, 217.0)
+            hud_target_size(300.0, hud_height(&[group(1, false)], false, 0, 1.05)),
+            (300.0, 160.0)
+        );
+        // 高于最小高的缩放取整：单组（组头+3 行+折叠行）+ 今日行 =
+        // 267，× 1.05 = 280.35 → 280；× 1.1 = 293.7 → 294
+        assert_eq!(
+            hud_target_size(300.0, hud_height(&[group(3, true)], true, 0, 1.05)),
+            (300.0, 280.0)
         );
         assert_eq!(
-            hud_target_size(300.0, hud_height(3, false, false, 0, 1.1)),
-            (300.0, 228.0)
-        );
-        assert_eq!(
-            hud_target_size(300.0, hud_height(5, false, false, 0, 1.05)),
-            (300.0, 335.0)
+            hud_target_size(300.0, hud_height(&[group(3, true)], true, 0, 1.1)),
+            (300.0, 294.0)
         );
         // 最小高夹取：建窗 min_inner_size（HUD_MIN_HEIGHT = 160）会钳住更矮
-        // 的 set_size（空态 64 / 单行 95 / 两行 151 全在其下，窗口实际就是
-        // 160 高），目标不夹取则永远对不上回声（同上误判）
+        // 的 set_size（空态 64 / 单组单行 115 在其下，窗口实际就是 160 高；
+        // 单组两行 171 高于最小高原样生效），目标不夹取则永远对不上回声
+        //（同上误判）
         assert_eq!(hud_target_size(300.0, 64.0), (300.0, 160.0));
         assert_eq!(
-            hud_target_size(300.0, hud_height(0, false, false, 0, 1.0)),
+            hud_target_size(300.0, hud_height(&[], false, 0, 1.0)),
             (300.0, 160.0),
             "空态 64 被 min_inner_size 钳到 160"
         );
         assert_eq!(
-            hud_target_size(300.0, hud_height(1, false, false, 0, 1.0)),
+            hud_target_size(300.0, hud_height(&[group(1, false)], false, 0, 1.0)),
             (300.0, 160.0),
-            "单行 95 被 min_inner_size 钳到 160"
+            "单组单行 115 被 min_inner_size 钳到 160"
         );
         assert_eq!(
-            hud_target_size(300.0, hud_height(2, false, false, 0, 1.0)),
-            (300.0, 160.0),
-            "两行 151 被 min_inner_size 钳到 160"
+            hud_target_size(300.0, hud_height(&[group(2, false)], false, 0, 1.0)),
+            (300.0, 171.0),
+            "单组两行 171（30+20+2×56+1+8）高于最小高，原样生效"
         );
         // 不低于最小高：自适应值本身即生效尺寸，原样保留
         assert_eq!(hud_target_size(300.0, 207.0), (300.0, 207.0));
@@ -3628,9 +4025,9 @@ mod tests {
         ))
         .unwrap();
         let snapshot = collect_session_snapshot(&conn, 10, now).unwrap().0;
-        assert_eq!(snapshot.sessions.len(), 1, "子代理只能归并到根会话");
-        assert_eq!(snapshot.sessions[0].session_id, "sess_root");
-        assert_eq!(snapshot.sessions[0].project, "main-project");
+        assert_eq!(zcode_sessions(&snapshot).len(), 1, "子代理只能归并到根会话");
+        assert_eq!(zcode_sessions(&snapshot)[0].session_id, "sess_root");
+        assert_eq!(zcode_sessions(&snapshot)[0].project, "main-project");
         drop(conn);
         let _ = fs::remove_file(&path);
     }
@@ -3686,20 +4083,22 @@ mod tests {
         let snap = collect_session_snapshot(&conn, win10, now).unwrap().0;
         // 子代理会话被过滤；3 个主会话全部活跃
         assert_eq!(snap.total_active, 3, "{snap:?}");
-        assert_eq!(snap.v, 1);
+        assert_eq!(snap.v, 2, "v2 = 多 agent 分组契约");
+        assert_eq!(snap.groups.len(), 1, "collect 只产 ZCode 组");
+        assert_eq!(snap.groups[0].agent, AGENT_ZCODE);
         // 排序：按最近活动倒序（A > B > C）
-        assert_eq!(snap.sessions.len(), 3);
-        assert_eq!(snap.sessions[0].session_id, "sess_aaa111");
-        assert_eq!(snap.sessions[1].session_id, "sess_bbb222");
-        assert_eq!(snap.sessions[2].session_id, "sess_ccc333");
+        assert_eq!(zcode_sessions(&snap).len(), 3);
+        assert_eq!(zcode_sessions(&snap)[0].session_id, "sess_aaa111");
+        assert_eq!(zcode_sessions(&snap)[1].session_id, "sess_bbb222");
+        assert_eq!(zcode_sessions(&snap)[2].session_id, "sess_ccc333");
         // 项目名：directory 末段；空目录回退 "#短标识"
-        assert_eq!(snap.sessions[0].project, "proj-alpha");
-        assert_eq!(snap.sessions[2].project, "#ccc333");
+        assert_eq!(zcode_sessions(&snap)[0].project, "proj-alpha");
+        assert_eq!(zcode_sessions(&snap)[2].project, "#ccc333");
         // 短标识：剥 sess_ 前缀取 6 位
-        assert_eq!(snap.sessions[0].short, "aaa111");
+        assert_eq!(zcode_sessions(&snap)[0].short, "aaa111");
         // 会话树合计（注入版 V9 口径）：子代理 sess_sub1 的窗口内请求
         // 并入主会话 A（含窗口外早期请求），↑ 逐笔 clamp 非缓存口径
-        let a = &snap.sessions[0];
+        let a = &zcode_sessions(&snap)[0];
         // ↑ = 50+5+999+15，两层子代理均并入
         assert_eq!(a.in_tokens, 1069);
         // ↓ = (200+6) + 999 + 30
@@ -3721,15 +4120,15 @@ mod tests {
         assert_eq!(a.ttft_ms, None);
         // 仅 message 信号的会话（C）：user 消息驱动生成中（发消息后
         // 首笔请求完成前的即时反馈），速度 "–"（无数据）
-        assert_eq!(snap.sessions[2].models, None);
+        assert_eq!(zcode_sessions(&snap)[2].models, None);
         assert!(
-            snap.sessions[2].generating,
+            zcode_sessions(&snap)[2].generating,
             "user 消息晚于一切请求 → message 驱动生成中"
         );
-        assert_eq!(snap.sessions[2].speed, None);
-        assert_eq!(snap.sessions[2].ttft_ms, None);
-        assert_eq!(snap.sessions[2].total, 0);
-        assert_eq!(snap.sessions[2].req_count, 0);
+        assert_eq!(zcode_sessions(&snap)[2].speed, None);
+        assert_eq!(zcode_sessions(&snap)[2].ttft_ms, None);
+        assert_eq!(zcode_sessions(&snap)[2].total, 0);
+        assert_eq!(zcode_sessions(&snap)[2].req_count, 0);
         // 今日合计（全库不分会话树；测试库全部行都在"今日"本地零点后）：
         // in = 100+5+999+10+20、out = 200+6+999+20+30、
         // ⟲ = 50+0+0+5+5、total = Σcomputed_total_tokens，× = 5 行
@@ -3746,7 +4145,8 @@ mod tests {
             "缺 first/completed 列的老库模型速度应降级为空"
         );
 
-        // 折叠：7 个活跃会话只展示 5 条，total_active = 7
+        // 折叠：7 个活跃会话每组只展示 3 条，total_active = 7（组内
+        // 折叠提示"还有 4 个"由 total_active 与可见行差值在前端表达）
         let (conn, path) = hud_db("fold");
         let mut inserts = String::from(
             "INSERT INTO session VALUES\n",
@@ -3767,7 +4167,7 @@ mod tests {
         conn.execute_batch(&format!("{inserts}\n{usages}")).unwrap();
         let snap = collect_session_snapshot(&conn, win10, now).unwrap().0;
         assert_eq!(snap.total_active, 7);
-        assert_eq!(snap.sessions.len(), MAX_VISIBLE_SESSIONS);
+        assert_eq!(zcode_sessions(&snap).len(), MAX_VISIBLE_PER_AGENT);
         // 窗口档位为"不限"（0）时按 24h 兜底，同样能看到会话
         let snap_unlimited = collect_session_snapshot(&conn, 0, now).unwrap().0;
         assert_eq!(snap_unlimited.total_active, 7);
@@ -3784,16 +4184,286 @@ mod tests {
         .unwrap();
         let snap = collect_session_snapshot(&conn, 5, now).unwrap().0;
         assert_eq!(snap.total_active, 1, "{snap:?}");
-        assert_eq!(snap.sessions[0].session_id, "sess_new");
+        assert_eq!(zcode_sessions(&snap)[0].session_id, "sess_new");
 
         drop(conn);
         let _ = fs::remove_file(&path);
     }
 
     #[test]
+    fn 归一_空组过滤与全agent合计闭环() {
+        // 过滤：今日无数据且无活跃会话的组不出现（ZCode 空组同样过滤）
+        let mut snap = HudSnapshot {
+            v: 2,
+            total_active: 99,
+            groups: vec![
+                HudAgentGroup {
+                    agent: AGENT_ZCODE.to_string(),
+                    today: HudTodayTotal::default(),
+                    total_active: 0,
+                    sessions: Vec::new(),
+                },
+                HudAgentGroup {
+                    agent: AGENT_CLAUDE.to_string(),
+                    today: HudTodayTotal {
+                        in_tokens: 100,
+                        out_tokens: 20,
+                        cache_read: 5,
+                        total: 125,
+                        req_count: 3,
+                    },
+                    total_active: 1,
+                    sessions: Vec::new(),
+                },
+            ],
+            today_total: HudTodayTotal::default(),
+            model_speeds: Vec::new(),
+        };
+        normalize_snapshot(&mut snap);
+        assert_eq!(snap.groups.len(), 1, "无数据组不出现");
+        assert_eq!(snap.groups[0].agent, AGENT_CLAUDE);
+        // 汇总：total_active / today_total = Σ 各组（底部今日行闭环）
+        let mut snap = HudSnapshot {
+            v: 2,
+            total_active: 0,
+            groups: vec![
+                HudAgentGroup {
+                    agent: AGENT_ZCODE.to_string(),
+                    today: HudTodayTotal {
+                        in_tokens: 10,
+                        out_tokens: 2,
+                        cache_read: 1,
+                        total: 13,
+                        req_count: 1,
+                    },
+                    total_active: 2,
+                    sessions: Vec::new(),
+                },
+                HudAgentGroup {
+                    agent: AGENT_CURSOR.to_string(),
+                    today: HudTodayTotal {
+                        total: 500,
+                        ..HudTodayTotal::default()
+                    },
+                    total_active: 0,
+                    sessions: Vec::new(),
+                },
+            ],
+            today_total: HudTodayTotal::default(),
+            model_speeds: Vec::new(),
+        };
+        normalize_snapshot(&mut snap);
+        assert_eq!(snap.total_active, 2);
+        assert_eq!(snap.today_total.in_tokens, 10);
+        assert_eq!(snap.today_total.out_tokens, 2);
+        assert_eq!(snap.today_total.cache_read, 1);
+        assert_eq!(snap.today_total.total, 513, "底部今日行 = Σ 各组组头今日值");
+        assert_eq!(snap.today_total.req_count, 1);
+    }
+
+    #[test]
+    fn 归一_组排序_会话组按最新活动降序_汇总组固定序_游标恒最后() {
+        let brief = |session_id: &str, last_at: i64| HudSessionBrief {
+            session_id: session_id.to_string(),
+            short: short_session_id(session_id),
+            project: "p".into(),
+            models: None,
+            sub_count: 0,
+            generating: false,
+            last_active_at: last_at,
+            in_tokens: 0,
+            out_tokens: 0,
+            cache_read: 0,
+            total: 0,
+            req_count: 0,
+            speed: None,
+            speed_quality: None,
+            speed_completed_at: None,
+            speed_state: SpeedState::Unavailable,
+            round_key: None,
+            round_started_at: None,
+            ttft_ms: None,
+        };
+        let group = |agent: &str, sessions: Vec<HudSessionBrief>| HudAgentGroup {
+            agent: agent.to_string(),
+            today: HudTodayTotal {
+                total: 1,
+                ..HudTodayTotal::default()
+            },
+            total_active: sessions.len(),
+            sessions,
+        };
+        let mut snap = HudSnapshot {
+            v: 2,
+            total_active: 0,
+            groups: vec![
+                // 无会话组（cursor 恒最后；kimi 按固定序排前）
+                group(AGENT_CURSOR, Vec::new()),
+                group(AGENT_KIMI, Vec::new()),
+                // 会话组：codex 最新（100）应排最前，claude（50）次之，
+                // zcode（10）在会话组中垫底
+                group(AGENT_ZCODE, vec![brief("sess_z", 10)]),
+                group(AGENT_CLAUDE, vec![brief("sess_c", 50)]),
+                group(AGENT_CODEX, vec![brief("sess_x", 100)]),
+            ],
+            today_total: HudTodayTotal::default(),
+            model_speeds: Vec::new(),
+        };
+        normalize_snapshot(&mut snap);
+        let agents: Vec<&str> = snap.groups.iter().map(|g| g.agent.as_str()).collect();
+        assert_eq!(
+            agents,
+            ["codex", "claude", "zcode", "kimi", "cursor"],
+            "会话组按组内最新活动降序，无会话组按 agent 固定序且 cursor 恒最后"
+        );
+    }
+
+    #[test]
+    fn 非源会话行_组装与字段降级() {
+        // 模型集合剔除空段；项目目录取末段；无目录回退 "#短标识"；
+        // 恒空闲；无速度原料（0/0.0，codex 场景）时无速度
+        let row = AgentSessionBrief {
+            session_id: "abc12345-uuid".into(),
+            last_at: 1_234,
+            in_tokens: 100,
+            out_tokens: 20,
+            cache_read: 5,
+            req_count: 2,
+            models: Some(",GLM-5.3,,GLM-4.6,".into()),
+            project: Some("/Users/a/proj-x/".into()),
+            speed_out_tokens: 0,
+            speed_ms: 0.0,
+            generating: false,
+            ttft_ms: None,
+            gen_out_tokens: 0,
+            gen_ms: 0.0,
+        };
+        let brief = brief_from_agent_row(row, AGENT_CODEX);
+        assert_eq!(brief.short, "abc123");
+        assert_eq!(brief.project, "proj-x");
+        assert_eq!(brief.models.as_deref(), Some("GLM-5.3,GLM-4.6"));
+        assert_eq!(brief.in_tokens, 100);
+        assert_eq!(brief.total, 125, "Σ = ↑+↓+⟲");
+        assert!(!brief.generating, "非 ZCode 源无生成中信号恒空闲");
+        assert_eq!(brief.speed_state, SpeedState::Unavailable);
+        assert_eq!(brief.speed, None);
+        assert_eq!(brief.ttft_ms, None);
+        assert_eq!(brief.sub_count, 0);
+
+        // 全空模型串与缺失目录：models 归 None、项目回退 "#短标识"
+        let row = AgentSessionBrief {
+            session_id: "sess_ff8899xx".into(),
+            last_at: 0,
+            in_tokens: 0,
+            out_tokens: 0,
+            cache_read: 0,
+            req_count: 0,
+            models: Some(",".into()),
+            project: None,
+            speed_out_tokens: 0,
+            speed_ms: 0.0,
+            generating: false,
+            ttft_ms: None,
+            gen_out_tokens: 0,
+            gen_ms: 0.0,
+        };
+        let brief = brief_from_agent_row(row, AGENT_CLAUDE);
+        assert_eq!(brief.models, None);
+        assert_eq!(brief.project, "#ff8899");
+        assert_eq!(brief.total, 0);
+
+        // 有请求平均速度原料（claude / 无 step 数据的 kimi 场景）：
+        // 请求平均 = Σout ÷ Σms × 1000，质量标 request_average（前端显示
+        // ≈ 前缀）；completed_at 是 rollout 择优专用恒 None
+        let row = AgentSessionBrief {
+            session_id: "sess_speed01".into(),
+            last_at: 0,
+            in_tokens: 10,
+            out_tokens: 47,
+            cache_read: 0,
+            req_count: 3,
+            models: None,
+            project: None,
+            speed_out_tokens: 4_700,
+            speed_ms: 2_000.0,
+            generating: false,
+            ttft_ms: None,
+            gen_out_tokens: 0,
+            gen_ms: 0.0,
+        };
+        let brief = brief_from_agent_row(row, AGENT_KIMI);
+        assert_eq!(
+            brief.speed,
+            Some(2350.0),
+            "请求平均 = Σout ÷ Σms × 1000"
+        );
+        assert_eq!(brief.speed_quality, Some(SpeedQuality::RequestAverage));
+        assert_eq!(brief.speed_completed_at, None);
+        assert_eq!(brief.speed_state, SpeedState::Unavailable);
+        assert_eq!(brief.ttft_ms, None, "无 step 数据时 TTFT 回退 None");
+
+        // kimi 生成口径优先：gen_* 与 speed_* 原料同时存在时走生成口径
+        // （无 ≈ 前缀的 Generation 质量），generating/ttft 直接透传
+        let row = AgentSessionBrief {
+            session_id: "sess_gen0001".into(),
+            last_at: 0,
+            in_tokens: 10,
+            out_tokens: 47,
+            cache_read: 0,
+            req_count: 3,
+            models: None,
+            project: None,
+            speed_out_tokens: 4_700,
+            speed_ms: 2_000.0,
+            generating: true,
+            ttft_ms: Some(580),
+            gen_out_tokens: 300,
+            gen_ms: 5_000.0,
+        };
+        let brief = brief_from_agent_row(row, AGENT_KIMI);
+        assert_eq!(
+            brief.speed,
+            Some(60.0),
+            "生成口径 = Σgen_out ÷ Σgen_ms × 1000"
+        );
+        assert_eq!(
+            brief.speed_quality,
+            Some(SpeedQuality::Generation),
+            "生成口径优先于请求平均"
+        );
+        assert!(brief.generating, "kimi 生成中透传");
+        assert_eq!(brief.ttft_ms, Some(580), "kimi TTFT 透传");
+
+        // claude 同样的行不启用生成口径（仅 kimi 组生效，零变化防御）
+        let row = AgentSessionBrief {
+            session_id: "sess_gen0002".into(),
+            last_at: 0,
+            in_tokens: 10,
+            out_tokens: 47,
+            cache_read: 0,
+            req_count: 3,
+            models: None,
+            project: None,
+            speed_out_tokens: 4_700,
+            speed_ms: 2_000.0,
+            generating: false,
+            ttft_ms: None,
+            gen_out_tokens: 300,
+            gen_ms: 5_000.0,
+        };
+        let brief = brief_from_agent_row(row, AGENT_CLAUDE);
+        assert_eq!(brief.speed, Some(2350.0), "非 kimi 组仍走请求平均");
+        assert_eq!(brief.speed_quality, Some(SpeedQuality::RequestAverage));
+        assert!(!brief.generating);
+        assert_eq!(brief.ttft_ms, None);
+    }
+
+    #[test]
     fn 快照_生成中判定按最新轮完成状态() {
         let (conn, path) = hud_db("generating");
         let now = 2_000_000_000_i64;
+        // 前三个场景一组快照断言（每组至多 3 条可见，第 4 个场景
+        // sess_live2 以更新的时刻单独插入后二次收集断言）
         conn.execute_batch(&format!(
             "INSERT INTO session VALUES
                ('sess_live', NULL, '/live'), ('sess_done', NULL, '/done'),
@@ -3808,34 +4478,37 @@ mod tests {
                ('sess_done', 'turn_d1', 'completed', {d1});
              INSERT INTO model_usage VALUES
                -- 失败：最新请求 error 且轮未落库 → 空闲（防卡生成中）
-               ('sess_fail', 'turn_f1', {f1}, 'M', 'error', 1, 0, 0, 0, 0, 1);
-             INSERT INTO model_usage VALUES
-               -- 轮运行中落库（status='running'）→ 生成中
-               ('sess_live2', 'turn_r1', {r1}, 'M', 'completed', 1, 1, 0, 0, 0, 2);",
+               ('sess_fail', 'turn_f1', {f1}, 'M', 'error', 1, 0, 0, 0, 0, 1);",
             l1 = now - 1_000,
             d1 = now - 2_000,
             f1 = now - 3_000,
-            r1 = now - 4_000,
         ))
-        .unwrap();
-        conn.execute_batch(
-            "INSERT INTO session VALUES ('sess_live2', NULL, '/live2');
-             INSERT INTO turn_usage VALUES ('sess_live2', 'turn_r1', 'running', 0);",
-        )
         .unwrap();
 
         let snap = collect_session_snapshot(&conn, 10, now).unwrap().0;
-        let gen = |id: &str| {
-            snap.sessions
+        let gen = |snap: &HudSnapshot, id: &str| {
+            zcode_sessions(snap)
                 .iter()
                 .find(|s| s.session_id == id)
                 .unwrap()
                 .generating
         };
-        assert!(gen("sess_live"), "最新轮未落 turn_usage 应判生成中");
-        assert!(!gen("sess_done"), "完成轮应判空闲");
-        assert!(!gen("sess_fail"), "最新请求失败的未落库轮应判空闲");
-        assert!(gen("sess_live2"), "turn_usage running 行应判生成中");
+        assert!(gen(&snap, "sess_live"), "最新轮未落 turn_usage 应判生成中");
+        assert!(!gen(&snap, "sess_done"), "完成轮应判空闲");
+        assert!(!gen(&snap, "sess_fail"), "最新请求失败的未落库轮应判空闲");
+
+        // 轮运行中落库（status='running'）→ 生成中；时刻取最新保证
+        // 进入每组 3 条的可见列表
+        conn.execute_batch(&format!(
+            "INSERT INTO session VALUES ('sess_live2', NULL, '/live2');
+             INSERT INTO turn_usage VALUES ('sess_live2', 'turn_r1', 'running', 0);
+             INSERT INTO model_usage VALUES
+               ('sess_live2', 'turn_r1', {r1}, 'M', 'completed', 1, 1, 0, 0, 0, 2);",
+            r1 = now - 500,
+        ))
+        .unwrap();
+        let snap = collect_session_snapshot(&conn, 10, now).unwrap().0;
+        assert!(gen(&snap, "sess_live2"), "turn_usage running 行应判生成中");
 
         // 老版本库无 status 列：error/cancelled 防卡判定降级为按无轮
         // 行判生成中（与 usage_feed 的 runs 口径一致）。全新裸库自建
@@ -3857,7 +4530,7 @@ mod tests {
         ))
         .unwrap();
         let snap = collect_session_snapshot(&conn2, 10, now).unwrap().0;
-        assert!(snap.sessions[0].generating, "无 status 列时按未完成轮判生成中");
+        assert!(zcode_sessions(&snap)[0].generating, "无 status 列时按未完成轮判生成中");
 
         drop(conn2);
         let _ = fs::remove_file(&path2);
@@ -3873,7 +4546,7 @@ mod tests {
         let _ = fs::remove_file(&path);
         let conn = Connection::open(&path).unwrap();
         let snap = collect_session_snapshot(&conn, 10, 1_000).unwrap().0;
-        assert!(snap.sessions.is_empty());
+        assert!(zcode_sessions(&snap).is_empty());
         assert_eq!(snap.total_active, 0);
         drop(conn);
         let _ = fs::remove_file(&path);
@@ -3882,7 +4555,7 @@ mod tests {
         let (conn, path) = hud_db("old");
         conn.execute_batch("DROP TABLE model_usage;").unwrap();
         let snap = collect_session_snapshot(&conn, 10, 1_000).unwrap().0;
-        assert!(snap.sessions.is_empty());
+        assert!(zcode_sessions(&snap).is_empty());
         drop(conn);
         let _ = fs::remove_file(&path);
     }
@@ -3966,7 +4639,7 @@ mod tests {
         ))
         .unwrap();
         let snap = collect_session_snapshot(&conn, 10, now).unwrap().0;
-        let s = &snap.sessions[0];
+        let s = &zcode_sessions(&snap)[0];
         assert_eq!(s.in_tokens, 0 + 60, "↑ 应逐行 clamp 负值后汇总");
         assert_eq!(s.out_tokens, 10);
         assert_eq!(s.cache_read, 90);
@@ -4213,8 +4886,8 @@ mod tests {
         let snap = collect_session_snapshot(&conn, 10, now).unwrap().0;
         // 主会话自身窗口外空闲，但子代理活跃 → 主会话行仍显示且唯一
         assert_eq!(snap.total_active, 1, "{snap:?}");
-        assert_eq!(snap.sessions.len(), 1);
-        let m = &snap.sessions[0];
+        assert_eq!(zcode_sessions(&snap).len(), 1);
+        let m = &zcode_sessions(&snap)[0];
         assert_eq!(m.session_id, "sess_m");
         // last_active 归并取子代理最大值（排序键不被主会话空闲拖没）
         assert_eq!(m.last_active_at, now - 1_000);
@@ -4256,7 +4929,7 @@ mod tests {
         ))
         .unwrap();
         let snap = collect_session_snapshot(&conn, 10, now).unwrap().0;
-        let m = &snap.sessions[0];
+        let m = &zcode_sessions(&snap)[0];
         // 按最近使用降序：GLM-5.3(5s) → GLM-5.3-Flash(10s) → GLM-4.6(60s)
         assert_eq!(
             m.models.as_deref(),
@@ -4312,7 +4985,7 @@ mod tests {
         ))
         .unwrap();
         let snap = collect_session_snapshot(&conn, 10, now).unwrap().0;
-        let m = &snap.sessions[0];
+        let m = &zcode_sessions(&snap)[0];
         // 树内取或：子代理最新轮（ts1）无 turn_usage 落库 → 生成中
         assert!(m.generating, "{m:?}");
         // 生成中：速度取树内最近一笔完成请求（主会话 tm2，started_at 最新）
@@ -4329,7 +5002,7 @@ mod tests {
         ))
         .unwrap();
         let snap = collect_session_snapshot(&conn, 10, now).unwrap().0;
-        let m = &snap.sessions[0];
+        let m = &zcode_sessions(&snap)[0];
         assert!(!m.generating);
         let idle_speed = m.speed.expect("空闲应保持最近生成速率（DB fallback）");
         assert!((idle_speed - 37.5).abs() < 1e-9, "{idle_speed}");
@@ -4350,7 +5023,7 @@ mod tests {
         ))
         .unwrap();
         let snap = collect_session_snapshot(&conn, 10, now2).unwrap().0;
-        let m = &snap.sessions[0];
+        let m = &zcode_sessions(&snap)[0];
         assert!(m.generating, "最新轮未落 turn_usage → 生成中");
         assert_eq!(m.speed, None, "dur/ttft 列缺失 → 速度无数据");
         assert_eq!(m.ttft_ms, None);
@@ -4390,7 +5063,7 @@ mod tests {
         .unwrap();
 
         let snapshot = collect_session_snapshot(&conn, 10, now).unwrap().0;
-        let brief = &snapshot.sessions[0];
+        let brief = &zcode_sessions(&snapshot)[0];
         assert!(brief.generating);
         assert_eq!(brief.speed, None, "进行中最新请求不应泄漏上一笔速度");
         assert_eq!(brief.speed_state, SpeedState::Measuring);
@@ -4434,7 +5107,7 @@ mod tests {
         .unwrap();
 
         let first = collect_session_snapshot(&conn, 10, now).unwrap().0;
-        let brief = &first.sessions[0];
+        let brief = &zcode_sessions(&first)[0];
         assert!(brief.generating, "新 user 消息应进入生成中状态");
         assert_eq!(brief.round_key.as_deref(), Some("message:msg_new"));
         assert_eq!(
@@ -4452,7 +5125,7 @@ mod tests {
         )
         .unwrap();
         let second = collect_session_snapshot(&conn, 10, now).unwrap().0;
-        let brief = &second.sessions[0];
+        let brief = &zcode_sessions(&second)[0];
         assert!(brief.generating);
         assert_eq!(brief.round_key.as_deref(), Some("message:msg_new"));
         assert_eq!(brief.speed_quality, Some(SpeedQuality::Generation));
@@ -4717,7 +5390,7 @@ mod tests {
         ))
         .unwrap();
         let snap = collect_session_snapshot(&conn, 10, now).unwrap().0;
-        let m = &snap.sessions[0];
+        let m = &zcode_sessions(&snap)[0];
         // user 消息（子代理成员，树口径）晚于树内最新请求开始 → 生成中
         //（新轮已开始、首笔请求未完成，"–" 语义的 speed 数据不足）
         assert!(m.generating, "{m:?}");
@@ -4735,7 +5408,7 @@ mod tests {
         .unwrap();
         let snap = collect_session_snapshot(&conn, 10, now).unwrap().0;
         assert!(
-            !snap.sessions[0].generating,
+            !zcode_sessions(&snap)[0].generating,
             "user 消息早于最新请求开始且轮完成 → 空闲"
         );
 
@@ -4770,8 +5443,8 @@ mod tests {
         .unwrap();
         // 窗口 24 小时：陈旧消息让会话保留可见，但生成态必须回落
         let snap = collect_session_snapshot(&conn, 24 * 60, now).unwrap().0;
-        assert_eq!(snap.sessions.len(), 1, "{snap:?}");
-        let m = &snap.sessions[0];
+        assert_eq!(zcode_sessions(&snap).len(), 1, "{snap:?}");
+        let m = &zcode_sessions(&snap)[0];
         assert!(!m.generating, "超期孤儿消息不得永久冒充活跃轮: {m:?}");
         assert_eq!(m.speed_state, SpeedState::Recent, "空闲会话显示最近确认速度");
 
@@ -4784,7 +5457,7 @@ mod tests {
         ))
         .unwrap();
         let snap = collect_session_snapshot(&conn, 24 * 60, now).unwrap().0;
-        assert!(snap.sessions[0].generating, "新鲜消息应驱动生成中");
+        assert!(zcode_sessions(&snap)[0].generating, "新鲜消息应驱动生成中");
         drop(conn);
         let _ = fs::remove_file(&path);
     }

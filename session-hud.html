@@ -12,14 +12,19 @@
         配置；列表渲染在壳内完成，不引入 panel 的组件体系；另监听
         zbar://appearance-changed 同步主面板的语言与亮暗主题——语言变化
         重读词典全量重渲染，主题变化给 <html> 切 .dark 类，纯 CSS 生效）。
-      - 样式内联：尺寸常量（头部 30px / 会话行 56px / 模型速度行 20px /
-        折叠行 20px / 今日行 20px / 底部留白 8px / 空态总高 64px）与
-        Rust 侧 session_hud.rs 的 hud_height 计算一一对应——窗口高度由
-        Rust 侧按会话条数自适应，页面内容必须落在同样的尺寸栅格上，
-        否则会出现裁切或空白。栅格与 Rust 公式的对齐要点（V3 修复）：
-        今日行/折叠行的 border 用 box-sizing: border-box 收进 20px 内，
-        列表区与模型速度区各自的 1px border-bottom 由 Rust 公式的
-        HUD_LIST_BORDER_H / HUD_MODELS_BORDER_H 计入。
+      - 样式内联：尺寸常量（头部 30px / 组头 20px / 会话行 56px / 模型
+        速度行 20px / 组折叠行 20px / 今日行 20px / 底部留白 8px / 空态
+        总高 64px）与 Rust 侧 session_hud.rs 的 hud_height 计算一一对应
+        ——窗口高度由 Rust 侧按各组可见行数自适应，页面内容必须落在同样
+        的尺寸栅格上，否则会出现裁切或空白。栅格与 Rust 公式的对齐要点
+        （V3 修复）：今日行/折叠行/组头的 border 用 box-sizing:
+        border-box 收进 20px 内，列表区与模型速度区各自的 1px
+        border-bottom 由 Rust 公式的 HUD_LIST_BORDER_H /
+        HUD_MODELS_BORDER_H 计入。
+        分组结构（v2 契约）：每组一个 .hud-group 容器（.hud-group-head
+        组头 20px + .hud-row 会话行 + 该组溢出时一条 .hud-more 折叠行
+        20px），组头显示 agent 名与该 agent 今日 Σ；底部 #hud-today 为
+        全 agent 今日总合计（= Σ 各组组头今日值）。
         会话行三行制：项目行（状态点·项目名·短标识·模型）+ 核心指标行
        （Σ 累计 · × 请求 · 速度 t/s · TTFT）+ 分解行（↑ 输入 ↓ 输出
         ⟲ 缓存读），每行 nowrap + overflow hidden 防御极端长值。
@@ -409,8 +414,8 @@
       /* 会话列表：每行 56px × --hud-scale（HUD_ROW_H）。flex 容器允许
          收缩（flex-shrink 1 + min-height: 0）：自适应高度模式下窗口与
          内容恰好等高不出现滚动；用户拖拽出更矮的窗口时本区收缩并纵向
-         滚动（细滚动条，与深色壳协调），头部/模型速度区/今日行/折叠行
-         固定不滚 */
+         滚动（细滚动条，与深色壳协调），头部/模型速度区/今日行固定不
+         滚——组头/会话行/组折叠行都在本区内随内容滚动 */
       #hud-list {
         /* 有会话时也要填满用户拖出的额外高度；否则列表按内容高度停止，
            窗口下方透明，看起来像高度没有改变。min-height:0 允许拖矮时
@@ -439,6 +444,50 @@
       }
       #hud-list::-webkit-scrollbar-thumb:hover {
         background: var(--hud-scrollbar-hover);
+      }
+      /* agent 分组容器（v2 契约）：组头 + 会话行 + 该组溢出折叠行。
+         组头 20px × --hud-scale（HUD_GROUP_HEAD_H，与折叠行/今日行同
+         高）：agent 名（.hud-group-name，10px 加粗主色，分组标题强于
+         会话行内容）+ 该 agent 今日 Σ（.hud-group-sum，9px 淡色小字，
+         风格与今日行一致；今日 Σ 属数字信息随 showTokens 一并隐藏，
+         关闭时仅显示 agent 名，高度不变），随列表区滚动；组间分隔用
+         组头顶部细线（克制，仅第二组起出现，border 收进 20px 内与
+         Rust 公式一致）。纯汇总组（如 Cursor，无会话行）仅渲染组头 */
+      .hud-group {
+        display: flex;
+        flex-direction: column;
+      }
+      .hud-group + .hud-group > .hud-group-head {
+        border-top: 1px solid var(--hud-divider);
+      }
+      .hud-group-head {
+        height: calc(20px * var(--hud-scale));
+        flex: 0 0 calc(20px * var(--hud-scale));
+        box-sizing: border-box;
+        display: flex;
+        align-items: center;
+        padding: 0 10px;
+        background: var(--hud-bg);
+        font-size: calc(9px * var(--hud-scale));
+        color: var(--hud-text-2);
+        font-variant-numeric: tabular-nums;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      /* 组头 agent 名（强化层）：10px 加粗主色，分组标题视觉层级高于
+         会话行项目名（.hud-project 已降为 500），纠正"标题弱于内容" */
+      .hud-group-name {
+        font-size: calc(10px * var(--hud-scale));
+        font-weight: 700;
+        color: var(--hud-text);
+      }
+      /* 组头今日 Σ 数据段（弱化层）：沿用 9px 淡色 + tabular-nums 的
+         数字风格，数字信息不与 agent 名争夺视觉焦点 */
+      .hud-group-sum {
+        font-size: calc(9px * var(--hud-scale));
+        color: var(--hud-text-2);
+        font-variant-numeric: tabular-nums;
       }
       .hud-row {
         height: calc(56px * var(--hud-scale));
@@ -485,7 +534,7 @@
       }
       .hud-project {
         font-size: calc(10px * var(--hud-scale));
-        font-weight: 600;
+        font-weight: 500;
         color: var(--hud-text);
         white-space: nowrap;
         overflow: hidden;
@@ -591,30 +640,31 @@
         font-size: calc(10px * var(--hud-scale));
         color: var(--hud-text-3);
       }
-      /* 折叠提示行：20px × --hud-scale（HUD_MORE_H）。border 收进高度
-         （box-sizing: border-box，V3 修复：content-box 下实际 21px，
-         Rust 公式按 20px 计导致窗口比内容矮、末行被裁） */
-      #hud-more {
+      /* 组内折叠提示行：20px × --hud-scale（HUD_MORE_H），渲染在所属
+         .hud-group 容器尾部（每组一条，"还有 N 个会话"）。border 收进
+         高度（box-sizing: border-box，V3 修复：content-box 下实际 21px，
+         Rust 公式按 20px 计导致窗口比内容矮、末行被裁）。行在列表容器
+         内部，不再自带外框/圆角——底部圆角由 #hud-list 容器统一承担，
+         顶部细线与上方末行分隔 */
+      .hud-more {
         height: calc(20px * var(--hud-scale));
         flex: 0 0 calc(20px * var(--hud-scale));
         box-sizing: border-box;
-        display: none;
+        display: flex;
         align-items: center;
         justify-content: center;
-        background: var(--hud-bg);
-        border: 1px solid var(--hud-border);
-        border-top: none;
-        border-radius: 0 0 12px 12px;
+        border-top: 1px solid var(--hud-divider-soft);
         font-size: calc(9px * var(--hud-scale));
         color: var(--hud-text-3);
       }
-      /* 今日合计行（HUD_TODAY_H，与折叠行同高同款）：列表下方、折叠行
-         之上的窗口级汇总（今日 Σ x · × n，自然日本地零点起全库合计，
-         随 showTokens 配置隐藏——关闭数据行时整行不显示；今日无请求
-         或空态不显示——Rust 侧窗口高度据此增减，页面内容须落在同一
-         尺寸栅格）。折叠行显示时由折叠行承担底部圆角，本行去圆角；
-         折叠行隐藏时本行承担。border 收进高度（box-sizing: border-box，
-         V3 修复同折叠行） */
+      /* 今日合计行（HUD_TODAY_H，与折叠行同高同款）：列表下方、模型
+         速度区之上的全 agent 今日总合计（今日 Σ x · × n = Σ 各组组头
+         今日值，自然日本地零点起，随 showTokens 配置隐藏——关闭数据行
+         时整行不显示；今日无请求或无可见会话行不显示——Rust 侧窗口高
+         度据此增减，页面内容须落在同一尺寸栅格）。组折叠行随组渲染在
+         列表区内，不再参与本行的圆角协作；底部圆角按最下方可见元素承
+         担（renderShell：今日行 > 模型速度区 > 列表容器）。border 收进
+         高度（box-sizing: border-box，V3 修复同折叠行） */
       #hud-today {
         height: calc(20px * var(--hud-scale));
         flex: 0 0 calc(20px * var(--hud-scale));
@@ -706,12 +756,12 @@
       .hud-ms-slow {
         color: var(--hud-err);
       }
-      /* 圆角闭环：列表区（首行/末行）与头尾容器拼接。无折叠行时最下方
-         可见行承担底部圆角（renderShell 按今日行 > 模型速度区 > 列表的
-         优先级切换 rounded-bottom 类）；空态无这些行，由 #hud-empty
-         自带同半径底角（见上）。注意：本注释此前缺失闭合符，
-         导致下面三条规则连同 .hidden（空态显隐）整段被浏览器当注释
-         吞掉——空态元素永远 display:flex 与列表同屏、会话行被挤压
+      /* 圆角闭环：列表区（组头/会话行/组折叠行都在容器内）与头尾容器
+         拼接。最下方可见元素承担底部圆角（renderShell 按今日行 > 模型
+         速度区 > 列表容器的优先级切换 rounded-bottom 类）；空态无这些
+         行，由 #hud-empty 自带同半径底角（见上）。注意：本注释此前缺失
+         闭合符，导致下面三条规则连同 .hidden（空态显隐）整段被浏览器当
+         注释吞掉——空态元素永远 display:flex 与列表同屏、会话行被挤压
          裁切（V3 修复的高度/同屏 Bug 根因之一）。列表非空时的 1px
          border-bottom 兼作与模型速度区/今日行的分隔线，高度由 Rust 公
          式 HUD_LIST_BORDER_H 计入 */
@@ -730,7 +780,7 @@
   <body>
     <div id="hud-root">
       <div id="hud-header" data-tauri-drag-region="">
-        <span id="hud-title" data-tauri-drag-region="">ZCode Sessions</span>
+        <span id="hud-title" data-tauri-drag-region="">本日活跃会话</span>
         <span id="hud-count" data-tauri-drag-region=""></span>
         <!-- 头部右侧两个小按钮（与标题/计数同排，计数靠 margin-left auto
              顶到右侧）。设置按钮：点击在 header 下方开关设置面板；
@@ -828,7 +878,6 @@
       <div id="hud-empty" class="hidden"></div>
       <div id="hud-models"></div>
       <div id="hud-today"></div>
-      <div id="hud-more"></div>
     </div>
     <script type="module" src="/src/session-hud-main.ts"></script>
   </body>

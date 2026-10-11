@@ -34,6 +34,11 @@ use crate::pricing::config_dir;
 
 // ===== 路径定位 =====
 
+/// 会话窗口查询（query_window_sessions）内层活跃扫查的行数上限（窗口内
+/// 最近 N 笔请求，started_at 降序 LIMIT）：窗口内行数可能很大，以最近 N
+/// 笔为界保证查询成本有硬上限；最新会话（排序前几名）必然在内层结果中
+const WINDOW_SCAN_ROWS: i64 = 2000;
+
 /// Claude projects 目录路径（不做存在性检查，供诊断展示）。
 /// 环境变量 ZBAR_CLAUDE_HOME（指向 .claude 根目录）优先，否则 ~/.claude/projects。
 fn projects_dir_path() -> PathBuf {
@@ -804,6 +809,108 @@ pub fn query_stats(from_ms: i64, to_ms: i64) -> Result<db::Stats, String> {
         earliest_ms,
         latest_ms,
         current_model: db::query_current_model(&conn),
+    })
+}
+
+/// 会话悬浮窗（session_hud）用：查询活跃窗口内的会话行。
+///
+/// 口径与 ZCode 组一致：
+/// - 活跃判定 = `started_at >= window_start`（窗口内有 model_usage 落库）；
+/// - 行累计为会话**全生命周期**合计（外层对窗口内会话集合不再加时间
+///   过滤）：↑ = Σ max(0, input − cache_read)（SQLite 双参 MAX 逐行
+///   clamp）、↓ = Σ output、⟲ = Σ cache_read、× = 行数；另产会话级
+///   请求平均速度原料（仅统计 duration_ms > 0 行的 Σoutput 与
+///   Σduration，NULL/0/负耗时行分子分母一并排除）；
+/// - 排序按最近活动倒序（MAX(started_at) DESC），只取前 `limit` 条；
+/// - `total_active` 为窗口内 distinct 会话总数（含未展示的，供折叠
+///   提示"还有 N 个"）。
+///
+/// 项目目录取该会话最近一行非空 cwd（model_usage 自带 cwd/project_key
+/// 列，目录末段由 session_hud 侧解析）。查询前先增量导入（5 秒节流，
+/// 未安装/失败静默返回 Err，由调用方跳过该组）。
+pub fn query_window_sessions(
+    window_start_ms: i64,
+    limit: usize,
+) -> Result<crate::session_hud::AgentWindowSessions, String> {
+    import_incremental()?;
+    let conn = open_claude_db()?;
+    query_window_sessions_at(&conn, window_start_ms, limit)
+}
+
+/// query_window_sessions 的纯查询内核（连接注入版，供单元测试）。
+pub(crate) fn query_window_sessions_at(
+    conn: &Connection,
+    window_start_ms: i64,
+    limit: usize,
+) -> Result<crate::session_hud::AgentWindowSessions, String> {
+    // 内层子查询按 started_at 索引倒序取窗口内最近 N 笔的会话（成本
+    // 硬上限，绝不全表扫），外层对命中的会话全生命周期聚合后取最新
+    // `limit` 条
+    let sql = "SELECT session_id,
+            MAX(started_at),
+            COALESCE(SUM(MAX(0, input_tokens - cache_read_input_tokens)), 0),
+            COALESCE(SUM(output_tokens), 0),
+            COALESCE(SUM(cache_read_input_tokens), 0),
+            COUNT(*),
+            GROUP_CONCAT(DISTINCT model_id),
+            (SELECT m2.cwd FROM model_usage m2
+              WHERE m2.session_id = model_usage.session_id
+                AND m2.cwd IS NOT NULL AND m2.cwd != ''
+              ORDER BY m2.started_at DESC LIMIT 1),
+            -- 请求平均速度原料：仅统计 duration_ms > 0 的行，分子分母
+            -- 同范围（NULL/0/负耗时行一并排除，防短耗时行放大均值）
+            COALESCE(SUM(CASE WHEN duration_ms > 0 THEN output_tokens ELSE 0 END), 0),
+            COALESCE(SUM(CASE WHEN duration_ms > 0 THEN duration_ms ELSE 0.0 END), 0.0)
+         FROM model_usage
+         WHERE session_id IN (
+            SELECT session_id FROM model_usage
+             WHERE started_at >= ?1 ORDER BY started_at DESC LIMIT ?2
+         )
+         GROUP BY session_id
+         ORDER BY 2 DESC
+         LIMIT ?3";
+    let mut stmt = conn
+        .prepare(sql)
+        .map_err(|e| format!("准备 Claude 会话窗口查询失败: {e}"))?;
+    let sessions = stmt
+        .query_map(
+            rusqlite::params![window_start_ms, WINDOW_SCAN_ROWS, limit as i64],
+            |row| {
+                Ok(crate::session_hud::AgentSessionBrief {
+                    session_id: row.get(0)?,
+                    last_at: row.get(1)?,
+                    in_tokens: row.get(2)?,
+                    out_tokens: row.get(3)?,
+                    cache_read: row.get(4)?,
+                    req_count: row.get(5)?,
+                    models: row.get(6)?,
+                    project: row.get(7)?,
+                    // duration_ms 为 REAL，SUM 结果读 f64
+                    speed_out_tokens: row.get(8)?,
+                    speed_ms: row.get(9)?,
+                    // claude 无生成中/TTFT/生成口径数据源（transcript 信号
+                    // 仅 kimi 有），增强字段恒默认值
+                    generating: false,
+                    ttft_ms: None,
+                    gen_out_tokens: 0,
+                    gen_ms: 0.0,
+                })
+            },
+        )
+        .map_err(|e| format!("读取 Claude 会话窗口失败: {e}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("读取 Claude 会话窗口失败: {e}"))?;
+    let total_active: usize = conn
+        .query_row(
+            "SELECT COUNT(DISTINCT session_id) FROM model_usage WHERE started_at >= ?1",
+            [window_start_ms],
+            |row| row.get::<_, i64>(0),
+        )
+        .map(|n| n.max(0) as usize)
+        .map_err(|e| format!("统计 Claude 活跃会话数失败: {e}"))?;
+    Ok(crate::session_hud::AgentWindowSessions {
+        total_active,
+        sessions,
     })
 }
 
@@ -2187,5 +2294,99 @@ mod tests {
             Ok(v) => eprintln!("[test] 实时额度: {v:?}"),
             Err(e) => eprintln!("[test] 实时额度不可用（不展示额度块）: {e}"),
         }
+    }
+    /// 会话悬浮窗窗口查询（query_window_sessions_at）的 SQL 聚合口径：
+    /// 活跃判定看窗口、累计看全生命周期、cwd 取会话最近一行非空值、
+    /// 请求平均速度仅统计 duration_ms > 0 行（NULL/0 排除）、
+    /// total_active 含未展示会话、limit 截断。
+    #[test]
+    fn hud_window_sessions_aggregation() {
+        let tmp = std::env::temp_dir().join(format!("zbar-claude-hudwin-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).expect("创建临时目录失败");
+        let db_path = tmp.join("claude-hudwin.sqlite");
+        let conn = Connection::open(&db_path).expect("打开临时库失败");
+        // 复用生产建表（open_claude_db 写死 ~/.zbar 路径，测试直接手建
+        // 同构最小表；列集与 query_window_sessions_at 用到的列一致）
+        conn.execute_batch(
+            "CREATE TABLE model_usage (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                dedupe_key TEXT NOT NULL,
+                started_at INTEGER NOT NULL,
+                model_id TEXT NOT NULL DEFAULT '',
+                input_tokens INTEGER NOT NULL DEFAULT 0,
+                output_tokens INTEGER NOT NULL DEFAULT 0,
+                cache_read_input_tokens INTEGER NOT NULL DEFAULT 0,
+                cache_creation_input_tokens INTEGER NOT NULL DEFAULT 0,
+                reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+                computed_total_tokens INTEGER NOT NULL DEFAULT 0,
+                cwd TEXT,
+                project_key TEXT,
+                duration_ms REAL,
+                UNIQUE(dedupe_key));
+             CREATE INDEX idx_mu_started ON model_usage(started_at);
+             CREATE INDEX idx_mu_session ON model_usage(session_id);",
+        )
+        .expect("建测试表失败");
+        let now = 1_000_000_000_000_i64;
+        let win = now - 10 * 60_000;
+        conn.execute_batch(&format!(
+            "INSERT INTO model_usage
+                (session_id, dedupe_key, started_at, model_id,
+                 input_tokens, output_tokens, cache_read_input_tokens, cwd, duration_ms)
+             VALUES
+                -- s-a：窗口内两行；cwd 取最近一行（第二行 /b 覆盖第一行 /a）；
+                -- 两行均有有效耗时 → 速度原料 Σout = 4 / Σms = 2500
+                ('s-a', 'd1', {a}, 'claude-x', 100, 3, 40, '/Users/a/proj-a', 2000.0),
+                ('s-a', 'd2', {b}, 'claude-y', 10, 1, 0, '/Users/a/proj-b', 500.0),
+                -- s-b：窗口内仅一小行，早期大额行计入全生命周期累计；
+                -- 耗时 NULL / 0 的行不参与速度聚合
+                ('s-b', 'd3', {early}, 'claude-x', 9000, 8000, 100, NULL, NULL),
+                ('s-b', 'd4', {c}, 'claude-x', 10, 1, 0, NULL, 0.0),
+                -- s-ghost：仅窗口外活跃 → 不算活跃
+                ('s-ghost', 'd5', {early2}, 'claude-x', 5, 5, 0, NULL, NULL);",
+            a = now - 120_000,
+            b = now - 30_000,
+            c = now - 60_000,
+            early = now - 3 * 3600_000,
+            early2 = now - 5 * 3600_000,
+        ))
+        .expect("写入样例行失败");
+
+        let found = query_window_sessions_at(&conn, win, 3).expect("窗口查询失败");
+        assert_eq!(found.total_active, 2, "s-ghost 窗口外不计活跃");
+        assert_eq!(found.sessions.len(), 2);
+        // 排序：最近活动倒序（s-a 的最新行比 s-b 新）
+        assert_eq!(found.sessions[0].session_id, "s-a");
+        assert_eq!(found.sessions[1].session_id, "s-b");
+        // s-a：↑ = 60 + 10 = 70、↓ = 4、⟲ = 40、× = 2；cwd 取最近一行 /b
+        let s_a = &found.sessions[0];
+        assert_eq!(s_a.in_tokens, 70);
+        assert_eq!(s_a.out_tokens, 4);
+        assert_eq!(s_a.cache_read, 40);
+        assert_eq!(s_a.req_count, 2);
+        assert_eq!(s_a.models.as_deref(), Some("claude-x,claude-y"));
+        assert_eq!(s_a.project.as_deref(), Some("/Users/a/proj-b"));
+        // s-a 速度原料：两行耗时均有效 → Σout = 4、Σms = 2500
+        // （换算为 1.6 t/s 由 brief_from_agent_row 完成）
+        assert_eq!(s_a.speed_out_tokens, 4);
+        assert!((s_a.speed_ms - 2500.0).abs() < f64::EPSILON);
+        // s-b：全生命周期 ↑ = 8900 + 10、cwd 全空 → None；
+        // NULL/0 耗时行全部排除 → 无速度原料
+        let s_b = &found.sessions[1];
+        assert_eq!(s_b.in_tokens, 8910);
+        assert_eq!(s_b.out_tokens, 8001);
+        assert_eq!(s_b.project, None);
+        assert_eq!(s_b.speed_out_tokens, 0);
+        assert!((s_b.speed_ms - 0.0).abs() < f64::EPSILON);
+
+        // limit 截断：只取最新 1 条，total_active 仍为窗口内全部
+        let found = query_window_sessions_at(&conn, win, 1).expect("limit 查询失败");
+        assert_eq!(found.total_active, 2);
+        assert_eq!(found.sessions.len(), 1);
+        assert_eq!(found.sessions[0].session_id, "s-a");
+
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }

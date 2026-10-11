@@ -17,11 +17,15 @@
 //!   递增且按文件隔离（同一 session 下多个 agent 文件不得共享序号序列）；
 //!   续读从该文件已入库最大序号恢复，文件被重写（变短）时从 0 重计，
 //!   UNIQUE 键 + "总量更大者胜" upsert 保证幂等。
-//! - **耗时数据**：无流式首 token 事件，TTFT 恒 None（同 Claude 只有总耗时
-//!   的口径）。总耗时用事件时间差推算：同文件内顺序处理时维护"最近一条
-//!   llm.request 的 time"，usage.record 到来时取差值作 duration_ms——连续
-//!   多条 llm.request（重试）天然取最近一条即成功那次；差值 <100ms 或
-//!   >600s（10 分钟）或无前置请求视为脏配对写 NULL，不兜底。
+//! - **耗时数据**：TTFT 与流式时长来自 type=transcript.ops 行的 step.upsert
+//!   （step.llmTiming.llmFirstTokenLatencyMs / llmStreamDurationMs，同一
+//!   (turnId, stepId) 后到的 upsert 全字段覆盖先到的），入 step_meta 表供
+//!   悬浮窗生成中判定 / TTFT / 生成口径速度聚合；旧版 CLI / 旧会话无该事件
+//!   时 step_meta 为空，功能自然回退请求平均口径（≈），不报错。总耗时仍用
+//!   事件时间差推算：同文件内顺序处理时维护"最近一条 llm.request 的 time"，
+//!   usage.record 到来时取差值作 duration_ms——连续多条 llm.request（重试）
+//!   天然取最近一条即成功那次；差值 <100ms 或 >600s（10 分钟）或无前置
+//!   请求视为脏配对写 NULL，不兜底。
 //! - **额度来源**：会话文件里没有 rate_limits，订阅额度实时调
 //!   GET {apiBase}/usages（Kimi Code CLI 内部同款）。域名按 CLI 的
 //!   ~/.kimi-code/region 分流：global → api.kimi.ai/coding/v1，否则（含
@@ -78,6 +82,16 @@ pub fn sessions_dir() -> Result<PathBuf, String> {
 fn kimi_db_path() -> Result<PathBuf, String> {
     Ok(config_dir()?.join("kimi.sqlite"))
 }
+
+/// 会话窗口查询（query_window_sessions）内层活跃扫查的行数上限（窗口内
+/// 最近 N 笔请求，started_at 降序 LIMIT）：窗口内行数可能很大，以最近 N
+/// 笔为界保证查询成本有硬上限；最新会话（排序前几名）必然在内层结果中
+const WINDOW_SCAN_ROWS: i64 = 2000;
+
+/// 生成中判定的 step 新鲜度窗口（毫秒）：CLI 被杀 / 崩溃时 running 的 step
+/// 永远停留在 running（不会再有 completed 覆盖），超过该窗口仍 running 的
+/// step 视为陈旧残留，回退空闲，防止误判常驻"生成中"。
+const GENERATING_FRESH_MS: i64 = 10 * 60_000;
 
 /// 打开（必要时创建）导入库并确保表结构就绪。这是自有库，读写均可用。
 /// 与 claude.sqlite 同构，含 duration_ms 列（值来自 llm.request→usage.record
@@ -140,7 +154,22 @@ fn open_kimi_db_at(path: &Path) -> Result<Connection, String> {
             cwd         TEXT,
             project_key TEXT,
             captured_at INTEGER
-         );",
+         );
+         CREATE TABLE IF NOT EXISTS step_meta (
+            session_id TEXT NOT NULL,
+            file_path  TEXT    NOT NULL,   -- wire.jsonl 相对路径（与 dedupe_key 文件段同口径）
+            turn_id    INTEGER NOT NULL,
+            step_key   TEXT    NOT NULL,   -- stepId 原值的字符串化
+            state      TEXT    NOT NULL,   -- running/completed/interrupted/failed
+            started_at INTEGER,            -- startedAt ISO 解析后的毫秒；失败 NULL
+            ended_at   INTEGER,            -- endedAt ISO 解析后的毫秒；失败 NULL
+            ttft_ms    REAL,               -- llmTiming.llmFirstTokenLatencyMs
+            stream_ms  REAL,               -- llmTiming.llmStreamDurationMs
+            output_tokens INTEGER NOT NULL DEFAULT 0,  -- step usage.output（生成速度分子）
+            updated_at INTEGER NOT NULL DEFAULT 0,     -- 事件行 time（毫秒），覆盖时取 max
+            PRIMARY KEY (file_path, turn_id, step_key)
+         );
+         CREATE INDEX IF NOT EXISTS idx_kimi_step_meta_session ON step_meta(session_id);",
     )
     .map_err(|e| format!("初始化 Kimi 导入库失败: {e}"))?;
     ensure_duration_column(&conn)?;
@@ -196,6 +225,83 @@ struct UsagePayload {
 impl UsagePayload {
     fn computed_total(&self) -> i64 {
         self.input_other + self.output + self.input_cache_read + self.input_cache_creation
+    }
+}
+
+/// transcript.ops 事件行（宽松解析：字段全 Option + default，未知字段自动
+/// 忽略，CLI 协议演进自然兼容）。形态：
+/// `{type:"transcript.ops", agent_id?, ops: TranscriptOperation[], seq?, time?}`。
+/// 本模块只消费 `op === "step.upsert"`（step 状态与 llmTiming 是悬浮窗生成
+/// 中判定 / TTFT / 生成口径速度的数据源），其余 op（turn/frame/marker/task/
+/// todo 等）靠 ops 数组内逐条过滤跳过。注意外层事件字段是 snake_case，step
+/// 内字段是 camelCase。
+#[derive(Debug, Default, Deserialize)]
+struct TranscriptOpsLine {
+    #[serde(default)]
+    ops: Vec<StepUpsertOp>,
+}
+
+/// ops 数组单条操作。只关心 op = "step.upsert"；其余 op 的字段反序列化为
+/// 全 None（宽松容错），由调用方按 op 名过滤，不入库。
+#[derive(Debug, Default, Deserialize)]
+struct StepUpsertOp {
+    #[serde(default)]
+    op: Option<String>,
+    /// 事件层 turnId（step 内另有 turnId，两者取先非空者优先）
+    #[serde(rename = "turnId", default)]
+    turn_id: Option<i64>,
+    #[serde(default)]
+    step: Option<StepPayload>,
+}
+
+/// step.upsert 的 step 载荷（camelCase 字段；字段缺省不报错防协议演进）。
+#[derive(Debug, Default, Deserialize)]
+struct StepPayload {
+    /// stepId 原值（string | number），step_meta 主键组成部分；缺失/空串/
+    /// 其他类型跳过该 op（无法安全构成主键）
+    #[serde(rename = "stepId", default)]
+    step_id: Option<serde_json::Value>,
+    #[serde(rename = "turnId", default)]
+    turn_id: Option<i64>,
+    /// running | completed | interrupted | failed；未知值原样入库，查询侧
+    /// 只认 running（生成中）与 completed（TTFT）
+    #[serde(default)]
+    state: Option<String>,
+    /// ISO8601 字符串（RFC3339 解析，失败置 None——同 resetTime 口径）
+    #[serde(rename = "startedAt", default)]
+    started_at: Option<String>,
+    #[serde(rename = "endedAt", default)]
+    ended_at: Option<String>,
+    #[serde(default)]
+    usage: Option<StepUsagePayload>,
+    #[serde(rename = "llmTiming", default)]
+    llm_timing: Option<LlmTimingPayload>,
+}
+
+/// step 级用量（只取 output 作生成速度分子，其余字段忽略）。
+#[derive(Debug, Default, Deserialize)]
+struct StepUsagePayload {
+    #[serde(default)]
+    output: i64,
+}
+
+/// step 级 LLM 计时。llmFirstTokenLatencyMs 即 TTFT，llmStreamDurationMs
+/// 为流式生成时长（毫秒），两者是生成口径速度的分子分母来源。
+#[derive(Debug, Default, Deserialize)]
+struct LlmTimingPayload {
+    #[serde(rename = "llmFirstTokenLatencyMs", default)]
+    first_token_latency_ms: Option<f64>,
+    #[serde(rename = "llmStreamDurationMs", default)]
+    stream_duration_ms: Option<f64>,
+}
+
+/// stepId 原值 → 字符串化主键段：字符串原样（空串拒绝）、数字 to_string、
+/// 其余类型 None（跳过该 op，防脏数据构成不可预测的键）。
+fn step_key_of(value: &serde_json::Value) -> Option<String> {
+    match value {
+        serde_json::Value::String(s) if !s.is_empty() => Some(s.clone()),
+        serde_json::Value::Number(n) => Some(n.to_string()),
+        _ => None,
     }
 }
 
@@ -280,6 +386,70 @@ fn upsert_session_meta(
         ],
     )
     .map_err(|e| format!("写入 Kimi 会话项目维度失败: {e}"))?;
+    Ok(())
+}
+
+/// 写入/覆盖一条 step.upsert（upsert 幂等语义：同一 (file_path, turn_id,
+/// step_key) 的 step 会被 CLI 多次 upsert——state 从 running → completed，
+/// llmTiming 在完成后才填充——每次都是独立事件行追加，后到的全字段覆盖
+/// 先到的；仅 updated_at 取 max 保持单调，防御乱序/重放把时间戳带回退）。
+/// - session_id 由调用方按该文件目录归属直接传入（与 usage 导入同源），
+///   存列不靠路径推导，查询侧免 JOIN；
+/// - turnId 优先取 step 内的，缺失回退事件层的；
+/// - startedAt/endedAt 为 ISO 字符串，RFC3339 解析失败置 NULL（不报错）；
+/// - stepId 缺失/空串/其他类型直接跳过（无法安全构成主键）。
+fn upsert_step_meta(
+    tx: &rusqlite::Transaction<'_>,
+    session_id: &str,
+    file_key: &str,
+    op: &StepUpsertOp,
+    step: &StepPayload,
+    event_time_ms: i64,
+) -> Result<(), String> {
+    let Some(step_key) = step.step_id.as_ref().and_then(step_key_of) else {
+        return Ok(());
+    };
+    let Some(turn_id) = step.turn_id.or(op.turn_id) else {
+        return Ok(());
+    };
+    let state = step.state.clone().unwrap_or_default();
+    let started_at = step.started_at.as_deref().and_then(parse_reset_time_ms);
+    let ended_at = step.ended_at.as_deref().and_then(parse_reset_time_ms);
+    let ttft_ms = step.llm_timing.as_ref().and_then(|t| t.first_token_latency_ms);
+    let stream_ms = step
+        .llm_timing
+        .as_ref()
+        .and_then(|t| t.stream_duration_ms);
+    let output_tokens = step.usage.as_ref().map(|u| u.output).unwrap_or(0);
+    tx.execute(
+        "INSERT INTO step_meta
+            (session_id, file_path, turn_id, step_key, state, started_at, ended_at,
+             ttft_ms, stream_ms, output_tokens, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+         ON CONFLICT(file_path, turn_id, step_key) DO UPDATE SET
+            session_id = excluded.session_id,
+            state = excluded.state,
+            started_at = excluded.started_at,
+            ended_at = excluded.ended_at,
+            ttft_ms = excluded.ttft_ms,
+            stream_ms = excluded.stream_ms,
+            output_tokens = excluded.output_tokens,
+            updated_at = MAX(step_meta.updated_at, excluded.updated_at)",
+        rusqlite::params![
+            session_id,
+            file_key,
+            turn_id,
+            step_key,
+            state,
+            started_at,
+            ended_at,
+            ttft_ms,
+            stream_ms,
+            output_tokens,
+            event_time_ms,
+        ],
+    )
+    .map_err(|e| format!("写入 Kimi step 状态失败: {e}"))?;
     Ok(())
 }
 
@@ -619,6 +789,29 @@ fn import_one_file(
             }
             continue;
         }
+        // transcript.ops 行：逐条消费 step.upsert 维护 step_meta（生成中/
+        // TTFT/生成口径速度数据源），其余 op 与解析失败的行整行跳过（偏移
+        // 仍推进，不报错——旧版 CLI 无该事件时 step_meta 自然为空，功能
+        // 回退请求平均口径）。宽松结构：未知字段/未知 op 一律忽略。
+        if line.line_type.as_deref() == Some("transcript.ops") {
+            if let Ok(ops_line) = serde_json::from_slice::<TranscriptOpsLine>(&buf) {
+                for op in &ops_line.ops {
+                    if op.op.as_deref() == Some("step.upsert") {
+                        if let Some(step) = op.step.as_ref() {
+                            upsert_step_meta(
+                                &tx,
+                                &session_id,
+                                file_key,
+                                op,
+                                step,
+                                line.time.unwrap_or(0),
+                            )?;
+                        }
+                    }
+                }
+            }
+            continue;
+        }
         if line.line_type.as_deref() != Some("usage.record") {
             continue;
         }
@@ -831,6 +1024,209 @@ pub fn query_stats(from_ms: i64, to_ms: i64) -> Result<db::Stats, String> {
         earliest_ms,
         latest_ms,
         current_model: db::query_current_model(&conn),
+    })
+}
+
+/// 会话悬浮窗（session_hud）用：查询活跃窗口内的会话行。
+///
+/// 口径与 ZCode 组一致：
+/// - 活跃判定 = `started_at >= window_start`（窗口内有 model_usage 落库）；
+/// - 行累计为会话**全生命周期**合计（外层对窗口内会话集合不再加时间
+///   过滤）：↑ = Σ max(0, input − cache_read)（SQLite 双参 MAX 逐行
+///   clamp）、↓ = Σ output、⟲ = Σ cache_read、× = 行数；
+/// - 排序按最近活动倒序（MAX(started_at) DESC），只取前 `limit` 条；
+/// - `total_active` 为窗口内 distinct 会话总数（含未展示的，供折叠
+///   提示"还有 N 个"）。
+///
+/// 项目目录取 session_meta.cwd（导入器按会话首事件 upsert，session_id
+/// 主键等值查；无记录为 None，目录末段由 session_hud 侧解析）。查询前
+/// 先增量导入（5 秒节流，未安装/失败静默返回 Err，由调用方跳过该组）。
+///
+/// kimi 增强（AgentSessionBrief.generating/ttft_ms/gen_*）：命中会话再
+/// 聚合 step_meta（wire.jsonl transcript.ops 的 step.upsert）——生成中
+/// 判定（新鲜 running step + 10 分钟新鲜度保护）、最新完成 step 的 TTFT、
+/// 生成口径速度原料（Σoutput ÷ Σ流式时长）；无 transcript.ops 数据的
+/// 旧会话字段保持默认（空闲 / None / 0），由 session_hud 侧回退请求
+/// 平均速度口径。
+pub fn query_window_sessions(
+    window_start_ms: i64,
+    limit: usize,
+) -> Result<crate::session_hud::AgentWindowSessions, String> {
+    import_incremental()?;
+    let conn = open_kimi_db()?;
+    query_window_sessions_at(&conn, window_start_ms, limit, chrono::Utc::now().timestamp_millis())
+}
+
+/// step_meta 的会话级聚合结果（回填 AgentSessionBrief 的 kimi 增强字段）。
+#[derive(Debug, Default, Clone, PartialEq)]
+struct StepMetaAgg {
+    /// 存在新鲜 running step（生成中）
+    generating: bool,
+    /// 最新一笔完成 step 的 TTFT（毫秒，四舍五入取整）
+    ttft_ms: Option<i64>,
+    /// 生成口径速度分子：stream_ms>0 且 output_tokens>0 行的 Σoutput
+    gen_out_tokens: i64,
+    /// 生成口径速度分母：同范围行的 ΣllmStreamDurationMs（毫秒）
+    gen_ms: f64,
+}
+
+/// step_meta 会话级聚合（仅对主查询 LIMIT 命中的会话，一次 IN 查询，
+/// 避免逐会话 N 次查询）：
+/// - generating：存在 state='running' 且 started_at（缺失回退 updated_at）
+///   ≥ now − 新鲜度窗口的 step（GENERATING_FRESH_MS 保护，见常量注释）；
+/// - ttft：state='completed' 且 ttft_ms 非空的 step 中按完成参考时刻
+///   （ended_at 缺失回退 updated_at）最新一条的 ROUND 值（相关子查询，
+///   走 session_id 索引，命中会话个位数成本可忽略）；
+/// - gen 速度原料：Σoutput 与 Σstream_ms，仅统计 stream_ms > 0 且
+///   output_tokens > 0 的行（分子分母同范围，防 0 行稀释均值）。
+/// 无 step_meta 数据（旧版 CLI / 旧会话）返回空映射，调用方保持字段
+/// 默认值即自然回退请求平均口径。
+fn query_step_meta_aggregate(
+    conn: &Connection,
+    session_ids: &[String],
+    now_ms: i64,
+) -> Result<HashMap<String, StepMetaAgg>, String> {
+    if session_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let placeholders = vec!["?"; session_ids.len()].join(", ");
+    let sql = format!(
+        "SELECT sm.session_id,
+                COALESCE(MAX(CASE WHEN sm.state = 'running'
+                                   AND COALESCE(sm.started_at, sm.updated_at) >= ?1
+                                  THEN 1 ELSE 0 END), 0),
+                (SELECT CAST(ROUND(st.ttft_ms) AS INTEGER) FROM step_meta st
+                  WHERE st.session_id = sm.session_id
+                    AND st.state = 'completed' AND st.ttft_ms IS NOT NULL
+                  ORDER BY COALESCE(st.ended_at, st.updated_at) DESC
+                  LIMIT 1),
+                COALESCE(SUM(CASE WHEN sm.stream_ms > 0 AND sm.output_tokens > 0
+                                  THEN sm.output_tokens ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN sm.stream_ms > 0 AND sm.output_tokens > 0
+                                  THEN sm.stream_ms ELSE 0 END), 0.0)
+         FROM step_meta sm
+         WHERE sm.session_id IN ({placeholders})
+         GROUP BY sm.session_id"
+    );
+    // 绑定顺序：?1 = 新鲜度下限，其后依次为 IN 列表
+    let mut bind: Vec<rusqlite::types::Value> =
+        vec![rusqlite::types::Value::Integer(now_ms - GENERATING_FRESH_MS)];
+    bind.extend(
+        session_ids
+            .iter()
+            .map(|s| rusqlite::types::Value::Text(s.clone())),
+    );
+    let mut stmt = conn
+        .prepare(&sql)
+        .map_err(|e| format!("准备 Kimi step 聚合查询失败: {e}"))?;
+    let rows = stmt
+        .query_map(rusqlite::params_from_iter(bind.iter()), |row| {
+            let ttft: Option<i64> = row.get(2)?;
+            Ok((
+                row.get::<_, String>(0)?,
+                StepMetaAgg {
+                    generating: row.get::<_, i64>(1)? != 0,
+                    ttft_ms: ttft,
+                    gen_out_tokens: row.get(3)?,
+                    gen_ms: row.get(4)?,
+                },
+            ))
+        })
+        .map_err(|e| format!("读取 Kimi step 聚合失败: {e}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("读取 Kimi step 聚合失败: {e}"))?;
+    Ok(rows.into_iter().collect())
+}
+
+/// query_window_sessions 的纯查询内核（连接注入版，供单元测试；now_ms
+/// 由调用方传入保持纯函数可测——生成中新鲜度判定依赖当前时刻）。
+pub(crate) fn query_window_sessions_at(
+    conn: &Connection,
+    window_start_ms: i64,
+    limit: usize,
+    now_ms: i64,
+) -> Result<crate::session_hud::AgentWindowSessions, String> {
+    // 内层子查询按 started_at 索引倒序取窗口内最近 N 笔的会话（成本
+    // 硬上限，绝不全表扫），外层对命中的会话全生命周期聚合后取最新
+    // `limit` 条
+    let sql = "SELECT model_usage.session_id,
+            MAX(model_usage.started_at),
+            COALESCE(SUM(MAX(0, model_usage.input_tokens - model_usage.cache_read_input_tokens)), 0),
+            COALESCE(SUM(model_usage.output_tokens), 0),
+            COALESCE(SUM(model_usage.cache_read_input_tokens), 0),
+            COUNT(*),
+            GROUP_CONCAT(DISTINCT model_usage.model_id),
+            (SELECT sm.cwd FROM session_meta sm
+              WHERE sm.session_id = model_usage.session_id),
+            -- 请求平均速度原料：仅统计 duration_ms > 0 的行，分子分母
+            -- 同范围（NULL/0/负耗时行一并排除，防短耗时行放大均值）
+            COALESCE(SUM(CASE WHEN model_usage.duration_ms > 0 THEN model_usage.output_tokens ELSE 0 END), 0),
+            COALESCE(SUM(CASE WHEN model_usage.duration_ms > 0 THEN model_usage.duration_ms ELSE 0 END), 0)
+         FROM model_usage
+         WHERE model_usage.session_id IN (
+            SELECT session_id FROM model_usage
+             WHERE started_at >= ?1 ORDER BY started_at DESC LIMIT ?2
+         )
+         GROUP BY model_usage.session_id
+         ORDER BY 2 DESC
+         LIMIT ?3";
+    let mut stmt = conn
+        .prepare(sql)
+        .map_err(|e| format!("准备 Kimi 会话窗口查询失败: {e}"))?;
+    let mut sessions = stmt
+        .query_map(
+            rusqlite::params![window_start_ms, WINDOW_SCAN_ROWS, limit as i64],
+            |row| {
+                Ok(crate::session_hud::AgentSessionBrief {
+                    session_id: row.get(0)?,
+                    last_at: row.get(1)?,
+                    in_tokens: row.get(2)?,
+                    out_tokens: row.get(3)?,
+                    cache_read: row.get(4)?,
+                    req_count: row.get(5)?,
+                    models: row.get(6)?,
+                    project: row.get(7)?,
+                    // duration_ms 为 INTEGER，SUM 结果 rusqlite 读 f64 自动转换
+                    speed_out_tokens: row.get(8)?,
+                    speed_ms: row.get(9)?,
+                    // kimi 增强字段先填默认（无 step_meta 数据时的回退形态），
+                    // 下方按 step_meta 聚合结果回填
+                    generating: false,
+                    ttft_ms: None,
+                    gen_out_tokens: 0,
+                    gen_ms: 0.0,
+                })
+            },
+        )
+        .map_err(|e| format!("读取 Kimi 会话窗口失败: {e}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("读取 Kimi 会话窗口失败: {e}"))?;
+    // kimi 增强（生成中 / TTFT / 生成口径速度）：对 LIMIT 命中的会话集合
+    // 做一次 step_meta 聚合回填；无 step 数据的会话不在结果映射里，保持
+    // 上面构造时的默认值（空闲 / 无 TTFT / 无生成速度原料）即自然回退
+    if !sessions.is_empty() {
+        let ids: Vec<String> = sessions.iter().map(|s| s.session_id.clone()).collect();
+        let aggs = query_step_meta_aggregate(conn, &ids, now_ms)?;
+        for s in &mut sessions {
+            if let Some(agg) = aggs.get(&s.session_id) {
+                s.generating = agg.generating;
+                s.ttft_ms = agg.ttft_ms;
+                s.gen_out_tokens = agg.gen_out_tokens;
+                s.gen_ms = agg.gen_ms;
+            }
+        }
+    }
+    let total_active: usize = conn
+        .query_row(
+            "SELECT COUNT(DISTINCT session_id) FROM model_usage WHERE started_at >= ?1",
+            [window_start_ms],
+            |row| row.get::<_, i64>(0),
+        )
+        .map(|n| n.max(0) as usize)
+        .map_err(|e| format!("统计 Kimi 活跃会话数失败: {e}"))?;
+    Ok(crate::session_hud::AgentWindowSessions {
+        total_active,
+        sessions,
     })
 }
 
@@ -3350,5 +3746,339 @@ mod tests {
         // None（与 unknown key 的区别在于 key 被识别，语义同为撑不起窗口行）
         let hour5_no_pct = entry(vec![win("hour5", None, Some(1_787_828_325_000))], None);
         assert!(limits_from_quota_entry(&hour5_no_pct).is_none());
+    }
+    /// 会话悬浮窗窗口查询（query_window_sessions_at）的 SQL 聚合口径：
+    /// 活跃判定看窗口、累计看全生命周期（↑ 逐行 clamp / ⟲ / ×）、
+    /// 请求平均速度仅统计 duration_ms > 0 行（NULL/负值排除）、
+    /// total_active 含未展示会话、排序按最近活动倒序、limit 截断、
+    /// session_meta.cwd 作为项目目录。
+    #[test]
+    fn hud_window_sessions_aggregation() {
+        let tmp = std::env::temp_dir().join(format!("zbar-kimi-hudwin-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).expect("创建临时目录失败");
+        let db_path = tmp.join("kimi-hudwin.sqlite");
+        let conn = open_kimi_db_at(&db_path).expect("打开临时库失败");
+        let now = 1_000_000_000_000_i64;
+        let win = now - 10 * 60_000;
+        conn.execute_batch(&format!(
+            "INSERT INTO model_usage
+                (session_id, dedupe_key, started_at, model_id,
+                 input_tokens, output_tokens, cache_read_input_tokens, computed_total_tokens, duration_ms)
+             VALUES
+                -- s-new：窗口内 1 分钟前，两行（含 cache_read > input 的 clamp 行）；
+                -- 两行均有有效耗时 → 速度原料 Σout = 10 / Σms = 2500
+                ('s-new', 'd1', {a}, 'kimi-k2', 30, 7, 50, 37, 1000),
+                ('s-new', 'd2', {b}, 'kimi-k2', 100, 3, 40, 103, 1500),
+                -- s-old：全生命周期有早期大额行，但窗口内仅一小行（活跃判定）；
+                -- 耗时 NULL / 负值的行不参与速度聚合
+                ('s-old', 'd3', {early}, 'kimi-k2', 9000, 8000, 100, 17000, NULL),
+                ('s-old', 'd4', {c}, 'kimi-k3', 10, 1, 0, 11, -1),
+                -- s-ghost：仅窗口外活跃 → 不算活跃、不入结果
+                ('s-ghost', 'd5', {early2}, 'kimi-k2', 5, 5, 0, 10, 800);
+             INSERT INTO session_meta (session_id, cwd, project_key, captured_at)
+             VALUES ('s-new', '/Users/a/proj-n/', 'k', 1);",
+            a = now - 60_000,
+            b = now - 30_000,
+            c = now - 120_000,
+            early = now - 3 * 3600_000,
+            early2 = now - 5 * 3600_000,
+        ))
+        .expect("写入样例行失败");
+
+        let found = query_window_sessions_at(&conn, win, 3, now).expect("窗口查询失败");
+        assert_eq!(found.total_active, 2, "s-ghost 窗口外不计活跃");
+        assert_eq!(found.sessions.len(), 2);
+        // 排序：最近活动倒序（s-new > s-old）
+        assert_eq!(found.sessions[0].session_id, "s-new");
+        assert_eq!(found.sessions[1].session_id, "s-old");
+        // s-new 全生命周期累计：↑ = max(0,30−50) + (100−40) = 60、
+        // ↓ = 10、⟲ = 90、× = 2；项目目录来自 session_meta.cwd 原值
+        let s_new = &found.sessions[0];
+        assert_eq!(s_new.in_tokens, 60);
+        assert_eq!(s_new.out_tokens, 10);
+        assert_eq!(s_new.cache_read, 90);
+        assert_eq!(s_new.req_count, 2);
+        assert_eq!(s_new.models.as_deref(), Some("kimi-k2"));
+        assert_eq!(s_new.project.as_deref(), Some("/Users/a/proj-n/"));
+        // s-new 速度原料：两行耗时均有效 → Σout = 10、Σms = 2500
+        // （换算为 4.0 t/s 由 brief_from_agent_row 完成）
+        assert_eq!(s_new.speed_out_tokens, 10);
+        assert!((s_new.speed_ms - 2500.0).abs() < f64::EPSILON);
+        // s-old 全生命周期累计含窗口外大额行（活跃判定与累计口径分离）：
+        // ↑ = 8900 + 10、↓ = 8001、⟲ = 100、× = 2；NULL/负耗时行全部
+        // 排除 → 无速度原料
+        let s_old = &found.sessions[1];
+        assert_eq!(s_old.in_tokens, 8910);
+        assert_eq!(s_old.out_tokens, 8001);
+        assert_eq!(s_old.cache_read, 100);
+        assert_eq!(s_old.req_count, 2);
+        assert_eq!(s_old.project, None, "无 session_meta 记录时目录为 None");
+        assert_eq!(s_old.speed_out_tokens, 0);
+        assert!((s_old.speed_ms - 0.0).abs() < f64::EPSILON);
+        // 本库无 step_meta 数据（未导入 transcript.ops）：kimi 增强字段
+        // 全部默认——空闲 / 无 TTFT / 无生成口径原料（session_hud 侧对该
+        // 形态回退请求平均速度口径，见 brief_from_agent_row）
+        assert!(!s_new.generating, "无 step 数据不得误报生成中");
+        assert_eq!(s_new.ttft_ms, None);
+        assert_eq!(s_new.gen_out_tokens, 0);
+        assert!((s_new.gen_ms - 0.0).abs() < f64::EPSILON);
+
+        // limit 截断：只取最新 1 条，total_active 仍为窗口内全部
+        let found = query_window_sessions_at(&conn, win, 1, now).expect("limit 查询失败");
+        assert_eq!(found.total_active, 2);
+        assert_eq!(found.sessions.len(), 1);
+        assert_eq!(found.sessions[0].session_id, "s-new");
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// transcript.ops 解析（step_meta 端到端）：step.upsert 入库、同 step
+    /// 二次 upsert（running → completed + llmTiming）全字段覆盖、非
+    /// step.upsert op 与缺 stepId/turnId 的 op 跳过、ISO 时间解析毫秒、
+    /// 数字 stepId 字符串化、重复导入幂等、乱序重放 updated_at 取 max 不
+    /// 回退。
+    #[test]
+    fn transcript_ops_step_meta_parsing() {
+        let tmp = std::env::temp_dir().join(format!("zbar-kimi-ops-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let sessions_root = tmp.join("sessions");
+        let db_path = tmp.join("kimi-ops.sqlite");
+        let wire_dir = sessions_root.join("sess-step").join("agents").join("ag-1");
+        std::fs::create_dir_all(&wire_dir).expect("创建样例目录失败");
+        let started_iso = "2026-01-01T00:00:10Z";
+        let ended_iso = "2026-01-01T00:00:20.5Z";
+        let started_ms = chrono::DateTime::parse_from_rfc3339(started_iso)
+            .unwrap()
+            .timestamp_millis();
+        let ended_ms = chrono::DateTime::parse_from_rfc3339(ended_iso)
+            .unwrap()
+            .timestamp_millis();
+        std::fs::write(
+            wire_dir.join("wire.jsonl"),
+            format!(
+                concat!(
+                    r#"{{"type":"metadata","protocolVersion":"1.3","sessionId":"sess-step"}}"#,
+                    "\n",
+                    // 有效 usage 行（与 step_meta 无关，验证两类事件同文件共存）
+                    r#"{{"type":"usage.record","model":"kimi-k2","time":1000,"usage":{{"inputOther":10,"output":5}}}}"#,
+                    "\n",
+                    // 第 1 条 transcript.ops：turn.upsert 忽略 + step.upsert running
+                    r#"{{"type":"transcript.ops","agent_id":"ag-1","seq":1,"time":2000,"ops":[{{"op":"turn.upsert","turnId":0,"turn":{{"state":"active"}}}},{{"op":"step.upsert","turnId":1,"step":{{"stepId":"s-1","turnId":1,"state":"running","startedAt":"{started}"}}}}]}}"#,
+                    "\n",
+                    // 第 2 条：同 step 二次 upsert → completed + llmTiming 覆盖
+                    r#"{{"type":"transcript.ops","agent_id":"ag-1","seq":2,"time":3000,"ops":[{{"op":"step.upsert","turnId":1,"step":{{"stepId":"s-1","turnId":1,"state":"completed","startedAt":"{started}","endedAt":"{ended}","usage":{{"inputOther":100,"output":50}},"llmTiming":{{"llmRequestBuildMs":12,"llmFirstTokenLatencyMs":1234.6,"llmStreamDurationMs":8000.25}}}}}}]}}"#,
+                    "\n",
+                    // 第 3 条：数字 stepId 字符串化生效；缺 stepId / 两层都缺
+                    // turnId / frame.upsert 全部跳过
+                    r#"{{"type":"transcript.ops","agent_id":"ag-1","seq":3,"time":4000,"ops":[{{"op":"step.upsert","turnId":1,"step":{{"stepId":7,"turnId":1,"state":"running"}}}},{{"op":"step.upsert","turnId":2,"step":{{"turnId":2,"state":"running"}}}},{{"op":"step.upsert","step":{{"stepId":"s-x","state":"running"}}}},{{"op":"frame.upsert","frame":{{"text":"ignored"}}}}]}}"#,
+                    "\n",
+                    "不是 JSON 的脏行\n",
+                ),
+                started = started_iso,
+                ended = ended_iso,
+            ),
+        )
+        .expect("写入样例文件失败");
+
+        import_incremental_into(&sessions_root, &db_path).expect("增量导入失败");
+        let conn = Connection::open(&db_path).expect("打开临时库失败");
+        // usage.record 正常入库，step_meta 2 行（s-1 与 "7"）
+        assert_eq!(usage_count(&conn), (1, 15), "usage.record 应正常入库");
+        let expect_file_key = Path::new("sess-step")
+            .join("agents")
+            .join("ag-1")
+            .join("wire.jsonl")
+            .to_string_lossy()
+            .to_string();
+        let step = |step_key: &str| -> (String, String, i64, String, Option<i64>, Option<i64>, Option<f64>, Option<f64>, i64, i64) {
+            conn.query_row(
+                "SELECT session_id, file_path, turn_id, state, started_at, ended_at,
+                        ttft_ms, stream_ms, output_tokens, updated_at
+                 FROM step_meta WHERE step_key = ?1",
+                [step_key],
+                |row| {
+                    Ok((
+                        row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?,
+                        row.get(4)?, row.get(5)?, row.get(6)?, row.get(7)?,
+                        row.get(8)?, row.get(9)?,
+                    ))
+                },
+            )
+            .expect("查询 step_meta 失败")
+        };
+        // s-1：二次 upsert 覆盖为 completed，llmTiming/usage/ISO 时间全落库
+        let (sid, fp, turn, state, s_at, e_at, ttft, stream, out, upd) = step("s-1");
+        assert_eq!(sid, "sess-step");
+        assert_eq!(fp, expect_file_key, "file_path 应与 dedupe_key 文件段同口径");
+        assert_eq!(turn, 1);
+        assert_eq!(state, "completed", "后到的 upsert 应覆盖 running");
+        assert_eq!(s_at, Some(started_ms), "ISO startedAt 应解析为毫秒");
+        assert_eq!(e_at, Some(ended_ms), "ISO endedAt（带小数秒）应解析为毫秒");
+        assert_eq!(ttft, Some(1234.6), "llmFirstTokenLatencyMs 即 TTFT");
+        assert_eq!(stream, Some(8000.25), "llmStreamDurationMs 应落库");
+        assert_eq!(out, 50, "step usage.output 应落库");
+        assert_eq!(upd, 3000, "updated_at 取事件行 time");
+        // "7"：数字 stepId 字符串化，running 原样入库
+        let (sid, _, turn, state, s_at, e_at, ttft, stream, out, upd) = step("7");
+        assert_eq!(sid, "sess-step");
+        assert_eq!(turn, 1);
+        assert_eq!(state, "running");
+        assert_eq!(s_at, None);
+        assert_eq!(e_at, None);
+        assert_eq!(ttft, None);
+        assert_eq!(stream, None);
+        assert_eq!(out, 0);
+        assert_eq!(upd, 4000);
+
+        // 幂等：重复导入行数与内容不变
+        import_incremental_into(&sessions_root, &db_path).expect("二次导入失败");
+        let rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM step_meta", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 2, "重复导入不得产生重复/丢失");
+
+        // 追加乱序重放：同 step 的旧事件（time=2500 < 已入库 3000）覆盖
+        // 其余字段但 updated_at 保持 max 单调不回退
+        let wire_path = wire_dir.join("wire.jsonl");
+        let mut appended = std::fs::read_to_string(&wire_path).unwrap();
+        appended.push_str(
+            r#"{"type":"transcript.ops","agent_id":"ag-1","seq":4,"time":2500,"ops":[{"op":"step.upsert","turnId":1,"step":{"stepId":"s-1","turnId":1,"state":"completed","startedAt":"2026-01-01T00:00:10Z","endedAt":"2026-01-01T00:00:20.5Z","usage":{"output":50},"llmTiming":{"llmFirstTokenLatencyMs":1234.6,"llmStreamDurationMs":8000.25}}}]}"#,
+        );
+        appended.push('\n');
+        std::fs::write(&wire_path, appended).expect("追加样例行失败");
+        import_incremental_into(&sessions_root, &db_path).expect("追加后导入失败");
+        let (_, _, _, state, _, _, ttft, stream, out, upd) = step("s-1");
+        assert_eq!(state, "completed");
+        assert_eq!(ttft, Some(1234.6));
+        assert_eq!(stream, Some(8000.25));
+        assert_eq!(out, 50);
+        assert_eq!(upd, 3000, "乱序重放 updated_at 应保持 max 不回退");
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// step_meta 聚合（query_window_sessions_at 的 kimi 增强口径）：
+    /// 生成中判定（新鲜 running / 陈旧 running 超 10 分钟回退空闲 /
+    /// completed 恒空闲 / started_at 缺失回退 updated_at 参与新鲜度）、
+    /// TTFT 取完成参考时刻最新一条（ROUND 取整）、生成速度原料仅统计
+    /// stream_ms 与 output 同时 > 0 的行。
+    #[test]
+    fn hud_generating_ttft_and_gen_speed_from_step_meta() {
+        let tmp = std::env::temp_dir().join(format!("zbar-kimi-gen-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).expect("创建临时目录失败");
+        let db_path = tmp.join("kimi-gen.sqlite");
+        let conn = open_kimi_db_at(&db_path).expect("打开临时库失败");
+        let now = 10_000_000_000_000_i64;
+        let win = now - 10 * 60_000;
+        // 四个窗口内活跃会话（model_usage 是活跃判定与累计的数据源）
+        conn.execute_batch(&format!(
+            "INSERT INTO model_usage
+                (session_id, dedupe_key, started_at, model_id,
+                 input_tokens, output_tokens, cache_read_input_tokens, computed_total_tokens)
+             VALUES
+                ('s-live', 'd1', {a}, 'kimi-k2', 10, 5, 0, 15),
+                ('s-stale', 'd2', {b}, 'kimi-k2', 10, 5, 0, 15),
+                ('s-done', 'd3', {c}, 'kimi-k2', 10, 5, 0, 15),
+                ('s-mix', 'd4', {d}, 'kimi-k2', 10, 5, 0, 15);",
+            a = now - 60_000,
+            b = now - 120_000,
+            c = now - 90_000,
+            d = now - 30_000,
+        ))
+        .expect("写入 model_usage 失败");
+        // step_meta 样本（file_path 模拟真实形态：相对 sessions 根、带会话
+        // 前缀，跨会话不重；主键即 (file_path, turn_id, step_key)）
+        conn.execute_batch(&format!(
+            "INSERT INTO step_meta
+                (session_id, file_path, turn_id, step_key, state, started_at, ended_at,
+                 ttft_ms, stream_ms, output_tokens, updated_at)
+             VALUES
+                -- s-live：新鲜 running（1 分钟前开始）→ 生成中
+                ('s-live', 's-live/agents/main/wire.jsonl', 1, 'a', 'running', {live_started}, NULL,
+                 NULL, NULL, 0, {live_started}),
+                -- s-live：另一 agent 文件已完成 step，不影响任一 running 判定
+                ('s-live', 's-live/agents/sub/wire.jsonl', 1, 'a', 'completed', {old}, {old},
+                 100.0, 2000.0, 10, {old}),
+                -- s-stale：running 但开始于 11 分钟前 → 超新鲜度窗口回退空闲
+                ('s-stale', 's-stale/agents/main/wire.jsonl', 1, 'a', 'running', {stale_started}, NULL,
+                 NULL, NULL, 0, {stale_started}),
+                -- s-stale：completed 且 ttft 带小数 → ROUND 取整为 1235
+                ('s-stale', 's-stale/agents/main/wire.jsonl', 2, 'b', 'completed', {old}, {fresh},
+                 1234.6, 3000.0, 20, {fresh}),
+                -- s-done：两条 completed，TTFT 取完成参考时刻（ended_at）最新的 500
+                ('s-done', 's-done/agents/main/wire.jsonl', 1, 'a', 'completed', {old}, {done_old},
+                 100.0, 1000.0, 10, {done_old}),
+                ('s-done', 's-done/agents/main/wire.jsonl', 2, 'b', 'completed', {done_new_s}, {done_new_e},
+                 500.0, 4000.0, 30, {done_new_e}),
+                -- s-mix：一条有效（stream/out 双正）+ stream=0 + output=0 各一条
+                -- → 速度原料 Σout=400 / Σms=8000，零行全部排除
+                ('s-mix', 's-mix/agents/main/wire.jsonl', 1, 'a', 'completed', {old}, {old},
+                 900.0, 8000.0, 400, {old}),
+                ('s-mix', 's-mix/agents/main/wire.jsonl', 2, 'b', 'completed', {old}, {old},
+                 900.0, 0.0, 999, {old}),
+                ('s-mix', 's-mix/agents/main/wire.jsonl', 3, 'c', 'completed', {old}, {old},
+                 900.0, 5000.0, 0, {old});",
+            live_started = now - 60_000,
+            stale_started = now - 11 * 60_000,
+            old = now - 30 * 60_000,
+            fresh = now - 40_000,
+            done_old = now - 90_000,
+            done_new_s = now - 80_000,
+            done_new_e = now - 50_000,
+        ))
+        .expect("写入 step_meta 失败");
+
+        let found = query_window_sessions_at(&conn, win, 8, now).expect("窗口查询失败");
+        let by_id: HashMap<String, &crate::session_hud::AgentSessionBrief> = found
+            .sessions
+            .iter()
+            .map(|s| (s.session_id.clone(), s))
+            .collect();
+        assert_eq!(found.sessions.len(), 4, "四个窗口内活跃会话");
+
+        let live = by_id.get("s-live").expect("s-live 缺失");
+        assert!(live.generating, "新鲜 running step → 生成中");
+        assert_eq!(
+            live.ttft_ms,
+            Some(100),
+            "生成中也可带最近完成 step 的 TTFT（另一 agent 文件的 completed 行）"
+        );
+
+        let stale = by_id.get("s-stale").expect("s-stale 缺失");
+        assert!(
+            !stale.generating,
+            "running 超 10 分钟新鲜度窗口应回退空闲"
+        );
+        assert_eq!(
+            stale.ttft_ms,
+            Some(1235),
+            "TTFT 取 completed 行 ROUND 值"
+        );
+
+        let done = by_id.get("s-done").expect("s-done 缺失");
+        assert!(!done.generating, "completed 恒空闲");
+        assert_eq!(
+            done.ttft_ms,
+            Some(500),
+            "TTFT 应取完成参考时刻最新一条"
+        );
+        assert_eq!(done.gen_out_tokens, 40, "生成速度分子 Σoutput（两行）");
+        assert!((done.gen_ms - 5000.0).abs() < f64::EPSILON, "Σstream_ms");
+
+        let mix = by_id.get("s-mix").expect("s-mix 缺失");
+        assert!(!mix.generating);
+        assert_eq!(mix.ttft_ms, Some(900));
+        assert_eq!(
+            mix.gen_out_tokens, 400,
+            "stream_ms=0 的行应排除出分子"
+        );
+        assert!(
+            (mix.gen_ms - 8000.0).abs() < f64::EPSILON,
+            "output_tokens=0 的行应排除出分母"
+        );
+
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }
