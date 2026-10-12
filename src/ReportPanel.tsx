@@ -157,7 +157,7 @@ interface ReportData {
  * 报告页数据源注册表：id → 展示元数据 + 远端同步来源。新增 agent 数据源时
  * 在此登记（并在 load() 补对应本地加载分支），REPORT_AGENT_IDS 与 agent
  * 筛选行即自动扩展，无需再改筛选渲染。remoteSource 为远端同步协议里的
- * source 字符串（无远端支持的 agent 省略，如 Cursor / Kimi / dsh 明细仅本机）。
+ * source 字符串（无远端支持的 agent 省略，如 Cursor 明细仅本机）。
  * 品牌色不在此登记：由 AGENT_COLOR[id] 统一取（dsh / opencodego / minimax
  * 已注册）。
  *
@@ -171,10 +171,15 @@ const REPORT_SOURCE_REGISTRY = {
   codex: { label: "Codex", brand: "codex", remoteSource: "codex" },
   claude: { label: "Claude", brand: "claude", remoteSource: "claude" },
   cursor: { label: "Cursor", brand: "cursor" },
-  kimi: { label: "Kimi Code", brand: "kimi" },
-  // 纯本地采集型（本地 ~/.dsh 会话数据）：无远端同步来源，取数走 fetchDshUsage
-  // （stats + trend，无 rate_limits → 报告页额度区块本就不含该源）
-  dsh: { label: "DeepSeek Harness", brand: "dsh" },
+  // Kimi Code（本地 ~/.kimi-code 会话采集型）：本地取数走 fetchKimiUsage，
+  // remoteSource 是**后端来源名 "kimi"**（sync.rs 增量上传与 server 白名单
+  // 同值）。订阅额度（rate_limits）只来自本机 OAuth 查询，报告页额度区块
+  // 本就不含该源，合并的只有 stats/trend。
+  kimi: { label: "Kimi Code", brand: "kimi", remoteSource: "kimi" },
+  // 纯本地采集型（本地 ~/.dsh 会话数据）：取数走 fetchDshUsage（stats +
+  // trend，无 rate_limits → 报告页额度区块本就不含该源）；remoteSource 是
+  // **后端来源名 "dsh"**（sync.rs 增量上传与 server 白名单同值）。
+  dsh: { label: "DeepSeek Harness", brand: "dsh", remoteSource: "dsh" },
   // OpenCode（本地 opencode.db 采集型，Go 套餐额度是并列的另一条链路）：
   // 本地取数走 fetchOpencodeUsage（get_opencode_usage）；remoteSource 是
   // **后端来源名 "opencode"**（sync.rs 增量上传与 server 白名单都用它），
@@ -667,7 +672,8 @@ interface LocalResults {
   codex: LoadedSource | null;
   claude: LoadedSource | null;
   kimi: LoadedSource | null;
-  /** 纯本地采集型（本地 ~/.dsh 会话数据），与 Kimi 同构：无远端合并来源 */
+  /** DSH（本地 ~/.dsh 会话数据）：取数走 fetchDshUsage，键是 UI 侧 agent id
+   *  `dsh`（远端来源名同字面，见注册表 remoteSource） */
   dsh: LoadedSource | null;
   /** OpenCode（本地 opencode.db 采集型）：取数走 fetchOpencodeUsage，
    *  键是 UI 侧 agent id `opencodego`（远端来源名字面见注册表 remoteSource） */
@@ -680,11 +686,15 @@ interface LocalResults {
 }
 
 /** 远端阶段返回的数据（同步未启用 / 筛选仅本地时各字段为空）。
- *  仅登记有远端同步来源的 agent：Cursor / Kimi / dsh 明细只在本机。 */
+ *  仅登记有远端同步来源的 agent：Cursor 明细只在本机。 */
 interface RemoteResults {
   zai: RemoteUsage | null;
   codex: RemoteUsage | null;
   claude: RemoteUsage | null;
+  /** Kimi Code 明细已在 sync.rs 里按 source="kimi" 上传（server 白名单同值） */
+  kimi: RemoteUsage | null;
+  /** DSH 明细已在 sync.rs 里按 source="dsh" 上传（server 白名单同值） */
+  dsh: RemoteUsage | null;
   /** OpenCode 明细已在 sync.rs 里按 source="opencode" 上传（server 白名单同值） */
   opencodego: RemoteUsage | null;
   /** MiniMax Code 明细已在 sync.rs 里按 source="minimaxcode" 上传（白名单同值） */
@@ -740,10 +750,10 @@ function assembleReport(args: {
   addSourceAgent("zai", local.zai, remote?.zai ?? null);
   addSourceAgent("codex", local.codex?.source ?? null, remote?.codex ?? null);
   addSourceAgent("claude", local.claude?.source ?? null, remote?.claude ?? null);
-  // Kimi 无远端来源，只合并本机数据
-  addSourceAgent("kimi", local.kimi?.source ?? null, null);
-  // dsh（DeepSeek Harness）同样无远端来源，只合并本机快照
-  addSourceAgent("dsh", local.dsh?.source ?? null, null);
+  // Kimi：本机快照 + 远端（source="kimi"）；订阅额度仍只来自本机
+  addSourceAgent("kimi", local.kimi?.source ?? null, remote?.kimi ?? null);
+  // dsh（DeepSeek Harness）：本机快照 + 远端（source="dsh"），同款合并口径
+  addSourceAgent("dsh", local.dsh?.source ?? null, remote?.dsh ?? null);
   // OpenCode：本机快照 + 远端（source="opencode"，与 zai/codex/claude 同款
   // 合并口径）；同步未启用时 remote 为 null，等价于纯本机
   addSourceAgent(
@@ -1141,7 +1151,8 @@ export function ReportContent({
       agentVisibility.cursor && wantLocal
         ? safe(() => fetchCursorUsage(fromMs, toMs))
         : Promise.resolve(null);
-    // Kimi 首期无远端同步，只读本机快照（未安装时 safe 兜底为 null）
+    // Kimi 本机快照（未安装时 safe 兜底为 null）；远端部分见下面的
+    // remoteUsageFor（source="kimi"），额度字段不进报告页
     const localKimiPromise: Promise<LoadedSource | null> =
       agentVisibility.kimi && wantLocal
         ? safe(async () => {
@@ -1153,8 +1164,8 @@ export function ReportContent({
             return { source: { stats: snapshot.stats, trend: snapshot.trend } };
           })
         : Promise.resolve(null);
-    // dsh（DeepSeek Harness）同样只读本机（~/.dsh 会话数据，无远端同步，
-    // 快照无 rate_limits）；未安装 / 无会话目录时 safe 兜底为 null
+    // dsh（DeepSeek Harness）本机快照（~/.dsh 会话数据，快照无 rate_limits）；
+    // 未安装 / 无会话目录时 safe 兜底为 null，远端部分见 remoteUsageFor
     const localDshPromise: Promise<LoadedSource | null> =
       agentVisibility.dsh && wantLocal
         ? safe(async () => {
@@ -1207,7 +1218,7 @@ export function ReportContent({
         : { devices: deviceFilter, source };
     /** 有远端同步来源的 agent 统一走这里（source 字符串取自注册表）。 */
     const remoteUsageFor = (
-      id: "zai" | "codex" | "claude" | "opencodego" | "minimax"
+      id: "zai" | "codex" | "claude" | "kimi" | "dsh" | "opencodego" | "minimax"
     ) =>
       agentVisibility[id] && wantRemote
         ? safe(() =>
@@ -1219,6 +1230,10 @@ export function ReportContent({
     const remoteZaiPromise = remoteUsageFor("zai");
     const remoteCodexPromise = remoteUsageFor("codex");
     const remoteClaudePromise = remoteUsageFor("claude");
+    // Kimi 的远端 source 是 "kimi"（注册表 remoteSource），与 UI id 同字面
+    const remoteKimiPromise = remoteUsageFor("kimi");
+    // DSH 的远端 source 是 "dsh"（注册表 remoteSource），与 UI id 同字面
+    const remoteDshPromise = remoteUsageFor("dsh");
     // OpenCode 的远端 source 是 "opencode"（注册表 remoteSource），非 UI id
     const remoteOpencodePromise = remoteUsageFor("opencodego");
     // MiniMax Code 的远端 source 是 "minimaxcode"（注册表 remoteSource），非 UI id
@@ -1295,10 +1310,12 @@ export function ReportContent({
 
     // —— 远端阶段：独立异步，返回后合并进状态（不阻塞本地首屏）——
     try {
-      const [rz, rc, rcl, ro, rm] = await Promise.all([
+      const [rz, rc, rcl, rk, rd, ro, rm] = await Promise.all([
         remoteZaiPromise,
         remoteCodexPromise,
         remoteClaudePromise,
+        remoteKimiPromise,
+        remoteDshPromise,
         remoteOpencodePromise,
         remoteMinimaxPromise,
       ]);
@@ -1315,6 +1332,8 @@ export function ReportContent({
           zai: rz,
           codex: rc,
           claude: rcl,
+          kimi: rk,
+          dsh: rd,
           opencodego: ro,
           minimax: rm,
         },

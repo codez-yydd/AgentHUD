@@ -258,6 +258,13 @@ export async function listRemoteDevices(): Promise<DeviceInfo[]> {
   return invoke<DeviceInfo[]>("list_remote_devices");
 }
 
+/** 服务端出现过的 source 清单（去重）。用于「其他设备上传过某来源就显示
+ *  对应 tab」——本机没装该 CLI 时也能看到别的设备的用量。
+ *  未启用同步 / 服务器不可达时返回空数组（不报错）。 */
+export async function remoteSourcePresence(): Promise<string[]> {
+  return invoke<string[]>("remote_source_presence");
+}
+
 export async function getCleanupStatus(): Promise<CleanupStatus> {
   return invoke<CleanupStatus>("get_cleanup_status");
 }

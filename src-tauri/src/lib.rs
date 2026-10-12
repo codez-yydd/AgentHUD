@@ -1697,6 +1697,28 @@ async fn pending_upload_count() -> Result<i64, String> {
     .map_err(|e| format!("待上传统计任务失败: {e}"))?
 }
 
+/// remote_source_presence：服务端出现过的 source 清单（去重）。
+/// 前端用它判断「其他设备上传过哪些本地采集型来源」——本机没装该 CLI、
+/// 也没录过凭证时，仍然把对应 tab 显示出来（否则别的设备的数据在本机
+/// 没有任何入口可看）。复用 remote_models_cached 的 5 分钟缓存（该接口
+/// 返回的每条模型记录本就带 source 字段，无需额外的 HTTP 请求）；
+/// 未启用同步 / 服务器不可达时返回空列表（静默降级）。
+/// async + spawn_blocking：缓存过期时内部是同步 HTTP（ureq），不能卡主线程。
+#[tauri::command]
+async fn remote_source_presence() -> Result<Vec<String>, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let mut seen = std::collections::BTreeSet::new();
+        for m in sync::remote_models_cached() {
+            if !m.source.is_empty() {
+                seen.insert(m.source);
+            }
+        }
+        Ok(seen.into_iter().collect())
+    })
+    .await
+    .map_err(|e| format!("远端来源探测任务失败: {e}"))?
+}
+
 /// get_trend 的入参：时间范围 + 分桶粒度
 #[derive(Debug, Deserialize)]
 struct TrendRequest {
@@ -2474,6 +2496,7 @@ pub fn run() {
             rename_device,
             set_auto_cleanup,
             pending_upload_count,
+            remote_source_presence,
             get_pin,
             set_pin,
             set_panel_sticky,

@@ -355,14 +355,217 @@ interface AgentEntry {
   ts: number;
 }
 
-/** Kimi 快照条目：与 AgentEntry 同款形状，但 snapshot 携带加油包余额与
- *  额度失败原因（rate_limits_error），展示层需要这两个字段。 */
-interface KimiEntry {
-  snapshot: KimiSnapshot | null;
+/** 「本地采集 + 远端合并」四源（Kimi / DSH / OpenCode / MiniMax Code）的
+ *  公共快照形状：只有 stats / trend，**不含**订阅额度窗口（各自的额度走
+ *  独立链路，见各来源注释）。 */
+interface LocalCollectSnapshot {
+  stats: Stats;
+  trend: TrendPoint[];
+}
+
+/** 四源缓存条目：四个来源结构完全同构，只有快照类型不同（Kimi 另带
+ *  rate_limits / rate_limits_error），故共用同一泛型条目——刷新逻辑也
+ *  统一走 refreshLocalCollectRange，新增同类来源只需再写一个类型别名。 */
+interface LocalCollectEntry<T extends LocalCollectSnapshot> {
+  snapshot: T | null;
   error: string | null;
   refreshing: boolean;
   ts: number;
 }
+
+/** 空条目工厂：泛型函数内引用不到某一源的 EMPTY_* 常量，统一由这里构造
+ *  （形状与各 EMPTY_* 完全一致）。 */
+function emptyLocalCollectEntry<
+  T extends LocalCollectSnapshot,
+>(): LocalCollectEntry<T> {
+  return { snapshot: null, error: null, refreshing: false, ts: 0 };
+}
+
+/** 一个「本地采集型」来源的取数与缓存句柄（refreshLocalCollectRangeImpl 用）。
+ *  四源共用：新增同类来源只需在 DataCache 里再声明一次这组字段。 */
+interface LocalCollectAgent<T extends LocalCollectSnapshot> {
+  /** 远端同步协议里的来源名（server 白名单同值，**不是** UI 侧 AgentId） */
+  source: "kimi" | "dsh" | "opencode" | "minimaxcode";
+  /** 完全无数据时的错误文案填充名（与各 EMPTY_* 的展示名一致） */
+  label: string;
+  fetchLocal: (from: number, to: number, bucket: TrendBucket) => Promise<T>;
+  inflight: Set<string>;
+  setCache: React.Dispatch<
+    React.SetStateAction<Record<string, LocalCollectEntry<T>>>
+  >;
+  /** 仅远端有数据（本机未安装 / 无会话）时构造快照：额度字段按各源语义
+   *  置空（Kimi 的 rate_limits 是本机 OAuth 查询结果；DSH 无额度窗口；
+   *  OpenCode / MiniMax Code 的套餐额度走 providerQuota 另一条链路——
+   *  远端只有明细，本来就没有这些数据）。 */
+  makeRemoteOnly: (
+    remote: RemoteUsage,
+    pricing: PricingConfig,
+    fxRate: number,
+    bucket: TrendBucket
+  ) => T;
+  /** 成功后是否重读 Agent 额度增量（只有带额度窗口的 Kimi 需要） */
+  reloadAgentQuota: boolean;
+}
+
+/** refreshLocalCollectRangeImpl 需要的外部依赖（组件闭包里的同步状态）。 */
+interface LocalCollectCtx {
+  syncConfig: SyncConfig | null;
+  syncEnabled: boolean;
+  pricing: PricingConfig;
+  fxRate: number;
+  /** 无数据错误文案（key + 名称 → 本地化文本） */
+  noDataText: (label: string) => string;
+  /** 查询收尾钩子（Kimi 用它重读 Agent 额度增量） */
+  onSettled: () => void;
+}
+
+/**
+ * 刷新单个「本地采集型」来源的范围（Kimi / DSH / OpenCode / MiniMax Code 四源
+ * 同构：快照只有 stats / trend）。这四个来源的明细都已在 sync.rs 里按各自的
+ * source 名上传（server 白名单同值），故取数与合并口径与 refreshAgentRange
+ * 完全一致：
+ * - df === "all"：本机 + 远端其他设备（exclude_device = 本机设备）；
+ * - df === "local"：仅本机，不发远端请求；
+ * - df === <device_id>：仅远端该设备（本机命令不发）。
+ * 合并时 spread 本机快照以保留其额外字段（Kimi 的 rate_limits /
+ * rate_limits_error；其余三源只有 stats / trend）。本机命令失败（未安装 /
+ * 无会话）不整体失败：远端有数据仍展示远端，完全无数据才把本机错误透出
+ * ——与 refreshAgentRange 同款软失败语义。
+ * 定义为模块级 async 函数而非组件内泛型回调：泛型箭头不能声明 async
+ * （返回类型会变成 Promise，与刷新函数签名不符），且重入保护 / refreshing
+ * 置位 / 异常兜底全部同步执行到第一个 await 之前，语义与组件内写法一致。
+ */
+async function refreshLocalCollectRangeImpl<T extends LocalCollectSnapshot>(
+  agent: LocalCollectAgent<T>,
+  df: string,
+  key: string,
+  from: number,
+  to: number,
+  bucket: TrendBucket,
+  ctx: LocalCollectCtx
+): Promise<void> {
+  const {
+    source,
+    label,
+    fetchLocal,
+    inflight,
+    setCache,
+    makeRemoteOnly,
+    reloadAgentQuota,
+  } = agent;
+  // 同步段（await 之前）：同 key 已在刷新则直接返回，并立刻置 refreshing
+  if (inflight.has(key)) return;
+  inflight.add(key);
+  setCache((prev) => ({
+    ...prev,
+    [key]: {
+      ...(prev[key] ?? emptyLocalCollectEntry<T>()),
+      refreshing: true,
+    },
+  }));
+
+  // 本机命令错误单独记录（未安装等）：远端有数据时仍可展示，不整体失败
+  let localError: string | null = null;
+  // 用对象盒子承接 then 回调里的赋值：回调内赋值不参与控制流分析，
+  // 直接用 let 会被 TS 收窄成初始 null，后面无法安全解引用
+  const localBox: { snapshot: T | null } = { snapshot: null };
+  try {
+    let remote: RemoteUsage | null = null;
+
+    const wantLocal = df === "all" || df === "local";
+    const wantRemote = ctx.syncEnabled && df !== "local";
+
+    const tasks: Promise<unknown>[] = [];
+    if (wantLocal) {
+      tasks.push(
+        fetchLocal(from, to, bucket)
+          .then((s) => (localBox.snapshot = s))
+          .catch((e) => {
+            localError = String(e);
+          })
+      );
+    }
+    if (wantRemote && ctx.syncConfig) {
+      const opts =
+        df === "all"
+          ? { excludeDevice: ctx.syncConfig.device_id, source }
+          : { devices: df, source };
+      const isSpecificRemote = df !== "all";
+      tasks.push(
+        remoteUsage(from, to, bucket, opts)
+          .then((r) => (remote = r))
+          .catch((e) => {
+            if (isSpecificRemote) throw e;
+            // "全部"模式：远端失败静默，仅用本地数据
+          })
+      );
+    }
+
+    await Promise.all(tasks);
+    const local = localBox.snapshot;
+
+    // 合并本地 + 远端（与 refreshAgentRange 同款三分支；spread 本机快照以
+    // 保留 rate_limits 等非合并字段）
+    let snapshot: T | null;
+    if (df === "local") {
+      snapshot = local;
+    } else if (remote && !local) {
+      snapshot = makeRemoteOnly(remote, ctx.pricing, ctx.fxRate, bucket);
+    } else if (local && remote) {
+      snapshot = {
+        ...local,
+        stats: mergeStats(local.stats, remote),
+        trend: mergeTrend(
+          local.trend,
+          remote,
+          ctx.pricing,
+          ctx.fxRate,
+          bucket
+        ),
+      };
+    } else {
+      snapshot = local;
+    }
+
+    setCache((prev) =>
+      trimCustomEntries(
+        {
+          ...prev,
+          [key]: {
+            snapshot,
+            // 有数据（含仅远端）即清错误；完全无数据时透出本机错误
+            error: snapshot ? null : localError ?? ctx.noDataText(label),
+            refreshing: false,
+            ts: Date.now(),
+          },
+        },
+        MAX_CUSTOM_ENTRIES
+      )
+    );
+  } catch (e) {
+    setCache((prev) =>
+      trimCustomEntries(
+        {
+          ...prev,
+          [key]: {
+            ...(prev[key] ?? emptyLocalCollectEntry<T>()),
+            error: String(e),
+            refreshing: false,
+            ts: Date.now(),
+          },
+        },
+        MAX_CUSTOM_ENTRIES
+      )
+    );
+  } finally {
+    inflight.delete(key);
+    if (reloadAgentQuota) ctx.onSettled();
+  }
+}
+
+/** Kimi 快照条目：与 AgentEntry 同款形状，但 snapshot 携带加油包余额与
+ *  额度失败原因（rate_limits_error），展示层需要这两个字段。 */
+type KimiEntry = LocalCollectEntry<KimiSnapshot>;
 
 const EMPTY_AGENT: AgentEntry = {
   snapshot: null,
@@ -389,65 +592,29 @@ const EMPTY_CURSOR: CursorEntry = {
 
 const EMPTY_CODEX: AgentEntry = EMPTY_AGENT;
 const EMPTY_CLAUDE: AgentEntry = EMPTY_AGENT;
-const EMPTY_KIMI: KimiEntry = {
-  snapshot: null,
-  error: null,
-  refreshing: false,
-  ts: 0,
-};
+const EMPTY_KIMI: KimiEntry = emptyLocalCollectEntry();
 
-/** DSH 快照条目：与 AgentEntry 同款形状，但快照**不含** rate_limits
- *  （本地采集型无订阅额度窗口），故不能复用 AgentEntry（其 snapshot 类型
- *  要求 rate_limits 字段）。仅本地采集，不参与远端同步合并。 */
-interface DshEntry {
-  snapshot: DshSnapshot | null;
-  error: string | null;
-  refreshing: boolean;
-  ts: number;
-}
+/** DSH（DeepSeek Harness）快照条目：快照**不含** rate_limits（本地采集型
+ *  无订阅额度窗口），故不能复用 AgentEntry（其 snapshot 类型要求
+ *  rate_limits 字段）。 */
+type DshEntry = LocalCollectEntry<DshSnapshot>;
 
-const EMPTY_DSH: DshEntry = {
-  snapshot: null,
-  error: null,
-  refreshing: false,
-  ts: 0,
-};
+const EMPTY_DSH: DshEntry = emptyLocalCollectEntry();
 
 /** OpenCode 快照条目：与 DshEntry 同款形状同款理由——本地采集型快照
  *  **不含** rate_limits（Go 套餐额度是并列的另一条来源，走 providerQuota），
- *  故不能复用 AgentEntry（其 snapshot 类型要求 rate_limits 字段）。
- *  仅本地采集，不参与远端同步合并。 */
-interface OpencodeEntry {
-  snapshot: OpencodeSnapshot | null;
-  error: string | null;
-  refreshing: boolean;
-  ts: number;
-}
+ *  故不能复用 AgentEntry（其 snapshot 类型要求 rate_limits 字段）。 */
+type OpencodeEntry = LocalCollectEntry<OpencodeSnapshot>;
 
-const EMPTY_OPENCODE: OpencodeEntry = {
-  snapshot: null,
-  error: null,
-  refreshing: false,
-  ts: 0,
-};
+const EMPTY_OPENCODE: OpencodeEntry = emptyLocalCollectEntry();
 
 /** MiniMax Code 快照条目：与 OpencodeEntry 同款形状同款理由——本地采集型
  *  快照**不含** rate_limits（套餐额度是并列的另一条来源，走 providerQuota
  *  的 minimax 条目），故不能复用 AgentEntry（其 snapshot 类型要求
- *  rate_limits 字段）。前端不做远端合并（与 dsh / opencode 同款）。 */
-interface MinimaxcodeEntry {
-  snapshot: MinimaxcodeSnapshot | null;
-  error: string | null;
-  refreshing: boolean;
-  ts: number;
-}
+ *  rate_limits 字段）。 */
+type MinimaxcodeEntry = LocalCollectEntry<MinimaxcodeSnapshot>;
 
-const EMPTY_MINIMAXCODE: MinimaxcodeEntry = {
-  snapshot: null,
-  error: null,
-  refreshing: false,
-  ts: 0,
-};
+const EMPTY_MINIMAXCODE: MinimaxcodeEntry = emptyLocalCollectEntry();
 
 /** 通用 provider 额度缓存条目（provider → {entries, refreshing, ts}）。
  *  entries 为每条凭证一个 ProviderQuotaEntry（单凭证失败以条目内
@@ -1337,234 +1504,188 @@ export function DataProvider({ pricing, credentialPresence, children }: Provider
   );
 
   /**
-   * 刷新单个 Kimi 范围：纯本地快照（首期无远端同步，不向远端 sync 发
-   * source="kimi" 请求），形态参照 refreshCursorRange（then/catch/finally），
-   * 签名与 Entry 对齐 claude（key 带 df 前缀，与 codex/claude 循环同款调用）。
-   * df 仅用于缓存 key 隔离，数据本身始终读本机 ~/.kimi-code 会话。
+   * 刷新单个「本地采集型」来源的范围（Kimi / DSH / OpenCode / MiniMax Code
+   * 四源同构：快照只有 stats / trend）。主体是模块级
+   * refreshLocalCollectRangeImpl（异步泛型函数不能直接当 useCallback 回调），
+   * 这里只负责把当前闭包里的同步配置/价格/汇率/文案绑进去。
+   * 取数与合并口径与 refreshAgentRange 完全一致：
+   * - df === "all"：本机 + 远端其他设备（exclude_device = 本机设备）；
+   * - df === "local"：仅本机，不发远端请求；
+   * - df === <device_id>：仅远端该设备（本机命令不发）。
+   * 这四个来源的明细都已在 sync.rs 里按各自的 source 名上传（server 白名单
+   * 同值）：kimi / dsh / opencode / minimaxcode——后两个与 UI 侧 AgentId
+   * （opencodego / minimax）异名，别写错。
+   */
+  const refreshLocalCollectRange = useCallback(
+    <T extends LocalCollectSnapshot,>(
+      agent: LocalCollectAgent<T>,
+      df: string,
+      key: string,
+      from: number,
+      to: number,
+      bucket: TrendBucket
+    ) => {
+      void refreshLocalCollectRangeImpl(agent, df, key, from, to, bucket, {
+        syncConfig,
+        syncEnabled,
+        pricing,
+        fxRate,
+        noDataText: (label) =>
+          tRef.current("stats.noDataFor", { name: label }),
+        onSettled: scheduleAgentQuotaReload,
+      });
+    },
+    [syncConfig, syncEnabled, pricing, fxRate, scheduleAgentQuotaReload]
+  );
+
+  /**
+   * 刷新单个 Kimi 范围：本机 ~/.kimi-code 会话 + 远端同来源（source="kimi"）
+   * 合并，形态与 refreshAgentRange 一致。key 带 df 前缀（与 codex/claude
+   * 同款调用），df 同时决定远端取数语义（见 refreshLocalCollectRange）。
+   * 成功后照旧重读 Agent 额度增量：Kimi 是四个来源里唯一有额度窗口
+   * （rate_limits）的，其余三源该参数为 false。
    */
   const refreshKimiRange = useCallback(
     (
-      _df: string,
+      df: string,
       key: string,
       from: number,
       to: number,
       bucket: TrendBucket
-    ) => {
-      if (kimiInflight.current.has(key)) return;
-      kimiInflight.current.add(key);
-      setKimiCache((prev) => ({
-        ...prev,
-        [key]: { ...(prev[key] ?? EMPTY_KIMI), refreshing: true },
-      }));
-
-      fetchKimiUsage(from, to, bucket)
-        .then((data) => {
-          setKimiCache((prev) =>
-            trimCustomEntries(
-              {
-                ...prev,
-                [key]: { snapshot: data, error: null, refreshing: false, ts: Date.now() },
-              },
-              MAX_CUSTOM_ENTRIES
-            )
-          );
-        })
-        .catch((e) => {
-          setKimiCache((prev) =>
-            trimCustomEntries(
-              {
-                ...prev,
-                [key]: {
-                  ...(prev[key] ?? EMPTY_KIMI),
-                  error: String(e),
-                  refreshing: false,
-                  ts: Date.now(),
-                },
-              },
-              MAX_CUSTOM_ENTRIES
-            )
-          );
-        })
-        .finally(() => {
-          kimiInflight.current.delete(key);
-          scheduleAgentQuotaReload();
-        });
-    },
-    [scheduleAgentQuotaReload]
+    ) =>
+      refreshLocalCollectRange(
+        {
+          source: "kimi",
+          label: "Kimi Code",
+          fetchLocal: fetchKimiUsage,
+          inflight: kimiInflight.current,
+          setCache: setKimiCache,
+          // 订阅额度来自本机 OAuth 查询（远端只有明细）→ 仅远端时置空
+          makeRemoteOnly: (remote, pricing, fxRate, bucket) => ({
+            stats: remoteToStats(remote),
+            trend: remoteTrendToLocal(remote, pricing, fxRate, bucket),
+            rate_limits: null,
+            rate_limits_error: null,
+          }),
+          reloadAgentQuota: true,
+        },
+        df,
+        key,
+        from,
+        to,
+        bucket
+      ),
+    [refreshLocalCollectRange]
   );
 
   /**
-   * 刷新单个 DSH（DeepSeek Harness）范围：纯本地快照，形态与 refreshKimiRange
-   * 完全一致（then/catch/finally + trimCustomEntries），df 仅用于缓存 key 隔离
-   * ——dsh 不参与远端同步（快照无 rate_limits，也无同步口径），故不经
-   * refreshAgentRange（其 source 联合类型不含 dsh，也不该扩）。
-   * 与 Kimi 的唯一差异：不调用 scheduleAgentQuotaReload——dsh 没有任何额度
-   * 窗口（无 rate_limits），其查询不写入 agent 额度快照，重读历史纯属空转。
+   * 刷新单个 DSH（DeepSeek Harness）范围：本机 ~/.dsh 会话 + 远端同来源
+   * （source="dsh"）合并，形态与 refreshKimiRange 完全一致（走同一个
+   * refreshLocalCollectRange），df 同时决定远端取数语义。
+   * 与 Kimi 的唯一差异：reloadAgentQuota 为 false——dsh 没有任何额度窗口
+   * （无 rate_limits），其查询不写入 agent 额度快照，重读历史纯属空转。
    */
   const refreshDshRange = useCallback(
     (
-      _df: string,
+      df: string,
       key: string,
       from: number,
       to: number,
       bucket: TrendBucket
-    ) => {
-      if (dshInflight.current.has(key)) return;
-      dshInflight.current.add(key);
-      setDshCache((prev) => ({
-        ...prev,
-        [key]: { ...(prev[key] ?? EMPTY_DSH), refreshing: true },
-      }));
-
-      fetchDshUsage(from, to, bucket)
-        .then((data) => {
-          setDshCache((prev) =>
-            trimCustomEntries(
-              {
-                ...prev,
-                [key]: { snapshot: data, error: null, refreshing: false, ts: Date.now() },
-              },
-              MAX_CUSTOM_ENTRIES
-            )
-          );
-        })
-        .catch((e) => {
-          setDshCache((prev) =>
-            trimCustomEntries(
-              {
-                ...prev,
-                [key]: {
-                  ...(prev[key] ?? EMPTY_DSH),
-                  error: String(e),
-                  refreshing: false,
-                  ts: Date.now(),
-                },
-              },
-              MAX_CUSTOM_ENTRIES
-            )
-          );
-        })
-        .finally(() => {
-          dshInflight.current.delete(key);
-        });
-    },
-    []
+    ) =>
+      refreshLocalCollectRange(
+        {
+          source: "dsh",
+          label: "DeepSeek Harness",
+          fetchLocal: fetchDshUsage,
+          inflight: dshInflight.current,
+          setCache: setDshCache,
+          // 无额度字段可保留：仅远端时就是纯 stats/trend 快照
+          makeRemoteOnly: (remote, pricing, fxRate, bucket) => ({
+            stats: remoteToStats(remote),
+            trend: remoteTrendToLocal(remote, pricing, fxRate, bucket),
+          }),
+          reloadAgentQuota: false,
+        },
+        df,
+        key,
+        from,
+        to,
+        bucket
+      ),
+    [refreshLocalCollectRange]
   );
 
   /**
-   * 刷新单个 OpenCode 范围：纯本地快照，形态与 refreshDshRange 完全一致
-   * （then/catch/finally + trimCustomEntries），df 仅用于缓存 key 隔离——
-   * opencode 与 dsh 同为本地采集型，不参与远端同步（快照无 rate_limits，
-   * 也无同步口径），故不经 refreshAgentRange。同样不调用
-   * scheduleAgentQuotaReload：本地用量查询不写 agent 额度快照（Go 套餐额度
-   * 走 providerQuota 那条独立链路），重读历史纯属空转。
+   * 刷新单个 OpenCode 范围：本机 opencode.db + 远端同来源（source="opencode"，
+   * 注意不是 UI 侧 AgentId `opencodego`）合并，形态与 refreshDshRange 完全一致
+   * （走同一个 refreshLocalCollectRange）。reloadAgentQuota 为 false：本地用量
+   * 查询不写 agent 额度快照（Go 套餐额度走 providerQuota 那条独立链路）。
    */
   const refreshOpencodeRange = useCallback(
     (
-      _df: string,
+      df: string,
       key: string,
       from: number,
       to: number,
       bucket: TrendBucket
-    ) => {
-      if (opencodeInflight.current.has(key)) return;
-      opencodeInflight.current.add(key);
-      setOpencodeCache((prev) => ({
-        ...prev,
-        [key]: { ...(prev[key] ?? EMPTY_OPENCODE), refreshing: true },
-      }));
-
-      fetchOpencodeUsage(from, to, bucket)
-        .then((data) => {
-          setOpencodeCache((prev) =>
-            trimCustomEntries(
-              {
-                ...prev,
-                [key]: { snapshot: data, error: null, refreshing: false, ts: Date.now() },
-              },
-              MAX_CUSTOM_ENTRIES
-            )
-          );
-        })
-        .catch((e) => {
-          setOpencodeCache((prev) =>
-            trimCustomEntries(
-              {
-                ...prev,
-                [key]: {
-                  ...(prev[key] ?? EMPTY_OPENCODE),
-                  error: String(e),
-                  refreshing: false,
-                  ts: Date.now(),
-                },
-              },
-              MAX_CUSTOM_ENTRIES
-            )
-          );
-        })
-        .finally(() => {
-          opencodeInflight.current.delete(key);
-        });
-    },
-    []
+    ) =>
+      refreshLocalCollectRange(
+        {
+          source: "opencode",
+          label: "OpenCode",
+          fetchLocal: fetchOpencodeUsage,
+          inflight: opencodeInflight.current,
+          setCache: setOpencodeCache,
+          makeRemoteOnly: (remote, pricing, fxRate, bucket) => ({
+            stats: remoteToStats(remote),
+            trend: remoteTrendToLocal(remote, pricing, fxRate, bucket),
+          }),
+          reloadAgentQuota: false,
+        },
+        df,
+        key,
+        from,
+        to,
+        bucket
+      ),
+    [refreshLocalCollectRange]
   );
 
   /**
-   * 刷新单个 MiniMax Code 范围：纯本地快照，形态与 refreshOpencodeRange 完全
-   * 一致（then/catch/finally + trimCustomEntries），df 仅用于缓存 key 隔离——
-   * minimaxcode 与 opencode 同为本地采集型，快照无 rate_limits、前端也不做
-   * 远端合并，故不经 refreshAgentRange。同样不调用 scheduleAgentQuotaReload：
-   * 本地用量查询不写 agent 额度快照（套餐额度走 providerQuota["minimax"] 那条
-   * 独立链路），重读历史纯属空转。
+   * 刷新单个 MiniMax Code 范围：本机 ~/.minimax + 远端同来源
+   * （source="minimaxcode"）合并，形态与 refreshOpencodeRange 完全一致（走同一
+   * 个 refreshLocalCollectRange）。reloadAgentQuota 为 false：本地用量查询不写
+   * agent 额度快照（套餐额度走 providerQuota["minimax"] 那条独立链路）。
    */
   const refreshMinimaxcodeRange = useCallback(
     (
-      _df: string,
+      df: string,
       key: string,
       from: number,
       to: number,
       bucket: TrendBucket
-    ) => {
-      if (minimaxcodeInflight.current.has(key)) return;
-      minimaxcodeInflight.current.add(key);
-      setMinimaxcodeCache((prev) => ({
-        ...prev,
-        [key]: { ...(prev[key] ?? EMPTY_MINIMAXCODE), refreshing: true },
-      }));
-
-      fetchMinimaxcodeUsage(from, to, bucket)
-        .then((data) => {
-          setMinimaxcodeCache((prev) =>
-            trimCustomEntries(
-              {
-                ...prev,
-                [key]: { snapshot: data, error: null, refreshing: false, ts: Date.now() },
-              },
-              MAX_CUSTOM_ENTRIES
-            )
-          );
-        })
-        .catch((e) => {
-          setMinimaxcodeCache((prev) =>
-            trimCustomEntries(
-              {
-                ...prev,
-                [key]: {
-                  ...(prev[key] ?? EMPTY_MINIMAXCODE),
-                  error: String(e),
-                  refreshing: false,
-                  ts: Date.now(),
-                },
-              },
-              MAX_CUSTOM_ENTRIES
-            )
-          );
-        })
-        .finally(() => {
-          minimaxcodeInflight.current.delete(key);
-        });
-    },
-    []
+    ) =>
+      refreshLocalCollectRange(
+        {
+          source: "minimaxcode",
+          label: "MiniMax Code",
+          fetchLocal: fetchMinimaxcodeUsage,
+          inflight: minimaxcodeInflight.current,
+          setCache: setMinimaxcodeCache,
+          makeRemoteOnly: (remote, pricing, fxRate, bucket) => ({
+            stats: remoteToStats(remote),
+            trend: remoteTrendToLocal(remote, pricing, fxRate, bucket),
+          }),
+          reloadAgentQuota: false,
+        },
+        df,
+        key,
+        from,
+        to,
+        bucket
+      ),
+    [refreshLocalCollectRange]
   );
 
   // Quota 数据加载（与范围无关，每次调用会采样写入 quota_history）。

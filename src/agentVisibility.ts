@@ -326,6 +326,26 @@ export function isLocalCollectAgent(id: string): boolean {
   return AGENT_GROUP[id as AgentId] === "local";
 }
 
+/**
+ * 远端同步 source 名 → UI 侧 AgentId（「远端有数据也显示 tab」联动用）。
+ *
+ * 只有这四个来源需要这条联动：zai/codex/claude/cursor 的可见性默认开启、
+ * 凭证驱动的新 provider 没有明细上传通道。它们的明细都按各自 source 上传
+ * （见 server/app.py 的 SYNC_SOURCE_WHITELIST），故「其他设备在用、本机
+ * 没装」时本机也该有入口——否则远端数据在本机完全看不到。
+ * opencodego / minimax 与后端来源名异名（opencode / minimaxcode），
+ * 写错字面会查不到任何远端数据。
+ */
+export const REMOTE_SOURCE_AGENTS: ReadonlyArray<{
+  source: string;
+  agent: AgentId;
+}> = [
+  { source: "kimi", agent: "kimi" },
+  { source: "dsh", agent: "dsh" },
+  { source: "opencode", agent: "opencodego" },
+  { source: "minimaxcode", agent: "minimax" },
+];
+
 // 模式 A：label 是品牌名不进词典；description 存词典键，渲染时查（跟随 UI 语言）
 export const AGENT_VISIBILITY_OPTIONS: ReadonlyArray<{
   id: AgentId;

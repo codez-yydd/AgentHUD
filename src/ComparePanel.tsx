@@ -44,10 +44,13 @@ interface Props {
 }
 
 /** 对比页参与的 Agent（凭证驱动的新 provider 尚无周额度对比数据，暂不纳入）。
- *  dsh（DeepSeek Harness）、opencodego（OpenCode）与 minimax（MiniMax Code）
- *  为本地采集型：纳入 Token 用量对比；因无订阅额度窗口快照（后端
- *  agent_quota_history 只写 cursor/codex/claude/kimi），不登记 AGENT_WINDOW_KEY，
- *  故不出现在周额度系列里。
+ *  kimi（Kimi Code）、dsh（DeepSeek Harness）、opencodego（OpenCode）与
+ *  minimax（MiniMax Code）为本地采集型：纳入 Token 用量对比；因无订阅额度
+ *  窗口快照（后端 agent_quota_history 只写 cursor/codex/claude/kimi），不登记
+ *  AGENT_WINDOW_KEY，故不出现在周额度系列里。
+ *  这四个来源的明细都会按各自 source 上传到同步服务器（见 server/app.py 的
+ *  SYNC_SOURCE_WHITELIST），故 remoteSource 齐全：对比页把「本机 + 其他设备」
+ *  合并统计；cursor 仍是本机口径（明细不上传）。
  *  注意这里的值全是 **UI 侧 AgentId**（opencodego / minimax，而非后端来源名
  *  opencode / minimaxcode），与后端交互的来源名由 LOCAL_COMPARE_SOURCE /
  *  AGENT_META.remoteSource 给出。 */
@@ -78,11 +81,12 @@ const AGENT_META: Record<
   codex: { label: "Codex", brand: "codex", remoteSource: "codex" },
   claude: { label: "Claude", brand: "claude", remoteSource: "claude" },
   cursor: { label: "Cursor", brand: "cursor" },
-  kimi: { label: "Kimi Code", brand: "kimi" },
-  // 纯本地采集型（DeepSeek Harness）：已纳入对比页 Token 用量对比；
-  // 无远端同步来源（remoteSource 缺省 → 远端取数分支自动跳过），
-  // 也无周额度窗口（AGENT_WINDOW_KEY 不登记 → 不建额度系列）
-  dsh: { label: "DeepSeek Harness", brand: "dsh" },
+  kimi: { label: "Kimi Code", brand: "kimi", remoteSource: "kimi" },
+  // 纯本地采集型（DeepSeek Harness）：已纳入对比页 Token 用量对比。
+  // remoteSource 是**后端来源名 "dsh"**（sync.rs 增量上传与 server 白名单
+  // 同值），其他设备上传的 DSH 用量能和本机一起计入对比；无周额度窗口
+  // （AGENT_WINDOW_KEY 不登记 → 不建额度系列）。
+  dsh: { label: "DeepSeek Harness", brand: "dsh", remoteSource: "dsh" },
   // 凭证驱动的新 provider（对比页暂未纳入，元数据先补齐保证类型完整）
   gemini: { label: "Gemini", brand: "gemini" },
   grok: { label: "Grok", brand: "grok" },
@@ -536,7 +540,7 @@ export function CompareContent({ agentVisibility }: Props) {
       if (wantRemote && syncConfig) {
         for (const agent of enabledAgents) {
           const source = AGENT_META[agent].remoteSource;
-          if (!source) continue; // 前端未登记远端来源的 agent（Cursor / Kimi / dsh）只按本机口径对比
+          if (!source) continue; // 前端未登记远端来源的 agent（Cursor）只按本机口径对比
           const usageOpts =
             deviceFilter === "all"
               ? { excludeDevice: syncConfig.device_id, source }

@@ -10,7 +10,12 @@ import { ThemePanel } from "./ThemePanel";
 import { SkinHubPanel } from "./SkinHubPanel";
 import { SkinStandalonePanel } from "./SkinStandalonePanel";
 import { ADD_SERVICE_EVENT } from "./AddServiceMenu";
-import { fetchPricing, hasProviderCredentials, saveCurrency } from "./api";
+import {
+  fetchPricing,
+  hasProviderCredentials,
+  remoteSourcePresence,
+  saveCurrency,
+} from "./api";
 import { startUpdateScheduler } from "./updater";
 import { useI18n } from "./i18n";
 import type { Currency, PricingConfig } from "./types";
@@ -19,6 +24,7 @@ import {
   CREDENTIALS_CHANGED_EVENT,
   CREDENTIAL_AGENTS,
   PRESENCE_PROVIDERS,
+  REMOTE_SOURCE_AGENTS,
   clearAgentManuallyDisabled,
   enableAgentByCredential,
   loadAgentVisibility,
@@ -156,6 +162,37 @@ export default function App() {
     const sync = () => setAgentVisibility(loadAgentVisibility());
     window.addEventListener(AGENT_VISIBILITY_EVENT, sync);
     return () => window.removeEventListener(AGENT_VISIBILITY_EVENT, sync);
+  }, []);
+
+  // 4) 「远端有数据也显示」：Kimi / DSH / OpenCode / MiniMax Code 四个本地
+  //    采集型来源的可见性默认关闭，presence 又只看本机——于是「别的设备在用、
+  //    这台没装这个 CLI」时，本机连 tab 都没有，远端数据完全看不到。这里把
+  //    远端来源存在性并入联动（后端读同步服务的模型清单并去重出 source，
+  //    未启用同步 / 服务器不可达时返回空列表，行为与升级前一致），有数据即
+  //    自动开启对应 tab。用户在设置页显式关闭过的 agent 不会被重新打开
+  //    （enableAgentByCredential 内部检查手动关闭标记）。
+  //    每 5 分钟复查一次：其他设备后来才开始用某个 agent 时本机 tab 也会出现。
+  useEffect(() => {
+    let alive = true;
+    const probe = () => {
+      remoteSourcePresence()
+        .then((sources) => {
+          if (!alive) return;
+          const remote = new Set(sources);
+          for (const { source, agent } of REMOTE_SOURCE_AGENTS) {
+            if (remote.has(source)) enableAgentByCredential(agent);
+          }
+        })
+        .catch(() => {
+          // 探测失败视为无远端数据（不显示新 tab），不阻断启动
+        });
+    };
+    probe();
+    const timer = window.setInterval(probe, 5 * 60_000);
+    return () => {
+      alive = false;
+      window.clearInterval(timer);
+    };
   }, []);
 
   // 语言对应币种生效：启动时把后端偏好对齐到语言（覆盖旧的手动值，保证菜单栏

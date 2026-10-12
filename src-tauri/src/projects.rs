@@ -1557,8 +1557,11 @@ mod tests {
         let home = dirs::home_dir().unwrap().to_string_lossy().to_string();
         let tilde = normalize_cwd("~/code/demo").unwrap();
         let expect_home = {
+            // normalize_cwd 会把 Windows 反斜杠统一成正斜杠、再按小写折叠
+            // （文件系统大小写不敏感），故期望值同样处理：直接拿 home_dir()
+            // 的原始串（Windows 上是 C:\Users\x）比 prefix 会永远失败
             #[cfg(any(target_os = "macos", target_os = "windows"))]
-            { home.to_lowercase() }
+            { home.replace('\\', "/").to_lowercase() }
             #[cfg(not(any(target_os = "macos", target_os = "windows")))]
             { home.clone() }
         };
