@@ -53,8 +53,8 @@ import {
 } from "./layout";
 import {
   AGENT_VISIBILITY_OPTIONS,
+  canAddCredential,
   isCredentialAgent,
-  isLocalAgent,
   type AgentId,
   type AgentVisibility,
 } from "./agentVisibility";
@@ -467,10 +467,12 @@ export function SettingsPanel({
                       </span>
                     </span>
                     <span className="flex items-center gap-1.5 shrink-0">
-                      {/* 凭证型服务（非本地直读型）的行内快捷入口：跳转统计页
-                          并直接打开该服务的添加凭证表单；阻断 label 隐式激活，
-                          避免点按钮时翻转右侧展示开关 */}
-                      {isCredentialAgent(agent.id) && !isLocalAgent(agent.id) && (
+                      {/* 凭证型服务的行内快捷入口：跳转统计页并直接打开该服务的
+                          添加凭证表单；纯本地型（gemini）无凭证可录故不显示，
+                          双数据源（opencodego）保留——API Key 是其真实数据来源。
+                          用静态判定 canAddCredential（不受当前是否已配凭证影响）。
+                          阻断 label 隐式激活，避免点按钮时翻转右侧展示开关 */}
+                      {isCredentialAgent(agent.id) && canAddCredential(agent.id) && (
                         <button
                           type="button"
                           onClick={(e) => {

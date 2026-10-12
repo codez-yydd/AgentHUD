@@ -285,17 +285,19 @@ fn list_meta(provider: &str) -> Result<Vec<CredentialMeta>, String> {
 }
 
 fn has_credentials(provider: &str) -> Result<bool, String> {
-    // 本地型 provider（OpenCode Go / Gemini CLI）特判：无凭证也能出数据——
-    // presence = 本地登录态/数据库存在，装了 CLI 的用户 tab 自动出现；
+    // 本地型 provider（Gemini CLI）特判：无凭证也能出数据——
+    // presence = 本地登录态存在，装了 CLI 的用户 tab 自动出现；
     // 其凭证体系保持可用（可选添加，不做强引导）。
-    if provider == "opencodego" {
-        return Ok(crate::opencodego::has_local_data());
-    }
     if provider == "gemini" {
         return Ok(crate::gemini::has_local_data());
     }
-    // grok 为混合型：本地 auth.json 存在即视为有数据（OR 语义）；本地没有
-    // 时继续走通用凭证判断（手动 token 条目同样能出 tab）
+    // 混合型（本地数据 OR 手动凭证，两者任一即可出数据）：
+    // - grok：本地 auth.json 存在即视为有数据；
+    // - opencodego：本地 opencode.db 存在、或用户配了官方 API Key（不装 CLI
+    //   只用 Key 的场景）都算有数据。本地没有时继续走下方通用凭证判断。
+    if provider == "opencodego" && crate::opencodego::has_local_data() {
+        return Ok(true);
+    }
     if provider == "grok" && crate::grok::has_local_data() {
         return Ok(true);
     }

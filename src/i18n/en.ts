@@ -230,6 +230,11 @@ export const en: typeof zh = {
     "summary.loadFailed": "Failed to load",
     "summary.notLoggedIn": "Not signed in",
     "summary.noQuotaData": "No quota data",
+    // OpenCode Go quota provenance: the official API returns authoritative
+    // values; the local DB is an estimate from fixed constants. The badge must
+    // keep them apart so estimated numbers are never mistaken for official ones.
+    "summary.opencodeOfficial": "Official",
+    "summary.opencodeEstimated": "Local estimate",
   } satisfies typeof summary),
 
   ...({
@@ -1029,6 +1034,11 @@ export const en: typeof zh = {
     "credentials.localEmptyTitle": "Local data source, no credentials needed",
     "credentials.localEmptyHint":
       "This service reads the local CLI login state automatically; no credentials required. You can still add one manually.",
+    // Dual-source (local DB + API key, either works): when no local data exists,
+    // do not claim "no credentials needed" — the user needs the key entry point
+    "credentials.localEmptyTitleDual": "No local data detected yet",
+    "credentials.localEmptyHintDual":
+      "Install the OpenCode CLI and sign in to the Go plan to read the local database automatically. Without the CLI it still works — add an API key to query the official endpoint directly.",
 
     // ===== Per-provider guides (placeholders until each service is wired up) =====
     // guideBrief.<provider> is the first sentence shown in the empty state
@@ -1042,6 +1052,8 @@ export const en: typeof zh = {
       "Sign in to cursor.com and paste the Cookie, or the local Cursor login state is read automatically.",
     "credentials.guideBrief.grok":
       "Install the Grok CLI and run grok login to read the local login state automatically; you can also copy the key from ~/.grok/auth.json and add it as a Token.",
+    "credentials.guideBrief.opencodego":
+      "Subscribe to Go / Go Plus in the OpenCode Console (opencode.ai/console) and paste the API key here to query usage straight from the official endpoint.",
     "credentials.guideBrief.qoder":
       "Sign in to Qoder (global: qoder.com / China: qoder.com.cn).",
     "credentials.guideBrief.minimax":
@@ -1104,7 +1116,7 @@ export const en: typeof zh = {
     "credentials.guide.qoder":
       "Sign in to Qoder (global: qoder.com / China: qoder.com.cn — pick the region matching your credential) → open the console/account usage page → copy the Cookie request header of any request (or the whole \"Copy as cURL\") from the F12 Network panel → paste it here; big-model credit usage will appear automatically.",
     "credentials.guide.opencodego":
-      "Once OpenCode is installed and you are signed in to the Go plan, usage is estimated automatically from the local database (~/.local/share/opencode/) — no credentials required.",
+      "Two ways, either is enough: (1) Install the OpenCode CLI and sign in to the Go plan — usage is estimated automatically from the local database (~/.local/share/opencode/) with no credentials; (2) Subscribe to Go / Go Plus in the OpenCode Console (opencode.ai/console) and paste the API key — this queries the official endpoint (/zen/go/v1/usage) for authoritative 5-hour / weekly / monthly percentages and reset times, and does not consume plan quota. Use (2) if you do not have the CLI installed.",
     "credentials.guide.minimax":
       "Create a Coding Plan API key (an sk-cp- token) under \"API Keys\" on the MiniMax platform (platform.minimaxi.com; global: the minimax.io console) and paste it here; current-window and weekly usage will appear automatically. The region must match the site where the key was created (for a global-site key, select Global).",
     "credentials.guide.moonshot":

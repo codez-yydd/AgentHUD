@@ -100,6 +100,11 @@ export const credentials = {
   "credentials.localEmptyTitle": "本地数据源，无需凭证",
   "credentials.localEmptyHint":
     "该服务自动读取本地 CLI 登录态，无需凭证；如需也可手动添加。",
+  // 双数据源（本地库 + API Key 任一可用）：本地没数据时不该说「无需凭证」，
+  // 否则用户找不到录入 API Key 的入口（page 底部按钮即添加入口）
+  "credentials.localEmptyTitleDual": "尚未检测到本地数据",
+  "credentials.localEmptyHintDual":
+    "可安装 OpenCode CLI 登录 Go 计划后自动读取本地库；未安装也不影响使用——添加 API Key 即可直连官方接口读取用量。",
 
   // ===== 各服务获取凭证的引导文案（键位预留，接入时按控制台路径细化）=====
   // guideBrief.<provider> 为空态首句（去哪登录/获取）；完整 guide.<provider>
@@ -112,6 +117,8 @@ export const credentials = {
     "登录 cursor.com 后复制 Cookie 粘贴保存，或自动读取本机已登录 Cursor 的本地登录态。",
   "credentials.guideBrief.grok":
     "安装 Grok CLI 并运行 grok login 即可自动读取本地登录态；也可从 ~/.grok/auth.json 复制 key 作为 Token 手动添加。",
+  "credentials.guideBrief.opencodego":
+    "在 OpenCode Console（opencode.ai/console）订阅 Go/Go Plus 后复制 API Key 粘贴保存，即可直连官方接口读取用量。",
   "credentials.guideBrief.qoder":
     "登录 Qoder（国际站 qoder.com / 中国站 qoder.com.cn）。",
   "credentials.guideBrief.minimax":
@@ -171,7 +178,7 @@ export const credentials = {
   "credentials.guide.qoder":
     "登录 Qoder（国际站 qoder.com / 中国站 qoder.com.cn，区域需与所添凭证一致）→ 进入控制台/账户用量页 → F12 Network 面板复制任意请求的 Cookie 请求头（或整段 Copy as cURL）→ 粘贴保存，将自动展示大模型积分用量。",
   "credentials.guide.opencodego":
-    "安装 OpenCode 并登录 Go 计划后，自动从本地数据库（~/.local/share/opencode/）估算用量与额度，无需添加凭证。",
+    "两种方式任选：① 安装 OpenCode CLI 并登录 Go 计划，自动从本地库（~/.local/share/opencode/）估算用量，无需凭证；② 在 OpenCode Console（opencode.ai/console）订阅 Go / Go Plus 后复制 API Key 粘贴保存，直连官方接口（/zen/go/v1/usage）读取权威用量——5 小时窗 / 本周 / 本月三档百分比与重置时间，不消耗套餐额度。未安装 CLI 时用 ② 即可。",
   "credentials.guide.minimax":
     "在 MiniMax 开放平台的「API Keys」页（platform.minimaxi.com，国际站为 minimax.io 控制台）创建 Coding Plan 的 API Key（sk-cp- 开头 Token）后粘贴保存，将自动展示当前窗口与本周用量；区域需与所填 Key 的获取站点一致（国际站 Key 请选国际站）。",
   "credentials.guide.moonshot":

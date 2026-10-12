@@ -184,11 +184,8 @@ pub(crate) fn flatten_response(
 pub(crate) fn query_provider_quota(
     provider: &str,
 ) -> Result<Vec<ProviderQuotaEntry>, String> {
-    // 0. 纯本地型 provider（OpenCode Go / Gemini CLI）：不走凭证快照与校验
-    //    回写，直接读本地登录态/数据库。数据不存在返回空数组（tab 不出现）。
-    if provider == "opencodego" {
-        return Ok(crate::opencodego::fetch_quota_entries());
-    }
+    // 0. 纯本地型 provider（Gemini CLI）：不走凭证快照与校验回写，直接读本地
+    //    登录态。数据不存在返回空数组（tab 不出现）。
     if provider == "gemini" {
         return Ok(crate::gemini::fetch_quota_entries());
     }
@@ -196,8 +193,10 @@ pub(crate) fn query_provider_quota(
     let snapshots = provider_credentials::load_query_snapshots(provider)?;
     // grok 为混合型（本地 auth.json + 手动凭证），由其 fetch 内部合并两路，
     // 无手动凭证也可能有本地条目，不能按快照为空早返回；
+    // opencodego 同为混合型（本地 opencode.db + 官方 API Key），两路都可用，
+    // 无凭证时也需进入其 fetch 走本地估算路径；
     // 其余凭证型 provider 无凭证时早返回（行为不变）
-    if provider != "grok" && snapshots.is_empty() {
+    if provider != "grok" && provider != "opencodego" && snapshots.is_empty() {
         return Ok(vec![]);
     }
     // 2. 按 provider 分发（其余 provider 尚未接入：空数组，前端显示接入提示）
@@ -206,6 +205,9 @@ pub(crate) fn query_provider_quota(
         "deepseek" => crate::deepseek::fetch_quota_entries(&snapshots),
         "minimax" => crate::minimax::fetch_quota_entries(&snapshots),
         "grok" => crate::grok::fetch_quota_entries(&snapshots),
+        // OpenCode Go 混合型：无 Key 走本地 SQLite 估算，有 Key 走官方
+        // /zen/go/v1/usage（官方口径优先，本地估算仅在新鲜时附带）
+        "opencodego" => crate::opencodego::fetch_quota_entries(&snapshots),
         // Claude 订阅手动凭证（kind=token，sk-ant-oat OAuth access token）：
         // 每条凭证调同一 OAuth usage 端点，解析复用 claude 模块函数。本地
         // 登录态不并入本链路——本地路径继续走 get_claude_usage 的

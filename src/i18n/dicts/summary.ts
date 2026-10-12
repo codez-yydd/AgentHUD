@@ -15,4 +15,8 @@ export const summary = {
   "summary.loadFailed": "数据获取失败",
   "summary.notLoggedIn": "未登录",
   "summary.noQuotaData": "暂无额度数据",
+  // OpenCode Go 额度口径标记：官方 API 返回的是权威值；本地库是按常量推算的
+  // 估算值，两者不可混同（徽章上必须区分，否则用户会误以为都是官方额度）
+  "summary.opencodeOfficial": "官方",
+  "summary.opencodeEstimated": "本地估算",
 };

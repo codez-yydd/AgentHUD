@@ -883,6 +883,33 @@ export function SummaryTab({
   const cursorCacheHitPct = cacheHitPctCursor(cursorEvents);
   const kimiCacheHitPct = cacheHitPctSeparate(kimi?.stats.overall);
 
+  // OpenCode Go 额度（双数据源：有 API Key 时官方口径，否则本地库估算）。
+  // 数据来自 providerQuota 通用缓存（后端 get_provider_quota 分发），窗口
+  // key 复用 kimi 词表：hour5 / weekly / monthly。
+  // 注意与其余 Agent 的差异：官方接口只给百分比 + 重置时间，**不含金额与
+  // token**，故花费表与趋势图里它恒为 0（下方 cost/tokens 传 0），这里只喂
+  // 额度监控区的 metrics。
+  const opencodeQuotaEntry = providerQuota["opencodego"]?.entries?.[0];
+  const opencodeMetrics: AgentSummary["metrics"] =
+    opencodeQuotaEntry?.status === "ok"
+      ? opencodeQuotaEntry.windows.map((w) => {
+          // 5小时/本周 复用公共词表（与 kimi 等一致）；月度没有对应公共键
+          // （"stats.kimiMonthlyQuota" 是「月总额度」语义，专指 Kimi），
+          // 故沿用后端窗口标题（"本月"，后端本就返回中文标题，见 kimi.rs 同款）
+          const label =
+            w.key === "hour5"
+              ? t("common.hour5")
+              : w.key === "weekly"
+                ? t("common.weekly")
+                : w.title;
+          return {
+            label,
+            usedPct: w.usedPercent ?? 0,
+            resetAt: w.resetsAt ?? null,
+          };
+        })
+      : [];
+
   // 按 agent 组装。新增来源时在此追加，总览占比条 / 花费表 / 额度列表会一起跟上。
   const allAgents: AgentSummary[] = [
     {
@@ -982,6 +1009,31 @@ export function SummaryTab({
       cacheHitPct: kimiCacheHitPct,
       metrics: kimiMetrics,
       empty: kimiEmpty,
+    },
+    {
+      // OpenCode Go（双数据源）：额度监控区展示 5小时/本周/本月三档。
+      // 花费与 token 恒为 0——官方接口只返回百分比，不透出金额；无 CLI 时
+      // 本机也没有会话日志可统计。这两项为 0 会让它在花费表与占比条里被
+      // activeAgents 过滤掉（符合预期：它没有花费数据可展示）。
+      id: "opencodego",
+      name: "OpenCode",
+      color: AGENT_COLOR.opencodego,
+      tintBg: "rgba(249, 115, 22, 0.07)",
+      nameClass: "text-orange-700",
+      // 官方口径与本地估算需区分：本地估算是推算值，不能冒充官方额度
+      badge:
+        opencodeQuotaEntry?.status === "ok"
+          ? opencodeQuotaEntry.credentialId === "local"
+            ? t("summary.opencodeEstimated")
+            : t("summary.opencodeOfficial")
+          : null,
+      badgeClass: "bg-orange-500/12 text-orange-700",
+      cost: 0,
+      tokens: 0,
+      // 额度缓存已写入（ts>0）即视为已有结论，避免加载中空转
+      loaded: (providerQuota["opencodego"]?.ts ?? 0) > 0,
+      metrics: opencodeMetrics,
+      empty: t("summary.noQuotaData"),
     },
   ];
 

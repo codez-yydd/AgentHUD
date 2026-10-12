@@ -104,15 +104,18 @@ export function GenericQuotaPanel({
         guideKey={guideKey}
         brand={provider}
         regionOptions={regionOptions}
-        // 本地型 provider（opencodego/gemini）数据来自本地库，凭证为可选，
-        // 空态按「无需凭证」引导，且不提供添加入口（手动凭证不参与查询）
+        // 本地型 provider 数据来自本地库，凭证为可选：空态按「无需凭证」引导，
+        // 纯本地型（gemini）不提供添加入口；双数据源（opencodego）仍保留入口，
+        // 由 CredentialsCard 内部按 localOnlyMode 分别处理
         optional={isLocalAgent(provider)}
       />
 
       {/* 额度空态三档：无凭证（凭证卡空态已含引导，不重复提示）/
           有凭证查询中（refreshing 或未完成首轮）/ 确认未接入
-          （doubao 等后端暂无查询分支的 provider，首轮返回空数组） */}
-      {quotaEntries.length === 0 && hasCreds && (!firstRoundDone || refreshing || NOT_YET_PROVIDERS.includes(provider)) && (
+          （doubao 等后端暂无查询分支的 provider，首轮返回空数组）。
+          本地型 provider 即使没有凭证也会真的发起查询（数据来自本地库），
+          因此「查询中」占位同样适用，否则纯本地用户会看到面板空白。 */}
+      {quotaEntries.length === 0 && (hasCreds || isLocalAgent(provider)) && (!firstRoundDone || refreshing || NOT_YET_PROVIDERS.includes(provider)) && (
         <div className="card-base rounded-2xl px-3 py-3">
           <p className="text-[10px] text-slate-500 leading-relaxed">
             {refreshing || !firstRoundDone

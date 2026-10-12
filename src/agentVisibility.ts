@@ -95,6 +95,56 @@ export function isLocalAgent(id: string): boolean {
   return (LOCAL_AGENTS as readonly string[]).includes(id);
 }
 
+/**
+ * 双数据源 provider：本地数据与手动凭证是**两条并列来源**，任一可得即可出
+ * 数据（后端 presence 为 OR 语义）。与纯本地型（gemini：只有本地 CLI 登录态
+ * 一条路，凭证无意义）的区别在于「凭证是否真的参与查询」——
+ * - opencodego：本地 opencode.db 读的是本机 CLI 用量；用户没装 CLI 时，
+ *   配官方 API Key 走 opencode.ai/zen/go/v1/usage 同样能拿到官方口径数据。
+ * 因此这类 provider 必须保留「添加凭证」入口。
+ */
+export const DUAL_MODE_AGENTS: readonly CredentialAgentId[] = ["opencodego"];
+
+/** id 是否属于双数据源 provider（凭证入口据此放行）。 */
+export function isDualModeAgent(id: string): boolean {
+  return (DUAL_MODE_AGENTS as readonly string[]).includes(id);
+}
+
+/**
+ * 纯本地型 provider：**只有本地数据一条来源**，凭证根本不参与查询（gemini
+ * 读的是 Gemini CLI 的 OAuth 登录态，没有可录入的 Key）。这类 provider 在
+ * 「添加服务」浮层与设置页里都不该出现——列出来也无凭证可录。
+ *
+ * 注意与 LOCAL_AGENTS 的区别：LOCAL_AGENTS 表达的是「本地数据也算数据来源」
+ * （用于空态文案与轮询门槛），双数据源型（opencodego）也在其中；而本集合
+ * 表达的是「**只能**靠本地数据」，是判断「能否录入凭证」的静态依据。
+ */
+export const PURE_LOCAL_AGENTS: readonly CredentialAgentId[] = ["gemini"];
+
+/** id 是否属于「只能靠本地数据、无凭证可录」的 provider。 */
+export function isPureLocalAgent(id: string): boolean {
+  return (PURE_LOCAL_AGENTS as readonly string[]).includes(id);
+}
+
+/**
+ * 该 provider 是否可以录入凭证（静态属性，与当前是否已配凭证无关）。
+ * 凭证录入入口（添加服务浮层、设置页快捷按钮、凭证卡添加按钮）统一用它判断，
+ * 避免把「当前只有本地数据」的运行时状态误当作「不能录入凭证」。
+ */
+export function canAddCredential(id: string): boolean {
+  return !isPureLocalAgent(id);
+}
+
+/**
+ * 该 provider 当前是否需要「只有本地数据源」的表达（空态文案与凭证入口收口）。
+ * 纯本地型恒为 true；双数据源型仅在没有 API Key 时才用本地口径——一旦配了
+ * Key，凭证卡应回到常规的凭证列表形态（可加/可删/可看校验结论）。
+ */
+export function localOnlyMode(id: string, hasCredentials: boolean): boolean {
+  if (!isLocalAgent(id)) return false;
+  return !isDualModeAgent(id) || !hasCredentials;
+}
+
 export type AgentVisibility = Record<AgentId, boolean>;
 
 /** 各 Agent 的品牌展示色（汇总页与对比页共用，保证跨页视觉一致）。 */

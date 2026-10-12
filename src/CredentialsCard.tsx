@@ -18,10 +18,12 @@ import {
 } from "./api";
 import { useDataCache } from "./DataCache";
 import {
+  canAddCredential,
   disableAgentByCredential,
   isCredentialAgent,
-  isLocalAgent,
+  isDualModeAgent,
   isPurePreferenceAgent,
+  localOnlyMode,
   notifyCredentialsChanged,
 } from "./agentVisibility";
 import { formatResetStamp } from "./format";
@@ -88,9 +90,13 @@ export function CredentialsCard({
   const { t } = useI18n();
   const { credentials, refreshCredentials } = useDataCache();
   const entries = credentials[provider];
-  // 本地型（gemini/opencodego）：手动凭证不参与查询，不提供添加入口，
-  // 空态只保留本地数据源说明
-  const localOnly = optional && isLocalAgent(provider);
+  const credCount = credentials[provider]?.length ?? 0;
+  // 只有本地数据源可用的形态（gemini 恒真；opencodego 仅在没配 API Key 时）：
+  // 空态与入口按「无需凭证」收口，避免引导用户添加一个不参与查询的凭证
+  const localOnly = optional && localOnlyMode(provider, credCount > 0);
+  // 能否录入凭证是静态属性（纯本地型 gemini 无凭证可录）；双数据源
+  // （opencodego）即便当前走本地口径也保留入口——没装 CLI 的用户靠它拿数据
+  const showAddEntry = canAddCredential(provider);
 
   // 首挂载加载；读取失败只提示一次（旧缓存/事件刷新静默保留旧值）
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -198,11 +204,14 @@ export function CredentialsCard({
       // 删除最后一条凭证（凭证型 agent）：回退该 agent 的展示偏好，
       // tab 不再因残留的「有凭证自动开启」而常驻（设置页可随时手动重开）。
       // kimi 属纯偏好控制的首批 provider（tab 承载本地 CLI 主面板），
-      // 删凭证不影响其 tab 显隐（见 PURE_PREFERENCE_AGENTS）
+      // 删凭证不影响其 tab 显隐（见 PURE_PREFERENCE_AGENTS）；
+      // 双数据源 provider（opencodego）同理豁免：本地 opencode.db 仍在时删掉
+      // API Key 不该把 tab 一起收起，故显隐交由用户与 presence 决定
       if (
         entries.length === 1 &&
         isCredentialAgent(provider) &&
-        !isPurePreferenceAgent(provider)
+        !isPurePreferenceAgent(provider) &&
+        !isDualModeAgent(provider)
       ) {
         disableAgentByCredential(provider);
       }
@@ -245,8 +254,9 @@ export function CredentialsCard({
               {t("credentials.countBadge", { n: entries.length })}
             </span>
           )}
-          {/* 本地型 provider 不提供添加入口（手动凭证不参与查询，避免误导） */}
-          {!localOnly && (
+          {/* 纯本地型不提供添加入口（凭证不参与查询，避免误导）；
+              双数据源（opencodego）保留入口——API Key 是没装 CLI 用户的数据来源 */}
+          {showAddEntry && (
             <button
               onClick={() => {
                 setAdding(true);
@@ -275,16 +285,42 @@ export function CredentialsCard({
           <div className="min-w-0">
             <div className="text-[10px] text-slate-900/80 font-medium">
               {localOnly
-                ? t("credentials.localEmptyTitle")
+                ? t(
+                    isDualModeAgent(provider)
+                      ? "credentials.localEmptyTitleDual"
+                      : "credentials.localEmptyTitle"
+                  )
                 : t("credentials.emptyTitle")}
             </div>
-            {/* 本地型（gemini/opencodego）走「无需凭证」说明；其余 optional
-                provider（cursor：本地登录态可选 + 手动 Cookie）与普通 provider
-                一样展示各自的首句引导与完整步骤展开，避免误用本地 CLI 文案 */}
+            {/* 本地口径空态：纯本地型只有「无需凭证」一句；双数据源（opencodego）
+                还要给出 API Key 这条并列路径，并复用「查看接入步骤」展开完整说明 */}
             {localOnly ? (
-              <p className="text-[9px] text-slate-500 leading-relaxed mt-0.5">
-                {t("credentials.localEmptyHint")}
-              </p>
+              <>
+                <p className="text-[9px] text-slate-500 leading-relaxed mt-0.5">
+                  {t(
+                    isDualModeAgent(provider)
+                      ? "credentials.localEmptyHintDual"
+                      : "credentials.localEmptyHint"
+                  )}
+                </p>
+                {isDualModeAgent(provider) && (
+                  <>
+                    {guideExpanded && (
+                      <p className="text-[9px] text-slate-500 leading-relaxed mt-1">
+                        {t(guideKey)}
+                      </p>
+                    )}
+                    <button
+                      onClick={() => setGuideExpanded((v) => !v)}
+                      className="mt-1 text-[9px] text-sky-700/80 hover:text-sky-700 transition-colors"
+                    >
+                      {guideExpanded
+                        ? t("credentials.guideLess")
+                        : t("credentials.guideMore")}
+                    </button>
+                  </>
+                )}
+              </>
             ) : (
               <>
                 {/* 首句（去哪登录/获取）；前提条件等长尾说明收进展开区 */}
@@ -308,7 +344,7 @@ export function CredentialsCard({
                 </button>
               </>
             )}
-            {!localOnly && (
+            {showAddEntry && (
               <button
                 onClick={() => {
                   setAdding(true);

@@ -2,9 +2,14 @@
  * 添加服务浮层：StatsPanel tab 栏「＋」按钮的下拉服务选择卡。
  *
  * 解决「新服务的 tab 默认隐藏（有凭证才显示）→ 新用户没有添加第一个
- * 凭证的入口」的死循环：浮层列出全部凭证型服务（排除 gemini/opencodego
- * 本地直读型），点选后由 StatsPanel 弹出该服务的添加凭证表单（复用
- * CredentialsCard 的 CredentialFormDialog），添加成功后 tab 自动出现并切换。
+ * 凭证的入口」的死循环：浮层列出全部凭证型服务，点选后由 StatsPanel 弹出
+ * 该服务的添加凭证表单（复用 CredentialsCard 的 CredentialFormDialog），
+ * 添加成功后 tab 自动出现并切换。
+ *
+ * 排除项只有「纯本地型」provider（gemini：数据只来自本地 CLI 登录态，
+ * 凭证不参与查询，列出来也无凭证可录）。双数据源 provider（opencodego：
+ * 本地 opencode.db 或官方 API Key 任一可用）必须保留——没装 OpenCode CLI
+ * 的用户正是靠这里录入 API Key。
  *
  * 本组件为纯展示浮层：外点关闭与 Esc 关闭由 StatsPanel 的锚容器负责
  * （「＋」按钮需包含在点击豁免范围内，保证再次点击按钮可正常切换开关）。
@@ -16,7 +21,7 @@ import {
   AGENT_VISIBILITY_OPTIONS,
   CREDENTIAL_AGENTS,
   CREDENTIAL_AGENT_KIND,
-  isLocalAgent,
+  canAddCredential,
   type CredentialAgentId,
 } from "./agentVisibility";
 import { KIND_BADGE } from "./CredentialsCard";
@@ -27,9 +32,13 @@ import { BrandIcon } from "./BrandIcon";
  *  App 监听后切回统计页并把目标 provider 交给 StatsPanel 打开添加表单。 */
 export const ADD_SERVICE_EVENT = "zbar-open-credential-add";
 
-/** 可添加凭证的服务清单：凭证型 provider 排除本地直读型（无凭证可录） */
+/** 可添加凭证的服务清单：凭证型 provider 去掉「无凭证可录」的纯本地型
+ *  （gemini）。注意用静态判定 canAddCredential——localOnlyMode 是运行时
+ *  状态（受「当前是否已配凭证」影响），拿它当静态过滤会把双数据源型
+ *  （opencodego）在未配 Key 时错误地排除掉，而「没配 Key」恰恰是最需要
+ *  这个入口的场景。 */
 const ADDABLE_SERVICES: readonly CredentialAgentId[] = CREDENTIAL_AGENTS.filter(
-  (id) => !isLocalAgent(id)
+  (id) => canAddCredential(id)
 );
 
 interface AddServiceMenuProps {
