@@ -1915,23 +1915,67 @@ pub(crate) fn build_kimi_agent() -> ureq::Agent {
     builder.build()
 }
 
+/// 刷新失败的 HTTP 状态 + 响应体 → 用户可执行的中文原因（纯函数，便于单测）。
+///
+/// 为什么单独分类：实测（2026-10 本机真实凭据）服务端对失效的 refresh_token
+/// 返回 **HTTP 400**，体为
+/// `{"error":"invalid_grant","error_description":"The provided authorization grant is invalid"}`，
+/// 同时文件里的 access_token 走 `/usages` 也是 401——即「凭据已死，必须重新登录
+/// CLI」，不是网络问题。旧实现把所有非 401/403 一律写成「网络错误或服务不可用」，
+/// 用户看到 400 会以为是网络抖动，无从下手。
+fn refresh_failure_message(status: u16, body: Option<&str>) -> String {
+    match status {
+        400 | 401 | 403 => {
+            let detail = body.and_then(oauth_error_detail);
+            match detail {
+                Some(d) => {
+                    format!("refresh_token 已失效（需重新登录 Kimi Code CLI）：{d}")
+                }
+                None => "refresh_token 已失效（需重新登录 Kimi Code CLI）".to_string(),
+            }
+        }
+        _ => format!("刷新请求失败（网络错误或服务不可用）: HTTP {status}"),
+    }
+}
+
+/// 从 OAuth 错误响应体里摘出 error / error_description（纯函数）。
+/// 只取这两个固定字段，绝不整段回显响应体——错误体里可能夹带 token 类字段，
+/// 而这个字符串会进日志与面板文案。
+fn oauth_error_detail(body: &str) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_str(body).ok()?;
+    let err = v.get("error").and_then(|e| e.as_str()).map(str::trim);
+    let desc = v
+        .get("error_description")
+        .and_then(|d| d.as_str())
+        .map(str::trim);
+    match (err.filter(|s| !s.is_empty()), desc.filter(|s| !s.is_empty())) {
+        (Some(e), Some(d)) => Some(format!("{e}: {d}")),
+        (Some(e), None) => Some(e.to_string()),
+        (None, Some(d)) => Some(d.to_string()),
+        (None, None) => None,
+    }
+}
+
 /// 用 refresh_token 换新 access_token（ureq 自带 form 编码，代理复用额度
 /// 请求同一套）。返回的缓存条目由调用方决定只进内存，本函数不碰任何文件。
 fn refresh_oauth_token(refresh_token: &str) -> Result<OAuthTokenCache, String> {
     let endpoints = kimi_endpoints();
-    let resp = build_kimi_agent()
+    // 错误分支需要读响应体才能给出可执行原因，故先取出 owned 的 Result 再分类
+    //（ureq 的 Error::Status 里带着 Response，map_err 拿到的只是引用，读不了体）。
+    let resp = match build_kimi_agent()
         .post(&format!("{}/api/oauth/token", endpoints.oauth_host))
         .send_form(&[
             ("client_id", KIMI_OAUTH_CLIENT_ID),
             ("grant_type", "refresh_token"),
             ("refresh_token", refresh_token),
-        ])
-        .map_err(|e| match &e {
-            ureq::Error::Status(401, _) | ureq::Error::Status(403, _) => {
-                "refresh_token 已失效（需重新登录 Kimi Code CLI）".to_string()
-            }
-            _ => format!("刷新请求失败（网络错误或服务不可用）: {e}"),
-        })?;
+        ]) {
+        Ok(resp) => resp,
+        Err(ureq::Error::Status(code, resp)) => {
+            let body = resp.into_string().ok();
+            return Err(refresh_failure_message(code, body.as_deref()));
+        }
+        Err(e) => return Err(format!("刷新请求失败（网络错误或服务不可用）: {e}")),
+    };
     let body: OAuthTokenResponse = resp
         .into_json()
         .map_err(|e| format!("解析刷新响应失败: {e}"))?;
@@ -4080,5 +4124,50 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// 刷新失败的分类（纯函数）：4xx 一律是「凭据已失效，需重新登录 CLI」，
+    /// 并把服务端的 error / error_description 带出来（实测 invalid_grant）；
+    /// 其余状态码才按网络/服务不可用措辞。
+    #[test]
+    fn refresh_failure_message_classifies_status() {
+        // 本机真实响应体（2026-10 实测）
+        let real = r#"{"error":"invalid_grant","error_description":"The provided authorization grant is invalid"}"#;
+        let msg = refresh_failure_message(400, Some(real));
+        assert!(msg.contains("refresh_token 已失效"), "{msg}");
+        assert!(msg.contains("重新登录 Kimi Code CLI"), "{msg}");
+        assert!(msg.contains("invalid_grant"), "要带上服务端原因: {msg}");
+        assert!(
+            msg.contains("The provided authorization grant is invalid"),
+            "error_description 也要带: {msg}"
+        );
+
+        // 无 body / 坏 body：仍给可执行结论，但不编造原因
+        for status in [400u16, 401, 403] {
+            let msg = refresh_failure_message(status, None);
+            assert!(msg.contains("重新登录 Kimi Code CLI"), "{msg}");
+            assert!(!msg.contains("网络错误"), "4xx 不该说成网络问题: {msg}");
+        }
+        assert_eq!(
+            refresh_failure_message(401, Some("not json")),
+            "refresh_token 已失效（需重新登录 Kimi Code CLI）"
+        );
+        // 只有 error 或只有 error_description 也要能用
+        assert_eq!(
+            oauth_error_detail(r#"{"error":"invalid_client"}"#),
+            Some("invalid_client".to_string())
+        );
+        assert_eq!(
+            oauth_error_detail(r#"{"error_description":" revoked "}"#),
+            Some("revoked".to_string())
+        );
+        assert_eq!(oauth_error_detail(r#"{"error":"  "}"#), None);
+        assert_eq!(oauth_error_detail("{}"), None);
+        assert_eq!(oauth_error_detail("not json"), None);
+
+        // 5xx / 429 等：保持原网络/服务措辞 + 状态码
+        let msg = refresh_failure_message(503, Some(real));
+        assert!(msg.contains("网络错误或服务不可用"), "{msg}");
+        assert!(msg.contains("503"), "{msg}");
     }
 }

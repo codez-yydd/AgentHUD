@@ -34,6 +34,15 @@
 //! （block-start）」，TTFT 取「首 chunk − 该 step 起始时刻」。因此本模块产出的是
 //! **真生成速度**（`SpeedQuality::Generation`，前端不带 ≈ 前缀），且**有真实
 //! TTFT**——这两点是 claude/kimi 导入库给不出的（它们的 jsonl 只有请求总耗时）。
+//!
+//! **无订阅额度（刻意不提供，别再来加）**：DSH 把 DeepSeek 平台账号登录态存在
+//! `~/.dsh/.credentials.yaml`（记录名 `deepseek-account-platform/default`），
+//! 但那条记录的 `kind` 是 `grant`，其 `token` **不是开放平台 API Key**——实测
+//! 用它打 `GET https://api.deepseek.com/user/balance` 返回 401
+//! （`Authentication Fails, Your api key: ****… is invalid`），而 platform 网端
+//! 接口被 WAF 拦（HTTP 429 `Request Blocked`）。DeepSeek 本身按量计费、没有
+//! Coding Plan 式的订阅窗口，故本来源**不产任何额度条目**：余额查询继续走既有
+//! 凭证通道（`deepseek` provider 的 API Key），不在这里重复实现，也不臆造窗口。
 
 use crate::db;
 use crate::pricing::config_dir;
