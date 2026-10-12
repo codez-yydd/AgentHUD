@@ -55,6 +55,7 @@ import {
   AGENT_VISIBILITY_OPTIONS,
   canAddCredential,
   isCredentialAgent,
+  isLocalCollectAgent,
   type AgentId,
   type AgentVisibility,
 } from "./agentVisibility";
@@ -437,18 +438,20 @@ export function SettingsPanel({
         <SettingsCard title={t("settings.sources")} action={<span className="text-[9px] text-slate-500">{t("settings.instant")}</span>} hint={t("settings.sourcesHint")}>
             {/* 本地采集 / 凭证接入 两组展示，组标题为轻量小节分隔，
                 样式对齐卡内其他说明文字。
-                分组按**语义**而非数组下标切分：此前用 slice(0,5)/slice(5) 的
-                位置魔法数，新增 agent 插到中间会静默归错组（不报错），
-                故改为按「是否凭证驱动」判定——插入顺序从此不再影响分组。 */}
+                分组按**数据来源**（AGENT_GROUP）切分，而非数组下标、也非
+                「是否凭证驱动」：kimi 虽有独立凭证体系（属 CREDENTIAL_AGENTS），
+                但用量数据来自本地 ~/.kimi-code/sessions，仍属本地采集——
+                故这里必须用 isLocalCollectAgent，不能用 isCredentialAgent
+                （后者会把它挪进凭证接入组）。详见 AGENT_GROUP 注释。 */}
             {(
               [
                 [
                   "settings.groupLocal",
-                  AGENT_VISIBILITY_OPTIONS.filter((a) => !isCredentialAgent(a.id)),
+                  AGENT_VISIBILITY_OPTIONS.filter((a) => isLocalCollectAgent(a.id)),
                 ],
                 [
                   "settings.groupCredential",
-                  AGENT_VISIBILITY_OPTIONS.filter((a) => isCredentialAgent(a.id)),
+                  AGENT_VISIBILITY_OPTIONS.filter((a) => !isLocalCollectAgent(a.id)),
                 ],
               ] as const
             ).map(([groupKey, agents]) => (

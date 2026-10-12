@@ -506,7 +506,8 @@ export const en: typeof zh = {
     "settings.instant": "Instant",
     "settings.sourcesHint":
       "Hiding a source only removes its tab and summary card; local collection and device sync are unaffected.",
-    // Group subtitles: first 5 agents are local collection, the other 13 are credential-based
+    // Group subtitles; membership comes from AGENT_GROUP (data origin) in
+    // agentVisibility: local collection = zai/codex/claude/cursor/kimi/dsh
     "settings.groupLocal": "Local collection",
     "settings.groupCredential": "Credential-based",
     "settings.agentZaiDesc": "Z.ai usage & Coding Plan quota",

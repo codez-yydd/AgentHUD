@@ -46,7 +46,8 @@ export const settings = {
   "settings.instant": "即时生效",
   "settings.sourcesHint":
     "关闭后仅从统计标签和汇总中隐藏，不影响本地采集与设备同步。",
-  // 分组小节标题：首批 5 个为本地采集，其余 13 个为凭证接入
+  // 分组小节标题；归属由 agentVisibility 的 AGENT_GROUP（数据来源）决定，
+  // 本地采集 = zai/codex/claude/cursor/kimi/dsh，其余为凭证接入
   "settings.groupLocal": "本地采集",
   "settings.groupCredential": "凭证接入",
   "settings.agentZaiDesc": "Z.ai 用量与 Coding Plan 额度",

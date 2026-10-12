@@ -213,6 +213,58 @@ export const AGENT_COLOR_SCALE: Record<AgentId, readonly string[]> = {
   dsh: ["#3a53d0", "#4D6BFE", "#7a90fe", "#a6b4fe"],
 };
 
+/**
+ * 设置页「统计展示来源」的分组归属（纯界面分组，不影响采集与同步）。
+ *
+ * 判据是**数据从哪来**，不是「有没有凭证」：
+ * - local：「本地采集」——解析本地 CLI 会话日志 → 派生自有 sqlite → 参与多设备
+ *   同步上传。与后端同步白名单 SYNC_SOURCE_WHITELIST（server/app.py）及
+ *   projects.rs 的来源列表完全一致（此处的 zai 对应 source 名 "zcode"）。
+ * - credential：「凭证接入」——数据来自 API Key / Cookie 等凭证查询。
+ *
+ * 特意用 Record<AgentId, ...> 而非数组：新增 agent 时 TypeScript 会强制在此
+ * 表态，不会「漏登记 → 静默归错组」。此处曾两次踩坑，都是同一类错误：
+ * 1. 原实现按 AGENT_VISIBILITY_OPTIONS 的 slice(0,5)/slice(5) 位置魔法数切分，
+ *    新 agent 插到中间即静默归错组；
+ * 2. 随后改按 isCredentialAgent 判定 —— 依然错：kimi 另有凭证体系
+ *    （~/.zbar/credentials/kimi.json、网页 OAuth 登录、汇总页「其他账号」区）
+ *    故属于 CREDENTIAL_AGENTS，于是被当成凭证型挪出「本地采集」，而它的用量
+ *    数据其实来自本地 ~/.kimi-code/sessions 会话日志。
+ * 两个集合回答的是不同问题，不可互相替代：CREDENTIAL_AGENTS 管「凭证体系与
+ * tab 显示门槛」，AGENT_GROUP 管「数据来源归类」。
+ *
+ * gemini / opencodego 虽也有本地读取路径（见 LOCAL_AGENTS），但不解析会话
+ * 日志、不进同步白名单，故仍归 credential（维持既有展示行为）。
+ */
+export type AgentGroupKind = "local" | "credential";
+
+export const AGENT_GROUP: Record<AgentId, AgentGroupKind> = {
+  zai: "local",
+  codex: "local",
+  claude: "local",
+  cursor: "local",
+  kimi: "local",
+  dsh: "local",
+  gemini: "credential",
+  grok: "credential",
+  qoder: "credential",
+  opencodego: "credential",
+  minimax: "credential",
+  moonshot: "credential",
+  deepseek: "credential",
+  longcat: "credential",
+  mimo: "credential",
+  alibaba: "credential",
+  alibabatoken: "credential",
+  stepfun: "credential",
+  doubao: "credential",
+};
+
+/** id 是否属于「本地采集」分组（未知 id 回退 false，不抛错）。 */
+export function isLocalCollectAgent(id: string): boolean {
+  return AGENT_GROUP[id as AgentId] === "local";
+}
+
 // 模式 A：label 是品牌名不进词典；description 存词典键，渲染时查（跟随 UI 语言）
 export const AGENT_VISIBILITY_OPTIONS: ReadonlyArray<{
   id: AgentId;
@@ -244,8 +296,8 @@ export const AGENT_VISIBILITY_OPTIONS: ReadonlyArray<{
     label: "Kimi",
     descriptionKey: "settings.agentKimiDesc",
   },
-  // 索引 5：紧随首批 5 个本地采集型之后（SettingsPanel 按 slice(0,5)/slice(5)
-  // 分组，位置由数组下标决定）
+  // 紧随首批 5 个本地采集型之后：分组由 AGENT_GROUP 语义决定（与数组下标
+  // 无关），此处位置只决定「本地采集」组内的显示顺序
   {
     id: "dsh",
     label: "DeepSeek Harness",
