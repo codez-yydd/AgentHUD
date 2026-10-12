@@ -155,6 +155,30 @@ pub(crate) fn normalize_dots(s: &str) -> String {
     s.replace('.', "-")
 }
 
+/// 价格与隐藏名单查找的 model_id 候选形态（有序，**永不改写原始 id**）：
+/// 1. 原始 id 恒为首选——模型名自身可以带 "/"（本机数据里就有
+///    `stealth/ox-alpha` 这种把斜杠写在名字里的 id），必须先按自己的名字匹配；
+/// 2. 仅当原始形态未命中时，才追加「去掉首个 "/" 之前那一段」的形态：第三方 CLI
+///    会把「provider 配置名 + 模型名」拼成一个 id 落盘（实测 Kimi Code 的
+///    usage.record.model = "zhipuai-coding-plan/glm-5.3-flash"，其中
+///    zhipuai-coding-plan 是它的 provider 配置名、glm-5.3-flash 才是模型名），
+///    而价格表里用户按裸模型名配价（GLM-5.3-Flash），需要这一层回退才对得上。
+///
+/// 两个刻意的选择：
+/// - 按**首个** "/" 切分，不用 rsplit 取最后一段——模型名自身可能含 "/"，
+///   例如 `a/b/c` 的模型部分是 `b/c`，取最后一段会把模型名截断成 `c`；
+/// - 只「追加候选」而不改写 id：入库、展示、同步、隐藏名单始终保留原始 id，
+///   截断形态只用于查找，永远不会成为模型的身份。
+pub(crate) fn model_id_candidates(id: &str) -> Vec<&str> {
+    let mut out = vec![id];
+    if let Some((head, rest)) = id.split_once('/') {
+        if !head.is_empty() && !rest.is_empty() {
+            out.push(rest);
+        }
+    }
+    out
+}
+
 
 /// 从差异检查的遍历主体中剔除隐藏名单里的模型（价格设置页「删除」过的模型，
 /// 即使数据库仍出现过也不再进入 new/changed/missing 任何提醒）。
@@ -173,7 +197,14 @@ pub(crate) fn filter_hidden_models(
         .collect();
     relevant
         .into_iter()
-        .filter(|id| !hidden_keys.contains(&normalize_dots(&id.to_lowercase())))
+        .filter(|id| {
+            // 与价格查找同口径（见 model_id_candidates）：原始 id 未命中时再看
+            // 去掉 provider 前段的形态，否则用户按裸模型名隐藏过的模型会因落盘
+            // 带前缀而反复冒出来提醒
+            !model_id_candidates(id)
+                .iter()
+                .any(|c| hidden_keys.contains(&normalize_dots(&c.to_lowercase())))
+        })
         .collect()
 }
 
@@ -256,10 +287,22 @@ fn diff_with_reference(
         if !seen.insert(key.clone()) {
             continue;
         }
-        let user_u: Option<ModelPrice> = user_usd.get(&key).map(|p| (*p).clone());
+        // 候选形态：原始 id 优先，其次去掉 provider 前段（见 model_id_candidates）。
+        // 「用户是否已配价」与 L1/L2 都按同一候选序列查找——否则落盘带
+        // provider 前缀时，用户明明按裸模型名配过价，也会被误报成「新增模型」
+        let cands: Vec<String> = model_id_candidates(model_id)
+            .into_iter()
+            .map(|c| c.to_lowercase())
+            .collect();
+        let user_u: Option<ModelPrice> = cands
+            .iter()
+            .find_map(|c| user_usd.get(&normalize_dots(c)).map(|p| (*p).clone()));
 
         // L1（精确/点号归一）命中：参考表收录了该模型，正常走 new/changed 判定
-        if let Some(default_usd) = lookup_exact(ref_usd, &norm_usd, &lc) {
+        if let Some(default_usd) = cands
+            .iter()
+            .find_map(|c| lookup_exact(ref_usd, &norm_usd, c))
+        {
             let item = |user: Option<ModelPrice>| PriceDiffItem {
                 model_id: model_id.clone(),
                 user,
@@ -291,7 +334,10 @@ fn diff_with_reference(
         }
         // L2 变体回退：未配置模型拿基础模型参考价兜底（如 gpt-5.6-sol → gpt-5），
         // 条目标注实际参考来源，默认勾选、由用户知情决定是否应用
-        if let Some((usd_ref, hit_id)) = lookup_variant(ref_usd, &norm_usd, &lc) {
+        if let Some((usd_ref, hit_id)) = cands
+            .iter()
+            .find_map(|c| lookup_variant(ref_usd, &norm_usd, c))
+        {
             new_models.push(PriceDiffItem {
                 model_id: model_id.clone(),
                 user: None,
@@ -665,6 +711,85 @@ mod tests {
         let keep: std::collections::HashSet<String> = ["a".to_string()].into_iter().collect();
         assert_eq!(filter_hidden_models(keep, &[]).len(), 1);
     }
+
+    /// 候选形态：原始 id 恒为首位；只在含 "/" 时追加「去掉首段」的形态；
+    /// 模型名自身带 "/" 时保留其余部分（`provider/a/b` → `a/b`），
+    /// 绝不取最后一段（那会把模型名截断成 `b`）。
+    #[test]
+    fn model_id_candidates_never_truncates_model_name() {
+        assert_eq!(model_id_candidates("glm-5.3-flash"), vec!["glm-5.3-flash"]);
+        assert_eq!(
+            model_id_candidates("zhipuai-coding-plan/glm-5.3-flash"),
+            vec!["zhipuai-coding-plan/glm-5.3-flash", "glm-5.3-flash"],
+            "带 provider 前缀时应追加裸模型名候选，且原始 id 优先"
+        );
+        assert_eq!(
+            model_id_candidates("provider/a/b"),
+            vec!["provider/a/b", "a/b"],
+            "按首个 '/' 切分，保留模型名自身的 '/'"
+        );
+        assert_eq!(
+            model_id_candidates("stealth/ox-alpha"),
+            vec!["stealth/ox-alpha", "ox-alpha"],
+            "名字自带 '/' 的模型：原始形态仍为首选"
+        );
+        // 边界：首段为空 / 尾段为空时不产出空候选
+        assert_eq!(model_id_candidates("/glm"), vec!["/glm"]);
+        assert_eq!(model_id_candidates("zhipuai/"), vec!["zhipuai/"]);
+    }
+
+    /// 落盘带 provider 前缀的模型（Kimi Code 的 usage.record.model =
+    /// "zhipuai-coding-plan/glm-5.3-flash"）应能对上用户按裸模型名配置的价格，
+    /// 从而不再被误报成「新增模型 / 缺失价格」。
+    #[test]
+    fn diff_matches_provider_prefixed_model_id() {
+        let mut user = PricingConfig::default();
+        user.usd.insert("GLM-5.3-Flash".into(), price(0.3, 1.2, 0.03));
+        let relevant: std::collections::HashSet<String> =
+            ["zhipuai-coding-plan/glm-5.3-flash".to_string()]
+                .into_iter()
+                .collect();
+        let ref_usd = BTreeMap::from([("glm-5.3-flash".to_string(), price(0.3, 1.2, 0.03))]);
+
+        let diff = diff_with_reference(&user, &relevant, &ref_usd, "test");
+        assert!(diff.new_models.is_empty(), "已配价却被当成新增模型");
+        assert!(diff.changed.is_empty(), "价格一致不应报变动");
+        assert!(diff.missing.is_empty(), "参考表已收录不应算缺失");
+    }
+
+    /// 原始 id 优先于「去掉前缀」形态：名字自带 "/" 的模型按自己的名字命中，
+    /// 不会被另一个同名裸模型（ox-alpha）的价格抢走。
+    #[test]
+    fn exact_slash_name_wins_over_stripped_candidate() {
+        let mut user = PricingConfig::default();
+        user.usd.insert("stealth/ox-alpha".into(), price(1.0, 2.0, 0.1));
+        // 另一个真实存在的裸模型，价格完全不同：一旦命中它会报 changed
+        user.usd.insert("ox-alpha".into(), price(9.0, 9.0, 9.0));
+        let relevant: std::collections::HashSet<String> =
+            ["stealth/ox-alpha".to_string()].into_iter().collect();
+        let ref_usd = BTreeMap::from([("stealth/ox-alpha".to_string(), price(1.0, 2.0, 0.1))]);
+
+        let diff = diff_with_reference(&user, &relevant, &ref_usd, "test");
+        assert!(
+            diff.changed.is_empty() && diff.new_models.is_empty() && diff.missing.is_empty(),
+            "应命中自身精确价格（1/2/0.1），而不是截断形态 ox-alpha 的 9/9/9"
+        );
+    }
+
+    /// 隐藏名单同一口径：用户按裸模型名隐藏后，落盘带 provider 前缀的同一模型
+    /// 也不应再冒出来提醒。
+    #[test]
+    fn hidden_matches_provider_prefixed_form() {
+        let relevant: std::collections::HashSet<String> = [
+            "zhipuai-coding-plan/glm-5.3-flash".to_string(),
+            "stealth/ox-alpha".to_string(),
+        ]
+        .into_iter()
+        .collect();
+        let hidden = vec!["glm-5.3-flash".to_string(), "stealth/ox-alpha".to_string()];
+        let left = filter_hidden_models(relevant, &hidden);
+        assert!(left.is_empty(), "两条都应被隐藏，剩余: {left:?}");
+    }
 }
 
 /// 把用户勾选的若干 (model_id, currency, price) 合并进 pricing 并保存。
@@ -818,7 +943,15 @@ fn parse_modelsdev_prices(root: &serde_json::Value) -> BTreeMap<String, ModelPri
             let Some(cost_obj) = mv.get("cost").and_then(|c| c.as_object()) else {
                 continue;
             };
-            let key = model_id.rsplit('/').next().unwrap_or(model_id).to_lowercase();
+            // 只剥掉 org/provider 前缀（**首个** "/" 之前那一段），保留模型名自身的
+            // "/"：rsplit 取最后一段会把 `org/a/b` 的模型名截断成 `b`。
+            // 无 "/" 与单 "/" 的 id 两种写法结果相同（官方家绝大多数如此），
+            // 差异只出现在 2 段以上，此时「org 前缀」按约定就是首段。
+            let key = model_id
+                .split_once('/')
+                .map(|(_, rest)| rest)
+                .unwrap_or(model_id)
+                .to_lowercase();
             let cost = |name: &str| {
                 cost_obj
                     .get(name)

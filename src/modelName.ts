@@ -45,18 +45,40 @@ export function priceLookupKey(raw: string): string {
   return canonicalModelId(raw).replace(/\./g, "-");
 }
 
-/** 价格表条目查找：精确命中优先，其次按 priceLookupKey 兜底。
- * 供 hasPositivePrice / merge.ts modelCost / PricingPanel 表单显示共用，
- * 保证「⚠ 判定、花费计算、价格编辑」三处读到同一份价格。 */
+/** 价格表条目的候选查找键（有序，**永不改写模型身份**）：
+ *  1. 原始 id —— 模型名自身可以带 "/"（本机数据里就有 `stealth/ox-alpha` 这种把
+ *     斜杠写在名字里的 id），必须优先按自己的名字匹配；
+ *  2. 未命中时追加「去掉首个 "/" 之前那一段」的形态 —— 第三方 CLI 会把
+ *     「provider 配置名 + 模型名」拼成一个 id 落盘（实测 Kimi Code 的
+ *     usage.record.model = `zhipuai-coding-plan/glm-5.3-flash`，其中
+ *     zhipuai-coding-plan 是 provider 配置名、glm-5.3-flash 才是模型名），
+ *     而价格表里通常按裸模型名配价（如 `GLM-5.3-Flash`）。
+ *
+ *  刻意按**首个** "/" 切分而非取最后一段：模型名自身可能含 "/"，
+ *  例如 `a/b/c` 的模型部分是 `b/c`，取最后一段会截断成 `c`。
+ *  与后端 pricing.rs 的 model_id_candidates 保持同一口径。 */
+export function priceLookupCandidates(raw: string): string[] {
+  const out = [raw];
+  const i = raw.indexOf("/");
+  if (i > 0 && i < raw.length - 1) out.push(raw.slice(i + 1));
+  return out;
+}
+
+/** 价格表条目查找：按 priceLookupCandidates 的顺序，每条候选先精确命中、
+ *  其次按 priceLookupKey 兜底（大小写/点号/不可见字符差异）。
+ *  供 hasPositivePrice / merge.ts modelCost / PricingPanel 表单显示共用，
+ *  保证「⚠ 判定、花费计算、价格编辑」三处读到同一份价格。 */
 export function lookupPrice(
   usd: Record<string, ModelPrice>,
   modelId: string
 ): ModelPrice | undefined {
-  const exact = usd[modelId];
-  if (exact) return exact;
-  const target = priceLookupKey(modelId);
-  for (const [k, v] of Object.entries(usd)) {
-    if (priceLookupKey(k) === target) return v;
+  for (const cand of priceLookupCandidates(modelId)) {
+    const exact = usd[cand];
+    if (exact) return exact;
+    const target = priceLookupKey(cand);
+    for (const [k, v] of Object.entries(usd)) {
+      if (priceLookupKey(k) === target) return v;
+    }
   }
   return undefined;
 }

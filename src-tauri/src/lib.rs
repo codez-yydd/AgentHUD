@@ -95,9 +95,12 @@ impl Billable for db::BucketModelStat {
 /// 按 price map 计算单个模型的花费（每百万 token 计价）。
 /// input_tokens 已包含 cache_read_tokens，缓存读部分按缓存价计费，
 /// 剩余非缓存输入部分才按输入价计费。
-/// 查找先精确匹配 db 原始形态；miss 时再按「小写 + 点号归一」兜底（价格条目
-/// 与 db 的 model_id 大小写或点号/连字符写法可能不一致，让任何形态都能算出花费）。
-/// 线性扫描仅在 miss 时发生。
+/// 查找按 pricing::model_id_candidates 的候选顺序：原始 db 形态优先，未命中时
+/// 再试「去掉 provider 前段」的形态（第三方 CLI 会把 provider 配置名拼进模型 id，
+/// 如 zhipuai-coding-plan/glm-5.3-flash）；每一形态都先精确匹配、再按
+/// 「小写 + 点号归一」兜底（价格条目与 db 的 model_id 大小写或点号/连字符写法可能
+/// 不一致，让任何形态都能算出花费）。原始形态恒优先，模型名自身带 "/" 时不会被
+/// 截断形态抢先命中。线性扫描仅在 miss 时发生。
 fn cost_for<B: Billable>(s: &B, map: &BTreeMap<String, ModelPrice>) -> f64 {
     let lookup = |p: &ModelPrice| {
         let non_cache_input =
@@ -107,14 +110,19 @@ fn cost_for<B: Billable>(s: &B, map: &BTreeMap<String, ModelPrice>) -> f64 {
             + s.cache_read_tokens() as f64 * p.cache_read)
             / 1_000_000.0
     };
-    if let Some(p) = map.get(s.model_id()) {
-        return lookup(p);
+    for cand in pricing::model_id_candidates(s.model_id()) {
+        if let Some(p) = map.get(cand) {
+            return lookup(p);
+        }
+        let target = pricing::normalize_dots(&cand.to_lowercase());
+        if let Some((_, p)) = map
+            .iter()
+            .find(|(k, _)| pricing::normalize_dots(&k.to_lowercase()) == target)
+        {
+            return lookup(p);
+        }
     }
-    let target = pricing::normalize_dots(&s.model_id().to_lowercase());
-    map.iter()
-        .find(|(k, _)| pricing::normalize_dots(&k.to_lowercase()) == target)
-        .map(|(_, p)| lookup(p))
-        .unwrap_or(0.0)
+    0.0
 }
 
 /// 当前 USD→CNY 汇率（与 Cursor 配置共用同一来源，每日自动更新；非法值回退 7.2）。
@@ -2419,6 +2427,76 @@ mod tests {
             provider_id: provider.to_string(),
             model_id: model.to_string(),
         }
+    }
+
+    /// cost_for 的候选查找：第三方 CLI 落盘的「provider 配置名/模型名」
+    /// （Kimi Code + 智谱实测为 zhipuai-coding-plan/glm-5.3-flash）要能对上用户
+    /// 按裸模型名配置的价格；模型名自身带 "/" 时原始 id 优先，不被截断形态抢走。
+    #[test]
+    fn cost_for_matches_provider_prefixed_model_id() {
+        struct Row {
+            model: String,
+            input: i64,
+            output: i64,
+            cache_read: i64,
+        }
+        impl Billable for Row {
+            fn model_id(&self) -> &str {
+                &self.model
+            }
+            fn input_tokens(&self) -> i64 {
+                self.input
+            }
+            fn output_tokens(&self) -> i64 {
+                self.output
+            }
+            fn cache_read_tokens(&self) -> i64 {
+                self.cache_read
+            }
+        }
+        let row = |m: &str| Row {
+            model: m.to_string(),
+            input: 1_000_000,
+            output: 1_000_000,
+            cache_read: 0,
+        };
+        let map = BTreeMap::from([
+            (
+                "GLM-5.3-Flash".to_string(),
+                ModelPrice {
+                    input: 0.3,
+                    output: 1.2,
+                    cache_read: 0.03,
+                },
+            ),
+            (
+                "ox-alpha".to_string(),
+                ModelPrice {
+                    input: 9.0,
+                    output: 9.0,
+                    cache_read: 9.0,
+                },
+            ),
+            (
+                "stealth/ox-alpha".to_string(),
+                ModelPrice {
+                    input: 1.0,
+                    output: 2.0,
+                    cache_read: 0.1,
+                },
+            ),
+        ]);
+        // 带 provider 前缀 → 回退按裸模型名计价：1M×0.3 + 1M×1.2 = 1.5
+        let got = cost_for(&row("zhipuai-coding-plan/glm-5.3-flash"), &map);
+        assert!((got - 1.5).abs() < 1e-9, "带前缀未对上裸模型名价格: {got}");
+        // 名字自带 "/" → 命中自身精确价格（1.0 + 2.0），而非 ox-alpha 的 9+9
+        let got = cost_for(&row("stealth/ox-alpha"), &map);
+        assert!((got - 3.0).abs() < 1e-9, "被截断形态抢走了价格: {got}");
+        // 无前缀的既有行为不变（大小写/点号归一兜底）
+        let got = cost_for(&row("glm-5.3-FLASH"), &map);
+        assert!((got - 1.5).abs() < 1e-9, "既有归一口径被改坏: {got}");
+        // 完全未配价 → 0（不因候选而误命中）
+        assert_eq!(cost_for(&row("unknown/nothing"), &map), 0.0);
     }
 
     /// 多来源模型清单合并：跨来源同名去重、不同来源同名保留、按 model_id 排序
