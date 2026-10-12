@@ -383,6 +383,8 @@ Parses local `~/.kimi-code/sessions` session records (`wire.jsonl`). Prerequisit
 
 Services that cannot be auto-detected from the local sign-in state (ZCode / Codex / Claude / Kimi Code / Cursor, etc.) are connected via **credentials**. The credentials entry lives inside each agent panel (not on the settings page).
 
+Two standalone balance-query services were retired: **DeepSeek balance** (the local dsh source already covers DeepSeek usage) and **Kimi open platform / Moonshot balance** (local Kimi Code already covers both usage and subscription quota) — the same thing no longer appears twice in the UI. Existing credential files are not deleted; they simply have no UI entry any more.
+
 - **Stacked credentials** — each service accepts multiple credentials (multi-account / multi-subscription), displayed stacked in the panel; notes (e.g. to distinguish plan tiers), editing and deletion are supported.
 - **Region** — some services offer a China / International region choice.
 - **Local storage** — one JSON file per service, stored in plain text under `~/.zbar/credentials/` (directory mode 700, file mode 600); this machine only, never synced.
@@ -391,11 +393,11 @@ By credential type:
 
 | Type | How to obtain | Services |
 | --- | --- | --- |
-| API Key | Create a key in the service console and paste it | DeepSeek (balance), Kimi open platform (Moonshot) (balance), MiniMax (5-hour + weekly dual windows), Tongyi Lingma Coding Plan (5h / weekly / monthly windows) |
+| API Key | Create a key in the service console and paste it | MiniMax (5-hour + weekly dual windows), Tongyi Lingma Coding Plan (5h / weekly / monthly windows) |
 | Cookie | Copy the cookie from browser DevTools (F12) and paste | Qoder (LLM credits), LongCat by Meituan (token quota + booster packs), Xiaomi MiMo (balance + credits), Alibaba Cloud Bailian token packs (5h / 7-day windows, Team / Personal variants) |
 | Token | Grab the token from the console and paste | StepFun (rate / credits dual-plan variants, Oasis-Token) |
 
-Three more services work with **zero credentials** by reading local state: Gemini (Gemini CLI signed-in state, auto token refresh), Grok (grok CLI signed-in state, multiple tokens), OpenCode Go (usage estimated from a local SQLite DB).
+Four more services work with **zero credentials** by reading local state: Gemini (Gemini CLI signed-in state, auto token refresh), Grok (grok CLI signed-in state, multiple tokens), OpenCode Go (usage estimated from a local SQLite DB), MiniMax Code (usage and cost from local `~/.minimax`; machines with a configured `sk-cp-` API key also show the Coding Plan subscription quota). These four have no credential entry: they query credentials already on this machine or local data.
 
 For the exact steps, follow the in-app guidance shown when adding a credential.
 

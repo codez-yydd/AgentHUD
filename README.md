@@ -389,6 +389,8 @@ ZBar 以 **只读** 方式访问 ZCode 的 SQLite 数据库，不会干扰 ZCode
 
 除自动读取本机登录态的服务（ZCode / Codex / Claude / Kimi Code / Cursor 等）外，其余订阅 / 额度服务通过**凭证**接入。凭证入口在各 Agent 面板页内（设置页不提供凭证配置）。
 
+两个「独立余额查询」型服务已下架：**DeepSeek 余额**（本地 dsh 已覆盖 DeepSeek 用量）与 **Kimi 开放平台余额（月之暗面）**（本地 Kimi Code 已覆盖用量与订阅额度）——同一件事不再在界面里出现两遍。已存在的凭证文件不会被删除，只是不再有界面入口。
+
 - **多凭证堆叠** — 每个服务可添加多个凭证（多账号 / 多订阅），面板中堆叠显示；支持备注（如区分订阅等级）、编辑与删除。
 - **region 选择** — 部分服务支持选择中国站 / 国际站。
 - **本地存储** — 每个服务一个 JSON 文件，明文保存在 `~/.zbar/credentials/`（目录权限 700、文件 600），仅存本机、不参与多设备同步。
@@ -397,11 +399,11 @@ ZBar 以 **只读** 方式访问 ZCode 的 SQLite 数据库，不会干扰 ZCode
 
 | 类型 | 获取方式 | 服务 |
 | --- | --- | --- |
-| API Key | 服务控制台创建 Key 后粘贴 | DeepSeek（余额）、Kimi 开放平台 · 月之暗面（余额）、MiniMax（5h + 周双窗口）、通义灵码 Coding Plan（5h / 周 / 月三窗口） |
+| API Key | 服务控制台创建 Key 后粘贴 | MiniMax（5h + 周双窗口）、通义灵码 Coding Plan（5h / 周 / 月三窗口） |
 | Cookie | 浏览器 F12 复制 Cookie 粘贴 | Qoder（大模型积分）、LongCat 美团（Token 配额 + 加油包）、小米 MiMo（余额 + 积分）、百炼 Token 包（5h / 7 天窗口，Team / Personal 双形态） |
 | Token | 控制台获取 Token 后粘贴 | StepFun 阶跃星辰（速率 / 积分双套餐形态，Oasis-Token） |
 
-另有三个**本地读取型**服务零凭证即可使用：Gemini（读取 Gemini CLI 登录态，自动刷新 token）、Grok（读取 grok CLI 登录态，支持多 token）、OpenCode Go（本地 SQLite 用量估算）。
+另有四个**本地读取型**服务零凭证即可使用：Gemini（读取 Gemini CLI 登录态，自动刷新 token）、Grok（读取 grok CLI 登录态，支持多 token）、OpenCode Go（本地 SQLite 用量估算）、MiniMax Code（本地 `~/.minimax` 用量与花费；已配置 `sk-cp-` API Key 的机器同时展示 Coding Plan 订阅额度）。这四个服务不提供凭证录入入口，按本机已有的凭证或本地数据查询。
 
 各类型凭证的具体获取步骤，以应用内添加凭证时的引导文案为准。
 

@@ -42,6 +42,22 @@ export type CredentialAgentId = Exclude<
   "zai" | "codex" | "claude" | "cursor" | "dsh"
 >;
 
+/**
+ * 凭证体系名单。
+ *
+ * **为什么没有 moonshot / deepseek**（产品决定，别再补回来）：
+ * 两者都是「独立余额/额度查询」型 provider，已被对应的本地采集型 agent 覆盖——
+ * moonshot 是月之暗面开放平台余额，而 Kimi Code（本地 `~/.kimi-code` 会话 + 订阅
+ * 额度）已经在了；deepseek 是平台余额，而本地 dsh（DeepSeek Harness 会话即 DeepSeek
+ * 用量）已经在了。留着它们等于同一件事在「本地采集」里出现两遍（之前的重命名
+ * 「Moonshot → Kimi」就是这么暴露出来的），故整项下架：不进设置列表、不进 tab、
+ * 不参与 presence 探测与 120s 额度轮询。
+ *
+ * 只下架 UI 与轮询，不动历史数据：`AgentId` 联合类型、`AGENT_COLOR`、`AGENT_GROUP`、
+ * `DEFAULT_VISIBILITY`、`CREDENTIAL_AGENT_KIND` 里仍保留这两个 id（那几张表都是
+ * `Record<AgentId, …>`，删键会连带改类型），这样已写入 localStorage 的可见性键与
+ * 已存在的凭证文件都还能被安全读到，只是不再有任何界面入口。
+ */
 export const CREDENTIAL_AGENTS: readonly CredentialAgentId[] = [
   "kimi",
   "gemini",
@@ -49,8 +65,6 @@ export const CREDENTIAL_AGENTS: readonly CredentialAgentId[] = [
   "qoder",
   "opencodego",
   "minimax",
-  "moonshot",
-  "deepseek",
   "longcat",
   "mimo",
   "alibaba",
