@@ -125,6 +125,19 @@ export function QuotaEntryCard({
         </p>
       )}
 
+      {/* 正常态（ok / pending）的说明行：中性色，不当失败展示。
+          例：本地估算条目的「本地用量估算，非官方额度数据」（非官方口径需要告知，
+          否则用户会把估算值当官方额度）、本地登录条目的「当前账号没有生效的订阅」。
+          这类 message 以前只在 error/expired 时渲染，等于静默丢弃了这些说明。 */}
+      {!isError && entry.message && (
+        <p
+          className="text-[10px] text-slate-500 leading-relaxed mb-1.5 break-all"
+          title={entry.message}
+        >
+          {entry.message}
+        </p>
+      )}
+
       {/* 用量窗口（标题优先取 key 映射的 i18n 文案，未收录回落 Rust title） */}
       {entry.windows.length > 0 && (
         <div className="space-y-1.5">

@@ -33,25 +33,55 @@
 //! status_code==1004 或 status_msg 含 "cookie"/"login" 或 HTTP 401/403 →
 //! expired（默认区域文案附加国际站切换提示，见 expired_message）；
 //! 其他非 0 → error（带 status_msg）。
+//!
+//! ## 零凭证回退：MiniMax Code 本地 OAuth 登录态
+//!
+//! MiniMax Code 把自家 OAuth 登录态落在
+//! `<数据根>/auth/<env>/<region>/<clientId>/auth.json`（本机真实布局
+//! `~/.minimax/auth/prod/cn/mcode-public/auth.json`；records map 的 value 带
+//! accessToken / refreshToken / clientId / expiresAtMs）。用户**没配 Coding Plan
+//! 凭证**时这条本地登录态是唯一问得动的来源，故作为零凭证回退：凭证条目优先，
+//! 只有一条凭证条目都没有时才追加本地登录条目（见 provider_quota 的 minimax 分支）。
+//!
+//! **端点只能走开放平台路径**（本机真实登录态实测）：
+//! - 同一 accessToken 打 `/v1/api/openplatform/coding_plan/remains` → HTTP 200
+//!   `{"model_remains":null,"base_resp":{"status_code":2062,"status_msg":"no active
+//!   token plan subscription"}}`——token **被接受**，只是该账号没有生效订阅；
+//! - 同一 token 打主路径 `/v1/token_plan/remains` → HTTP 200
+//!   `{"base_resp":{"status_code":1004,"status_msg":"login fail: Please carry the
+//!   API secret key in the 'Authorization' field of the request header"}}`
+//!   ——主路径只认 `sk-cp-` Key，本地 OAuth token 必然失败。
+//! 故本地路径固定用 FALLBACK_PATH，且不做 should_fallback 判定（那会先打一次
+//! 注定失败的主路径）。
+//!
+//! **静默纪律**：无 auth.json / 记录不可解析 / token 已过期 / 网络失败 / 非 200 /
+//! body 不可解析 / 其他业务码 → 一律不产条目（本地登录是补充展示，不该在面板上
+//! 刷错误）；token 只在内存里流转，不写日志、不进任何错误消息。过期也**不刷新**
+//! ——MiniMax Code 的刷新端点与 client 行为未知，不猜。唯一例外是业务码 2062
+//! （已登录但无生效订阅）：产出一条 pending 中性条目说明原因，让面板解释空白
+//! 而不是留空（前端 QuotaEntryCard 对 ok/pending 的 message 走中性说明行）。
 
 use crate::provider_credentials::CredentialQuerySnapshot;
 use crate::provider_quota::{
     flatten_response, now_ms, parse_flexible_f64, quota_http_agent, ProviderQuotaEntry,
     ProviderQuotaWindow,
 };
+use std::path::{Path, PathBuf};
 
 /// 新版端点路径（优先）。
 const PRIMARY_PATH: &str = "/v1/token_plan/remains";
 /// 旧版开放平台端点路径（新版 404/501 时回退）。
 const FALLBACK_PATH: &str = "/v1/api/openplatform/coding_plan/remains";
 
-/// region → API 主机域名（纯函数，便于单测）：global 走国际站 minimax.io，
-/// 其余（None/"cn"/未知值）默认国内站 minimaxi.com。
+/// region → API 主机域名（纯函数，便于单测）：国际站（凭证的 "global"，以及
+/// MiniMax Code 本地登录目录用的 "en"/"io"，见 region_hint）走 api.minimax.io；
+/// 其余（None/"cn"/未知值）默认国内站 api.minimaxi.com。凭证下拉只提供
+/// cn/global（provider_credentials 的 REGIONS），en/io 仅来自本地登录目录名，
+/// 两条路径共用同一映射。
 fn host_for_region(region: Option<&str>) -> &'static str {
-    if region == Some("global") {
-        "api.minimax.io"
-    } else {
-        "api.minimaxi.com"
+    match region {
+        Some("global") | Some("en") | Some("io") => "api.minimax.io",
+        _ => "api.minimaxi.com",
     }
 }
 
@@ -369,6 +399,278 @@ fn entry_from_raw(
     }
 }
 
+// ============================================================
+// 零凭证回退：MiniMax Code 本地 OAuth 登录态（见模块头）
+// ============================================================
+
+/// 本地登录条目的 credential_id：不对应凭证体系任何条目，provider_quota 的
+/// 校验回写按此值跳过（与 gemini/grok/opencodego 的本地条目同口径）。
+const LOCAL_CREDENTIAL_ID: &str = "local";
+
+/// 本地登录条目标签（凭证名位置展示；credential_id="local" 另有「本地」徽章）。
+const LOCAL_LABEL: &str = "MiniMax Code 登录";
+
+/// `<root>/auth` 下搜索 auth.json 的最大下探层数（真实布局是 3 层目录：
+/// env/region/clientId）。目录命名随版本可能变化，故按「够深就找、找到就用」
+/// 实现，不写死层级。
+const LOCAL_AUTH_MAX_DEPTH: usize = 3;
+
+/// token 过期提前量（毫秒）：距过期不足 60 秒视为不可用（与 kimi 同口径，
+/// 防止请求发出途中刚好过期）。过期不刷新（见模块头），直接静默无条目。
+const LOCAL_TOKEN_SKEW_MS: i64 = 60_000;
+
+/// `base_resp.status_code`：已登录但账号没有生效的 Token Plan 订阅
+/// （本机真实登录态实测返回 2062 / "no active token plan subscription"）。
+const LOCAL_NO_SUBSCRIPTION_CODE: f64 = 2062.0;
+
+/// 2062 的中性说明文案（账号状态，不是查询故障，故不按 error 展示）。
+const LOCAL_NO_SUBSCRIPTION_MESSAGE: &str =
+    "MiniMax Code 已登录的账号当前没有生效的 Token Plan 订阅（未开通或已到期）";
+
+/// 一条本地登录记录（auth.json 的 records map 一条）。token 只在内存里流转：
+/// 不写任何文件、不落日志、不进错误消息。
+#[derive(Debug, Clone, PartialEq)]
+struct LocalLogin {
+    access_token: String,
+    expires_at_ms: i64,
+    client_id: String,
+    /// 区域提示（由 auth.json 所在目录名推出，见 region_hint）；None 走默认国内站
+    region: Option<String>,
+}
+
+/// token 是否可用（纯函数）：距过期还有 LOCAL_TOKEN_SKEW_MS 以上才算可用。
+fn token_usable(expires_at_ms: i64, now: i64) -> bool {
+    now + LOCAL_TOKEN_SKEW_MS < expires_at_ms
+}
+
+/// 解析 auth.json 的 records（纯函数，便于单测）：形态
+/// `{"records":{"com.minimax.mcode.oauth.prod.cn\u0000<sub>":{...}}}`（key 里的
+/// 记录名不影响解析），每个 value 取 accessToken / expiresAtMs / clientId。
+/// accessToken 非空且 expiresAtMs 为数值（容忍字符串数字）才算一条；region
+/// 不在文件里，留 None 由调用方按目录名补齐。
+fn parse_login_records(auth: &serde_json::Value) -> Vec<LocalLogin> {
+    let Some(records) = auth.get("records").and_then(|r| r.as_object()) else {
+        return vec![];
+    };
+    records
+        .values()
+        .filter_map(|record| {
+            let access_token = record
+                .get("accessToken")
+                .and_then(|t| t.as_str())
+                .map(str::trim)
+                .filter(|t| !t.is_empty())?;
+            let expires_at_ms = record.get("expiresAtMs").and_then(parse_flexible_f64)?;
+            let client_id = record
+                .get("clientId")
+                .and_then(|c| c.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            Some(LocalLogin {
+                access_token: access_token.to_string(),
+                expires_at_ms: expires_at_ms as i64,
+                client_id,
+                region: None,
+            })
+        })
+        .collect()
+}
+
+/// 选取可用登录记录（纯函数）：先按 token_usable 过滤（过期/即将过期直接丢，
+/// 不刷新），再取 expiresAtMs 最大的一条——同一目录树里可能有多条记录（多次
+/// 登录 / 多客户端），最近一次登录最可信。无可用记录 → None（静默）。
+fn pick_login_record(records: &[LocalLogin], now: i64) -> Option<LocalLogin> {
+    records
+        .iter()
+        .filter(|record| token_usable(record.expires_at_ms, now))
+        .max_by_key(|record| record.expires_at_ms)
+        .cloned()
+}
+
+/// 从 auth.json 的目录段推断区域提示（纯函数，便于单测）。真实布局是
+/// `<env>/<region>/<clientId>/auth.json`（本机实测 prod/cn/mcode-public），
+/// 目录命名随版本可能变化，故按三步容错：
+/// 1. 目录段里出现已知区域名（cn/en/global/io，忽略大小写）→ 直接用它（最稳）；
+/// 2. 末段与文件里的 clientId 相同 → 取它前一段（`<env>/<region>/<clientId>` 形态）；
+/// 3. 否则取最后一段（`<region>/auth.json` 形态）。
+/// 都取不到 → None（由 host_for_region 按默认国内站处理）。
+fn region_hint(components: &[String], client_id: &str) -> Option<String> {
+    let known = |c: &str| matches!(c.to_ascii_lowercase().as_str(), "cn" | "en" | "global" | "io");
+    if let Some(hit) = components.iter().find(|c| known(c)) {
+        return Some(hit.to_ascii_lowercase());
+    }
+    let client_id = client_id.trim();
+    if components.len() >= 2 && !client_id.is_empty() && components[components.len() - 1] == client_id {
+        return Some(components[components.len() - 2].clone());
+    }
+    components.last().cloned()
+}
+
+/// auth.json 相对 `<root>/auth` 的目录段（不含文件名；`auth/auth.json` → 空）。
+fn auth_path_components(auth_root: &Path, auth_file: &Path) -> Vec<String> {
+    auth_file
+        .strip_prefix(auth_root)
+        .ok()
+        .and_then(|rel| rel.parent())
+        .map(|parent| {
+            parent
+                .components()
+                .map(|c| c.as_os_str().to_string_lossy().to_string())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// 收集 `<root>/auth` 下最多 LOCAL_AUTH_MAX_DEPTH 层目录里的 auth.json。
+/// 目录不存在 / 读不动 → 空 Vec（静默：没装过或没登录过 MiniMax Code）。
+fn local_auth_files(auth_root: &Path) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    collect_auth_files(auth_root, LOCAL_AUTH_MAX_DEPTH, &mut files);
+    files
+}
+
+/// `local_auth_files` 的递归体：先收本层的 auth.json，再按剩余深度下探子目录
+/// （深度上限保证符号链接环/超深目录不会无限下探）。
+fn collect_auth_files(dir: &Path, depth: usize, files: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            if depth > 0 {
+                collect_auth_files(&path, depth - 1, files);
+            }
+        } else if path.file_name().is_some_and(|name| name == "auth.json") {
+            files.push(path);
+        }
+    }
+}
+
+/// 读取本地登录态并选出可用记录（无网络：纯文件 IO + 上面的纯函数）。
+/// 目录/文件缺失、读失败、坏 JSON、记录全过期 → None（静默，绝不刷新）。
+fn load_local_login(auth_root: &Path, now: i64) -> Option<LocalLogin> {
+    let mut records = Vec::new();
+    for path in local_auth_files(auth_root) {
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(auth) = serde_json::from_str::<serde_json::Value>(&text) else {
+            continue;
+        };
+        let components = auth_path_components(auth_root, &path);
+        for mut login in parse_login_records(&auth) {
+            login.region = region_hint(&components, &login.client_id);
+            records.push(login);
+        }
+    }
+    pick_login_record(&records, now)
+}
+
+/// 补齐开放平台端点的信封：该端点把 `model_remains` 放在**顶层**（实测 2062
+/// 响应体就是 `{"model_remains":null,"base_resp":{...}}`，没有 token_plan 端点
+/// 的 data 信封），而 `entry_from_raw` 按 `data.model_remains` 取。这里在解析前
+/// 把顶层的 `model_remains` 搬进 `data`（已有 data 信封时原样返回），让两条路径
+/// 共用同一个解析器，而不是写第二个解析器。
+fn hoist_model_remains(mut v: serde_json::Value) -> serde_json::Value {
+    if v.get("data").is_some_and(|d| !d.is_null()) {
+        return v;
+    }
+    let Some(models) = v.get("model_remains").cloned() else {
+        return v;
+    };
+    if let Some(obj) = v.as_object_mut() {
+        obj.insert(
+            "data".to_string(),
+            serde_json::json!({ "model_remains": models }),
+        );
+    }
+    v
+}
+
+/// 本地登录条目的骨架（credential_id 固定 "local"：provider_quota 的校验回写
+/// 按此跳过，前端按此渲染「本地」徽章）。
+fn local_entry(status: &str, message: Option<String>) -> ProviderQuotaEntry {
+    ProviderQuotaEntry {
+        credential_id: LOCAL_CREDENTIAL_ID.to_string(),
+        label: LOCAL_LABEL.to_string(),
+        status: status.to_string(),
+        windows: vec![],
+        balance: None,
+        plan_name: None,
+        message,
+        updated_at: now_ms(),
+    }
+}
+
+/// 本地登录响应 → 展示条目（纯函数，网络无关，单测直接构造输入）。只认三种
+/// 可解释形态，其余一律 None（静默，见模块头纪律）：
+/// - 业务码 2062（no active token plan subscription）→ 一条 pending 中性条目
+///   说明已登录但无生效订阅（与 gemini/opencodego 的 pending 同口径）；
+/// - 业务码 0 → 交给凭证路径的 `entry_from_raw` 解析（先按 hoist_model_remains
+///   补齐开放平台端点的顶层 model_remains），解析结果非 ok（缺 model_remains
+///   等）也不产条目；
+/// - 其余业务码（含 1004 登录失败）、非 200、坏 JSON → None。
+fn entry_from_local_raw(
+    raw: &Result<(u16, Option<String>), String>,
+    region: Option<&str>,
+) -> Option<ProviderQuotaEntry> {
+    let Ok((200, Some(body))) = raw else {
+        return None;
+    };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(body) else {
+        return None;
+    };
+    let status_code = v
+        .get("base_resp")
+        .and_then(|b| b.get("status_code"))
+        .and_then(parse_flexible_f64)
+        .unwrap_or(0.0);
+    if status_code == LOCAL_NO_SUBSCRIPTION_CODE {
+        return Some(local_entry(
+            "pending",
+            Some(LOCAL_NO_SUBSCRIPTION_MESSAGE.to_string()),
+        ));
+    }
+    if status_code != 0.0 {
+        return None;
+    }
+    let normalized = Ok((200u16, Some(hoist_model_remains(v).to_string())));
+    let entry = entry_from_raw(LOCAL_CREDENTIAL_ID, LOCAL_LABEL, region, &normalized);
+    (entry.status == "ok").then_some(entry)
+}
+
+/// 本地登录态的单次请求（网络层）：只用 FALLBACK_PATH（理由见模块头）。
+/// 头与凭证路径完全一致（Bearer + accept + MM-API-Source: ZBar）；
+/// 网络层彻底失败 → Err（中文原因，不含 token）。
+fn fetch_local_remains_raw(
+    agent: &ureq::Agent,
+    host: &str,
+    access_token: &str,
+) -> Result<(u16, Option<String>), String> {
+    let resp = agent
+        .get(&format!("https://{host}{FALLBACK_PATH}"))
+        .set("Authorization", &format!("Bearer {access_token}"))
+        .set("accept", "application/json")
+        .set("MM-API-Source", "ZBar")
+        .call();
+    flatten_response(resp).map_err(|e| format!("MiniMax Code 登录态额度{e}"))
+}
+
+/// 零凭证回退入口：MiniMax Code 本地登录态 → 订阅额度条目（不可用则 None）。
+/// 任何一步不可用（无 auth.json / 记录不可解析 / token 已过期 / 网络失败 /
+/// 非 200 / body 不可解析 / 其他业务码）都静默返回 None——本地登录是补充来源，
+/// 不该在面板上刷错误条目。唯一有产出的是业务码 0（ok 双窗口）与 2062（pending
+/// 说明）。由 provider_quota 在 minimax 一条凭证条目都没有时调用。
+pub(crate) fn fetch_local_login_entry() -> Option<ProviderQuotaEntry> {
+    let auth_root = crate::minimaxcode::data_root().join("auth");
+    let login = load_local_login(&auth_root, now_ms())?;
+    let host = host_for_region(login.region.as_deref());
+    let raw = fetch_local_remains_raw(&quota_http_agent(), host, &login.access_token);
+    entry_from_local_raw(&raw, login.region.as_deref())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -630,5 +932,209 @@ mod tests {
         let entry = entry_from_raw(CRED_ID, LABEL, None, &raw);
         assert_eq!(entry.status, "ok");
         assert!(entry.windows.is_empty());
+    }
+
+    // ===== 零凭证回退：MiniMax Code 本地登录态 =====
+
+    /// 本机真实 auth.json 形态（记录名带 \u0000 分隔，key 不参与解析）。
+    const LOCAL_AUTH_BODY: &str = r#"{
+        "schemaVersion": 1,
+        "records": {
+            "com.minimax.mcode.oauth.prod.cn\u0000sub-1": {
+                "schemaVersion": 1,
+                "accessToken": "mmoat_local_token",
+                "refreshToken": "mmort_local_token",
+                "tokenType": "Bearer",
+                "clientId": "mcode-public",
+                "scopes": ["agent.default"],
+                "audience": "agent-backend",
+                "expiresAtMs": 1791839661268,
+                "generation": 3
+            }
+        }
+    }"#;
+
+    fn auth_value(body: &str) -> serde_json::Value {
+        serde_json::from_str(body).expect("测试 JSON 必须可解析")
+    }
+
+    /// 过期提前量：距过期不足 60 秒即不可用（防请求途中过期）。
+    #[test]
+    fn local_token_usable_respects_skew() {
+        assert!(token_usable(1_000_000, 900_000)); // 剩 100s
+        assert!(!token_usable(1_000_000, 940_001)); // 剩 59.999s
+        assert!(!token_usable(1_000_000, 1_000_000)); // 已到期
+        assert!(!token_usable(0, 0));
+    }
+
+    /// 解析 records：取 accessToken / expiresAtMs / clientId；空 token 跳过；
+    /// 字符串数字容忍；缺 records 返回空表。
+    #[test]
+    fn local_parse_login_records() {
+        let records = parse_login_records(&auth_value(LOCAL_AUTH_BODY));
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].access_token, "mmoat_local_token");
+        assert_eq!(records[0].expires_at_ms, 1_791_839_661_268);
+        assert_eq!(records[0].client_id, "mcode-public");
+        assert_eq!(records[0].region, None, "region 不在文件里，由目录名补");
+
+        let mixed = r#"{"records":{
+            "a":{"accessToken":"t1","expiresAtMs":"1700000000000","clientId":"c1"},
+            "b":{"accessToken":"   ","expiresAtMs":1700000000000},
+            "c":{"accessToken":"t3"},
+            "d":"not-an-object"
+        }}"#;
+        let records = parse_login_records(&auth_value(mixed));
+        assert_eq!(records.len(), 1, "空 token / 缺 expiresAtMs / 非对象都要跳过");
+        assert_eq!(records[0].access_token, "t1");
+        assert_eq!(records[0].expires_at_ms, 1_700_000_000_000);
+
+        assert!(parse_login_records(&auth_value(r#"{"schemaVersion":1}"#)).is_empty());
+    }
+
+    /// 多条登录记录：只挑未过期的，且取最晚过期的一条（同一账号多代登录态并存）。
+    #[test]
+    fn local_pick_login_record_prefers_latest_usable() {
+        let records = vec![
+            LocalLogin {
+                access_token: "old".into(),
+                expires_at_ms: 1_000_000,
+                client_id: "c".into(),
+                region: None,
+            },
+            LocalLogin {
+                access_token: "new".into(),
+                expires_at_ms: 2_000_000,
+                client_id: "c".into(),
+                region: None,
+            },
+        ];
+        let picked = pick_login_record(&records, 900_000).expect("应挑到未过期的一条");
+        assert_eq!(picked.access_token, "new");
+        // 全部过期 → None（静默无条目，不刷新）
+        assert!(pick_login_record(&records, 3_000_000).is_none());
+        assert!(pick_login_record(&[], 0).is_none());
+    }
+
+    /// 目录名 → 区域提示（三步容错）：已知区域名（cn/en/global/io）直接命中；
+    /// 末段是 clientId 时取它前一段；层级不足时按最后一段兜底；空 → None。
+    #[test]
+    fn local_region_hint_from_path() {
+        let comps = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<String>>();
+        // 第 1 步：目录段里出现已知区域名（本机真实布局 prod/cn/mcode-public）
+        assert_eq!(
+            region_hint(&comps(&["prod", "cn", "mcode-public"]), "mcode-public"),
+            Some("cn".to_string())
+        );
+        assert_eq!(
+            region_hint(&comps(&["prod", "EN", "mcode-public"]), "mcode-public"),
+            Some("en".to_string()),
+            "大小写不敏感，且归一为小写"
+        );
+        // 第 2 步：没有已知区域名，但末段 == clientId → 取前一段
+        assert_eq!(
+            region_hint(&comps(&["prod", "ap-sg", "mcode-public"]), "mcode-public"),
+            Some("ap-sg".to_string())
+        );
+        // 第 3 步：都不满足 → 最后一段兜底（由 host_for_region 决定默认国内站）
+        assert_eq!(
+            region_hint(&comps(&["mcode-public"]), "mcode-public"),
+            Some("mcode-public".to_string())
+        );
+        // 空段 → None
+        assert_eq!(region_hint(&comps(&[]), "mcode-public"), None);
+    }
+
+    /// 本地登录条目：只认 2062（pending 说明）与业务码 0 + 可解析双窗口（ok）；
+    /// 其余一律 None（静默，不在面板刷错误）。
+    #[test]
+    fn local_entry_from_raw_handles_all_outcomes() {
+        // 2062：已登录但无生效订阅 → pending + 中文说明（本机真实响应）
+        let no_sub = ok_raw(
+            r#"{"model_remains":null,"base_resp":{"status_code":2062,"status_msg":"no active token plan subscription"}}"#,
+        );
+        let entry = entry_from_local_raw(&no_sub, Some("cn")).expect("2062 应产出一条说明条目");
+        assert_eq!(entry.credential_id, "local");
+        assert_eq!(entry.status, "pending");
+        assert!(entry.windows.is_empty());
+        assert!(entry.message.unwrap().contains("没有生效的 Token Plan 订阅"));
+
+        // 业务码 0 + 顶层 model_remains（开放平台端点没有 data 信封）→ ok 双窗口
+        let ok_body = r#"{"model_remains":[{
+            "model_name":"MiniMax-M2",
+            "current_interval_total_count":1000,
+            "current_interval_usage_count":300,
+            "current_interval_remaining_percent":70,
+            "current_weekly_total_count":5000,
+            "current_weekly_usage_count":1200,
+            "current_weekly_remaining_percent":76
+        }],"base_resp":{"status_code":0,"status_msg":""}}"#;
+        let entry = entry_from_local_raw(&ok_raw(ok_body), Some("cn")).expect("业务码 0 应产出条目");
+        assert_eq!(entry.status, "ok");
+        assert_eq!(entry.credential_id, "local");
+        assert_eq!(entry.windows.len(), 2, "顶层 model_remains 要能补齐信封后被解析");
+        assert_eq!(entry.windows[0].key, "interval");
+
+        // 1004（主路径才认 sk-cp Key）/ 其它业务码 / 非 200 / 坏 JSON / 网络失败 → None
+        let login_fail = ok_raw(
+            r#"{"base_resp":{"status_code":1004,"status_msg":"login fail: Please carry the API secret key"}}"#,
+        );
+        assert!(entry_from_local_raw(&login_fail, None).is_none());
+        assert!(entry_from_local_raw(&ok_raw(r#"{"base_resp":{"status_code":7}}"#), None).is_none());
+        assert!(entry_from_local_raw(&Ok((500, Some("oops".into()))), None).is_none());
+        assert!(entry_from_local_raw(&ok_raw("not json"), None).is_none());
+        assert!(entry_from_local_raw(&Err("网络错误".into()), None).is_none());
+        // 业务码 0 但 model_remains 缺失 → 凭证路径解析为 error，本地路径不产条目
+        assert!(entry_from_local_raw(
+            &ok_raw(r#"{"base_resp":{"status_code":0,"status_msg":""}}"#),
+            None
+        )
+        .is_none());
+    }
+
+    /// 只有 2062 与业务码 0 会产出条目：确认 `fetch_local_login_entry` 的静默
+    /// 纪律在「没有 auth.json」时不 panic、不产条目（临时空目录，不碰真实 home）。
+    #[test]
+    fn local_login_without_auth_file_is_silent() {
+        let dir = std::env::temp_dir().join(format!("zbar-minimax-auth-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("建临时目录失败");
+        assert!(load_local_login(&dir, 1_000_000).is_none());
+        assert!(load_local_login(&dir.join("missing"), 1_000_000).is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 真实目录布局能被发现：`<root>/auth/prod/cn/mcode-public/auth.json`（三层，
+    /// 本机实测形态）。断言的读取结果与 region 提示都来自目录名，不需要联网，
+    /// 也不碰真实 home。
+    #[test]
+    fn local_login_discovers_real_auth_layout() {
+        let root = std::env::temp_dir().join(format!("zbar-minimax-auth-real-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let dir = root.join("auth").join("prod").join("cn").join("mcode-public");
+        std::fs::create_dir_all(&dir).expect("建 auth 目录失败");
+        std::fs::write(dir.join("auth.json"), LOCAL_AUTH_BODY).expect("写 auth.json 失败");
+
+        let login = load_local_login(&root.join("auth"), 1_700_000_000_000)
+            .expect("应发现三层目录里的登录态");
+        assert_eq!(login.access_token, "mmoat_local_token");
+        assert_eq!(login.client_id, "mcode-public");
+        assert_eq!(login.region.as_deref(), Some("cn"), "区域来自目录名");
+        assert_eq!(
+            host_for_region(login.region.as_deref()),
+            "api.minimaxi.com",
+            "cn 走国内站端点"
+        );
+
+        // 同一目录树里多份登录态（不同 clientId）→ 取最晚过期的一条
+        let other = root.join("auth").join("prod").join("en").join("mcode-public");
+        std::fs::create_dir_all(&other).expect("建第二份 auth 目录失败");
+        let newer = LOCAL_AUTH_BODY.replace("1791839661268", "1900000000000");
+        std::fs::write(other.join("auth.json"), newer).expect("写第二份 auth.json 失败");
+        let login = load_local_login(&root.join("auth"), 1_700_000_000_000).expect("应有可用登录态");
+        assert_eq!(login.region.as_deref(), Some("en"));
+        assert_eq!(host_for_region(login.region.as_deref()), "api.minimax.io");
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

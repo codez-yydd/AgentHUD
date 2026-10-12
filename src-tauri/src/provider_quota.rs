@@ -195,15 +195,29 @@ pub(crate) fn query_provider_quota(
     // 无手动凭证也可能有本地条目，不能按快照为空早返回；
     // opencodego 同为混合型（本地 opencode.db + 官方 API Key），两路都可用，
     // 无凭证时也需进入其 fetch 走本地估算路径；
+    // minimax 自合并 MiniMax Code 后也是混合型：不仅凭证可查，MiniMax Code 的
+    // 本地 OAuth 登录态同样能问同一个开放平台端点（实测），故无凭证时也要进
+    // 分发走本地登录回退；
     // 其余凭证型 provider 无凭证时早返回（行为不变）
-    if provider != "grok" && provider != "opencodego" && snapshots.is_empty() {
+    if provider != "grok" && provider != "opencodego" && provider != "minimax" && snapshots.is_empty()
+    {
         return Ok(vec![]);
     }
     // 2. 按 provider 分发（其余 provider 尚未接入：空数组，前端显示接入提示）
     let entries = match provider {
         "moonshot" => crate::moonshot::fetch_quota_entries(&snapshots),
         "deepseek" => crate::deepseek::fetch_quota_entries(&snapshots),
-        "minimax" => crate::minimax::fetch_quota_entries(&snapshots),
+        // MiniMax 混合型：配了 Coding Plan 凭证时按凭证查（官方口径，与原来完全
+        // 一致）；一条凭证都没有时才回退 MiniMax Code 的本地 OAuth 登录态——
+        // 实测该 token 被同一个开放平台端点接受，账号没有生效订阅时产出一条
+        // pending 说明（而不是让面板留空）。凭证优先，绝不与本地条目叠加同一账号。
+        "minimax" => {
+            let mut entries = crate::minimax::fetch_quota_entries(&snapshots);
+            if entries.is_empty() {
+                entries.extend(crate::minimax::fetch_local_login_entry());
+            }
+            entries
+        }
         "grok" => crate::grok::fetch_quota_entries(&snapshots),
         // OpenCode Go 混合型：无 Key 走本地 SQLite 估算，有 Key 走官方
         // /zen/go/v1/usage（官方口径优先，本地估算仅在新鲜时附带）
