@@ -142,6 +142,11 @@ export const en: typeof zh = {
     "stats.dshNotFound": "No DSH session data found",
     "stats.dshNotFoundHint":
       "Make sure DeepSeek Harness is installed and has been used; data is read from the ~/.dsh session directory.",
+    // OpenCode panel: local usage (opencode.db import) + Go plan quota block
+    "stats.opencodeQuota": "Go plan quota",
+    "stats.opencodeNotFound": "No OpenCode session data found",
+    "stats.opencodeNotFoundHint":
+      "Make sure OpenCode is installed and has been used; data is read from the local database\n(~/.local/share/opencode/opencode.db).",
     // Claude subscription quota incremental windows (rendered only when the API returns them)
     "stats.claudeOpusWeekly": "Opus weekly",
     "stats.claudeSonnetWeekly": "Sonnet weekly",
@@ -525,11 +530,12 @@ export const en: typeof zh = {
     "settings.agentGeminiDesc": "Gemini subscription quota (hidden by default; shown once enabled or a credential is added)",
     "settings.agentGrokDesc": "Grok subscription quota (hidden by default; shown once enabled or a credential is added)",
     "settings.agentQoderDesc": "Qoder subscription quota (hidden by default; shown once enabled or a credential is added)",
-    "settings.agentOpencodegoDesc": "OpenCode usage & quota (hidden by default; shown once enabled or a credential is added)",
+    "settings.agentOpencodegoDesc": "OpenCode usage & quota (hidden by default; reads local OpenCode data)",
     "settings.agentMinimaxDesc": "MiniMax subscription quota (hidden by default; shown once enabled or a credential is added)",
     // Moonshot (月之暗面) open platform: this reads an account balance
-    // (recharge-based), not a subscription quota
-    "settings.agentMoonshotDesc": "Kimi balance (hidden by default; shown once enabled or a credential is added)",
+    // (recharge-based), not a subscription quota; it is an agent-style provider
+    // with no credential entry, hence the wording avoids "add a credential"
+    "settings.agentMoonshotDesc": "Kimi open platform balance (hidden by default)",
     "settings.agentDeepseekDesc": "DeepSeek balance & usage (hidden by default; shown once enabled or a credential is added)",
     "settings.agentLongcatDesc": "LongCat subscription quota (hidden by default; shown once enabled or a credential is added)",
     "settings.agentMimoDesc": "MiMo subscription quota (hidden by default; shown once enabled or a credential is added)",
@@ -1014,6 +1020,8 @@ export const en: typeof zh = {
     "credentials.quotaPending":
       "Quota queries are coming soon. Your credential is ready; usage and quota will appear here once connected.",
     "credentials.quotaRefreshing": "Querying quota, please wait…",
+    "credentials.noCredentialEntry":
+      "This service has no credential entry: it queries credentials already on this machine or local data, and none is available right now.",
     "credentials.entryError": "Query failed",
     "credentials.entryExpired": "Expired",
     "credentials.entryPending": "Pending",

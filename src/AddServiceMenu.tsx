@@ -32,11 +32,12 @@ import { BrandIcon } from "./BrandIcon";
  *  App 监听后切回统计页并把目标 provider 交给 StatsPanel 打开添加表单。 */
 export const ADD_SERVICE_EVENT = "zbar-open-credential-add";
 
-/** 可添加凭证的服务清单：凭证型 provider 去掉「无凭证可录」的纯本地型
- *  （gemini）。注意用静态判定 canAddCredential——localOnlyMode 是运行时
- *  状态（受「当前是否已配凭证」影响），拿它当静态过滤会把双数据源型
- *  （opencodego）在未配 Key 时错误地排除掉，而「没配 Key」恰恰是最需要
- *  这个入口的场景。 */
+/** 可添加凭证的服务清单：凭证型 provider 去掉两类——「无凭证可录」的纯本地型
+ *  （gemini）与「产品上不提供录入入口」的 agent 化 provider
+ *  （opencodego / moonshot，见 NO_CREDENTIAL_ENTRY_AGENTS），统一由静态判定
+ *  canAddCredential 收口。注意不能用 localOnlyMode 当过滤器：它是运行时状态
+ *  （受「当前是否已配凭证」影响），会把仍需要入口的 provider 在未配 Key 时
+ *  错误排除，而「没配 Key」恰恰是最需要入口的场景。 */
 const ADDABLE_SERVICES: readonly CredentialAgentId[] = CREDENTIAL_AGENTS.filter(
   (id) => canAddCredential(id)
 );

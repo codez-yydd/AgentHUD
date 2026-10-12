@@ -64,11 +64,15 @@ export const settings = {
   "settings.agentGeminiDesc": "Gemini 订阅额度（默认隐藏，启用或添加凭证后显示）",
   "settings.agentGrokDesc": "Grok 订阅额度（默认隐藏，启用或添加凭证后显示）",
   "settings.agentQoderDesc": "Qoder 订阅额度（默认隐藏，启用或添加凭证后显示）",
-  "settings.agentOpencodegoDesc": "OpenCode 用量与额度（默认隐藏，启用或添加凭证后显示）",
+  // agent 化口径：opencodego / moonshot / deepseek 不提供凭证录入入口（见
+  // agentVisibility.NO_CREDENTIAL_ENTRY_AGENTS），文案不再承诺「添加凭证后显示」
+  "settings.agentOpencodegoDesc": "OpenCode 用量与额度（默认隐藏；读取本地 OpenCode 数据）",
   "settings.agentMinimaxDesc": "MiniMax 订阅额度（默认隐藏，启用或添加凭证后显示）",
-  // 月之暗面开放平台：查的是账户余额（充值型），非订阅额度，故用「余额」
-  "settings.agentMoonshotDesc": "Kimi 余额（默认隐藏，启用或添加凭证后显示）",
-  "settings.agentDeepseekDesc": "DeepSeek 余额与用量（默认隐藏，启用或添加凭证后显示）",
+  // 月之暗面开放平台：查的是账户余额（充值型），非订阅额度，故用「余额」；
+  // 与「Kimi Code」区分，文案写明「开放平台」
+  "settings.agentMoonshotDesc": "Kimi 开放平台余额（默认隐藏）",
+  // DeepSeek 用量已由 dsh（DeepSeek Harness）本地采集覆盖，不再单列平台余额入口
+  "settings.agentDeepseekDesc": "DeepSeek 余额（默认隐藏）",
   "settings.agentLongcatDesc": "LongCat 订阅额度（默认隐藏，启用或添加凭证后显示）",
   "settings.agentMimoDesc": "MiMo 订阅额度（默认隐藏，启用或添加凭证后显示）",
   "settings.agentAlibabaDesc": "通义灵码 Coding Plan 订阅额度（默认隐藏，启用或添加凭证后显示）",

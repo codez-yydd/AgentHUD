@@ -118,7 +118,9 @@ export function isLocalAgent(id: string): boolean {
  * 一条路，凭证无意义）的区别在于「凭证是否真的参与查询」——
  * - opencodego：本地 opencode.db 读的是本机 CLI 用量；用户没装 CLI 时，
  *   配官方 API Key 走 opencode.ai/zen/go/v1/usage 同样能拿到官方口径数据。
- * 因此这类 provider 必须保留「添加凭证」入口。
+ * 这类 provider 的**双源能力**保留（后端仍按 OR 语义查询，已存在的凭证照旧
+ * 参与），但录入入口已按产品决定收口为「像 agent 一样不提供凭证管理」，
+ * 见 NO_CREDENTIAL_ENTRY_AGENTS。
  */
 export const DUAL_MODE_AGENTS: readonly CredentialAgentId[] = ["opencodego"];
 
@@ -144,12 +146,38 @@ export function isPureLocalAgent(id: string): boolean {
 }
 
 /**
+ * 界面不提供凭证录入入口的 provider（与 PURE_LOCAL_AGENTS 是两回事，见下）：
+ * - opencodego：OpenCode 与 Kimi Code、ZCode 一样是自带 CLI 与订阅的 agent，
+ *   数据来自自身 CLI 的本地库（`~/.local/share/opencode/opencode.db`）；
+ * - moonshot：月之暗面开放平台余额，按同一「agent 口径」一并收口（产品决定）；
+ * - deepseek：已有 dsh（DeepSeek Harness，本地会话即 DeepSeek 用量），
+ *   不再单独提供平台余额查询的录入入口（产品决定）。
+ *
+ * 收口的是**入口**，不是能力：后端查询链路与已存在的凭证完全不动——
+ * 已经配过 Key 的机器照旧出数据，只是界面不再提供「添加凭证 / 多账号」入口，
+ * 因此无法新增。与 PURE_LOCAL_AGENTS 的区别：那个是「技术上没有可录的凭证」
+ * （gemini 只有 CLI 登录态），这个是「产品上不提供入口」。
+ */
+export const NO_CREDENTIAL_ENTRY_AGENTS: readonly CredentialAgentId[] = [
+  "opencodego",
+  "moonshot",
+  "deepseek",
+];
+
+/** id 是否在界面上提供凭证录入入口（静态判定）。 */
+export function hasCredentialEntry(id: string): boolean {
+  return !(NO_CREDENTIAL_ENTRY_AGENTS as readonly string[]).includes(id);
+}
+
+/**
  * 该 provider 是否可以录入凭证（静态属性，与当前是否已配凭证无关）。
  * 凭证录入入口（添加服务浮层、设置页快捷按钮、凭证卡添加按钮）统一用它判断，
  * 避免把「当前只有本地数据」的运行时状态误当作「不能录入凭证」。
+ * 两类为 false：技术上无凭证可录（gemini），产品上不提供入口
+ * （opencodego / moonshot，见 NO_CREDENTIAL_ENTRY_AGENTS）。
  */
 export function canAddCredential(id: string): boolean {
-  return !isPureLocalAgent(id);
+  return !isPureLocalAgent(id) && hasCredentialEntry(id);
 }
 
 /**
@@ -248,9 +276,9 @@ export const AGENT_GROUP: Record<AgentId, AgentGroupKind> = {
   gemini: "credential",
   grok: "credential",
   qoder: "credential",
-  opencodego: "credential",
+  opencodego: "local",
   minimax: "credential",
-  moonshot: "credential",
+  moonshot: "local",
   deepseek: "credential",
   longcat: "credential",
   mimo: "credential",
@@ -576,6 +604,12 @@ const SOURCE_META: Record<string, { label: string; color: string }> = {
   stepfun: { label: "StepFun", color: AGENT_COLOR.stepfun },
   doubao: { label: "火山引擎", color: AGENT_COLOR.doubao },
   dsh: { label: "DeepSeek Harness", color: AGENT_COLOR.dsh },
+  // OpenCode 是唯一「UI id 与后端来源名不同字面」的 agent：后端来源名固定
+  // "opencode"（本地 opencode.db 导入库、项目页会话、悬浮窗分组、远端上传
+  // 都用它），而面板 id / 颜色 / 可见性键是 "opencodego"。两个域都查这张表
+  // ——项目页会话来源、报告图例按来源名查（"opencode"，缺了会显示 Unknown），
+  // 面板与设置项按 agent id 查（"opencodego"）——故两条都登记、指向同一品牌。
+  opencode: { label: "OpenCode", color: AGENT_COLOR.opencodego },
 };
 
 /** source 字符串 → 品牌名 + 品牌色（未知来源回退中性灰，不抛错） */
