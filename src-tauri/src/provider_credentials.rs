@@ -291,6 +291,11 @@ fn has_credentials(provider: &str) -> Result<bool, String> {
     if provider == "gemini" {
         return Ok(crate::gemini::has_local_data());
     }
+    // DeepSeek Harness 同为纯本地型（读 ~/.dsh 会话日志，无凭证体系）：
+    // presence = 会话目录存在，装了 DSH 的用户 tab 自动出现；没装则不出现。
+    if provider == "dsh" {
+        return Ok(crate::dsh::has_local_data());
+    }
     // 混合型（本地数据 OR 手动凭证，两者任一即可出数据）：
     // - grok：本地 auth.json 存在即视为有数据；
     // - opencodego：本地 opencode.db 存在、或用户配了官方 API Key（不装 CLI

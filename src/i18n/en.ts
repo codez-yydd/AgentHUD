@@ -139,6 +139,9 @@ export const en: typeof zh = {
     "stats.claudeNotFound": "No Claude Code detected",
     "stats.claudeNotFoundHint":
       "Install and run Claude Code to create local sessions\n(~/.claude/projects), then check back",
+    "stats.dshNotFound": "No DSH session data found",
+    "stats.dshNotFoundHint":
+      "Make sure DeepSeek Harness is installed and has been used; data is read from the ~/.dsh session directory.",
     // Claude subscription quota incremental windows (rendered only when the API returns them)
     "stats.claudeOpusWeekly": "Opus weekly",
     "stats.claudeSonnetWeekly": "Sonnet weekly",
@@ -235,6 +238,8 @@ export const en: typeof zh = {
     // keep them apart so estimated numbers are never mistaken for official ones.
     "summary.opencodeOfficial": "Official",
     "summary.opencodeEstimated": "Local estimate",
+    // DSH has no subscription cap, so its summary quota row shows today's usage
+    "summary.dshTodayUsage": "Today {tokens} tokens · {cost}",
   } satisfies typeof summary),
 
   ...({
@@ -509,6 +514,11 @@ export const en: typeof zh = {
     "settings.agentClaudeDesc": "Claude Code usage & plan quotas",
     "settings.agentCursorDesc": "Cursor usage & plan quotas",
     "settings.agentKimiDesc": "Kimi Code CLI usage & subscription quota",
+    // DeepSeek Harness: local-collection agent (no credential to add, no
+    // subscription quota window); still hidden by default and controlled by
+    // the settings toggle
+    "settings.agentDshDesc":
+      "DeepSeek Harness usage and cost (read from local ~/.dsh session data, no credentials required)",
     // Credential-based providers: hidden by default; shown once enabled or a
     // credential is added (quota integrations rolling out progressively)
     "settings.agentGeminiDesc": "Gemini subscription quota (hidden by default; shown once enabled or a credential is added)",

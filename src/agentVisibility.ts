@@ -21,15 +21,26 @@ export type AgentId =
   | "alibaba"
   | "alibabatoken"
   | "stepfun"
-  | "doubao";
+  | "doubao"
+  // 纯本地采集型（读取本地 ~/.dsh 会话数据，无凭证可录、无订阅额度窗口），
+  // 与 claude/codex/kimi 同级：tab 纯偏好控制，默认隐藏
+  | "dsh";
 
 /**
  * 凭证驱动的新 provider 集合（tab 显示门槛 = 已启用或已有凭证）。
  * kimi 属首批 5 个（默认开启、tab 行为不变），但其凭证体系与其他新
  * provider 完全一致（~/.zbar/credentials/kimi.json，支持 OAuth 网页
  * 登录/手动粘贴），故同样纳入本集合参与「有凭证自动显示」联动。
+ *
+ * dsh（DeepSeek Harness）与 zai/codex/claude/cursor 同列：纯本地采集，
+ * 既无凭证体系也无「有凭证自动显示」联动——必须显式排除，否则会因
+ * Exclude 不完整被本类型吸收，进而强迫 CREDENTIAL_AGENT_KIND 为它编造
+ * 一个凭证类型。
  */
-export type CredentialAgentId = Exclude<AgentId, "zai" | "codex" | "claude" | "cursor">;
+export type CredentialAgentId = Exclude<
+  AgentId,
+  "zai" | "codex" | "claude" | "cursor" | "dsh"
+>;
 
 export const CREDENTIAL_AGENTS: readonly CredentialAgentId[] = [
   "kimi",
@@ -56,11 +67,17 @@ export const CREDENTIAL_AGENTS: readonly CredentialAgentId[] = [
  * tab 显隐门槛：CREDENTIAL_AGENTS 中除 PURE_PREFERENCE_AGENTS（kimi）外
  * 均为「已启用或有凭证」；kimi 属首批 5 个，与 claude/cursor 一样纯偏好
  * 控制——presence 只驱动「其他账号」区的补刷/轮询，不影响 tab 显隐。
+ *
+ * dsh 也在此列：它是纯本地采集型（无凭证体系，故不进 CREDENTIAL_AGENTS），
+ * 但后端 has_provider_credentials 对其特判为「~/.dsh 会话目录是否存在」。
+ * 于是「装了 DSH 才出现 tab」与 claude/codex 的默认可见语义一致，
+ * 又不至于让没装的用户看到空 tab。
  */
 export const PRESENCE_PROVIDERS: readonly string[] = [
   ...CREDENTIAL_AGENTS,
   "claude",
   "cursor",
+  "dsh",
 ];
 
 /**
@@ -168,6 +185,7 @@ export const AGENT_COLOR: Record<AgentId, string> = {
   alibabatoken: "#ff9240",
   stepfun: "#3b82f6",
   doubao: "#00d4aa",
+  dsh: "#4D6BFE",
 };
 
 /** 同一 Agent 的多账号系列用同色系色阶区分（明度递增，4 档，超出取最末档）。
@@ -191,6 +209,8 @@ export const AGENT_COLOR_SCALE: Record<AgentId, readonly string[]> = {
   alibabatoken: ["#e5772c", "#ff9240", "#ffa866", "#ffbd8c"],
   stepfun: ["#2d68cc", "#3b82f6", "#6ba1f9", "#96bffb"],
   doubao: ["#00a486", "#00d4aa", "#33debb", "#66e6cc"],
+  // DeepSeek 蓝同色系 4 档（与 deepseek 同款色阶）
+  dsh: ["#3a53d0", "#4D6BFE", "#7a90fe", "#a6b4fe"],
 };
 
 // 模式 A：label 是品牌名不进词典；description 存词典键，渲染时查（跟随 UI 语言）
@@ -223,6 +243,13 @@ export const AGENT_VISIBILITY_OPTIONS: ReadonlyArray<{
     id: "kimi",
     label: "Kimi",
     descriptionKey: "settings.agentKimiDesc",
+  },
+  // 索引 5：紧随首批 5 个本地采集型之后（SettingsPanel 按 slice(0,5)/slice(5)
+  // 分组，位置由数组下标决定）
+  {
+    id: "dsh",
+    label: "DeepSeek Harness",
+    descriptionKey: "settings.agentDshDesc",
   },
   {
     id: "gemini",
@@ -390,6 +417,8 @@ const DEFAULT_VISIBILITY: AgentVisibility = {
   alibabatoken: false,
   stepfun: false,
   doubao: false,
+  // 纯本地采集型：无凭证联动，默认隐藏，由设置页开关开启
+  dsh: false,
 };
 
 /** 读取展示偏好；缺失或损坏字段回退默认值（首批 5 个保持「缺省即开」，
@@ -494,6 +523,7 @@ const SOURCE_META: Record<string, { label: string; color: string }> = {
   alibabatoken: { label: "百炼Token包", color: AGENT_COLOR.alibabatoken },
   stepfun: { label: "StepFun", color: AGENT_COLOR.stepfun },
   doubao: { label: "火山引擎", color: AGENT_COLOR.doubao },
+  dsh: { label: "DeepSeek Harness", color: AGENT_COLOR.dsh },
 };
 
 /** source 字符串 → 品牌名 + 品牌色（未知来源回退中性灰，不抛错） */

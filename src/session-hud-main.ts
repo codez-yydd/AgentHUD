@@ -230,6 +230,7 @@ const AGENT_LABELS: Record<string, string> = {
   codex: "Codex",
   kimi: "Kimi",
   cursor: "Cursor",
+  dsh: "DeepSeek Harness",
 };
 
 /** 轻量双语词典（仅悬浮窗内文案；语言偏好与主面板同键共享） */

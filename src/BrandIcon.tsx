@@ -7,6 +7,8 @@ export type BrandIconName =
   | "claude"
   | "cursor"
   | "kimi"
+  // 本地采集型（有独立品牌图形，走 BRAND_PATHS 单色 currentColor 渲染）
+  | "dsh"
   // 凭证驱动的新 provider：品牌色圆底 + 白色首字母/简笔图形
   | "gemini"
   | "grok"
@@ -37,6 +39,10 @@ const BRAND_PATHS: Record<Exclude<BrandIconName, "zai" | "gemini" | "grok" | "qo
     "M11.503.131 1.891 5.678a.84.84 0 0 0-.42.726v11.188c0 .3.162.575.42.724l9.609 5.55a1 1 0 0 0 .998 0l9.61-5.55a.84.84 0 0 0 .42-.724V6.404a.84.84 0 0 0-.42-.726L12.497.131a1.01 1.01 0 0 0-.996 0M2.657 6.338h18.55c.263 0 .43.287.297.515L12.23 22.918c-.062.107-.229.064-.229-.06V12.335a.59.59 0 0 0-.295-.51l-9.11-5.257c-.109-.063-.064-.23.061-.23",
   // Kimi mark：手绘月牙形（Kimi 月亮品牌意象，单色填充）。
   kimi: "M20.6 13.3A8.8 8.8 0 1 1 10.7 3.4a6.9 6.9 0 0 0 9.9 9.9Z",
+  // DeepSeek Harness mark：鲸鱼（DeepSeek 鲸鱼意象 = 本地深潜采集）。
+  // 身体（胶囊）+ 尾鳍（三角）+ 两粒喷气水花；眼睛是反向绕行的子路径
+  // （nonzero 填充规则下挖空），单色 currentColor、viewBox 24×24。
+  dsh: "M7.9 8.4h7.8a4.3 4.3 0 0 1 0 8.6H7.9a4.3 4.3 0 0 1 0-8.6ZM17.5 10 22.8 6.2v6.4ZM9.9 3.6a1.2 1.2 0 1 1-2.4 0 1.2 1.2 0 0 1 2.4 0ZM13.9 5.4a.9.9 0 1 1-1.8 0 .9.9 0 0 1 1.8 0ZM7.5 12.2a1.1 1.1 0 1 0 2.2 0 1.1 1.1 0 0 0-2.2 0Z",
 };
 
 // ============================================================
@@ -66,9 +72,10 @@ function letterTile(
   );
 }
 
-/** 新 provider 的圆底色块定义（bg=底色；icon=白色图形） */
+/** 新 provider 的圆底色块定义（bg=底色；icon=白色图形）。
+ *  Exclude 与 BRAND_PATHS 互补：进 BRAND_PATHS 的（zai/dsh）必须在此排除。 */
 const CREDENTIAL_AGENT_TILES: Record<
-  Exclude<BrandIconName, "zai" | "codex" | "claude" | "cursor" | "kimi">,
+  Exclude<BrandIconName, "zai" | "dsh" | "codex" | "claude" | "cursor" | "kimi">,
   { bg: string; icon: ReactNode }
 > = {
   // Gemini：四角星（Sparkle 品牌意象）

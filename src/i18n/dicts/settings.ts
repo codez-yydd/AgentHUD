@@ -54,6 +54,10 @@ export const settings = {
   "settings.agentClaudeDesc": "Claude Code 用量与订阅额度",
   "settings.agentCursorDesc": "Cursor 编辑器用量与套餐额度",
   "settings.agentKimiDesc": "Kimi Code CLI 用量与订阅额度",
+  // DeepSeek Harness：本地采集型（无凭证可录、无订阅额度窗口），仍为
+  // 默认隐藏，由设置页开关控制
+  "settings.agentDshDesc":
+    "DeepSeek Harness 用量与花费（读取本地 ~/.dsh 会话数据，无需凭证）",
   // 凭证驱动的新 provider：默认隐藏，启用或添加凭证后展示对应标签
   //（额度接入逐步上线）
   "settings.agentGeminiDesc": "Gemini 订阅额度（默认隐藏，启用或添加凭证后显示）",

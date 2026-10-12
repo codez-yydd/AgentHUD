@@ -45,6 +45,9 @@ image = { version = "0.25", default-features = false, features = ["png", "webp"]
 zip = { version = "2", default-features = false, features = ["deflate"] }
 # Kimi OAuth 设备码登录：无本地 device_id 时生成 UUID v4（与 Kimi Code CLI 共享）
 uuid = { version = "1", features = ["v4"] }
+# DeepSeek Harness 会话日志：session.v4.jsonl.zstd 为多帧串联 zstd，
+# 用纯 Rust 解码器（不引入 C 工具链，Windows 构建无需原生 zstd 依赖）
+ruzstd = "0.8"
 
 [target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]
 tauri-plugin-autostart = "2.5.1"

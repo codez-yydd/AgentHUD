@@ -19,4 +19,7 @@ export const summary = {
   // 估算值，两者不可混同（徽章上必须区分，否则用户会误以为都是官方额度）
   "summary.opencodeOfficial": "官方",
   "summary.opencodeEstimated": "本地估算",
+  // DSH 无订阅额度上限，汇总页额度区改展示「今日实际用量」摘要
+  // （DSH has no subscription cap; the summary quota row shows today's actual usage）
+  "summary.dshTodayUsage": "今日 {tokens} Token · {cost}",
 };

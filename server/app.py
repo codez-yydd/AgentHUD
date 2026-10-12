@@ -105,7 +105,7 @@ def require_device_token():
 # /sync 上传明细（records）的来源白名单：source 由持有 device token 的客户端
 # 上传，属于任意字符串，不校验会原样落库（usage_records.source）并回流到
 # /usage 等展示接口，构成 XSS 注入面，这里统一收紧。
-SYNC_SOURCE_WHITELIST = {"zcode", "codex", "claude", "kimi", "cursor"}
+SYNC_SOURCE_WHITELIST = {"zcode", "codex", "claude", "kimi", "cursor", "dsh"}
 
 
 def _first_invalid_record_source(records):

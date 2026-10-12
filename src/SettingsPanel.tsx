@@ -435,12 +435,21 @@ export function SettingsPanel({
         </SettingsCard>
 
         <SettingsCard title={t("settings.sources")} action={<span className="text-[9px] text-slate-500">{t("settings.instant")}</span>} hint={t("settings.sourcesHint")}>
-            {/* 本地采集（首批 5 个）/ 凭证接入（新 provider）两组展示，
-                组标题为轻量小节分隔，样式对齐卡内其他说明文字 */}
+            {/* 本地采集 / 凭证接入 两组展示，组标题为轻量小节分隔，
+                样式对齐卡内其他说明文字。
+                分组按**语义**而非数组下标切分：此前用 slice(0,5)/slice(5) 的
+                位置魔法数，新增 agent 插到中间会静默归错组（不报错），
+                故改为按「是否凭证驱动」判定——插入顺序从此不再影响分组。 */}
             {(
               [
-                ["settings.groupLocal", AGENT_VISIBILITY_OPTIONS.slice(0, 5)],
-                ["settings.groupCredential", AGENT_VISIBILITY_OPTIONS.slice(5)],
+                [
+                  "settings.groupLocal",
+                  AGENT_VISIBILITY_OPTIONS.filter((a) => !isCredentialAgent(a.id)),
+                ],
+                [
+                  "settings.groupCredential",
+                  AGENT_VISIBILITY_OPTIONS.filter((a) => isCredentialAgent(a.id)),
+                ],
               ] as const
             ).map(([groupKey, agents]) => (
               <div key={groupKey}>

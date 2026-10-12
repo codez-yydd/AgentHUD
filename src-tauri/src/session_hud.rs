@@ -1746,6 +1746,7 @@ pub(crate) const AGENT_CLAUDE: &str = "claude";
 pub(crate) const AGENT_CODEX: &str = "codex";
 pub(crate) const AGENT_KIMI: &str = "kimi";
 pub(crate) const AGENT_CURSOR: &str = "cursor";
+pub(crate) const AGENT_DSH: &str = "dsh";
 
 /// agent 固定序（无会话但有今日数据的组之间、组排序的同刻稳定键；
 /// cursor 恒最后）
@@ -1755,7 +1756,8 @@ fn agent_order(agent: &str) -> u8 {
         AGENT_CLAUDE => 1,
         AGENT_CODEX => 2,
         AGENT_KIMI => 3,
-        _ => 4,
+        AGENT_DSH => 4,
+        _ => 5,
     }
 }
 
@@ -2123,7 +2125,10 @@ fn brief_from_agent_row(row: AgentSessionBrief, agent: &str) -> HudSessionBrief 
     // 平均）优先于请求平均（claude/kimi 无 step 数据时）；任一侧无有效行
     // （codex / 全 NULL/0 耗时）则无速度。completed_at 是 rollout 择优
     // 专用（仅 zcode），恒 None。
-    let (speed, quality) = if agent == AGENT_KIMI && row.gen_out_tokens > 0 && row.gen_ms > 0.0 {
+    let (speed, quality) = if (agent == AGENT_KIMI || agent == AGENT_DSH)
+        && row.gen_out_tokens > 0
+        && row.gen_ms > 0.0
+    {
         (
             Some(row.gen_out_tokens as f64 * 1000.0 / row.gen_ms),
             Some(SpeedQuality::Generation),
@@ -2190,6 +2195,10 @@ fn append_agent_groups(snapshot: &mut HudSnapshot, window_minutes: u32, now_ms: 
             AGENT_KIMI,
             crate::kimi::query_window_sessions(window_start, MAX_VISIBLE_PER_AGENT),
         ),
+        (
+            AGENT_DSH,
+            crate::dsh::query_window_sessions(window_start, MAX_VISIBLE_PER_AGENT),
+        ),
     ] {
         let Ok(found) = sessions else {
             continue; // 未安装/导入失败：静默无该组
@@ -2229,6 +2238,7 @@ fn today_stats(agent: &str, today_start: i64, now_ms: i64) -> Result<HudTodayTot
         AGENT_CLAUDE => crate::claude::query_stats(today_start, now_ms)?,
         AGENT_CODEX => crate::codex::query_stats(today_start, now_ms)?,
         AGENT_KIMI => crate::kimi::query_stats(today_start, now_ms)?,
+        AGENT_DSH => crate::dsh::query_stats(today_start, now_ms)?,
         _ => return Err(format!("未知 agent 今日统计源: {agent}")),
     };
     Ok(hud_today_from_overall(&stats.overall))

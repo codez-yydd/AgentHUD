@@ -7,6 +7,7 @@ import type {
   Currency,
   CurrentModel,
   CursorSnapshot,
+  DshSnapshot,
   KimiSnapshot,
   ModelStat,
   OverallStat,
@@ -58,6 +59,8 @@ interface Props {
   claude: ClaudeSnapshot | null;
   cursor: CursorSnapshot | null;
   kimi: KimiSnapshot | null;
+  /** DSH（DeepSeek Harness）：纯本地采集型，快照无订阅额度窗口 */
+  dsh: DshSnapshot | null;
   currency: Currency;
   bucket: "hour" | "day";
   fxRate: number;
@@ -151,6 +154,8 @@ function AgentCostCard({
     claude: "claude",
     cursor: "cursor",
     kimi: "kimi",
+    // 本地采集型（DeepSeek Harness）：独立品牌图形（鲸鱼）
+    dsh: "dsh",
     // 凭证驱动的新 provider（汇总卡片暂只汇总前 5 个，键先补齐保证类型完整）
     gemini: "gemini",
     grok: "grok",
@@ -303,6 +308,7 @@ function buildModelRows(
   claude: ClaudeSnapshot | null,
   cursor: CursorSnapshot | null,
   kimi: KimiSnapshot | null,
+  dsh: DshSnapshot | null,
   pricing: PricingConfig,
   currency: Currency,
   fxRate: number,
@@ -409,6 +415,33 @@ function buildModelRows(
       source: "Kimi",
       color: AGENT_COLOR.kimi,
       barBg: "bg-indigo-500/10",
+      requests: m.requests,
+      tokens: m.total_tokens,
+      cost: modelCost(
+        m.model_id,
+        m.input_tokens,
+        m.output_tokens,
+        m.cache_read_tokens,
+        pricing,
+        currency,
+        fxRate
+      ),
+      hasPrice,
+      mergedNote: mergedNoteOf(m),
+    });
+  }
+
+  // DSH（DeepSeek Harness）：与 Codex/Claude/Kimi 行同款（DeepSeek 蓝）。
+  // 其 provider 是自由字符串（deepseek-account / 第三方路由），故 key 带
+  // provider_id 避免同名模型跨 provider 撞行。
+  for (const m of agentVisibility.dsh ? dsh?.stats.by_model ?? [] : []) {
+    const hasPrice = hasPositivePrice(m.model_id, pricing);
+    rows.push({
+      key: `dsh:${m.provider_id}:${m.model_id}`,
+      name: m.model_id,
+      source: "DeepSeek Harness",
+      color: AGENT_COLOR.dsh,
+      barBg: "bg-blue-500/10",
       requests: m.requests,
       tokens: m.total_tokens,
       cost: modelCost(
@@ -627,6 +660,7 @@ export function SummaryTab({
   claude,
   cursor,
   kimi,
+  dsh,
   currency,
   bucket,
   fxRate,
@@ -653,6 +687,7 @@ export function SummaryTab({
     claudeError,
     cursorError,
     kimiError,
+    dshError,
     error: zaiError,
     agentQuotaDeltas,
     accountQuotas,
@@ -702,6 +737,14 @@ export function SummaryTab({
     0
   );
   const kimiTokens = kimi?.stats.overall.total_tokens ?? 0;
+
+  // DSH（DeepSeek Harness）花费 & token（与 Codex/Claude/Kimi 同款口径：
+  // 花费对趋势桶双货币求和）。无订阅额度窗口 → 无 rate_limits 可读。
+  const dshCostRaw = (dsh?.trend ?? []).reduce(
+    (s, p) => s + (currency === "cny" ? p.cost_cny : p.cost_usd),
+    0
+  );
+  const dshTokens = dsh?.stats.overall.total_tokens ?? 0;
 
   // Kimi 凭证体系条目（~/.zbar/credentials/kimi.json，应用内网页登录）：
   // 全局 120s 轮询覆盖（与 Kimi 页「其他账号」区同源同频）；含 error/expired
@@ -876,12 +919,36 @@ export function SummaryTab({
       : t("summary.loadFailed")
     : t("summary.noData");
 
+  // DSH：纯本地采集，无订阅额度窗口（metrics 恒为空 → 额度区固定走
+  // summary.noQuotaData 空文案，无需按错误串分支），故不派生 empty 文案
+
   // 各 Agent 缓存命中率（口径与各详情页一致）
   const zaiCacheHitPct = cacheHitPctIncluded(stats?.overall);
   const codexCacheHitPct = cacheHitPctIncluded(codex?.stats.overall);
   const claudeCacheHitPct = cacheHitPctSeparate(claude?.stats.overall);
   const cursorCacheHitPct = cacheHitPctCursor(cursorEvents);
   const kimiCacheHitPct = cacheHitPctSeparate(kimi?.stats.overall);
+  // DSH 缓存率：input 含 cache_read 的 included 口径（与 DshPanel 的
+  // cacheRateMode="included" 一致）
+  const dshCacheHitPct = cacheHitPctIncluded(dsh?.stats.overall);
+  // DSH 无订阅额度窗口，额度区改用真实用量摘要：取趋势里「今天」的桶
+  // （日桶标签为后端 bucket_label 的本地时间 %m-%d，与这里同口径）。
+  const dshToday = (() => {
+    const now = new Date();
+    const label = `${String(now.getMonth() + 1).padStart(2, "0")}-${String(
+      now.getDate()
+    ).padStart(2, "0")}`;
+    return (dsh?.trend ?? []).find((p) => p.label === label);
+  })();
+  const dshUsageSummary = dshToday
+    ? t("summary.dshTodayUsage", {
+        tokens: formatTokens(dshToday.total_tokens),
+        cost: formatCost(
+          currency === "cny" ? dshToday.cost_cny : dshToday.cost_usd,
+          currency
+        ),
+      })
+    : t("summary.noQuotaData");
 
   // OpenCode Go 额度（双数据源：有 API Key 时官方口径，否则本地库估算）。
   // 数据来自 providerQuota 通用缓存（后端 get_provider_quota 分发），窗口
@@ -1011,6 +1078,34 @@ export function SummaryTab({
       empty: kimiEmpty,
     },
     {
+      // DSH（DeepSeek Harness）：纯本地采集型（~/.dsh 会话数据），与
+      // claude/kimi 同级——有花费/token 与速度，但**没有订阅额度窗口**
+      // （后端无 rate_limits 字段），故 metrics 恒为空数组。
+      // 额度区那行改用**真实用量摘要**（今日 Token + 花费）而不是「暂无额度
+      // 数据」空文案：DSH 确实没有额度上限，不能用 QuotaMiniRow 编造百分比
+      // （它要画「剩余 %」进度条），但把今日实际用量摆出来对用户是有信息量的。
+      // 因无 plan_type 可作徽标，徽标退回最近使用的模型名。
+      id: "dsh",
+      name: "DeepSeek Harness",
+      color: AGENT_COLOR.dsh,
+      tintBg: "rgba(77, 107, 254, 0.07)",
+      nameClass: "text-blue-700",
+      badge: dsh?.stats.current_model?.model_id ?? null,
+      badgeClass: "bg-blue-600/12 text-blue-700",
+      cost: dshCostRaw,
+      tokens: dshTokens,
+      // 有 error 说明已确认未安装/失败，允许被隐藏
+      loaded: dsh != null || dshError != null,
+      currentModel: dsh?.stats.current_model ?? null,
+      avgTps: dsh?.stats.overall.avg_tps ?? null,
+      // 后端置 generation（真生成窗口）→ 卡片不带 ≈ 前缀
+      speedQuality: dsh?.stats.overall.speedQuality ?? null,
+      avgTtftMs: dsh?.stats.overall.avg_ttft_ms ?? null,
+      cacheHitPct: dshCacheHitPct,
+      metrics: [],
+      empty: dshUsageSummary,
+    },
+    {
       // OpenCode Go（双数据源）：额度监控区展示 5小时/本周/本月三档。
       // 花费与 token 恒为 0——官方接口只返回百分比，不透出金额；无 CLI 时
       // 本机也没有会话日志可统计。这两项为 0 会让它在花费表与占比条里被
@@ -1068,6 +1163,9 @@ export function SummaryTab({
   (claude?.trend ?? []).forEach((p) => claudeTrendMap.set(p.label, p));
   const kimiTrendMap = new Map<string, TrendPoint>();
   (kimi?.trend ?? []).forEach((p) => kimiTrendMap.set(p.label, p));
+  // DSH 趋势桶同样自带双货币花费（后端 get_dsh_usage 用同一套 cost_for 折算）
+  const dshTrendMap = new Map<string, TrendPoint>();
+  (dsh?.trend ?? []).forEach((p) => dshTrendMap.set(p.label, p));
 
   const trendLabels: string[] = [];
   const trendLabelSet = new Set<string>();
@@ -1086,6 +1184,8 @@ export function SummaryTab({
     cursorDailyMap.forEach((_point, label) => addTrendLabel(label));
   if (agentVisibility.kimi)
     kimiTrendMap.forEach((_point, label) => addTrendLabel(label));
+  if (agentVisibility.dsh)
+    dshTrendMap.forEach((_point, label) => addTrendLabel(label));
 
   const mergedTrend: TrendPoint[] = trendLabels.map((label) => {
     const p =
@@ -1101,6 +1201,7 @@ export function SummaryTab({
     const x = agentVisibility.codex ? codexTrendMap.get(label) : undefined;
     const a = agentVisibility.claude ? claudeTrendMap.get(label) : undefined;
     const k = agentVisibility.kimi ? kimiTrendMap.get(label) : undefined;
+    const d = agentVisibility.dsh ? dshTrendMap.get(label) : undefined;
     return {
       label: p.label,
       total_tokens:
@@ -1108,23 +1209,27 @@ export function SummaryTab({
         (x?.total_tokens ?? 0) +
         (a?.total_tokens ?? 0) +
         (k?.total_tokens ?? 0) +
+        (d?.total_tokens ?? 0) +
         (c?.tokens ?? 0),
       requests:
         (agentVisibility.zai ? p.requests : 0) +
         (x?.requests ?? 0) +
         (a?.requests ?? 0) +
-        (k?.requests ?? 0),
+        (k?.requests ?? 0) +
+        (d?.requests ?? 0),
       cost_cny:
         (agentVisibility.zai ? p.cost_cny : 0) +
         (x?.cost_cny ?? 0) +
         (a?.cost_cny ?? 0) +
         (k?.cost_cny ?? 0) +
+        (d?.cost_cny ?? 0) +
         (c?.costCny ?? 0),
       cost_usd:
         (agentVisibility.zai ? p.cost_usd : 0) +
         (x?.cost_usd ?? 0) +
         (a?.cost_usd ?? 0) +
         (k?.cost_usd ?? 0) +
+        (d?.cost_usd ?? 0) +
         (c?.costUsd ?? 0),
     };
   });
@@ -1136,6 +1241,7 @@ export function SummaryTab({
     claude,
     cursor,
     kimi,
+    dsh,
     pricing,
     currency,
     fxRate,

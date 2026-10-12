@@ -12,6 +12,7 @@ import { CodexPanel } from "./CodexPanel";
 import { ClaudePanel } from "./ClaudePanel";
 import { CursorPanel } from "./CursorPanel";
 import { KimiPanel } from "./KimiPanel";
+import { DshPanel } from "./DshPanel";
 import { SummaryTab } from "./SummaryTab";
 import { ProjectsPanel } from "./ProjectsPanel";
 import { GenericQuotaPanel } from "./GenericQuotaPanel";
@@ -145,6 +146,8 @@ export function StatsPanel({
     cursorError,
     kimi,
     kimiError,
+    dsh,
+    dshError,
     fxRate,
     syncConfig,
     remoteDevices,
@@ -553,6 +556,8 @@ export function StatsPanel({
                 alibabatoken: "bg-orange-400/15 text-orange-700 shadow-sm",
                 stepfun: "bg-blue-500/12 text-blue-700 shadow-sm",
                 doubao: "bg-teal-500/12 text-teal-700 shadow-sm",
+                // DeepSeek Harness：与 deepseek 同品牌蓝（本地采集型）
+                dsh: "bg-blue-600/12 text-blue-700 shadow-sm",
               };
               return (
                 <button
@@ -674,6 +679,18 @@ export function StatsPanel({
           pricing={pricing}
           agentQuotaDelta={agentQuotaDeltas.kimi?.weekly}
         />
+      ) : tab === "dsh" ? (
+        // DSH（DeepSeek Harness）：纯本地采集型，无凭证卡、无「其他账号」区、
+        // 无订阅额度窗口（快照无 rate_limits，额度块自动不渲染）
+        <DshPanel
+          snapshot={dsh}
+          loading={!dsh && !dshError}
+          error={dshError}
+          currency={currency}
+          fxRate={fxRate}
+          trendBucket={trendBucket}
+          pricing={pricing}
+        />
       ) : isCredentialAgent(tab) ? (
         // 凭证驱动的新 provider：通用额度面板（凭证卡 + 配额卡；配额数据
         // 由面板经 DataCache 的 providerQuota 缓存自取，未接入的 provider
@@ -710,6 +727,7 @@ export function StatsPanel({
           claude={claude}
           cursor={cursor}
           kimi={kimi}
+          dsh={dsh}
           currency={currency}
           bucket={trendBucket}
           fxRate={fxRate}

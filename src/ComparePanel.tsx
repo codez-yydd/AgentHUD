@@ -42,9 +42,18 @@ interface Props {
   agentVisibility: AgentVisibility;
 }
 
-/** 对比页参与的 Agent（凭证驱动的新 provider 尚无周额度对比数据，暂不纳入） */
-type CompareAgent = "zai" | "codex" | "claude" | "cursor" | "kimi";
-const COMPARE_AGENTS: CompareAgent[] = ["zai", "codex", "claude", "cursor", "kimi"];
+/** 对比页参与的 Agent（凭证驱动的新 provider 尚无周额度对比数据，暂不纳入）。
+ *  dsh（DeepSeek Harness）为纯本地采集型：纳入 Token 用量对比；因无订阅额度
+ *  窗口，不登记 AGENT_WINDOW_KEY，故不出现在周额度系列里。 */
+type CompareAgent = "zai" | "codex" | "claude" | "cursor" | "kimi" | "dsh";
+const COMPARE_AGENTS: CompareAgent[] = [
+  "zai",
+  "codex",
+  "claude",
+  "cursor",
+  "kimi",
+  "dsh",
+];
 const AGENT_META: Record<
   AgentId,
   { label: string; brand: BrandIconName; remoteSource?: string }
@@ -54,6 +63,10 @@ const AGENT_META: Record<
   claude: { label: "Claude", brand: "claude", remoteSource: "claude" },
   cursor: { label: "Cursor", brand: "cursor" },
   kimi: { label: "Kimi", brand: "kimi" },
+  // 纯本地采集型（DeepSeek Harness）：已纳入对比页 Token 用量对比；
+  // 无远端同步来源（remoteSource 缺省 → 远端取数分支自动跳过），
+  // 也无周额度窗口（AGENT_WINDOW_KEY 不登记 → 不建额度系列）
+  dsh: { label: "DeepSeek Harness", brand: "dsh" },
   // 凭证驱动的新 provider（对比页暂未纳入，元数据先补齐保证类型完整）
   gemini: { label: "Gemini", brand: "gemini" },
   grok: { label: "Grok", brand: "grok" },
@@ -70,7 +83,9 @@ const AGENT_META: Record<
   doubao: { label: "火山引擎", brand: "doubao" },
 };
 
-/** 各 Agent 参与对比的周额度窗口（Z.ai 走 QuotaSnapshot.weekly_pct，不走这里） */
+/** 各 Agent 参与对比的周额度窗口（Z.ai 走 QuotaSnapshot.weekly_pct，不走这里）。
+ *  dsh 故意不登记：它没有订阅额度窗口，buildQuotaSeries 对 undefined 会直接
+ *  跳过该 Agent（只出现在 Token 用量对比里），不建空额度系列。 */
 const AGENT_WINDOW_KEY: Partial<Record<AgentId, AgentQuotaWindowKey>> = {
   codex: "weekly",
   claude: "weekly",

@@ -16,6 +16,7 @@ import type {
   CursorConfig,
   CursorSnapshot,
   DeviceInfo,
+  DshSnapshot,
   KimiSnapshot,
   KimiDeviceAuthInfo,
   KimiDevicePollResult,
@@ -361,9 +362,9 @@ export async function clearQuotaHistory(): Promise<void> {
   await invoke("clear_quota_history");
 }
 
-/** 对比页：按指定 Agent 和周期聚合 Token（支持 zai/codex/claude/cursor/kimi） */
+/** 对比页：按指定 Agent 和周期聚合 Token（支持 zai/codex/claude/cursor/kimi/dsh） */
 export async function getCompareTokensForAgent(
-  source: "zai" | "codex" | "claude" | "cursor" | "kimi",
+  source: "zai" | "codex" | "claude" | "cursor" | "kimi" | "dsh",
   periods: [number, number][]
 ): Promise<WeeklyTokenBucket[]> {
   return invoke<WeeklyTokenBucket[]>("get_compare_tokens_for_agent", {
@@ -423,6 +424,21 @@ export async function fetchClaudeUsage(
   bucket: TrendBucket
 ): Promise<ClaudeSnapshot> {
   return invoke<ClaudeSnapshot>("get_claude_usage", {
+    req: { from_ms: fromMs, to_ms: toMs, bucket },
+  });
+}
+
+// ===== DSH（DeepSeek Harness）用量统计 =====
+
+/** 拉取 DSH 用量快照（stats + trend；本地采集型无订阅额度窗口）。
+ *  入参字段名固定 snake_case（from_ms/to_ms），不能靠 camelCase 转换。
+ *  未安装 / 无 ~/.dsh 会话目录时后端返回 Err（中文提示），调用方需容错。 */
+export async function fetchDshUsage(
+  fromMs: number,
+  toMs: number,
+  bucket: TrendBucket
+): Promise<DshSnapshot> {
+  return invoke<DshSnapshot>("get_dsh_usage", {
     req: { from_ms: fromMs, to_ms: toMs, bucket },
   });
 }

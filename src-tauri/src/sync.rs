@@ -70,6 +70,12 @@ pub struct SyncConfig {
     /// 同一修订时间戳下的 Codex 模型修订 rowid（处理毫秒级并列）。
     #[serde(default)]
     pub last_uploaded_codex_model_rev_id: i64,
+    /// 已上传到的 DSH 导入库 rowid 游标（与上面各来源相互独立）。
+    #[serde(default)]
+    pub last_uploaded_dsh_rowid: i64,
+    /// DSH 修订行补传游标（updated_at 毫秒时间戳，见 dsh 模块修订机制）。
+    #[serde(default)]
+    pub last_uploaded_dsh_rev_ts: i64,
     /// 已上传到的快照 ts 游标（额度快照）。
     #[serde(default)]
     pub last_uploaded_snapshot_ts: i64,
@@ -101,6 +107,8 @@ impl Default for SyncConfig {
             last_uploaded_claude_rev_ts: 0,
             last_uploaded_codex_model_rev_ts: 0,
             last_uploaded_codex_model_rev_id: 0,
+            last_uploaded_dsh_rowid: 0,
+            last_uploaded_dsh_rev_ts: 0,
             last_uploaded_snapshot_ts: 0,
             last_uploaded_agent_quota_snapshot_ts: 0,
             last_sync_at: 0,
@@ -506,6 +514,15 @@ pub fn upload_incremental() -> Result<SyncOutcome, String> {
         }
     }
 
+    // ===== 阶段四：DSH 明细（本地采集型，与 zcode/kimicode 同属可上传来源）=====
+    let mut dsh_uploaded = 0usize;
+    match upload_derived_source_incremental(&mut cfg, &base, &token, "dsh") {
+        Ok(n) => dsh_uploaded = n,
+        Err(e) => {
+            eprintln!("[zbar-sync] DSH 增量上传失败（下次重试）: {e}");
+        }
+    }
+
     let _ = snapshot_cursor_advanced; // 标记已用，避免未读警告
     let _ = agent_quota_snapshot_cursor_advanced;
     let now = chrono::Local::now().timestamp_millis();
@@ -514,7 +531,7 @@ pub fn upload_incremental() -> Result<SyncOutcome, String> {
     save_sync_config(&cfg)?;
 
     Ok(SyncOutcome {
-        uploaded: total_uploaded + codex_uploaded + claude_uploaded,
+        uploaded: total_uploaded + codex_uploaded + claude_uploaded + dsh_uploaded,
         new_max_rowid: since,
         last_sync_at: now,
     })
@@ -788,6 +805,16 @@ fn upload_derived_source_incremental(
                 && !crate::claude::query_since(cfg.last_uploaded_claude_rowid, 1)?.is_empty();
             (dir, pending, cfg.last_uploaded_claude_rowid)
         }
+        "dsh" => {
+            // 会话日志目录存在即视为已安装（dsh 模块无「必须报错」的目录入口，
+            // 与 claude::projects_dir() 的 Result 语义对齐：目录不存在就不上传）
+            let dir = crate::dsh::has_local_data();
+            let pending = dir
+                && (!crate::dsh::query_since(cfg.last_uploaded_dsh_rowid, 1)?.is_empty()
+                    || !crate::dsh::query_revised_since(cfg.last_uploaded_dsh_rev_ts, 0, 1)?
+                        .is_empty());
+            (dir, pending, cfg.last_uploaded_dsh_rowid)
+        }
         _ => return Err(format!("未知数据来源: {source}")),
     };
     // 未安装对应 CLI：无会话目录，静默跳过（不算错误，避免后台同步每轮刷日志）
@@ -838,6 +865,7 @@ fn upload_derived_source_incremental(
         let records = match source {
             "codex" => crate::codex::query_since(since, BATCH)?,
             "claude" => crate::claude::query_since(since, BATCH)?,
+            "dsh" => crate::dsh::query_since(since, BATCH)?,
             _ => unreachable!("来源已在上文校验"),
         };
         if records.is_empty() {
@@ -851,6 +879,7 @@ fn upload_derived_source_incremental(
         match source {
             "codex" => cfg.last_uploaded_codex_rowid = since,
             "claude" => cfg.last_uploaded_claude_rowid = since,
+            "dsh" => cfg.last_uploaded_dsh_rowid = since,
             _ => unreachable!("来源已在上文校验"),
         }
     }
@@ -900,6 +929,28 @@ fn upload_derived_source_incremental(
         // 推进到补传开始前的水位：补传期间新发生的修订（updated_at 更大）
         // 下一轮自然选出
         cfg.last_uploaded_claude_rev_ts = sweep_watermark;
+    }
+
+    // DSH 修订补传：同一步的 assistant/message 可能先以中间值落盘入库并上传，
+    // 终值稍后以同 dedupe_key 覆盖本地行（id 不变）→ id 游标永远选不出它。
+    // 按 updated_at 选出修订行重传，服务端「总量更大者胜」upsert 覆盖修正。
+    if source == "dsh" {
+        let sweep_watermark = chrono::Local::now().timestamp_millis();
+        let mut after_id = 0i64;
+        loop {
+            let records = crate::dsh::query_revised_since(
+                cfg.last_uploaded_dsh_rev_ts,
+                after_id,
+                BATCH,
+            )?;
+            if records.is_empty() {
+                break;
+            }
+            after_id = records.last().map(|r| r.local_rowid).unwrap_or(after_id);
+            let resp = post_batch_with_fallback(&base, &token, &records, None, with_projects)?;
+            total += resp.accepted;
+        }
+        cfg.last_uploaded_dsh_rev_ts = sweep_watermark;
     }
     Ok(total)
 }
@@ -1387,6 +1438,8 @@ pub fn disconnect() -> Result<(), String> {
     cfg.last_uploaded_claude_rev_ts = 0;
     cfg.last_uploaded_codex_model_rev_ts = 0;
     cfg.last_uploaded_codex_model_rev_id = 0;
+    cfg.last_uploaded_dsh_rowid = 0;
+    cfg.last_uploaded_dsh_rev_ts = 0;
     cfg.last_sync_at = 0;
     // 保留 server_url + mode + interval，方便下次重连
     save_sync_config(&cfg)

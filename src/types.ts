@@ -570,6 +570,8 @@ export type StatsTab =
   | "claude"
   | "cursor"
   | "kimi"
+  // 本地采集型（读取本地会话数据，无凭证可录、无订阅额度窗口）
+  | "dsh"
   // 凭证驱动的新 provider（通用额度面板，数据接入逐步上线）
   | "gemini"
   | "grok"
@@ -778,6 +780,18 @@ export interface ClaudeSnapshot {
   /** 授权类额度失败提示（OAuth 凭证缺失 / token 失效，用户可自助修复）；
    *  网络类失败不产出该字段（保持静默降级）。旧缓存条目无此字段，可选。 */
   rate_limits_error?: string | null;
+}
+
+// ===== DSH（DeepSeek Harness）用量统计（与 Rust dsh 模块结构一一对应）=====
+
+/** DSH 用量快照（get_dsh_usage 返回）。
+ *  stats / trend 与 z.ai 同构（展示层可直接复用 AgentUsagePanel）；
+ *  本地采集型无订阅额度窗口，故**不含** rate_limits / rate_limits_error
+ *  （额度区在通用面板里自动不渲染）。速度口径由后端置为 generation
+ *  （真生成窗口）且 TTFT 有真值，展示层不出现 ≈ 前缀。 */
+export interface DshSnapshot {
+  stats: Stats;
+  trend: TrendPoint[];
 }
 
 // ===== Kimi 用量统计（与 Rust kimi 模块结构一一对应）=====

@@ -42,6 +42,9 @@ export const stats = {
   "stats.claudeNotFound": "未检测到 Claude Code",
   "stats.claudeNotFoundHint":
     "请安装并使用 Anthropic Claude Code 产生本地会话记录\n（~/.claude/projects）后再查看",
+  "stats.dshNotFound": "未找到 DSH 会话数据",
+  "stats.dshNotFoundHint":
+    "请确认 DeepSeek Harness 已安装并使用过；数据读取自 ~/.dsh 会话目录。",
   // Claude 订阅额度增量窗口（API 返回该窗口才有值，缺省不渲染）
   "stats.claudeOpusWeekly": "Opus 周额度",
   "stats.claudeSonnetWeekly": "Sonnet 周额度",

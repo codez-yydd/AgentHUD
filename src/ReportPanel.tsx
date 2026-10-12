@@ -13,6 +13,7 @@ import type {
   Currency,
   CursorSnapshot,
   DeviceInfo,
+  DshSnapshot,
   KimiSnapshot,
   PricingConfig,
   RemoteUsage,
@@ -25,6 +26,7 @@ import {
   fetchClaudeUsage,
   fetchCodexUsage,
   fetchCursorUsage,
+  fetchDshUsage,
   fetchKimiUsage,
   fetchStats,
   fetchTrend,
@@ -150,7 +152,8 @@ interface ReportData {
  * 报告页数据源注册表：id → 展示元数据 + 远端同步来源。新增 agent 数据源时
  * 在此登记（并在 load() 补对应本地加载分支），REPORT_AGENT_IDS 与 agent
  * 筛选行即自动扩展，无需再改筛选渲染。remoteSource 为远端同步协议里的
- * source 字符串（无远端支持的 agent 省略，如 Cursor / Kimi 明细仅本机）。
+ * source 字符串（无远端支持的 agent 省略，如 Cursor / Kimi / dsh 仅本机）。
+ * 品牌色不在此登记：由 AGENT_COLOR[id] 统一取（dsh 已注册）。
  */
 const REPORT_SOURCE_REGISTRY = {
   zai: { label: "Z.ai", brand: "zai", remoteSource: "zcode" },
@@ -158,6 +161,9 @@ const REPORT_SOURCE_REGISTRY = {
   claude: { label: "Claude", brand: "claude", remoteSource: "claude" },
   cursor: { label: "Cursor", brand: "cursor" },
   kimi: { label: "Kimi", brand: "kimi" },
+  // 纯本地采集型（本地 ~/.dsh 会话数据）：无远端同步来源，取数走 fetchDshUsage
+  // （stats + trend，无 rate_limits → 报告页额度区块本就不含该源）
+  dsh: { label: "DeepSeek Harness", brand: "dsh" },
 } as const satisfies Record<
   string,
   { label: string; brand: BrandIconName; remoteSource?: string }
@@ -170,6 +176,17 @@ type ReportAgentSourceId = keyof typeof REPORT_SOURCE_REGISTRY;
 const REPORT_AGENT_IDS = Object.keys(
   REPORT_SOURCE_REGISTRY
 ) as ReportAgentSourceId[];
+
+/** 图例前缀用的来源名：优先取同步协议 provider 的注册名，未登记的 provider
+ *  （dsh 的 provider_id 是自由字符串，如 "deepseek-account" / 第三方）回退到
+ *  该模型所属报告 agent 的注册名，避免图例出现 "Unknown xxx"。 */
+function sourcePrefixOf(
+  agentId: ReportAgentSourceId,
+  providerId: string
+): string {
+  const label = sourceMeta(providerId).label;
+  return label === "Unknown" ? REPORT_SOURCE_REGISTRY[agentId].label : label;
+}
 
 /** 本地日期 YYYY-MM-DD，避免 UTC 偏移。 */
 function localDateStr(ms: number): string {
@@ -498,7 +515,7 @@ interface ReportCacheEntry {
   from_ms: number;
   to_ms: number;
   bucket: TrendBucket;
-  /** zai/codex/claude/kimi 已合并来源（stats + trend） */
+  /** zai/codex/claude/kimi/dsh 已合并来源（stats + trend） */
   sources: Partial<Record<Exclude<ReportAgentSourceId, "cursor">, ReportSource>>;
   /** Cursor 原始快照（每日明细，重建时再折叠） */
   cursor: CursorSnapshot | null;
@@ -598,6 +615,7 @@ function localResultsFromEntry(entry: ReportCacheEntry): LocalResults {
     codex: loaded("codex"),
     claude: loaded("claude"),
     kimi: loaded("kimi"),
+    dsh: loaded("dsh"),
     cursor: entry.cursor,
     fxRate: entry.fxRate,
   };
@@ -614,11 +632,14 @@ interface LocalResults {
   codex: LoadedSource | null;
   claude: LoadedSource | null;
   kimi: LoadedSource | null;
+  /** 纯本地采集型（本地 ~/.dsh 会话数据），与 Kimi 同构：无远端合并来源 */
+  dsh: LoadedSource | null;
   cursor: CursorSnapshot | null;
   fxRate: number;
 }
 
-/** 远端阶段返回的数据（同步未启用 / 筛选仅本地时各字段为空）。 */
+/** 远端阶段返回的数据（同步未启用 / 筛选仅本地时各字段为空）。
+ *  仅登记有远端同步来源的 agent：Cursor / Kimi / dsh 明细只在本机。 */
 interface RemoteResults {
   zai: RemoteUsage | null;
   codex: RemoteUsage | null;
@@ -676,6 +697,8 @@ function assembleReport(args: {
   addSourceAgent("claude", local.claude?.source ?? null, remote?.claude ?? null);
   // Kimi 无远端来源，只合并本机数据
   addSourceAgent("kimi", local.kimi?.source ?? null, null);
+  // dsh（DeepSeek Harness）同样无远端来源，只合并本机快照
+  addSourceAgent("dsh", local.dsh?.source ?? null, null);
   const cursorAgent =
     agentVisibility.cursor && local.cursor
       ? makeCursorAgent(local.cursor, fromMs, toMs, fxRate)
@@ -1070,6 +1093,19 @@ export function ReportContent({
             return { source: { stats: snapshot.stats, trend: snapshot.trend } };
           })
         : Promise.resolve(null);
+    // dsh（DeepSeek Harness）同样只读本机（~/.dsh 会话数据，无远端同步，
+    // 快照无 rate_limits）；未安装 / 无会话目录时 safe 兜底为 null
+    const localDshPromise: Promise<LoadedSource | null> =
+      agentVisibility.dsh && wantLocal
+        ? safe(async () => {
+            const snapshot: DshSnapshot = await fetchDshUsage(
+              fromMs,
+              toMs,
+              bucket
+            );
+            return { source: { stats: snapshot.stats, trend: snapshot.trend } };
+          })
+        : Promise.resolve(null);
     const fxRatePromise = getCursorConfig()
       .then((config) =>
         config.usd_cny_rate > 0 ? config.usd_cny_rate : 7.2
@@ -1101,12 +1137,13 @@ export function ReportContent({
     // 本地阶段是否已渲染出内容（决定远端失败时是否提示错误）
     let localRendered = false;
     try {
-      const [lz, lc, ll, lcur, lk, fx] = await Promise.all([
+      const [lz, lc, ll, lcur, lk, ld, fx] = await Promise.all([
         localZaiPromise,
         localCodexPromise,
         localClaudePromise,
         localCursorPromise,
         localKimiPromise,
+        localDshPromise,
         fxRatePromise,
       ]);
       if (reqId !== loadReqId.current) return;
@@ -1115,6 +1152,7 @@ export function ReportContent({
         codex: lc,
         claude: ll,
         kimi: lk,
+        dsh: ld,
         cursor: lcur,
         fxRate: fx,
       };
@@ -1458,8 +1496,12 @@ export function ReportContent({
   // ===== 用量趋势：按模型 × 按日 token 序列（by_model 桶聚合） =====
   const modelDaily = useMemo(() => {
     const perDay = new Map<string, Map<string, number>>();
-    // key → 模型/来源元数据（同 model_id 不同 provider 时图例需加前缀区分）
-    const names = new Map<string, { modelId: string; providerId: string }>();
+    // key → 模型/来源元数据（同 model_id 不同 provider 时图例需加前缀区分；
+    // agentId 供 provider 未登记时回退来源名）
+    const names = new Map<
+      string,
+      { modelId: string; providerId: string; agentId: ReportAgentSourceId }
+    >();
     if (!report) return { perDay, names };
     for (const agent of filteredAgents) {
       for (const point of agent.trend) {
@@ -1484,6 +1526,7 @@ export function ReportContent({
             names.set(key, {
               modelId: model.model_id,
               providerId: model.provider_id,
+              agentId: agent.id,
             });
           }
         }
@@ -1544,7 +1587,7 @@ export function ReportContent({
       const meta = modelDaily.names.get(key);
       const label =
         meta && dupModels.has(meta.modelId)
-          ? `${sourceMeta(meta.providerId).label} ${meta.modelId}`
+          ? `${sourcePrefixOf(meta.agentId, meta.providerId)} ${meta.modelId}`
           : (meta?.modelId ?? key);
       return {
         key,

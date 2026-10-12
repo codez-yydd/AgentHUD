@@ -11,6 +11,7 @@ mod cookie_util;
 mod cursor;
 mod db;
 mod deepseek;
+mod dsh;
 mod gemini;
 mod grok;
 mod kimi;
@@ -160,6 +161,8 @@ async fn list_models() -> Result<Vec<db::ModelInfo>, String> {
         let codex_models = codex::list_models().unwrap_or_default();
         let claude_models = claude::list_models().unwrap_or_default();
         let kimi_models = kimi::list_models().unwrap_or_default();
+        // DSH 同为本地采集型：其模型（deepseek-flash 等）要进价格配置页才能定价
+        let dsh_models = dsh::list_models().unwrap_or_default();
         let remote = sync::remote_models_cached()
             .into_iter()
             .map(|m| db::ModelInfo {
@@ -172,7 +175,14 @@ async fn list_models() -> Result<Vec<db::ModelInfo>, String> {
                 model_id: m.model_id,
             })
             .collect();
-        Ok(merge_model_lists(vec![zcode, codex_models, claude_models, kimi_models, remote]))
+        Ok(merge_model_lists(vec![
+            zcode,
+            codex_models,
+            claude_models,
+            kimi_models,
+            dsh_models,
+            remote,
+        ]))
     })
     .await
     .map_err(|e| format!("模型列表查询任务失败: {e}"))?
@@ -245,6 +255,13 @@ pub(crate) fn collect_relevant_models(
     }
     // Kimi 导入库同上
     if let Ok(models) = kimi::list_models() {
+        models.into_iter().for_each(|m| {
+            relevant.insert(m.model_id);
+        });
+    }
+    // DSH 导入库同上：其 provider 是自由字符串（deepseek-account / 第三方路由），
+    // 更要靠这里把实际用到的 model_id 纳入，避免价格配置页漏项
+    if let Ok(models) = dsh::list_models() {
         models.into_iter().for_each(|m| {
             relevant.insert(m.model_id);
         });
@@ -536,7 +553,8 @@ async fn get_compare_tokens(
 }
 
 /// 按 Agent 和指定周期聚合 Token。
-/// source: zai / codex / claude / kimi / cursor；周期区间统一使用 [reset_at, end_at)。
+/// source: zai / codex / claude / kimi / cursor / dsh；周期区间统一使用
+/// [reset_at, end_at)。dsh 已支持后端聚合（对比页前端尚未纳入该 agent）。
 #[tauri::command]
 async fn get_compare_tokens_for_agent(
     source: String,
@@ -548,6 +566,7 @@ async fn get_compare_tokens_for_agent(
             "codex" => codex::query_period_buckets(&periods),
             "claude" => claude::query_period_buckets(&periods),
             "kimi" => kimi::query_period_buckets(&periods),
+            "dsh" => dsh::query_period_buckets(&periods),
             "cursor" => {
                 let from_ms = periods.iter().map(|(from, _)| *from).min().unwrap_or(0);
                 let to_ms = periods.iter().map(|(_, to)| *to).max().unwrap_or(0);
@@ -1006,6 +1025,72 @@ async fn get_kimi_debug() -> Result<kimi::KimiDebugInfo, String> {
         .map_err(|e| format!("Kimi 诊断任务失败: {e}"))?
 }
 
+// ===== DeepSeek Harness 用量统计 =====
+
+/// get_dsh_usage 的入参：时间范围 + 分桶粒度（"hour" | "day"）
+#[derive(Debug, Deserialize)]
+struct DshUsageRequest {
+    from_ms: i64,
+    to_ms: i64,
+    bucket: String,
+}
+
+/// get_dsh_usage 返回的 DSH 快照：本地事件日志导入库的统计 + 趋势（含花费）。
+/// **无额度字段**：DSH 的账户 grant 走未文档化的平台内部端点（x-dsh-auth-token），
+/// 本项目不接；DeepSeek 余额请用 deepseek 服务（公开 /user/balance 接口）。
+#[derive(Debug, Serialize)]
+struct DshSnapshot {
+    stats: db::Stats,
+    trend: Vec<TrendBucket>,
+}
+
+/// 拉取 DSH 用量快照（本地 session.v4.jsonl.zstd 增量导入 + 聚合查询）。
+/// async + spawn_blocking：与 get_claude_usage 同款卸载到阻塞线程池。
+#[tauri::command]
+async fn get_dsh_usage(req: DshUsageRequest) -> Result<DshSnapshot, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let stats = dsh::query_stats(req.from_ms, req.to_ms)?;
+        let buckets = dsh::query_trend(req.from_ms, req.to_ms, &req.bucket)?;
+        let pricing = load_pricing().unwrap_or_default();
+
+        // 花费计算与 get_claude_usage 同款：桶内按模型聚合后用 cost_for 求和。
+        // 只存美元价：人民币花费 = 美元花费 × 当前汇率（实时折算）。
+        // DSH 的 provider 是自由字符串（deepseek-account / deepseek-official /
+        // opencode-go / 任意第三方），故按 model_id 查价并允许 miss → 0。
+        let fx = load_fx_rate();
+        let trend = buckets
+            .into_iter()
+            .map(|b| {
+                let cost_usd = b
+                    .by_model
+                    .iter()
+                    .map(|m| cost_for(m, &pricing.usd))
+                    .sum::<f64>();
+                TrendBucket {
+                    label: b.label,
+                    total_tokens: b.total_tokens,
+                    requests: b.requests,
+                    cost_cny: cost_usd * fx,
+                    cost_usd,
+                    by_model: bucket_models(&b.by_model),
+                }
+            })
+            .collect();
+
+        Ok(DshSnapshot { stats, trend })
+    })
+    .await
+    .map_err(|e| format!("DSH 查询任务失败: {e}"))?
+}
+
+/// 诊断 DSH 数据导入（排查"暂无数据"问题）
+#[tauri::command]
+async fn get_dsh_debug() -> Result<dsh::DshDebugInfo, String> {
+    tauri::async_runtime::spawn_blocking(dsh::debug_info)
+        .await
+        .map_err(|e| format!("DSH 诊断任务失败: {e}"))?
+}
+
 fn append_agent_quota_snapshot(
     source: &str,
     plan_type: Option<String>,
@@ -1452,7 +1537,10 @@ async fn pending_upload_count() -> Result<i64, String> {
         let claude = claude::max_rowid()
             .map(|m| (m - cfg.last_uploaded_claude_rowid).max(0))
             .unwrap_or(0);
-        Ok(zcode + codex + claude)
+        let dsh = dsh::max_rowid()
+            .map(|m| (m - cfg.last_uploaded_dsh_rowid).max(0))
+            .unwrap_or(0);
+        Ok(zcode + codex + claude + dsh)
     })
     .await
     .map_err(|e| format!("待上传统计任务失败: {e}"))?
@@ -1805,6 +1893,16 @@ fn today_tray_title(app: &AppHandle) -> String {
 
     // Kimi：合并今日用量（本地导入库；未安装/失败静默降级，同上）
     if let Ok(stats) = kimi::query_stats(today_start, now_ms) {
+        total += stats.overall.total_tokens;
+        cost += stats
+            .by_model
+            .iter()
+            .map(|m| cost_for(m, &pricing.usd))
+            .sum::<f64>();
+    }
+
+    // DeepSeek Harness：合并今日用量（本地会话日志导入库；未安装/失败静默降级，同上）
+    if let Ok(stats) = dsh::query_stats(today_start, now_ms) {
         total += stats.overall.total_tokens;
         cost += stats
             .by_model
@@ -2256,6 +2354,8 @@ pub fn run() {
             get_claude_debug,
             get_kimi_usage,
             get_kimi_debug,
+            get_dsh_usage,
+            get_dsh_debug,
             list_accounts,
             capture_account,
             switch_account,

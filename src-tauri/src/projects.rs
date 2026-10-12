@@ -990,11 +990,12 @@ fn query_projects(from_ms: i64, to_ms: i64) -> Result<Vec<ProjectSummary>, Strin
     let pricing = load_pricing().unwrap_or_default();
     let mut projects: HashMap<String, ProjectAcc> = HashMap::new();
 
-    // codex / claude / kimi 三源（未安装/查询失败打印日志并降级为空，不互相阻断）
+    // codex / claude / kimi / dsh 四源（未安装/查询失败打印日志并降级为空，不互相阻断）
     let model_rows = [
         ("codex", codex::query_project_model_rows(from_ms, to_ms)),
         ("claude", claude::query_project_model_rows(from_ms, to_ms)),
         ("kimi", kimi::query_project_model_rows(from_ms, to_ms)),
+        ("dsh", crate::dsh::query_project_model_rows(from_ms, to_ms)),
     ];
     for (source, rows) in model_rows {
         match rows {
@@ -1012,6 +1013,7 @@ fn query_projects(from_ms: i64, to_ms: i64) -> Result<Vec<ProjectSummary>, Strin
         ("codex", codex::query_project_session_counts(from_ms, to_ms)),
         ("claude", claude::query_project_session_counts(from_ms, to_ms)),
         ("kimi", kimi::query_project_session_counts(from_ms, to_ms)),
+        ("dsh", crate::dsh::query_project_session_counts(from_ms, to_ms)),
     ];
     for (source, counts) in session_counts {
         match counts {
@@ -1031,6 +1033,7 @@ fn query_projects(from_ms: i64, to_ms: i64) -> Result<Vec<ProjectSummary>, Strin
         ("codex", codex::query_project_display_paths()),
         ("claude", claude::query_project_display_paths()),
         ("kimi", kimi::query_project_display_paths()),
+        ("dsh", crate::dsh::query_project_display_paths()),
     ];
     for (source, paths) in display_paths {
         match paths {
@@ -1171,7 +1174,7 @@ fn query_sessions(
     // 参与查询的源（非法源名返回空页，不报错）
     let sources: Vec<&str> = match source.as_deref() {
         Some(s) if !s.is_empty() => {
-            if !["codex", "claude", "kimi", "zcode", "cursor"].contains(&s) {
+            if !["codex", "claude", "kimi", "dsh", "zcode", "cursor"].contains(&s) {
                 return Ok(SessionsPage {
                     total: 0,
                     items: Vec::new(),
@@ -1179,7 +1182,7 @@ fn query_sessions(
             }
             vec![s]
         }
-        _ => vec!["codex", "claude", "kimi", "zcode"],
+        _ => vec!["codex", "claude", "kimi", "dsh", "zcode"],
     };
 
     // 单源走 SQL 分页；多源各取全部匹配行（行数 = 会话 × 模型，量级可控）
@@ -1194,6 +1197,7 @@ fn query_sessions(
             "codex" => codex::query_project_sessions(&project_key, from_ms, to_ms, per_offset, per_limit),
             "claude" => claude::query_project_sessions(&project_key, from_ms, to_ms, per_offset, per_limit),
             "kimi" => kimi::query_project_sessions(&project_key, from_ms, to_ms, per_offset, per_limit),
+            "dsh" => crate::dsh::query_project_sessions(&project_key, from_ms, to_ms, per_offset, per_limit),
             "zcode" => zcode_project_sessions(&project_key, from_ms, to_ms, per_offset, per_limit),
             // cursor 无会话维度（纯内存聚合），会话列表不展示
             "cursor" => Ok((0, Vec::new())),
