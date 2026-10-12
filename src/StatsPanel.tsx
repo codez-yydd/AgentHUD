@@ -342,6 +342,32 @@ export function StatsPanel({
     return () => observer.disconnect();
   }, [visibleTabs.length]);
 
+  // 鼠标滚轮左右滑动 tab 栏（Agent 变多后 tab 经常溢出，滚轮是最顺手的通道）：
+  // - 只有确实溢出时才接管，否则完全不动默认行为（不溢出时滚轮该滚页面就滚页面）；
+  // - 触控板横向手势（deltaX 为主）直接用；普通鼠标纵向滚轮（deltaY）换算成横向；
+  // - 已经滚到两端时把事件还给页面，避免「划到尽头就卡住、页面也滚不动」；
+  // - 必须用原生监听：React 的事件委托给 root 挂的是 passive wheel，拦不住
+  //   纵向滚动，会出现「tab 在滚、页面同时也在滚」的双滚。
+  useEffect(() => {
+    const el = tabScrollRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      const max = el.scrollWidth - el.clientWidth;
+      if (max <= 1) return;
+      // deltaMode：0=像素（Chromium/WebView2 默认）、1=行、2=页
+      const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? el.clientWidth : 1;
+      const raw = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
+      const delta = raw * unit;
+      if (!delta) return;
+      const next = Math.min(max, Math.max(0, el.scrollLeft + delta));
+      if (next === el.scrollLeft) return;
+      el.scrollLeft = next;
+      e.preventDefault();
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, []);
+
   // ===== 窗口置顶常驻（仅 Windows）=====
   const isWindows =
     typeof navigator !== "undefined" &&
