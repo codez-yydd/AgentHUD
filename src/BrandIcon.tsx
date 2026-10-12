@@ -82,6 +82,22 @@ const KIMI_CODE_PATH =
   // 光标短横
   "M7.01 20.23L8.93 20.23A0.48 0.48 0 0 0 8.93 19.27L7.01 19.27A0.48 0.48 0 0 0 7.01 20.23Z";
 
+/**
+ * MiniMax Code 桌面端 mark（小怪兽轮廓），描自本机官方安装目录的图标。
+ *
+ * 方法可复现：`D:\app\MiniMax Code\uninstallerIcon.ico`（256px 帧）→ 非白像素
+ * → 取中心连通域并填洞（得到干净掩码）→ 沿质心 144 条射线二分求边界 → 抽稀到
+ * 72 点 → 环形滑动平均去量化抖动 → 归一化到 24×24（留 1.1 边距）。
+ * 与原掩码回栅格化比对 **IoU 0.96**（1px 边缘抗锯齿量级的差异）。
+ *
+ * 为什么不用官方仓库的字标：MiniMax-AI/minimax-code 的
+ * docs/assets/wordmark-*.svg 是 ASCII-art 字标（Menlo 等宽字排的蓝色块字
+ * 「MiniMax Code」，760×88，444 个 <text>），没有独立 mark 图片；桌面端图标
+ * 才是用户认得的那个图形，且本项目的数据来源就是桌面端的 ~/.minimax。
+ */
+const MINIMAX_CODE_MARK =
+  "M22.34 11.64 L22.2 12.53 L21.96 13.4 L21.63 14.23 L21.26 15.02 L21.07 15.91 L21.21 17.05 L21.44 18.35 L21.35 19.54 L20.79 20.47 L19.9 21.07 L18.75 21.25 L17.37 20.83 L16.06 20.26 L15.11 20.35 L14.45 21.15 L13.79 22.15 L12.93 22.71 L11.97 22.9 L11.03 22.7 L10.17 22.1 L9.51 21.07 L8.86 20.28 L7.9 20.22 L6.6 20.78 L5.19 21.25 L4.03 21.08 L3.18 20.45 L2.6 19.54 L2.6 18.28 L2.79 17.02 L2.93 15.87 L2.7 15.02 L2.32 14.23 L2.04 13.39 L1.81 12.53 L1.66 11.64 L1.61 10.74 L1.66 9.83 L1.8 8.92 L2.04 8.03 L2.32 7.14 L2.09 5.86 L2.03 4.61 L2.26 3.53 L3.55 3.3 L4.78 3.14 L5.88 2.96 L6.68 2.48 L7.51 2.08 L8.37 1.75 L9.25 1.48 L10.15 1.29 L11.05 1.15 L11.98 1.1 L12.9 1.1 L13.8 1.24 L14.71 1.43 L15.59 1.71 L16.45 2.04 L17.28 2.46 L18.08 2.93 L19.13 3.17 L20.33 3.37 L21.5 3.68 L21.77 4.71 L21.78 5.92 L21.64 7.14 L21.97 8.01 L22.2 8.9 L22.34 9.81 L22.39 10.73Z";
+
 
 // ============================================================
 // 凭证驱动的新 provider 图标：品牌色圆底 + 白色首字母/简笔图形。
@@ -111,9 +127,14 @@ function letterTile(
 }
 
 /** 新 provider 的圆底色块定义（bg=底色；icon=白色图形）。
- *  Exclude 与 BRAND_PATHS 互补：进 BRAND_PATHS 的（zai/dsh）必须在此排除。 */
+ *  Exclude 与 BRAND_PATHS 互补：进 BRAND_PATHS 的（zai/dsh）必须在此排除；
+ *  已换成官方 mark 的 opencodego / minimax 走各自独立分支（见下方 BrandIcon），
+ *  同样必须在此排除——它们不再使用「品牌色圆底 + 白字」的占位图形。 */
 const CREDENTIAL_AGENT_TILES: Record<
-  Exclude<BrandIconName, "zai" | "dsh" | "codex" | "claude" | "cursor" | "kimi">,
+  Exclude<
+    BrandIconName,
+    "zai" | "dsh" | "codex" | "claude" | "cursor" | "kimi" | "opencodego" | "minimax"
+  >,
   { bg: string; icon: ReactNode }
 > = {
   // Gemini：四角星（Sparkle 品牌意象）
@@ -128,25 +149,6 @@ const CREDENTIAL_AGENT_TILES: Record<
   },
   grok: { bg: "#1d9bf0", icon: letterTile("G") },
   qoder: { bg: "#6c5ce7", icon: letterTile("Q") },
-  // OpenCode：终端提示符 >_ 意象
-  opencodego: {
-    bg: "#f97316",
-    icon: (
-      <text
-        x="12"
-        y="12.8"
-        textAnchor="middle"
-        dominantBaseline="middle"
-        fill="#fff"
-        fontSize="9.5"
-        fontWeight="700"
-        fontFamily="ui-monospace, 'Cascadia Mono', Consolas, monospace"
-      >
-        &gt;_
-      </text>
-    ),
-  },
-  minimax: { bg: "#00b96b", icon: letterTile("M") },
   // Kimi（月之暗面开放平台，provider id 仍为 moonshot）：月光月牙。
   // 与 Kimi Code 的吉祥物 mark 区分开——月牙是月之暗面的品牌意象。
   moonshot: {
@@ -202,6 +204,58 @@ export function BrandIcon({ brand, ...props }: BrandIconProps) {
         focusable="false"
       >
         <path fillRule="nonzero" d={KIMI_CODE_PATH} />
+      </svg>
+    );
+  }
+
+  // OpenCode 官方 mark（不再是占位的「>_」终端提示符）：
+  // 取自官方仓库 anomalyco/opencode（原 sst/opencode）的
+  // packages/ui/src/assets/favicon/favicon.svg —— 官方 mark 是「方形环 + 环内下半的
+  // 次级色块」的方块字「o」：原图 512×512 里外层方环 x128..384 / y96..416 为白色，
+  // 环内下半 x192..320 / y224..352 为浅灰 #5A5858，底为深色 #131010。
+  // 这里去掉底色（界面底色由父层决定），环用 currentColor、内块用 0.55 透明度，
+  // 保留官方 mark 的「环 + 内块」两段对比，浅色/深色主题下都成立。
+  if (brand === "opencodego") {
+    return (
+      <svg
+        {...props}
+        viewBox="0 0 24 24"
+        fill="none"
+        aria-hidden="true"
+        focusable="false"
+      >
+        <path
+          fill="currentColor"
+          fillRule="evenodd"
+          clipRule="evenodd"
+          d="M3.28 1.1H20.72V22.9H3.28V1.1ZM7.64 5.46H16.36V18.54H7.64V5.46Z"
+        />
+        <path
+          fill="currentColor"
+          fillOpacity="0.55"
+          d="M7.64 9.82H16.36V18.54H7.64V9.82Z"
+        />
+      </svg>
+    );
+  }
+
+  // MiniMax Code 走独立分支（不再是绿色圆底 + 字母「M」）：
+  // 官方开源仓库 MiniMax-AI/minimax-code 的字标是 ASCII-art（docs/assets/wordmark-*.svg，
+  // Menlo 等宽字排出的蓝色块字），**没有**独立 mark 图形；桌面端则使用那只小怪兽
+  // 图标（本机安装目录 D:\app\MiniMax Code 的 uninstallerIcon.ico，256px 帧）。
+  // 数据既然来自桌面端 ~/.minimax，图标也就以桌面端为准：从 256px 帧里取「非白像素
+  // →中心连通域→填洞」的掩码，沿质心做 144 条射线取边界、抽稀到 72 点并做环形平滑，
+  // 归一化到 24×24（与原始掩码 IoU 0.96）。单色 currentColor，跟随品牌色渲染。
+  if (brand === "minimax") {
+    return (
+      <svg
+        {...props}
+        viewBox="0 0 24 24"
+        fill="currentColor"
+        aria-hidden="true"
+        focusable="false"
+      >
+        <path d={MINIMAX_CODE_MARK} />
       </svg>
     );
   }
