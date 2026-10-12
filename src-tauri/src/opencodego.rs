@@ -15,8 +15,11 @@
 //! `fetch_local_entries` 的新鲜度门槛），不再叠加本地估算条目以免同源重复。
 //!
 //! **B. 本地 SQLite（零凭证回退）**
-//! 直读 OpenCode 本地数据目录的 opencode.db（message 单表，不联合 part 表），
-//! 按 CodexBar 同款常量估算滚动 5 小时窗 / 周 / 月三档用量百分比。数据目录：
+//! 直读 OpenCode 本地数据目录的 opencode.db（消息单表，不联合 part 表），
+//! 按 CodexBar 同款常量估算滚动 5 小时窗 / 周 / 月三档用量百分比。表名随
+//! OpenCode 版本自适应：v2 为 `session_message`（角色在列 `type`，provider 在
+//! `$.model.providerID`），v1 为 `message`（角色在 `$.role`，provider 在
+//! `$.providerID`）——详见 `query_records`。数据目录：
 //! `~/.local/share/opencode/`（Windows 上 OpenCode 同样使用
 //! `%USERPROFILE%\.local\share\opencode\`）；`ZBAR_OPENCODE_HOME` 可覆盖根
 //! 目录（测试/便携场景用，对齐 codex.rs 的 ZBAR_CODEX_HOME 先例）。
@@ -59,7 +62,9 @@ const FIVE_HOURS_MS: i64 = 5 * 3_600_000;
 const WEEK_MS: i64 = 7 * 86_400_000;
 
 /// OpenCode 数据根目录（ZBAR_OPENCODE_HOME 优先，其次 ~/.local/share/opencode/）。
-fn opencode_root() -> PathBuf {
+/// pub(crate)：用量导入模块（opencode.rs）复用同一口径，避免两处各写一份根目录
+/// 解析导致 ZBAR_OPENCODE_HOME 覆盖只在一处生效。
+pub(crate) fn opencode_root() -> PathBuf {
     if let Ok(home) = std::env::var("ZBAR_OPENCODE_HOME") {
         let home = home.trim();
         if !home.is_empty() {
@@ -73,8 +78,8 @@ fn opencode_root() -> PathBuf {
         .join("opencode")
 }
 
-/// 本地库路径（presence 探测与查询共用同一口径）。
-fn db_path() -> PathBuf {
+/// 本地库路径（presence 探测、额度估算与用量导入共用同一口径）。
+pub(crate) fn db_path() -> PathBuf {
     opencode_root().join("opencode.db")
 }
 
@@ -112,20 +117,49 @@ fn open_readonly(path: &Path) -> Result<Connection, String> {
     Ok(conn)
 }
 
+/// 表是否存在（v2/v1 形态探测与测试共用；table 名是代码内常量，无注入风险）。
+fn has_table(conn: &Connection, name: &str) -> bool {
+    conn.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
+        [name],
+        |row| row.get::<_, i64>(0),
+    )
+    .map(|count| count > 0)
+    .unwrap_or(false)
+}
+
 /// 读取 opencode-go 的 (created_ms, cost_usd) 序列。
-/// 只查 message 单表：providerID=opencode-go 的 assistant 消息，cost 为
-/// 数值（json_type 过滤字符串脏值）；时间取 COALESCE($.time.created,
-/// time_created)（毫秒 epoch），任一时间都拿不到的行无法定位窗口，跳过。
+///
+/// **v2 / v1 自适应**：v2 把 v1 的 `message` 表改名成 `session_message`
+/// （其迁移 SQL：`ALTER TABLE session RENAME TO session_v2` 同一批），且**角色从
+/// data JSON 的 `$.role` 提升为列 `type`**（v2 的 `data` 里实测没有 role 字段），
+/// 故先探测 `session_message` 用 `type = 'assistant'` 过滤，否则回退 `message`
+/// 按 `$.role` 过滤。provider 两版都用 `COALESCE(NULLIF($.providerID,''),
+/// $.model.providerID)`：v1 平铺、v2 嵌套在 `$.model` 里（实测）。
+///
+/// 只查单表（不联合 part/session），cost 必须是数值（`json_type` 过滤字符串
+/// 脏值）；时间取 `COALESCE($.time.created, time_created)`（毫秒 epoch），
+/// 任一时间都拿不到的行无法定位窗口，跳过。两版都认不出消息表时报错而非静默
+/// 返回空（未知 schema 要暴露出来，不能假装「用量为 0」）。
 fn query_records(conn: &Connection) -> Result<Vec<(i64, f64)>, String> {
+    // 角色过滤片段：v2 用列、v1 用 data JSON
+    let (table, role_filter) = if has_table(conn, "session_message") {
+        ("session_message", "type = 'assistant'")
+    } else if has_table(conn, "message") {
+        ("message", "json_extract(data,'$.role') = 'assistant'")
+    } else {
+        return Err("OpenCode 本地库缺少消息表（既非 v2 的 session_message 也非 v1 的 message）".to_string());
+    };
     let mut stmt = conn
-        .prepare(
+        .prepare(&format!(
             "SELECT COALESCE(json_extract(data,'$.time.created'), time_created), \
                     json_extract(data,'$.cost') \
-             FROM message \
-             WHERE json_extract(data,'$.providerID')='opencode-go' \
-               AND json_extract(data,'$.role')='assistant' \
-               AND json_type(data,'$.cost') IN ('integer','real')",
-        )
+             FROM {table} \
+             WHERE COALESCE(NULLIF(json_extract(data,'$.providerID'), ''), \
+                            json_extract(data,'$.model.providerID')) = 'opencode-go' \
+               AND {role_filter} \
+               AND json_type(data,'$.cost') IN ('integer','real')"
+        ))
         .map_err(|e| format!("OpenCode 查询准备失败: {e}"))?;
     let rows = stmt
         .query_map([], |row| {
@@ -462,6 +496,7 @@ mod tests {
     const FEB_1: i64 = 1_706_745_600_000;
 
     /// 建内存库并插入 message 样例行（data JSON + time_created）。
+    /// v1 形态：表名 `message`，角色与 provider 都在 data JSON 里。
     fn memory_db() -> Connection {
         let conn = Connection::open_in_memory().expect("打开内存库失败");
         conn.execute_batch(
@@ -473,6 +508,34 @@ mod tests {
         )
         .expect("建表失败");
         conn
+    }
+
+    /// 建内存库并插入 session_message 样例行（v2 形态：角色在列 `type`，
+    /// provider/model 嵌套在 `$.model` 里 —— 均为实测形状）。
+    fn memory_db_v2() -> Connection {
+        let conn = Connection::open_in_memory().expect("打开内存库失败");
+        conn.execute_batch(
+            "CREATE TABLE session_message (
+                id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                type TEXT NOT NULL,
+                seq INTEGER,
+                time_created INTEGER,
+                time_updated INTEGER,
+                data TEXT NOT NULL
+             );",
+        )
+        .expect("建表失败");
+        conn
+    }
+
+    fn insert_v2_row(conn: &Connection, type_: &str, data: &str, time_created: Option<i64>) {
+        conn.execute(
+            "INSERT INTO session_message (session_id, type, data, time_created)
+             VALUES ('ses_test', ?1, ?2, ?3)",
+            rusqlite::params![type_, data, time_created],
+        )
+        .expect("插入失败");
     }
 
     fn insert_row(conn: &Connection, data: &str, time_created: Option<i64>) {
@@ -549,7 +612,7 @@ mod tests {
         assert_eq!(entry.windows[1].resets_at, Some(MON_0 + WEEK_MS));
     }
 
-    /// 查询过滤：providerID/role 不符排除、cost 字符串脏值排除、
+    /// **v1 路径**的查询过滤：providerID/role 不符排除、cost 字符串脏值排除、
     /// 时间 COALESCE（data 缺 time.created 时回退 time_created 列）、
     /// 两处时间全缺的行跳过。
     #[test]
@@ -608,6 +671,104 @@ mod tests {
         assert_eq!(entry.windows[0].used, Some(3.25));
         // 行 B（更晚）不是最老一条 → 重置锚定在行 A + 5h
         assert_eq!(entry.windows[0].resets_at, Some(1_704_270_000_000 + FIVE_HOURS_MS));
+    }
+
+    /// **v2 路径**的查询过滤（表 `session_message`）：角色认列 `type`（v2 的
+    /// data 里没有 role 字段），provider 认嵌套 `$.model.providerID`；平铺
+    /// `$.providerID` 仍兼容（两形态取先非空者）；时间 COALESCE 与容错口径同 v1。
+    #[test]
+    fn query_v2_uses_type_column_and_nested_provider() {
+        let conn = memory_db_v2();
+        // 合法行 A：嵌套 provider/model（实测 v2 形态），data 带 time.created
+        insert_v2_row(
+            &conn,
+            "assistant",
+            r#"{"cost":1.25,"model":{"id":"deepseek-v4.1-flash","providerID":"opencode-go"},
+                "time":{"created":1704270000000},"tokens":{"input":10,"output":5}}"#,
+            Some(111111),
+        );
+        // 合法行 B：data 缺 time.created → COALESCE 回退 time_created 列
+        insert_v2_row(
+            &conn,
+            "assistant",
+            r#"{"cost":2,"model":{"providerID":"opencode-go","id":"m"}}"#,
+            Some(WED_NOON - 3_600_000),
+        );
+        // 合法行 C：平铺 providerID 仍认（两版本共存期的容错）
+        insert_v2_row(
+            &conn,
+            "assistant",
+            r#"{"providerID":"opencode-go","modelID":"m","cost":0.5,
+                "time":{"created":1704270000000}}"#,
+            None,
+        );
+        // 排除：其他 provider（嵌套形态）
+        insert_v2_row(
+            &conn,
+            "assistant",
+            r#"{"cost":99.0,"model":{"providerID":"opencode","id":"step-5-preview-free"},
+                "time":{"created":1704270000000}}"#,
+            None,
+        );
+        // 排除：v2 的 type 非 assistant（data 里即使写了 role=assistant 也不算，
+        // 因为 v2 的角色在列上）
+        insert_v2_row(
+            &conn,
+            "user",
+            r#"{"role":"assistant","providerID":"opencode-go","cost":99.0,
+                "time":{"created":1704270000000}}"#,
+            None,
+        );
+        // 排除：cost 字符串脏值
+        insert_v2_row(
+            &conn,
+            "assistant",
+            r#"{"cost":"3.0","model":{"providerID":"opencode-go"},
+                "time":{"created":1704270000000}}"#,
+            None,
+        );
+        // 跳过：时间全缺
+        insert_v2_row(
+            &conn,
+            "assistant",
+            r#"{"cost":5.0,"model":{"providerID":"opencode-go"}}"#,
+            None,
+        );
+
+        let records = query_records(&conn).expect("v2 查询应成功");
+        assert_eq!(
+            records,
+            vec![
+                (1_704_270_000_000, 1.25),
+                (WED_NOON - 3_600_000, 2.0),
+                (1_704_270_000_000, 0.5)
+            ]
+        );
+    }
+
+    /// 两版表都不存在（未知 schema）→ 报错而非静默返回空：未知形态必须暴露，
+    /// 不能让额度面板把「读不到」显示成「用量为 0」。
+    #[test]
+    fn query_without_known_message_table_errors() {
+        let conn = Connection::open_in_memory().expect("打开内存库失败");
+        conn.execute_batch("CREATE TABLE account (id TEXT PRIMARY KEY);")
+            .expect("建表失败");
+        let err = query_records(&conn).expect_err("未知 schema 应报错");
+        assert!(err.contains("消息表"), "错误信息应说明缺表原因: {err}");
+        // v2 表存在时优先用它（即使同时残留 v1 的 message 表）
+        conn.execute_batch(
+            "CREATE TABLE message (id INTEGER PRIMARY KEY, data TEXT, time_created INTEGER);
+             CREATE TABLE session_message (
+                id TEXT PRIMARY KEY, session_id TEXT, type TEXT, data TEXT NOT NULL,
+                time_created INTEGER);
+             INSERT INTO message (data, time_created) VALUES
+                ('{\"providerID\":\"opencode-go\",\"role\":\"assistant\",\"cost\":9.0}', 1);
+             INSERT INTO session_message (session_id, type, data, time_created) VALUES
+                ('s', 'assistant', '{\"cost\":1.0,\"model\":{\"providerID\":\"opencode-go\"}}', 7);",
+        )
+        .expect("建双表失败");
+        let records = query_records(&conn).expect("应成功");
+        assert_eq!(records, vec![(7, 1.0)], "共存时应只认 v2 表，不重复累加");
     }
 
     /// 登录检测：auth.json 顶层 opencode-go.key 非空才有效；

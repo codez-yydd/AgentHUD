@@ -62,6 +62,7 @@ use tauri::{
     AppHandle, Emitter, LogicalSize, Manager, WebviewUrl, WebviewWindowBuilder,
 };
 
+use crate::local_agents;
 use crate::token_speed::{
     is_completed_status, request_speed_at, PENDING_FRESH_MS, RequestTiming, SessionTree,
     SpeedQuality, SpeedSnapshot, SpeedState,
@@ -1741,28 +1742,57 @@ pub(crate) struct HudModelSpeed {
 
 /// agent 组标识（HudAgentGroup.agent 的取值域，前端显示名映射见
 /// session-hud-main.ts 的 AGENT_LABELS；顺序即无会话组的固定排序）
+///
+/// zcode / claude / codex / cursor 是注册表外的固定组（形态自成一派，见
+/// `local_agents.rs` 模块头）；kimi / dsh / opencode（及未来新增的本地读取型
+/// agent）的名字**从注册表常量取**，保证「组标识」与「来源字符串」单一口径，
+/// 不让两处字符串各自漂移。
 pub(crate) const AGENT_ZCODE: &str = "zcode";
 pub(crate) const AGENT_CLAUDE: &str = "claude";
 pub(crate) const AGENT_CODEX: &str = "codex";
-pub(crate) const AGENT_KIMI: &str = "kimi";
 pub(crate) const AGENT_CURSOR: &str = "cursor";
-pub(crate) const AGENT_DSH: &str = "dsh";
+// 注册表来源的组标识别名：生产路径（分组 / 今日合计 / 速度口径）统一走
+// `local_agents::all()`，不再按名字分支，故这三个别名只在单测里按 AGENT_*
+// 命名引用（与上面几个固定组保持同一套写法）；保留它们是为了让
+// HudAgentGroup.agent 的取值域在本文件一处可读，不是为了生产分发。
+#[allow(dead_code)]
+pub(crate) const AGENT_KIMI: &str = local_agents::KIMI;
+#[allow(dead_code)]
+pub(crate) const AGENT_DSH: &str = local_agents::DSH;
+#[allow(dead_code)]
+pub(crate) const AGENT_OPENCODE: &str = local_agents::OPENCODE;
 
-/// agent 固定序（无会话但有今日数据的组之间、组排序的同刻稳定键；
-/// cursor 恒最后）
+/// 固定序前缀（注册表外的三个组，顺序与历史一致：zcode/claude/codex）。
+const FIXED_AGENT_ORDER: [&str; 3] = [AGENT_ZCODE, AGENT_CLAUDE, AGENT_CODEX];
+
+/// agent 固定序（无会话但有今日数据的组之间、组排序的同刻稳定键）：
+/// 固定组按 `FIXED_AGENT_ORDER`，注册表来源紧跟其后按注册顺序
+/// （kimi=3、dsh=4、opencode=5），非注册表来源（cursor 等）恒最后。
+/// **新增 agent 不需要改本函数**。
 fn agent_order(agent: &str) -> u8 {
-    match agent {
-        AGENT_ZCODE => 0,
-        AGENT_CLAUDE => 1,
-        AGENT_CODEX => 2,
-        AGENT_KIMI => 3,
-        AGENT_DSH => 4,
-        _ => 5,
+    if let Some(i) = FIXED_AGENT_ORDER.iter().position(|a| *a == agent) {
+        return i as u8;
+    }
+    let sources = local_agents::all();
+    match sources.iter().position(|s| s.source() == agent) {
+        Some(i) => (FIXED_AGENT_ORDER.len() + i) as u8,
+        None => (FIXED_AGENT_ORDER.len() + sources.len()) as u8,
     }
 }
 
-/// 非 ZCode 源（Claude/Codex/Kimi）窗口活跃会话行：各源
-/// query_window_sessions 返回的原料行，session_hud 侧组装为
+/// 该 agent 声明的窗口速度口径（注册表来源查注册表；注册表外来源
+/// （claude / codex / cursor）只有请求总耗时 → 恒请求平均）。
+/// 注册表来源的声明见 `local_agents::LocalAgentSource::speed_quality`：
+/// kimi / dsh 有真生成窗口原料（Generation），opencode 无 TTFT 也无生成窗口
+/// （RequestAverage，**不得**标 Generation，见 opencode.rs 模块头）。
+fn declared_speed_quality(agent: &str) -> SpeedQuality {
+    local_agents::find(agent)
+        .map(|source| source.speed_quality())
+        .unwrap_or(SpeedQuality::RequestAverage)
+}
+
+/// 非 ZCode 源（claude/codex 与注册表内的本地读取型 agent）窗口活跃会话行：
+/// 各源 query_window_sessions 返回的原料行，session_hud 侧组装为
 /// HudSessionBrief。字段口径与 ZCode 组一致：累计为会话全生命周期
 /// 合计，in_tokens 已是 ↑ 非缓存输入（逐笔 clamp 后的 SQL 聚合值）。
 #[derive(Debug, Clone, PartialEq)]
@@ -1782,8 +1812,9 @@ pub(crate) struct AgentSessionBrief {
     /// 模型集合（GROUP_CONCAT(DISTINCT model_id)，顺序不保证；空串
     /// 归一为 None 由 session_hud 侧处理）
     pub models: Option<String>,
-    /// 项目目录（claude = 会话最近一行 cwd；codex/kimi = session_meta.cwd；
-    /// 无记录为 None，目录末段由 session_hud 侧解析）
+    /// 项目目录（claude = 会话最近一行 cwd；codex/kimi/dsh/opencode =
+    /// 各自派生库的 cwd/session_meta；无记录为 None，目录末段由 session_hud
+    /// 侧解析）
     pub project: Option<String>,
     /// 请求平均速度分子：仅统计 duration_ms > 0 行的 Σoutput_tokens
     /// （与 speed_ms 同范围——NULL/0/负耗时行分子分母一并排除；codex
@@ -1793,19 +1824,21 @@ pub(crate) struct AgentSessionBrief {
     /// （毫秒；claude 列为 REAL、kimi 为 INTEGER，统一读作 f64；codex
     /// 恒 0）
     pub speed_ms: f64,
-    /// 生成中实时信号：仅 kimi 有（transcript.ops 的 step.upsert running
-    /// 状态 + 10 分钟新鲜度保护，见 kimi.rs GENERATING_FRESH_MS）；
-    /// claude/codex 无该数据源构造时恒 false
+    /// 生成中实时信号：kimi 有（transcript.ops 的 step.upsert running 状态 +
+    /// 10 分钟新鲜度保护，见 kimi.rs GENERATING_FRESH_MS）；其余来源（含
+    /// claude/codex/dsh/opencode）无该数据源，构造时恒 false
     pub generating: bool,
-    /// 最近一笔完成 step 的 TTFT（毫秒，transcript.ops llmTiming 口径）；
-    /// 仅 kimi 有，claude/codex 构造时恒 None
+    /// 最近一笔完成 step 的 TTFT（毫秒；kimi = transcript.ops llmTiming 口径，
+    /// dsh = stream 首 chunk 口径）；无 TTFT 的来源（claude/codex/opencode）
+    /// 构造时恒 None
     pub ttft_ms: Option<i64>,
-    /// 生成口径速度分子：仅统计 stream_ms > 0 且 output_tokens > 0 的
-    /// step 行 Σoutput（与 gen_ms 同范围，防 0 行稀释均值）；仅 kimi 有，
-    /// claude/codex 构造时恒 0
+    /// 生成口径速度分子：仅统计流式时长 > 0 且 output_tokens > 0 的行 Σoutput
+    /// （与 gen_ms 同范围，防 0 行稀释均值）；只有注册表声明 Generation 的
+    /// 来源（kimi/dsh）会填，其余来源构造时恒 0
     pub gen_out_tokens: i64,
-    /// 生成口径速度分母：同范围 step 行的 ΣllmStreamDurationMs（毫秒）；
-    /// 仅 kimi 有，claude/codex 构造时恒 0.0
+    /// 生成口径速度分母：同范围行的 Σ 生成耗时（毫秒；kimi =
+    /// ΣllmStreamDurationMs，dsh = Σduration_ms，各自模块的既有口径）；
+    /// 非 Generation 来源构造时恒 0.0
     pub gen_ms: f64,
 }
 
@@ -2121,11 +2154,13 @@ fn brief_from_agent_row(row: AgentSessionBrief, agent: &str) -> HudSessionBrief 
                 .join(",")
         })
         .filter(|joined| !joined.is_empty());
-    // 速度：生成口径（kimi，gen_* 原料分子分母同范围，先 Σ 后除防二次
-    // 平均）优先于请求平均（claude/kimi 无 step 数据时）；任一侧无有效行
-    // （codex / 全 NULL/0 耗时）则无速度。completed_at 是 rollout 择优
+    // 速度：生成口径（kimi/dsh，gen_* 原料分子分母同范围，先 Σ 后除防二次
+    // 平均）优先于请求平均（claude/codex/cursor 与无 step 数据的 kimi）；
+    // 任一侧无有效行（codex / 全 NULL/0 耗时）则无速度。是否允许生成口径
+    // 由注册表声明（declared_speed_quality）决定——opencode 声明请求平均，
+    // 即使拿到 gen_* 也不按生成口径展示。completed_at 是 rollout 择优
     // 专用（仅 zcode），恒 None。
-    let (speed, quality) = if (agent == AGENT_KIMI || agent == AGENT_DSH)
+    let (speed, quality) = if declared_speed_quality(agent) == SpeedQuality::Generation
         && row.gen_out_tokens > 0
         && row.gen_ms > 0.0
     {
@@ -2180,8 +2215,9 @@ fn append_agent_groups(snapshot: &mut HudSnapshot, window_minutes: u32, now_ms: 
     let window_start = now_ms - minutes as i64 * 60_000;
     let today_start = today_start_ms(now_ms);
 
-    // Claude / Codex / Kimi：活跃会话行 + 今日合计（两者独立查询，任一
-    // 成功即成组——今日查询失败时按全 0 处理，会话行仍可展示）
+    // Claude / Codex：注册表外的固定组（形态自成一派，见 local_agents 模块头）。
+    // 活跃会话行 + 今日合计（两者独立查询，任一成功即成组——今日查询失败时
+    // 按全 0 处理，会话行仍可展示）
     for (agent, sessions) in [
         (
             AGENT_CLAUDE,
@@ -2191,16 +2227,28 @@ fn append_agent_groups(snapshot: &mut HudSnapshot, window_minutes: u32, now_ms: 
             AGENT_CODEX,
             crate::codex::query_window_sessions(window_start, MAX_VISIBLE_PER_AGENT),
         ),
-        (
-            AGENT_KIMI,
-            crate::kimi::query_window_sessions(window_start, MAX_VISIBLE_PER_AGENT),
-        ),
-        (
-            AGENT_DSH,
-            crate::dsh::query_window_sessions(window_start, MAX_VISIBLE_PER_AGENT),
-        ),
     ] {
         let Ok(found) = sessions else {
+            continue; // 未安装/导入失败：静默无该组
+        };
+        let today = today_stats(agent, today_start, now_ms).unwrap_or_default();
+        snapshot.groups.push(HudAgentGroup {
+            agent: agent.to_string(),
+            today,
+            total_active: found.total_active,
+            sessions: found
+                .sessions
+                .into_iter()
+                .map(|row| brief_from_agent_row(row, agent))
+                .collect(),
+        });
+    }
+
+    // 注册表内的本地读取型 agent（kimi/dsh/opencode/未来新增）：新增 agent
+    // 只需在 local_agents 注册表加一行，这里自动成组（含其今日合计与速度口径）
+    for source in local_agents::all() {
+        let agent = source.source();
+        let Ok(found) = source.query_window_sessions(window_start, MAX_VISIBLE_PER_AGENT) else {
             continue; // 未安装/导入失败：静默无该组
         };
         let today = today_stats(agent, today_start, now_ms).unwrap_or_default();
@@ -2233,13 +2281,16 @@ fn append_agent_groups(snapshot: &mut HudSnapshot, window_minutes: u32, now_ms: 
 
 /// 非 ZCode 源今日合计（db::Stats.overall → HudTodayTotal）。查询失败
 /// （未安装/库忙）返回 Err，由调用方按全 0 处理。
+///
+/// claude / codex 是注册表外的固定来源，显式分发；其余（kimi/dsh/opencode/
+/// 未来新增）走注册表，新增 agent 不需要改本函数。
 fn today_stats(agent: &str, today_start: i64, now_ms: i64) -> Result<HudTodayTotal, String> {
     let stats = match agent {
         AGENT_CLAUDE => crate::claude::query_stats(today_start, now_ms)?,
         AGENT_CODEX => crate::codex::query_stats(today_start, now_ms)?,
-        AGENT_KIMI => crate::kimi::query_stats(today_start, now_ms)?,
-        AGENT_DSH => crate::dsh::query_stats(today_start, now_ms)?,
-        _ => return Err(format!("未知 agent 今日统计源: {agent}")),
+        other => local_agents::find(other)
+            .ok_or_else(|| format!("未知 agent 今日统计源: {agent}"))?
+            .query_stats(today_start, now_ms)?,
     };
     Ok(hud_today_from_overall(&stats.overall))
 }
@@ -5545,6 +5596,91 @@ mod tests {
             display
         );
         assert!(tree.ever_parsed, "最新 rollout 文件应至少解析出一行");
+    }
+
+    /// 注册表来源在悬浮窗里的速度口径与固定序（新增 agent 时本测试不需要改）：
+    /// - 口径由 `local_agents` 声明：kimi/dsh = Generation，opencode = 请求平均
+    ///   （无 TTFT / 无真生成窗口，**不得**冒充 Generation）；
+    /// - 固定序：zcode/claude/codex 之后紧跟注册表顺序，非注册表来源恒最后。
+    #[test]
+    fn 注册表来源_速度口径与固定序() {
+        let row_with_gen = || AgentSessionBrief {
+            session_id: "sess_gen_opencode".into(),
+            last_at: 0,
+            in_tokens: 10,
+            out_tokens: 47,
+            cache_read: 0,
+            req_count: 3,
+            models: None,
+            project: None,
+            speed_out_tokens: 4_700,
+            speed_ms: 2_000.0,
+            generating: false,
+            ttft_ms: None,
+            gen_out_tokens: 300,
+            gen_ms: 5_000.0,
+        };
+
+        // opencode：注册表声明请求平均 → 即使行里带了 gen_* 原料也不按生成口径
+        assert_eq!(
+            local_agents::find(AGENT_OPENCODE).map(|s| s.speed_quality()),
+            Some(SpeedQuality::RequestAverage),
+            "opencode 的 TTFT 列恒 NULL（has_ttft = false），口径必须是请求平均"
+        );
+        let brief = brief_from_agent_row(row_with_gen(), AGENT_OPENCODE);
+        assert_eq!(
+            brief.speed_quality,
+            Some(SpeedQuality::RequestAverage),
+            "opencode 不得标 Generation"
+        );
+        assert_eq!(brief.speed, Some(2350.0), "回退请求平均 = Σout ÷ Σms × 1000");
+
+        // 同一份原料给注册表里声明 Generation 的来源（kimi/dsh）则走生成口径
+        for agent in [AGENT_KIMI, AGENT_DSH] {
+            let brief = brief_from_agent_row(row_with_gen(), agent);
+            assert_eq!(
+                brief.speed_quality,
+                Some(SpeedQuality::Generation),
+                "{agent} 有真生成窗口原料，应走生成口径"
+            );
+            assert_eq!(brief.speed, Some(60.0), "生成口径 = Σgen_out ÷ Σgen_ms × 1000");
+        }
+        // 注册表外来源（claude/codex）恒请求平均
+        assert_eq!(
+            declared_speed_quality(AGENT_CLAUDE),
+            SpeedQuality::RequestAverage
+        );
+        assert_eq!(
+            declared_speed_quality(AGENT_CODEX),
+            SpeedQuality::RequestAverage
+        );
+
+        // 固定序：固定组 0..2，注册表来源按注册顺序紧随其后，其余恒最后
+        assert_eq!(agent_order(AGENT_ZCODE), 0);
+        assert_eq!(agent_order(AGENT_CLAUDE), 1);
+        assert_eq!(agent_order(AGENT_CODEX), 2);
+        for (i, source) in local_agents::all().iter().enumerate() {
+            assert_eq!(
+                agent_order(source.source()),
+                (FIXED_AGENT_ORDER.len() + i) as u8,
+                "注册表顺序即组固定序（{0}）",
+                source.source()
+            );
+        }
+        assert_eq!(agent_order(AGENT_OPENCODE), 5, "opencode 排在 dsh 之后");
+        assert!(
+            agent_order(AGENT_CURSOR) > agent_order(AGENT_OPENCODE),
+            "非注册表来源（cursor）恒最后"
+        );
+        assert_eq!(agent_order("unknown-agent"), agent_order(AGENT_CURSOR));
+
+        // 组标识常量与注册表来源名同源（两处字符串不得漂移）
+        assert_eq!(AGENT_KIMI, local_agents::KIMI);
+        assert_eq!(AGENT_DSH, local_agents::DSH);
+        assert_eq!(AGENT_OPENCODE, local_agents::OPENCODE);
+
+        // 未注册 agent 的今日统计仍按原有错误口径返回 Err（不 panic 不臆造 0）
+        assert!(today_stats("unknown-agent", 0, 1).is_err());
     }
 
     // ---- 文件路径显式版读写（测试复用，与生产 save/load 同逻辑）----

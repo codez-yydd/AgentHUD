@@ -1,10 +1,12 @@
 //! 多设备同步：配置读写 + 增量上传 + HTTP 调用 + 后台同步线程。
 //!
 //! 设计要点（见 server/README.md）：
-//! - model_usage 的普通明细用 (device_id, local_rowid) 去重；模型名回填通过
+//! - model_usage 的普通明细用 (device_id, source, local_rowid) 去重；模型名回填通过
 //!   独立修订游标补传，不影响普通 rowid 游标。
 //! - 客户端维护游标 last_uploaded_rowid，只上传 rowid > 游标 的新记录。
 //! - 复用项目现有 ureq HTTP 客户端 + pricing::config_dir() 的 ~/.zbar/ 目录。
+//! - 本地采集型来源（codex / claude / dsh / opencode / kimi）各自一套
+//!   「rowid 游标 + 修订游标」，见 upload_derived_source_incremental。
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -76,6 +78,18 @@ pub struct SyncConfig {
     /// DSH 修订行补传游标（updated_at 毫秒时间戳，见 dsh 模块修订机制）。
     #[serde(default)]
     pub last_uploaded_dsh_rev_ts: i64,
+    /// 已上传到的 OpenCode 导入库 rowid 游标（与上面各来源相互独立）。
+    #[serde(default)]
+    pub last_uploaded_opencode_rowid: i64,
+    /// OpenCode 修订行补传游标（updated_at 毫秒时间戳，见 opencode 模块修订机制）。
+    #[serde(default)]
+    pub last_uploaded_opencode_rev_ts: i64,
+    /// 已上传到的 Kimi 导入库 rowid 游标（与 Kimi 额度快照是两条独立通道）。
+    #[serde(default)]
+    pub last_uploaded_kimi_rowid: i64,
+    /// Kimi 修订行补传游标（updated_at 毫秒时间戳，见 kimi 模块修订机制）。
+    #[serde(default)]
+    pub last_uploaded_kimi_rev_ts: i64,
     /// 已上传到的快照 ts 游标（额度快照）。
     #[serde(default)]
     pub last_uploaded_snapshot_ts: i64,
@@ -109,6 +123,10 @@ impl Default for SyncConfig {
             last_uploaded_codex_model_rev_id: 0,
             last_uploaded_dsh_rowid: 0,
             last_uploaded_dsh_rev_ts: 0,
+            last_uploaded_opencode_rowid: 0,
+            last_uploaded_opencode_rev_ts: 0,
+            last_uploaded_kimi_rowid: 0,
+            last_uploaded_kimi_rev_ts: 0,
             last_uploaded_snapshot_ts: 0,
             last_uploaded_agent_quota_snapshot_ts: 0,
             last_sync_at: 0,
@@ -365,10 +383,10 @@ pub struct SyncOutcome {
     pub last_sync_at: i64,
 }
 
-/// 执行一次增量上传（三阶段）：先 zcode 明细（含额度快照），再 Codex、Claude
-/// 两个派生库的明细。各来源游标相互独立：
+/// 执行一次增量上传（分阶段）：先 zcode 明细（含额度快照），再 codex / claude /
+/// dsh / opencode / kimi 各派生库的明细。各来源游标相互独立：
 /// - zcode 失败：整体返回 Err，游标不前进（下次重试），与原有行为一致；
-/// - codex/claude 失败：不阻断已成功来源的结果，错误仅记日志，游标停在最近
+/// - 其余来源失败：不阻断已成功来源的结果，错误仅记日志，游标停在最近
 ///   成功批次并随配置落盘（下次从断点续传）。
 pub fn upload_incremental() -> Result<SyncOutcome, String> {
     let mut cfg = load_sync_config()?;
@@ -523,6 +541,26 @@ pub fn upload_incremental() -> Result<SyncOutcome, String> {
         }
     }
 
+    // ===== 阶段五：OpenCode 明细（本地采集型，派生库 ~/.zbar/opencode.sqlite）=====
+    let mut opencode_uploaded = 0usize;
+    match upload_derived_source_incremental(&mut cfg, &base, &token, "opencode") {
+        Ok(n) => opencode_uploaded = n,
+        Err(e) => {
+            eprintln!("[zbar-sync] OpenCode 增量上传失败（下次重试）: {e}");
+        }
+    }
+
+    // ===== 阶段六：Kimi 明细（本地采集型，派生库 ~/.zbar/kimi.sqlite）=====
+    // 注意：这是**用量明细**通道；Kimi 的额度快照走 agent_quota_snapshots，
+    // 两者游标与 payload 字段都不同，互不影响。
+    let mut kimi_uploaded = 0usize;
+    match upload_derived_source_incremental(&mut cfg, &base, &token, "kimi") {
+        Ok(n) => kimi_uploaded = n,
+        Err(e) => {
+            eprintln!("[zbar-sync] Kimi 增量上传失败（下次重试）: {e}");
+        }
+    }
+
     let _ = snapshot_cursor_advanced; // 标记已用，避免未读警告
     let _ = agent_quota_snapshot_cursor_advanced;
     let now = chrono::Local::now().timestamp_millis();
@@ -531,7 +569,12 @@ pub fn upload_incremental() -> Result<SyncOutcome, String> {
     save_sync_config(&cfg)?;
 
     Ok(SyncOutcome {
-        uploaded: total_uploaded + codex_uploaded + claude_uploaded + dsh_uploaded,
+        uploaded: total_uploaded
+            + codex_uploaded
+            + claude_uploaded
+            + dsh_uploaded
+            + opencode_uploaded
+            + kimi_uploaded,
         new_max_rowid: since,
         last_sync_at: now,
     })
@@ -769,11 +812,92 @@ fn post_zcode_batch_with_fallback(
     }
 }
 
-/// 上传派生来源（codex/claude 导入库）的增量（id > 对应游标，循环分批）。
-/// 查询前由各模块自行增量导入（原始 jsonl → 派生 sqlite）。两条路径完全同构，
-/// 仅数据源与游标字段不同，故按 source 参数泛化：
-/// - "codex" → crate::codex + last_uploaded_codex_rowid
+/// 一个批次的发送回执：只留批循环需要的两个数（服务端接受的条数 + 服务端回传的
+/// 游标）。抽成独立结构是为了让批循环变成可注入的纯逻辑——单测用假查询/假发送
+/// 覆盖「游标推进」的行为，不碰网络与真实服务端。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct BatchAck {
+    accepted: usize,
+    max_rowid: i64,
+}
+
+/// 明细增量批循环（**游标推进逻辑的唯一定义处**，各来源共用）：
+/// 反复取 `rowid > since` 的下一批直到取空；每批成功发送后把游标推进到
+/// `max(服务端回传游标, 本批最大 rowid)`——取 max 既保证不死循环（本批最大
+/// rowid 是下界），也不会被服务端回传的旧游标拖回退。每批推进都立刻通过
+/// `on_advance` 回写配置游标，故中途失败时已成功的批次不丢断点（调用方随
+/// 配置落盘，下次从断点续传）；失败时直接返回 Err，剩余批次留给下一轮。
+///
+/// query(since, limit) / send(records, batch_max) 由调用方按来源注入。
+fn pump_source_batches<Q, S, A>(
+    cursor: i64,
+    batch: usize,
+    mut query: Q,
+    mut send: S,
+    mut on_advance: A,
+) -> Result<(usize, i64), String>
+where
+    Q: FnMut(i64, usize) -> Result<Vec<UsageRow>, String>,
+    S: FnMut(&[UsageRow], i64) -> Result<BatchAck, String>,
+    A: FnMut(i64),
+{
+    let mut since = cursor;
+    let mut total = 0usize;
+    loop {
+        let records = query(since, batch)?;
+        if records.is_empty() {
+            break;
+        }
+        // 本批最大 rowid（游标必须至少推进到这里，否则死循环）
+        let batch_max = records.last().map(|r| r.local_rowid).unwrap_or(since);
+        let ack = send(&records, batch_max)?;
+        total += ack.accepted;
+        since = ack.max_rowid.max(batch_max);
+        on_advance(since);
+    }
+    Ok((total, since))
+}
+
+/// 修订补传扫描（claude / dsh / opencode / kimi 同构，codex 的模型名回填另有一套）：
+/// 本来源存在「行 id 不变、内容被覆盖」的修订——普通 `id > 游标` 查询永远选不出它。
+/// 这里按修订时间游标 `updated_at > since_ts` 分批选出这些行重传，服务端以
+/// 「总量更大者胜」的 upsert 覆盖修正（见 server/db.py）。`after_id` 逐批推进，
+/// 防止同一批记录被反复选出。返回 (成功上传条数, 本次扫描水位)。
+///
+/// 水位取**扫描开始时刻**（而不是扫描中读到的最大 updated_at）：扫描期间新落盘
+/// 的修订时间更大，留给下一轮自然选出，避免一边扫一边追平永不停机。
+fn sweep_source_revisions<Q, S>(
+    since_ts: i64,
+    batch: usize,
+    mut query: Q,
+    mut send: S,
+) -> Result<(usize, i64), String>
+where
+    Q: FnMut(i64, i64, usize) -> Result<Vec<UsageRow>, String>,
+    S: FnMut(&[UsageRow]) -> Result<usize, String>,
+{
+    let sweep_watermark = chrono::Local::now().timestamp_millis();
+    let mut after_id = 0i64;
+    let mut total = 0usize;
+    loop {
+        let records = query(since_ts, after_id, batch)?;
+        if records.is_empty() {
+            break;
+        }
+        after_id = records.last().map(|r| r.local_rowid).unwrap_or(after_id);
+        total += send(&records)?;
+    }
+    Ok((total, sweep_watermark))
+}
+
+/// 上传派生来源（本地采集型导入库）的增量（id > 对应游标，循环分批）。
+/// 查询前由各模块自行增量导入（原始 jsonl / 本地库 → 派生 sqlite）。各条路径
+/// 完全同构，仅数据源与游标字段不同，故按 source 参数泛化：
+/// - "codex" → crate::codex + last_uploaded_codex_rowid（另有模型名回填通道）
 /// - "claude" → crate::claude + last_uploaded_claude_rowid
+/// - "dsh" → crate::dsh + last_uploaded_dsh_rowid
+/// - "opencode" → crate::opencode + last_uploaded_opencode_rowid
+/// - "kimi" → crate::kimi + last_uploaded_kimi_rowid（与额度快照通道无关）
 /// 未安装对应 CLI 时静默返回 0（不算错误，避免后台同步每轮刷错误日志）。
 /// 首批上传前先探测服务端协议版本（proto ≥ 2 才支持多来源）：
 /// 旧服务端无 source 列，记录会按 (device_id, local_rowid) 撞键静默丢弃
@@ -814,6 +938,30 @@ fn upload_derived_source_incremental(
                     || !crate::dsh::query_revised_since(cfg.last_uploaded_dsh_rev_ts, 0, 1)?
                         .is_empty());
             (dir, pending, cfg.last_uploaded_dsh_rowid)
+        }
+        "opencode" => {
+            // OpenCode 的「已安装」判定 = 本地库里存在 v1/v2 消息表
+            // （opencode::has_local_data，比只看库文件是否存在更严：空库/改名后
+            // 的新版库没有消息表，不该假装有数据）
+            let dir = crate::opencode::has_local_data();
+            let pending = dir
+                && (!crate::opencode::query_since(cfg.last_uploaded_opencode_rowid, 1)?
+                    .is_empty()
+                    || !crate::opencode::query_revised_since(
+                        cfg.last_uploaded_opencode_rev_ts,
+                        0,
+                        1,
+                    )?
+                    .is_empty());
+            (dir, pending, cfg.last_uploaded_opencode_rowid)
+        }
+        "kimi" => {
+            let dir = crate::kimi::sessions_dir().is_ok();
+            let pending = dir
+                && (!crate::kimi::query_since(cfg.last_uploaded_kimi_rowid, 1)?.is_empty()
+                    || !crate::kimi::query_revised_since(cfg.last_uploaded_kimi_rev_ts, 0, 1)?
+                        .is_empty());
+            (dir, pending, cfg.last_uploaded_kimi_rowid)
         }
         _ => return Err(format!("未知数据来源: {source}")),
     };
@@ -858,31 +1006,40 @@ fn upload_derived_source_incremental(
         );
     }
 
-    let mut since = cursor;
     let mut total = 0usize;
     const BATCH: usize = 500;
-    loop {
-        let records = match source {
-            "codex" => crate::codex::query_since(since, BATCH)?,
-            "claude" => crate::claude::query_since(since, BATCH)?,
-            "dsh" => crate::dsh::query_since(since, BATCH)?,
+    // 明细增量：批循环与游标推进抽在 pump_source_batches（可单测），这里只按
+    // 来源注入查询与游标字段。
+    let (batch_uploaded, _since) = pump_source_batches(
+        cursor,
+        BATCH,
+        |since, limit| match source {
+            "codex" => crate::codex::query_since(since, limit),
+            "claude" => crate::claude::query_since(since, limit),
+            "dsh" => crate::dsh::query_since(since, limit),
+            "opencode" => crate::opencode::query_since(since, limit),
+            "kimi" => crate::kimi::query_since(since, limit),
             _ => unreachable!("来源已在上文校验"),
-        };
-        if records.is_empty() {
-            break;
-        }
-        // 本批最大 rowid（游标必须至少推进到这里，否则死循环）
-        let batch_max = records.last().map(|r| r.local_rowid).unwrap_or(since);
-        let resp = post_batch_with_fallback(&base, &token, &records, Some(batch_max), with_projects)?;
-        total += resp.accepted;
-        since = resp.max_rowid.max(batch_max);
-        match source {
-            "codex" => cfg.last_uploaded_codex_rowid = since,
-            "claude" => cfg.last_uploaded_claude_rowid = since,
-            "dsh" => cfg.last_uploaded_dsh_rowid = since,
+        },
+        |records, batch_max| {
+            let resp =
+                post_batch_with_fallback(&base, &token, records, Some(batch_max), with_projects)?;
+            Ok(BatchAck {
+                accepted: resp.accepted,
+                max_rowid: resp.max_rowid,
+            })
+        },
+        // 每批成功就回写游标：中途失败时已成功的批次不丢断点（调用方落盘）
+        |advanced| match source {
+            "codex" => cfg.last_uploaded_codex_rowid = advanced,
+            "claude" => cfg.last_uploaded_claude_rowid = advanced,
+            "dsh" => cfg.last_uploaded_dsh_rowid = advanced,
+            "opencode" => cfg.last_uploaded_opencode_rowid = advanced,
+            "kimi" => cfg.last_uploaded_kimi_rowid = advanced,
             _ => unreachable!("来源已在上文校验"),
-        }
-    }
+        },
+    )?;
+    total += batch_uploaded;
 
     // Codex 模型名回填不会产生新的 id，普通 rowid 游标选不出这些旧记录。
     // 参照 Claude 修订补传：不携带 last_rowid，只让服务端按同一主键做修正，
@@ -908,49 +1065,46 @@ fn upload_derived_source_incremental(
         cfg.last_uploaded_codex_model_rev_id = revision_id;
     }
 
-    // Claude 修订补传：会话流式落盘时，某条消息的中间值可能已随早前批次上传，
-    // 终值稍后覆盖本地行（id 不变）→ 上面的 id 游标永远选不出它。这里按
-    // updated_at 选出修订行重传，新版服务端以"总量更大者胜" upsert 覆盖修正；
-    // 旧服务端（INSERT OR IGNORE）会忽略重传——退化为旧行为（远端保留中间值），
-    // 无数据损坏，无需协议协商。after_id 逐批推进防止同批重复选出。
-    if source == "claude" {
-        let sweep_watermark = chrono::Local::now().timestamp_millis();
-        let mut after_id = 0i64;
-        loop {
-            let records =
-                crate::claude::query_revised_since(cfg.last_uploaded_claude_rev_ts, after_id, BATCH)?;
-            if records.is_empty() {
-                break;
-            }
-            after_id = records.last().map(|r| r.local_rowid).unwrap_or(after_id);
-            let resp = post_batch_with_fallback(&base, &token, &records, None, with_projects)?;
-            total += resp.accepted;
-        }
+    // Claude / DSH / OpenCode / Kimi 修订补传（扫描逻辑与水位口径见
+    // sweep_source_revisions）：这些来源都会「行 id 不变、内容被覆盖」——
+    // Claude 会话流式落盘、DSH 同一步先小后大、OpenCode 指纹变化整会话重导
+    // 时存活行原地 upsert、Kimi wire.jsonl 被重写重放——上面的 id 游标永远选不出
+    // 它们，必须按 updated_at 重传，由服务端「总量更大者胜」upsert 覆盖修正。
+    // 旧服务端（无覆盖守卫）会忽略重传——退化为旧行为（远端保留中间值），
+    // 无数据损坏，故无需协议协商。
+    if matches!(source, "claude" | "dsh" | "opencode" | "kimi") {
+        let rev_cursor = match source {
+            "claude" => cfg.last_uploaded_claude_rev_ts,
+            "dsh" => cfg.last_uploaded_dsh_rev_ts,
+            "opencode" => cfg.last_uploaded_opencode_rev_ts,
+            "kimi" => cfg.last_uploaded_kimi_rev_ts,
+            _ => unreachable!("来源已在上文校验"),
+        };
+        let (rev_uploaded, sweep_watermark) = sweep_source_revisions(
+            rev_cursor,
+            BATCH,
+            |since_ts, after_id, limit| match source {
+                "claude" => crate::claude::query_revised_since(since_ts, after_id, limit),
+                "dsh" => crate::dsh::query_revised_since(since_ts, after_id, limit),
+                "opencode" => crate::opencode::query_revised_since(since_ts, after_id, limit),
+                "kimi" => crate::kimi::query_revised_since(since_ts, after_id, limit),
+                _ => unreachable!("来源已在上文校验"),
+            },
+            |records| {
+                let resp = post_batch_with_fallback(&base, &token, records, None, with_projects)?;
+                Ok(resp.accepted)
+            },
+        )?;
+        total += rev_uploaded;
         // 推进到补传开始前的水位：补传期间新发生的修订（updated_at 更大）
         // 下一轮自然选出
-        cfg.last_uploaded_claude_rev_ts = sweep_watermark;
-    }
-
-    // DSH 修订补传：同一步的 assistant/message 可能先以中间值落盘入库并上传，
-    // 终值稍后以同 dedupe_key 覆盖本地行（id 不变）→ id 游标永远选不出它。
-    // 按 updated_at 选出修订行重传，服务端「总量更大者胜」upsert 覆盖修正。
-    if source == "dsh" {
-        let sweep_watermark = chrono::Local::now().timestamp_millis();
-        let mut after_id = 0i64;
-        loop {
-            let records = crate::dsh::query_revised_since(
-                cfg.last_uploaded_dsh_rev_ts,
-                after_id,
-                BATCH,
-            )?;
-            if records.is_empty() {
-                break;
-            }
-            after_id = records.last().map(|r| r.local_rowid).unwrap_or(after_id);
-            let resp = post_batch_with_fallback(&base, &token, &records, None, with_projects)?;
-            total += resp.accepted;
+        match source {
+            "claude" => cfg.last_uploaded_claude_rev_ts = sweep_watermark,
+            "dsh" => cfg.last_uploaded_dsh_rev_ts = sweep_watermark,
+            "opencode" => cfg.last_uploaded_opencode_rev_ts = sweep_watermark,
+            "kimi" => cfg.last_uploaded_kimi_rev_ts = sweep_watermark,
+            _ => unreachable!("来源已在上文校验"),
         }
-        cfg.last_uploaded_dsh_rev_ts = sweep_watermark;
     }
     Ok(total)
 }
@@ -1425,13 +1579,15 @@ pub fn set_auto_cleanup(req: AutoCleanupServerRequest) -> Result<AutoCleanupConf
 
 // ===== 断开连接 =====
 
-/// 清空凭证（保留 enabled=false），不删服务器数据。
-pub fn disconnect() -> Result<(), String> {
-    let mut cfg = load_sync_config()?;
-    cfg.enabled = false;
-    cfg.device_id.clear();
-    cfg.device_name.clear();
-    cfg.device_token.clear();
+/// 清空**各来源明细**的上传游标（断开连接时用：下次注册必须重新全量上传明细）。
+/// 集中成一处，新增来源若忘了在这里加游标字段，会被单测
+/// `disconnect_resets_every_source_cursor` 抓住——它按 serde 字段名扫描所有
+/// `last_uploaded_*`，不依赖人工枚举。
+///
+/// 刻意不动 `last_uploaded_snapshot_ts` / `last_uploaded_agent_quota_snapshot_ts`：
+/// 那是额度快照通道的游标，重置它会让下次注册后重传全部历史快照（行为变更），
+/// 与本次任务无关，保持既有语义（只补传本次连接后新增的快照）。
+fn reset_source_cursors(cfg: &mut SyncConfig) {
     cfg.last_uploaded_rowid = 0;
     cfg.last_uploaded_codex_rowid = 0;
     cfg.last_uploaded_claude_rowid = 0;
@@ -1440,7 +1596,21 @@ pub fn disconnect() -> Result<(), String> {
     cfg.last_uploaded_codex_model_rev_id = 0;
     cfg.last_uploaded_dsh_rowid = 0;
     cfg.last_uploaded_dsh_rev_ts = 0;
+    cfg.last_uploaded_opencode_rowid = 0;
+    cfg.last_uploaded_opencode_rev_ts = 0;
+    cfg.last_uploaded_kimi_rowid = 0;
+    cfg.last_uploaded_kimi_rev_ts = 0;
     cfg.last_sync_at = 0;
+}
+
+/// 清空凭证（保留 enabled=false），不删服务器数据。
+pub fn disconnect() -> Result<(), String> {
+    let mut cfg = load_sync_config()?;
+    cfg.enabled = false;
+    cfg.device_id.clear();
+    cfg.device_name.clear();
+    cfg.device_token.clear();
+    reset_source_cursors(&mut cfg);
     // 保留 server_url + mode + interval，方便下次重连
     save_sync_config(&cfg)
 }
@@ -1500,5 +1670,335 @@ fn map_http_err(op: &str) -> impl Fn(ureq::Error) -> String + '_ {
             }
         };
         format!("{op}失败: {detail}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! 同步上传通道的单测：**一律不碰网络、不碰真实服务端、不碰真实 ~/.zbar**
+    //! （配置读写用 serde 在内存里来回，派生库相关行为由各模块自己的测试覆盖）。
+    //! 覆盖四件事：
+    //! 1. 游标推进（pump_source_batches，各来源共用同一实现）；
+    //! 2. 修订补传扫描（sweep_source_revisions，claude/dsh/opencode/kimi 共用）；
+    //! 3. 配置文件向后兼容（旧 sync.json 缺新字段仍可反序列化）；
+    //! 4. disconnect 的游标重置不漏来源。
+
+    use super::*;
+
+    /// 造一条明细（字段值不参与断言，只要 local_rowid 可控）。
+    fn row(local_rowid: i64) -> UsageRow {
+        UsageRow {
+            local_rowid,
+            started_at: local_rowid * 1_000,
+            model_id: "m".into(),
+            provider_id: "opencode".into(),
+            input_tokens: 1,
+            output_tokens: 2,
+            cache_read_input_tokens: 0,
+            cache_creation_input_tokens: 0,
+            reasoning_tokens: 0,
+            computed_total_tokens: 3,
+            source: "opencode".into(),
+            session_id: None,
+            project_key: None,
+            project_display: None,
+        }
+    }
+
+    /// 批循环：游标逐批推进到本批最大 rowid、循环到取空为止；每批都通过
+    /// on_advance 回写游标（这是「中途失败也不丢断点」的前提）。
+    #[test]
+    fn pump_advances_cursor_per_batch_until_exhausted() {
+        let mut batches = vec![vec![row(3), row(7)], vec![row(9)], Vec::new()].into_iter();
+        let mut queries: Vec<(i64, usize)> = Vec::new();
+        let mut sent: Vec<Vec<i64>> = Vec::new();
+        let mut advances: Vec<i64> = Vec::new();
+
+        let (total, since) = pump_source_batches(
+            0,
+            500,
+            |since, limit| {
+                queries.push((since, limit));
+                Ok(batches.next().unwrap_or_default())
+            },
+            |records, batch_max| {
+                sent.push(records.iter().map(|r| r.local_rowid).collect());
+                Ok(BatchAck {
+                    accepted: records.len(),
+                    max_rowid: batch_max,
+                })
+            },
+            |advanced| advances.push(advanced),
+        )
+        .expect("批循环不该失败");
+
+        assert_eq!(queries, vec![(0, 500), (7, 500), (9, 500)], "下一批必须从新游标取");
+        assert_eq!(sent, vec![vec![3, 7], vec![9]]);
+        assert_eq!(advances, vec![7, 9], "每批成功都应立刻回写游标");
+        assert_eq!(total, 3);
+        assert_eq!(since, 9);
+    }
+
+    /// 服务端回传的游标比本批最大 rowid 小（旧服务端回 0、或落库失败回旧值）时，
+    /// 本地游标必须用本批最大 rowid 兜底——否则下一轮取到同一批，死循环。
+    #[test]
+    fn pump_never_rewinds_cursor_on_stale_server_ack() {
+        let mut first = true;
+        let mut advances: Vec<i64> = Vec::new();
+        let (total, since) = pump_source_batches(
+            0,
+            500,
+            |_since, _limit| {
+                if first {
+                    first = false;
+                    Ok(vec![row(4)])
+                } else {
+                    Ok(Vec::new())
+                }
+            },
+            |_records, _batch_max| {
+                Ok(BatchAck {
+                    accepted: 1,
+                    max_rowid: 0, // 服务端回传旧游标
+                })
+            },
+            |advanced| advances.push(advanced),
+        )
+        .expect("批循环不该失败");
+
+        assert_eq!(since, 4, "服务端回传 0 时本地游标必须停在本批最大 rowid");
+        assert_eq!(advances, vec![4]);
+        assert_eq!(total, 1);
+    }
+
+    /// 中途失败：已成功批次推进的游标要保留（调用方随配置落盘 → 下次从断点续传），
+    /// 错误照常向上抛。
+    #[test]
+    fn pump_keeps_checkpoint_when_a_later_batch_fails() {
+        let mut calls = 0;
+        let mut advances: Vec<i64> = Vec::new();
+        let err = pump_source_batches(
+            0,
+            500,
+            |_since, _limit| {
+                calls += 1;
+                if calls == 1 {
+                    Ok(vec![row(2)])
+                } else {
+                    Err("模拟查询失败".to_string())
+                }
+            },
+            |_records, batch_max| {
+                Ok(BatchAck {
+                    accepted: 1,
+                    max_rowid: batch_max,
+                })
+            },
+            |advanced| advances.push(advanced),
+        )
+        .expect_err("查询失败必须向上报错");
+
+        assert!(err.contains("模拟查询失败"), "错误应原样上抛: {err}");
+        assert_eq!(advances, vec![2], "首批已成功的断点必须保留");
+    }
+
+    /// 修订扫描：按 after_id 分批取到空为止，累计服务端接受的条数，水位取
+    /// **扫描开始前**的时刻（扫描期间的修订留给下一轮，避免越扫越多）。
+    #[test]
+    fn sweep_pages_by_id_and_returns_pre_sweep_watermark() {
+        let before = chrono::Local::now().timestamp_millis();
+        let mut batches = vec![vec![row(1), row(2)], vec![row(5)], Vec::new()].into_iter();
+        let mut queries: Vec<(i64, i64, usize)> = Vec::new();
+        let mut sent: Vec<Vec<i64>> = Vec::new();
+
+        let (total, watermark) = sweep_source_revisions(
+            1_000,
+            2,
+            |since_ts, after_id, limit| {
+                queries.push((since_ts, after_id, limit));
+                Ok(batches.next().unwrap_or_default())
+            },
+            |records| {
+                sent.push(records.iter().map(|r| r.local_rowid).collect());
+                Ok(records.len())
+            },
+        )
+        .expect("修订扫描不该失败");
+        let after = chrono::Local::now().timestamp_millis();
+
+        assert_eq!(
+            queries,
+            vec![(1_000, 0, 2), (1_000, 2, 2), (1_000, 5, 2)],
+            "修订游标固定，after_id 逐批推进（防止同批被反复选出）"
+        );
+        assert_eq!(sent, vec![vec![1, 2], vec![5]]);
+        assert_eq!(total, 3);
+        assert!(
+            watermark >= before && watermark <= after,
+            "水位应取扫描开始时刻：{before} <= {watermark} <= {after}"
+        );
+    }
+
+    /// 修订扫描上传失败：错误上抛，调用方不会推进修订游标（水位是返回值，
+    /// 出错就没有返回值）——下一轮重新扫，服务端 upsert 幂等。
+    #[test]
+    fn sweep_propagates_send_error_without_watermark() {
+        let err = sweep_source_revisions(
+            0,
+            500,
+            |_since_ts, _after_id, _limit| Ok(vec![row(1)]),
+            |_records| Err("模拟上传失败".to_string()),
+        )
+        .expect_err("上传失败必须向上报错");
+        assert!(err.contains("模拟上传失败"), "错误应原样上抛: {err}");
+    }
+
+    /// 未知来源必须在任何查询/网络请求前就报错（防止拼错来源名时静默当成功）。
+    #[test]
+    fn unknown_source_is_rejected_before_any_query() {
+        let mut cfg = SyncConfig::default();
+        // 地址指向不可路由端口：真发请求会超时失败，而本用例必须立刻返回
+        let err = upload_derived_source_incremental(
+            &mut cfg,
+            "http://127.0.0.1:1",
+            "token",
+            "opencodego",
+        )
+        .expect_err("未知来源必须报错");
+        assert!(err.contains("未知数据来源"), "错误信息应指明来源非法: {err}");
+        assert_eq!(cfg.last_uploaded_opencode_rowid, 0, "报错不得改动任何游标");
+    }
+
+    /// 旧配置文件（升级前写入的 sync.json，没有 opencode / kimi 的四个游标字段）
+    /// 必须仍能反序列化，且既有字段值原样保留、新字段取 0。
+    #[test]
+    fn legacy_config_without_new_cursors_still_deserializes() {
+        let legacy = r#"{
+            "enabled": true,
+            "mode": "auto",
+            "interval_seconds": 300,
+            "server_url": "http://192.168.1.9:8787",
+            "device_id": "dev-1",
+            "device_name": "本机",
+            "device_token": "tok",
+            "last_uploaded_rowid": 11,
+            "last_uploaded_codex_rowid": 22,
+            "last_uploaded_claude_rowid": 33,
+            "last_uploaded_claude_rev_ts": 44,
+            "last_uploaded_codex_model_rev_ts": 55,
+            "last_uploaded_codex_model_rev_id": 66,
+            "last_uploaded_dsh_rowid": 77,
+            "last_uploaded_dsh_rev_ts": 88,
+            "last_uploaded_snapshot_ts": 99,
+            "last_uploaded_agent_quota_snapshot_ts": 111,
+            "last_sync_at": 222
+        }"#;
+        let cfg: SyncConfig =
+            serde_json::from_str(legacy).expect("旧配置必须仍可反序列化（新字段用 serde 默认）");
+
+        // 既有字段一个都不能丢
+        assert!(cfg.enabled);
+        assert_eq!(cfg.mode, SyncMode::Auto);
+        assert_eq!(cfg.interval_seconds, 300);
+        assert_eq!(cfg.device_id, "dev-1");
+        assert_eq!(cfg.last_uploaded_rowid, 11);
+        assert_eq!(cfg.last_uploaded_dsh_rowid, 77);
+        assert_eq!(cfg.last_uploaded_dsh_rev_ts, 88);
+        assert_eq!(cfg.last_uploaded_agent_quota_snapshot_ts, 111);
+        assert_eq!(cfg.last_sync_at, 222);
+        // 新增的四个游标字段缺省为 0（= 下次同步从头全量上传）
+        assert_eq!(cfg.last_uploaded_opencode_rowid, 0);
+        assert_eq!(cfg.last_uploaded_opencode_rev_ts, 0);
+        assert_eq!(cfg.last_uploaded_kimi_rowid, 0);
+        assert_eq!(cfg.last_uploaded_kimi_rev_ts, 0);
+
+        // 极端情况：空对象也是合法配置（每个字段都有 serde(default)）
+        let empty: SyncConfig = serde_json::from_str("{}").expect("空配置应可反序列化");
+        assert!(!empty.enabled);
+        assert_eq!(empty.last_uploaded_opencode_rowid, 0);
+        assert_eq!(empty.last_uploaded_kimi_rev_ts, 0);
+    }
+
+    /// 新字段会写进配置文件且往返一致（旧客户端读到未知字段会忽略，
+    /// 但新客户端自己必须能读回自己的游标）。
+    #[test]
+    fn new_cursors_round_trip_through_config_json() {
+        let cfg = SyncConfig {
+            last_uploaded_opencode_rowid: 7,
+            last_uploaded_opencode_rev_ts: 8,
+            last_uploaded_kimi_rowid: 9,
+            last_uploaded_kimi_rev_ts: 10,
+            ..Default::default()
+        };
+        let text = serde_json::to_string(&cfg).expect("序列化失败");
+        for key in [
+            "last_uploaded_opencode_rowid",
+            "last_uploaded_opencode_rev_ts",
+            "last_uploaded_kimi_rowid",
+            "last_uploaded_kimi_rev_ts",
+        ] {
+            assert!(text.contains(key), "配置应包含字段 {key}: {text}");
+        }
+        let back: SyncConfig = serde_json::from_str(&text).expect("反序列化失败");
+        assert_eq!(back.last_uploaded_opencode_rowid, 7);
+        assert_eq!(back.last_uploaded_opencode_rev_ts, 8);
+        assert_eq!(back.last_uploaded_kimi_rowid, 9);
+        assert_eq!(back.last_uploaded_kimi_rev_ts, 10);
+    }
+
+    /// disconnect 必须清空**每个来源**的明细游标。这里按 serde 字段名扫描
+    /// （而不是人工枚举字段），所以将来新增来源却忘了在 reset_source_cursors
+    /// 里加一行时，本用例会失败。
+    #[test]
+    fn disconnect_resets_every_source_cursor() {
+        // 把所有 last_uploaded_* 字段灌成非零值，再走一遍重置
+        let mut obj = serde_json::to_value(SyncConfig::default())
+            .expect("序列化默认配置失败")
+            .as_object()
+            .cloned()
+            .expect("配置应是 JSON 对象");
+        for (key, value) in obj.iter_mut() {
+            if key.starts_with("last_uploaded") {
+                *value = serde_json::json!(1_234);
+            }
+        }
+        let mut cfg: SyncConfig =
+            serde_json::from_value(serde_json::Value::Object(obj)).expect("反序列化失败");
+        cfg.last_sync_at = 1_234;
+        reset_source_cursors(&mut cfg);
+
+        let after = serde_json::to_value(&cfg).expect("序列化失败");
+        let after = after.as_object().expect("配置应是 JSON 对象");
+        // 额度快照通道的游标不属于「来源明细」，reset_source_cursors 刻意不动
+        const SNAPSHOT_CURSORS: [&str; 2] = [
+            "last_uploaded_snapshot_ts",
+            "last_uploaded_agent_quota_snapshot_ts",
+        ];
+        let mut checked = 0usize;
+        for (key, value) in after.iter() {
+            if !key.starts_with("last_uploaded") || SNAPSHOT_CURSORS.contains(&key.as_str()) {
+                continue;
+            }
+            assert_eq!(
+                value,
+                &serde_json::json!(0),
+                "{key} 未被 reset_source_cursors 清空"
+            );
+            checked += 1;
+        }
+        assert!(
+            checked >= 10,
+            "扫到的明细游标字段只有 {checked} 个，断言可能已失效"
+        );
+        assert_eq!(
+            after.get("last_sync_at"),
+            Some(&serde_json::json!(0)),
+            "last_sync_at 也应清空"
+        );
+        assert_eq!(
+            after.get("last_uploaded_snapshot_ts"),
+            Some(&serde_json::json!(1_234)),
+            "快照游标保持既有语义（不重置）"
+        );
     }
 }

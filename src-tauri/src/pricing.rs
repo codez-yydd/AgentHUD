@@ -879,6 +879,11 @@ const MODELSDEV_PROVIDERS: &[&str] = &[
     "perplexity",
     "amazon-bedrock",
     "azure",
+    // OpenCode（开源 agent）的两条自营 provider：其订阅/Zen 模型价格挂在
+    // models.dev 上（实测 opencode-go/deepseek-v4.1-flash = 0.15/0.6/0.003），
+    // 不纳入白名单则价格配置页永远拿不到这些模型的参考价
+    "opencode",
+    "opencode-go",
 ];
 
 /// models.dev 同步结果的本地缓存（~/.zbar/modelsdev-cache.json）。

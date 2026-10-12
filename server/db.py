@@ -120,6 +120,10 @@ AGENT_QUOTA_WINDOWS = {
     "codex": {"hour5", "weekly"},
     "claude": {"hour5", "weekly"},
     "cursor": {"cursor_auto", "cursor_api"},
+    # Kimi Code（客户端 lib.rs 以 hour5 / weekly 两个窗口上传）：此前不在本表里，
+    # 服务端会**静默丢弃**它的额度快照，导致多设备额度视图里 kimi 永远没有数据。
+    # 窗口键与 codex/claude 同款，直接并进来即可。
+    "kimi": {"hour5", "weekly"},
 }
 
 SCHEMA_CONFIG = """

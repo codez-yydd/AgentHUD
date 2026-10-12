@@ -16,12 +16,14 @@ mod gemini;
 mod grok;
 mod kimi;
 mod kimi_oauth;
+mod local_agents;
 mod longcat;
 mod minimax;
 mod mimo;
 mod model_speed;
 mod moonshot;
 mod net_config;
+mod opencode;
 mod opencodego;
 mod pet;
 mod pets;
@@ -156,7 +158,8 @@ async fn get_stats(req: StatsRequest) -> Result<db::Stats, String> {
 }
 
 /// list_models：列出所有出现过的模型，价格设置页的配价表单数据源。
-/// 来源 = 本地 ZCode 库 ∪ Codex 导入库 ∪ Claude 导入库 ∪ Kimi 导入库 ∪ 远端同步的全部设备模型
+/// 来源 = 本地 ZCode 库 ∪ Codex 导入库 ∪ Claude 导入库 ∪ 注册表内的本地读取型
+/// agent（kimi/dsh/opencode/未来新增）∪ 远端同步的全部设备模型
 /// （让"其他设备在用、本机没有"的模型也能直接配价并参与价格更新检查）。
 /// 按 (provider_id, model_id) 去重、按 model_id 排序。
 /// 远端清单带 5 分钟缓存、失败静默降级为空；远端 HTTP 不能跑在主线程，
@@ -164,13 +167,12 @@ async fn get_stats(req: StatsRequest) -> Result<db::Stats, String> {
 #[tauri::command]
 async fn list_models() -> Result<Vec<db::ModelInfo>, String> {
     tauri::async_runtime::spawn_blocking(|| {
-        // zcode 本地库是主数据源，失败照常报错；codex/claude/kimi/远端为增量来源，静默降级
+        // zcode 本地库是主数据源，失败照常报错；codex/claude/注册表来源/远端为
+        // 增量来源，静默降级。注册表来源由 local_agents 遍历产出——新增 agent
+        // 只要注册表加一行，这里就自动进价格配置页。
         let zcode = db::list_models()?;
         let codex_models = codex::list_models().unwrap_or_default();
         let claude_models = claude::list_models().unwrap_or_default();
-        let kimi_models = kimi::list_models().unwrap_or_default();
-        // DSH 同为本地采集型：其模型（deepseek-flash 等）要进价格配置页才能定价
-        let dsh_models = dsh::list_models().unwrap_or_default();
         let remote = sync::remote_models_cached()
             .into_iter()
             .map(|m| db::ModelInfo {
@@ -183,14 +185,10 @@ async fn list_models() -> Result<Vec<db::ModelInfo>, String> {
                 model_id: m.model_id,
             })
             .collect();
-        Ok(merge_model_lists(vec![
-            zcode,
-            codex_models,
-            claude_models,
-            kimi_models,
-            dsh_models,
-            remote,
-        ]))
+        let mut lists = vec![zcode, codex_models, claude_models];
+        lists.extend(local_agents::model_lists(local_agents::all()));
+        lists.push(remote);
+        Ok(merge_model_lists(lists))
     })
     .await
     .map_err(|e| format!("模型列表查询任务失败: {e}"))?
@@ -261,15 +259,12 @@ pub(crate) fn collect_relevant_models(
             relevant.insert(m.model_id);
         });
     }
-    // Kimi 导入库同上
-    if let Ok(models) = kimi::list_models() {
-        models.into_iter().for_each(|m| {
-            relevant.insert(m.model_id);
-        });
-    }
-    // DSH 导入库同上：其 provider 是自由字符串（deepseek-account / 第三方路由），
-    // 更要靠这里把实际用到的 model_id 纳入，避免价格配置页漏项
-    if let Ok(models) = dsh::list_models() {
+    // 注册表内的本地读取型 agent（kimi/dsh/opencode/未来新增）同上：
+    // 新增 agent 只要注册表加一行就自动进价格检查主体，不必再改这里。
+    // 尤其 dsh / opencode 的 provider 是自由字符串（deepseek-account /
+    // opencode-go / 第三方路由），更要靠这里把实际用到的 model_id 纳入，
+    // 避免价格配置页漏项。
+    for models in local_agents::model_lists(local_agents::all()) {
         models.into_iter().for_each(|m| {
             relevant.insert(m.model_id);
         });
@@ -561,8 +556,8 @@ async fn get_compare_tokens(
 }
 
 /// 按 Agent 和指定周期聚合 Token。
-/// source: zai / codex / claude / kimi / cursor / dsh；周期区间统一使用
-/// [reset_at, end_at)。dsh 已支持后端聚合（对比页前端尚未纳入该 agent）。
+/// source: zai / codex / claude / cursor ∪ 注册表内的本地读取型 agent
+/// （kimi / dsh / opencode / 未来新增）；周期区间统一使用 [reset_at, end_at)。
 #[tauri::command]
 async fn get_compare_tokens_for_agent(
     source: String,
@@ -573,14 +568,21 @@ async fn get_compare_tokens_for_agent(
             "zai" => db::query_period_buckets(&periods),
             "codex" => codex::query_period_buckets(&periods),
             "claude" => claude::query_period_buckets(&periods),
-            "kimi" => kimi::query_period_buckets(&periods),
-            "dsh" => dsh::query_period_buckets(&periods),
             "cursor" => {
                 let from_ms = periods.iter().map(|(from, _)| *from).min().unwrap_or(0);
                 let to_ms = periods.iter().map(|(_, to)| *to).max().unwrap_or(0);
                 cursor::fetch_cursor_period_buckets(from_ms, to_ms, &periods)
             }
-            _ => Err(format!("未知的对比 Agent: {source}")),
+            // 注册表内的本地读取型 agent（kimi/dsh/opencode/未来新增）：
+            // 新增 agent 只要注册表加一行就自动可按来源对比，不必再改这里。
+            other => match local_agents::compare_period_buckets(
+                local_agents::all(),
+                other,
+                &periods,
+            ) {
+                Some(result) => result,
+                None => Err(format!("未知的对比 Agent: {source}")),
+            },
         }?;
         Ok(buckets
             .into_iter()
@@ -1099,6 +1101,73 @@ async fn get_dsh_debug() -> Result<dsh::DshDebugInfo, String> {
         .map_err(|e| format!("DSH 诊断任务失败: {e}"))?
 }
 
+// ===== OpenCode（本地读取型）用量统计 =====
+
+/// get_opencode_usage 的入参：时间范围 + 分桶粒度（"hour" | "day"）
+#[derive(Debug, Deserialize)]
+struct OpencodeUsageRequest {
+    from_ms: i64,
+    to_ms: i64,
+    bucket: String,
+}
+
+/// get_opencode_usage 返回的 OpenCode 快照：本地 opencode.db 导入库的统计 +
+/// 趋势（含花费）。**无额度字段**：Go 套餐额度走 opencodego 服务（官方
+/// /zen/go/v1/usage 或本地估算），本命令只出「本地会话用量」。
+#[derive(Debug, Serialize)]
+struct OpencodeSnapshot {
+    stats: db::Stats,
+    trend: Vec<TrendBucket>,
+}
+
+/// 拉取 OpenCode 用量快照（本地 opencode.db 增量导入 + 聚合查询）。
+/// async + spawn_blocking：与 get_dsh_usage 同款卸载到阻塞线程池。
+///
+/// 花费计算与 get_dsh_usage 同款（桶内按模型聚合后用 cost_for 求和）。
+/// 注意 OpenCode 自己在 `$.cost` 里记了成本，本模块的派生库把它另存为
+/// `reported_cost_usd`（见 opencode.rs 模块头）；本命令暂仍按本项目价格表
+/// 重算，需要官方口径时改用 opencode::query_reported_cost。
+#[tauri::command]
+async fn get_opencode_usage(req: OpencodeUsageRequest) -> Result<OpencodeSnapshot, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let stats = opencode::query_stats(req.from_ms, req.to_ms)?;
+        let buckets = opencode::query_trend(req.from_ms, req.to_ms, &req.bucket)?;
+        let pricing = load_pricing().unwrap_or_default();
+
+        let fx = load_fx_rate();
+        let trend = buckets
+            .into_iter()
+            .map(|b| {
+                let cost_usd = b
+                    .by_model
+                    .iter()
+                    .map(|m| cost_for(m, &pricing.usd))
+                    .sum::<f64>();
+                TrendBucket {
+                    label: b.label,
+                    total_tokens: b.total_tokens,
+                    requests: b.requests,
+                    cost_cny: cost_usd * fx,
+                    cost_usd,
+                    by_model: bucket_models(&b.by_model),
+                }
+            })
+            .collect();
+
+        Ok(OpencodeSnapshot { stats, trend })
+    })
+    .await
+    .map_err(|e| format!("OpenCode 查询任务失败: {e}"))?
+}
+
+/// 诊断 OpenCode 数据导入（排查"暂无数据"问题）
+#[tauri::command]
+async fn get_opencode_debug() -> Result<opencode::OpencodeDebugInfo, String> {
+    tauri::async_runtime::spawn_blocking(opencode::debug_info)
+        .await
+        .map_err(|e| format!("OpenCode 诊断任务失败: {e}"))?
+}
+
 fn append_agent_quota_snapshot(
     source: &str,
     plan_type: Option<String>,
@@ -1530,9 +1599,13 @@ async fn set_auto_cleanup(req: AutoCleanupServerRequest) -> Result<sync::AutoCle
         .map_err(|e| format!("自动清理配置任务失败: {e}"))?
 }
 
-/// 查询本机待上传的记录数（zcode 与 codex/claude 两个派生库的
-/// 「max_rowid - 游标」之和，各取 max(0)），供同步面板显示。
-/// codex/claude 查询失败按 0 计（未安装时不应影响其他来源显示）。
+/// 查询本机待上传的记录数（zcode 与 codex/claude 两个派生库、以及注册表内
+/// **已声明上传游标**的本地读取型 agent（kimi/dsh/opencode/未来新增）的
+/// 「max_rowid − 游标」之和，各取 max(0)），供同步面板显示。
+/// codex/claude 与注册表来源查询失败按 0 计（未安装时不应影响其他来源显示）。
+/// 注册表来源是否计入由其 `sync_cursor` 声明决定：没有上传通道的来源计 0——
+/// 按全量计入会永远报「有待上传」却永远传不上去（假信号），详见
+/// `local_agents::LocalAgentSource::sync_cursor`。
 /// async + spawn_blocking：派生库首次导入可能解析大量会话文件，不能卡主线程。
 #[tauri::command]
 async fn pending_upload_count() -> Result<i64, String> {
@@ -1545,10 +1618,10 @@ async fn pending_upload_count() -> Result<i64, String> {
         let claude = claude::max_rowid()
             .map(|m| (m - cfg.last_uploaded_claude_rowid).max(0))
             .unwrap_or(0);
-        let dsh = dsh::max_rowid()
-            .map(|m| (m - cfg.last_uploaded_dsh_rowid).max(0))
-            .unwrap_or(0);
-        Ok(zcode + codex + claude + dsh)
+        // 注册表来源（kimi/dsh/opencode 均已接入同步上传；未来新增 agent 在
+        // 其 sync_cursor 里返回游标即自动计入，未接入的自动计 0）
+        let registry = local_agents::pending_rows(local_agents::all(), &cfg);
+        Ok(zcode + codex + claude + registry)
     })
     .await
     .map_err(|e| format!("待上传统计任务失败: {e}"))?
@@ -1899,18 +1972,11 @@ fn today_tray_title(app: &AppHandle) -> String {
             .sum::<f64>();
     }
 
-    // Kimi：合并今日用量（本地导入库；未安装/失败静默降级，同上）
-    if let Ok(stats) = kimi::query_stats(today_start, now_ms) {
-        total += stats.overall.total_tokens;
-        cost += stats
-            .by_model
-            .iter()
-            .map(|m| cost_for(m, &pricing.usd))
-            .sum::<f64>();
-    }
-
-    // DeepSeek Harness：合并今日用量（本地会话日志导入库；未安装/失败静默降级，同上）
-    if let Ok(stats) = dsh::query_stats(today_start, now_ms) {
+    // 注册表内的本地读取型 agent（kimi/dsh/opencode/未来新增）：合并今日用量。
+    // 口径与上面 ZCode 段完全一致（token 合计 + by_model 按价格表 cost_for 计费）；
+    // 单源查询失败静默跳过（未安装该 agent 时的常态）。新增 agent 只要注册表
+    // 加一行就自动计入，不必再改这里。
+    for (_source, stats) in local_agents::stats(local_agents::all(), today_start, now_ms) {
         total += stats.overall.total_tokens;
         cost += stats
             .by_model
@@ -2364,6 +2430,8 @@ pub fn run() {
             get_kimi_debug,
             get_dsh_usage,
             get_dsh_debug,
+            get_opencode_usage,
+            get_opencode_debug,
             list_accounts,
             capture_account,
             switch_account,

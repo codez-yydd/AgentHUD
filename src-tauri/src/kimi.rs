@@ -1293,10 +1293,10 @@ pub fn query_trend(
     Ok(out)
 }
 
-/// 查询 id > since 的明细记录（同步上传预留，首期 sync.rs 不接入 kimi）。
-/// source 固定 "kimi"，local_rowid = id。proto 5 字段预留：kimi 的项目
-/// 维度在 session_meta 表，接入同步时再 join 填充，当前恒 None。
-#[allow(dead_code)]
+/// 查询 id > since 的明细记录（同步增量上传用，见 sync.rs 的 kimi 阶段）。
+/// source 固定 "kimi"，local_rowid = id。项目维度（project_key / project_display）
+/// 暂不带：kimi 的项目维度在 session_meta 表、需 join 才拿得到，而服务端的
+/// 项目聚合接口已下线（维度仅落库存储），故按最小改动只带 session_id。
 pub fn query_since(since: i64, limit: usize) -> Result<Vec<db::UsageRow>, String> {
     import_incremental()?;
     let conn = open_kimi_db()?;
@@ -1350,11 +1350,11 @@ pub fn max_rowid() -> Result<i64, String> {
     Ok(max)
 }
 
-/// 查询修订行（updated_at > since_ts 的记录，同步补传预留，首期不接入）。
-/// 文件重写重放时新值覆盖旧行（id 不变）——常规的 id > 游标查询永远选不出它，
-/// 本查询按修订时间选出这些行，供服务端以"总量更大者胜"的 upsert 修正。
+/// 查询修订行（updated_at > since_ts 的记录，同步补传用；见 sync.rs 的
+/// kimi 修订扫描）。文件重写重放时新值覆盖旧行（id 不变）——常规的
+/// id > 游标查询永远选不出它，本查询按修订时间选出这些行，供服务端以
+/// "总量更大者胜"的 upsert 修正。
 /// after_id 分页：按 id 升序、只取 id > after_id 的行，调用方逐批推进。
-#[allow(dead_code)]
 pub fn query_revised_since(
     since_ts: i64,
     after_id: i64,

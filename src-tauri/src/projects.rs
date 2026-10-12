@@ -4,6 +4,9 @@
 //! - Codex：会话文件首行 session_meta 事件的 payload.cwd → session_meta 表；
 //! - Claude：会话 jsonl 行内顶层 cwd 字段 → model_usage 的 cwd/project_key 列；
 //! - Kimi：wire.jsonl 头部 environmentDisclosure.cwd 行 → session_meta 表；
+//! - 其余本地读取型开源 agent（dsh / opencode / 未来新增）：见 `local_agents.rs`
+//!   的声明式注册表——本文件对它们只做「遍历注册表 + 合并」，不再逐个枚举来源；
+//!   codex/claude/zcode/cursor 形态各自独立，仍在本文件显式接线（见注册表模块头）。
 //! - ZCode：db.sqlite 的 model_usage 无 cwd 列，但主库 session_id 可关联
 //!   zcode_sessions 派生库（~/.zbar/zcode_sessions.sqlite，解析主库 session
 //!   表 directory 列 + agents/**/metadata.json 得 session_id → cwd 映射）。
@@ -21,7 +24,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Mutex, OnceLock};
 
 use crate::pricing::{load_pricing, ModelPrice};
-use crate::{claude, codex, db, kimi, zcode_sessions, Billable, cost_for};
+use crate::{claude, codex, db, local_agents, zcode_sessions, Billable, cost_for};
 
 /// 未知项目的聚合键（无 cwd / 无项目维度的用量全部归入）
 pub const UNKNOWN_PROJECT: &str = "__unknown__";
@@ -94,8 +97,9 @@ pub fn normalize_cwd(raw: &str) -> Option<String> {
 
 // ===== 数据结构（跨源公共行 + 命令返回）=====
 
-/// 各源项目聚合查询返回的模型级行（codex/claude/kimi/zcode 共用）。
-/// 花费由调用方结合价格表用 cost_for 计算（与 get_trend 同款口径）。
+/// 各源项目聚合查询返回的模型级行（codex/claude/zcode 与注册表内的本地
+/// 读取型 agent 共用）。花费由调用方结合价格表用 cost_for 计算（与 get_trend
+/// 同款口径）。
 #[derive(Debug, Clone)]
 pub(crate) struct ProjectModelRow {
     /// 归一化项目键；无 cwd 的会话为 UNKNOWN_PROJECT（SQL 侧 COALESCE）
@@ -192,7 +196,7 @@ pub struct ProjectSummary {
 /// 项目内按 Agent 来源的用量拆分
 #[derive(Debug, Clone, Serialize)]
 pub struct AgentBreakdown {
-    /// "codex" | "claude" | "kimi" | "zcode"
+    /// 来源标识（"codex" | "claude" | "zcode" | 注册表来源如 "kimi"/"dsh"/"opencode"）
     pub source: String,
     pub tokens: u64,
     pub requests: u64,
@@ -212,7 +216,7 @@ pub struct SessionsPage {
 #[derive(Debug, Clone, Serialize)]
 pub struct SessionSummary {
     pub session_id: String,
-    /// 会话所属源（"codex" | "claude" | "kimi" | "zcode"）
+    /// 会话所属源（"codex" | "claude" | "zcode" | 注册表来源如 "kimi"/"dsh"/"opencode"）
     pub source: String,
     /// 首末请求时间（毫秒）
     pub first_at: i64,
@@ -272,12 +276,15 @@ fn accumulate(
     agent.cost_usd += cost;
 }
 
-/// 项目浏览器查询前触发四源存量回填（各回填自带 30 秒节流 + 每批限量，
+/// 项目浏览器查询前触发各源存量回填（各回填自带 30 秒节流 + 每批限量，
 /// 未安装对应 CLI 时静默失败）。查询入口统一走这里，前端无需关心。
+///
+/// 本地读取型 agent（kimi/dsh/opencode/未来新增）的回填走注册表遍历，
+/// 新增 agent 不必再改本函数；codex/claude 与 zcode 派生库形态独立，显式列出。
 fn backfill_projects_dimensions() {
     let _ = codex::backfill_session_meta();
     let _ = claude::backfill_project_keys();
-    let _ = kimi::backfill_session_meta();
+    local_agents::backfill_dimensions(local_agents::all());
     // zcode 派生库导入（rollout 镜像 + session 项目维度映射），失败静默：
     // 派生库无映射时 zcode 走旧回退路径
     let _ = zcode_sessions::import_incremental();
@@ -990,14 +997,19 @@ fn query_projects(from_ms: i64, to_ms: i64) -> Result<Vec<ProjectSummary>, Strin
     let pricing = load_pricing().unwrap_or_default();
     let mut projects: HashMap<String, ProjectAcc> = HashMap::new();
 
-    // codex / claude / kimi / dsh 四源（未安装/查询失败打印日志并降级为空，不互相阻断）
-    let model_rows = [
+    // codex / claude（形态自成一派，见 local_agents 模块头）与注册表内的
+    // 本地读取型 agent（kimi/dsh/opencode/未来新增）分开列出：注册表成员由
+    // local_agents 遍历产出，新增 agent 不需要再改这里。任一来源未安装/
+    // 查询失败仅打印日志并降级为空，不互相阻断。
+    let fixed_model_rows = [
         ("codex", codex::query_project_model_rows(from_ms, to_ms)),
         ("claude", claude::query_project_model_rows(from_ms, to_ms)),
-        ("kimi", kimi::query_project_model_rows(from_ms, to_ms)),
-        ("dsh", crate::dsh::query_project_model_rows(from_ms, to_ms)),
     ];
-    for (source, rows) in model_rows {
+    let registry_model_rows = local_agents::project_model_rows(local_agents::all(), from_ms, to_ms);
+    for (source, rows) in fixed_model_rows
+        .into_iter()
+        .chain(registry_model_rows.into_iter())
+    {
         match rows {
             Ok(rows) => {
                 for row in &rows {
@@ -1009,13 +1021,16 @@ fn query_projects(from_ms: i64, to_ms: i64) -> Result<Vec<ProjectSummary>, Strin
     }
 
     // 会话数（COUNT(DISTINCT session_id)，项目粒度）
-    let session_counts = [
+    let fixed_session_counts = [
         ("codex", codex::query_project_session_counts(from_ms, to_ms)),
         ("claude", claude::query_project_session_counts(from_ms, to_ms)),
-        ("kimi", kimi::query_project_session_counts(from_ms, to_ms)),
-        ("dsh", crate::dsh::query_project_session_counts(from_ms, to_ms)),
     ];
-    for (source, counts) in session_counts {
+    let registry_session_counts =
+        local_agents::project_session_counts(local_agents::all(), from_ms, to_ms);
+    for (source, counts) in fixed_session_counts
+        .into_iter()
+        .chain(registry_session_counts.into_iter())
+    {
         match counts {
             Ok(counts) => {
                 for (key, count) in counts {
@@ -1029,13 +1044,15 @@ fn query_projects(from_ms: i64, to_ms: i64) -> Result<Vec<ProjectSummary>, Strin
     }
 
     // 展示路径（原始形态 cwd，保留大小写）
-    let display_paths = [
+    let fixed_display_paths = [
         ("codex", codex::query_project_display_paths()),
         ("claude", claude::query_project_display_paths()),
-        ("kimi", kimi::query_project_display_paths()),
-        ("dsh", crate::dsh::query_project_display_paths()),
     ];
-    for (source, paths) in display_paths {
+    let registry_display_paths = local_agents::project_display_paths(local_agents::all());
+    for (source, paths) in fixed_display_paths
+        .into_iter()
+        .chain(registry_display_paths.into_iter())
+    {
         match paths {
             Ok(paths) => merge_display_paths(&mut projects, paths),
             Err(e) => eprintln!("[projects] {source} 展示路径查询失败（本次跳过）: {e}"),
@@ -1157,6 +1174,29 @@ fn session_speed(
     }
 }
 
+/// 会话明细的固定来源（注册表外）：codex / claude 形态自成一派；
+/// zcode 有会话维度；cursor 无会话维度，但历史上前端可传该来源名（返回空页）。
+const FIXED_SESSION_SOURCES: [&str; 4] = ["codex", "claude", "zcode", "cursor"];
+
+/// 默认（前端不指定来源）参与跨源合并的固定来源（cursor 无会话维度不参与）。
+const FIXED_DEFAULT_SESSION_SOURCES: [&str; 3] = ["codex", "claude", "zcode"];
+
+/// 来源名是否可查：固定来源 ∪ 注册表内的本地读取型 agent
+/// （kimi/dsh/opencode/未来新增，新增 agent 不需要改本函数）。
+fn is_known_session_source(source: &str) -> bool {
+    FIXED_SESSION_SOURCES.contains(&source) || local_agents::find(source).is_some()
+}
+
+/// 默认（前端不指定来源）参与跨源合并的来源集合 = 固定来源 + 注册表来源。
+/// 抽成函数是为了让单测直接断言集合口径（不必跑真实查询）：新增 agent
+/// 只要注册表加一行，这里自动纳入。
+fn default_session_sources() -> Vec<&'static str> {
+    FIXED_DEFAULT_SESSION_SOURCES
+        .into_iter()
+        .chain(local_agents::all().iter().map(|s| s.source()))
+        .collect()
+}
+
 /// 项目会话分页查询。source 为 None 时跨源合并（各源取全部匹配行，
 /// Rust 侧按最后活跃时间排序后统一分页）；指定单源时 SQL 侧 LIMIT/OFFSET
 /// 分页。未知项目在 zcode 无会话维度时自然不返回 zcode 明细。
@@ -1171,10 +1211,11 @@ fn query_sessions(
     backfill_projects_dimensions();
     let pricing = load_pricing().unwrap_or_default();
 
-    // 参与查询的源（非法源名返回空页，不报错）
+    // 参与查询的源（非法源名返回空页，不报错）。默认集合 = 固定来源 + 注册表
+    // 来源（顺序不影响结果：跨源合并在 Rust 侧按会话聚合后统一排序分页）。
     let sources: Vec<&str> = match source.as_deref() {
         Some(s) if !s.is_empty() => {
-            if !["codex", "claude", "kimi", "dsh", "zcode", "cursor"].contains(&s) {
+            if !is_known_session_source(s) {
                 return Ok(SessionsPage {
                     total: 0,
                     items: Vec::new(),
@@ -1182,7 +1223,7 @@ fn query_sessions(
             }
             vec![s]
         }
-        _ => vec!["codex", "claude", "kimi", "dsh", "zcode"],
+        _ => default_session_sources(),
     };
 
     // 单源走 SQL 分页；多源各取全部匹配行（行数 = 会话 × 模型，量级可控）
@@ -1196,12 +1237,22 @@ fn query_sessions(
         let result = match src {
             "codex" => codex::query_project_sessions(&project_key, from_ms, to_ms, per_offset, per_limit),
             "claude" => claude::query_project_sessions(&project_key, from_ms, to_ms, per_offset, per_limit),
-            "kimi" => kimi::query_project_sessions(&project_key, from_ms, to_ms, per_offset, per_limit),
-            "dsh" => crate::dsh::query_project_sessions(&project_key, from_ms, to_ms, per_offset, per_limit),
             "zcode" => zcode_project_sessions(&project_key, from_ms, to_ms, per_offset, per_limit),
             // cursor 无会话维度（纯内存聚合），会话列表不展示
             "cursor" => Ok((0, Vec::new())),
-            _ => unreachable!("来源已在上文校验"),
+            // 注册表内的本地读取型 agent（kimi/dsh/opencode/未来新增）：
+            // 新增 agent 不必再改这里。来源名已在上方校验，未命中理论不可达，
+            // 仍按「查询失败静默降级为空」处理以免未来改动把这里变成 panic。
+            other => local_agents::project_sessions(
+                local_agents::all(),
+                other,
+                &project_key,
+                from_ms,
+                to_ms,
+                per_offset,
+                per_limit,
+            )
+            .unwrap_or(Ok((0, Vec::new()))),
         };
         // 未安装对应 CLI / 查询失败静默降级为空，不阻断其他源
         let (t, rows) = result.unwrap_or((0, Vec::new()));
@@ -1284,10 +1335,10 @@ fn query_sessions(
 
 // ===== Tauri 命令（前端契约，签名不可改）=====
 
-/// get_projects：返回时间范围内按项目聚合的用量（跨 codex/claude/kimi/
-/// zcode 四源合并，cursor 无项目维度不在项目浏览器展示）。内部含 SQLite
-/// 查询与三源存量回填（文件 IO），async + spawn_blocking 卸载到阻塞线程池，
-/// 避免阻塞主线程。
+/// get_projects：返回时间范围内按项目聚合的用量（跨 codex/claude/zcode 与
+/// 注册表内的本地读取型 agent（kimi/dsh/opencode/未来新增）合并；cursor 无
+/// 项目维度不在项目浏览器展示）。内部含 SQLite 查询与各源存量回填（文件 IO），
+/// async + spawn_blocking 卸载到阻塞线程池，避免阻塞主线程。
 #[tauri::command]
 pub async fn get_projects(from_ms: i64, to_ms: i64) -> Result<Vec<ProjectSummary>, String> {
     tauri::async_runtime::spawn_blocking(move || query_projects(from_ms, to_ms))
@@ -1296,7 +1347,8 @@ pub async fn get_projects(from_ms: i64, to_ms: i64) -> Result<Vec<ProjectSummary
 }
 
 /// get_project_sessions：分页返回指定项目的会话明细。
-/// source 可选过滤（"codex" | "claude" | "kimi" | "zcode" | "cursor"）。
+/// source 可选过滤（"codex" | "claude" | "zcode" | "cursor" ∪ 注册表来源，
+/// 见 `is_known_session_source`）。
 /// 查询入口先走各源现成的增量导入（含 5 秒节流）与存量回填。
 #[tauri::command]
 pub async fn get_project_sessions(
@@ -1604,5 +1656,44 @@ mod tests {
         assert_eq!(projects.len(), 1);
         let acc = projects.get("/users/a/proj").expect("预置项目应保留");
         assert_eq!(acc.display_path.as_deref(), Some("/Users/A/Proj"));
+    }
+
+    /// 注册表来源在项目页的来源口径（纯集合断言，不查任何真实库）：
+    /// - 来源白名单必须覆盖注册表**全部**来源（opencode 曾漏登记 → 项目页按
+    ///   来源过滤时被判为非法来源、静默返回空页）；
+    /// - 默认（不指定来源）合并集合同样覆盖注册表全部来源，且不含 cursor
+    ///   （cursor 无会话维度，不参与会话列表合并）；
+    /// - 固定来源与注册表来源不得重名（重名会让单源分发出现二义）；
+    /// - 未注册来源名仍走「空页」降级（既有行为不变）。
+    #[test]
+    fn 注册表来源_项目页白名单与默认集合() {
+        for source in local_agents::all() {
+            assert!(
+                is_known_session_source(source.source()),
+                "注册表来源 {} 必须在项目页来源白名单里",
+                source.source()
+            );
+            assert!(
+                default_session_sources().contains(&source.source()),
+                "注册表来源 {} 必须在默认合并集合里",
+                source.source()
+            );
+        }
+        // 本次接入的 opencode 与既有来源都必须在白名单里
+        for known in ["opencode", "kimi", "dsh", "codex", "claude", "zcode", "cursor"] {
+            assert!(is_known_session_source(known), "{known} 应在白名单里");
+        }
+        assert!(!is_known_session_source("no-such-agent"));
+        assert!(!is_known_session_source(""));
+        // cursor 无会话维度：可查（历史契约）但不参与默认合并
+        assert!(is_known_session_source("cursor"));
+        assert!(!default_session_sources().contains(&"cursor"));
+        // 固定来源与注册表来源不得重名
+        for fixed in FIXED_SESSION_SOURCES {
+            assert!(
+                local_agents::find(fixed).is_none(),
+                "{fixed} 不应同时出现在固定来源与注册表里"
+            );
+        }
     }
 }
