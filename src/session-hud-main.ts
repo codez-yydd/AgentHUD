@@ -57,7 +57,7 @@ import { installHudResizeHandles } from "./hud-resize";
  *  ↑/↓/⟲/Σ/× 均为树内 model_usage 合计，子代理不单独成行 */
 interface HudSessionBrief {
   sessionId: string;
-  /** 会话短标识（去 sess_ 前缀后 6 位） */
+  /** 会话短标识（剥来源前缀后 6 位：zcode 的 sess_ / DSH 的 session-） */
   short: string;
   /** 项目名（目录末段；缺失时为 "#短标识"） */
   project: string;
@@ -67,6 +67,12 @@ interface HudSessionBrief {
   subCount: number;
   /** true = 生成中（树内任一成员最新一轮未完成） */
   generating: boolean;
+  /** 该行所属来源能否给出实时状态（zcode/kimi/dsh = true；只有导入库聚合的
+   *  来源 false → 状态点按"无实时状态"中性 tooltip，不得读作"空闲"） */
+  liveStatus?: boolean;
+  /** true = 本行不在活跃窗口内（该 agent 窗口内无活跃会话时的"今日最近会话"
+   *  回退行）：淡显 + tooltip 说明，不与窗口内活跃行混同 */
+  outOfWindow?: boolean;
   lastActiveAt: number;
   inTokens: number;
   outTokens: number;
@@ -87,10 +93,18 @@ interface HudSessionBrief {
   ttftMs: number | null;
 }
 
-/** Rust 侧 HudModelSpeed（模型速度区单行，按模型聚合的窗口速度摘要） */
+/** Rust 侧 HudModelSpeed（模型速度区单行，按模型聚合的窗口速度摘要）。
+ *  行粒度 = 来源 × 模型：同一模型可能同时被两个 agent 使用，而两者口径不同
+ *  （真生成窗口 vs 整请求平均），合并会把两套口径的平均值混在一起 */
 interface HudModelSpeed {
+  /** 来源标识（后端来源名，显示名见 AGENT_LABELS；同模型多来源时消歧用） */
+  agent: string;
   /** 模型 id（原值，行内 truncate + title 全名） */
   model: string;
+  /** 速度口径：generation = 真生成窗口；request_average = 整请求耗时近似（≈） */
+  quality?: "generation" | "request_average" | null;
+  /** 最近一笔可信样本的 started_at（毫秒；仅 Rust 侧排序用，前端不显示） */
+  lastAt?: number;
   /** 最近一笔完成请求的输出速度 t/s */
   tps: number;
   /** 窗口内全部可信样本的总输出速度 t/s */
@@ -176,9 +190,12 @@ interface Msg {
   cursorHeadDetail: string;
   generating: string;
   idle: string;
-  /** Claude/Codex 灰点 tooltip（本地导入库聚合，无实时状态；ZCode/Kimi
-   *  有实时状态，点 tooltip 走 generating/idle） */
+  /** Claude/Codex 等灰点 tooltip（本地导入库聚合，无实时状态；实时性由
+   *  Rust 侧 liveStatus 声明，ZCode/Kimi/DSH 有实时状态，点 tooltip 走
+   *  generating/idle） */
   idleLocal: string;
+  /** 窗口外回退行说明（该 agent 窗口内无活跃会话，行展示的是今日最近会话） */
+  outOfWindow: string;
   /** 子代理徽标 tooltip */
   subBadge: (n: number) => string;
   /** 速度位"测算中"占位 tooltip（生成中但尚无可测数据） */
@@ -206,9 +223,11 @@ interface Msg {
   closeTip: string;
   /** 模型速度区行内跟随小字（最近值之后的 均 / 快 / 慢） */
   modelSpeedExtra: (avg: string, max: string, min: string) => string;
-  /** 模型速度区行 title 详情（模型全名 + 最近值/窗口均/最快/最慢/样本数 +
-   *  行内颜色分档口径说明） */
+  /** 模型速度区行 title 详情（来源 + 口径 + 模型全名 + 最近值/窗口均/最快/
+   *  最慢/样本数 + 行内颜色分档口径说明） */
   modelSpeedTitle: (
+    source: string,
+    quality: string,
     model: string,
     recent: string,
     avg: string,
@@ -216,6 +235,10 @@ interface Msg {
     min: string,
     n: number
   ) => string;
+  /** 真生成窗口口径名（title 用） */
+  qualityGeneration: string;
+  /** 整请求平均口径名（title 用，与行内 ≈ 前缀同义） */
+  qualityRequestAverage: string;
   /** 今日合计行（窗口级汇总 = 全 agent 今日总合计：Σ 总量 · × 请求数） */
   todayLine: (total: string, req: string) => string;
   /** 今日合计行 title 详情（in 为 input 原值含缓存读，中性符号避免与
@@ -252,6 +275,7 @@ const MESSAGES: Record<"zh" | "en", Msg> = {
     generating: "生成中",
     idle: "空闲",
     idleLocal: "本地导入库聚合，无实时状态",
+    outOfWindow: "窗口外最近会话（今日）",
     subBadge: (n: number) => `${n} 个子代理在跑（已并入本会话合计）`,
     measuring: "生成中，请求完成后显示速率",
     metricsLine: (total, req, speed, ttft) =>
@@ -264,8 +288,10 @@ const MESSAGES: Record<"zh" | "en", Msg> = {
     settingsTip: "设置",
     closeTip: "关闭悬浮窗",
     modelSpeedExtra: (avg, max, min) => `· 均 ${avg} · 快 ${max} · 慢 ${min}`,
-    modelSpeedTitle: (model, recent, avg, max, min, n) =>
-      `${model} · 最近 ${recent} t/s · 均 ${avg} t/s · 快 ${max} t/s · 慢 ${min} t/s · ${n} 笔；颜色按最近值分档`,
+    modelSpeedTitle: (source, quality, model, recent, avg, max, min, n) =>
+      `${source} · ${model} · ${quality} · 最近 ${recent} t/s · 均 ${avg} t/s · 快 ${max} t/s · 慢 ${min} t/s · ${n} 笔；颜色按最近值分档`,
+    qualityGeneration: "真生成窗口口径",
+    qualityRequestAverage: "整请求平均口径（≈，含首字等待）",
     todayLine: (total, req) => `今日 Σ ${total} · × ${req}`,
     todayDetail: (inT, out, cr, req) =>
       `输入(含⟲) ${inT} · 输出 ${out} · 缓存读 ${cr} · 请求 ${req}`,
@@ -280,6 +306,7 @@ const MESSAGES: Record<"zh" | "en", Msg> = {
     generating: "Generating",
     idle: "Idle",
     idleLocal: "Aggregated from local store — no live state",
+    outOfWindow: "Latest session today (outside the active window)",
     subBadge: (n: number) => `${n} subagent(s) running (merged into totals)`,
     measuring: "Generating — rate appears once the request completes",
     metricsLine: (total, req, speed, ttft) =>
@@ -293,8 +320,10 @@ const MESSAGES: Record<"zh" | "en", Msg> = {
     closeTip: "Close overlay",
     modelSpeedExtra: (avg, max, min) =>
       `· avg ${avg} · best ${max} · worst ${min}`,
-    modelSpeedTitle: (model, recent, avg, max, min, n) =>
-      `${model} · recent ${recent} t/s · avg ${avg} t/s · best ${max} t/s · worst ${min} t/s · ${n} requests; color tiers by the latest value`,
+    modelSpeedTitle: (source, quality, model, recent, avg, max, min, n) =>
+      `${source} · ${model} · ${quality} · recent ${recent} t/s · avg ${avg} t/s · best ${max} t/s · worst ${min} t/s · ${n} requests; color tiers by the latest value`,
+    qualityGeneration: "true generation window",
+    qualityRequestAverage: "whole-request average (≈, includes first-token wait)",
     todayLine: (total, req) => `Today Σ ${total} · × ${req}`,
     todayDetail: (inT, out, cr, req) =>
       `Input (incl. cache read) ${inT} · Output ${out} · Cache read ${cr} · Requests ${req}`,
@@ -636,7 +665,7 @@ function modelSpeedClass(tps: number): string {
   return "hud-ms-slow";
 }
 
-/** 重建模型速度区（列表下方、今日行之上，每活跃模型一行：左模型名
+/** 重建模型速度区（列表下方、今日行之上，每「来源 × 模型」一行：左模型名
  *  truncate、右速度值右对齐三档变色 + 小号灰单位后缀 + 更暗一档的
  *  "· 均 x · 快 y · 慢 z" 跟随小字）。textContent 写入外部字符串，无
  *  innerHTML 注入面；速度属数字信息，显隐随 showTokens（与 Rust 侧
@@ -648,21 +677,45 @@ function renderModels(visible: boolean): void {
     modelsEl.style.display = "none";
     return;
   }
-  const rows = (snapshot?.modelSpeeds ?? []).map((m) => {
+  const rowsData = snapshot?.modelSpeeds ?? [];
+  // 同一模型被多个来源用时（两套口径的行）补来源名消歧：只在真出现重名时
+  // 才加后缀，绝大多数行仍是干净的模型名
+  const nameCount = new Map<string, number>();
+  for (const m of rowsData) {
+    nameCount.set(m.model, (nameCount.get(m.model) ?? 0) + 1);
+  }
+  const rows = rowsData.map((m) => {
     const row = document.createElement("div");
     row.className = "hud-msrow";
     const recent = m.tps.toFixed(1);
     const avg = m.avgTps.toFixed(1);
     const max = m.maxTps.toFixed(1);
     const min = m.minTps.toFixed(1);
-    // 行 title 同时兜底模型全名（名字截断时）与速度口径
-    row.title = msg.modelSpeedTitle(m.model, recent, avg, max, min, m.samples);
+    const source = AGENT_LABELS[m.agent] ?? m.agent;
+    const quality =
+      m.quality === "request_average"
+        ? msg.qualityRequestAverage
+        : msg.qualityGeneration;
+    // 行 title 同时兜底模型全名（名字截断时）、来源与速度口径
+    row.title = msg.modelSpeedTitle(
+      source,
+      quality,
+      m.model,
+      recent,
+      avg,
+      max,
+      min,
+      m.samples
+    );
     const name = document.createElement("span");
     name.className = "hud-ms-name";
-    name.textContent = m.model;
+    name.textContent =
+      (nameCount.get(m.model) ?? 0) > 1 ? `${m.model} · ${source}` : m.model;
     const val = document.createElement("span");
     val.className = `hud-ms-val ${modelSpeedClass(m.tps)}`;
-    val.textContent = recent;
+    // ≈ 前缀与悬浮窗会话行的速度口径标注同一条约定：请求平均不是真解码
+    // 速度（含首字等待），必须带近似号
+    val.textContent = m.quality === "request_average" ? `≈${recent}` : recent;
     // 单位后缀：独立静态节点，只继承行灰、小一号，不参与三档变色
     //（同会话行"数值 + t/s"格式；flex 行内用 span 承载以便单独设字号；
     // 字号随 --hud-scale 缩放与行内其余文字保持比例）
@@ -722,15 +775,19 @@ function renderRows(): void {
         String(g.today.reqCount)
       );
       head.append(sum);
+      // 组内全是窗口外回退行时，组头 tooltip 补一句说明（否则"今日 Σ"配着
+      // 淡显的会话行，用户不知道这些行是不是此刻在跑）
+      const allStale =
+        g.sessions.length > 0 && g.sessions.every((s) => s.outOfWindow);
       head.title =
-        g.agent === "cursor"
+        (g.agent === "cursor"
           ? msg.cursorHeadDetail
           : msg.todayDetail(
               String(g.today.in),
               String(g.today.out),
               String(g.today.cacheRead),
               String(g.today.reqCount)
-            );
+            )) + (allStale ? ` · ${msg.outOfWindow}` : "");
     }
     groupEl.append(head);
 
@@ -767,8 +824,12 @@ function buildSessionRow(
   usedKeys: Set<string>
 ): HTMLDivElement {
   const row = document.createElement("div");
-  row.className = "hud-row";
-  row.title = `${s.project} · ${s.sessionId}`;
+  // 窗口外回退行（该 agent 窗口内无活跃会话，展示的是今日最近会话）淡显，
+  // 与"此刻在跑"的行明确区分；.hud-row 高度/结构不变，不影响高度栅格
+  row.className = s.outOfWindow ? "hud-row hud-row-stale" : "hud-row";
+  row.title = s.outOfWindow
+    ? `${s.project} · ${s.sessionId} · ${msg.outOfWindow}`
+    : `${s.project} · ${s.sessionId}`;
   const fieldKey = `${agent}:${s.sessionId}`;
   usedKeys.add(fieldKey);
 
@@ -788,18 +849,16 @@ function buildSessionRow(
   // 首行：状态点 + 项目名 + 短标识 +（可选）子代理徽标 +（可选）模型
   const top = document.createElement("div");
   top.className = "hud-row-top";
-  // 状态点：ZCode / Kimi 组有实时生成中/空闲信号（Kimi 来自 wire.jsonl
-  // transcript.ops 的 step 状态 + 新鲜度保护，旧会话无该数据时恒空闲）；
-  // 其余非 ZCode 组无轮次信号，灰点仅为视觉对齐，tooltip 用中性说明
-  //（本地导入库聚合，非"空闲"）
+  // 状态点：实时性由 Rust 侧 liveStatus 声明（ZCode 轮次未完成 / Kimi
+  // step_meta running / DSH 会话投影 openStep 未结束），其余来源只有导入库
+  // 聚合 → 灰点是中性占位，tooltip 用中性说明（不得读作"空闲"）
   const dot = document.createElement("span");
   dot.className = `hud-dot${s.generating ? " gen" : ""}`;
-  dot.title =
-    agent === "zcode" || agent === "kimi"
-      ? s.generating
-        ? msg.generating
-        : msg.idle
-      : msg.idleLocal;
+  dot.title = s.liveStatus
+    ? s.generating
+      ? msg.generating
+      : msg.idle
+    : msg.idleLocal;
   const project = document.createElement("span");
   project.className = "hud-project";
   project.textContent = s.project;

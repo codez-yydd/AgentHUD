@@ -1661,6 +1661,15 @@ pub(crate) struct HudSessionBrief {
     pub sub_count: usize,
     /// 状态：true = 生成中（树内任一成员最新一轮未完成），false = 空闲
     pub generating: bool,
+    /// 生成状态的**实时性声明**：true = 本行所属来源能给出实时生成中/空闲
+    /// 信号（zcode 轮次未完成、kimi `step_meta` 的 running step、dsh 会话
+    /// 投影的未结束 step）；false = 该来源只有导入库聚合，前端按"无实时
+    /// 状态"的中性 tooltip 展示，不得把灰点读作"空闲"。
+    pub live_status: bool,
+    /// true = 本行**不在活跃窗口内**：该 agent 窗口内没有任何活跃会话，
+    /// 这里展示的是它"今日最近会话"回退行（见 `group_session_rows`）。
+    /// 前端淡显 + tooltip 说明，绝不与窗口内活跃行混同。
+    pub out_of_window: bool,
     /// 窗口内最近活动时刻（毫秒，主会话与子代理取 max，排序键）
     pub last_active_at: i64,
     /// 全生命周期累计：↑ 非缓存输入（逐笔 max(0, input − cache_read)
@@ -1720,12 +1729,25 @@ pub(crate) struct HudTodayTotal {
 }
 
 /// 模型速度区单行（列表下方、今日行之上的按模型分组速度摘要）。
-/// camelCase 与前端契约一致；口径见 collect_model_speeds。
+/// camelCase 与前端契约一致；口径见 collect_model_speeds（zcode 主库）与
+/// collect_derived_model_speeds（各来源派生库）。
+///
+/// **行粒度 = 来源 × 模型**（不是只按模型）：同一模型可能被两个 agent 同时
+/// 使用，而两者的速度口径不同（真生成窗口 vs 整请求耗时近似），合并成一行
+/// 会把两套口径的平均值混在一起。前端在模型名重复时才补来源名消歧。
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct HudModelSpeed {
+    /// 来源标识（AGENT_* 常量 / 注册来源名；多来源同模型时前端消歧用）
+    pub agent: String,
     /// 模型 id（原值展示；前端 truncate + title 全名）
     pub model: String,
+    /// 速度口径：generation = 真生成窗口（zcode 主库 first/completed 时刻、
+    /// dsh stream 首末 chunk）；request_average = 整请求耗时近似（前端加 ≈）
+    pub quality: SpeedQuality,
+    /// 最近一笔**可信**样本的 started_at（毫秒）：跨来源合并排序键，也是
+    /// 组内截断依据；前端不消费（展示用 tps）
+    pub last_at: i64,
     /// 最近一笔完成请求的输出速度 t/s（output ÷ 生成毫秒 × 1000，
     /// 实时感优先）
     pub tps: f64,
@@ -1735,8 +1757,9 @@ pub(crate) struct HudModelSpeed {
     pub max_tps: f64,
     /// 窗口内可信样本的单笔最慢速度 t/s（与 avg_tps 同样本池）
     pub min_tps: f64,
-    /// 可信速度样本数（completed 且 first/completed 时刻齐全时序正常
-    /// 且 output > 0 的行数）
+    /// 可信速度样本数（认定规则见各口径函数：zcode = completed 且
+    /// first/completed 时刻齐全时序正常；派生库 = duration_ms > 0 且
+    /// output > 0）
     pub samples: i64,
 }
 
@@ -1825,12 +1848,14 @@ pub(crate) struct AgentSessionBrief {
     /// 恒 0）
     pub speed_ms: f64,
     /// 生成中实时信号：kimi 有（transcript.ops 的 step.upsert running 状态 +
-    /// 10 分钟新鲜度保护，见 kimi.rs GENERATING_FRESH_MS）；其余来源（含
-    /// claude/codex/dsh/opencode）无该数据源，构造时恒 false
+    /// 10 分钟新鲜度保护，见 kimi.rs GENERATING_FRESH_MS）、dsh 有（会话投影
+    /// `session_projcache` 的 `openTurnStartSeq` 非空 = 当前轮未结束 + 同量级
+    /// 新鲜度保护，见 dsh.rs generating_from_projection）；其余来源（claude/
+    /// codex/opencode/minimaxcode）无该数据源，构造时恒 false
     pub generating: bool,
     /// 最近一笔完成 step 的 TTFT（毫秒；kimi = transcript.ops llmTiming 口径，
-    /// dsh = stream 首 chunk 口径）；无 TTFT 的来源（claude/codex/opencode）
-    /// 构造时恒 None
+    /// dsh = stream 首 chunk 口径）；无 TTFT 的来源（claude/codex/opencode/
+    /// minimaxcode）构造时恒 None
     pub ttft_ms: Option<i64>,
     /// 生成口径速度分子：仅统计流式时长 > 0 且 output_tokens > 0 的行 Σoutput
     /// （与 gen_ms 同范围，防 0 行稀释均值）；只有注册表声明 Generation 的
@@ -1884,10 +1909,11 @@ pub(crate) struct HudSnapshot {
     /// 窗口级汇总行，随 show_tokens 配置隐藏——前端与窗口高度判定同条
     /// 件，见 today_visible；全 0 = 今日无请求，前端不显示该行）
     pub today_total: HudTodayTotal,
-    /// 模型速度区（活跃窗口内按模型分组的速度摘要，按最近使用降序至多
-    /// HUD_MAX_MODEL_ROWS 个；查询失败/老库缺列降级为空数组 → 前端不
-    /// 渲染该区，窗口高度判定同条件见 model_speed_visible。仅 ZCode
-    /// 源——rollout/时刻列仅 ZCode 有）
+    /// 模型速度区（活跃窗口内按「来源 × 模型」分组的速度摘要，按最近使用
+    /// 降序至多 HUD_MAX_MODEL_ROWS 个；ZCode 行来自 collect_model_speeds，
+    /// 其余来源行由 append_agent_groups 经注册表追加后合并截断）。
+    /// 查询失败/老库缺列降级为空数组 → 前端不渲染该区，窗口高度判定同条件
+    /// 见 model_speed_visible
     pub model_speeds: Vec<HudModelSpeed>,
 }
 
@@ -2182,8 +2208,14 @@ fn brief_from_agent_row(row: AgentSessionBrief, agent: &str) -> HudSessionBrief 
         project: project_name(row.project.as_deref(), &short),
         models,
         sub_count: 0,
-        // 生成中：仅 kimi 构造处填 true（其余源恒 false），直接透传
+        // 生成中：由各来源构造处填（kimi = step_meta running step、dsh =
+        // 会话投影未结束 step），其余来源恒 false，直接透传
         generating: row.generating,
+        // 实时性由注册表声明（kimi/dsh = true；claude/codex/opencode/
+        // minimaxcode 只有导入库聚合 = false）
+        live_status: local_agents::find(agent).is_some_and(|s| s.has_live_status()),
+        // 默认窗口内；窗口外回退行由 group_session_rows 打标
+        out_of_window: false,
         last_active_at: row.last_at,
         in_tokens: row.in_tokens.max(0),
         out_tokens: row.out_tokens.max(0),
@@ -2200,11 +2232,60 @@ fn brief_from_agent_row(row: AgentSessionBrief, agent: &str) -> HudSessionBrief 
     }
 }
 
+/// 单 agent 组的会话行取数：**活跃窗口优先，窗口内无则回退今日**。
+///
+/// 为什么需要回退：窗口（默认 10 分钟）是"活跃"判定，一个 agent 今天跑过但
+/// 最近 10 分钟没动静时，窗口查询返回 `sessions: []`，组就只剩一个孤零零的
+/// 组头（今日 Σ）——四五个 agent 里只有正在跑的那个有明细，其余全无内容，
+/// 用户读到的是"这些 agent 没有展示"（2026-10 本机实测：kimi / opencode /
+/// minimaxcode 三组皆如此，各自今日都有用量）。回退口径 = 该 agent **今日**
+/// （本地自然日零点起）最近 `limit` 条会话，行标记 `out_of_window`，前端淡显
+/// + tooltip 说明；组头今日 Σ 与这些行同属"今日"，读起来自洽。
+///
+/// 返回 `None` = 活跃窗口查询失败（未安装/库忙）→ 该组整体不出现；
+/// 返回的 `total_active` **恒为窗口内活跃会话数**（回退查询的计数不参与）
+/// ——头部"n 活跃"与组内"还有 N 个"的口径不能因为回退行而虚增。回退查询
+/// 失败按"无明细"处理（组头仍在，不报错）。
+fn group_session_rows(
+    agent: &str,
+    window_start: i64,
+    today_start: i64,
+    today_has_data: bool,
+    limit: usize,
+    mut query: impl FnMut(i64, usize) -> Result<AgentWindowSessions, String>,
+) -> Option<(usize, Vec<HudSessionBrief>)> {
+    let found = query(window_start, limit).ok()?;
+    let briefs = |rows: Vec<AgentSessionBrief>, out_of_window: bool| {
+        rows.into_iter()
+            .map(|row| {
+                let mut brief = brief_from_agent_row(row, agent);
+                brief.out_of_window = out_of_window;
+                brief
+            })
+            .collect::<Vec<_>>()
+    };
+    if !found.sessions.is_empty() || !today_has_data {
+        return Some((found.total_active, briefs(found.sessions, false)));
+    }
+    // 窗口内一个活跃会话都没有，但今日有数据：回退到"今日最近会话"，
+    // 让该组有明细可读（口径与打标说明见函数 doc）
+    let rows = query(today_start, limit)
+        .map(|fallback| briefs(fallback.sessions, true))
+        .unwrap_or_default();
+    Some((found.total_active, rows))
+}
+
 /// 组装非 ZCode 组并追加进快照（Claude/Codex/Kimi 派生库 + Cursor API）。
 /// 失败语义：单源失败只跳过该组，不影响其他组展示（未安装/未配置/网络
 /// 失败静默降级，与 lib.rs today_tray_title 同款）；会话行取每组前
-/// MAX_VISIBLE_PER_AGENT 条。今日汇总复用各源 query_stats（5 秒节流增量
-/// 导入后查派生库）；Cursor 为纯汇总组（仅今日 total，无会话行）。
+/// MAX_VISIBLE_PER_AGENT 条（窗口内无活跃会话时回退今日最近会话，见
+/// group_session_rows）。今日汇总复用各源 query_stats（5 秒节流增量导入后
+/// 查派生库）；Cursor 为纯汇总组（仅今日 total，无会话行）。
+///
+/// 同时补齐模型速度区的非 ZCode 行（各注册来源自报口径，见
+/// collect_derived_model_speeds），与 ZCode 行合并后按最近使用降序截断——
+/// 没有这一步时速度区只统计 ZCode 主库，只跑 dsh/kimi/opencode 的用户看到
+/// 的是整片空白（2026-10 本机实测：modelSpeeds = []）。
 fn append_agent_groups(snapshot: &mut HudSnapshot, window_minutes: u32, now_ms: i64) {
     // 有效窗口与 ZCode 组同口径：0（不限）也有 24h 兜底上限
     let minutes = if window_minutes == 0 {
@@ -2218,51 +2299,69 @@ fn append_agent_groups(snapshot: &mut HudSnapshot, window_minutes: u32, now_ms: 
     // Claude / Codex：注册表外的固定组（形态自成一派，见 local_agents 模块头）。
     // 活跃会话行 + 今日合计（两者独立查询，任一成功即成组——今日查询失败时
     // 按全 0 处理，会话行仍可展示）
-    for (agent, sessions) in [
-        (
-            AGENT_CLAUDE,
-            crate::claude::query_window_sessions(window_start, MAX_VISIBLE_PER_AGENT),
-        ),
-        (
-            AGENT_CODEX,
-            crate::codex::query_window_sessions(window_start, MAX_VISIBLE_PER_AGENT),
-        ),
-    ] {
-        let Ok(found) = sessions else {
+    for agent in [AGENT_CLAUDE, AGENT_CODEX] {
+        let today = today_stats(agent, today_start, now_ms).unwrap_or_default();
+        let Some((total_active, sessions)) = group_session_rows(
+            agent,
+            window_start,
+            today_start,
+            today.total > 0,
+            MAX_VISIBLE_PER_AGENT,
+            |start, limit| match agent {
+                AGENT_CLAUDE => crate::claude::query_window_sessions(start, limit),
+                _ => crate::codex::query_window_sessions(start, limit),
+            },
+        ) else {
             continue; // 未安装/导入失败：静默无该组
         };
-        let today = today_stats(agent, today_start, now_ms).unwrap_or_default();
         snapshot.groups.push(HudAgentGroup {
             agent: agent.to_string(),
             today,
-            total_active: found.total_active,
-            sessions: found
-                .sessions
-                .into_iter()
-                .map(|row| brief_from_agent_row(row, agent))
-                .collect(),
+            total_active,
+            sessions,
         });
     }
 
-    // 注册表内的本地读取型 agent（kimi/dsh/opencode/未来新增）：新增 agent
-    // 只需在 local_agents 注册表加一行，这里自动成组（含其今日合计与速度口径）
+    // 注册表内的本地读取型 agent（kimi/dsh/opencode/minimaxcode/未来新增）：
+    // 新增 agent 只需在 local_agents 注册表加一行，这里自动成组（含其今日
+    // 合计、实时状态声明、速度口径与模型速度区行）
     for source in local_agents::all() {
         let agent = source.source();
-        let Ok(found) = source.query_window_sessions(window_start, MAX_VISIBLE_PER_AGENT) else {
+        let today = today_stats(agent, today_start, now_ms).unwrap_or_default();
+        let Some((total_active, sessions)) = group_session_rows(
+            agent,
+            window_start,
+            today_start,
+            today.total > 0,
+            MAX_VISIBLE_PER_AGENT,
+            |start, limit| source.query_window_sessions(start, limit),
+        ) else {
             continue; // 未安装/导入失败：静默无该组
         };
-        let today = today_stats(agent, today_start, now_ms).unwrap_or_default();
         snapshot.groups.push(HudAgentGroup {
             agent: agent.to_string(),
             today,
-            total_active: found.total_active,
-            sessions: found
-                .sessions
-                .into_iter()
-                .map(|row| brief_from_agent_row(row, agent))
-                .collect(),
+            total_active,
+            sessions,
         });
     }
+
+    // 模型速度区：追加各注册来源的「来源 × 模型」行（ZCode 行由
+    // collect_session_snapshot 产出），合并后统一按最近使用降序截断到
+    // HUD_MAX_MODEL_ROWS 行——各来源内部已按同一上限各自截断（避免一次
+    // 查询搬回几十行），这里是跨来源合并后的最终上限（窗口高度按
+    // HUD_MAX_MODEL_ROWS 栅格计算，见 hud_height）
+    for rows in local_agents::window_model_speeds(local_agents::all(), window_start, HUD_MAX_MODEL_ROWS)
+    {
+        snapshot.model_speeds.extend(rows);
+    }
+    snapshot.model_speeds.sort_by(|a, b| {
+        b.last_at
+            .cmp(&a.last_at)
+            .then_with(|| a.agent.cmp(&b.agent))
+            .then_with(|| a.model.cmp(&b.model))
+    });
+    snapshot.model_speeds.truncate(HUD_MAX_MODEL_ROWS);
 
     // Cursor：纯汇总组（仅今日 Σ token，无输入/输出拆分、无会话行）。
     // API 内部有 120 秒缓存，每 DB 拍调用安全。
@@ -2524,7 +2623,12 @@ fn collect_model_speeds(conn: &Connection, window_start: i64) -> Vec<HudModelSpe
             (
                 a.last_at,
                 HudModelSpeed {
+                    agent: AGENT_ZCODE.to_string(),
                     model,
+                    // 本函数只跑 ZCode 主库：生成窗口 = first_token_at →
+                    // completed_at（status='completed' 已在上方判定）
+                    quality: SpeedQuality::Generation,
+                    last_at: a.last_at,
                     tps: a.last_tps,
                     avg_tps: a.sum_out as f64 * 1000.0 / a.sum_ms as f64,
                     max_tps: a.max_tps,
@@ -2538,6 +2642,134 @@ fn collect_model_speeds(conn: &Connection, window_start: i64) -> Vec<HudModelSpe
     out.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.model.cmp(&b.1.model)));
     out.truncate(HUD_MAX_MODEL_ROWS);
     out.into_iter().map(|(_, s)| s).collect()
+}
+
+/// 派生库通用「窗口内按模型的速度摘要」（kimi / dsh / opencode / minimaxcode
+/// 共用；注册表来源经 `LocalAgentSource::query_window_model_speeds` 转发）。
+///
+/// 各来源派生库的 model_usage 形态一致（model_id / started_at / output_tokens
+/// / duration_ms），差别只在 `duration_ms` 的语义，故口径由调用方声明：
+/// - dsh：`duration_ms` = stream 首末 chunk 之差（真生成窗口）→ Generation；
+/// - kimi / opencode / minimaxcode：`duration_ms` = 整请求耗时 → RequestAverage
+///   （前端加 ≈；kimi 的 `step_meta` 虽有真流式时长，但没有 model 归属列，
+///   无法按模型拆分，故模型区只能用请求平均，会话行才走生成口径）。
+///
+/// 样本认定：`duration_ms > 0` 且 `output_tokens > 0`（分子分母同范围，防
+/// 0 行稀释均值）；row 级 tps = output ÷ duration × 1000。每模型取最近一笔
+/// 可信样本为 tps（实时感优先）、全样本池给 avg/max/min。按最近使用降序、
+/// 至多 `limit` 个模型。表/列缺失（老库）返回空数组，不报错、不伪造速度。
+pub(crate) fn collect_derived_model_speeds(
+    conn: &Connection,
+    window_start_ms: i64,
+    limit: usize,
+    agent: &str,
+    quality: SpeedQuality,
+) -> Result<Vec<HudModelSpeed>, String> {
+    let has = |col: &str| crate::db::has_column(conn, "model_usage", col);
+    if !has_table(conn, "model_usage")
+        || !has("model_id")
+        || !has("started_at")
+        || !has("output_tokens")
+        || !has("duration_ms")
+    {
+        return Ok(Vec::new());
+    }
+    let mut stmt = conn
+        .prepare(
+            "SELECT COALESCE(model_id, ''), started_at, \
+                    COALESCE(output_tokens, 0), COALESCE(duration_ms, 0) \
+             FROM model_usage \
+             WHERE started_at >= ?1 AND model_id IS NOT NULL AND model_id != '' \
+             ORDER BY started_at DESC LIMIT ?2",
+        )
+        .map_err(|e| format!("准备 {agent} 模型速度查询失败: {e}"))?;
+    let rows = stmt
+        .query_map(
+            rusqlite::params![window_start_ms, MODEL_SPEED_SCAN_ROWS],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                    // duration_ms 各库声明不一（dsh/opencode/minimaxcode = REAL，
+                    // kimi = INTEGER），统一读 f64（rusqlite 对两型都能转）
+                    row.get::<_, f64>(3)?,
+                ))
+            },
+        )
+        .map_err(|e| format!("读取 {agent} 模型速度失败: {e}"))?;
+
+    /// 单模型样本池（与 ZCode 侧 ModelSpeedAgg 同口径：DESC 序首见即最近）
+    struct ModelSpeedAgg {
+        last_at: i64,
+        last_tps: f64,
+        max_tps: f64,
+        min_tps: f64,
+        sum_out: i64,
+        sum_ms: f64,
+        samples: i64,
+    }
+    let mut aggs: BTreeMap<String, ModelSpeedAgg> = BTreeMap::new();
+    for row in rows {
+        let (model, started_at, output, duration) =
+            row.map_err(|e| format!("读取 {agent} 模型速度失败: {e}"))?;
+        // 可信样本：有模型名、有时刻、有输出、有正耗时（NaN/inf 一并排除，
+        // 不让脏值把均值拉成非数）
+        if model.is_empty() || started_at <= 0 || output <= 0 || !(duration > 0.0) {
+            continue;
+        }
+        let tps = output as f64 * 1000.0 / duration;
+        if !tps.is_finite() {
+            continue;
+        }
+        let entry = aggs.entry(model).or_insert(ModelSpeedAgg {
+            last_at: started_at,
+            last_tps: tps,
+            max_tps: tps,
+            min_tps: tps,
+            sum_out: 0,
+            sum_ms: 0.0,
+            samples: 0,
+        });
+        // DESC 序首见即最近一笔；同刻多行取先到者（防御乱序 only >）
+        if started_at > entry.last_at {
+            entry.last_at = started_at;
+            entry.last_tps = tps;
+        }
+        if tps > entry.max_tps {
+            entry.max_tps = tps;
+        }
+        if tps < entry.min_tps {
+            entry.min_tps = tps;
+        }
+        entry.sum_out += output;
+        entry.sum_ms += duration;
+        entry.samples += 1;
+    }
+
+    let mut out: Vec<HudModelSpeed> = aggs
+        .into_iter()
+        .map(|(model, a)| HudModelSpeed {
+            agent: agent.to_string(),
+            model,
+            quality,
+            last_at: a.last_at,
+            tps: a.last_tps,
+            avg_tps: a.sum_out as f64 * 1000.0 / a.sum_ms as f64,
+            max_tps: a.max_tps,
+            min_tps: a.min_tps,
+            samples: a.samples,
+        })
+        .collect();
+    // 按最近使用降序（同刻按模型名稳定排序，跨来源合并后顺序可复现）
+    out.sort_by(|a, b| {
+        b.last_at
+            .cmp(&a.last_at)
+            .then_with(|| a.agent.cmp(&b.agent))
+            .then_with(|| a.model.cmp(&b.model))
+    });
+    out.truncate(limit);
+    Ok(out)
 }
 
 /// 活跃时刻合并（同一会话两信号取更晚者）
@@ -2866,6 +3098,9 @@ fn collect_session_brief(
         },
         sub_count: active_subs,
         generating,
+        // ZCode 的生成中来自轮次状态机（rollout/turn 完成信号）→ 有实时状态
+        live_status: true,
+        out_of_window: false,
         last_active_at,
         in_tokens: agg.plain_in,
         out_tokens: agg.out_tokens,
@@ -2969,15 +3204,56 @@ fn turn_status(conn: &Connection, session_id: &str, turn_id: &str) -> Result<Opt
     }
 }
 
-/// 会话短标识：去 "sess_" 前缀后取前 6 位（前缀不剥离的话前 6 位恒为
-/// "sess_s" 无区分度）；空/超短 id 原样返回。
-fn short_session_id(session_id: &str) -> String {
-    let bare = session_id.strip_prefix("sess_").unwrap_or(session_id);
-    if bare.is_empty() {
-        session_id.chars().take(6).collect()
-    } else {
-        bare.chars().take(6).collect()
+/// 剥来源前缀后的裸 id（长前缀优先；无前缀原样返回）。
+/// 前缀按实测来源形态各剥一种：zcode 的 `sess_`、DSH 的 `session-`
+/// （`~/.dsh/sessions/**/session.v4.jsonl.zstd` 的 header 与投影缓存文件名
+/// 都是这个形态）、kimi 路径形态里的 `session_` 目录名。
+fn strip_session_prefix(session_id: &str) -> &str {
+    session_id
+        .strip_prefix("session-")
+        .or_else(|| session_id.strip_prefix("session_"))
+        .or_else(|| session_id.strip_prefix("sess_"))
+        .unwrap_or(session_id)
+}
+
+/// 路径形态会话 id 里最有区分度的一段（会话 id 必带十六进制/UUID 数字；
+/// 末段常是 `wire.jsonl` 这类固定文件名、中间常是 `agents/<agentId>` 这类
+/// 无区分度的固定目录，故**从末段往前找第一个含 ASCII 数字的段**）。
+/// 全路径都没有数字段时退回末段（总比盘符开头的 "C:\..." 有信息量）。
+/// 非路径形态返回 None，由调用方按前缀规则处理。
+fn path_session_segment(session_id: &str) -> Option<&str> {
+    if !session_id.contains('/') && !session_id.contains('\\') {
+        return None;
     }
+    let segments = || {
+        session_id
+            .split(['/', '\\'])
+            .filter(|seg| !seg.is_empty())
+    };
+    segments()
+        .filter(|seg| seg.chars().any(|c| c.is_ascii_digit()))
+        .next_back()
+        .or_else(|| segments().next_back())
+}
+
+/// 会话短标识（6 位）：前缀不剥离时前 6 位恒为 "sess_s" / "sessio" 毫无区分
+/// 度；kimi 的非标准层级会话 id 是 `wire.jsonl` **全路径**（见 kimi.rs
+/// session_id_from_path 的兜底分支），不特殊处理就恒为盘符开头（实测
+/// "C:\Use"），等于没有标识——这类走 path_session_segment 取有信息量的段。
+/// 空/超短 id 回退取原值前 6 位（不空白）。
+fn short_session_id(session_id: &str) -> String {
+    let bare = match path_session_segment(session_id) {
+        Some(segment) => strip_session_prefix(segment),
+        None => {
+            let stripped = strip_session_prefix(session_id);
+            if stripped.is_empty() {
+                session_id
+            } else {
+                stripped
+            }
+        }
+    };
+    bare.chars().take(6).collect()
 }
 
 /// 项目名解析：directory 取最后一段文件夹名（/ 与 \ 都作分隔符，兼容
@@ -4121,7 +4397,7 @@ mod tests {
     }
 
     #[test]
-    fn 短标识_剥离sess前缀取6位() {
+    fn 短标识_剥离来源前缀取6位() {
         // "sess_" 前缀不剥离的话前 6 位恒为 "sess_s" 无区分度
         assert_eq!(
             short_session_id("sess_c0ea9749-12df-4917"),
@@ -4130,6 +4406,304 @@ mod tests {
         assert_eq!(short_session_id("sess_ab"), "ab");
         assert_eq!(short_session_id("plain-id-xxx"), "plain-");
         assert_eq!(short_session_id("sess_"), "sess_", "空裸 id 回原串前 6 位");
+        // DSH 的会话 id 形态：不剥离 "session-" 前缀时前 6 位恒为 "sessio"
+        assert_eq!(
+            short_session_id("session-8cd2f3cd-8140-4b1f-bc0f-a09c123bbbc4"),
+            "8cd2f3"
+        );
+        assert_eq!(short_session_id("session-"), "sessio");
+        // 路径形态（kimi 非标准层级）：取含数字的那一段，剥 session_ 前缀
+        assert_eq!(
+            short_session_id(
+                r"C:\Users\admin\.kimi-code\sessions\wd_test_4ab2fc41ee00\session_d8eb3473-55fa-4f5b-818a-9d5f2edbd4a7\agents\main\wire.jsonl"
+            ),
+            "d8eb34"
+        );
+        assert_eq!(
+            short_session_id("/w/sessions/session_ab12cd99/agents/main/wire.jsonl"),
+            "ab12cd"
+        );
+        // 路径里没有任何带数字的段 → 退回最后一段（去掉扩展名后的前 6 位）
+        assert_eq!(short_session_id("C:/work/proj/wire.jsonl"), "wire.j");
+    }
+
+    /// 派生库形态的最小库（kimi/dsh/opencode/minimaxcode 同形：
+    /// model_id / started_at / output_tokens / duration_ms）
+    fn derived_db(name: &str) -> (Connection, std::path::PathBuf) {
+        let path = std::env::temp_dir().join(format!(
+            "zbar-session-hud-derived-{}-{name}.sqlite",
+            std::process::id()
+        ));
+        let _ = fs::remove_file(&path);
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE model_usage (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                dedupe_key TEXT NOT NULL,
+                started_at INTEGER NOT NULL,
+                model_id TEXT NOT NULL DEFAULT '',
+                provider_id TEXT NOT NULL DEFAULT '',
+                input_tokens INTEGER NOT NULL DEFAULT 0,
+                output_tokens INTEGER NOT NULL DEFAULT 0,
+                cache_read_input_tokens INTEGER NOT NULL DEFAULT 0,
+                cache_creation_input_tokens INTEGER NOT NULL DEFAULT 0,
+                reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+                computed_total_tokens INTEGER NOT NULL DEFAULT 0,
+                duration_ms INTEGER,
+                updated_at INTEGER NOT NULL DEFAULT 0,
+                UNIQUE(dedupe_key));",
+        )
+        .unwrap();
+        (conn, path)
+    }
+
+    /// 派生库通用按模型速度聚合（collect_derived_model_speeds）：最近值 =
+    /// 最近一笔可信样本、avg = Σout÷Σms、max/min 取样本池单笔极值、样本认定
+    /// （duration>0 且 output>0）、来源与口径原样带出、跨来源合并前的排序与
+    /// 上限、列缺失降级。
+    #[test]
+    fn 模型速度区_派生库通用聚合口径() {
+        let (conn, path) = derived_db("generic");
+        let now = 1_791_840_000_000_i64;
+        let win_start = now - 10 * 60_000;
+        conn.execute_batch(&format!(
+            "INSERT INTO model_usage
+               (session_id, dedupe_key, started_at, model_id, output_tokens, duration_ms) VALUES
+               -- M-a：最早 2000ms/200tok=100、中间 1000ms/50tok=50、最新 2000ms/400tok=200
+               ('s1', 'k1', {a1}, 'M-a', 200, 2000),
+               ('s1', 'k2', {a2}, 'M-a', 50, 1000),
+               ('s1', 'k3', {a3}, 'M-a', 400, 2000),
+               -- M-b：单笔 1000ms/30tok=30（比 M-a 的最近样本更新）
+               ('s2', 'k4', {b1}, 'M-b', 30, 1000),
+               -- M-zero：duration=0（NULL/0 都不可信）→ 无样本不入列
+               ('s2', 'k5', {b2}, 'M-zero', 500, 0),
+               ('s2', 'k6', {b3}, 'M-zero', 500, NULL),
+               -- M-noout：output=0 → 无速度意义
+               ('s2', 'k7', {b4}, 'M-noout', 0, 1000),
+               -- M-old：窗口外 → 不参与
+               ('s2', 'k8', {old}, 'M-old', 900, 1000);",
+            a1 = now - 60_000,
+            a2 = now - 30_000,
+            a3 = now - 20_000,
+            b1 = now - 5_000,
+            b2 = now - 4_000,
+            b3 = now - 3_500,
+            b4 = now - 3_000,
+            old = now - 20 * 60_000,
+        ))
+        .unwrap();
+        let rows = collect_derived_model_speeds(
+            &conn,
+            win_start,
+            3,
+            "dsh",
+            SpeedQuality::Generation,
+        )
+        .expect("派生库速度聚合失败");
+        assert_eq!(rows.len(), 2, "只留两个有可信样本的模型：{rows:?}");
+        // 排序：按最近可信样本降序（M-b 更新）
+        assert_eq!(rows[0].model, "M-b");
+        assert_eq!(rows[0].agent, "dsh");
+        assert_eq!(rows[0].quality, SpeedQuality::Generation);
+        assert_eq!(rows[0].last_at, now - 5_000);
+        assert!((rows[0].tps - 30.0).abs() < 1e-9);
+        assert_eq!(rows[0].samples, 1);
+        assert!(
+            (rows[0].avg_tps - 30.0).abs() < 1e-9
+                && (rows[0].max_tps - 30.0).abs() < 1e-9
+                && (rows[0].min_tps - 30.0).abs() < 1e-9,
+            "单样本时均/快/慢与最近值同值：{rows:?}"
+        );
+        assert_eq!(rows[1].model, "M-a");
+        // 最近一笔 = 最新样本（400tok ÷ 2000ms = 200 t/s）
+        assert!((rows[1].tps - 200.0).abs() < 1e-9);
+        // avg = 650tok ÷ 5000ms = 130 t/s（先 Σ 后除，不做二次平均）
+        assert!((rows[1].avg_tps - 130.0).abs() < 1e-9);
+        assert!((rows[1].max_tps - 200.0).abs() < 1e-9);
+        assert!((rows[1].min_tps - 50.0).abs() < 1e-9);
+        assert_eq!(rows[1].samples, 3);
+
+        // 口径与来源由调用方声明（kimi/opencode/minimaxcode 走请求平均）
+        let rows = collect_derived_model_speeds(
+            &conn,
+            win_start,
+            3,
+            "opencode",
+            SpeedQuality::RequestAverage,
+        )
+        .unwrap();
+        assert!(rows
+            .iter()
+            .all(|r| r.agent == "opencode" && r.quality == SpeedQuality::RequestAverage));
+
+        // 上限截断（limit 逐来源生效；跨来源合并后的总上限在 append_agent_groups）
+        assert_eq!(
+            collect_derived_model_speeds(&conn, win_start, 1, "dsh", SpeedQuality::Generation)
+                .unwrap()
+                .len(),
+            1
+        );
+        // 空窗口：无行（不编造 0 t/s 行）
+        assert!(collect_derived_model_speeds(
+            &conn,
+            now + 1_000,
+            3,
+            "dsh",
+            SpeedQuality::Generation
+        )
+        .unwrap()
+        .is_empty());
+
+        drop(conn);
+        let _ = fs::remove_file(&path);
+
+        // 老库缺 duration_ms 列 → 空数组（不报错、不伪造速度）
+        let (conn, path) = derived_db("legacy");
+        conn.execute_batch("ALTER TABLE model_usage DROP COLUMN duration_ms;")
+            .unwrap();
+        conn.execute_batch(&format!(
+            "INSERT INTO model_usage (session_id, dedupe_key, started_at, model_id, output_tokens)
+             VALUES ('s1', 'k1', {t}, 'M', 100);",
+            t = now - 1_000,
+        ))
+        .unwrap();
+        assert!(collect_derived_model_speeds(
+            &conn,
+            win_start,
+            3,
+            "dsh",
+            SpeedQuality::Generation
+        )
+        .unwrap()
+        .is_empty());
+        drop(conn);
+        let _ = fs::remove_file(&path);
+    }
+
+    /// 组内会话行取数：活跃窗口优先，窗口内无活跃会话但今日有数据时回退
+    /// 「今日最近会话」并打 out_of_window 标；窗口查询失败 → 整组跳过（None）；
+    /// 今日无数据时不回退（没东西可回退，组头也会被 normalize 过滤掉）。
+    #[test]
+    fn 组会话行_窗口无活跃时回退今日并打标() {
+        let now = 1_791_840_000_000_i64;
+        let window_start = now - 10 * 60_000;
+        let today_start = today_start_ms(now);
+
+        let brief = |session_id: &str, last_at: i64| AgentSessionBrief {
+            session_id: session_id.to_string(),
+            last_at,
+            in_tokens: 100,
+            out_tokens: 10,
+            cache_read: 0,
+            req_count: 1,
+            models: Some("M".into()),
+            project: Some("C:/work/proj".into()),
+            speed_out_tokens: 10,
+            speed_ms: 1_000.0,
+            generating: false,
+            ttft_ms: None,
+            gen_out_tokens: 0,
+            gen_ms: 0.0,
+        };
+        let found = |total_active: usize, sessions: Vec<AgentSessionBrief>| AgentWindowSessions {
+            total_active,
+            sessions,
+        };
+
+        // 1) 窗口内有活跃会话：原样使用，不查今日
+        let mut calls: Vec<i64> = Vec::new();
+        let (total, rows) = group_session_rows(
+            "kimi",
+            window_start,
+            today_start,
+            true,
+            3,
+            |start, _limit| {
+                calls.push(start);
+                Ok(found(1, vec![brief("sess_live", now - 1_000)]))
+            },
+        )
+        .expect("窗口查询成功即应成组");
+        assert_eq!(calls, vec![window_start], "有活跃会话时不得再查回退窗口");
+        assert_eq!(total, 1);
+        assert_eq!(rows.len(), 1);
+        assert!(!rows[0].out_of_window, "窗口内活跃行不带回退标");
+
+        // 2) 窗口内无活跃会话 + 今日有数据：回退今日最近会话并打标
+        let mut calls: Vec<i64> = Vec::new();
+        let (total, rows) = group_session_rows(
+            "kimi",
+            window_start,
+            today_start,
+            true,
+            3,
+            |start, _limit| {
+                calls.push(start);
+                if start == window_start {
+                    Ok(found(0, Vec::new()))
+                } else {
+                    Ok(found(2, vec![brief("sess_today", now - 3_600_000)]))
+                }
+            },
+        )
+        .expect("回退成功仍应成组");
+        assert_eq!(calls, vec![window_start, today_start], "应再查一次今日");
+        assert_eq!(total, 0, "total_active 必须是窗口内口径，不因回退虚增");
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].out_of_window, "回退行必须打标");
+        assert_eq!(rows[0].session_id, "sess_today");
+        assert_eq!(rows[0].project, "proj", "项目名解析与窗口内行同法");
+        // 实时性声明来自注册表（kimi 有 step_meta running 信号）
+        assert!(rows[0].live_status);
+
+        // 3) 窗口内无活跃 + 今日无数据：不回退（省一次查询，也无内容可展示）
+        let mut calls: Vec<i64> = Vec::new();
+        let (total, rows) = group_session_rows(
+            "kimi",
+            window_start,
+            today_start,
+            false,
+            3,
+            |start, _limit| {
+                calls.push(start);
+                Ok(found(0, Vec::new()))
+            },
+        )
+        .unwrap();
+        assert_eq!(calls, vec![window_start]);
+        assert_eq!(total, 0);
+        assert!(rows.is_empty());
+
+        // 4) 回退查询失败 → 无明细但不丢组头
+        let (total, rows) = group_session_rows(
+            "kimi",
+            window_start,
+            today_start,
+            true,
+            3,
+            |start, _limit| {
+                if start == window_start {
+                    Ok(found(0, Vec::new()))
+                } else {
+                    Err("库忙".into())
+                }
+            },
+        )
+        .unwrap();
+        assert_eq!(total, 0);
+        assert!(rows.is_empty());
+
+        // 5) 窗口查询失败（未安装）→ None，调用方跳过该组
+        assert!(group_session_rows(
+            "kimi",
+            window_start,
+            today_start,
+            true,
+            3,
+            |_start, _limit| Err("未安装".into())
+        )
+        .is_none());
     }
 
     #[test]
@@ -4358,6 +4932,8 @@ mod tests {
             models: None,
             sub_count: 0,
             generating: false,
+            live_status: true,
+            out_of_window: false,
             last_active_at: last_at,
             in_tokens: 0,
             out_tokens: 0,

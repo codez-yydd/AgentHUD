@@ -48,7 +48,7 @@
 
 use crate::db;
 use crate::projects::{ProjectModelRow, ProjectSessionModelRow};
-use crate::session_hud::AgentWindowSessions;
+use crate::session_hud::{AgentWindowSessions, HudModelSpeed};
 use crate::sync::SyncConfig;
 use crate::token_speed::SpeedQuality;
 
@@ -181,6 +181,34 @@ pub trait LocalAgentSource: Sync {
         SpeedQuality::RequestAverage
     }
 
+    /// 该来源能否给出**实时状态**（生成中 / 空闲）。
+    ///
+    /// `true` = 有独立的运行中信号（kimi = `step_meta` 的 running step + 新鲜度
+    /// 保护；dsh = 会话投影的 `openTurnStartSeq`（当前轮未结束）+ 新鲜度保护），
+    /// 悬浮窗的状态点 tooltip 按「生成中 / 空闲」读。`false`（默认）= 只有导入库
+    /// 聚合，行上的灰点是**中性占位**，前端按"无实时状态"文案展示——绝不能把
+    /// 这种灰点读成"空闲"，那是在替来源编造它给不出的信号。
+    fn has_live_status(&self) -> bool {
+        false
+    }
+
+    // ===== 会话悬浮窗：模型速度区 =====
+
+    /// 活跃窗口内按「本来源 × 模型」分组的输出速度摘要（悬浮窗底部速度区
+    /// 一行一个模型；ZCode 走自有路径，不在此列）。
+    ///
+    /// 默认空实现 = 该来源不贡献速度区行（数据源给不出按模型的速度）。各来源
+    /// 的实现只声明**口径**，聚合本身复用
+    /// `session_hud::collect_derived_model_speeds`（各来源派生库 schema 同形）。
+    fn query_window_model_speeds(
+        &self,
+        window_start_ms: i64,
+        limit: usize,
+    ) -> Result<Vec<HudModelSpeed>, String> {
+        let _ = (window_start_ms, limit);
+        Ok(Vec::new())
+    }
+
     // ===== 项目维度（没有项目维度的来源用默认空实现，不必写样板）=====
 
     /// 按项目 × 模型聚合 [from_ms, to_ms) 的用量。
@@ -309,6 +337,24 @@ impl LocalAgentSource for KimiSource {
         SpeedQuality::Generation
     }
 
+    /// kimi 的 `step_meta` 有 `state = running` 的 step（10 分钟新鲜度保护，
+    /// 见 kimi.rs GENERATING_FRESH_MS）→ 能给出实时生成中/空闲。
+    fn has_live_status(&self) -> bool {
+        true
+    }
+
+    /// 模型速度区：kimi 的 `step_meta` 没有 model 归属列（模型只在
+    /// `model_usage.model_id` 上），无法把真流式时长拆到模型上，故模型维度
+    /// 只能按 `duration_ms`（llm.request→usage.record 事件差 = 整请求耗时）
+    /// 走**请求平均**口径（前端带 ≈）；会话行仍走 step_meta 的生成口径。
+    fn query_window_model_speeds(
+        &self,
+        window_start_ms: i64,
+        limit: usize,
+    ) -> Result<Vec<HudModelSpeed>, String> {
+        crate::kimi::query_window_model_speeds(window_start_ms, limit)
+    }
+
     fn query_project_model_rows(
         &self,
         from_ms: i64,
@@ -418,6 +464,23 @@ impl LocalAgentSource for DshSource {
         SpeedQuality::Generation
     }
 
+    /// dsh 的会话投影（`session_projcache/sessions/<sid>.json`）有
+    /// `turnBoundary.val.openTurnStartSeq`：非空 = 当前轮未结束（工具执行期间
+    /// 也非空，见 dsh.rs generating_from_projection）→ 能给出实时生成中/空闲。
+    fn has_live_status(&self) -> bool {
+        true
+    }
+
+    /// 模型速度区：dsh 的 `duration_ms` 就是 stream 首末 chunk 之差（真生成
+    /// 窗口）→ 生成口径，与会话行同源。
+    fn query_window_model_speeds(
+        &self,
+        window_start_ms: i64,
+        limit: usize,
+    ) -> Result<Vec<HudModelSpeed>, String> {
+        crate::dsh::query_window_model_speeds(window_start_ms, limit)
+    }
+
     fn query_project_model_rows(
         &self,
         from_ms: i64,
@@ -524,6 +587,15 @@ impl LocalAgentSource for OpencodeSource {
     /// → 没有真生成窗口，不能标 Generation（见 opencode.rs 模块头）。
     fn speed_quality(&self) -> SpeedQuality {
         SpeedQuality::RequestAverage
+    }
+
+    /// 模型速度区：`duration_ms` 是请求总耗时 → 请求平均口径（前端带 ≈）。
+    fn query_window_model_speeds(
+        &self,
+        window_start_ms: i64,
+        limit: usize,
+    ) -> Result<Vec<HudModelSpeed>, String> {
+        crate::opencode::query_window_model_speeds(window_start_ms, limit)
     }
 
     fn query_project_model_rows(
@@ -635,6 +707,15 @@ impl LocalAgentSource for MinimaxcodeSource {
         SpeedQuality::RequestAverage
     }
 
+    /// 模型速度区：`duration_ms` 是整请求耗时 → 请求平均口径（前端带 ≈）。
+    fn query_window_model_speeds(
+        &self,
+        window_start_ms: i64,
+        limit: usize,
+    ) -> Result<Vec<HudModelSpeed>, String> {
+        crate::minimaxcode::query_window_model_speeds(window_start_ms, limit)
+    }
+
     fn query_project_model_rows(
         &self,
         from_ms: i64,
@@ -729,6 +810,22 @@ pub(crate) fn model_lists(
     sources
         .iter()
         .map(|s| s.list_models().unwrap_or_default())
+        .collect()
+}
+
+/// 遍历：各来源的窗口模型速度行（悬浮窗底部速度区用；失败静默为空——未安装
+/// 该 agent 时查询失败是常态，不该让某个来源拖垮整区）。
+pub(crate) fn window_model_speeds(
+    sources: &[&'static dyn LocalAgentSource],
+    window_start_ms: i64,
+    limit: usize,
+) -> Vec<Vec<HudModelSpeed>> {
+    sources
+        .iter()
+        .map(|s| {
+            s.query_window_model_speeds(window_start_ms, limit)
+                .unwrap_or_default()
+        })
         .collect()
 }
 
@@ -827,6 +924,8 @@ mod tests {
     const FAKE_PROJECT: &str = "fake-项目";
     const FAKE_MODEL: &str = "fake-model";
     const FAKE_ROWID: i64 = 1_000;
+    /// 哨兵：悬浮窗模型速度区的模型名
+    const FAKE_SPEED_MODEL: &str = "fake-speed-model";
 
     impl LocalAgentSource for FakeAgent {
         fn source(&self) -> &'static str {
@@ -904,6 +1003,26 @@ mod tests {
                 total_active: 1,
                 sessions: Vec::new(),
             })
+        }
+
+        /// 悬浮窗模型速度区：哨兵行（来源名与口径按生产形态自己带，
+        /// session_hud 侧只做合并与截断）
+        fn query_window_model_speeds(
+            &self,
+            _window_start_ms: i64,
+            _limit: usize,
+        ) -> Result<Vec<HudModelSpeed>, String> {
+            Ok(vec![HudModelSpeed {
+                agent: "fake-agent".into(),
+                model: FAKE_SPEED_MODEL.into(),
+                quality: SpeedQuality::RequestAverage,
+                last_at: 777,
+                tps: 12.5,
+                avg_tps: 10.0,
+                max_tps: 20.0,
+                min_tps: 5.0,
+                samples: 3,
+            }])
         }
 
         fn query_project_model_rows(
@@ -995,6 +1114,16 @@ mod tests {
         ) -> Result<AgentWindowSessions, String> {
             Err("不该被调用".into())
         }
+
+        /// 查询失败的模型速度区来源：遍历必须静默吞掉该错误（未安装 agent 的
+        /// 常态），绝不让它拖垮整块速度区
+        fn query_window_model_speeds(
+            &self,
+            _window_start_ms: i64,
+            _limit: usize,
+        ) -> Result<Vec<HudModelSpeed>, String> {
+            Err("查询失败".into())
+        }
     }
 
     /// 有游标假来源：待上传 = max_rowid − 游标（负值归零）。
@@ -1053,8 +1182,8 @@ mod tests {
         assert!(find("nonexistent-agent").is_none(), "未注册来源返回 None");
     }
 
-    /// 速度口径声明：kimi/dsh 有真生成窗口（Generation），opencode 只有请求
-    /// 总耗时（RequestAverage，见 opencode.rs 的 has_ttft = false）。
+    /// 速度口径声明：kimi/dsh 有真生成窗口（Generation），opencode/minimaxcode
+    /// 只有请求总耗时（RequestAverage，见各自模块的 has_ttft = false）。
     #[test]
     fn 注册表_速度口径声明() {
         assert_eq!(
@@ -1072,6 +1201,20 @@ mod tests {
             SpeedQuality::RequestAverage,
             "minimaxcode 只有整请求耗时、无 TTFT，不得标 Generation"
         );
+    }
+
+    /// 实时状态声明：只有拿得到"运行中"信号的来源才算有实时状态。
+    /// kimi = step_meta running step、dsh = 会话投影的当前轮未结束；opencode /
+    /// minimaxcode 没有可信的运行中标记（语义未确认），必须如实声明 false
+    /// ——否则界面会把灰点读成"空闲"，等于替来源编造状态。
+    #[test]
+    fn 注册表_实时状态声明() {
+        assert!(find(KIMI).unwrap().has_live_status());
+        assert!(find(DSH).unwrap().has_live_status());
+        assert!(!find(OPENCODE).unwrap().has_live_status());
+        assert!(!find(MINIMAXCODE).unwrap().has_live_status());
+        // 默认实现 = 无实时状态（新增来源不写就如实是"无状态信号"）
+        assert!(!NO_CURSOR.has_live_status());
     }
 
     /// 待上传口径：只有声明了上传游标的来源才计入，其余恒 0。
@@ -1162,6 +1305,23 @@ mod tests {
         assert!(buckets.iter().all(|b| b.total_tokens == 42 && b.requests == 1));
         assert_eq!(buckets[1].reset_at, 1_000);
         assert!(compare_period_buckets(sources, "opencode", &[(0, 1)]).is_none());
+    }
+
+    /// 窗口模型速度区的遍历：同样路由到新来源；查询失败的来源静默为空
+    /// （未安装 agent 的常态，不能让某个来源拖垮整块速度区）。
+    #[test]
+    fn 注册表_窗口模型速度区遍历() {
+        let sources: &[&'static dyn LocalAgentSource] = &[&FAKE, &NO_CURSOR];
+        let lists = window_model_speeds(sources, 1_000, 3);
+        assert_eq!(lists.len(), 2, "逐来源返回一项（与 sources 等长）");
+        assert_eq!(lists[0].len(), 1);
+        assert_eq!(lists[0][0].model, FAKE_SPEED_MODEL);
+        assert_eq!(lists[0][0].agent, "fake-agent");
+        assert_eq!(lists[0][0].last_at, 777);
+        assert!(lists[1].is_empty(), "查询失败的来源静默为空");
+        // 生产注册表：逐来源一项（真实查询只读派生库；各来源行内容由模块
+        // 自己的测试与真机冒烟覆盖）
+        assert_eq!(window_model_speeds(all(), 1_000, 3).len(), all().len());
     }
 
     /// 今日 stats 与模型清单的遍历：同样路由到新来源；查询失败的来源静默跳过

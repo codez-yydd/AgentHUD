@@ -9,7 +9,8 @@
 //! 但它只是**节流（5s / 每 200 事件）的滞后缓存**——实测 8 个会话中 3 个落后于
 //! 日志（活跃会话落后一个 turn）。且它只有「会话累计」一个数，没有逐 step 时间
 //! 与逐模型明细，无法支撑「今日/7天/30天」范围筛选与模型分布。故本模块以**事件
-//! 日志为权威源**，projcache 仅用于补 `cwd`（见 `project_cwd_fallback`）。
+//! 日志为权威源**，projcache 只用于两个旁路信号：补 `cwd`
+//! （`project_cwd_fallback`）与判「生成中」（`session_generating`）。
 //!
 //! **文件格式要点（均已实测确认）**：
 //! - 多帧串联 zstd：整个文件由上百个独立 zstd 帧首尾相接（实测 151~156 帧），
@@ -420,25 +421,91 @@ fn decode_frames(buf: &[u8]) -> (Vec<String>, usize) {
 }
 
 // ============================================================
-// cwd 兜底（读 projcache）
+// 会话投影快照（projcache）：cwd 兜底 + 生成中判定
 // ============================================================
+//
+// 该缓存是**节流写**的（5s / 每 200 事件），只服务这两个旁路信号；累计用量
+// 与逐模型明细一律以事件日志为准（见模块头）。
 
-/// 从投影快照取 cwd（兜底用）：事件日志 header 缺失 cwd 时才读。
-/// 只认 unit version 7 且 `identity.formatVersion == 4`，其余一律放弃
-/// （DSH 升级换格式时宁可少一个 cwd，也不误解析）。同名 `.bak.<stamp>` 文件
-/// 不参与（文件名不匹配本函数构造的路径）。
-fn project_cwd_fallback(session_id: &str) -> Option<(String, i64)> {
-    let path = projcache_dir().join(format!("{session_id}.json"));
-    let data = std::fs::read_to_string(&path).ok()?;
+/// 生成中新鲜度上限（毫秒）：与 kimi 的 `GENERATING_FRESH_MS` 同量级。
+/// 必要性见 `generating_from_projection`。
+const GENERATING_FRESH_MS: i64 = 10 * 60 * 1000;
+
+/// 读并校验指定路径的投影快照 → (快照, 文件修改时刻毫秒)。只认 unit version 7
+/// + `identity.formatVersion == 4`，其余一律放弃（DSH 升级换格式时宁可少一个
+/// cwd / 少一个状态信号，也不误解析）；半写状态解析失败返回 None（保守）。
+///
+/// mtime 是生成中判定的**新鲜度基准**：DSH 只在事件发生时改写该文件，
+/// mtime 即"最后一次事件"的时刻（拿不到独立的轮起始时刻，见下）。
+fn read_projection_at(path: &Path) -> Option<(Value, i64)> {
+    let data = std::fs::read_to_string(path).ok()?;
+    let mtime_ms = std::fs::metadata(path)
+        .ok()?
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_millis() as i64;
     let v: Value = serde_json::from_str(&data).ok()?;
     if v.get("version").and_then(|t| t.as_i64()) != Some(7) {
         return None;
     }
-    let record = v.get("record")?;
-    let identity = record.get("identity")?;
-    if identity.get("formatVersion").and_then(|t| t.as_i64()) != Some(4) {
+    if v.pointer("/record/identity/formatVersion")
+        .and_then(|t| t.as_i64())
+        != Some(4)
+    {
         return None;
     }
+    Some((v, mtime_ms))
+}
+
+/// 按会话 id 读投影快照。会话 id 只允许文件名安全字符集（字母数字 + `-` +
+/// `_`，实测形态即 `session-<uuid>` / `<uuid>`），避免拼出目录外路径。
+fn read_projection(session_id: &str) -> Option<(Value, i64)> {
+    if session_id.is_empty()
+        || !session_id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return None;
+    }
+    read_projection_at(&projcache_dir().join(format!("{session_id}.json")))
+}
+
+/// 由投影快照判「生成中」（纯函数，单测直接喂快照 + mtime）：
+/// `turnBoundary.val.openTurnStartSeq` 非空 = **当前轮未结束**，这正是 ZCode 侧
+/// `generating` 的同义口径（"最新一轮未完成"），也保证了同一悬浮窗里各 agent 的
+/// 状态点含义一致。
+///
+/// **为什么不用 `sessionStats.openStep`**（本机实测，2026-10）：openStep 只在
+/// LLM 调用期间非空，工具执行期间恒为空（cargo test 这类长工具跑的时候
+/// `openStep = null` 而 `openTurnStartSeq` 仍非空），按 step 判定会让状态点在
+/// 每个 step 边界闪成"空闲"；轮级判定跨 step 稳定，且与本项目既有的"轮未完成"
+/// 语义一致。
+///
+/// **新鲜度上限是必须的**：进程被强杀时该轮永远停在未结束——本机三例被崩溃
+/// 带走的子代理会话（`openTurnStartSeq = 5`、投影 mtime 停在崩溃时刻）两小时后
+/// 依然如此，没有该上限就会把僵尸轮一直显示成"生成中"。取 10 分钟（与 kimi
+/// 同量级）：代价是"真实但超长的轮"（含长工具调用——实测事件间隔可达 40s+，
+/// 且无法从快照里拿到轮起始时刻，只能用文件 mtime）超过 10 分钟时会被判空闲，
+/// 方向保守：宁可少报生成中，也不谎报。
+fn generating_from_projection(v: &Value, mtime_ms: i64, now_ms: i64) -> bool {
+    let turn_open = v
+        .pointer("/record/rows/turnBoundary/val/openTurnStartSeq")
+        .is_some_and(|seq| !seq.is_null());
+    turn_open && mtime_ms > 0 && now_ms.saturating_sub(mtime_ms) <= GENERATING_FRESH_MS
+}
+
+/// 会话是否正在生成（读盘版；文件缺失/格式不符/半写一律按空闲）。
+fn session_generating(session_id: &str, now_ms: i64) -> bool {
+    read_projection(session_id)
+        .is_some_and(|(v, mtime_ms)| generating_from_projection(&v, mtime_ms, now_ms))
+}
+
+/// 从投影快照取 cwd（兜底用）：事件日志 header 缺失 cwd 时才读。
+fn project_cwd_fallback(session_id: &str) -> Option<(String, i64)> {
+    let (v, _mtime_ms) = read_projection(session_id)?;
+    let identity = v.pointer("/record/identity")?;
     let cwd = identity
         .get("cwd")
         .and_then(|t| t.as_str())
@@ -1040,8 +1107,11 @@ pub fn query_revised_since(
 /// - `gen_out_tokens` / `gen_ms`：`duration_ms > 0` 且 `output_tokens > 0` 行的
 ///   Σoutput 与 Σduration（分子分母同范围）→ session_hud 侧标 Generation；
 /// - `ttft_ms`：最新一条有 TTFT 的 step 值；
-/// - `generating`：DSH 无「运行中」标记可读（其会话投影才有，且是滞后缓存），
-///   故恒 false，不臆造生成中状态。
+/// - `generating`：读**会话投影缓存**的 `turnBoundary.val.openTurnStartSeq`
+///   （非空 = 当前轮未结束，工具执行期间也非空），带 10 分钟新鲜度保护——事件
+///   日志里没有"运行中"标记，要推断它必须解压整个文件读到末尾，成本与 2 秒
+///   一拍的悬浮窗不成比例，而投影缓存是 DSH 自己维护的小 JSON。见
+///   `generating_from_projection`。
 ///
 /// 注意 `input_tokens` 在本库**已含** cache_read（见模块头计费口径），
 /// 故非缓存输入 = input_tokens − cache_read_input_tokens。
@@ -1051,14 +1121,21 @@ pub fn query_window_sessions(
 ) -> Result<crate::session_hud::AgentWindowSessions, String> {
     import_incremental()?;
     let conn = open_dsh_db()?;
-    query_window_sessions_at(&conn, window_start_ms, limit)
+    query_window_sessions_at(
+        &conn,
+        window_start_ms,
+        limit,
+        chrono::Utc::now().timestamp_millis(),
+    )
 }
 
-/// query_window_sessions 的纯查询内核（连接注入版，供单元测试）。
+/// query_window_sessions 的纯查询内核（连接注入版，供单元测试；now_ms 由
+/// 调用方传入——生成中新鲜度判定依赖当前时刻，注入后判定可测）。
 pub(crate) fn query_window_sessions_at(
     conn: &Connection,
     window_start_ms: i64,
     limit: usize,
+    now_ms: i64,
 ) -> Result<crate::session_hud::AgentWindowSessions, String> {
     /// 内层候选行上限（与 claude 同量级：限制成本，不全表扫）。
     const WINDOW_SCAN_ROWS: i64 = 2000;
@@ -1092,7 +1169,7 @@ pub(crate) fn query_window_sessions_at(
     let mut stmt = conn
         .prepare(sql)
         .map_err(|e| format!("准备 DSH 会话窗口查询失败: {e}"))?;
-    let sessions = stmt
+    let mut sessions = stmt
         .query_map(
             rusqlite::params![window_start_ms, WINDOW_SCAN_ROWS, limit as i64],
             |row| {
@@ -1107,7 +1184,7 @@ pub(crate) fn query_window_sessions_at(
                     project: row.get(7)?,
                     speed_out_tokens: row.get(8)?,
                     speed_ms: row.get(9)?,
-                    // DSH 无运行中标记可读，不臆造
+                    // 生成中先填 false，下方由会话投影（当前轮是否结束）回填
                     generating: false,
                     ttft_ms: row.get(10)?,
                     gen_out_tokens: row.get(8)?,
@@ -1126,10 +1203,35 @@ pub(crate) fn query_window_sessions_at(
         )
         .map(|n| n.max(0) as usize)
         .map_err(|e| format!("统计 DSH 活跃会话数失败: {e}"))?;
+    // 生成中：逐会话读投影缓存（实测每个约 30KB，HUD 2 秒一拍 × ≤3 个会话，
+    // 成本可忽略）；文件缺失/半写/格式变化一律保守判空闲，不臆造状态
+    for s in &mut sessions {
+        s.generating = session_generating(&s.session_id, now_ms);
+    }
     Ok(crate::session_hud::AgentWindowSessions {
         total_active,
         sessions,
     })
+}
+
+/// 会话悬浮窗模型速度区：窗口内按模型的速度摘要。
+///
+/// 口径 = **真生成窗口**（本库 `duration_ms` 就是 stream 首末 chunk 之差，
+/// 见模块头速度口径），聚合本身复用各来源派生库通用的
+/// `session_hud::collect_derived_model_speeds`。
+pub fn query_window_model_speeds(
+    window_start_ms: i64,
+    limit: usize,
+) -> Result<Vec<crate::session_hud::HudModelSpeed>, String> {
+    import_incremental()?;
+    let conn = open_dsh_db()?;
+    crate::session_hud::collect_derived_model_speeds(
+        &conn,
+        window_start_ms,
+        limit,
+        crate::local_agents::DSH,
+        crate::token_speed::SpeedQuality::Generation,
+    )
 }
 
 /// 按项目 × 模型聚合 [from_ms, to_ms) 的用量（SQL 侧 GROUP BY，不逐行加载）。
@@ -1390,6 +1492,111 @@ mod tests {
         files
             .into_iter()
             .find_map(|p| std::fs::read(&p).ok().filter(|b| b.len() > 64))
+    }
+
+    /// 投影快照最小形态（用真实字段路径：record.rows.turnBoundary.val.openTurnStartSeq
+    /// 与 record.rows.sessionStats.val.openStep）
+    fn projection_json(open_turn: &str, open_step: &str) -> String {
+        format!(
+            r#"{{"version":7,"record":{{"identity":{{"formatVersion":4,"cwd":"D:\\code\\demo"}},"rows":{{"turnBoundary":{{"val":{{"openTurnStartSeq":{open_turn},"lastStepBoundary":{{"kind":"start","seq":9}}}}}},"sessionStats":{{"val":{{"openStep":{open_step}}}}}}}}}}}"#
+        )
+    }
+
+    /// 生成中判定（投影的"当前轮未结束" + 新鲜度上限）：
+    /// - 轮未结束（openTurnStartSeq 非空）且投影新鲜 → 生成中；
+    /// - 轮已收尾（null，本机实测正常收尾的会话恒如此）→ 空闲；
+    /// - **step 边界不闪**：工具执行期间 openStep 为空但轮未结束 → 仍算生成中
+    ///   （这是选轮级信号而非 openStep 的原因，见函数注释）；
+    /// - 僵尸轮（进程被强杀，mtime 停在崩溃时刻）→ 新鲜度上限判空闲。
+    #[test]
+    fn generating_from_projection_uses_open_turn_with_freshness() {
+        let now = 1_791_840_000_000_i64;
+        let parse = |s: String| serde_json::from_str::<Value>(&s).expect("测试 JSON 应可解析");
+
+        // 轮未结束 + 投影 5 秒前写过 → 生成中
+        let live = parse(projection_json("6999", "null"));
+        assert!(generating_from_projection(&live, now - 5_000, now));
+        // 同上但 step 也开着（LLM 调用中）
+        let live_step = parse(projection_json(
+            "6999",
+            &format!(r#"{{"turn":33,"step":20,"startTime":{}}}"#, now - 3_000),
+        ));
+        assert!(generating_from_projection(&live_step, now - 3_000, now));
+
+        // 轮已收尾 → 空闲（无论 step 字段是什么）
+        assert!(!generating_from_projection(
+            &parse(projection_json("null", "null")),
+            now - 5_000,
+            now
+        ));
+
+        // 边界：mtime 恰好等于上限仍算生成中（闭区间），超 1ms 即空闲
+        let live = parse(projection_json("6999", "null"));
+        assert!(generating_from_projection(
+            &live,
+            now - GENERATING_FRESH_MS,
+            now
+        ));
+        assert!(!generating_from_projection(
+            &live,
+            now - GENERATING_FRESH_MS - 1,
+            now
+        ));
+        // mtime 缺失（0）/ 路径缺失 → 空闲（不臆造）
+        assert!(!generating_from_projection(&live, 0, now));
+        assert!(!generating_from_projection(
+            &parse(r#"{"version":7,"record":{"identity":{"formatVersion":4},"rows":{}}}"#.into()),
+            now,
+            now
+        ));
+    }
+
+    /// 投影快照读取的守卫：只认 version 7 + formatVersion 4；半写/损坏 JSON
+    /// 返回 None（保守判空闲）；会话 id 只允许文件名安全字符集（不拼目录外路径）；
+    /// mtime 随读取一并取出（生成中判定的新鲜度基准）。
+    #[test]
+    fn read_projection_guards_format_and_session_id() {
+        let dir = std::env::temp_dir().join(format!("zbar-dsh-proj-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let ok = dir.join("session-abc.json");
+        std::fs::write(&ok, projection_json("null", "null")).unwrap();
+        let (v, mtime_ms) = read_projection_at(&ok).expect("合法形态应可读");
+        assert_eq!(
+            v.pointer("/record/identity/cwd").and_then(|c| c.as_str()),
+            Some(r"D:\code\demo")
+        );
+        assert!(mtime_ms > 0, "mtime 必须一并取出（新鲜度基准）");
+
+        // version 不是 7 / formatVersion 不是 4：放弃（升级换格式时不误解析）
+        std::fs::write(
+            &ok,
+            projection_json("null", "null").replace("\"version\":7", "\"version\":8"),
+        )
+        .unwrap();
+        assert!(read_projection_at(&ok).is_none());
+        std::fs::write(
+            &ok,
+            projection_json("null", "null").replace("\"formatVersion\":4", "\"formatVersion\":5"),
+        )
+        .unwrap();
+        assert!(read_projection_at(&ok).is_none());
+
+        // 半写状态：截断的 JSON 解析失败 → None（不 panic、不误判）
+        std::fs::write(&ok, &projection_json("null", "null")[..40]).unwrap();
+        assert!(read_projection_at(&ok).is_none());
+        // 文件不存在 → None
+        assert!(read_projection_at(&dir.join("nope.json")).is_none());
+
+        // 会话 id 守卫：路径分隔/上跳一律不读（返回 None，不构造目录外路径）
+        assert!(read_projection("../secrets").is_none());
+        assert!(read_projection("a/b").is_none());
+        assert!(read_projection("a\\b").is_none());
+        assert!(read_projection("").is_none());
+        assert!(read_projection("..").is_none());
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// 会话 header 行解析：id / createdAt / cwd / delegationDepth。
@@ -1661,6 +1868,48 @@ mod tests {
             trend_total, first.overall.total_tokens,
             "趋势总量与 overall 不一致"
         );
+
+        // 会话窗口（悬浮窗分组）：行内不变式——in 为非缓存输入（≤ 原值）、
+        // 生成口径分子分母同范围、项目/模型集合可解析；不假设本机恰好有几行
+        let window = query_window_sessions(0, 3).expect("会话窗口查询失败");
+        if !window.sessions.is_empty() {
+            assert!(window.sessions.len() <= 3, "limit 未生效");
+            assert!(window.total_active >= window.sessions.len());
+            for s in &window.sessions {
+                assert!(!s.session_id.is_empty());
+                assert!(s.in_tokens >= 0 && s.out_tokens >= 0 && s.cache_read >= 0);
+                assert!(s.req_count > 0, "会话行应有 model_usage 计行");
+                assert_eq!(
+                    s.gen_out_tokens > 0,
+                    s.gen_ms > 0.0,
+                    "生成口径分子分母必须同范围（有分子必有分母）：{s:?}"
+                );
+            }
+        }
+
+        // 模型速度区：窗口覆盖全量 → 每个模型一行，口径必须是生成口径
+        // （duration_ms = stream 首末 chunk 差），且 tps 全部为正有限值
+        let speeds = query_window_model_speeds(0, 3).expect("模型速度查询失败");
+        assert!(!speeds.is_empty(), "有真实数据时速度区不该为空");
+        for row in &speeds {
+            assert_eq!(row.agent, "dsh");
+            assert_eq!(
+                row.quality,
+                crate::token_speed::SpeedQuality::Generation,
+                "DSH 的 duration_ms 是生成窗口，不是请求总耗时"
+            );
+            assert!(row.samples > 0 && row.last_at > 0);
+            assert!(
+                row.tps.is_finite() && row.tps > 0.0 && row.avg_tps > 0.0,
+                "速度必须是正有限值：{row:?}"
+            );
+            // 样本池极值关系：最近值来自同一样本池，必落在 [min, max] 内
+            assert!(row.min_tps <= row.max_tps, "样本池极值关系被破坏");
+            assert!(
+                row.tps >= row.min_tps - 1e-6 && row.tps <= row.max_tps + 1e-6,
+                "最近值必须落在样本池极值内：{row:?}"
+            );
+        }
     }
 
     /// query_trend 的桶数上限：`to_ms = i64::MAX` 这类无界调用必须被截断而不是

@@ -508,6 +508,12 @@
         min-width: 0;
         line-height: calc(14px * var(--hud-scale));
       }
+      /* 窗口外回退行（该 agent 活跃窗口内无会话，行内是"今日最近会话"）：
+         整体降透明度做"非此刻活跃"的视觉标记，行高/结构不变（不影响
+         Rust 侧高度栅格 HUD_ROW_H）；hover tooltip 给出完整说明 */
+      .hud-row-stale {
+        opacity: 0.62;
+      }
       /* 状态点：生成中（青绿呼吸脉冲，1.2s infinite，opacity + transform
          —— 不做位移/字号，不影响布局）/ 空闲（灰，静止） */
       .hud-dot {

@@ -1057,6 +1057,29 @@ pub fn query_window_sessions(
     query_window_sessions_at(&conn, window_start_ms, limit, chrono::Utc::now().timestamp_millis())
 }
 
+/// 会话悬浮窗模型速度区：窗口内按模型的速度摘要。
+///
+/// 口径 = **请求平均**（本库 `duration_ms` 是 `llm.request → usage.record` 事件
+/// 时间差 = 整请求耗时，前端带 ≈）。**为什么不用 step_meta 的生成口径**：
+/// `step_meta` 没有 model 归属列（主键是 file_path/turn_id/step_key，模型只落在
+/// `model_usage.model_id` 上），真流式时长无法拆到模型维度；会话行仍是生成口径
+/// （见 `query_window_sessions_at` 的 step_meta 回填），两者不冲突——行是"这个
+/// 会话多快"，模型区是"这个模型按请求平均多快"，各自标注口径。
+pub fn query_window_model_speeds(
+    window_start_ms: i64,
+    limit: usize,
+) -> Result<Vec<crate::session_hud::HudModelSpeed>, String> {
+    import_incremental()?;
+    let conn = open_kimi_db()?;
+    crate::session_hud::collect_derived_model_speeds(
+        &conn,
+        window_start_ms,
+        limit,
+        crate::local_agents::KIMI,
+        crate::token_speed::SpeedQuality::RequestAverage,
+    )
+}
+
 /// step_meta 的会话级聚合结果（回填 AgentSessionBrief 的 kimi 增强字段）。
 #[derive(Debug, Default, Clone, PartialEq)]
 struct StepMetaAgg {
@@ -3867,6 +3890,33 @@ mod tests {
         assert_eq!(s_new.ttft_ms, None);
         assert_eq!(s_new.gen_out_tokens, 0);
         assert!((s_new.gen_ms - 0.0).abs() < f64::EPSILON);
+
+        // 模型速度区（悬浮窗底部）：按「来源 × 模型」聚合，请求平均口径
+        //（step_meta 没有 model 归属列，按模型只能走 duration_ms）
+        let speeds = crate::session_hud::collect_derived_model_speeds(
+            &conn,
+            win,
+            3,
+            crate::local_agents::KIMI,
+            crate::token_speed::SpeedQuality::RequestAverage,
+        )
+        .expect("模型速度聚合失败");
+        assert_eq!(
+            speeds.len(),
+            1,
+            "窗口内只有 kimi-k2 有可信耗时（k3 的 -1 不可信）：{speeds:?}"
+        );
+        assert_eq!(speeds[0].model, "kimi-k2");
+        assert_eq!(speeds[0].agent, "kimi");
+        // Σout = 7 + 3 = 10、Σms = 1000 + 1500 → 均 4 t/s；
+        // 最近一笔 = 3 ÷ 1500ms = 2 t/s
+        assert!((speeds[0].avg_tps - 4.0).abs() < 1e-9, "{speeds:?}");
+        assert!((speeds[0].tps - 2.0).abs() < 1e-9, "{speeds:?}");
+        assert_eq!(speeds[0].samples, 2);
+        assert_eq!(
+            speeds[0].quality,
+            crate::token_speed::SpeedQuality::RequestAverage
+        );
 
         // limit 截断：只取最新 1 条，total_active 仍为窗口内全部
         let found = query_window_sessions_at(&conn, win, 1, now).expect("limit 查询失败");

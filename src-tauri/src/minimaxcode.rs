@@ -1676,6 +1676,26 @@ pub fn query_window_sessions(
     query_window_sessions_at(&conn, window_start_ms, limit)
 }
 
+/// 会话悬浮窗模型速度区：窗口内按模型的速度摘要。
+///
+/// 口径 = **请求平均**（本库 `duration_ms` 取源库 `request_duration_ms`，是整
+/// 请求耗时，没有生成窗口原料，见模块头；前端带 ≈），聚合复用各来源派生库通用
+/// 的 `session_hud::collect_derived_model_speeds`。
+pub fn query_window_model_speeds(
+    window_start_ms: i64,
+    limit: usize,
+) -> Result<Vec<crate::session_hud::HudModelSpeed>, String> {
+    import_incremental()?;
+    let conn = open_minimaxcode_db()?;
+    crate::session_hud::collect_derived_model_speeds(
+        &conn,
+        window_start_ms,
+        limit,
+        crate::local_agents::MINIMAXCODE,
+        crate::token_speed::SpeedQuality::RequestAverage,
+    )
+}
+
 /// `query_window_sessions` 的纯查询内核（连接注入版，供单元测试）。
 pub(crate) fn query_window_sessions_at(
     conn: &Connection,
@@ -3074,6 +3094,28 @@ mod tests {
             .sessions
             .iter()
             .all(|s| s.in_tokens > 0 && s.out_tokens > 0));
+
+        // 模型速度区（悬浮窗底部）：按「来源 × 模型」聚合，请求平均口径
+        //（duration_ms 取源库 request_duration_ms，无生成窗口原料）
+        let speeds = crate::session_hud::collect_derived_model_speeds(
+            &derived,
+            0,
+            3,
+            crate::local_agents::MINIMAXCODE,
+            crate::token_speed::SpeedQuality::RequestAverage,
+        )
+        .expect("模型速度聚合失败");
+        assert!(
+            speeds
+                .iter()
+                .any(|r| r.model == "MiniMax-M3.1-Flash-Preview"),
+            "真实样本的模型必须出现在速度区：{speeds:?}"
+        );
+        assert!(speeds.iter().all(|r| r.agent == "minimaxcode"
+            && r.quality == crate::token_speed::SpeedQuality::RequestAverage
+            && r.samples > 0
+            && r.tps > 0.0
+            && r.avg_tps > 0.0));
 
         // 项目维度：ses_a 是合成工作区（无项目），ses_b 是真实目录 → unknown + 1 个键
         let projects = query_project_model_rows_at(&derived, 0, i64::MAX).expect("项目聚合失败");

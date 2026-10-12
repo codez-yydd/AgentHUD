@@ -1435,6 +1435,26 @@ pub fn query_window_sessions(
     query_window_sessions_at(&conn, window_start_ms, limit)
 }
 
+/// 会话悬浮窗模型速度区：窗口内按模型的速度摘要。
+///
+/// 口径 = **请求平均**（本库 `duration_ms` 是整请求耗时，没有生成窗口原料，
+/// 见模块头；前端带 ≈），聚合复用各来源派生库通用的
+/// `session_hud::collect_derived_model_speeds`。
+pub fn query_window_model_speeds(
+    window_start_ms: i64,
+    limit: usize,
+) -> Result<Vec<crate::session_hud::HudModelSpeed>, String> {
+    import_incremental()?;
+    let conn = open_opencode_db()?;
+    crate::session_hud::collect_derived_model_speeds(
+        &conn,
+        window_start_ms,
+        limit,
+        crate::local_agents::OPENCODE,
+        crate::token_speed::SpeedQuality::RequestAverage,
+    )
+}
+
 /// `query_window_sessions` 的纯查询内核（连接注入版，供单元测试）。
 pub(crate) fn query_window_sessions_at(
     conn: &Connection,
@@ -2809,6 +2829,26 @@ mod tests {
             && s.gen_out_tokens == 0
             && s.gen_ms == 0.0));
         assert!(window.sessions.iter().all(|s| s.in_tokens > 0 && s.out_tokens > 0));
+
+        // 模型速度区（悬浮窗底部）：按「来源 × 模型」聚合，请求平均口径
+        //（本库有 TTFT 列但恒 NULL、duration_ms 是请求总耗时）
+        let speeds = crate::session_hud::collect_derived_model_speeds(
+            &derived,
+            0,
+            3,
+            crate::local_agents::OPENCODE,
+            crate::token_speed::SpeedQuality::RequestAverage,
+        )
+        .expect("模型速度聚合失败");
+        assert_eq!(speeds.len(), 2, "两个模型各一行：{speeds:?}");
+        assert_eq!(speeds[0].model, "deepseek-v4.1-flash", "按最近使用降序");
+        assert_eq!(speeds[0].samples, 2, "msg_2 + msg_3 同模型");
+        assert_eq!(speeds[1].model, "step-5-preview-free");
+        assert!(speeds.iter().all(|r| r.agent == "opencode"
+            && r.quality == crate::token_speed::SpeedQuality::RequestAverage
+            && r.samples > 0
+            && r.tps > 0.0
+            && r.avg_tps > 0.0));
 
         // 项目维度：两个项目键 + 会话数
         let projects = query_project_model_rows_at(&derived, 0, i64::MAX).expect("项目聚合失败");
