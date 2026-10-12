@@ -527,7 +527,9 @@ export const en: typeof zh = {
     "settings.agentQoderDesc": "Qoder subscription quota (hidden by default; shown once enabled or a credential is added)",
     "settings.agentOpencodegoDesc": "OpenCode usage & quota (hidden by default; shown once enabled or a credential is added)",
     "settings.agentMinimaxDesc": "MiniMax subscription quota (hidden by default; shown once enabled or a credential is added)",
-    "settings.agentMoonshotDesc": "Moonshot subscription quota (hidden by default; shown once enabled or a credential is added)",
+    // Moonshot (月之暗面) open platform: this reads an account balance
+    // (recharge-based), not a subscription quota
+    "settings.agentMoonshotDesc": "Kimi balance (hidden by default; shown once enabled or a credential is added)",
     "settings.agentDeepseekDesc": "DeepSeek balance & usage (hidden by default; shown once enabled or a credential is added)",
     "settings.agentLongcatDesc": "LongCat subscription quota (hidden by default; shown once enabled or a credential is added)",
     "settings.agentMimoDesc": "MiMo subscription quota (hidden by default; shown once enabled or a credential is added)",

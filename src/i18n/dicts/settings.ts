@@ -66,7 +66,8 @@ export const settings = {
   "settings.agentQoderDesc": "Qoder 订阅额度（默认隐藏，启用或添加凭证后显示）",
   "settings.agentOpencodegoDesc": "OpenCode 用量与额度（默认隐藏，启用或添加凭证后显示）",
   "settings.agentMinimaxDesc": "MiniMax 订阅额度（默认隐藏，启用或添加凭证后显示）",
-  "settings.agentMoonshotDesc": "Moonshot 订阅额度（默认隐藏，启用或添加凭证后显示）",
+  // 月之暗面开放平台：查的是账户余额（充值型），非订阅额度，故用「余额」
+  "settings.agentMoonshotDesc": "Kimi 余额（默认隐藏，启用或添加凭证后显示）",
   "settings.agentDeepseekDesc": "DeepSeek 余额与用量（默认隐藏，启用或添加凭证后显示）",
   "settings.agentLongcatDesc": "LongCat 订阅额度（默认隐藏，启用或添加凭证后显示）",
   "settings.agentMimoDesc": "MiMo 订阅额度（默认隐藏，启用或添加凭证后显示）",

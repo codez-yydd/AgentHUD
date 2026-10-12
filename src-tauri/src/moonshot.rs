@@ -1,4 +1,9 @@
-//! Moonshot（月之暗面开放平台）余额查询模块。
+//! Moonshot（月之暗面）开放平台余额查询模块。
+//!
+//! 命名：provider id 仍为 `moonshot`（凭证文件名 moonshot.json、服务端契约、
+//! 价格表 key 都依赖它），界面显示名是「Kimi」——Kimi 是产品名，月之暗面 /
+//! Moonshot 是公司名。用户可见文案（含下列错误串）统一用「Kimi」，内部标识符
+//! 保持 moonshot。
 //!
 //! 数据来源：GET {host}/v1/users/me/balance（Bearer API Key 鉴权），余额
 //! 四项均为字符串数字形态。host 按凭证 region 分流：
@@ -51,8 +56,8 @@ fn expired_message(region: Option<&str>) -> String {
     }
 }
 
-/// 逐凭证查询 Moonshot 余额（串行；单凭证失败产出 error/expired 条目，
-/// 不阻塞其他凭证）。由 provider_quota 骨架分发调用。
+/// 逐凭证查询 Kimi（月之暗面开放平台）余额（串行；单凭证失败产出 error/expired
+/// 条目，不阻塞其他凭证）。由 provider_quota 骨架分发调用。
 pub(crate) fn fetch_quota_entries(
     snapshots: &[CredentialQuerySnapshot],
 ) -> Vec<ProviderQuotaEntry> {
@@ -79,7 +84,7 @@ fn fetch_balance_raw(
         .set("Authorization", &format!("Bearer {}", cred.secret))
         .set("Accept", "application/json")
         .call();
-    flatten_response(resp).map_err(|e| format!("Moonshot 余额{e}"))
+    flatten_response(resp).map_err(|e| format!("Kimi 余额{e}"))
 }
 
 /// 解析单凭证查询结果 → 展示条目（纯函数，网络无关，单测直接构造输入）。
@@ -112,13 +117,13 @@ fn entry_from_raw(
         return fail("expired", expired_message(region));
     }
     if *http_status != 200 {
-        return fail("error", format!("Moonshot 余额查询失败（HTTP {http_status}）"));
+        return fail("error", format!("Kimi 余额查询失败（HTTP {http_status}）"));
     }
     let Some(body) = body.as_deref() else {
-        return fail("error", "Moonshot 余额响应为空".to_string());
+        return fail("error", "Kimi 余额响应为空".to_string());
     };
     let Ok(v) = serde_json::from_str::<serde_json::Value>(body) else {
-        return fail("error", "Moonshot 余额响应解析失败".to_string());
+        return fail("error", "Kimi 余额响应解析失败".to_string());
     };
     // 业务错误码：code != 0 时 smsg 承载平台侧原因（如 Key 被禁用）
     let code = v
@@ -131,16 +136,16 @@ fn entry_from_raw(
             .and_then(|s| s.as_str())
             .filter(|s| !s.trim().is_empty())
             .unwrap_or("未知错误");
-        return fail("error", format!("Moonshot 平台返回错误: {smsg}"));
+        return fail("error", format!("Kimi 平台返回错误: {smsg}"));
     }
     let Some(data) = v.get("data").filter(|d| d.is_object()) else {
-        return fail("error", "Moonshot 余额响应缺少 data 字段".to_string());
+        return fail("error", "Kimi 余额响应缺少 data 字段".to_string());
     };
     let Some(amount) = data
         .get("available_balance")
         .and_then(parse_flexible_f64)
     else {
-        return fail("error", "Moonshot 余额响应缺少 available_balance".to_string());
+        return fail("error", "Kimi 余额响应缺少 available_balance".to_string());
     };
     ProviderQuotaEntry {
         credential_id: cred_id.to_string(),

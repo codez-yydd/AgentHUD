@@ -293,7 +293,7 @@ export const AGENT_VISIBILITY_OPTIONS: ReadonlyArray<{
   },
   {
     id: "kimi",
-    label: "Kimi",
+    label: "Kimi Code",
     descriptionKey: "settings.agentKimiDesc",
   },
   // 紧随首批 5 个本地采集型之后：分组由 AGENT_GROUP 语义决定（与数组下标
@@ -330,7 +330,7 @@ export const AGENT_VISIBILITY_OPTIONS: ReadonlyArray<{
   },
   {
     id: "moonshot",
-    label: "Moonshot",
+    label: "Kimi",
     descriptionKey: "settings.agentMoonshotDesc",
   },
   {
@@ -561,13 +561,13 @@ const SOURCE_META: Record<string, { label: string; color: string }> = {
   codex: { label: "Codex", color: AGENT_COLOR.codex },
   claude: { label: "Claude", color: AGENT_COLOR.claude },
   cursor: { label: "Cursor", color: AGENT_COLOR.cursor },
-  kimi: { label: "Kimi", color: AGENT_COLOR.kimi },
+  kimi: { label: "Kimi Code", color: AGENT_COLOR.kimi },
   gemini: { label: "Gemini", color: AGENT_COLOR.gemini },
   grok: { label: "Grok", color: AGENT_COLOR.grok },
   qoder: { label: "Qoder", color: AGENT_COLOR.qoder },
   opencodego: { label: "OpenCode", color: AGENT_COLOR.opencodego },
   minimax: { label: "MiniMax", color: AGENT_COLOR.minimax },
-  moonshot: { label: "Moonshot", color: AGENT_COLOR.moonshot },
+  moonshot: { label: "Kimi", color: AGENT_COLOR.moonshot },
   deepseek: { label: "DeepSeek", color: AGENT_COLOR.deepseek },
   longcat: { label: "LongCat", color: AGENT_COLOR.longcat },
   mimo: { label: "MiMo", color: AGENT_COLOR.mimo },

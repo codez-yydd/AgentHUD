@@ -228,7 +228,7 @@ const AGENT_LABELS: Record<string, string> = {
   zcode: "ZCode",
   claude: "Claude",
   codex: "Codex",
-  kimi: "Kimi",
+  kimi: "Kimi Code",
   cursor: "Cursor",
   dsh: "DeepSeek Harness",
 };

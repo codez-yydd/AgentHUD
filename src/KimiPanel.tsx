@@ -74,8 +74,8 @@ export function KimiPanel(props: Props) {
           accent: "indigo",
         }}
         empty={{
-          name: "Kimi",
-          icon: "🌙",
+          name: "Kimi Code",
+          icon: "🖥️",
           title: t("stats.kimiNotFound"),
           hint: t("stats.kimiNotFoundHint"),
         }}

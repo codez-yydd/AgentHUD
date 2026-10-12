@@ -160,7 +160,7 @@ const REPORT_SOURCE_REGISTRY = {
   codex: { label: "Codex", brand: "codex", remoteSource: "codex" },
   claude: { label: "Claude", brand: "claude", remoteSource: "claude" },
   cursor: { label: "Cursor", brand: "cursor" },
-  kimi: { label: "Kimi", brand: "kimi" },
+  kimi: { label: "Kimi Code", brand: "kimi" },
   // 纯本地采集型（本地 ~/.dsh 会话数据）：无远端同步来源，取数走 fetchDshUsage
   // （stats + trend，无 rate_limits → 报告页额度区块本就不含该源）
   dsh: { label: "DeepSeek Harness", brand: "dsh" },

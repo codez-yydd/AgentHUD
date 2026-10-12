@@ -412,7 +412,7 @@ function buildModelRows(
     rows.push({
       key: `kimi:${m.provider_id}:${m.model_id}`,
       name: m.model_id,
-      source: "Kimi",
+      source: "Kimi Code",
       color: AGENT_COLOR.kimi,
       barBg: "bg-indigo-500/10",
       requests: m.requests,
@@ -1059,7 +1059,7 @@ export function SummaryTab({
     },
     {
       id: "kimi",
-      name: "Kimi",
+      name: "Kimi Code",
       color: AGENT_COLOR.kimi,
       tintBg: "rgba(67, 56, 202, 0.07)",
       nameClass: "text-indigo-700",

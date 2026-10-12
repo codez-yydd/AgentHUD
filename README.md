@@ -45,7 +45,7 @@
   - [全局快捷键](#全局快捷键)
   - [动态壁纸](#动态壁纸)
   - [Cursor 统计](#cursor-统计)
-  - [Kimi 统计](#kimi-统计)
+  - [Kimi Code 统计](#kimi-code-统计)
   - [凭证管理](#凭证管理)
   - [周额度对比与报表](#周额度对比与报表)
   - [多设备同步](#多设备同步)
@@ -122,16 +122,16 @@
 - **🖥 Cursor 用量统计** — 自动读取本机 Cursor 应用的登录凭据，统计 Pro / Auto / API 套餐额度与 Token 花费明细，美元花费按汇率折算后并入汇总视图；旧版设置页手动填写的 Cookie 会**自动迁移**为凭证（老用户无感升级），支持添加多个 Cookie 实现多账号堆叠显示。
 - **🟢 Codex 用量统计** — 解析本机 `~/.codex/sessions` 会话记录统计 Token 用量与花费；ChatGPT 订阅登录的机器上还可实时拉取 **5 小时 / 每周**额度进度条（API 中转模式自动隐藏额度块）。
 - **🟠 Claude 用量统计** — 解析本机 `~/.claude/projects` 会话记录统计 Token 用量与花费（含子代理会话，按 message 去重防重复计数）；claude.ai 订阅登录的机器上实时拉取 **5 小时会话 / 每周**额度（第三方中转模式自动隐藏额度块）。订阅增强：**模型专属周额度窗口**（Opus / Sonnet 独立额度池）、**超额消费（extra usage）金额行**、凭证失效时给出明确报错并引导重新授权、套餐名识别（Max 5x / Max 20x），支持手动粘贴 `sk-ant-oat` Token 添加多账号（「其他账号」堆叠区）。
-- **🌙 Kimi 用量统计** — 解析本机 `~/.kimi-code/sessions` 会话记录（`wire.jsonl`）统计 Token 用量、花费与 **Token 输出速度**；已登录 Kimi Code CLI 的机器上自动探测本地凭据（OAuth 过期时后台自动续期，无需配置），实时拉取订阅额度：**5 小时滚动窗口 / 周期额度**进度条与重置倒计时、加油包余额、官方会员档位名；也可在设置中手动配置 Kimi API Key。
+- **🖥️ Kimi Code 用量统计** — 解析本机 `~/.kimi-code/sessions` 会话记录（`wire.jsonl`）统计 Token 用量、花费与 **Token 输出速度**；已登录 Kimi Code CLI 的机器上自动探测本地凭据（OAuth 过期时后台自动续期，无需配置），实时拉取订阅额度：**5 小时滚动窗口 / 周期额度**进度条与重置倒计时、加油包余额、官方会员档位名；也可在设置中手动配置 Kimi API Key。
 - **🔑 通用凭证管理** — 各 Agent 面板页内置凭证入口（设置页不提供凭证配置）：每个服务可添加**多个凭证**（多账号 / 多订阅堆叠显示），支持备注（区分订阅等级）、编辑与删除，部分服务支持选择 **region**（中国站 / 国际站）。凭证明文保存在本地 `~/.zbar/credentials/`（目录权限 700、文件 600，仅存本机）。详见[凭证管理](#凭证管理)。
 - **🧩 新增 12 个订阅 / 额度服务** — 凭证驱动，默认隐藏，添加凭证或启用后显示，按凭证类型分组：
-  - **API Key 型**（服务控制台创建 Key 后粘贴）：DeepSeek（余额）、Moonshot 月之暗面（余额）、MiniMax（5h + 周双窗口）、通义灵码 Coding Plan（5h / 周 / 月三窗口）
+  - **API Key 型**（服务控制台创建 Key 后粘贴）：DeepSeek（余额）、Kimi 开放平台 · 月之暗面（余额）、MiniMax（5h + 周双窗口）、通义灵码 Coding Plan（5h / 周 / 月三窗口）
   - **手动 Cookie 型**（浏览器 F12 复制 Cookie 粘贴）：Qoder（大模型积分）、LongCat 美团（Token 配额 + 加油包）、小米 MiMo（余额 + 积分）、百炼 Token 包（5h / 7 天窗口，Team / Personal 双形态）
   - **手动 Token 型**（控制台获取 Token 后粘贴）：StepFun 阶跃星辰（速率 / 积分双套餐形态，Oasis-Token）
   - **本地读取型**（零凭证）：Gemini（读取 Gemini CLI 登录态，自动刷新 token）、Grok（读取 grok CLI 登录态，支持多 token）、OpenCode Go（本地 SQLite 用量估算）
 - **🫘 火山引擎（Volcengine 火山方舟）** — 已预留入口，额度查询即将上线。
-- **🧭 多服务汇总视图** — 「汇总 / Z.ai / Codex / Claude / Cursor / Kimi」标签切换：多服务合计花费与 Token、订阅额度卡片、分时趋势图与模型排行。
-- **⚡ 速度与首字延迟** — 基于调用耗时统计**平均输出速度（tok/s）**与**首字延迟（TTFT）**，含噪声过滤口径（整块下发识别、计时异常剔除）。ZCode / Claude 面板可用；Kimi 面板可用 TPS（由请求耗时推算的输出速度口径、无 TTFT，首字延迟与 Claude 一样隐藏）；Codex / Cursor 数据源无耗时字段，自动隐藏。平均速度统一按「首 Token → 完成」的真实生成区间加权计算（带 ≈ 的为含等待时间的请求近似值）；注入 ZCode 界面的皮肤注入版同样在每轮 / 会话条展示「均 / 快 / 慢」聚合与模型分组速度行，与悬浮窗口径一致。
+- **🧭 多服务汇总视图** — 「汇总 / Z.ai / Codex / Claude / Cursor / Kimi Code」标签切换：多服务合计花费与 Token、订阅额度卡片、分时趋势图与模型排行。
+- **⚡ 速度与首字延迟** — 基于调用耗时统计**平均输出速度（tok/s）**与**首字延迟（TTFT）**，含噪声过滤口径（整块下发识别、计时异常剔除）。ZCode / Claude 面板可用；Kimi Code 面板可用 TPS（由请求耗时推算的输出速度口径、无 TTFT，首字延迟与 Claude 一样隐藏）；Codex / Cursor 数据源无耗时字段，自动隐藏。平均速度统一按「首 Token → 完成」的真实生成区间加权计算（带 ≈ 的为含等待时间的请求近似值）；注入 ZCode 界面的皮肤注入版同样在每轮 / 会话条展示「均 / 快 / 慢」聚合与模型分组速度行，与悬浮窗口径一致。
 - **🏎 模型速度排行** — 统计面板「速度」标签页按模型比较流式输出表现：平均速度与「慢 / 平均 / 快」分位（p10/p50/p90）、首字延迟、输入 / 输出 / 耗时明细、请求数与成功率，支持今日 / 7 天切换与 30 秒自动刷新，并区分展示真实「速度样本」数（与总请求数区分）。
 - **🎯 当前模型** — 各 Agent 面板显示「当前模型」（口径：最近一次调用使用的模型 + 相对时间），汇总页各服务分组同步展示。
 
@@ -179,7 +179,7 @@ zai-floating-monitor/
 │   ├── AgentUsagePanel.tsx   # 单 CLI Agent 通用用量面板（Codex / Claude 共用）
 │   ├── CodexPanel.tsx        # Codex 视图（AgentUsagePanel 品牌皮肤）
 │   ├── ClaudePanel.tsx       # Claude 视图（AgentUsagePanel 品牌皮肤）
-│   ├── KimiPanel.tsx         # Kimi 视图（AgentUsagePanel 品牌皮肤）
+│   ├── KimiPanel.tsx         # Kimi Code 视图（AgentUsagePanel 品牌皮肤）
 │   ├── SkinHubPanel.tsx       # 皮肤分类导航页（免注入 / 需注入入口卡）
 │   ├── PricingPanel.tsx      # 价格配置面板
 │   ├── SettingsPanel.tsx     # 设置页（透明度 / 语言 / 开机自启 / 数据来源 / 汇率 / 快捷键）
@@ -380,13 +380,13 @@ ZBar 以 **只读** 方式访问 ZCode 的 SQLite 数据库，不会干扰 ZCode
 
 **汇率**（设置 → 汇率）：USD→CNY 默认每日自动联网更新，也可取消勾选后手动填写；各服务的美元花费按此汇率折算成人民币。配置保存在 `~/.zbar/cursor.json`（仅存于本机）。
 
-### Kimi 统计
+### Kimi Code 统计
 
 解析本机 `~/.kimi-code/sessions` 会话记录（`wire.jsonl`）统计用量与速度，前置条件是已安装并登录 Kimi Code CLI 且产生过本地会话；订阅额度接口通过本地凭据自动拉取（OAuth 过期时后台自动续期，无需配置），也可在设置中手动配置 Kimi API Key。
 
 ### 凭证管理
 
-除自动读取本机登录态的服务（ZCode / Codex / Claude / Kimi / Cursor 等）外，其余订阅 / 额度服务通过**凭证**接入。凭证入口在各 Agent 面板页内（设置页不提供凭证配置）。
+除自动读取本机登录态的服务（ZCode / Codex / Claude / Kimi Code / Cursor 等）外，其余订阅 / 额度服务通过**凭证**接入。凭证入口在各 Agent 面板页内（设置页不提供凭证配置）。
 
 - **多凭证堆叠** — 每个服务可添加多个凭证（多账号 / 多订阅），面板中堆叠显示；支持备注（如区分订阅等级）、编辑与删除。
 - **region 选择** — 部分服务支持选择中国站 / 国际站。
@@ -396,7 +396,7 @@ ZBar 以 **只读** 方式访问 ZCode 的 SQLite 数据库，不会干扰 ZCode
 
 | 类型 | 获取方式 | 服务 |
 | --- | --- | --- |
-| API Key | 服务控制台创建 Key 后粘贴 | DeepSeek（余额）、Moonshot 月之暗面（余额）、MiniMax（5h + 周双窗口）、通义灵码 Coding Plan（5h / 周 / 月三窗口） |
+| API Key | 服务控制台创建 Key 后粘贴 | DeepSeek（余额）、Kimi 开放平台 · 月之暗面（余额）、MiniMax（5h + 周双窗口）、通义灵码 Coding Plan（5h / 周 / 月三窗口） |
 | Cookie | 浏览器 F12 复制 Cookie 粘贴 | Qoder（大模型积分）、LongCat 美团（Token 配额 + 加油包）、小米 MiMo（余额 + 积分）、百炼 Token 包（5h / 7 天窗口，Team / Personal 双形态） |
 | Token | 控制台获取 Token 后粘贴 | StepFun 阶跃星辰（速率 / 积分双套餐形态，Oasis-Token） |
 

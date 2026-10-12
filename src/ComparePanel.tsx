@@ -62,7 +62,7 @@ const AGENT_META: Record<
   codex: { label: "Codex", brand: "codex", remoteSource: "codex" },
   claude: { label: "Claude", brand: "claude", remoteSource: "claude" },
   cursor: { label: "Cursor", brand: "cursor" },
-  kimi: { label: "Kimi", brand: "kimi" },
+  kimi: { label: "Kimi Code", brand: "kimi" },
   // 纯本地采集型（DeepSeek Harness）：已纳入对比页 Token 用量对比；
   // 无远端同步来源（remoteSource 缺省 → 远端取数分支自动跳过），
   // 也无周额度窗口（AGENT_WINDOW_KEY 不登记 → 不建额度系列）
@@ -73,7 +73,7 @@ const AGENT_META: Record<
   qoder: { label: "Qoder", brand: "qoder" },
   opencodego: { label: "OpenCode", brand: "opencodego" },
   minimax: { label: "MiniMax", brand: "minimax" },
-  moonshot: { label: "Moonshot", brand: "moonshot" },
+  moonshot: { label: "Kimi", brand: "moonshot" },
   deepseek: { label: "DeepSeek", brand: "deepseek" },
   longcat: { label: "LongCat", brand: "longcat" },
   mimo: { label: "MiMo", brand: "mimo" },
