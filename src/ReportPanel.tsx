@@ -15,6 +15,7 @@ import type {
   DeviceInfo,
   DshSnapshot,
   KimiSnapshot,
+  OpencodeSnapshot,
   PricingConfig,
   RemoteUsage,
   Stats,
@@ -28,6 +29,7 @@ import {
   fetchCursorUsage,
   fetchDshUsage,
   fetchKimiUsage,
+  fetchOpencodeUsage,
   fetchStats,
   fetchTrend,
   getCursorConfig,
@@ -153,8 +155,12 @@ interface ReportData {
  * 报告页数据源注册表：id → 展示元数据 + 远端同步来源。新增 agent 数据源时
  * 在此登记（并在 load() 补对应本地加载分支），REPORT_AGENT_IDS 与 agent
  * 筛选行即自动扩展，无需再改筛选渲染。remoteSource 为远端同步协议里的
- * source 字符串（无远端支持的 agent 省略，如 Cursor / Kimi / dsh 仅本机）。
- * 品牌色不在此登记：由 AGENT_COLOR[id] 统一取（dsh 已注册）。
+ * source 字符串（无远端支持的 agent 省略，如 Cursor / Kimi / dsh 明细仅本机）。
+ * 品牌色不在此登记：由 AGENT_COLOR[id] 统一取（dsh / opencodego 已注册）。
+ *
+ * 键是 **UI 侧 AgentId**（agentVisibility / AGENT_COLOR / 筛选胶囊都用它），
+ * 故 OpenCode 这里是 `opencodego`；而它与后端交互的来源名是 "opencode"
+ * （见该条目的 remoteSource 与 load() 里的本地取数分支）。
  */
 const REPORT_SOURCE_REGISTRY = {
   zai: { label: "Z.ai", brand: "zai", remoteSource: "zcode" },
@@ -165,6 +171,15 @@ const REPORT_SOURCE_REGISTRY = {
   // 纯本地采集型（本地 ~/.dsh 会话数据）：无远端同步来源，取数走 fetchDshUsage
   // （stats + trend，无 rate_limits → 报告页额度区块本就不含该源）
   dsh: { label: "DeepSeek Harness", brand: "dsh" },
+  // OpenCode（本地 opencode.db 采集型，Go 套餐额度是并列的另一条链路）：
+  // 本地取数走 fetchOpencodeUsage（get_opencode_usage）；remoteSource 是
+  // **后端来源名 "opencode"**（sync.rs 增量上传与 server 白名单都用它），
+  // 与 UI id `opencodego` 不同字面——写成 opencodego 会拉不到远端数据。
+  opencodego: {
+    label: "OpenCode",
+    brand: "opencodego",
+    remoteSource: "opencode",
+  },
 } as const satisfies Record<
   string,
   { label: string; brand: BrandIconName; remoteSource?: string }
@@ -180,7 +195,9 @@ const REPORT_AGENT_IDS = Object.keys(
 
 /** 图例前缀用的来源名：优先取同步协议 provider 的注册名，未登记的 provider
  *  （dsh 的 provider_id 是自由字符串，如 "deepseek-account" / 第三方）回退到
- *  该模型所属报告 agent 的注册名，避免图例出现 "Unknown xxx"。 */
+ *  该模型所属报告 agent 的注册名，避免图例出现 "Unknown xxx"。
+ *  OpenCode 的 provider_id 通常就是 "opencode"（sourceMeta 已登记 → 显示
+ *  "OpenCode"），第三方路由才回退到注册表标签，两条路径都不会出 Unknown。 */
 function sourcePrefixOf(
   agentId: ReportAgentSourceId,
   providerId: string
@@ -516,7 +533,7 @@ interface ReportCacheEntry {
   from_ms: number;
   to_ms: number;
   bucket: TrendBucket;
-  /** zai/codex/claude/kimi/dsh 已合并来源（stats + trend） */
+  /** zai/codex/claude/kimi/dsh/opencodego 已合并来源（stats + trend） */
   sources: Partial<Record<Exclude<ReportAgentSourceId, "cursor">, ReportSource>>;
   /** Cursor 原始快照（每日明细，重建时再折叠） */
   cursor: CursorSnapshot | null;
@@ -617,6 +634,7 @@ function localResultsFromEntry(entry: ReportCacheEntry): LocalResults {
     claude: loaded("claude"),
     kimi: loaded("kimi"),
     dsh: loaded("dsh"),
+    opencodego: loaded("opencodego"),
     cursor: entry.cursor,
     fxRate: entry.fxRate,
   };
@@ -635,6 +653,9 @@ interface LocalResults {
   kimi: LoadedSource | null;
   /** 纯本地采集型（本地 ~/.dsh 会话数据），与 Kimi 同构：无远端合并来源 */
   dsh: LoadedSource | null;
+  /** OpenCode（本地 opencode.db 采集型）：取数走 fetchOpencodeUsage，
+   *  键是 UI 侧 agent id `opencodego`（远端来源名字面见注册表 remoteSource） */
+  opencodego: LoadedSource | null;
   cursor: CursorSnapshot | null;
   fxRate: number;
 }
@@ -645,6 +666,8 @@ interface RemoteResults {
   zai: RemoteUsage | null;
   codex: RemoteUsage | null;
   claude: RemoteUsage | null;
+  /** OpenCode 明细已在 sync.rs 里按 source="opencode" 上传（server 白名单同值） */
+  opencodego: RemoteUsage | null;
 }
 
 interface Assembled {
@@ -700,6 +723,13 @@ function assembleReport(args: {
   addSourceAgent("kimi", local.kimi?.source ?? null, null);
   // dsh（DeepSeek Harness）同样无远端来源，只合并本机快照
   addSourceAgent("dsh", local.dsh?.source ?? null, null);
+  // OpenCode：本机快照 + 远端（source="opencode"，与 zai/codex/claude 同款
+  // 合并口径）；同步未启用时 remote 为 null，等价于纯本机
+  addSourceAgent(
+    "opencodego",
+    local.opencodego?.source ?? null,
+    remote?.opencodego ?? null
+  );
   const cursorAgent =
     agentVisibility.cursor && local.cursor
       ? makeCursorAgent(local.cursor, fromMs, toMs, fxRate)
@@ -1107,6 +1137,20 @@ export function ReportContent({
             return { source: { stats: snapshot.stats, trend: snapshot.trend } };
           })
         : Promise.resolve(null);
+    // OpenCode：本地取数命令是 get_opencode_usage（模块名 "opencode"），
+    // 快照只有 stats/trend（Go 套餐额度走 providerQuota 另一条链路，报告页
+    // 不展示）；未安装 / 本地库无数据时 safe 兜底为 null
+    const localOpencodePromise: Promise<LoadedSource | null> =
+      agentVisibility.opencodego && wantLocal
+        ? safe(async () => {
+            const snapshot: OpencodeSnapshot = await fetchOpencodeUsage(
+              fromMs,
+              toMs,
+              bucket
+            );
+            return { source: { stats: snapshot.stats, trend: snapshot.trend } };
+          })
+        : Promise.resolve(null);
     const fxRatePromise = getCursorConfig()
       .then((config) =>
         config.usd_cny_rate > 0 ? config.usd_cny_rate : 7.2
@@ -1118,7 +1162,7 @@ export function ReportContent({
         ? { excludeDevice: syncConfig?.device_id ?? "", source }
         : { devices: deviceFilter, source };
     /** 有远端同步来源的 agent 统一走这里（source 字符串取自注册表）。 */
-    const remoteUsageFor = (id: "zai" | "codex" | "claude") =>
+    const remoteUsageFor = (id: "zai" | "codex" | "claude" | "opencodego") =>
       agentVisibility[id] && wantRemote
         ? safe(() =>
             remoteUsage(fromMs, toMs, bucket, {
@@ -1129,6 +1173,8 @@ export function ReportContent({
     const remoteZaiPromise = remoteUsageFor("zai");
     const remoteCodexPromise = remoteUsageFor("codex");
     const remoteClaudePromise = remoteUsageFor("claude");
+    // OpenCode 的远端 source 是 "opencode"（注册表 remoteSource），非 UI id
+    const remoteOpencodePromise = remoteUsageFor("opencodego");
 
     setLocalLoading(true);
     setSyncing(wantRemote);
@@ -1138,13 +1184,14 @@ export function ReportContent({
     // 本地阶段是否已渲染出内容（决定远端失败时是否提示错误）
     let localRendered = false;
     try {
-      const [lz, lc, ll, lcur, lk, ld, fx] = await Promise.all([
+      const [lz, lc, ll, lcur, lk, ld, lo, fx] = await Promise.all([
         localZaiPromise,
         localCodexPromise,
         localClaudePromise,
         localCursorPromise,
         localKimiPromise,
         localDshPromise,
+        localOpencodePromise,
         fxRatePromise,
       ]);
       if (reqId !== loadReqId.current) return;
@@ -1154,6 +1201,7 @@ export function ReportContent({
         claude: ll,
         kimi: lk,
         dsh: ld,
+        opencodego: lo,
         cursor: lcur,
         fxRate: fx,
       };
@@ -1197,10 +1245,11 @@ export function ReportContent({
 
     // —— 远端阶段：独立异步，返回后合并进状态（不阻塞本地首屏）——
     try {
-      const [rz, rc, rcl] = await Promise.all([
+      const [rz, rc, rcl, ro] = await Promise.all([
         remoteZaiPromise,
         remoteCodexPromise,
         remoteClaudePromise,
+        remoteOpencodePromise,
       ]);
       if (reqId !== loadReqId.current || !localResults) return;
       const built = assembleReport({
@@ -1215,6 +1264,7 @@ export function ReportContent({
           zai: rz,
           codex: rc,
           claude: rcl,
+          opencodego: ro,
         },
       });
       setReport(built.data);

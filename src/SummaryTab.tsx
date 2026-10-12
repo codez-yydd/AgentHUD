@@ -10,6 +10,7 @@ import type {
   DshSnapshot,
   KimiSnapshot,
   ModelStat,
+  OpencodeSnapshot,
   OverallStat,
   PricingConfig,
   ProviderQuotaEntry,
@@ -62,6 +63,9 @@ interface Props {
   kimi: KimiSnapshot | null;
   /** DSH（DeepSeek Harness）：纯本地采集型，快照无订阅额度窗口 */
   dsh: DshSnapshot | null;
+  /** OpenCode（本地 opencode.db 采集型）：快照同样只有 stats/trend，
+   *  Go 套餐额度不在快照里（走 providerQuota["opencodego"] 另一条链路） */
+  opencode: OpencodeSnapshot | null;
   currency: Currency;
   bucket: "hour" | "day";
   fxRate: number;
@@ -310,6 +314,7 @@ function buildModelRows(
   cursor: CursorSnapshot | null,
   kimi: KimiSnapshot | null,
   dsh: DshSnapshot | null,
+  opencode: OpencodeSnapshot | null,
   pricing: PricingConfig,
   currency: Currency,
   fxRate: number,
@@ -443,6 +448,36 @@ function buildModelRows(
       source: "DeepSeek Harness",
       color: AGENT_COLOR.dsh,
       barBg: "bg-blue-500/10",
+      requests: m.requests,
+      tokens: m.total_tokens,
+      cost: modelCost(
+        m.model_id,
+        m.input_tokens,
+        m.output_tokens,
+        m.cache_read_tokens,
+        pricing,
+        currency,
+        fxRate
+      ),
+      hasPrice,
+      mergedNote: mergedNoteOf(m),
+    });
+  }
+
+  // OpenCode：与 Codex/Claude/Kimi 行同款（orange 品牌色，同面板主题色）。
+  // key 用 UI 侧 agent id `opencodego`（与其余行一致，按 agent 命名空间隔离），
+  // provider_id 也带进 key——opencode.db 里 provider 可以是任意路由，不能只按
+  // model_id 归并。
+  for (const m of agentVisibility.opencodego
+    ? opencode?.stats.by_model ?? []
+    : []) {
+    const hasPrice = hasPositivePrice(m.model_id, pricing);
+    rows.push({
+      key: `opencodego:${m.provider_id}:${m.model_id}`,
+      name: m.model_id,
+      source: "OpenCode",
+      color: AGENT_COLOR.opencodego,
+      barBg: "bg-orange-500/10",
       requests: m.requests,
       tokens: m.total_tokens,
       cost: modelCost(
@@ -662,6 +697,7 @@ export function SummaryTab({
   cursor,
   kimi,
   dsh,
+  opencode,
   currency,
   bucket,
   fxRate,
@@ -689,6 +725,7 @@ export function SummaryTab({
     cursorError,
     kimiError,
     dshError,
+    opencodeError,
     error: zaiError,
     agentQuotaDeltas,
     accountQuotas,
@@ -746,6 +783,16 @@ export function SummaryTab({
     0
   );
   const dshTokens = dsh?.stats.overall.total_tokens ?? 0;
+
+  // OpenCode 花费 & token（与 Codex/Claude/Kimi 同款口径：花费对趋势桶双货币
+  // 求和；速度字段来自本地 opencode.db 归一化库）。Go 套餐额度是**并列**的
+  // 另一条链路（providerQuota["opencodego"]，只给百分比），不进这里——
+  // 否则同一份用量会被官方百分比与本地明细重复计入。
+  const opencodeCostRaw = (opencode?.trend ?? []).reduce(
+    (s, p) => s + (currency === "cny" ? p.cost_cny : p.cost_usd),
+    0
+  );
+  const opencodeTokens = opencode?.stats.overall.total_tokens ?? 0;
 
   // Kimi 凭证体系条目（~/.zbar/credentials/kimi.json，应用内网页登录）：
   // 全局 120s 轮询覆盖（与 Kimi 页「其他账号」区同源同频）；含 error/expired
@@ -951,12 +998,19 @@ export function SummaryTab({
       })
     : t("summary.noQuotaData");
 
+  // OpenCode 缓存率：included 口径（本地库归一化把 cache_read 并进 input_tokens，
+  // 与 OpencodePanel 的 cacheRateMode="included" 一致）。
+  // 无 TTFT：后端该列恒 NULL（见 opencode.rs），速度口径是逐条 assistant 消息的
+  // 请求平均（request_average），卡片上会自动带 ≈ 前缀。
+  const opencodeCacheHitPct = cacheHitPctIncluded(opencode?.stats.overall);
+
   // OpenCode Go 额度（双数据源：有 API Key 时官方口径，否则本地库估算）。
   // 数据来自 providerQuota 通用缓存（后端 get_provider_quota 分发），窗口
   // key 复用 kimi 词表：hour5 / weekly / monthly。
   // 注意与其余 Agent 的差异：官方接口只给百分比 + 重置时间，**不含金额与
-  // token**，故花费表与趋势图里它恒为 0（下方 cost/tokens 传 0），这里只喂
-  // 额度监控区的 metrics。
+  // token**，故这里只喂额度监控区的 metrics；花费表与趋势图走的是并列的
+  // 本地用量快照（opencode，见上方 opencodeCostRaw/opencodeTokens），
+  // 两条链路不混算。
   const opencodeQuotaEntry = providerQuota["opencodego"]?.entries?.[0];
   const opencodeMetrics: AgentSummary["metrics"] =
     opencodeQuotaEntry?.status === "ok"
@@ -1107,10 +1161,13 @@ export function SummaryTab({
       empty: dshUsageSummary,
     },
     {
-      // OpenCode Go（双数据源）：额度监控区展示 5小时/本周/本月三档。
-      // 花费与 token 恒为 0——官方接口只返回百分比，不透出金额；无 CLI 时
-      // 本机也没有会话日志可统计。这两项为 0 会让它在花费表与占比条里被
-      // activeAgents 过滤掉（符合预期：它没有花费数据可展示）。
+      // OpenCode（双数据源）：花费/token 来自**本地** opencode.db 采集快照
+      // （与 dsh 同款口径），额度监控区展示 Go 套餐 5小时/本周/本月三档
+      // （providerQuota["opencodego"]，官方 API 或本地估算）。两条链路互不
+      // 重叠：官方接口只给百分比、不透出金额，故额度不进 cost/tokens，
+      // 用量也不进 metrics——分工与 OpencodePanel 一致。
+      // 无 CLI 时本机没有会话日志可统计，cost/tokens 双 0 → 该卡片被
+      // activeAgents 过滤掉（此时只剩额度区那一行展示套餐用量）。
       id: "opencodego",
       name: "OpenCode",
       color: AGENT_COLOR.opencodego,
@@ -1124,10 +1181,20 @@ export function SummaryTab({
             : t("summary.opencodeOfficial")
           : null,
       badgeClass: "bg-orange-500/12 text-orange-700",
-      cost: 0,
-      tokens: 0,
-      // 额度缓存已写入（ts>0）即视为已有结论，避免加载中空转
-      loaded: (providerQuota["opencodego"]?.ts ?? 0) > 0,
+      cost: opencodeCostRaw,
+      tokens: opencodeTokens,
+      // 有结论即算已加载：额度缓存写入（ts>0）或本地快照到达/确认报错
+      //（无 CLI 且未配 API Key 时两者皆无 → 保持加载态，不被误判为「零用量」）
+      loaded:
+        (providerQuota["opencodego"]?.ts ?? 0) > 0 ||
+        opencode != null ||
+        opencodeError != null,
+      currentModel: opencode?.stats.current_model ?? null,
+      avgTps: opencode?.stats.overall.avg_tps ?? null,
+      // 后端置 request_average（逐条 assistant 消息的平均，非真生成窗口）
+      // → 卡片自动带 ≈ 前缀
+      speedQuality: opencode?.stats.overall.speedQuality ?? null,
+      cacheHitPct: opencodeCacheHitPct,
       metrics: opencodeMetrics,
       empty: t("summary.noQuotaData"),
     },
@@ -1167,6 +1234,9 @@ export function SummaryTab({
   // DSH 趋势桶同样自带双货币花费（后端 get_dsh_usage 用同一套 cost_for 折算）
   const dshTrendMap = new Map<string, TrendPoint>();
   (dsh?.trend ?? []).forEach((p) => dshTrendMap.set(p.label, p));
+  // OpenCode 趋势桶同款（后端 get_opencode_usage 用同一套 cost_for 折算）
+  const opencodeTrendMap = new Map<string, TrendPoint>();
+  (opencode?.trend ?? []).forEach((p) => opencodeTrendMap.set(p.label, p));
 
   const trendLabels: string[] = [];
   const trendLabelSet = new Set<string>();
@@ -1187,6 +1257,8 @@ export function SummaryTab({
     kimiTrendMap.forEach((_point, label) => addTrendLabel(label));
   if (agentVisibility.dsh)
     dshTrendMap.forEach((_point, label) => addTrendLabel(label));
+  if (agentVisibility.opencodego)
+    opencodeTrendMap.forEach((_point, label) => addTrendLabel(label));
 
   const mergedTrend: TrendPoint[] = trendLabels.map((label) => {
     const p =
@@ -1203,6 +1275,9 @@ export function SummaryTab({
     const a = agentVisibility.claude ? claudeTrendMap.get(label) : undefined;
     const k = agentVisibility.kimi ? kimiTrendMap.get(label) : undefined;
     const d = agentVisibility.dsh ? dshTrendMap.get(label) : undefined;
+    const o = agentVisibility.opencodego
+      ? opencodeTrendMap.get(label)
+      : undefined;
     return {
       label: p.label,
       total_tokens:
@@ -1211,19 +1286,22 @@ export function SummaryTab({
         (a?.total_tokens ?? 0) +
         (k?.total_tokens ?? 0) +
         (d?.total_tokens ?? 0) +
+        (o?.total_tokens ?? 0) +
         (c?.tokens ?? 0),
       requests:
         (agentVisibility.zai ? p.requests : 0) +
         (x?.requests ?? 0) +
         (a?.requests ?? 0) +
         (k?.requests ?? 0) +
-        (d?.requests ?? 0),
+        (d?.requests ?? 0) +
+        (o?.requests ?? 0),
       cost_cny:
         (agentVisibility.zai ? p.cost_cny : 0) +
         (x?.cost_cny ?? 0) +
         (a?.cost_cny ?? 0) +
         (k?.cost_cny ?? 0) +
         (d?.cost_cny ?? 0) +
+        (o?.cost_cny ?? 0) +
         (c?.costCny ?? 0),
       cost_usd:
         (agentVisibility.zai ? p.cost_usd : 0) +
@@ -1231,6 +1309,7 @@ export function SummaryTab({
         (a?.cost_usd ?? 0) +
         (k?.cost_usd ?? 0) +
         (d?.cost_usd ?? 0) +
+        (o?.cost_usd ?? 0) +
         (c?.costUsd ?? 0),
     };
   });
@@ -1243,6 +1322,7 @@ export function SummaryTab({
     cursor,
     kimi,
     dsh,
+    opencode,
     pricing,
     currency,
     fxRate,

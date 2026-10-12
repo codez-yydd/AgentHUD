@@ -247,7 +247,8 @@ export interface RemoteOverall {
 export interface RemoteModelStat {
   model_id: string;
   provider_id: string;
-  /** 数据来源："zcode" | "codex" | "claude"（旧数据无此字段时后端默认 "zcode"） */
+  /** 数据来源："zcode" | "codex" | "claude" | "kimi" | "cursor" | "dsh"
+   *  | "opencode"（旧数据无此字段时后端默认 "zcode"） */
   source: string;
   requests: number;
   input_tokens: number;
@@ -794,6 +795,21 @@ export interface DshSnapshot {
   trend: TrendPoint[];
 }
 
+// ===== OpenCode 用量统计（与 Rust opencode 模块结构一一对应）=====
+
+/** OpenCode 用量快照（get_opencode_usage 返回）。
+ *  stats / trend 与 z.ai 同构（展示层直接复用 AgentUsagePanel）；
+ *  纯本地采集型（~/.local/share/opencode/opencode.db 导入库）**不含**
+ *  rate_limits——Go 套餐额度是另一条并列来源，走 get_provider_quota
+ *  （provider 仍为 agentId `opencodego`，命令/模块名里的 "opencode" 只是命名）。
+ *  速度口径由后端置为 request_average（逐条 assistant 消息的平均），展示层
+ *  自动加 ≈ 前缀；缓存率沿用 included 口径——本库归一化时把 cache_read 并进
+ *  input_tokens（见 opencode.rs 模块头），故分母用 input 与 Codex 同款。 */
+export interface OpencodeSnapshot {
+  stats: Stats;
+  trend: TrendPoint[];
+}
+
 // ===== Kimi 用量统计（与 Rust kimi 模块结构一一对应）=====
 
 /** Kimi（Kimi Code CLI）订阅额度（api.kimi.com 实时接口获取） */
@@ -1145,7 +1161,10 @@ export interface CustomPetEntry {
 
 /** 项目内单个 Agent 来源的用量分解 */
 export interface AgentBreakdown {
-  /** 数据来源："zcode" | "codex" | "claude" | "cursor" | "kimi" */
+  /** **后端来源名**（非 UI 侧 AgentId）："zcode" | "codex" | "claude" | "cursor"
+   *  ∪ 本地读取型注册表来源 "kimi" | "dsh" | "opencode"（Rust local_agents）。
+   *  展示元数据由 sourceMeta() 查（OpenCode 的后端来源名是 "opencode"，
+   *  面板 id 才是 "opencodego"）。 */
   source: string;
   tokens: number;
   requests: number;

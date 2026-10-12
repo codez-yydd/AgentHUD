@@ -45,6 +45,11 @@ export const stats = {
   "stats.dshNotFound": "未找到 DSH 会话数据",
   "stats.dshNotFoundHint":
     "请确认 DeepSeek Harness 已安装并使用过；数据读取自 ~/.dsh 会话目录。",
+  // OpenCode 面板：本地用量（opencode.db 导入库）+ Go 套餐额度板块
+  "stats.opencodeQuota": "Go 套餐额度",
+  "stats.opencodeNotFound": "未找到 OpenCode 会话数据",
+  "stats.opencodeNotFoundHint":
+    "请确认 OpenCode 已安装并使用过；数据读取自本地库\n（~/.local/share/opencode/opencode.db）。",
   // Claude 订阅额度增量窗口（API 返回该窗口才有值，缺省不渲染）
   "stats.claudeOpusWeekly": "Opus 周额度",
   "stats.claudeSonnetWeekly": "Sonnet 周额度",

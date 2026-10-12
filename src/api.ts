@@ -24,6 +24,7 @@ import type {
   ModelInfo,
   ModelSpeedStat,
   ModelsdevSyncResult,
+  OpencodeSnapshot,
   PricingConfig,
   PricingDiff,
   ApplyPriceItem,
@@ -186,7 +187,9 @@ export async function remoteUsage(
   options: {
     excludeDevice?: string;
     devices?: string;
-    /** 数据来源筛选："zcode" | "codex" | "claude"，空串 = 全部 */
+    /** 数据来源筛选：服务端来源名（"zcode" | "codex" | "claude" ∪ 本地上传型
+     *  "kimi" | "dsh" | "opencode"），空串 = 全部。注意是来源名不是 UI 侧
+     *  AgentId——OpenCode 面板 id 是 opencodego，这里要传 "opencode"。 */
     source?: string;
   } = {}
 ): Promise<RemoteUsage> {
@@ -362,9 +365,27 @@ export async function clearQuotaHistory(): Promise<void> {
   await invoke("clear_quota_history");
 }
 
-/** 对比页：按指定 Agent 和周期聚合 Token（支持 zai/codex/claude/cursor/kimi/dsh） */
+/**
+ * 对比页本地取数的**后端来源名**（get_compare_tokens_for_agent 的 source 参数）。
+ *
+ * 注意与 UI 侧 AgentId 是两个域：OpenCode 的面板 id / 颜色 / 可见性键是
+ * `opencodego`，而后端来源名固定是 `opencode`（Rust 侧 local_agents::OPENCODE，
+ * lib.rs 按来源字符串分发）——传成 `opencodego` 会拿到「未知的对比 Agent」错误。
+ * 其余 agent 两个域同字面，故只有 OpenCode 需要调用方显式映射。
+ */
+export type CompareTokenSource =
+  | "zai"
+  | "codex"
+  | "claude"
+  | "cursor"
+  | "kimi"
+  | "dsh"
+  | "opencode";
+
+/** 对比页：按指定 Agent 和周期聚合 Token
+ *  （支持 zai/codex/claude/cursor ∪ 注册表内本地读取型 kimi/dsh/opencode） */
 export async function getCompareTokensForAgent(
-  source: "zai" | "codex" | "claude" | "cursor" | "kimi" | "dsh",
+  source: CompareTokenSource,
   periods: [number, number][]
 ): Promise<WeeklyTokenBucket[]> {
   return invoke<WeeklyTokenBucket[]>("get_compare_tokens_for_agent", {
@@ -439,6 +460,23 @@ export async function fetchDshUsage(
   bucket: TrendBucket
 ): Promise<DshSnapshot> {
   return invoke<DshSnapshot>("get_dsh_usage", {
+    req: { from_ms: fromMs, to_ms: toMs, bucket },
+  });
+}
+
+// ===== OpenCode（本地读取型）用量统计 =====
+
+/** 拉取 OpenCode 用量快照（stats + trend；本地 opencode.db 导入库，无额度字段）。
+ *  agentId 仍是既有的 `opencodego`（显示名 OpenCode）——命令名里的 opencode
+ *  只是模块命名；Go 套餐额度是并列的另一条来源，走 get_provider_quota("opencodego")。
+ *  入参字段名固定 snake_case（from_ms/to_ms），不能靠 camelCase 转换。
+ *  未安装 OpenCode / 本地库无可用数据时后端返回 Err（中文提示），调用方需容错。 */
+export async function fetchOpencodeUsage(
+  fromMs: number,
+  toMs: number,
+  bucket: TrendBucket
+): Promise<OpencodeSnapshot> {
+  return invoke<OpencodeSnapshot>("get_opencode_usage", {
     req: { from_ms: fromMs, to_ms: toMs, bucket },
   });
 }

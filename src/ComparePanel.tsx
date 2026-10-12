@@ -23,6 +23,7 @@ import {
   remoteAgentQuotaSnapshots,
   remoteSnapshots,
   remoteUsage,
+  type CompareTokenSource,
 } from "./api";
 import { formatTokens } from "./format";
 import { remainingTextColor } from "./widgets";
@@ -43,9 +44,19 @@ interface Props {
 }
 
 /** 对比页参与的 Agent（凭证驱动的新 provider 尚无周额度对比数据，暂不纳入）。
- *  dsh（DeepSeek Harness）为纯本地采集型：纳入 Token 用量对比；因无订阅额度
- *  窗口，不登记 AGENT_WINDOW_KEY，故不出现在周额度系列里。 */
-type CompareAgent = "zai" | "codex" | "claude" | "cursor" | "kimi" | "dsh";
+ *  dsh（DeepSeek Harness）与 opencodego（OpenCode）为本地采集型：纳入 Token
+ *  用量对比；因无订阅额度窗口快照（后端 agent_quota_history 只写
+ *  cursor/codex/claude/kimi），不登记 AGENT_WINDOW_KEY，故不出现在周额度系列里。
+ *  注意这里的值全是 **UI 侧 AgentId**（opencodego 而非后端来源名 opencode），
+ *  与后端交互的来源名由 LOCAL_COMPARE_SOURCE / AGENT_META.remoteSource 给出。 */
+type CompareAgent =
+  | "zai"
+  | "codex"
+  | "claude"
+  | "cursor"
+  | "kimi"
+  | "dsh"
+  | "opencodego";
 const COMPARE_AGENTS: CompareAgent[] = [
   "zai",
   "codex",
@@ -53,6 +64,7 @@ const COMPARE_AGENTS: CompareAgent[] = [
   "cursor",
   "kimi",
   "dsh",
+  "opencodego",
 ];
 const AGENT_META: Record<
   AgentId,
@@ -71,7 +83,16 @@ const AGENT_META: Record<
   gemini: { label: "Gemini", brand: "gemini" },
   grok: { label: "Grok", brand: "grok" },
   qoder: { label: "Qoder", brand: "qoder" },
-  opencodego: { label: "OpenCode", brand: "opencodego" },
+  // OpenCode（本地 opencode.db 采集型，Go 套餐额度是并列的另一条链路）：
+  // 已纳入 Token 用量对比。remoteSource 是**后端来源名 "opencode"**——不是
+  // UI id `opencodego`（Rust sync.rs 的增量上传、server 白名单都是 opencode，
+  // 传 opencodego 会查不到任何远端数据）；图标走 BrandIcon 的 "opencodego"
+  // 品牌图形（BrandIconName 只有 UI 侧这一套 id）。
+  opencodego: {
+    label: "OpenCode",
+    brand: "opencodego",
+    remoteSource: "opencode",
+  },
   minimax: { label: "MiniMax", brand: "minimax" },
   moonshot: { label: "Kimi", brand: "moonshot" },
   deepseek: { label: "DeepSeek", brand: "deepseek" },
@@ -84,13 +105,32 @@ const AGENT_META: Record<
 };
 
 /** 各 Agent 参与对比的周额度窗口（Z.ai 走 QuotaSnapshot.weekly_pct，不走这里）。
- *  dsh 故意不登记：它没有订阅额度窗口，buildQuotaSeries 对 undefined 会直接
- *  跳过该 Agent（只出现在 Token 用量对比里），不建空额度系列。 */
+ *  dsh / opencodego 故意不登记：它们没有订阅额度窗口快照（后端
+ *  agent_quota_history 只写 cursor/codex/claude/kimi），buildQuotaSeries 对
+ *  undefined 会直接跳过该 Agent（只出现在 Token 用量对比里），不建空额度系列。
+ *  OpenCode Go 的 5 小时/周/月额度不是这条链路：它走 providerQuota 通用缓存
+ *  （agentId `opencodego`，见 SummaryTab 的额度监控区），两者语义不重叠。 */
 const AGENT_WINDOW_KEY: Partial<Record<AgentId, AgentQuotaWindowKey>> = {
   codex: "weekly",
   claude: "weekly",
   cursor: "cursor_auto",
   kimi: "weekly",
+};
+
+/**
+ * AgentId → 本地取数用的**后端来源名**（get_compare_tokens_for_agent 的 source）。
+ * 两个域只有 OpenCode 异名：UI 侧 id 是 `opencodego`，后端固定 `opencode`。
+ * 全量列出而不是 `?? agent` 回落：后者会把 opencodego 原样发给后端（后端不认，
+ * 报「未知的对比 Agent」），表格化后新增 agent 时也必须显式想清楚来源名。
+ */
+const LOCAL_COMPARE_SOURCE: Record<CompareAgent, CompareTokenSource> = {
+  zai: "zai",
+  codex: "codex",
+  claude: "claude",
+  cursor: "cursor",
+  kimi: "kimi",
+  dsh: "dsh",
+  opencodego: "opencode",
 };
 
 const DAY_MS = 86_400_000;
@@ -461,8 +501,10 @@ export function CompareContent({ agentVisibility }: Props) {
 
       if (wantLocal) {
         for (const agent of enabledAgents) {
+          // 传的是后端来源名（opencodego → "opencode"），不是 AgentId：
+          // 见 LOCAL_COMPARE_SOURCE 的说明
           tasks.push(
-            getCompareTokensForAgent(agent, weekPairs)
+            getCompareTokensForAgent(LOCAL_COMPARE_SOURCE[agent], weekPairs)
               .then((buckets) => {
                 localByAgent[agent] = buckets;
               })
@@ -477,7 +519,7 @@ export function CompareContent({ agentVisibility }: Props) {
       if (wantRemote && syncConfig) {
         for (const agent of enabledAgents) {
           const source = AGENT_META[agent].remoteSource;
-          if (!source) continue; // Cursor / Kimi 目前只采集本机，未上传到同步服务
+          if (!source) continue; // Cursor / Kimi / dsh 目前只采集本机，未上传到同步服务
           const usageOpts =
             deviceFilter === "all"
               ? { excludeDevice: syncConfig.device_id, source }

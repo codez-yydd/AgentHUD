@@ -231,6 +231,10 @@ const AGENT_LABELS: Record<string, string> = {
   kimi: "Kimi Code",
   cursor: "Cursor",
   dsh: "DeepSeek Harness",
+  // 键必须是后端来源名 "opencode"（Rust session_hud 的分组标识取自
+  // local_agents::OPENCODE），不是 UI 侧的面板 id "opencodego"——
+  // 写成 opencodego 会让悬浮窗分组落到「原样展示」兜底分支
+  opencode: "OpenCode",
 };
 
 /** 轻量双语词典（仅悬浮窗内文案；语言偏好与主面板同键共享） */

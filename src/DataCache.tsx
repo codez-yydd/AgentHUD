@@ -20,6 +20,7 @@ import type {
   KimiSnapshot,
   ModelStat,
   OverallStat,
+  OpencodeSnapshot,
   PricingConfig,
   ProviderCredentialMeta,
   ProviderQuotaEntry,
@@ -40,6 +41,7 @@ import {
   fetchCursorUsage,
   fetchDshUsage,
   fetchKimiUsage,
+  fetchOpencodeUsage,
   fetchQuota,
   getAgentQuotaHistory,
   fetchStats,
@@ -149,6 +151,7 @@ const CODEX_STALE_MS = 60_000;
 const CLAUDE_STALE_MS = 60_000;
 const KIMI_STALE_MS = 60_000;
 const DSH_STALE_MS = 60_000;
+const OPENCODE_STALE_MS = 60_000;
 
 // ===== 速度口径缓存迁移（V24.1 契约：可加总分子/分母 + speedQuality 标记）=====
 // 旧缓存（无版本标记）的 avg_tps/max_tps 由旧算法聚合（逐行速度算术平均、
@@ -407,6 +410,24 @@ const EMPTY_DSH: DshEntry = {
   ts: 0,
 };
 
+/** OpenCode 快照条目：与 DshEntry 同款形状同款理由——本地采集型快照
+ *  **不含** rate_limits（Go 套餐额度是并列的另一条来源，走 providerQuota），
+ *  故不能复用 AgentEntry（其 snapshot 类型要求 rate_limits 字段）。
+ *  仅本地采集，不参与远端同步合并。 */
+interface OpencodeEntry {
+  snapshot: OpencodeSnapshot | null;
+  error: string | null;
+  refreshing: boolean;
+  ts: number;
+}
+
+const EMPTY_OPENCODE: OpencodeEntry = {
+  snapshot: null,
+  error: null,
+  refreshing: false,
+  ts: 0,
+};
+
 /** 通用 provider 额度缓存条目（provider → {entries, refreshing, ts}）。
  *  entries 为每条凭证一个 ProviderQuotaEntry（单凭证失败以条目内
  *  status/message 表达，无全局 error）；不含 secret，可安全持久化。 */
@@ -476,6 +497,12 @@ export interface DataCacheValue {
   /** DSH 错误信息（如未安装 / 无 ~/.dsh 会话目录，不阻塞其他来源展示） */
   dshError: string | null;
 
+  // ===== OpenCode 数据（当前范围，读缓存；纯本地采集型，快照只有
+  //      stats/trend；Go 套餐额度在 providerQuota["opencodego"] 里）=====
+  opencode: OpencodeSnapshot | null;
+  /** OpenCode 错误信息（如未安装 / 本地库无数据，不阻塞其他来源展示） */
+  opencodeError: string | null;
+
   // ===== Cursor 数据（当前范围，读缓存）=====
   cursor: CursorSnapshot | null;
   cursorError: string | null;
@@ -530,7 +557,7 @@ export interface DataCacheValue {
 }
 
 // ===== 大缓存写盘防抖调度器 =====
-// 后台 30s 刷新轮里 zai/codex/claude/kimi/dsh/cursor/accountQuotas/providerQuota
+// 后台 30s 刷新轮里 zai/codex/claude/kimi/dsh/opencode/cursor/accountQuotas/providerQuota
 // 等大缓存陆续到达，若各自 state 变化即同步 JSON.stringify 全量写 localStorage，
 // 主线程会被反复阻塞（挂载/窗口返回时卡顿的来源之一）。这里把写盘请求合并进
 // pending Map（同 key 只保留最新值），500ms 防抖后在 requestIdleCallback 空闲期
@@ -655,6 +682,11 @@ export function DataProvider({ pricing, credentialPresence, children }: Provider
   // 磁盘上不可能存在旧口径速度条目（其余处理与 claude/kimi 完全一致）
   const [dshCache, setDshCache] = useState<Record<string, DshEntry>>(
     () => stripRefreshing(loadCache<Record<string, DshEntry>>("zbar-dsh-cache") ?? {})
+  );
+  // opencode 缓存：与 dsh 同款（zbar-opencode-cache 同为全新键，无旧口径速度
+  // 条目需要迁移，速度字段照旧由后端下发）
+  const [opencodeCache, setOpencodeCache] = useState<Record<string, OpencodeEntry>>(
+    () => stripRefreshing(loadCache<Record<string, OpencodeEntry>>("zbar-opencode-cache") ?? {})
   );
 
   // ===== 其他数据（持久化）=====
@@ -830,6 +862,7 @@ export function DataProvider({ pricing, credentialPresence, children }: Provider
   const claudeInflight = useRef<Set<string>>(new Set());
   const kimiInflight = useRef<Set<string>>(new Set());
   const dshInflight = useRef<Set<string>>(new Set());
+  const opencodeInflight = useRef<Set<string>>(new Set());
   const quotaReqId = useRef(0);
   const accountQuotasInflight = useRef(false);
   // 两路额度数据各自的最近成功时刻：切换账号后 refreshQuota（live，读 ~/.zcode
@@ -892,6 +925,10 @@ export function DataProvider({ pricing, credentialPresence, children }: Provider
   useEffect(() => {
     dshCacheRef.current = dshCache;
   }, [dshCache]);
+  const opencodeCacheRef = useRef(opencodeCache);
+  useEffect(() => {
+    opencodeCacheRef.current = opencodeCache;
+  }, [opencodeCache]);
 
   // ===== refs：后台 tick 读取最新 preset/custom（用户停留在自定义视图时把当前
   //      custom 范围纳入刷新用）。经 ref 读取而不是列入定时器 effect 依赖，
@@ -1371,6 +1408,64 @@ export function DataProvider({ pricing, credentialPresence, children }: Provider
     []
   );
 
+  /**
+   * 刷新单个 OpenCode 范围：纯本地快照，形态与 refreshDshRange 完全一致
+   * （then/catch/finally + trimCustomEntries），df 仅用于缓存 key 隔离——
+   * opencode 与 dsh 同为本地采集型，不参与远端同步（快照无 rate_limits，
+   * 也无同步口径），故不经 refreshAgentRange。同样不调用
+   * scheduleAgentQuotaReload：本地用量查询不写 agent 额度快照（Go 套餐额度
+   * 走 providerQuota 那条独立链路），重读历史纯属空转。
+   */
+  const refreshOpencodeRange = useCallback(
+    (
+      _df: string,
+      key: string,
+      from: number,
+      to: number,
+      bucket: TrendBucket
+    ) => {
+      if (opencodeInflight.current.has(key)) return;
+      opencodeInflight.current.add(key);
+      setOpencodeCache((prev) => ({
+        ...prev,
+        [key]: { ...(prev[key] ?? EMPTY_OPENCODE), refreshing: true },
+      }));
+
+      fetchOpencodeUsage(from, to, bucket)
+        .then((data) => {
+          setOpencodeCache((prev) =>
+            trimCustomEntries(
+              {
+                ...prev,
+                [key]: { snapshot: data, error: null, refreshing: false, ts: Date.now() },
+              },
+              MAX_CUSTOM_ENTRIES
+            )
+          );
+        })
+        .catch((e) => {
+          setOpencodeCache((prev) =>
+            trimCustomEntries(
+              {
+                ...prev,
+                [key]: {
+                  ...(prev[key] ?? EMPTY_OPENCODE),
+                  error: String(e),
+                  refreshing: false,
+                  ts: Date.now(),
+                },
+              },
+              MAX_CUSTOM_ENTRIES
+            )
+          );
+        })
+        .finally(() => {
+          opencodeInflight.current.delete(key);
+        });
+    },
+    []
+  );
+
   // Quota 数据加载（与范围无关，每次调用会采样写入 quota_history）。
   const loadQuota = useCallback(() => {
     const reqId = ++quotaReqId.current;
@@ -1648,6 +1743,7 @@ export function DataProvider({ pricing, credentialPresence, children }: Provider
         refreshClaudeRange(df, `${df}|${p}`, f, t, bucketOf(p));
         refreshKimiRange(df, `${df}|${p}`, f, t, bucketOf(p));
         refreshDshRange(df, `${df}|${p}`, f, t, bucketOf(p));
+        refreshOpencodeRange(df, `${df}|${p}`, f, t, bucketOf(p));
       }
       // 自定义视图当前展示的范围纳入本轮刷新：custom 无法预缓存（日期区间任意），
       // 不顺带刷的话该视图只能靠按需补刷，lastUpdate 会长期显示旧时间
@@ -1659,6 +1755,7 @@ export function DataProvider({ pricing, credentialPresence, children }: Provider
         refreshClaudeRange(df, key, f, t, bucketOf("custom"));
         refreshKimiRange(df, key, f, t, bucketOf("custom"));
         refreshDshRange(df, key, f, t, bucketOf("custom"));
+        refreshOpencodeRange(df, key, f, t, bucketOf("custom"));
       }
     };
     // 延后首刷（500ms）：WebView 重载（首次打开 / 长期隐藏后被系统回收）后，
@@ -1673,7 +1770,7 @@ export function DataProvider({ pricing, credentialPresence, children }: Provider
     // 故意不把 preset/custom 列入依赖：后台刷预设范围与二者无关（custom 仅在
     // 自定义视图时经 ref 顺带刷新），列入会导致每次切范围重建定时器
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [deviceFilter, syncConfig, syncEnabled, pricing, refreshZaiRange, refreshCodexRange, refreshClaudeRange, refreshKimiRange, refreshDshRange]);
+  }, [deviceFilter, syncConfig, syncEnabled, pricing, refreshZaiRange, refreshCodexRange, refreshClaudeRange, refreshKimiRange, refreshDshRange, refreshOpencodeRange]);
 
   // ===== 后台定时刷新 Cursor：所有预设范围，降频 180s（网络慢，4 范围并行）。
   //      账号级，不受 deviceFilter 影响。汇率每 tick 只读一次（与范围循环解耦）。
@@ -1820,9 +1917,13 @@ export function DataProvider({ pricing, credentialPresence, children }: Provider
     if (!dEntry || Date.now() - dEntry.ts > DSH_STALE_MS) {
       refreshDshRange(deviceFilter, zKey, f, t, trendBucket);
     }
+    const oEntry = opencodeCacheRef.current[zKey];
+    if (!oEntry || Date.now() - oEntry.ts > OPENCODE_STALE_MS) {
+      refreshOpencodeRange(deviceFilter, zKey, f, t, trendBucket);
+    }
     // 仅在范围/设备/刷新函数变化时触发；不依赖 cache 内容（靠 ref 读最新值）
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [preset, custom, deviceFilter, trendBucket, refreshZaiRange, refreshCursorRange, refreshCodexRange, refreshClaudeRange, refreshKimiRange, refreshDshRange]);
+  }, [preset, custom, deviceFilter, trendBucket, refreshZaiRange, refreshCursorRange, refreshCodexRange, refreshClaudeRange, refreshKimiRange, refreshDshRange, refreshOpencodeRange]);
 
   // ===== 窗口恢复可见时主动补刷：隐藏期间 setInterval 常被节流，恢复后立即补齐
   //      当前 deviceFilter 的预设范围，保证"常驻新鲜"。
@@ -1838,6 +1939,7 @@ export function DataProvider({ pricing, credentialPresence, children }: Provider
         refreshClaudeRange(df, `${df}|${p}`, f, t, bucketOf(p));
         refreshKimiRange(df, `${df}|${p}`, f, t, bucketOf(p));
         refreshDshRange(df, `${df}|${p}`, f, t, bucketOf(p));
+        refreshOpencodeRange(df, `${df}|${p}`, f, t, bucketOf(p));
         refreshCursorRange(p, f, t);
       }
       if (presetRef.current === "custom") {
@@ -1848,16 +1950,17 @@ export function DataProvider({ pricing, credentialPresence, children }: Provider
         refreshClaudeRange(df, `${df}|${cKey}`, f, t, bucketOf("custom"));
         refreshKimiRange(df, `${df}|${cKey}`, f, t, bucketOf("custom"));
         refreshDshRange(df, `${df}|${cKey}`, f, t, bucketOf("custom"));
+        refreshOpencodeRange(df, `${df}|${cKey}`, f, t, bucketOf("custom"));
         refreshCursorRange(cKey, f, t);
       }
     };
     document.addEventListener("visibilitychange", onVisible);
     return () => document.removeEventListener("visibilitychange", onVisible);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [deviceFilter, refreshZaiRange, refreshCursorRange, refreshCodexRange, refreshClaudeRange, refreshKimiRange, refreshDshRange]);
+  }, [deviceFilter, refreshZaiRange, refreshCursorRange, refreshCodexRange, refreshClaudeRange, refreshKimiRange, refreshDshRange, refreshOpencodeRange]);
 
   // ===== 持久化：小对象（体积小，序列化无感知）state 变化即同步落盘；
-  //      大缓存（zai/cursor/codex/claude/kimi/dsh/todayDelta/accountQuotas/
+  //      大缓存（zai/cursor/codex/claude/kimi/dsh/opencode/todayDelta/accountQuotas/
   //      providerQuota）走 500ms 防抖 + 空闲期写盘调度器（见 schedulePersist），
   //      避免后台刷新轮里陆续到达的各路数据反复全量序列化阻塞主线程。
   //      供下次冷启动各范围秒显 =====
@@ -1895,6 +1998,9 @@ export function DataProvider({ pricing, credentialPresence, children }: Provider
   useEffect(() => {
     schedulePersist("zbar-dsh-cache", dshCache);
   }, [dshCache]);
+  useEffect(() => {
+    schedulePersist("zbar-opencode-cache", opencodeCache);
+  }, [opencodeCache]);
   // 版本标记写入：必须位于 zai/claude/kimi 三个持久化 effect 之后。同一次
   // commit 的 effect 按声明顺序同步执行，挂载轮先落盘迁移后的缓存、再写
   // 版本标记；若两步之间进程被杀，只会残留「版本=旧 + 缓存=已剥离」，
@@ -1946,7 +2052,7 @@ export function DataProvider({ pricing, credentialPresence, children }: Provider
     };
   }, []);
 
-  // 手动刷新：刷新当前范围（z.ai + Codex + Claude + Cursor + Kimi + DSH）一次
+  // 手动刷新：刷新当前范围（z.ai + Codex + Claude + Cursor + Kimi + DSH + OpenCode）一次
   const refresh = useCallback(() => {
     const [f, t] = resolveRange(preset, custom);
     const zKey = `${deviceFilter}|${rangeKey(preset, custom)}`;
@@ -1955,10 +2061,11 @@ export function DataProvider({ pricing, credentialPresence, children }: Provider
     refreshClaudeRange(deviceFilter, zKey, f, t, trendBucket);
     refreshKimiRange(deviceFilter, zKey, f, t, trendBucket);
     refreshDshRange(deviceFilter, zKey, f, t, trendBucket);
+    refreshOpencodeRange(deviceFilter, zKey, f, t, trendBucket);
     refreshCursorRange(rangeKey(preset, custom), f, t);
     // 额度采样由上述后台命令写入，稍后读取以覆盖本次手动刷新产生的快照。
     window.setTimeout(loadAgentQuotaDeltas, 1_000);
-  }, [preset, custom, deviceFilter, trendBucket, refreshZaiRange, refreshCodexRange, refreshClaudeRange, refreshKimiRange, refreshDshRange, refreshCursorRange, loadAgentQuotaDeltas]);
+  }, [preset, custom, deviceFilter, trendBucket, refreshZaiRange, refreshCodexRange, refreshClaudeRange, refreshKimiRange, refreshDshRange, refreshOpencodeRange, refreshCursorRange, loadAgentQuotaDeltas]);
 
   const refreshQuota = useCallback(() => loadQuota(), [loadQuota]);
   const refreshAccountQuotas = useCallback(
@@ -1975,6 +2082,7 @@ export function DataProvider({ pricing, credentialPresence, children }: Provider
   const curClaude = claudeCache[curZaiKey] ?? EMPTY_CLAUDE;
   const curKimi = kimiCache[curZaiKey] ?? EMPTY_KIMI;
   const curDsh = dshCache[curZaiKey] ?? EMPTY_DSH;
+  const curOpencode = opencodeCache[curZaiKey] ?? EMPTY_OPENCODE;
 
   // lastUpdate 取当前范围各数据源里最旧的成功时间（保守的新鲜度下限）
   const updateTs = [
@@ -1984,6 +2092,7 @@ export function DataProvider({ pricing, credentialPresence, children }: Provider
     curClaude.ts,
     curKimi.ts,
     curDsh.ts,
+    curOpencode.ts,
   ].filter((t) => t > 0);
   const lastUpdate = updateTs.length ? Math.min(...updateTs) : 0;
   const refreshing =
@@ -1992,7 +2101,8 @@ export function DataProvider({ pricing, credentialPresence, children }: Provider
     curCodex.refreshing ||
     curClaude.refreshing ||
     curKimi.refreshing ||
-    curDsh.refreshing;
+    curDsh.refreshing ||
+    curOpencode.refreshing;
 
   // 展示派生 1：各账号今日增量优先用"本机+远端合并"计算值（多端同步，
   // 覆盖本机离线时段），未就绪时退回后端 account_quotas 的本机计算值。
@@ -2068,6 +2178,13 @@ export function DataProvider({ pricing, credentialPresence, children }: Provider
           }
         : curDsh.snapshot,
       dshError: curDsh.error,
+      opencode: curOpencode.snapshot
+        ? {
+            ...curOpencode.snapshot,
+            stats: foldByModelStats(curOpencode.snapshot.stats),
+          }
+        : curOpencode.snapshot,
+      opencodeError: curOpencode.error,
       cursor: curCursor.snapshot
         ? {
             ...curCursor.snapshot,
@@ -2105,6 +2222,7 @@ export function DataProvider({ pricing, credentialPresence, children }: Provider
       curCursor,
       curKimi,
       curDsh,
+      curOpencode,
       fxRate,
       quota,
       todayDeltaMerged,

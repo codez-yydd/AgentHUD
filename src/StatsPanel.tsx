@@ -13,6 +13,7 @@ import { ClaudePanel } from "./ClaudePanel";
 import { CursorPanel } from "./CursorPanel";
 import { KimiPanel } from "./KimiPanel";
 import { DshPanel } from "./DshPanel";
+import { OpencodePanel } from "./OpencodePanel";
 import { SummaryTab } from "./SummaryTab";
 import { ProjectsPanel } from "./ProjectsPanel";
 import { GenericQuotaPanel } from "./GenericQuotaPanel";
@@ -148,6 +149,8 @@ export function StatsPanel({
     kimiError,
     dsh,
     dshError,
+    opencode,
+    opencodeError,
     fxRate,
     syncConfig,
     remoteDevices,
@@ -691,6 +694,20 @@ export function StatsPanel({
           trendBucket={trendBucket}
           pricing={pricing}
         />
+      ) : tab === "opencodego" ? (
+        // OpenCode：本地采集型用量面板（本地 opencode.db 导入库）+ 顶部 Go
+        // 套餐额度卡（providerQuota["opencodego"]）。agentId 仍是 opencodego，
+        // 故必须在 isCredentialAgent 分支之前摘出来——否则会落到
+        // GenericQuotaPanel 只剩额度、看不到本地用量统计
+        <OpencodePanel
+          snapshot={opencode}
+          loading={!opencode && !opencodeError}
+          error={opencodeError}
+          currency={currency}
+          fxRate={fxRate}
+          trendBucket={trendBucket}
+          pricing={pricing}
+        />
       ) : isCredentialAgent(tab) ? (
         // 凭证驱动的新 provider：通用额度面板（凭证卡 + 配额卡；配额数据
         // 由面板经 DataCache 的 providerQuota 缓存自取，未接入的 provider
@@ -728,6 +745,7 @@ export function StatsPanel({
           cursor={cursor}
           kimi={kimi}
           dsh={dsh}
+          opencode={opencode}
           currency={currency}
           bucket={trendBucket}
           fxRate={fxRate}
