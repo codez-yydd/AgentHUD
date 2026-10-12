@@ -147,6 +147,11 @@ export const en: typeof zh = {
     "stats.opencodeNotFound": "No OpenCode session data found",
     "stats.opencodeNotFoundHint":
       "Make sure OpenCode is installed and has been used; data is read from the local database\n(~/.local/share/opencode/opencode.db).",
+    // MiniMax Code panel: local usage (~/.minimax) + plan quota block
+    "stats.minimaxQuota": "Plan quota",
+    "stats.minimaxcodeNotFound": "No MiniMax Code session data found",
+    "stats.minimaxcodeNotFoundHint":
+      "Make sure MiniMax Code is installed and has been used; data is read from the local database\n(~/.minimax).",
     // Claude subscription quota incremental windows (rendered only when the API returns them)
     "stats.claudeOpusWeekly": "Opus weekly",
     "stats.claudeSonnetWeekly": "Sonnet weekly",
@@ -512,7 +517,7 @@ export const en: typeof zh = {
     "settings.sourcesHint":
       "Hiding a source only removes its tab and summary card; local collection and device sync are unaffected.",
     // Group subtitles; membership comes from AGENT_GROUP (data origin) in
-    // agentVisibility: local collection = zai/codex/claude/cursor/kimi/dsh
+    // agentVisibility: local collection = zai/codex/claude/cursor/kimi/dsh/minimax
     "settings.groupLocal": "Local collection",
     "settings.groupCredential": "Credential-based",
     "settings.agentZaiDesc": "Z.ai usage & Coding Plan quota",
@@ -531,7 +536,10 @@ export const en: typeof zh = {
     "settings.agentGrokDesc": "Grok subscription quota (hidden by default; shown once enabled or a credential is added)",
     "settings.agentQoderDesc": "Qoder subscription quota (hidden by default; shown once enabled or a credential is added)",
     "settings.agentOpencodegoDesc": "OpenCode usage & quota (hidden by default; reads local OpenCode data)",
-    "settings.agentMinimaxDesc": "MiniMax subscription quota (hidden by default; shown once enabled or a credential is added)",
+    // MiniMax merged view: usage comes from local MiniMax Code data, the plan
+    // quota from an already-configured API key (keys keep working; only the
+    // credential entry point is gone)
+    "settings.agentMinimaxDesc": "MiniMax Code usage & plan quota (hidden by default; reads local MiniMax Code data, quota from the configured API key)",
     // Moonshot (月之暗面) open platform: this reads an account balance
     // (recharge-based), not a subscription quota; it is an agent-style provider
     // with no credential entry, hence the wording avoids "add a credential"

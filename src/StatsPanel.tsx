@@ -14,6 +14,7 @@ import { CursorPanel } from "./CursorPanel";
 import { KimiPanel } from "./KimiPanel";
 import { DshPanel } from "./DshPanel";
 import { OpencodePanel } from "./OpencodePanel";
+import { MinimaxPanel } from "./MinimaxPanel";
 import { SummaryTab } from "./SummaryTab";
 import { ProjectsPanel } from "./ProjectsPanel";
 import { GenericQuotaPanel } from "./GenericQuotaPanel";
@@ -151,6 +152,8 @@ export function StatsPanel({
     dshError,
     opencode,
     opencodeError,
+    minimaxcode,
+    minimaxcodeError,
     fxRate,
     syncConfig,
     remoteDevices,
@@ -708,6 +711,20 @@ export function StatsPanel({
           trendBucket={trendBucket}
           pricing={pricing}
         />
+      ) : tab === "minimax" ? (
+        // MiniMax Code：本地采集型用量面板（本地 ~/.minimax 库）+ 顶部套餐
+        // 额度卡（providerQuota["minimax"]，仍由已存的 sk-cp- Key 查询）。
+        // agentId 仍是 minimax，故必须在 isCredentialAgent 分支之前摘出来
+        // ——否则会落到 GenericQuotaPanel 只剩额度、看不到本地用量统计
+        <MinimaxPanel
+          snapshot={minimaxcode}
+          loading={!minimaxcode && !minimaxcodeError}
+          error={minimaxcodeError}
+          currency={currency}
+          fxRate={fxRate}
+          trendBucket={trendBucket}
+          pricing={pricing}
+        />
       ) : isCredentialAgent(tab) ? (
         // 凭证驱动的新 provider：通用额度面板（凭证卡 + 配额卡；配额数据
         // 由面板经 DataCache 的 providerQuota 缓存自取，未接入的 provider
@@ -746,6 +763,7 @@ export function StatsPanel({
           kimi={kimi}
           dsh={dsh}
           opencode={opencode}
+          minimaxcode={minimaxcode}
           currency={currency}
           bucket={trendBucket}
           fxRate={fxRate}

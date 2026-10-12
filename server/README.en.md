@@ -152,7 +152,9 @@ PORT=8080 python3 app.py
 
 ## Codex / Claude Data (source dimension)
 
-Newer clients also upload Codex CLI and Claude Code usage records in addition to ZCode usage. Sources are distinguished by the `source` field (`zcode` / `codex` / `claude`): the same device and the same `local_rowid` never conflict across sources (each source has its own independent rowid sequence), and their upload/query cursors are independent as well. The server schema does not constrain source values, so future sources need no server changes.
+Newer clients also upload usage records for Codex CLI, Claude Code, Kimi Code, Cursor, DeepSeek Harness, OpenCode and MiniMax Code in addition to ZCode usage. Sources are distinguished by the `source` field: the same device and the same `local_rowid` never conflict across sources (each source has its own independent rowid sequence), and their upload/query cursors are independent as well.
+
+**Upload whitelist**: the schema itself does not constrain source values, but uploads are gated by a whitelist (`SYNC_SOURCE_WHITELIST` in `app.py`, currently `zcode` / `codex` / `claude` / `kimi` / `cursor` / `dsh` / `opencode` / `minimaxcode`); a batch whose source is outside it is rejected with HTTP 400. **Adding a source on the client therefore requires adding it to the whitelist too** — otherwise that source keeps failing with 400 and its cursor never advances (no data is lost: it is uploaded automatically once the server is upgraded).
 
 **Upgrade**: pull the new code and restart the service. On first launch the `usage_records` table structure is migrated automatically (a `source` column is added, primary key becomes `(device_id, source, local_rowid)`); all existing data is kept intact and marked as `zcode`, and indexes are rebuilt. Upgrading the server before the clients is recommended.
 

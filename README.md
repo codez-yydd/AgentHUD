@@ -123,12 +123,13 @@
 - **🟢 Codex 用量统计** — 解析本机 `~/.codex/sessions` 会话记录统计 Token 用量与花费；ChatGPT 订阅登录的机器上还可实时拉取 **5 小时 / 每周**额度进度条（API 中转模式自动隐藏额度块）。
 - **🟠 Claude 用量统计** — 解析本机 `~/.claude/projects` 会话记录统计 Token 用量与花费（含子代理会话，按 message 去重防重复计数）；claude.ai 订阅登录的机器上实时拉取 **5 小时会话 / 每周**额度（第三方中转模式自动隐藏额度块）。订阅增强：**模型专属周额度窗口**（Opus / Sonnet 独立额度池）、**超额消费（extra usage）金额行**、凭证失效时给出明确报错并引导重新授权、套餐名识别（Max 5x / Max 20x），支持手动粘贴 `sk-ant-oat` Token 添加多账号（「其他账号」堆叠区）。
 - **🖥️ Kimi Code 用量统计** — 解析本机 `~/.kimi-code/sessions` 会话记录（`wire.jsonl`）统计 Token 用量、花费与 **Token 输出速度**；已登录 Kimi Code CLI 的机器上自动探测本地凭据（OAuth 过期时后台自动续期，无需配置），实时拉取订阅额度：**5 小时滚动窗口 / 周期额度**进度条与重置倒计时、加油包余额、官方会员档位名；也可在设置中手动配置 Kimi API Key。
+- **🟢 MiniMax Code 用量统计** — 解析本机 MiniMax Code 的本地数据（`~/.minimax`）统计 Token 用量与花费；同一页面顶部展示 MiniMax Coding Plan 订阅额度（**5 小时 / 周**双窗口进度条与重置倒计时），额度由已配置的 `sk-cp-` API Key 查询（未配置时只展示本地用量，不占位空标题）。
 - **🔑 通用凭证管理** — 各 Agent 面板页内置凭证入口（设置页不提供凭证配置）：每个服务可添加**多个凭证**（多账号 / 多订阅堆叠显示），支持备注（区分订阅等级）、编辑与删除，部分服务支持选择 **region**（中国站 / 国际站）。凭证明文保存在本地 `~/.zbar/credentials/`（目录权限 700、文件 600，仅存本机）。详见[凭证管理](#凭证管理)。
 - **🧩 新增 10 个订阅 / 额度服务** — 凭证驱动，默认隐藏，添加凭证或启用后显示，按凭证类型分组：
   - **API Key 型**（服务控制台创建 Key 后粘贴）：MiniMax（5h + 周双窗口）、通义灵码 Coding Plan（5h / 周 / 月三窗口）
   - **手动 Cookie 型**（浏览器 F12 复制 Cookie 粘贴）：Qoder（大模型积分）、LongCat 美团（Token 配额 + 加油包）、小米 MiMo（余额 + 积分）、百炼 Token 包（5h / 7 天窗口，Team / Personal 双形态）
   - **手动 Token 型**（控制台获取 Token 后粘贴）：StepFun 阶跃星辰（速率 / 积分双套餐形态，Oasis-Token）
-  - **本地读取型**（零凭证）：Gemini（读取 Gemini CLI 登录态，自动刷新 token）、Grok（读取 grok CLI 登录态，支持多 token）、OpenCode Go（本地 SQLite 用量估算）
+  - **本地读取型**（零凭证）：Gemini（读取 Gemini CLI 登录态，自动刷新 token）、Grok（读取 grok CLI 登录态，支持多 token）、OpenCode Go（本地 SQLite 用量估算）、MiniMax Code（本地 `~/.minimax` 用量；已配置 API Key 的机器同时展示 Coding Plan 订阅额度）
 - **🫘 火山引擎（Volcengine 火山方舟）** — 已预留入口，额度查询即将上线。
 - **🧭 多服务汇总视图** — 「汇总 / Z.ai / Codex / Claude / Cursor / Kimi Code」标签切换：多服务合计花费与 Token、订阅额度卡片、分时趋势图与模型排行。
 - **⚡ 速度与首字延迟** — 基于调用耗时统计**平均输出速度（tok/s）**与**首字延迟（TTFT）**，含噪声过滤口径（整块下发识别、计时异常剔除）。ZCode / Claude 面板可用；Kimi Code 面板可用 TPS（由请求耗时推算的输出速度口径、无 TTFT，首字延迟与 Claude 一样隐藏）；Codex / Cursor 数据源无耗时字段，自动隐藏。平均速度统一按「首 Token → 完成」的真实生成区间加权计算（带 ≈ 的为含等待时间的请求近似值）；注入 ZCode 界面的皮肤注入版同样在每轮 / 会话条展示「均 / 快 / 慢」聚合与模型分组速度行，与悬浮窗口径一致。

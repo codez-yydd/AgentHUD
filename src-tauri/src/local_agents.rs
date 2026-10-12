@@ -57,6 +57,10 @@ use crate::token_speed::SpeedQuality;
 pub const KIMI: &str = "kimi";
 pub const DSH: &str = "dsh";
 pub const OPENCODE: &str = "opencode";
+/// MiniMax Code（`~/.minimax/v2/sqlite/runtime-state.sqlite` → `~/.zbar/minimaxcode.sqlite`）。
+/// 注意这是**后端来源名**：前端页签仍是既有的 `minimax`（本地用量与 Coding Plan
+/// 额度卡同页），故本常量只用于来源过滤 / 项目页 / 同步与待上传口径。
+pub const MINIMAXCODE: &str = "minimaxcode";
 
 /// 本地读取型 agent 的查询契约。
 ///
@@ -554,20 +558,129 @@ impl LocalAgentSource for OpencodeSource {
     }
 }
 
+/// MiniMax Code（`~/.minimax/v2/sqlite/runtime-state.sqlite` →
+/// `~/.zbar/minimaxcode.sqlite`）。前端页签复用既有的 `minimax` 入口：本来源只
+/// 提供本地用量统计，Coding Plan 额度仍走 provider_quota 的 minimax 通道。
+struct MinimaxcodeSource;
+
+impl LocalAgentSource for MinimaxcodeSource {
+    fn source(&self) -> &'static str {
+        MINIMAXCODE
+    }
+
+    fn has_local_data(&self) -> bool {
+        crate::minimaxcode::has_local_data()
+    }
+
+    fn list_models(&self) -> Result<Vec<db::ModelInfo>, String> {
+        crate::minimaxcode::list_models()
+    }
+
+    fn query_stats(&self, from_ms: i64, to_ms: i64) -> Result<db::Stats, String> {
+        crate::minimaxcode::query_stats(from_ms, to_ms)
+    }
+
+    fn query_trend(
+        &self,
+        from_ms: i64,
+        to_ms: i64,
+        bucket: &str,
+    ) -> Result<Vec<db::TrendBucketRaw>, String> {
+        crate::minimaxcode::query_trend(from_ms, to_ms, bucket)
+    }
+
+    fn query_period_buckets(
+        &self,
+        periods: &[(i64, i64)],
+    ) -> Result<Vec<db::PeriodBucket>, String> {
+        crate::minimaxcode::query_period_buckets(periods)
+    }
+
+    fn max_rowid(&self) -> Result<i64, String> {
+        crate::minimaxcode::max_rowid()
+    }
+
+    fn query_since(&self, since: i64, limit: usize) -> Result<Vec<db::UsageRow>, String> {
+        crate::minimaxcode::query_since(since, limit)
+    }
+
+    fn query_revised_since(
+        &self,
+        since_ts: i64,
+        after_id: i64,
+        limit: usize,
+    ) -> Result<Vec<db::UsageRow>, String> {
+        crate::minimaxcode::query_revised_since(since_ts, after_id, limit)
+    }
+
+    /// MiniMax Code 已有上传通道（sync.rs 的 minimaxcode 阶段 +
+    /// `last_uploaded_minimaxcode_rowid` / `last_uploaded_minimaxcode_rev_ts` 游标），
+    /// 故如实返回游标、参与待上传计数。
+    fn sync_cursor(&self, cfg: &SyncConfig) -> Option<i64> {
+        Some(cfg.last_uploaded_minimaxcode_rowid)
+    }
+
+    fn query_window_sessions(
+        &self,
+        window_start_ms: i64,
+        limit: usize,
+    ) -> Result<AgentWindowSessions, String> {
+        crate::minimaxcode::query_window_sessions(window_start_ms, limit)
+    }
+
+    /// **恒请求平均**：MiniMax Code 源库没有首字时刻（只有整请求耗时
+    /// `request_duration_ms` 与整段解码时长），`time_to_first_token_ms` 列恒 NULL
+    /// → 没有真生成窗口，不能标 Generation（见 minimaxcode.rs 模块头）。
+    fn speed_quality(&self) -> SpeedQuality {
+        SpeedQuality::RequestAverage
+    }
+
+    fn query_project_model_rows(
+        &self,
+        from_ms: i64,
+        to_ms: i64,
+    ) -> Result<Vec<ProjectModelRow>, String> {
+        crate::minimaxcode::query_project_model_rows(from_ms, to_ms)
+    }
+
+    fn query_project_session_counts(
+        &self,
+        from_ms: i64,
+        to_ms: i64,
+    ) -> Result<Vec<(String, i64)>, String> {
+        crate::minimaxcode::query_project_session_counts(from_ms, to_ms)
+    }
+
+    fn query_project_display_paths(&self) -> Result<Vec<(String, String)>, String> {
+        crate::minimaxcode::query_project_display_paths()
+    }
+
+    fn query_project_sessions(
+        &self,
+        project_key: &str,
+        from_ms: i64,
+        to_ms: i64,
+        offset: u32,
+        limit: u32,
+    ) -> Result<(u32, Vec<ProjectSessionModelRow>), String> {
+        crate::minimaxcode::query_project_sessions(project_key, from_ms, to_ms, offset, limit)
+    }
+}
+
 // ============================================================
 // 注册表
 // ============================================================
-
-/// 三个实现各一份静态实例（零成本单元结构体，无内部状态）。
+/// 四个实现各一份静态实例（零成本单元结构体，无内部状态）。
 static KIMI_SOURCE: KimiSource = KimiSource;
 static DSH_SOURCE: DshSource = DshSource;
 static OPENCODE_SOURCE: OpencodeSource = OpencodeSource;
+static MINIMAXCODE_SOURCE: MinimaxcodeSource = MinimaxcodeSource;
 
 /// **注册表本体**：新增开源 agent 只需在此加一行（见模块头「新增步骤」）。
 /// 数组顺序 = 各集成面里该族的稳定顺序（悬浮窗固定序、项目页默认来源顺序）；
 /// 用切片而不是定长数组，是为了让「加一行」真的只加一行（不必再改长度）。
 static SOURCES: &[&'static dyn LocalAgentSource] =
-    &[&KIMI_SOURCE, &DSH_SOURCE, &OPENCODE_SOURCE];
+    &[&KIMI_SOURCE, &DSH_SOURCE, &OPENCODE_SOURCE, &MINIMAXCODE_SOURCE];
 
 /// 全部本地读取型来源（顺序即注册顺序）。
 pub fn all() -> &'static [&'static dyn LocalAgentSource] {
@@ -923,8 +1036,8 @@ mod tests {
         let names: Vec<&str> = all().iter().map(|s| s.source()).collect();
         assert_eq!(
             names,
-            [KIMI, DSH, OPENCODE],
-            "注册表覆盖 kimi/dsh/opencode（顺序即各组固定序）"
+            [KIMI, DSH, OPENCODE, MINIMAXCODE],
+            "注册表覆盖 kimi/dsh/opencode/minimaxcode（顺序即各组固定序）"
         );
         // 名字唯一（否则 find 会静默取第一个，两个实现互相遮蔽）
         let mut uniq = names.clone();
@@ -954,13 +1067,18 @@ mod tests {
             SpeedQuality::RequestAverage,
             "opencode 无 TTFT / 无生成窗口，不得标 Generation"
         );
+        assert_eq!(
+            find(MINIMAXCODE).unwrap().speed_quality(),
+            SpeedQuality::RequestAverage,
+            "minimaxcode 只有整请求耗时、无 TTFT，不得标 Generation"
+        );
     }
 
     /// 待上传口径：只有声明了上传游标的来源才计入，其余恒 0。
     #[test]
     fn 注册表_待上传只计有游标的来源() {
         let cfg = SyncConfig::default();
-        // 生产注册表：三个来源都已接入同步上传（各自独立的 rowid 游标字段，
+        // 生产注册表：四个来源都已接入同步上传（各自独立的 rowid 游标字段，
         // 命名口径 SyncConfig::last_uploaded_<source>_rowid），故都参与计数
         //（本断言只读游标字段，不触发任何派生库查询）
         assert_eq!(
@@ -974,6 +1092,10 @@ mod tests {
         assert_eq!(
             find(OPENCODE).unwrap().sync_cursor(&cfg),
             Some(cfg.last_uploaded_opencode_rowid)
+        );
+        assert_eq!(
+            find(MINIMAXCODE).unwrap().sync_cursor(&cfg),
+            Some(cfg.last_uploaded_minimaxcode_rowid)
         );
 
         // 无游标来源（未来新增但尚未接入同步的 agent）：max_rowid 再大也计 0，

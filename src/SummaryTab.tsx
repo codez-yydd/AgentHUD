@@ -9,6 +9,7 @@ import type {
   CursorSnapshot,
   DshSnapshot,
   KimiSnapshot,
+  MinimaxcodeSnapshot,
   ModelStat,
   OpencodeSnapshot,
   OverallStat,
@@ -66,6 +67,9 @@ interface Props {
   /** OpenCode（本地 opencode.db 采集型）：快照同样只有 stats/trend，
    *  Go 套餐额度不在快照里（走 providerQuota["opencodego"] 另一条链路） */
   opencode: OpencodeSnapshot | null;
+  /** MiniMax Code（本地 ~/.minimax 采集型）：快照只有 stats/trend，
+   *  套餐额度不在快照里（走 providerQuota["minimax"] 另一条链路） */
+  minimaxcode: MinimaxcodeSnapshot | null;
   currency: Currency;
   bucket: "hour" | "day";
   fxRate: number;
@@ -315,6 +319,7 @@ function buildModelRows(
   kimi: KimiSnapshot | null,
   dsh: DshSnapshot | null,
   opencode: OpencodeSnapshot | null,
+  minimaxcode: MinimaxcodeSnapshot | null,
   pricing: PricingConfig,
   currency: Currency,
   fxRate: number,
@@ -478,6 +483,35 @@ function buildModelRows(
       source: "OpenCode",
       color: AGENT_COLOR.opencodego,
       barBg: "bg-orange-500/10",
+      requests: m.requests,
+      tokens: m.total_tokens,
+      cost: modelCost(
+        m.model_id,
+        m.input_tokens,
+        m.output_tokens,
+        m.cache_read_tokens,
+        pricing,
+        currency,
+        fxRate
+      ),
+      hasPrice,
+      mergedNote: mergedNoteOf(m),
+    });
+  }
+
+  // MiniMax Code：与 OpenCode 行同款（MiniMax 绿，同面板主题色）。key 用 UI 侧
+  // agent id `minimax`（后端来源名是 minimaxcode，两个域不同字面），provider_id
+  // 同样带进 key——本地库里 provider 可以是任意路由，不能只按 model_id 归并。
+  for (const m of agentVisibility.minimax
+    ? minimaxcode?.stats.by_model ?? []
+    : []) {
+    const hasPrice = hasPositivePrice(m.model_id, pricing);
+    rows.push({
+      key: `minimax:${m.provider_id}:${m.model_id}`,
+      name: m.model_id,
+      source: "MiniMax Code",
+      color: AGENT_COLOR.minimax,
+      barBg: "bg-emerald-500/10",
       requests: m.requests,
       tokens: m.total_tokens,
       cost: modelCost(
@@ -698,6 +732,7 @@ export function SummaryTab({
   kimi,
   dsh,
   opencode,
+  minimaxcode,
   currency,
   bucket,
   fxRate,
@@ -726,6 +761,7 @@ export function SummaryTab({
     kimiError,
     dshError,
     opencodeError,
+    minimaxcodeError,
     error: zaiError,
     agentQuotaDeltas,
     accountQuotas,
@@ -793,6 +829,16 @@ export function SummaryTab({
     0
   );
   const opencodeTokens = opencode?.stats.overall.total_tokens ?? 0;
+
+  // MiniMax Code 花费 & token（与 OpenCode 同款口径：花费对趋势桶双货币求和；
+  // 速度字段来自本地 ~/.minimax 归一化库）。套餐额度是**并列**的另一条链路
+  // （providerQuota["minimax"]，只给百分比），不进这里——否则同一份订阅用量
+  // 会被官方百分比与本地明细重复计入。
+  const minimaxcodeCostRaw = (minimaxcode?.trend ?? []).reduce(
+    (s, p) => s + (currency === "cny" ? p.cost_cny : p.cost_usd),
+    0
+  );
+  const minimaxcodeTokens = minimaxcode?.stats.overall.total_tokens ?? 0;
 
   // Kimi 凭证体系条目（~/.zbar/credentials/kimi.json，应用内网页登录）：
   // 全局 120s 轮询覆盖（与 Kimi 页「其他账号」区同源同频）；含 error/expired
@@ -1004,6 +1050,38 @@ export function SummaryTab({
   // 请求平均（request_average），卡片上会自动带 ≈ 前缀。
   const opencodeCacheHitPct = cacheHitPctIncluded(opencode?.stats.overall);
 
+  // MiniMax Code 缓存率：included 口径（本地库归一化把 cache_read 并进
+  // input_tokens，与 MinimaxPanel 的 cacheRateMode="included" 一致）。
+  // 无 TTFT：后端该列恒 NULL（见 minimaxcode.rs），速度口径是整次请求耗时的
+  // 近似（request_average），卡片上会自动带 ≈ 前缀。
+  const minimaxcodeCacheHitPct = cacheHitPctIncluded(
+    minimaxcode?.stats.overall
+  );
+
+  // MiniMax 套餐额度（5h + 周窗口，由已存的 sk-cp- Key 查官方接口）。
+  // 数据来自 providerQuota 通用缓存（后端 get_provider_quota 分发）。
+  // 注意与其余 Agent 的差异：官方接口只给百分比 + 重置时间，**不含金额与
+  // token**，故这里只喂额度监控区的 metrics；花费表与趋势图走的是并列的本地
+  // 用量快照（minimaxcode，见上方 minimaxcodeCostRaw/minimaxcodeTokens），
+  // 两条链路不混算。
+  const minimaxQuotaEntry = providerQuota["minimax"]?.entries?.[0];
+  const minimaxMetrics: AgentSummary["metrics"] =
+    minimaxQuotaEntry?.status === "ok"
+      ? minimaxQuotaEntry.windows.map((w) => {
+          const label =
+            w.key === "hour5"
+              ? t("common.hour5")
+              : w.key === "weekly"
+                ? t("common.weekly")
+                : w.title;
+          return {
+            label,
+            usedPct: w.usedPercent ?? 0,
+            resetAt: w.resetsAt ?? null,
+          };
+        })
+      : [];
+
   // OpenCode Go 额度（双数据源：有 API Key 时官方口径，否则本地库估算）。
   // 数据来自 providerQuota 通用缓存（后端 get_provider_quota 分发），窗口
   // key 复用 kimi 词表：hour5 / weekly / monthly。
@@ -1198,6 +1276,36 @@ export function SummaryTab({
       metrics: opencodeMetrics,
       empty: t("summary.noQuotaData"),
     },
+    {
+      // MiniMax Code（合并口径，与 OpencodePanel 的分工一致）：花费/token 来自
+      // **本地** ~/.minimax 采集快照（与 OpenCode 同款），额度监控区展示套餐
+      // 5 小时 / 本周窗口（providerQuota["minimax"]，仍由已存的 sk-cp- Key 查询）。
+      // 两条链路互不重叠：官方接口只给百分比、不透出金额，故额度不进 cost/tokens，
+      // 用量也不进 metrics。既没存过 Key 也没有本地用量时 cost/tokens 双 0 →
+      // 该卡片被 activeAgents 过滤掉，只剩额度区那一行。
+      id: "minimax",
+      name: "MiniMax Code",
+      color: AGENT_COLOR.minimax,
+      tintBg: "rgba(0, 185, 107, 0.07)",
+      nameClass: "text-emerald-700",
+      badgeClass: "bg-emerald-500/12 text-emerald-700",
+      cost: minimaxcodeCostRaw,
+      tokens: minimaxcodeTokens,
+      // 有结论即算已加载：额度缓存写入（ts>0）或本地快照到达/确认报错。
+      // 三者皆无 = 还在等首轮（没装 MiniMax Code 且没存过 Key 的机器），
+      // 此时保持加载态，不被误判为「已加载且零用量」而闪出空卡片
+      loaded:
+        (providerQuota["minimax"]?.ts ?? 0) > 0 ||
+        minimaxcode != null ||
+        minimaxcodeError != null,
+      currentModel: minimaxcode?.stats.current_model ?? null,
+      avgTps: minimaxcode?.stats.overall.avg_tps ?? null,
+      // 后端置 request_average（整次请求耗时的近似，无 TTFT）→ 卡片带 ≈ 前缀
+      speedQuality: minimaxcode?.stats.overall.speedQuality ?? null,
+      cacheHitPct: minimaxcodeCacheHitPct,
+      metrics: minimaxMetrics,
+      empty: t("summary.noQuotaData"),
+    },
   ];
 
   const agents = allAgents.filter((agent) => agentVisibility[agent.id]);
@@ -1237,6 +1345,11 @@ export function SummaryTab({
   // OpenCode 趋势桶同款（后端 get_opencode_usage 用同一套 cost_for 折算）
   const opencodeTrendMap = new Map<string, TrendPoint>();
   (opencode?.trend ?? []).forEach((p) => opencodeTrendMap.set(p.label, p));
+  // MiniMax Code 趋势桶同款（后端 get_minimaxcode_usage 用同一套 cost_for 折算）
+  const minimaxcodeTrendMap = new Map<string, TrendPoint>();
+  (minimaxcode?.trend ?? []).forEach((p) =>
+    minimaxcodeTrendMap.set(p.label, p)
+  );
 
   const trendLabels: string[] = [];
   const trendLabelSet = new Set<string>();
@@ -1259,6 +1372,8 @@ export function SummaryTab({
     dshTrendMap.forEach((_point, label) => addTrendLabel(label));
   if (agentVisibility.opencodego)
     opencodeTrendMap.forEach((_point, label) => addTrendLabel(label));
+  if (agentVisibility.minimax)
+    minimaxcodeTrendMap.forEach((_point, label) => addTrendLabel(label));
 
   const mergedTrend: TrendPoint[] = trendLabels.map((label) => {
     const p =
@@ -1278,6 +1393,9 @@ export function SummaryTab({
     const o = agentVisibility.opencodego
       ? opencodeTrendMap.get(label)
       : undefined;
+    const m = agentVisibility.minimax
+      ? minimaxcodeTrendMap.get(label)
+      : undefined;
     return {
       label: p.label,
       total_tokens:
@@ -1287,6 +1405,7 @@ export function SummaryTab({
         (k?.total_tokens ?? 0) +
         (d?.total_tokens ?? 0) +
         (o?.total_tokens ?? 0) +
+        (m?.total_tokens ?? 0) +
         (c?.tokens ?? 0),
       requests:
         (agentVisibility.zai ? p.requests : 0) +
@@ -1294,7 +1413,8 @@ export function SummaryTab({
         (a?.requests ?? 0) +
         (k?.requests ?? 0) +
         (d?.requests ?? 0) +
-        (o?.requests ?? 0),
+        (o?.requests ?? 0) +
+        (m?.requests ?? 0),
       cost_cny:
         (agentVisibility.zai ? p.cost_cny : 0) +
         (x?.cost_cny ?? 0) +
@@ -1302,6 +1422,7 @@ export function SummaryTab({
         (k?.cost_cny ?? 0) +
         (d?.cost_cny ?? 0) +
         (o?.cost_cny ?? 0) +
+        (m?.cost_cny ?? 0) +
         (c?.costCny ?? 0),
       cost_usd:
         (agentVisibility.zai ? p.cost_usd : 0) +
@@ -1310,6 +1431,7 @@ export function SummaryTab({
         (k?.cost_usd ?? 0) +
         (d?.cost_usd ?? 0) +
         (o?.cost_usd ?? 0) +
+        (m?.cost_usd ?? 0) +
         (c?.costUsd ?? 0),
     };
   });
@@ -1323,6 +1445,7 @@ export function SummaryTab({
     kimi,
     dsh,
     opencode,
+    minimaxcode,
     pricing,
     currency,
     fxRate,

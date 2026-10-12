@@ -69,8 +69,8 @@ export const credentials = {
   "credentials.quotaPending":
     "额度查询接入即将上线。凭证已就绪，接入后将自动在此展示用量与额度。",
   "credentials.quotaRefreshing": "正在查询额度，请稍候…",
-  // 无凭证录入入口的 provider（agent 化口径：opencodego / moonshot）在既无
-  // 已存凭证也无本地数据时的空态说明——否则面板会是一片空白
+  // 无凭证录入入口的 provider（agent 化口径：opencodego / minimax / moonshot）
+  // 在既无已存凭证也无本地数据时的空态说明——否则面板会是一片空白
   "credentials.noCredentialEntry":
     "该服务不提供凭证录入入口：数据按本机已有的凭证或本地数据查询，当前没有可用数据。",
   "credentials.entryError": "查询失败",

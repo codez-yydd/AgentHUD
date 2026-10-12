@@ -103,9 +103,15 @@ export function isCredentialAgent(id: string): id is CredentialAgentId {
 /**
  * 本地型 provider 集合：数据由后端直读本地文件/数据库（无凭证也能出数据），
  * tab 门槛 = 本地数据存在；凭证体系保持可用但为「可选」（不做强引导）。
- * gemini（Gemini CLI 的 OAuth 登录态）与 opencodego 同属本地直读型。
+ * gemini（Gemini CLI 的 OAuth 登录态）与 opencodego 同属本地直读型；
+ * minimax 自合并 MiniMax Code 本地用量（~/.minimax）后也归此类——用量来自本地
+ * 库，凭证只决定「有没有套餐额度卡」。
  */
-export const LOCAL_AGENTS: readonly CredentialAgentId[] = ["opencodego", "gemini"];
+export const LOCAL_AGENTS: readonly CredentialAgentId[] = [
+  "opencodego",
+  "gemini",
+  "minimax",
+];
 
 /** id 是否属于本地型 provider（GenericQuotaPanel 据此切换凭证卡空态文案）。 */
 export function isLocalAgent(id: string): boolean {
@@ -118,11 +124,17 @@ export function isLocalAgent(id: string): boolean {
  * 一条路，凭证无意义）的区别在于「凭证是否真的参与查询」——
  * - opencodego：本地 opencode.db 读的是本机 CLI 用量；用户没装 CLI 时，
  *   配官方 API Key 走 opencode.ai/zen/go/v1/usage 同样能拿到官方口径数据。
+ * - minimax：本地 ~/.minimax 读的是 MiniMax Code 的逐次调用用量；套餐额度
+ *   （5h + 周窗口）是另一条路，由已存的 sk-cp- Key 查官方接口得到——两条
+ *   链路在面板里并列展示，缺任一条都不影响另一条。
  * 这类 provider 的**双源能力**保留（后端仍按 OR 语义查询，已存在的凭证照旧
  * 参与），但录入入口已按产品决定收口为「像 agent 一样不提供凭证管理」，
  * 见 NO_CREDENTIAL_ENTRY_AGENTS。
  */
-export const DUAL_MODE_AGENTS: readonly CredentialAgentId[] = ["opencodego"];
+export const DUAL_MODE_AGENTS: readonly CredentialAgentId[] = [
+  "opencodego",
+  "minimax",
+];
 
 /** id 是否属于双数据源 provider（凭证入口据此放行）。 */
 export function isDualModeAgent(id: string): boolean {
@@ -149,17 +161,21 @@ export function isPureLocalAgent(id: string): boolean {
  * 界面不提供凭证录入入口的 provider（与 PURE_LOCAL_AGENTS 是两回事，见下）：
  * - opencodego：OpenCode 与 Kimi Code、ZCode 一样是自带 CLI 与订阅的 agent，
  *   数据来自自身 CLI 的本地库（`~/.local/share/opencode/opencode.db`）；
+ * - minimax：MiniMax Code 同理（本地 ~/.minimax 采集用量 + 自家 Coding Plan
+ *   订阅额度），按同一「agent 口径」收口；
  * - moonshot：月之暗面开放平台余额，按同一「agent 口径」一并收口（产品决定）；
  * - deepseek：已有 dsh（DeepSeek Harness，本地会话即 DeepSeek 用量），
  *   不再单独提供平台余额查询的录入入口（产品决定）。
  *
  * 收口的是**入口**，不是能力：后端查询链路与已存在的凭证完全不动——
- * 已经配过 Key 的机器照旧出数据，只是界面不再提供「添加凭证 / 多账号」入口，
- * 因此无法新增。与 PURE_LOCAL_AGENTS 的区别：那个是「技术上没有可录的凭证」
- * （gemini 只有 CLI 登录态），这个是「产品上不提供入口」。
+ * 已经配过 Key 的机器照旧出数据（minimax 的套餐额度卡就靠它），只是界面
+ * 不再提供「添加凭证 / 多账号」入口，因此无法新增。与 PURE_LOCAL_AGENTS
+ * 的区别：那个是「技术上没有可录的凭证」（gemini 只有 CLI 登录态），
+ * 这个是「产品上不提供入口」。
  */
 export const NO_CREDENTIAL_ENTRY_AGENTS: readonly CredentialAgentId[] = [
   "opencodego",
+  "minimax",
   "moonshot",
   "deepseek",
 ];
@@ -174,7 +190,7 @@ export function hasCredentialEntry(id: string): boolean {
  * 凭证录入入口（添加服务浮层、设置页快捷按钮、凭证卡添加按钮）统一用它判断，
  * 避免把「当前只有本地数据」的运行时状态误当作「不能录入凭证」。
  * 两类为 false：技术上无凭证可录（gemini），产品上不提供入口
- * （opencodego / moonshot，见 NO_CREDENTIAL_ENTRY_AGENTS）。
+ * （opencodego / minimax / moonshot，见 NO_CREDENTIAL_ENTRY_AGENTS）。
  */
 export function canAddCredential(id: string): boolean {
   return !isPureLocalAgent(id) && hasCredentialEntry(id);
@@ -261,8 +277,11 @@ export const AGENT_COLOR_SCALE: Record<AgentId, readonly string[]> = {
  * 两个集合回答的是不同问题，不可互相替代：CREDENTIAL_AGENTS 管「凭证体系与
  * tab 显示门槛」，AGENT_GROUP 管「数据来源归类」。
  *
- * gemini / opencodego 虽也有本地读取路径（见 LOCAL_AGENTS），但不解析会话
- * 日志、不进同步白名单，故仍归 credential（维持既有展示行为）。
+ * gemini 虽也有本地读取路径（见 LOCAL_AGENTS），但只有 CLI 登录态、不解析会话
+ * 日志，故仍归 credential（维持既有展示行为）。
+ * opencodego 归 local：自接入 opencode 来源起，它的用量就是解析本地库得来的
+ * （并进了同步白名单）。minimax 同理——合并 MiniMax Code 后用量确实解析本地库
+ * （~/.minimax），与 kimi 一样是「本地采集为主、订阅额度为辅」的形态。
  */
 export type AgentGroupKind = "local" | "credential";
 
@@ -277,7 +296,7 @@ export const AGENT_GROUP: Record<AgentId, AgentGroupKind> = {
   grok: "credential",
   qoder: "credential",
   opencodego: "local",
-  minimax: "credential",
+  minimax: "local",
   moonshot: "local",
   deepseek: "credential",
   longcat: "credential",
@@ -332,6 +351,13 @@ export const AGENT_VISIBILITY_OPTIONS: ReadonlyArray<{
     descriptionKey: "settings.agentDshDesc",
   },
   {
+    // 合并 MiniMax Code 后仍是既有的 minimax（凭证、可见性、额度卡都不动），
+    // 只是显示名与分组随「本地用量为主」的形态调整
+    id: "minimax",
+    label: "MiniMax Code",
+    descriptionKey: "settings.agentMinimaxDesc",
+  },
+  {
     id: "gemini",
     label: "Gemini",
     descriptionKey: "settings.agentGeminiDesc",
@@ -350,21 +376,6 @@ export const AGENT_VISIBILITY_OPTIONS: ReadonlyArray<{
     id: "opencodego",
     label: "OpenCode",
     descriptionKey: "settings.agentOpencodegoDesc",
-  },
-  {
-    id: "minimax",
-    label: "MiniMax",
-    descriptionKey: "settings.agentMinimaxDesc",
-  },
-  {
-    id: "moonshot",
-    label: "Kimi",
-    descriptionKey: "settings.agentMoonshotDesc",
-  },
-  {
-    id: "deepseek",
-    label: "DeepSeek",
-    descriptionKey: "settings.agentDeepseekDesc",
   },
   {
     id: "longcat",
@@ -604,12 +615,16 @@ const SOURCE_META: Record<string, { label: string; color: string }> = {
   stepfun: { label: "StepFun", color: AGENT_COLOR.stepfun },
   doubao: { label: "火山引擎", color: AGENT_COLOR.doubao },
   dsh: { label: "DeepSeek Harness", color: AGENT_COLOR.dsh },
-  // OpenCode 是唯一「UI id 与后端来源名不同字面」的 agent：后端来源名固定
+  // OpenCode 是首个「UI id 与后端来源名不同字面」的 agent：后端来源名固定
   // "opencode"（本地 opencode.db 导入库、项目页会话、悬浮窗分组、远端上传
   // 都用它），而面板 id / 颜色 / 可见性键是 "opencodego"。两个域都查这张表
   // ——项目页会话来源、报告图例按来源名查（"opencode"，缺了会显示 Unknown），
   // 面板与设置项按 agent id 查（"opencodego"）——故两条都登记、指向同一品牌。
   opencode: { label: "OpenCode", color: AGENT_COLOR.opencodego },
+  // MiniMax 同为两个域异名（UI id `minimax` / 后端来源名 `minimaxcode`，
+  // 见 StatsPanel 的 minimax 分支与 MiniMaxPanel）：项目页会话来源、报告图例、
+  // 悬浮窗分组都按来源名查，缺了会显示 Unknown；品牌色与图标复用 minimax。
+  minimaxcode: { label: "MiniMax Code", color: AGENT_COLOR.minimax },
 };
 
 /** source 字符串 → 品牌名 + 品牌色（未知来源回退中性灰，不抛错） */

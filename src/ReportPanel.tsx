@@ -15,6 +15,7 @@ import type {
   DeviceInfo,
   DshSnapshot,
   KimiSnapshot,
+  MinimaxcodeSnapshot,
   OpencodeSnapshot,
   PricingConfig,
   RemoteUsage,
@@ -29,6 +30,7 @@ import {
   fetchCursorUsage,
   fetchDshUsage,
   fetchKimiUsage,
+  fetchMinimaxcodeUsage,
   fetchOpencodeUsage,
   fetchStats,
   fetchTrend,
@@ -156,11 +158,13 @@ interface ReportData {
  * 在此登记（并在 load() 补对应本地加载分支），REPORT_AGENT_IDS 与 agent
  * 筛选行即自动扩展，无需再改筛选渲染。remoteSource 为远端同步协议里的
  * source 字符串（无远端支持的 agent 省略，如 Cursor / Kimi / dsh 明细仅本机）。
- * 品牌色不在此登记：由 AGENT_COLOR[id] 统一取（dsh / opencodego 已注册）。
+ * 品牌色不在此登记：由 AGENT_COLOR[id] 统一取（dsh / opencodego / minimax
+ * 已注册）。
  *
  * 键是 **UI 侧 AgentId**（agentVisibility / AGENT_COLOR / 筛选胶囊都用它），
- * 故 OpenCode 这里是 `opencodego`；而它与后端交互的来源名是 "opencode"
- * （见该条目的 remoteSource 与 load() 里的本地取数分支）。
+ * 故 OpenCode 这里是 `opencodego`、MiniMax Code 是 `minimax`；而它们与后端
+ * 交互的来源名分别是 "opencode" 与 "minimaxcode"
+ * （见各条目的 remoteSource 与 load() 里的本地取数分支）。
  */
 const REPORT_SOURCE_REGISTRY = {
   zai: { label: "Z.ai", brand: "zai", remoteSource: "zcode" },
@@ -180,6 +184,16 @@ const REPORT_SOURCE_REGISTRY = {
     brand: "opencodego",
     remoteSource: "opencode",
   },
+  // MiniMax Code（本地 ~/.minimax 采集型，套餐额度是并列的另一条链路）：
+  // 本地取数走 fetchMinimaxcodeUsage（get_minimaxcode_usage）；remoteSource 是
+  // **后端来源名 "minimaxcode"**（sync.rs 增量上传与 server 白名单都用它），
+  // 与 UI id `minimax` 不同字面——写成 minimax 会拉不到远端数据。
+  // 键是 UI 侧 agent id `minimax`，与 OpenCode 同款的两个域异名。
+  minimax: {
+    label: "MiniMax Code",
+    brand: "minimax",
+    remoteSource: "minimaxcode",
+  },
 } as const satisfies Record<
   string,
   { label: string; brand: BrandIconName; remoteSource?: string }
@@ -197,7 +211,8 @@ const REPORT_AGENT_IDS = Object.keys(
  *  （dsh 的 provider_id 是自由字符串，如 "deepseek-account" / 第三方）回退到
  *  该模型所属报告 agent 的注册名，避免图例出现 "Unknown xxx"。
  *  OpenCode 的 provider_id 通常就是 "opencode"（sourceMeta 已登记 → 显示
- *  "OpenCode"），第三方路由才回退到注册表标签，两条路径都不会出 Unknown。 */
+ *  "OpenCode"），第三方路由才回退到注册表标签，两条路径都不会出 Unknown。
+ *  MiniMax Code 同理（provider_id 通常是 "minimaxcode"，sourceMeta 已登记）。 */
 function sourcePrefixOf(
   agentId: ReportAgentSourceId,
   providerId: string
@@ -533,7 +548,7 @@ interface ReportCacheEntry {
   from_ms: number;
   to_ms: number;
   bucket: TrendBucket;
-  /** zai/codex/claude/kimi/dsh/opencodego 已合并来源（stats + trend） */
+  /** zai/codex/claude/kimi/dsh/opencodego/minimax 已合并来源（stats + trend） */
   sources: Partial<Record<Exclude<ReportAgentSourceId, "cursor">, ReportSource>>;
   /** Cursor 原始快照（每日明细，重建时再折叠） */
   cursor: CursorSnapshot | null;
@@ -635,6 +650,7 @@ function localResultsFromEntry(entry: ReportCacheEntry): LocalResults {
     kimi: loaded("kimi"),
     dsh: loaded("dsh"),
     opencodego: loaded("opencodego"),
+    minimax: loaded("minimax"),
     cursor: entry.cursor,
     fxRate: entry.fxRate,
   };
@@ -656,6 +672,9 @@ interface LocalResults {
   /** OpenCode（本地 opencode.db 采集型）：取数走 fetchOpencodeUsage，
    *  键是 UI 侧 agent id `opencodego`（远端来源名字面见注册表 remoteSource） */
   opencodego: LoadedSource | null;
+  /** MiniMax Code（本地 ~/.minimax 采集型）：取数走 fetchMinimaxcodeUsage，
+   *  键是 UI 侧 agent id `minimax`（后端来源名是 `minimaxcode`，两个域异名） */
+  minimax: LoadedSource | null;
   cursor: CursorSnapshot | null;
   fxRate: number;
 }
@@ -668,6 +687,8 @@ interface RemoteResults {
   claude: RemoteUsage | null;
   /** OpenCode 明细已在 sync.rs 里按 source="opencode" 上传（server 白名单同值） */
   opencodego: RemoteUsage | null;
+  /** MiniMax Code 明细已在 sync.rs 里按 source="minimaxcode" 上传（白名单同值） */
+  minimax: RemoteUsage | null;
 }
 
 interface Assembled {
@@ -729,6 +750,14 @@ function assembleReport(args: {
     "opencodego",
     local.opencodego?.source ?? null,
     remote?.opencodego ?? null
+  );
+  // MiniMax Code：本机快照 + 远端（source="minimaxcode"，与 zai/codex/claude/
+  // opencodego 同款合并口径）；同步未启用时 remote 为 null，等价于纯本机。
+  // 套餐额度走 providerQuota 另一条链路，报告页额度区块本就不含该源
+  addSourceAgent(
+    "minimax",
+    local.minimax?.source ?? null,
+    remote?.minimax ?? null
   );
   const cursorAgent =
     agentVisibility.cursor && local.cursor
@@ -1151,6 +1180,21 @@ export function ReportContent({
             return { source: { stats: snapshot.stats, trend: snapshot.trend } };
           })
         : Promise.resolve(null);
+    // MiniMax Code：本地取数命令是 get_minimaxcode_usage（后端来源名
+    // "minimaxcode"，UI 侧 agent id 仍是 minimax），快照只有 stats/trend
+    // （套餐额度走 providerQuota 另一条链路，报告页不展示）；未安装 / 本地库
+    // 无数据时 safe 兜底为 null
+    const localMinimaxPromise: Promise<LoadedSource | null> =
+      agentVisibility.minimax && wantLocal
+        ? safe(async () => {
+            const snapshot: MinimaxcodeSnapshot = await fetchMinimaxcodeUsage(
+              fromMs,
+              toMs,
+              bucket
+            );
+            return { source: { stats: snapshot.stats, trend: snapshot.trend } };
+          })
+        : Promise.resolve(null);
     const fxRatePromise = getCursorConfig()
       .then((config) =>
         config.usd_cny_rate > 0 ? config.usd_cny_rate : 7.2
@@ -1162,7 +1206,9 @@ export function ReportContent({
         ? { excludeDevice: syncConfig?.device_id ?? "", source }
         : { devices: deviceFilter, source };
     /** 有远端同步来源的 agent 统一走这里（source 字符串取自注册表）。 */
-    const remoteUsageFor = (id: "zai" | "codex" | "claude" | "opencodego") =>
+    const remoteUsageFor = (
+      id: "zai" | "codex" | "claude" | "opencodego" | "minimax"
+    ) =>
       agentVisibility[id] && wantRemote
         ? safe(() =>
             remoteUsage(fromMs, toMs, bucket, {
@@ -1175,6 +1221,8 @@ export function ReportContent({
     const remoteClaudePromise = remoteUsageFor("claude");
     // OpenCode 的远端 source 是 "opencode"（注册表 remoteSource），非 UI id
     const remoteOpencodePromise = remoteUsageFor("opencodego");
+    // MiniMax Code 的远端 source 是 "minimaxcode"（注册表 remoteSource），非 UI id
+    const remoteMinimaxPromise = remoteUsageFor("minimax");
 
     setLocalLoading(true);
     setSyncing(wantRemote);
@@ -1184,7 +1232,7 @@ export function ReportContent({
     // 本地阶段是否已渲染出内容（决定远端失败时是否提示错误）
     let localRendered = false;
     try {
-      const [lz, lc, ll, lcur, lk, ld, lo, fx] = await Promise.all([
+      const [lz, lc, ll, lcur, lk, ld, lo, lm, fx] = await Promise.all([
         localZaiPromise,
         localCodexPromise,
         localClaudePromise,
@@ -1192,6 +1240,7 @@ export function ReportContent({
         localKimiPromise,
         localDshPromise,
         localOpencodePromise,
+        localMinimaxPromise,
         fxRatePromise,
       ]);
       if (reqId !== loadReqId.current) return;
@@ -1202,6 +1251,7 @@ export function ReportContent({
         kimi: lk,
         dsh: ld,
         opencodego: lo,
+        minimax: lm,
         cursor: lcur,
         fxRate: fx,
       };
@@ -1245,11 +1295,12 @@ export function ReportContent({
 
     // —— 远端阶段：独立异步，返回后合并进状态（不阻塞本地首屏）——
     try {
-      const [rz, rc, rcl, ro] = await Promise.all([
+      const [rz, rc, rcl, ro, rm] = await Promise.all([
         remoteZaiPromise,
         remoteCodexPromise,
         remoteClaudePromise,
         remoteOpencodePromise,
+        remoteMinimaxPromise,
       ]);
       if (reqId !== loadReqId.current || !localResults) return;
       const built = assembleReport({
@@ -1265,6 +1316,7 @@ export function ReportContent({
           codex: rc,
           claude: rcl,
           opencodego: ro,
+          minimax: rm,
         },
       });
       setReport(built.data);

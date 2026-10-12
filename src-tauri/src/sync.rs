@@ -5,7 +5,7 @@
 //!   独立修订游标补传，不影响普通 rowid 游标。
 //! - 客户端维护游标 last_uploaded_rowid，只上传 rowid > 游标 的新记录。
 //! - 复用项目现有 ureq HTTP 客户端 + pricing::config_dir() 的 ~/.zbar/ 目录。
-//! - 本地采集型来源（codex / claude / dsh / opencode / kimi）各自一套
+//! - 本地采集型来源（codex / claude / dsh / opencode / kimi / minimaxcode）各自一套
 //!   「rowid 游标 + 修订游标」，见 upload_derived_source_incremental。
 
 use serde::{Deserialize, Serialize};
@@ -90,6 +90,13 @@ pub struct SyncConfig {
     /// Kimi 修订行补传游标（updated_at 毫秒时间戳，见 kimi 模块修订机制）。
     #[serde(default)]
     pub last_uploaded_kimi_rev_ts: i64,
+    /// 已上传到的 MiniMax Code 导入库 rowid 游标（与上面各来源相互独立）。
+    #[serde(default)]
+    pub last_uploaded_minimaxcode_rowid: i64,
+    /// MiniMax Code 修订行补传游标（updated_at 毫秒时间戳，见 minimaxcode
+    /// 模块修订机制）。
+    #[serde(default)]
+    pub last_uploaded_minimaxcode_rev_ts: i64,
     /// 已上传到的快照 ts 游标（额度快照）。
     #[serde(default)]
     pub last_uploaded_snapshot_ts: i64,
@@ -127,6 +134,8 @@ impl Default for SyncConfig {
             last_uploaded_opencode_rev_ts: 0,
             last_uploaded_kimi_rowid: 0,
             last_uploaded_kimi_rev_ts: 0,
+            last_uploaded_minimaxcode_rowid: 0,
+            last_uploaded_minimaxcode_rev_ts: 0,
             last_uploaded_snapshot_ts: 0,
             last_uploaded_agent_quota_snapshot_ts: 0,
             last_sync_at: 0,
@@ -561,6 +570,15 @@ pub fn upload_incremental() -> Result<SyncOutcome, String> {
         }
     }
 
+    // ===== 阶段七：MiniMax Code 明细（本地采集型，派生库 ~/.zbar/minimaxcode.sqlite）=====
+    let mut minimaxcode_uploaded = 0usize;
+    match upload_derived_source_incremental(&mut cfg, &base, &token, "minimaxcode") {
+        Ok(n) => minimaxcode_uploaded = n,
+        Err(e) => {
+            eprintln!("[zbar-sync] MiniMax Code 增量上传失败（下次重试）: {e}");
+        }
+    }
+
     let _ = snapshot_cursor_advanced; // 标记已用，避免未读警告
     let _ = agent_quota_snapshot_cursor_advanced;
     let now = chrono::Local::now().timestamp_millis();
@@ -574,7 +592,8 @@ pub fn upload_incremental() -> Result<SyncOutcome, String> {
             + claude_uploaded
             + dsh_uploaded
             + opencode_uploaded
-            + kimi_uploaded,
+            + kimi_uploaded
+            + minimaxcode_uploaded,
         new_max_rowid: since,
         last_sync_at: now,
     })
@@ -858,7 +877,8 @@ where
     Ok((total, since))
 }
 
-/// 修订补传扫描（claude / dsh / opencode / kimi 同构，codex 的模型名回填另有一套）：
+/// 修订补传扫描（claude / dsh / opencode / kimi / minimaxcode 同构，
+/// codex 的模型名回填另有一套）：
 /// 本来源存在「行 id 不变、内容被覆盖」的修订——普通 `id > 游标` 查询永远选不出它。
 /// 这里按修订时间游标 `updated_at > since_ts` 分批选出这些行重传，服务端以
 /// 「总量更大者胜」的 upsert 覆盖修正（见 server/db.py）。`after_id` 逐批推进，
@@ -898,6 +918,7 @@ where
 /// - "dsh" → crate::dsh + last_uploaded_dsh_rowid
 /// - "opencode" → crate::opencode + last_uploaded_opencode_rowid
 /// - "kimi" → crate::kimi + last_uploaded_kimi_rowid（与额度快照通道无关）
+/// - "minimaxcode" → crate::minimaxcode + last_uploaded_minimaxcode_rowid
 /// 未安装对应 CLI 时静默返回 0（不算错误，避免后台同步每轮刷错误日志）。
 /// 首批上传前先探测服务端协议版本（proto ≥ 2 才支持多来源）：
 /// 旧服务端无 source 列，记录会按 (device_id, local_rowid) 撞键静默丢弃
@@ -963,6 +984,22 @@ fn upload_derived_source_incremental(
                         .is_empty());
             (dir, pending, cfg.last_uploaded_kimi_rowid)
         }
+        "minimaxcode" => {
+            // MiniMax Code 的「已安装」判定 = 本地 runtime-state 库存在且有用量表
+            //（minimaxcode::has_local_data，比只看库文件是否存在更严：空库/改名后
+            // 的新版库没有用量表，不该假装有数据）
+            let dir = crate::minimaxcode::has_local_data();
+            let pending = dir
+                && (!crate::minimaxcode::query_since(cfg.last_uploaded_minimaxcode_rowid, 1)?
+                    .is_empty()
+                    || !crate::minimaxcode::query_revised_since(
+                        cfg.last_uploaded_minimaxcode_rev_ts,
+                        0,
+                        1,
+                    )?
+                    .is_empty());
+            (dir, pending, cfg.last_uploaded_minimaxcode_rowid)
+        }
         _ => return Err(format!("未知数据来源: {source}")),
     };
     // 未安装对应 CLI：无会话目录，静默跳过（不算错误，避免后台同步每轮刷日志）
@@ -1019,6 +1056,7 @@ fn upload_derived_source_incremental(
             "dsh" => crate::dsh::query_since(since, limit),
             "opencode" => crate::opencode::query_since(since, limit),
             "kimi" => crate::kimi::query_since(since, limit),
+            "minimaxcode" => crate::minimaxcode::query_since(since, limit),
             _ => unreachable!("来源已在上文校验"),
         },
         |records, batch_max| {
@@ -1036,6 +1074,7 @@ fn upload_derived_source_incremental(
             "dsh" => cfg.last_uploaded_dsh_rowid = advanced,
             "opencode" => cfg.last_uploaded_opencode_rowid = advanced,
             "kimi" => cfg.last_uploaded_kimi_rowid = advanced,
+            "minimaxcode" => cfg.last_uploaded_minimaxcode_rowid = advanced,
             _ => unreachable!("来源已在上文校验"),
         },
     )?;
@@ -1065,19 +1104,24 @@ fn upload_derived_source_incremental(
         cfg.last_uploaded_codex_model_rev_id = revision_id;
     }
 
-    // Claude / DSH / OpenCode / Kimi 修订补传（扫描逻辑与水位口径见
+    // Claude / DSH / OpenCode / Kimi / MiniMax Code 修订补传（扫描逻辑与水位口径见
     // sweep_source_revisions）：这些来源都会「行 id 不变、内容被覆盖」——
     // Claude 会话流式落盘、DSH 同一步先小后大、OpenCode 指纹变化整会话重导
-    // 时存活行原地 upsert、Kimi wire.jsonl 被重写重放——上面的 id 游标永远选不出
+    // 时存活行原地 upsert、Kimi wire.jsonl 被重写重放、MiniMax Code 整表重扫
+    // 时存活行原地 upsert——上面的 id 游标永远选不出
     // 它们，必须按 updated_at 重传，由服务端「总量更大者胜」upsert 覆盖修正。
     // 旧服务端（无覆盖守卫）会忽略重传——退化为旧行为（远端保留中间值），
     // 无数据损坏，故无需协议协商。
-    if matches!(source, "claude" | "dsh" | "opencode" | "kimi") {
+    if matches!(
+        source,
+        "claude" | "dsh" | "opencode" | "kimi" | "minimaxcode"
+    ) {
         let rev_cursor = match source {
             "claude" => cfg.last_uploaded_claude_rev_ts,
             "dsh" => cfg.last_uploaded_dsh_rev_ts,
             "opencode" => cfg.last_uploaded_opencode_rev_ts,
             "kimi" => cfg.last_uploaded_kimi_rev_ts,
+            "minimaxcode" => cfg.last_uploaded_minimaxcode_rev_ts,
             _ => unreachable!("来源已在上文校验"),
         };
         let (rev_uploaded, sweep_watermark) = sweep_source_revisions(
@@ -1088,6 +1132,9 @@ fn upload_derived_source_incremental(
                 "dsh" => crate::dsh::query_revised_since(since_ts, after_id, limit),
                 "opencode" => crate::opencode::query_revised_since(since_ts, after_id, limit),
                 "kimi" => crate::kimi::query_revised_since(since_ts, after_id, limit),
+                "minimaxcode" => {
+                    crate::minimaxcode::query_revised_since(since_ts, after_id, limit)
+                }
                 _ => unreachable!("来源已在上文校验"),
             },
             |records| {
@@ -1103,6 +1150,7 @@ fn upload_derived_source_incremental(
             "dsh" => cfg.last_uploaded_dsh_rev_ts = sweep_watermark,
             "opencode" => cfg.last_uploaded_opencode_rev_ts = sweep_watermark,
             "kimi" => cfg.last_uploaded_kimi_rev_ts = sweep_watermark,
+            "minimaxcode" => cfg.last_uploaded_minimaxcode_rev_ts = sweep_watermark,
             _ => unreachable!("来源已在上文校验"),
         }
     }
@@ -1600,6 +1648,8 @@ fn reset_source_cursors(cfg: &mut SyncConfig) {
     cfg.last_uploaded_opencode_rev_ts = 0;
     cfg.last_uploaded_kimi_rowid = 0;
     cfg.last_uploaded_kimi_rev_ts = 0;
+    cfg.last_uploaded_minimaxcode_rowid = 0;
+    cfg.last_uploaded_minimaxcode_rev_ts = 0;
     cfg.last_sync_at = 0;
 }
 
@@ -1679,7 +1729,7 @@ mod tests {
     //! （配置读写用 serde 在内存里来回，派生库相关行为由各模块自己的测试覆盖）。
     //! 覆盖四件事：
     //! 1. 游标推进（pump_source_batches，各来源共用同一实现）；
-    //! 2. 修订补传扫描（sweep_source_revisions，claude/dsh/opencode/kimi 共用）；
+    //! 2. 修订补传扫描（sweep_source_revisions，claude/dsh/opencode/kimi/minimaxcode 共用）；
     //! 3. 配置文件向后兼容（旧 sync.json 缺新字段仍可反序列化）；
     //! 4. disconnect 的游标重置不漏来源。
 
@@ -1928,6 +1978,8 @@ mod tests {
             last_uploaded_opencode_rev_ts: 8,
             last_uploaded_kimi_rowid: 9,
             last_uploaded_kimi_rev_ts: 10,
+            last_uploaded_minimaxcode_rowid: 11,
+            last_uploaded_minimaxcode_rev_ts: 12,
             ..Default::default()
         };
         let text = serde_json::to_string(&cfg).expect("序列化失败");
@@ -1936,6 +1988,8 @@ mod tests {
             "last_uploaded_opencode_rev_ts",
             "last_uploaded_kimi_rowid",
             "last_uploaded_kimi_rev_ts",
+            "last_uploaded_minimaxcode_rowid",
+            "last_uploaded_minimaxcode_rev_ts",
         ] {
             assert!(text.contains(key), "配置应包含字段 {key}: {text}");
         }
@@ -1944,6 +1998,8 @@ mod tests {
         assert_eq!(back.last_uploaded_opencode_rev_ts, 8);
         assert_eq!(back.last_uploaded_kimi_rowid, 9);
         assert_eq!(back.last_uploaded_kimi_rev_ts, 10);
+        assert_eq!(back.last_uploaded_minimaxcode_rowid, 11);
+        assert_eq!(back.last_uploaded_minimaxcode_rev_ts, 12);
     }
 
     /// disconnect 必须清空**每个来源**的明细游标。这里按 serde 字段名扫描

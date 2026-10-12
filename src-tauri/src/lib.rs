@@ -19,6 +19,7 @@ mod kimi_oauth;
 mod local_agents;
 mod longcat;
 mod minimax;
+mod minimaxcode;
 mod mimo;
 mod model_speed;
 mod moonshot;
@@ -1166,6 +1167,75 @@ async fn get_opencode_debug() -> Result<opencode::OpencodeDebugInfo, String> {
     tauri::async_runtime::spawn_blocking(opencode::debug_info)
         .await
         .map_err(|e| format!("OpenCode 诊断任务失败: {e}"))?
+}
+
+// ===== MiniMax Code（本地读取型）用量统计 =====
+
+/// get_minimaxcode_usage 的入参：时间范围 + 分桶粒度（"hour" | "day"）
+#[derive(Debug, Deserialize)]
+struct MinimaxcodeUsageRequest {
+    from_ms: i64,
+    to_ms: i64,
+    bucket: String,
+}
+
+/// get_minimaxcode_usage 返回的 MiniMax Code 快照：本地 runtime-state.sqlite
+/// 导入库的统计 + 趋势（含花费）。字段与 `OpencodeSnapshot` 逐字段一致
+/// （前端复用同一个用量面板组件，形状不同会渲染不出来），故与 OpenCode 一样
+/// **不含额度字段**：Coding Plan 额度是并列的另一条来源，走 get_provider_quota
+/// （provider 仍是既有的 `minimax`），本命令只出「本地用量」。
+#[derive(Debug, Serialize)]
+struct MinimaxcodeSnapshot {
+    stats: db::Stats,
+    trend: Vec<TrendBucket>,
+}
+
+/// 拉取 MiniMax Code 用量快照（本地 runtime-state.sqlite 增量导入 + 聚合查询）。
+/// async + spawn_blocking：与 get_opencode_usage 同款卸载到阻塞线程池。
+///
+/// 花费计算与 get_dsh_usage / get_opencode_usage 同款（桶内按模型聚合后用
+/// cost_for 求和）。注意 MiniMax Code 自己在 `cost_usd` 列记了成本，本模块的
+/// 派生库把它另存为 `reported_cost_usd`（见 minimaxcode.rs 模块头）；本命令暂仍
+/// 按本项目价格表重算，需要官方口径时改用 minimaxcode::query_reported_cost。
+#[tauri::command]
+async fn get_minimaxcode_usage(req: MinimaxcodeUsageRequest) -> Result<MinimaxcodeSnapshot, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let stats = minimaxcode::query_stats(req.from_ms, req.to_ms)?;
+        let buckets = minimaxcode::query_trend(req.from_ms, req.to_ms, &req.bucket)?;
+        let pricing = load_pricing().unwrap_or_default();
+
+        let fx = load_fx_rate();
+        let trend = buckets
+            .into_iter()
+            .map(|b| {
+                let cost_usd = b
+                    .by_model
+                    .iter()
+                    .map(|m| cost_for(m, &pricing.usd))
+                    .sum::<f64>();
+                TrendBucket {
+                    label: b.label,
+                    total_tokens: b.total_tokens,
+                    requests: b.requests,
+                    cost_cny: cost_usd * fx,
+                    cost_usd,
+                    by_model: bucket_models(&b.by_model),
+                }
+            })
+            .collect();
+
+        Ok(MinimaxcodeSnapshot { stats, trend })
+    })
+    .await
+    .map_err(|e| format!("MiniMax Code 查询任务失败: {e}"))?
+}
+
+/// 诊断 MiniMax Code 数据导入（排查"暂无数据"问题）
+#[tauri::command]
+async fn get_minimaxcode_debug() -> Result<minimaxcode::MinimaxcodeDebugInfo, String> {
+    tauri::async_runtime::spawn_blocking(minimaxcode::debug_info)
+        .await
+        .map_err(|e| format!("MiniMax Code 诊断任务失败: {e}"))?
 }
 
 fn append_agent_quota_snapshot(
@@ -2432,6 +2502,8 @@ pub fn run() {
             get_dsh_debug,
             get_opencode_usage,
             get_opencode_debug,
+            get_minimaxcode_usage,
+            get_minimaxcode_debug,
             list_accounts,
             capture_account,
             switch_account,

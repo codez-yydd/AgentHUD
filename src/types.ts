@@ -248,7 +248,7 @@ export interface RemoteModelStat {
   model_id: string;
   provider_id: string;
   /** 数据来源："zcode" | "codex" | "claude" | "kimi" | "cursor" | "dsh"
-   *  | "opencode"（旧数据无此字段时后端默认 "zcode"） */
+   *  | "opencode" | "minimaxcode"（旧数据无此字段时后端默认 "zcode"） */
   source: string;
   requests: number;
   input_tokens: number;
@@ -810,6 +810,21 @@ export interface OpencodeSnapshot {
   trend: TrendPoint[];
 }
 
+// ===== MiniMax Code 用量统计（与 Rust minimaxcode 模块结构一一对应）=====
+
+/** MiniMax Code 用量快照（get_minimaxcode_usage 返回），载荷形状与
+ *  OpencodeSnapshot 完全一致，故面板与取数分支直接复用同一套类型与组件。
+ *  纯本地采集型（~/.minimax 本地库）**不含** rate_limits——套餐额度是另一条
+ *  并列来源，仍走 get_provider_quota("minimax")（provider 是 UI 侧 agent id，
+ *  命令/模块名里的 "minimaxcode" 才是后端来源名）。
+ *  速度口径由后端置为 request_average（只有整次请求耗时、无 TTFT），展示层
+ *  自动加 ≈ 前缀；缓存率沿用 included 口径——本库归一化时把 cache_read 并进
+ *  input_tokens（见 minimaxcode.rs 模块头），故分母用 input 与 Codex 同款。 */
+export interface MinimaxcodeSnapshot {
+  stats: Stats;
+  trend: TrendPoint[];
+}
+
 // ===== Kimi 用量统计（与 Rust kimi 模块结构一一对应）=====
 
 /** Kimi（Kimi Code CLI）订阅额度（api.kimi.com 实时接口获取） */
@@ -1162,9 +1177,10 @@ export interface CustomPetEntry {
 /** 项目内单个 Agent 来源的用量分解 */
 export interface AgentBreakdown {
   /** **后端来源名**（非 UI 侧 AgentId）："zcode" | "codex" | "claude" | "cursor"
-   *  ∪ 本地读取型注册表来源 "kimi" | "dsh" | "opencode"（Rust local_agents）。
-   *  展示元数据由 sourceMeta() 查（OpenCode 的后端来源名是 "opencode"，
-   *  面板 id 才是 "opencodego"）。 */
+   *  ∪ 本地读取型注册表来源 "kimi" | "dsh" | "opencode" | "minimaxcode"
+   *  （Rust local_agents）。展示元数据由 sourceMeta() 查（OpenCode 的后端来源名
+   *  是 "opencode"、MiniMax Code 的是 "minimaxcode"，面板 id 才是
+   *  "opencodego" / "minimax"）。 */
   source: string;
   tokens: number;
   requests: number;

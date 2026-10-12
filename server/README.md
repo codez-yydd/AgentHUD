@@ -140,7 +140,9 @@ PORT=8080 python3 app.py
 
 ## Codex / Claude 数据（source 维度）
 
-新版客户端除了 ZCode 用量，还会上传 Codex CLI 与 Claude Code 的用量明细。各来源通过 `source` 字段区分（`zcode` / `codex` / `claude`），同一台设备、同一 `local_rowid` 在不同 source 下互不冲突（各来源 rowid 序列相互独立），上传与查询游标也相互独立。服务端表结构对 source 取值无限制，后续新增来源无需再改服务端。
+新版客户端除了 ZCode 用量，还会上传 Codex CLI、Claude Code、Kimi Code、Cursor、DeepSeek Harness、OpenCode、MiniMax Code 等来源的用量明细。各来源通过 `source` 字段区分，同一台设备、同一 `local_rowid` 在不同 source 下互不冲突（各来源 rowid 序列相互独立），上传与查询游标也相互独立。
+
+**上传白名单**：服务端表结构对 source 取值无限制，但**上传侧有白名单**（`app.py` 的 `SYNC_SOURCE_WHITELIST`，当前为 `zcode` / `codex` / `claude` / `kimi` / `cursor` / `dsh` / `opencode` / `minimaxcode`）；白名单外的 source 会整批返回 400。**客户端新增来源时必须同步加白名单**——否则该来源一直 400，客户端游标不推进（不丢数据，服务端升级后自动补传）。
 
 **升级方式**：拉取新代码后重启服务即可。首次启动自动迁移 `usage_records` 表结构（新增 `source` 列，主键改为 `(device_id, source, local_rowid)`），老数据全部自动标记为 `zcode`，无损保留，索引自动重建。建议服务端先于客户端升级。
 

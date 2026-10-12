@@ -303,6 +303,14 @@ fn has_credentials(provider: &str) -> Result<bool, String> {
     if provider == "opencodego" && crate::opencodego::has_local_data() {
         return Ok(true);
     }
+    // - minimax：MiniMax Code 的本地用量（读 ~/.minimax 的 runtime-state 库）
+    //   与原有的 Coding Plan API Key 额度卡合并成同一个页签，故本地有用量数据
+    //   也算有数据——只跑过 MiniMax Code、从没填过 `sk-cp-` Key 的用户同样能看到
+    //   该页签（页签内额区块在无 Key 时自然不渲染）。凭证体系本身保持可选：
+    //   下面那条通用判断仍然生效，两者是 OR 关系。
+    if provider == "minimax" && crate::minimaxcode::has_local_data() {
+        return Ok(true);
+    }
     if provider == "grok" && crate::grok::has_local_data() {
         return Ok(true);
     }

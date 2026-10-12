@@ -50,6 +50,11 @@ export const stats = {
   "stats.opencodeNotFound": "未找到 OpenCode 会话数据",
   "stats.opencodeNotFoundHint":
     "请确认 OpenCode 已安装并使用过；数据读取自本地库\n（~/.local/share/opencode/opencode.db）。",
+  // MiniMax Code 面板：本地用量（~/.minimax 本地库）+ 套餐额度板块
+  "stats.minimaxQuota": "套餐额度",
+  "stats.minimaxcodeNotFound": "未找到 MiniMax Code 会话数据",
+  "stats.minimaxcodeNotFoundHint":
+    "请确认 MiniMax Code 已安装并使用过；数据读取自本地库\n（~/.minimax）。",
   // Claude 订阅额度增量窗口（API 返回该窗口才有值，缺省不渲染）
   "stats.claudeOpusWeekly": "Opus 周额度",
   "stats.claudeSonnetWeekly": "Sonnet 周额度",

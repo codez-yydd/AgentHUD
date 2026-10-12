@@ -47,7 +47,7 @@ export const settings = {
   "settings.sourcesHint":
     "关闭后仅从统计标签和汇总中隐藏，不影响本地采集与设备同步。",
   // 分组小节标题；归属由 agentVisibility 的 AGENT_GROUP（数据来源）决定，
-  // 本地采集 = zai/codex/claude/cursor/kimi/dsh，其余为凭证接入
+  // 本地采集 = zai/codex/claude/cursor/kimi/dsh/minimax，其余为凭证接入
   "settings.groupLocal": "本地采集",
   "settings.groupCredential": "凭证接入",
   "settings.agentZaiDesc": "Z.ai 用量与 Coding Plan 额度",
@@ -64,10 +64,13 @@ export const settings = {
   "settings.agentGeminiDesc": "Gemini 订阅额度（默认隐藏，启用或添加凭证后显示）",
   "settings.agentGrokDesc": "Grok 订阅额度（默认隐藏，启用或添加凭证后显示）",
   "settings.agentQoderDesc": "Qoder 订阅额度（默认隐藏，启用或添加凭证后显示）",
-  // agent 化口径：opencodego / moonshot / deepseek 不提供凭证录入入口（见
-  // agentVisibility.NO_CREDENTIAL_ENTRY_AGENTS），文案不再承诺「添加凭证后显示」
+  // agent 化口径：opencodego / minimax / moonshot / deepseek 不提供凭证录入入口
+  //（见 agentVisibility.NO_CREDENTIAL_ENTRY_AGENTS），文案不再承诺「添加凭证后显示」
   "settings.agentOpencodegoDesc": "OpenCode 用量与额度（默认隐藏；读取本地 OpenCode 数据）",
-  "settings.agentMinimaxDesc": "MiniMax 订阅额度（默认隐藏，启用或添加凭证后显示）",
+  // MiniMax 合并口径：用量读本地 MiniMax Code 数据，套餐额度由已存的 API Key 查得
+  //（已配 Key 的机器照旧出额度，只是不再提供凭证录入入口）
+  "settings.agentMinimaxDesc":
+    "MiniMax Code 用量与套餐额度（默认隐藏；读取本地 MiniMax Code 数据，套餐额度取自已配置的 API Key）",
   // 月之暗面开放平台：查的是账户余额（充值型），非订阅额度，故用「余额」；
   // 与「Kimi Code」区分，文案写明「开放平台」
   "settings.agentMoonshotDesc": "Kimi 开放平台余额（默认隐藏）",

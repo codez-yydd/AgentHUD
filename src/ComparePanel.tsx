@@ -44,11 +44,13 @@ interface Props {
 }
 
 /** 对比页参与的 Agent（凭证驱动的新 provider 尚无周额度对比数据，暂不纳入）。
- *  dsh（DeepSeek Harness）与 opencodego（OpenCode）为本地采集型：纳入 Token
- *  用量对比；因无订阅额度窗口快照（后端 agent_quota_history 只写
- *  cursor/codex/claude/kimi），不登记 AGENT_WINDOW_KEY，故不出现在周额度系列里。
- *  注意这里的值全是 **UI 侧 AgentId**（opencodego 而非后端来源名 opencode），
- *  与后端交互的来源名由 LOCAL_COMPARE_SOURCE / AGENT_META.remoteSource 给出。 */
+ *  dsh（DeepSeek Harness）、opencodego（OpenCode）与 minimax（MiniMax Code）
+ *  为本地采集型：纳入 Token 用量对比；因无订阅额度窗口快照（后端
+ *  agent_quota_history 只写 cursor/codex/claude/kimi），不登记 AGENT_WINDOW_KEY，
+ *  故不出现在周额度系列里。
+ *  注意这里的值全是 **UI 侧 AgentId**（opencodego / minimax，而非后端来源名
+ *  opencode / minimaxcode），与后端交互的来源名由 LOCAL_COMPARE_SOURCE /
+ *  AGENT_META.remoteSource 给出。 */
 type CompareAgent =
   | "zai"
   | "codex"
@@ -56,7 +58,8 @@ type CompareAgent =
   | "cursor"
   | "kimi"
   | "dsh"
-  | "opencodego";
+  | "opencodego"
+  | "minimax";
 const COMPARE_AGENTS: CompareAgent[] = [
   "zai",
   "codex",
@@ -65,6 +68,7 @@ const COMPARE_AGENTS: CompareAgent[] = [
   "kimi",
   "dsh",
   "opencodego",
+  "minimax",
 ];
 const AGENT_META: Record<
   AgentId,
@@ -93,7 +97,17 @@ const AGENT_META: Record<
     brand: "opencodego",
     remoteSource: "opencode",
   },
-  minimax: { label: "MiniMax", brand: "minimax" },
+  // MiniMax Code（本地 ~/.minimax 采集型，套餐额度是并列的另一条链路）：
+  // 已纳入 Token 用量对比。与 minimax 是同一个 agent（合并口径），故只此一行。
+  // remoteSource 是**后端来源名 "minimaxcode"**——不是 UI id `minimax`
+  // （Rust sync.rs 的增量上传、server 白名单都是 minimaxcode，传 minimax
+  // 会查不到任何远端数据）；图标走 BrandIcon 的 "minimax" 品牌图形。
+  // 无周额度窗口（AGENT_WINDOW_KEY 不登记 → 不建额度系列）。
+  minimax: {
+    label: "MiniMax Code",
+    brand: "minimax",
+    remoteSource: "minimaxcode",
+  },
   moonshot: { label: "Kimi", brand: "moonshot" },
   deepseek: { label: "DeepSeek", brand: "deepseek" },
   longcat: { label: "LongCat", brand: "longcat" },
@@ -105,11 +119,12 @@ const AGENT_META: Record<
 };
 
 /** 各 Agent 参与对比的周额度窗口（Z.ai 走 QuotaSnapshot.weekly_pct，不走这里）。
- *  dsh / opencodego 故意不登记：它们没有订阅额度窗口快照（后端
+ *  dsh / opencodego / minimax 故意不登记：它们没有订阅额度窗口快照（后端
  *  agent_quota_history 只写 cursor/codex/claude/kimi），buildQuotaSeries 对
  *  undefined 会直接跳过该 Agent（只出现在 Token 用量对比里），不建空额度系列。
- *  OpenCode Go 的 5 小时/周/月额度不是这条链路：它走 providerQuota 通用缓存
- *  （agentId `opencodego`，见 SummaryTab 的额度监控区），两者语义不重叠。 */
+ *  OpenCode Go / MiniMax 的套餐额度不是这条链路：它们走 providerQuota 通用缓存
+ *  （agentId `opencodego` / `minimax`，见 SummaryTab 的额度监控区），两者语义
+ *  不重叠。 */
 const AGENT_WINDOW_KEY: Partial<Record<AgentId, AgentQuotaWindowKey>> = {
   codex: "weekly",
   claude: "weekly",
@@ -119,9 +134,10 @@ const AGENT_WINDOW_KEY: Partial<Record<AgentId, AgentQuotaWindowKey>> = {
 
 /**
  * AgentId → 本地取数用的**后端来源名**（get_compare_tokens_for_agent 的 source）。
- * 两个域只有 OpenCode 异名：UI 侧 id 是 `opencodego`，后端固定 `opencode`。
- * 全量列出而不是 `?? agent` 回落：后者会把 opencodego 原样发给后端（后端不认，
- * 报「未知的对比 Agent」），表格化后新增 agent 时也必须显式想清楚来源名。
+ * 两个域有两个 agent 异名：UI 侧 `opencodego` → 后端 `opencode`，
+ * UI 侧 `minimax` → 后端 `minimaxcode`。全量列出而不是 `?? agent` 回落：
+ * 后者会把 UI id 原样发给后端（后端不认，报「未知的对比 Agent」），表格化后
+ * 新增 agent 时也必须显式想清楚来源名。
  */
 const LOCAL_COMPARE_SOURCE: Record<CompareAgent, CompareTokenSource> = {
   zai: "zai",
@@ -131,6 +147,7 @@ const LOCAL_COMPARE_SOURCE: Record<CompareAgent, CompareTokenSource> = {
   kimi: "kimi",
   dsh: "dsh",
   opencodego: "opencode",
+  minimax: "minimaxcode",
 };
 
 const DAY_MS = 86_400_000;
@@ -519,7 +536,7 @@ export function CompareContent({ agentVisibility }: Props) {
       if (wantRemote && syncConfig) {
         for (const agent of enabledAgents) {
           const source = AGENT_META[agent].remoteSource;
-          if (!source) continue; // Cursor / Kimi / dsh 目前只采集本机，未上传到同步服务
+          if (!source) continue; // 前端未登记远端来源的 agent（Cursor / Kimi / dsh）只按本机口径对比
           const usageOpts =
             deviceFilter === "all"
               ? { excludeDevice: syncConfig.device_id, source }
