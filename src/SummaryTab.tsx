@@ -21,6 +21,7 @@ import { formatCost, formatCountdownCore, formatMs, formatResetStamp, formatToke
 import { modelCost } from "./merge";
 import {
   canonicalModelId,
+  displayModelName,
   hasPositivePrice,
   type FoldedModelStat,
 } from "./modelName";
@@ -1313,8 +1314,17 @@ export function SummaryTab({
                       <span className={`shrink-0 px-1 py-px rounded text-[8px] font-medium ${a.badgeClass}`}>{a.badge}</span>
                     )}
                     {a.currentModel && (
-                      <span className="text-[9px] text-slate-500/90 truncate" title={t("common.currentModel")}>
-                        {a.currentModel.model_id}
+                      <span
+                        className="text-[9px] text-slate-500/90 truncate"
+                        title={
+                          // 默认 tooltip 是「当前模型」标签；标签被缩短（去掉了
+                          // provider 配置名前缀）时补上完整 id
+                          displayModelName(a.currentModel.model_id) !== a.currentModel.model_id
+                            ? `${t("common.currentModel")} · ${a.currentModel.model_id}`
+                            : t("common.currentModel")
+                        }
+                      >
+                        {displayModelName(a.currentModel.model_id)}
                       </span>
                     )}
                   </div>
@@ -1481,7 +1491,7 @@ export function SummaryTab({
                             : `${m.source} · ${m.name}`
                         }
                       >
-                        {m.name}
+                        {displayModelName(m.name)}
                       </span>
                       {!m.hasPrice && (
                         <span

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import type { ModelSpeedStat } from "./types";
 import { getModelSpeed } from "./api";
 import { formatSeconds, formatTokens, formatTps } from "./format";
+import { displayModelName } from "./modelName";
 import { useI18n } from "./i18n";
 
 /** 时间范围（今日 = 自然本地日；后端 days=0 使用同一口径） */
@@ -138,7 +139,9 @@ function ModelSpeedRow({
         <span className={`speed-rank ${rank === 0 ? "speed-rank-first" : ""}`}>{rank + 1}</span>
         <div className="min-w-0 flex-1 pt-px">
           <div className="flex items-center gap-1.5 min-w-0">
-            <span className="speed-model-name truncate">{model.modelId}</span>
+            <span className="speed-model-name truncate" title={model.modelId}>
+              {displayModelName(model.modelId)}
+            </span>
             {lowSuccess && <span className="speed-warning-dot" />}
           </div>
           <div className="flex items-center gap-1.5 mt-1 min-w-0">

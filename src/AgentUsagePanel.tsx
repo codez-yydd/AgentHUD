@@ -9,7 +9,7 @@ import type {
 } from "./types";
 import { formatCost, formatCountdownCore, formatPct, formatResetStamp, formatTokens, formatTps } from "./format";
 import { modelCost } from "./merge";
-import { hasPositivePrice, type FoldedModelStat } from "./modelName";
+import { displayModelName, hasPositivePrice, type FoldedModelStat } from "./modelName";
 import {
   CurrentModelBar,
   DetailRow,
@@ -426,12 +426,20 @@ export function AgentUsagePanel({
               const hasSpeedCol = rows.some((r) => r.m.avg_tps != null);
               return rows.map(({ m, hasPrice, costVal, variantTitle, sortVal }) => {
                 const pct = maxVal > 0 ? Math.max(sortVal / maxVal, 0.02) : 0;
+                // 标签只显示模型名（去掉第三方 CLI 拼进 id 的 provider 配置名前缀，
+                // 如 zhipuai-coding-plan/glm-5.3-flash → glm-5.3-flash）；完整 id
+                // 仍保留在 tooltip 里，便于区分不同前缀来源的同名模型
+                const label = displayModelName(m.model_id);
+                const title =
+                  [label !== m.model_id ? m.model_id : null, variantTitle]
+                    .filter(Boolean)
+                    .join(" · ") || undefined;
                 return (
                   <div key={m.provider_id + m.model_id} className="relative rounded-lg hover:bg-slate-900/4 transition-colors py-1.5 px-1.5 overflow-hidden">
                     <div className={`absolute inset-y-0 left-0 rounded-lg pointer-events-none ${theme.rowBar}`} style={{ width: `${pct * 100}%` }} />
                     <div className="relative flex items-center justify-between text-xs min-w-0">
                       <div className="flex items-center gap-1 min-w-0 flex-1">
-                        <span className="font-medium text-slate-900/90 truncate text-[11px]" title={variantTitle}>{m.model_id}</span>
+                        <span className="font-medium text-slate-900/90 truncate text-[11px]" title={title}>{label}</span>
                         {!hasPrice && <span className="text-[10px] text-amber-600/90 shrink-0" title={t("common.noPrice")}>⚠</span>}
                       </div>
                       <div className="flex items-center gap-1 num shrink-0 text-[10px]">

@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { Currency, CurrentModel, SpeedQuality, TrendPoint } from "./types";
 import { formatCost, formatMs, formatTps, formatTokens, dateStr } from "./format";
+import { displayModelName } from "./modelName";
 import { useI18n } from "./i18n";
 
 // ============================================================
@@ -215,8 +216,8 @@ export function CurrentModelBar({ model }: { model?: CurrentModel | null }) {
         <span className="text-[9px] text-slate-500 shrink-0">
           {t("common.currentModel")}
         </span>
-        <span className="text-[11px] font-medium text-slate-900/85 truncate">
-          {model.model_id}
+        <span className="text-[11px] font-medium text-slate-900/85 truncate" title={model.model_id}>
+          {displayModelName(model.model_id)}
         </span>
       </div>
       <span className="num text-[9px] text-slate-400 shrink-0">{rel}</span>

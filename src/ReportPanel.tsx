@@ -53,6 +53,7 @@ import {
 } from "./merge";
 import { BrandIcon, type BrandIconName } from "./BrandIcon";
 import {
+  displayModelName,
   foldCursorModelRows,
   foldModelStatRows,
   hasPositivePrice,
@@ -1571,24 +1572,29 @@ export function ReportContent({
       if (!topKeys.has(key)) otherTokens += tokens;
     }
     // 同一 model_id 来自多个来源（如 zai 与 codex 都用 GLM-5.3）时图例
-    // 会重名——重复的模型名加 agent 品牌前缀区分（Z.ai GLM-5.3 / Codex GLM-5.3）
+    // 会重名——重复的模型名加 agent 品牌前缀区分（Z.ai GLM-5.3 / Codex GLM-5.3）。
+    // 按**展示名**统计：展示名已去掉第三方 CLI 拼进 id 的 provider 配置名前缀
+    // （zhipuai-coding-plan/glm-5.3-flash → glm-5.3-flash），不同完整 id 也可能
+    // 折叠成同一个标签，那种情况同样要靠来源前缀区分。
     const dupModels = new Set<string>();
     {
-      const modelCounts = new Map<string, number>();
+      const labelCounts = new Map<string, number>();
       for (const [key] of top) {
         const modelId = modelDaily.names.get(key)?.modelId ?? key;
-        modelCounts.set(modelId, (modelCounts.get(modelId) ?? 0) + 1);
+        const label = displayModelName(modelId);
+        labelCounts.set(label, (labelCounts.get(label) ?? 0) + 1);
       }
-      for (const [modelId, count] of modelCounts) {
-        if (count > 1) dupModels.add(modelId);
+      for (const [label, count] of labelCounts) {
+        if (count > 1) dupModels.add(label);
       }
     }
     const series: TrendSeries[] = top.map(([key, total], index) => {
       const meta = modelDaily.names.get(key);
+      const modelLabel = meta ? displayModelName(meta.modelId) : key;
       const label =
-        meta && dupModels.has(meta.modelId)
-          ? `${sourcePrefixOf(meta.agentId, meta.providerId)} ${meta.modelId}`
-          : (meta?.modelId ?? key);
+        meta && dupModels.has(modelLabel)
+          ? `${sourcePrefixOf(meta.agentId, meta.providerId)} ${modelLabel}`
+          : modelLabel;
       return {
         key,
         label,
@@ -2683,7 +2689,7 @@ function buildMarkdown(
         "- " +
           t("report.md.modelLine", {
             agent: model.agentLabel,
-            model: model.modelId,
+            model: displayModelName(model.modelId),
             cost:
               model.cost != null ? formatCost(model.cost, currency) : "—",
             tokens: formatTokens(model.tokens),

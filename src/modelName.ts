@@ -45,6 +45,26 @@ export function priceLookupKey(raw: string): string {
   return canonicalModelId(raw).replace(/\./g, "-");
 }
 
+/** 展示用模型名（**只影响渲染标签，不改身份**）。
+ *
+ *  第三方 CLI 会把「provider 配置名 + 模型名」拼成一个 model_id 落盘：实测
+ *  Kimi Code 的 usage.record.model = `zhipuai-coding-plan/glm-5.3-flash`，
+ *  斜杠前是它的 provider 配置名、斜杠后才是模型名（同一条记录的 provider 字段
+ *  只写 "openai"，智谱这个身份只存在于前缀里）。界面按用户认知只显示模型名。
+ *
+ *  只切**首个** "/" 之前那一段，其余原样保留（`provider/a/b` → `a/b`）；
+ *  刻意不用 rsplit 取最后一段——模型名自身可能含 "/"，取最后一段会把名字
+ *  截断成 `b`。与价格查找的 priceLookupCandidates 同一口径。
+ *
+ *  完整 model_id 仍是唯一身份：分组折叠、计费、同步、价格查找、价格配置页
+ *  一律用完整 id，本函数仅用于渲染标签；需要区分同名前缀来源时（如悬停
+ *  提示）应展示完整 id。 */
+export function displayModelName(modelId: string): string {
+  const i = modelId.indexOf("/");
+  if (i <= 0 || i === modelId.length - 1) return modelId;
+  return modelId.slice(i + 1);
+}
+
 /** 价格表条目的候选查找键（有序，**永不改写模型身份**）：
  *  1. 原始 id —— 模型名自身可以带 "/"（本机数据里就有 `stealth/ox-alpha` 这种把
  *     斜杠写在名字里的 id），必须优先按自己的名字匹配；

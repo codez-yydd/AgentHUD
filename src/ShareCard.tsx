@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { PricingConfig } from "./types";
 import { saveShareImage } from "./api";
 import { formatCost, formatCountLocale, formatTokensLocale } from "./format";
+import { displayModelName } from "./modelName";
 import { BtnPrimary } from "./layout";
 import { useI18n } from "./i18n";
 import {
@@ -137,7 +138,9 @@ function buildView(data: ShareReportData, pricing: PricingConfig): ShareView {
     currency,
     5
   ).map((m) => ({
-    name: m.modelId,
+    // 只显示模型名（去掉第三方 CLI 拼进 id 的 provider 配置名前缀）；
+    // 计费与分组仍用完整 modelId（rangeModelRows 内部口径不变）
+    name: displayModelName(m.modelId),
     color: colorOf.get(m.agentId) ?? "#94a3b8",
     tokens: m.tokens,
     cost: m.cost,

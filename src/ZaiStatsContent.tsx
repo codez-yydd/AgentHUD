@@ -26,6 +26,7 @@ import { useDataCache } from "./DataCache";
 import { useI18n } from "./i18n";
 import {
   canonicalModelId,
+  displayModelName,
   hasPositivePrice,
   type FoldedModelStat,
 } from "./modelName";
@@ -230,9 +231,15 @@ function ModelRankList({
               <div className="flex items-center gap-1 min-w-0 flex-1">
                 <span
                   className="font-medium text-slate-900/90 truncate text-[11px]"
-                  title={variantTitle}
+                  title={
+                    // 标签只显示模型名，完整 id（含第三方 CLI 的 provider 配置名
+                    // 前缀）放在 tooltip 里
+                    [displayModelName(m.model_id) !== m.model_id ? m.model_id : null, variantTitle]
+                      .filter(Boolean)
+                      .join(" · ") || undefined
+                  }
                 >
-                  {m.model_id}
+                  {displayModelName(m.model_id)}
                 </span>
                 {!hasPrice && <span className="text-[10px] text-amber-600/90 shrink-0" title={t("common.noPrice")}>⚠</span>}
               </div>
