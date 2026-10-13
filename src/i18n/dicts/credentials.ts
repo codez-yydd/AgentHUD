@@ -80,6 +80,10 @@ export const credentials = {
   "credentials.balance": "余额",
   "credentials.balanceGranted": "赠送 {amount}",
   "credentials.balanceToppedUp": "充值 {amount}",
+  // 额度窗口的绝对值行（QuotaEntryCard）：右侧百分比统一是「剩 X%」（与
+  // Z.ai / Codex / Cursor 同款），故绝对值必须显式标注是「已用」，避免被
+  // 读成剩余量。{amount} 已含单位（如「700 次」），无单位时是纯数字
+  "credentials.windowUsedAbs": "已用 {amount} / {total}",
 
   // ===== 额度窗口标题（QuotaEntryCard 按 window.key 映射；Rust 各 provider
   //      模块下发的 title 为硬编码中文，英文界面经此翻译，未收录的 key 回落

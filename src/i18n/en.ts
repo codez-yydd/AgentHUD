@@ -1049,6 +1049,11 @@ export const en: typeof zh = {
     "credentials.balance": "Balance",
     "credentials.balanceGranted": "{amount} granted",
     "credentials.balanceToppedUp": "{amount} topped up",
+    // Absolute line of a quota window (QuotaEntryCard): the percentage on the
+    // right is always "% left" (matching Z.ai / Codex / Cursor), so the absolute
+    // values must say "Used" explicitly to avoid being read as remaining.
+    // {amount} already carries the unit when there is one (e.g. "700 calls")
+    "credentials.windowUsedAbs": "Used {amount} / {total}",
 
     // ===== Quota window titles (QuotaEntryCard maps by window.key; the titles
     //      sent by the Rust provider modules are hardcoded Chinese, translated

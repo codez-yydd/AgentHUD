@@ -144,19 +144,11 @@ jobs:
           # 重跑幂等：上次失败可能留下残缺 release，先清理（tag 保留）
           gh release view "v$VERSION" >/dev/null 2>&1 && gh release delete "v$VERSION" --yes || true
           # Release 说明（Markdown 分类条目版，与线上已更新的说明保持一致，防止重跑回退）
-          NOTES="## ✨ 新功能
+          NOTES="## 🐛 问题修复
 
-          - **四个面板支持手动添加 API Key（Kimi Code / MiniMax Code / OpenCode / DeepSeek Harness）** — 面板底部新增可折叠的凭证区（有凭证时自动展开）：把订阅用在别的 agent、本机没装（或不想装）对应官方 CLI 时，粘贴一个 Key 就能直连官方接口读额度，多订阅可堆叠显示、可备注、可切换区域
-          - **MiniMax Code：手动录入 Coding Plan Key** — 粘贴 sk-cp- 开头的 API Key（区分中国站 / 国际站）即显示当前窗口与本周用量；没装 MiniMax Code 也能查套餐额度
-          - **OpenCode：手动录入 Go 计划 API Key** — 粘贴 OpenCode Console 的 API Key 即显示 5 小时 / 本周 / 本月三档官方用量百分比与重置时间（查询不消耗套餐额度），与本地库估算并列展示
-          - **DeepSeek Harness：新增「DeepSeek 平台余额」区** — 粘贴 DeepSeek 开放平台 API Key 即显示账户余额与赠送 / 充值拆分；DSH 自身按量计费、没有订阅额度窗口，这条通道是「把 DeepSeek 额度用在别的 agent」时唯一能看到余额的入口
-          - **Kimi Code 的「其他账号」区与其余三个面板统一** — 网页登录（设备码流程，无需安装 CLI）与 API Key 两种录入形态、区域切换、多账号堆叠全部保持不变，只是换成同一个通用区块
-          - **OpenCode 与 MiniMax Code 可在标签栏「＋添加服务」浮层直接录入** — 全新机器没有任何本地数据时也能先录 Key，录完对应标签页自动出现
-
-          ## 🐛 问题修复
-
-          - **没装官方 CLI 就看不了订阅额度** — 此前 OpenCode / MiniMax Code / DeepSeek 三个服务不提供凭证录入入口（只能读取本机已有凭证或本地数据），把订阅用在别的 agent 的用户在界面上无路可走；本次放开入口并接出额度卡
-          - **MiniMax Code 凭证空态误用 OpenCode 文案** — 双数据源空态提示改为 MiniMax 专属（此前会提示去安装 OpenCode CLI）"
+          - **额度进度条方向与其它面板相反** — 凭证卡（Kimi Code / MiniMax Code / OpenCode 等「其他账号」区）的额度条此前展示的是**已用百分比**、进度条随用量变长，而 Z.ai / Codex / Claude / Cursor 主面板展示的是**剩余百分比**、进度条随用量变短：同一个账号在 Kimi 主面板显示「剩 30%」，在凭证卡里却显示「70%」。现已统一为剩余口径——右侧数字「剩 X%」、进度条长度 = 剩余百分比、配色按剩余分段（绿→琥珀→红），与其它面板逐项一致
+          - **绝对值改为显式「已用」** — 原先把「700 / 1000」与已用百分比挤在同一行，统一为剩余百分比后容易被读成剩余量；现在移到进度条下方单独一行并标注「已用 700 次 / 1000」
+          - **修复范围覆盖全部凭证型服务** — 该凭证卡是共享组件，故 Kimi Code、MiniMax Code、OpenCode、Claude、Cursor、Qoder、Grok、LongCat、MiMo、通义灵码、百炼 Token 包、StepFun、Gemini 的「其他账号」额度条一并生效；DeepSeek 平台余额只显示金额、无百分比条，不受影响"
           gh release create "v$VERSION" out/* \
             --title "ZBar v$VERSION" \
             --notes "$NOTES" \

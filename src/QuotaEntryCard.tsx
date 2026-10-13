@@ -2,7 +2,10 @@
  * 单条凭证的配额卡（共享组件）：从 GenericQuotaPanel 提取，供通用额度
  * 面板与 Claude 面板的「其他账号」区两处复用，避免组件复制。
  * 渲染结构：备注名 + 套餐/状态徽章 + 窗口进度条 + 按量余额 + 错误信息。
- * 提取时保持原实现零变化（样式、文案键、渲染条件与原文件一致）。
+ *
+ * 额度窗口统一按「剩余」口径展示（剩 X% + 剩余长度的条 + 按剩余着色），
+ * 与 Z.ai / Codex / Claude / Cursor 及汇总页的额度条完全一致；绝对值另起
+ * 一行标「已用 N / 总量」。详见 QuotaWindowBar 的注释。
  */
 import type { MessageKey } from "./i18n";
 import { useI18n } from "./i18n";
@@ -189,7 +192,20 @@ export function QuotaEntryCard({
   );
 }
 
-/** 单个用量窗口：标题 + 进度条 + 数值 + 重置倒计时（展示偏好跟随设置页） */
+/** 单个用量窗口：标题 + 进度条 + 数值 + 重置倒计时（展示偏好跟随设置页）。
+ *
+ *  **口径统一（重要）**：与 Z.ai / Codex / Claude / Cursor 的额度条一致，
+ *  一律按「剩余」展示——右侧数字是「剩 X%」，进度条长度 = 剩余百分比，
+ *  配色也按剩余分段（remainingGradient / remainingTextColor）。
+ *  后端 ProviderQuotaWindow.usedPercent 是**已用**百分比（各 provider 模块
+ *  按同一口径产出，如 kimi 的 pct_from_limit_remaining、minimax 的
+ *  100 - remaining_percent），故此处在渲染层取补数，不改后端契约。
+ *  修复前这里直接把 usedPercent 当数字与条长展示（「70%」+ 70% 长的条），
+ *  方向与其它面板相反：同一账号在 Kimi 主面板显示「剩 30%」、在凭证卡里
+ *  却显示「70%」。
+ *
+ *  绝对值信息保留：有 used/total 时在条下给一行「已用 N / 总量」（与 Z.ai 的
+ *  MCP 月度条同款版式），避免与右侧的「剩 X%」混淆。 */
 function QuotaWindowBar({
   title,
   usedPercent,
@@ -210,41 +226,52 @@ function QuotaWindowBar({
   now: number;
 }) {
   const { t } = useI18n();
-  const pct = usedPercent ?? (total ? (used ?? 0) / total * 100 : undefined);
-  const hasBar = pct != null && isFinite(pct);
-  const remain = hasBar ? Math.max(0, 100 - Math.min(Math.max(pct, 0), 100)) : 100;
+  // 已用百分比（缺 usedPercent 时用 used/total 兜底）→ 取补数得剩余
+  const usedPct =
+    usedPercent ?? (total ? ((used ?? 0) / total) * 100 : undefined);
+  const hasBar = usedPct != null && isFinite(usedPct);
+  const remain = hasBar
+    ? Math.max(0, 100 - Math.min(Math.max(usedPct, 0), 100))
+    : 0;
 
-  // 数值文本：used/total（带单位）优先，其次百分比
+  // 数值文本：有百分比 → 「剩 X%」（与其它面板同款）；无百分比只有绝对值时
+  // 回落展示绝对值本身（此前行为）
   const numText = hasBar
-    ? `${Math.round(pct)}%`
+    ? t("common.remaining", { pct: Math.round(remain) })
     : used != null
       ? unit
         ? `${used}${total != null ? `/${total}` : ""} ${unit}`
         : String(used)
+      : "";
+  // 绝对值行（已用口径；总量与单位来自后端，单位可能缺省）
+  const absText =
+    used != null && total != null
+      ? t("credentials.windowUsedAbs", {
+          amount: unit ? `${used} ${unit}` : String(used),
+          total: String(total),
+        })
       : "";
 
   return (
     <div>
       <div className="flex items-center justify-between gap-2 mb-0.5">
         <span className="text-[9px] text-slate-600/70">{title}</span>
-        <span className="flex items-center gap-1.5 min-w-0">
-          {used != null && total != null && (
-            <span className="num text-[9px] text-slate-500/80">
-              {used}
-              {unit ? ` ${unit}` : ""} / {total}
-            </span>
-          )}
-          {numText && (
-            <span
-              className="num text-[10px] font-semibold shrink-0"
-              style={{ color: remainingTextColor(remain) }}
-            >
-              {numText}
-            </span>
-          )}
-        </span>
+        {numText && (
+          <span
+            className="num text-[10px] font-semibold shrink-0"
+            style={{ color: remainingTextColor(remain) }}
+          >
+            {numText}
+          </span>
+        )}
       </div>
-      {hasBar && <ProgressBar pct={pct / 100} gradient={remainingGradient(remain)} />}
+      {hasBar && (
+        <ProgressBar pct={remain / 100} gradient={remainingGradient(remain)} />
+      )}
+      {/* 绝对值行：已用 / 总量（与右侧「剩 X%」互为补充，语义在文案里写明） */}
+      {absText && (
+        <div className="num text-[8px] text-slate-500/70 mt-0.5">{absText}</div>
+      )}
       {/* 重置时间：倒计时 / 具体时间点（两项可同时开，跟随设置页偏好） */}
       {resetsAt != null && resetsAt > now && (
         <div className="num text-[8px] text-slate-500/70 mt-0.5">
