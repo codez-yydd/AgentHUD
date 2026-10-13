@@ -55,26 +55,29 @@ export const settings = {
   "settings.agentClaudeDesc": "Claude Code 用量与订阅额度",
   "settings.agentCursorDesc": "Cursor 编辑器用量与套餐额度",
   "settings.agentKimiDesc": "Kimi Code CLI 用量与订阅额度",
-  // DeepSeek Harness：本地采集型（无凭证可录、无订阅额度窗口），仍为
-  // 默认隐藏，由设置页开关控制
+  // DeepSeek Harness：本地采集型（用量无凭证可录），但面板底部提供
+  // 「DeepSeek 平台余额」区（手动 DeepSeek 开放平台 API Key），仍为默认隐藏，
+  // 由设置页开关控制（这是没装过 DSH、只想看余额的用户进入面板的唯一入口）
   "settings.agentDshDesc":
-    "DeepSeek Harness 用量与花费（读取本地 ~/.dsh 会话数据，无需凭证）",
+    "DeepSeek Harness 用量与花费（读取本地 ~/.dsh 会话数据；可添加 DeepSeek 平台 API Key 查看账户余额）",
   // 凭证驱动的新 provider：默认隐藏，启用或添加凭证后展示对应标签
   //（额度接入逐步上线）
   "settings.agentGeminiDesc": "Gemini 订阅额度（默认隐藏，启用或添加凭证后显示）",
   "settings.agentGrokDesc": "Grok 订阅额度（默认隐藏，启用或添加凭证后显示）",
   "settings.agentQoderDesc": "Qoder 订阅额度（默认隐藏，启用或添加凭证后显示）",
-  // agent 化口径：opencodego / minimax / moonshot / deepseek 不提供凭证录入入口
-  //（见 agentVisibility.NO_CREDENTIAL_ENTRY_AGENTS），文案不再承诺「添加凭证后显示」
-  "settings.agentOpencodegoDesc": "OpenCode 用量与额度（默认隐藏；读取本地 OpenCode 数据）",
-  // MiniMax 合并口径：用量读本地 MiniMax Code 数据，套餐额度由已存的 API Key 查得
-  //（已配 Key 的机器照旧出额度，只是不再提供凭证录入入口）
+  // 双数据源：本地 CLI 数据或手动 API Key 任一即可出数据（面板底部有录入区，
+  // 没装 CLI 的用户靠它读官方额度）
+  "settings.agentOpencodegoDesc":
+    "OpenCode 用量与套餐额度（默认隐藏；读取本地 OpenCode 数据，或添加 Go 计划 API Key 直连官方接口）",
+  // MiniMax 合并口径：用量读本地 MiniMax Code 数据，套餐额度走手动录入的
+  // sk-cp- Coding Plan Key（区域需与 Key 站点一致）
   "settings.agentMinimaxDesc":
-    "MiniMax Code 用量与套餐额度（默认隐藏；读取本地 MiniMax Code 数据，套餐额度取自已配置的 API Key）",
+    "MiniMax Code 用量与套餐额度（默认隐藏；读取本地 MiniMax Code 数据，或添加 Coding Plan API Key 查套餐额度）",
   // 月之暗面开放平台：查的是账户余额（充值型），非订阅额度，故用「余额」；
   // 与「Kimi Code」区分，文案写明「开放平台」
   "settings.agentMoonshotDesc": "Kimi 开放平台余额（默认隐藏）",
-  // DeepSeek 用量已由 dsh（DeepSeek Harness）本地采集覆盖，不再单列平台余额入口
+  // DeepSeek 平台余额入口现在挂在 DSH 面板内（provider id 仍是 deepseek，
+  // 见 agentVisibility.CREDENTIAL_AGENT_ALIAS），本行不再单独提供
   "settings.agentDeepseekDesc": "DeepSeek 余额（默认隐藏）",
   "settings.agentLongcatDesc": "LongCat 订阅额度（默认隐藏，启用或添加凭证后显示）",
   "settings.agentMimoDesc": "MiMo 订阅额度（默认隐藏，启用或添加凭证后显示）",

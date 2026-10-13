@@ -146,16 +146,17 @@ jobs:
           # Release 说明（Markdown 分类条目版，与线上已更新的说明保持一致，防止重跑回退）
           NOTES="## ✨ 新功能
 
-          - **四个新来源接入跨设备合并（Kimi Code / DSH / OpenCode / MiniMax Code）** — 汇总页、对比页、报告页都会把本机与其它设备上传的用量合并统计，与 Z.ai / Codex / Claude 同款口径；1.5.0 里这四个来源只上传、不合并，别的设备传上来的用量在本机任何页面都看不到
-          - **设备筛选对四个来源生效** — 选「全部」= 本机 + 其它设备（自动排除本机、不重复计数），选具体设备 = 只看该设备；修复前无论选哪个设备都只显示本机数据
-          - **对比页与报告页补齐 Kimi Code、DSH 的远端来源登记** — 跨设备 Token 对比与报告统计不再只算本机；OpenCode / MiniMax Code 在汇总页也一并接入远端合并
-          - **远端有数据就显示对应入口** — 其它设备在用、本机没装该 CLI 时也会自动显示该来源的卡片与页签（启动时与每 5 分钟探测一次服务端的来源清单）；在设置页显式关闭过的来源不会被重新打开
+          - **四个面板支持手动添加 API Key（Kimi Code / MiniMax Code / OpenCode / DeepSeek Harness）** — 面板底部新增可折叠的凭证区（有凭证时自动展开）：把订阅用在别的 agent、本机没装（或不想装）对应官方 CLI 时，粘贴一个 Key 就能直连官方接口读额度，多订阅可堆叠显示、可备注、可切换区域
+          - **MiniMax Code：手动录入 Coding Plan Key** — 粘贴 sk-cp- 开头的 API Key（区分中国站 / 国际站）即显示当前窗口与本周用量；没装 MiniMax Code 也能查套餐额度
+          - **OpenCode：手动录入 Go 计划 API Key** — 粘贴 OpenCode Console 的 API Key 即显示 5 小时 / 本周 / 本月三档官方用量百分比与重置时间（查询不消耗套餐额度），与本地库估算并列展示
+          - **DeepSeek Harness：新增「DeepSeek 平台余额」区** — 粘贴 DeepSeek 开放平台 API Key 即显示账户余额与赠送 / 充值拆分；DSH 自身按量计费、没有订阅额度窗口，这条通道是「把 DeepSeek 额度用在别的 agent」时唯一能看到余额的入口
+          - **Kimi Code 的「其他账号」区与其余三个面板统一** — 网页登录（设备码流程，无需安装 CLI）与 API Key 两种录入形态、区域切换、多账号堆叠全部保持不变，只是换成同一个通用区块
+          - **OpenCode 与 MiniMax Code 可在标签栏「＋添加服务」浮层直接录入** — 全新机器没有任何本地数据时也能先录 Key，录完对应标签页自动出现
 
           ## 🐛 问题修复
 
-          - **新来源用量「上传了但另一台设备看不到」** — 服务端其实一直有数据（本次已核对 dsh / opencode / kimi / minimaxcode 均已入库），缺的是客户端读取侧：Kimi / DSH 连远端来源名都没登记，四个来源在汇总页的取数函数是纯本机实现；本次逐页补齐并核对
-          - **设备筛选在这四个来源上失效** — 修复后语义与 Z.ai / Codex / Claude 一致：远端取数失败只静默回退本机数据，本机未安装时仍展示远端数据（不再整体报错）
-          - **Windows 下项目路径归一化的单元测试恒失败** — 用例期望值未做反斜杠统一与小写折叠，与 normalize_cwd 的实际输出不符；修正后 cargo test 在 Windows 上全绿"
+          - **没装官方 CLI 就看不了订阅额度** — 此前 OpenCode / MiniMax Code / DeepSeek 三个服务不提供凭证录入入口（只能读取本机已有凭证或本地数据），把订阅用在别的 agent 的用户在界面上无路可走；本次放开入口并接出额度卡
+          - **MiniMax Code 凭证空态误用 OpenCode 文案** — 双数据源空态提示改为 MiniMax 专属（此前会提示去安装 OpenCode CLI）"
           gh release create "v$VERSION" out/* \
             --title "ZBar v$VERSION" \
             --notes "$NOTES" \

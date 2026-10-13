@@ -10,6 +10,7 @@ import { BrandIcon } from "./BrandIcon";
 import { QuotaEntryCard } from "./QuotaEntryCard";
 import { useDataCache } from "./DataCache";
 import { AGENT_COLOR } from "./agentVisibility";
+import { ProviderAccountsSection } from "./ProviderAccountsSection";
 import { useResetDisplay } from "./resetDisplay";
 import { useI18n } from "./i18n";
 
@@ -49,7 +50,9 @@ function toUsageSnapshot(
  * minimax（凭证、可见性、额度卡都不动），只是页面同时承载两条链路：
  * 用量走 get_minimaxcode_usage（本地库），额度走 get_provider_quota("minimax")
  * （注意 provider 是 **UI 侧 agent id**，minimaxcode 才是后端来源名），
- * 两条链路在 DataCache 里各自独立。
+ * 两条链路在 DataCache 里各自独立；面板底部另有手动 API Key 录入区
+ * （ProviderAccountsSection，provider id 仍是 minimax），供没装 MiniMax Code、
+ * 把订阅用在别的 agent 的用户直接凭 sk-cp- Key 读套餐额度。
  *
  * 版式与 OpencodePanel 同款：额度卡 shrink-0 常驻滚动区上方（不随用量滚走，
  * 面板只有一个滚动条由 AgentUsagePanel 提供——它自带滚动容器与内边距，
@@ -67,8 +70,8 @@ export function MinimaxPanel(props: Props) {
   const quotaEntries = cacheEntry?.entries ?? [];
   const refreshing = cacheEntry?.refreshing ?? false;
   // 是否已完成首轮查询（ts>0）：区分「还没查过」与「查过确认无数据」
-  //（照 GenericQuotaPanel；minimax 无凭证录入入口，用户没有凭证卡可看，
-  // 首轮未回时不能一片空白）
+  //（照 GenericQuotaPanel；本地无 MiniMax Code 数据、也没配 Coding Plan Key 时
+  // 首轮返回空数组，不能一片空白——空态另有底部凭证区的引导）
   const firstRoundDone = (cacheEntry?.ts ?? 0) > 0;
 
   // 倒计时显示用时钟（有窗口带重置时间才有意义，空数据不启定时器）
@@ -113,8 +116,7 @@ export function MinimaxPanel(props: Props) {
 
           {quotaEntries.length === 0 ? (
             // 空态一档：查询中或首轮未回（照 GenericQuotaPanel 的档位与文案；
-            // minimax 已无凭证录入入口，用户看不到凭证卡，首轮未回时同样
-            // 不能一片空白）
+            // 无本地数据也无 Key 时同样不能一片空白，底部凭证区给出录入引导）
             <div className="card-base rounded-2xl px-3 py-3">
               <p className="text-[10px] text-slate-500 leading-relaxed">
                 {t("credentials.quotaRefreshing")}
@@ -154,6 +156,26 @@ export function MinimaxPanel(props: Props) {
           hint: t("stats.minimaxcodeNotFoundHint"),
         }}
         cacheRateMode="included"
+      />
+
+      {/* 手动 API Key 录入区：Coding Plan 的 sk-cp- Key（区域需与 Key 站点一致）。
+       *  没装 MiniMax Code、或把订阅用在别的 agent 时，这里是唯一的额度来源；
+       *  凭证条目产生的额度卡由上方额度块渲染（那里混排本地登录态与手动凭证），
+       *  本区只承担凭证管理，故不重复渲染额度卡。空态提示用 MiniMax 自己的
+       *  双源文案（默认那份是 OpenCode 口径，不能照搬）。 */}
+      <ProviderAccountsSection
+        provider="minimax"
+        titleKey="stats.minimaxOtherAccounts"
+        kind="apiKey"
+        guideKey="credentials.guide.minimax"
+        brand="minimax"
+        regionOptions={[
+          { value: "cn", label: t("credentials.regionCn") },
+          { value: "global", label: t("credentials.regionGlobal") },
+        ]}
+        optional
+        dualHintKey="credentials.localEmptyHintDualMinimax"
+        accent={AGENT_COLOR.minimax}
       />
     </>
   );

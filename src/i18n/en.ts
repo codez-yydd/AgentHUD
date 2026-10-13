@@ -159,6 +159,11 @@ export const en: typeof zh = {
     "stats.claudeOtherAccounts": "Other accounts",
     "stats.cursorOtherAccounts": "Other accounts",
     "stats.kimiOtherAccounts": "Other accounts",
+    // Manual API key section at the bottom of the OpenCode / MiniMax Code panels
+    "stats.opencodeOtherAccounts": "Other accounts",
+    "stats.minimaxOtherAccounts": "Other accounts",
+    // DeepSeek Harness bottom section: manual DeepSeek platform API key → balance
+    "stats.dshPlatformBalance": "DeepSeek platform balance",
     "stats.kimiNotFound": "No Kimi Code detected",
     "stats.kimiNotFoundHint":
       "Install and run Kimi Code CLI to create local sessions\n(~/.kimi-code/sessions), then check back",
@@ -525,26 +530,34 @@ export const en: typeof zh = {
     "settings.agentClaudeDesc": "Claude Code usage & plan quotas",
     "settings.agentCursorDesc": "Cursor usage & plan quotas",
     "settings.agentKimiDesc": "Kimi Code CLI usage & subscription quota",
-    // DeepSeek Harness: local-collection agent (no credential to add, no
-    // subscription quota window); still hidden by default and controlled by
-    // the settings toggle
+    // DeepSeek Harness: local-collection agent for usage (nothing to add for it),
+    // but the panel bottom hosts the DeepSeek platform balance section (manual
+    // DeepSeek open-platform API key); still hidden by default and controlled by
+    // the settings toggle — the only way in for users who never ran DSH
     "settings.agentDshDesc":
-      "DeepSeek Harness usage and cost (read from local ~/.dsh session data, no credentials required)",
+      "DeepSeek Harness usage and cost (read from local ~/.dsh session data; add a DeepSeek platform API key to see the account balance)",
     // Credential-based providers: hidden by default; shown once enabled or a
     // credential is added (quota integrations rolling out progressively)
     "settings.agentGeminiDesc": "Gemini subscription quota (hidden by default; shown once enabled or a credential is added)",
     "settings.agentGrokDesc": "Grok subscription quota (hidden by default; shown once enabled or a credential is added)",
     "settings.agentQoderDesc": "Qoder subscription quota (hidden by default; shown once enabled or a credential is added)",
-    "settings.agentOpencodegoDesc": "OpenCode usage & quota (hidden by default; reads local OpenCode data)",
+    // Dual-source: local CLI data or a manual API key, either one is enough; the
+    // panel bottom provides the entry point for users without the CLI
+    "settings.agentOpencodegoDesc":
+      "OpenCode usage & plan quota (hidden by default; reads local OpenCode data, or add a Go plan API key to query the official API)",
     // MiniMax merged view: usage comes from local MiniMax Code data, the plan
-    // quota from an already-configured API key (keys keep working; only the
-    // credential entry point is gone)
-    "settings.agentMinimaxDesc": "MiniMax Code usage & plan quota (hidden by default; reads local MiniMax Code data, quota from the configured API key)",
-    // Moonshot (月之暗面) open platform: this reads an account balance
-    // (recharge-based), not a subscription quota; it is an agent-style provider
-    // with no credential entry, hence the wording avoids "add a credential"
+    // quota from a manually added sk-cp- Coding Plan key (region must match)
+    "settings.agentMinimaxDesc":
+      "MiniMax Code usage & plan quota (hidden by default; reads local MiniMax Code data, or add a Coding Plan API key for the plan quota)",
+    // Moonshot (月之暗面) open platform: reads an account balance
+    // (recharge-based), not a subscription quota; Kimi Code credentials already
+    // cover it, hence no credential entry
     "settings.agentMoonshotDesc": "Kimi open platform balance (hidden by default)",
-    "settings.agentDeepseekDesc": "DeepSeek balance & usage (hidden by default; shown once enabled or a credential is added)",
+    // Legacy key (no settings row any more — deepseek is not in
+    // AGENT_VISIBILITY_OPTIONS): the DeepSeek platform balance entry now lives
+    // inside the DeepSeek Harness panel (provider id stays deepseek, see
+    // agentVisibility.CREDENTIAL_AGENT_ALIAS); worded like the zh entry
+    "settings.agentDeepseekDesc": "DeepSeek balance (hidden by default)",
     "settings.agentLongcatDesc": "LongCat subscription quota (hidden by default; shown once enabled or a credential is added)",
     "settings.agentMimoDesc": "MiMo subscription quota (hidden by default; shown once enabled or a credential is added)",
     "settings.agentAlibabaDesc": "Alibaba Coding Plan (Tongyi Lingma) quota (hidden by default; shown once enabled or a credential is added)",
@@ -1068,6 +1081,10 @@ export const en: typeof zh = {
     "credentials.localEmptyTitleDual": "No local data detected yet",
     "credentials.localEmptyHintDual":
       "Install the OpenCode CLI and sign in to the Go plan to read the local database automatically. Without the CLI it still works — add an API key to query the official endpoint directly.",
+    // MiniMax Code is dual-source too, but the text above is OpenCode-specific;
+    // override it via CredentialsCard's dualHintKey on the MiniMax panel
+    "credentials.localEmptyHintDualMinimax":
+      "Install MiniMax Code and sign in to read local usage automatically. Without it, adding a Coding Plan API key (starting with sk-cp-) still works — it queries the official endpoint for plan quota.",
 
     // ===== Per-provider guides (placeholders until each service is wired up) =====
     // guideBrief.<provider> is the first sentence shown in the empty state

@@ -48,10 +48,18 @@ export type CredentialAgentId = Exclude<
  * **为什么没有 moonshot / deepseek**（产品决定，别再补回来）：
  * 两者都是「独立余额/额度查询」型 provider，已被对应的本地采集型 agent 覆盖——
  * moonshot 是月之暗面开放平台余额，而 Kimi Code（本地 `~/.kimi-code` 会话 + 订阅
- * 额度）已经在了；deepseek 是平台余额，而本地 dsh（DeepSeek Harness 会话即 DeepSeek
- * 用量）已经在了。留着它们等于同一件事在「本地采集」里出现两遍（之前的重命名
- * 「Moonshot → Kimi」就是这么暴露出来的），故整项下架：不进设置列表、不进 tab、
- * 不参与 presence 探测与 120s 额度轮询。
+ * 额度）已经在了，其凭证通道（provider `kimi`）也能直接查同一类额度；deepseek 是
+ * 平台余额，而本地 dsh（DeepSeek Harness 会话即 DeepSeek 用量）已经在了。留着它们
+ * 等于同一件事在界面里出现两遍（之前的重命名「Moonshot → Kimi」就是这么暴露出来的），
+ * 故整项下架：不进本表、不进设置列表、不进 tab。
+ *
+ * 但两者**并非完全一样**（2026-10 调整后）：
+ * - deepseek 重新接入 presence 探测与 120s 额度轮询（见 PRESENCE_PROVIDERS）——
+ *   它是 DSH 面板底部「DeepSeek 平台余额」区的查询通道（provider id 仍是 deepseek），
+ *   有 Key 时还要联动显示 dsh tab（见 CREDENTIAL_AGENT_ALIAS）；
+ * - moonshot 仍是彻底下架（无入口、不探测、不轮询）。
+ * 两者都不进本表：本表表达的是「tab 门槛 = 已启用或有凭证」的凭证驱动 provider，
+ * 而 deepseek 自身没有 tab（余额挂在 dsh 面板内）。
  *
  * 只下架 UI 与轮询，不动历史数据：`AgentId` 联合类型、`AGENT_COLOR`、`AGENT_GROUP`、
  * `DEFAULT_VISIBILITY`、`CREDENTIAL_AGENT_KIND` 里仍保留这两个 id（那几张表都是
@@ -82,17 +90,46 @@ export const CREDENTIAL_AGENTS: readonly CredentialAgentId[] = [
  * 均为「已启用或有凭证」；kimi 属首批 5 个，与 claude/cursor 一样纯偏好
  * 控制——presence 只驱动「其他账号」区的补刷/轮询，不影响 tab 显隐。
  *
- * dsh 也在此列：它是纯本地采集型（无凭证体系，故不进 CREDENTIAL_AGENTS），
+ * dsh 也在此列：它是纯本地采集型（无自己的凭证体系，故不进 CREDENTIAL_AGENTS），
  * 但后端 has_provider_credentials 对其特判为「~/.dsh 会话目录是否存在」。
  * 于是「装了 DSH 才出现 tab」与 claude/codex 的默认可见语义一致，
  * 又不至于让没装的用户看到空 tab。
+ *
+ * deepseek 也在此列：DSH 面板底部的「DeepSeek 平台余额」区用的就是 deepseek
+ * 凭证通道（provider id 仍是 deepseek，见 CREDENTIAL_AGENT_ALIAS）。探测它
+ * 有两个作用：① 有 Key 时把 dsh tab 一并显示出来（用户可能只买 DeepSeek 额度、
+ * 本机没跑过 DSH）；② 让它进 DataCache 的 120s 额度轮询与凭证变更补刷。
  */
 export const PRESENCE_PROVIDERS: readonly string[] = [
   ...CREDENTIAL_AGENTS,
   "claude",
   "cursor",
   "dsh",
+  "deepseek",
 ];
+
+/**
+ * 凭证 provider id ≠ 面板 agent id 的联动补充（provider 有凭证 → 显示 agent）。
+ *
+ * 目前只有一条：DeepSeek Harness 面板承载 DeepSeek 平台余额，而 dsh 自己没有
+ * 可录入的凭证（其本地登录态不是开放平台 API Key，见 dsh.rs 模块头），余额
+ * 走既有 deepseek 凭证通道。故 deepseek 探测到凭证时，把 dsh 的展示打开——
+ * 已经录过 Key 的机器上（例如老版本 deepseek 面板时期就存过凭证的用户），
+ * 不需要再去设置页手动开启 DSH tab 才能看余额。用户在设置页显式关闭过 dsh 时
+ * 不会被强行打开（enableAgentByCredential 内部检查手动关闭标记）。
+ *
+ * **它解决不了「第一把 Key 怎么录」**：别名只在 presence["deepseek"] 已经为 true
+ * 时触发，而 deepseek 的录入区只存在于 DSH 面板内 —— 全新机器（既没跑过 DSH、
+ * 也没有 Key）必须先到设置页打开「DeepSeek Harness」开关，才能进面板添加。这是
+ * 用户已确认的口径（不给 deepseek 加「＋添加服务」入口），README 里已如实写明。
+ *
+ * 注意：这里只影响**展示**，不改 tab 显隐的其它口径（dsh 仍不在
+ * CREDENTIAL_AGENTS 里，＋添加服务浮层也不为 deepseek 提供入口）。
+ */
+export const CREDENTIAL_AGENT_ALIAS: ReadonlyArray<{
+  provider: string;
+  agent: AgentId;
+}> = [{ provider: "deepseek", agent: "dsh" }];
 
 /**
  * tab 展示纯偏好控制的首批凭证型 provider（kimi）：虽已纳入凭证体系
@@ -141,9 +178,10 @@ export function isLocalAgent(id: string): boolean {
  * - minimax：本地 ~/.minimax 读的是 MiniMax Code 的逐次调用用量；套餐额度
  *   （5h + 周窗口）是另一条路，由已存的 sk-cp- Key 查官方接口得到——两条
  *   链路在面板里并列展示，缺任一条都不影响另一条。
- * 这类 provider 的**双源能力**保留（后端仍按 OR 语义查询，已存在的凭证照旧
- * 参与），但录入入口已按产品决定收口为「像 agent 一样不提供凭证管理」，
- * 见 NO_CREDENTIAL_ENTRY_AGENTS。
+ * 这类 provider 的**双源能力**与**双源入口**都保留：后端按 OR 语义查询，
+ * 面板底部的手动 API Key 录入区（ProviderAccountsSection）与「＋添加服务」
+ * 浮层都能新增凭证——没装 CLI 只想用 Key 的用户正是靠它们拿到数据
+ * （凭证卡空态因此用「尚未检测到本地数据」而非「无需凭证」，见 localOnlyMode）。
  */
 export const DUAL_MODE_AGENTS: readonly CredentialAgentId[] = [
   "opencodego",
@@ -173,25 +211,27 @@ export function isPureLocalAgent(id: string): boolean {
 
 /**
  * 界面不提供凭证录入入口的 provider（与 PURE_LOCAL_AGENTS 是两回事，见下）：
- * - opencodego：OpenCode 与 Kimi Code、ZCode 一样是自带 CLI 与订阅的 agent，
- *   数据来自自身 CLI 的本地库（`~/.local/share/opencode/opencode.db`）；
- * - minimax：MiniMax Code 同理（本地 ~/.minimax 采集用量 + 自家 Coding Plan
- *   订阅额度），按同一「agent 口径」收口；
- * - moonshot：月之暗面开放平台余额，按同一「agent 口径」一并收口（产品决定）；
- * - deepseek：已有 dsh（DeepSeek Harness，本地会话即 DeepSeek 用量），
- *   不再单独提供平台余额查询的录入入口（产品决定）。
+ * - moonshot：月之暗面开放平台余额，其语义已被 Kimi Code 面板的凭证通道
+ *   覆盖（provider `kimi`，kind=apiKey 直用，同一件事不再在界面里出现两遍）。
  *
- * 收口的是**入口**，不是能力：后端查询链路与已存在的凭证完全不动——
- * 已经配过 Key 的机器照旧出数据（minimax 的套餐额度卡就靠它），只是界面
- * 不再提供「添加凭证 / 多账号」入口，因此无法新增。与 PURE_LOCAL_AGENTS
- * 的区别：那个是「技术上没有可录的凭证」（gemini 只有 CLI 登录态），
- * 这个是「产品上不提供入口」。
+ * 收口的是**入口**，不是能力：后端查询链路与已存在的凭证完全不动。
+ * 与 PURE_LOCAL_AGENTS 的区别：那个是「技术上没有可录的凭证」（gemini 只有
+ * CLI 登录态），这个是「产品上不提供入口」。
+ *
+ * **2026-10 口径调整（用户要求，别按旧的「agent 化收口」改回去）**：
+ * opencodego / minimax / deepseek 三个 id 已从本表移除，改为在各自面板内提供
+ * 手动 API Key 录入区（见 ProviderAccountsSection）。原因：用户可能持有这些
+ * 订阅却**不装（或不想装）对应的官方 CLI**——把订阅用在别的 agent 里时，本机
+ * 既没有 CLI 的本地库也没有登录态，唯一能读到订阅额度 / 平台余额的途径就是
+ * 手动填 Key。三者的后端查询链路（OpenCode 官方用量接口 / MiniMax 的 sk-cp-
+ * Coding Plan / DeepSeek 平台余额）此前就已就绪，本次只是把入口放开。
+ * 放开后 opencodego / minimax 会自动出现在「＋添加服务」浮层与设置页快捷
+ * 按钮里（两者本就属 CREDENTIAL_AGENTS，是「没装 CLI 也想加 Key」的必经入口）；
+ * deepseek 不在 CREDENTIAL_AGENTS 也不在设置页服务清单里，其入口只存在于
+ * DeepSeek Harness 面板内（见 CREDENTIAL_AGENT_ALIAS）。
  */
 export const NO_CREDENTIAL_ENTRY_AGENTS: readonly CredentialAgentId[] = [
-  "opencodego",
-  "minimax",
   "moonshot",
-  "deepseek",
 ];
 
 /** id 是否在界面上提供凭证录入入口（静态判定）。 */
@@ -204,7 +244,7 @@ export function hasCredentialEntry(id: string): boolean {
  * 凭证录入入口（添加服务浮层、设置页快捷按钮、凭证卡添加按钮）统一用它判断，
  * 避免把「当前只有本地数据」的运行时状态误当作「不能录入凭证」。
  * 两类为 false：技术上无凭证可录（gemini），产品上不提供入口
- * （opencodego / minimax / moonshot，见 NO_CREDENTIAL_ENTRY_AGENTS）。
+ * （moonshot，见 NO_CREDENTIAL_ENTRY_AGENTS）。
  */
 export function canAddCredential(id: string): boolean {
   return !isPureLocalAgent(id) && hasCredentialEntry(id);

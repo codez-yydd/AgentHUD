@@ -23,6 +23,7 @@ import {
   AGENT_VISIBILITY_EVENT,
   CREDENTIALS_CHANGED_EVENT,
   CREDENTIAL_AGENTS,
+  CREDENTIAL_AGENT_ALIAS,
   PRESENCE_PROVIDERS,
   REMOTE_SOURCE_AGENTS,
   clearAgentManuallyDisabled,
@@ -141,16 +142,29 @@ export default function App() {
   //    （写 localStorage + 广播）。只在状态迁移时触发；用户在设置页显式
   //    关闭过的 agent 不再自动开启（见 enableAgentByCredential 的标记检查），
   //    删除全部凭证时由 disableAgentByCredential 回退偏好。
+  //    探测键 = 凭证 provider id，目标 = 要显示的 agent：两者多数同字面
+  //    （CREDENTIAL_AGENTS），另有少数异名关联（CREDENTIAL_AGENT_ALIAS，
+  //    如 deepseek 凭证 → dsh 面板里的 DeepSeek 平台余额区）。
   const prevPresenceRef = useRef<Record<string, boolean>>({});
   useEffect(() => {
     const prev = prevPresenceRef.current;
     const next: Record<string, boolean> = { ...prev };
-    for (const id of CREDENTIAL_AGENTS) {
-      const has = !!credentialPresence[id];
-      if (has && !prev[id]) {
-        enableAgentByCredential(id);
+    const pairs: ReadonlyArray<{ probe: string; agent: AgentId }> = [
+      ...CREDENTIAL_AGENTS.map((id) => ({
+        probe: id as string,
+        agent: id as AgentId,
+      })),
+      ...CREDENTIAL_AGENT_ALIAS.map(({ provider, agent }) => ({
+        probe: provider,
+        agent,
+      })),
+    ];
+    for (const { probe, agent } of pairs) {
+      const has = !!credentialPresence[probe];
+      if (has && !prev[probe]) {
+        enableAgentByCredential(agent);
       }
-      next[id] = has;
+      next[probe] = has;
     }
     prevPresenceRef.current = next;
     // eslint-disable-next-line react-hooks/exhaustive-deps

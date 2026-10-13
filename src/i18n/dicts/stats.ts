@@ -62,6 +62,13 @@ export const stats = {
   "stats.claudeOtherAccounts": "其他账号",
   "stats.cursorOtherAccounts": "其他账号",
   "stats.kimiOtherAccounts": "其他账号",
+  // OpenCode / MiniMax Code 底部的手动 API Key 管理区（ProviderAccountsSection）：
+  // 额度卡由各面板顶部额度块渲染，本区只放凭证管理，故沿用「其他账号」口径
+  "stats.opencodeOtherAccounts": "其他账号",
+  "stats.minimaxOtherAccounts": "其他账号",
+  // DeepSeek Harness 底部：手动 DeepSeek 开放平台 API Key → 账户余额。
+  // 标题按「余额」而非「其他账号」——它是平台账户余额，不是另一个账号的用量
+  "stats.dshPlatformBalance": "DeepSeek 平台余额",
   "stats.kimiNotFound": "未检测到 Kimi Code",
   "stats.kimiNotFoundHint":
     "请安装并使用 Kimi Code CLI 产生本地会话记录\n（~/.kimi-code/sessions）后再查看",

@@ -59,10 +59,15 @@ interface CredentialsCardProps {
   brand?: BrandIconName;
   /** 区域选项；不传则该 provider 无区域概念，弹层不显示下拉 */
   regionOptions?: ReadonlyArray<CredentialRegionOption>;
-  /** 可选模式（本地型 provider）：数据不依赖凭证，空态改为「无需凭证」
-   *  引导而非强引导填写；本地型（gemini/opencodego）手动凭证不参与查询，
-   *  不再提供「添加凭证」入口（claude/cursor 等 optional 型仍可添加）。 */
+  /** 可选模式（本地型 provider）：数据不依赖凭证，空态改为「尚未检测到本地数据」
+   *  （双数据源）或「无需凭证」引导而非强引导填写。是否**允许**录入仍由静态判定
+   *  canAddCredential 决定（gemini 纯本地型无入口；opencodego / minimax 双源、
+   *  仍保留添加入口——没装 CLI 的用户正是靠它填 Key）。 */
   optional?: boolean;
+  /** 覆盖双数据源空态提示文案（缺省 credentials.localEmptyHintDual，该文案
+   *  是 OpenCode 口径；MiniMax Code 等其它双源 provider 传自己的键，
+   *  避免在自家面板上出现「可安装 OpenCode CLI」的错位引导）。 */
+  dualHintKey?: MessageKey;
 }
 
 /** 凭证类型徽章配色（sky=API Key / amber=Cookie / violet=Token）。
@@ -86,6 +91,7 @@ export function CredentialsCard({
   brand,
   regionOptions,
   optional = false,
+  dualHintKey = "credentials.localEmptyHintDual",
 }: CredentialsCardProps) {
   const { t } = useI18n();
   const { credentials, refreshCredentials } = useDataCache();
@@ -299,7 +305,7 @@ export function CredentialsCard({
                 <p className="text-[9px] text-slate-500 leading-relaxed mt-0.5">
                   {t(
                     isDualModeAgent(provider)
-                      ? "credentials.localEmptyHintDual"
+                      ? dualHintKey
                       : "credentials.localEmptyHint"
                   )}
                 </p>

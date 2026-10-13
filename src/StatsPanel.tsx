@@ -94,8 +94,12 @@ function loadStatsTab(agentVisibility: AgentVisibility): StatsTab {
     if (saved === "projects") return saved;
     // 模型速度面板：本地 tab（无 Agent 偏好控制），直接恢复
     if (saved === "speed") return saved;
-    // Agent tab：任一 AgentId 均合法（含新 provider），按展示偏好恢复或回汇总
-    if (saved && saved in agentVisibility) {
+    // Agent tab：仅接受**确实存在 tab 按钮**的 id——AGENT_VISIBILITY_OPTIONS 是
+    // tab 栏的唯一构造来源（见下方 statTabs）。已下架但为兼容历史数据仍留在
+    // AgentId 联合类型 / localStorage 里的键（moonshot、deepseek）不再把面板
+    // 恢复到「有 tab 值、无 tab 按钮」的悬挂态（那种情况下内容区只会回落汇总页，
+    // 而 tab 栏没有任何高亮项）。按展示偏好恢复，未启用则回汇总。
+    if (saved && AGENT_VISIBILITY_OPTIONS.some((o) => o.id === saved)) {
       return agentVisibility[saved as keyof AgentVisibility]
         ? (saved as StatsTab)
         : "summary";
@@ -712,8 +716,9 @@ export function StatsPanel({
           agentQuotaDelta={agentQuotaDeltas.kimi?.weekly}
         />
       ) : tab === "dsh" ? (
-        // DSH（DeepSeek Harness）：纯本地采集型，无凭证卡、无「其他账号」区、
-        // 无订阅额度窗口（快照无 rate_limits，额度块自动不渲染）
+        // DSH（DeepSeek Harness）：用量为纯本地采集（快照无 rate_limits，额度块
+        // 自动不渲染）；面板底部另有「DeepSeek 平台余额」区（ProviderAccountsSection，
+        // provider id 为 deepseek，手动 API Key → /user/balance）
         <DshPanel
           snapshot={dsh}
           loading={!dsh && !dshError}

@@ -6,10 +6,11 @@
  * 该服务的添加凭证表单（复用 CredentialsCard 的 CredentialFormDialog），
  * 添加成功后 tab 自动出现并切换。
  *
- * 排除项只有「纯本地型」provider（gemini：数据只来自本地 CLI 登录态，
- * 凭证不参与查询，列出来也无凭证可录）。双数据源 provider（opencodego：
- * 本地 opencode.db 或官方 API Key 任一可用）必须保留——没装 OpenCode CLI
- * 的用户正是靠这里录入 API Key。
+ * 排除项两类：纯本地型（gemini：数据只来自本地 CLI 登录态，凭证不参与查询，
+ * 列出来也无凭证可录）与产品上不提供录入入口的 moonshot（见
+ * agentVisibility.NO_CREDENTIAL_ENTRY_AGENTS）。双数据源 provider
+ * （opencodego / minimax：本地库或官方 API Key 任一可用）必须保留——没装
+ * 对应 CLI、把订阅用在别的 agent 的用户正是靠这里录入第一条 Key。
  *
  * 本组件为纯展示浮层：外点关闭与 Esc 关闭由 StatsPanel 的锚容器负责
  * （「＋」按钮需包含在点击豁免范围内，保证再次点击按钮可正常切换开关）。
@@ -33,11 +34,13 @@ import { BrandIcon } from "./BrandIcon";
 export const ADD_SERVICE_EVENT = "zbar-open-credential-add";
 
 /** 可添加凭证的服务清单：凭证型 provider 去掉两类——「无凭证可录」的纯本地型
- *  （gemini）与「产品上不提供录入入口」的 agent 化 provider
- *  （opencodego / moonshot，见 NO_CREDENTIAL_ENTRY_AGENTS），统一由静态判定
- *  canAddCredential 收口。注意不能用 localOnlyMode 当过滤器：它是运行时状态
- *  （受「当前是否已配凭证」影响），会把仍需要入口的 provider 在未配 Key 时
- *  错误排除，而「没配 Key」恰恰是最需要入口的场景。 */
+ *  （gemini）与「产品上不提供录入入口」的 provider（现仅 moonshot，见
+ *  NO_CREDENTIAL_ENTRY_AGENTS），统一由静态判定 canAddCredential 收口。
+ *  opencodego / minimax 属于**双数据源**：没装 CLI 只想用 API Key 的用户正是
+ *  靠本浮层录第一条 Key（录完对应 tab 自动出现），故必须留在清单里。
+ *  注意不能用 localOnlyMode 当过滤器：它是运行时状态（受「当前是否已配凭证」
+ *  影响），会把仍需要入口的 provider 在未配 Key 时错误排除，而「没配 Key」
+ *  恰恰是最需要入口的场景。 */
 const ADDABLE_SERVICES: readonly CredentialAgentId[] = CREDENTIAL_AGENTS.filter(
   (id) => canAddCredential(id)
 );

@@ -99,9 +99,9 @@ export function GenericQuotaPanel({
         </button>
       </div>
 
-      {/* 凭证卡按产品口径收口：agent 化的 provider（opencodego / moonshot）
-          不提供凭证录入入口，整块不渲染——它们的额度卡照旧来自后端查询
-          （已存在的凭证仍然生效），只是没有增删入口。 */}
+      {/* 凭证卡按产品口径收口：不提供录入入口的 provider（现仅 moonshot）
+          整块不渲染——它的额度卡照旧来自后端查询（已存在的凭证仍然生效），
+          只是没有增删入口。 */}
       {hasCredentialEntry(provider) && (
         <CredentialsCard
           provider={provider}
@@ -109,8 +109,8 @@ export function GenericQuotaPanel({
           guideKey={guideKey}
           brand={provider}
           regionOptions={regionOptions}
-          // 本地型 provider 数据来自本地库，凭证为可选：空态按「无需凭证」引导
-          //（此处只对仍提供入口的 provider 生效；opencodego / moonshot 已整块不渲染）
+          // 本地型 provider 数据来自本地库，凭证为可选：空态按「尚未检测到本地数据」
+          // 引导（此分支只对仍提供入口的 provider 生效；moonshot 已整块不渲染）
           optional={isLocalAgent(provider)}
         />
       )}
@@ -120,8 +120,8 @@ export function GenericQuotaPanel({
           （doubao 等后端暂无查询分支的 provider，首轮返回空数组）。
           本地型 provider 即使没有凭证也会真的发起查询（数据来自本地库），
           因此「查询中」占位同样适用，否则纯本地用户会看到面板空白。
-          无凭证录入入口的 provider（opencodego / moonshot）另给一条说明：
-          它们没有凭证卡，既无已存凭证也无本地数据时不能让面板一片空白。 */}
+          无凭证录入入口的 provider（现仅 moonshot）另给一条说明：
+          它没有凭证卡，既无已存凭证也无本地数据时不能让面板一片空白。 */}
       {quotaEntries.length === 0 &&
         (hasCreds || isLocalAgent(provider) || !hasCredentialEntry(provider)) &&
         (refreshing ||

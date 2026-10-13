@@ -10,6 +10,7 @@ import { BrandIcon } from "./BrandIcon";
 import { QuotaEntryCard } from "./QuotaEntryCard";
 import { useDataCache } from "./DataCache";
 import { AGENT_COLOR } from "./agentVisibility";
+import { ProviderAccountsSection } from "./ProviderAccountsSection";
 import { useResetDisplay } from "./resetDisplay";
 import { useI18n } from "./i18n";
 
@@ -47,7 +48,9 @@ function toUsageSnapshot(
  * 附属板块；agentId 仍是既有的 opencodego，后端命令/模块名里的 "opencode"
  * 只是命名。用量数据走 get_opencode_usage（本地 opencode.db 导入库），
  * 额度走 get_provider_quota("opencodego")（本地库估算 / 官方 API 两路），
- * 两条链路在 DataCache 里各自独立。
+ * 两条链路在 DataCache 里各自独立；面板底部还有手动 API Key 录入区
+ * （ProviderAccountsSection，provider id 仍是 opencodego），供没装 CLI、
+ * 把 Go 订阅用在别的 agent 的用户直接凭官方 Key 读权威用量。
  *
  * 版式与 KimiPanel 同款：额度卡 shrink-0 常驻滚动区上方（不随用量滚走，
  * 面板只有一个滚动条由 AgentUsagePanel 提供——它自带滚动容器与内边距，
@@ -65,8 +68,8 @@ export function OpencodePanel(props: Props) {
   const quotaEntries = cacheEntry?.entries ?? [];
   const refreshing = cacheEntry?.refreshing ?? false;
   // 是否已完成首轮查询（ts>0）：区分「还没查过」与「查过确认无数据」
-  //（照 GenericQuotaPanel；opencodego 无凭证录入入口，用户没有凭证卡可看，
-  // 首轮未回时不能一片空白）
+  //（照 GenericQuotaPanel；本地无数据库、也没配 API Key 时首轮返回空数组，
+  // 不能一片空白——空态另有底部凭证区的引导）
   const firstRoundDone = (cacheEntry?.ts ?? 0) > 0;
 
   // 倒计时显示用时钟（有窗口带重置时间才有意义，空数据不启定时器）
@@ -150,6 +153,21 @@ export function OpencodePanel(props: Props) {
           hint: t("stats.opencodeNotFoundHint"),
         }}
         cacheRateMode="included"
+      />
+
+      {/* 手动 API Key 录入区：没装 OpenCode CLI（本机没有 opencode.db）时，
+       *  在 OpenCode Console 订阅 Go / Go Plus 后把 API Key 粘到这里即可直连
+       *  官方用量接口——这正是「订阅在手上、CLI 不想装 / 订阅用在别的 agent」
+       *  场景的唯一数据来源。凭证条目产生的额度卡由上方额度块渲染（那里混排
+       *  本地口径与手动凭证），本区只承担凭证管理，故不重复渲染额度卡。 */}
+      <ProviderAccountsSection
+        provider="opencodego"
+        titleKey="stats.opencodeOtherAccounts"
+        kind="apiKey"
+        guideKey="credentials.guide.opencodego"
+        brand="opencodego"
+        optional
+        accent={AGENT_COLOR.opencodego}
       />
     </>
   );
