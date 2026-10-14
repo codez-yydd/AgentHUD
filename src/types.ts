@@ -1234,3 +1234,82 @@ export interface SessionsPage {
   total: number;
   items: SessionSummary[];
 }
+
+// ===== 请求日志（主窗口「请求日志」页，与 Rust request_logs.rs 一一对应）=====
+
+/** 请求日志的**后端来源名**（get_request_logs / get_request_log_models 的 agent
+ *  参数）。注意它与 UI 侧 AgentId 是两个域：UI `zai` → `zcode`、
+ *  `opencodego` → `opencode`、`minimax` → `minimaxcode`（与 sync.rs 的上传来源名
+ *  同值，见 src/dashboard/compare/model.ts 的 remoteSource 映射）。 */
+export type RequestLogSource =
+  | "zcode"
+  | "codex"
+  | "claude"
+  | "kimi"
+  | "dsh"
+  | "opencode"
+  | "minimaxcode";
+
+/** 一行请求级明细（一次模型请求） */
+export interface RequestLogRow {
+  source: RequestLogSource;
+  /** 请求开始时间（毫秒时间戳） */
+  started_at: number;
+  model_id: string;
+  provider_id: string;
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+  cache_write_tokens: number;
+  reasoning_tokens: number;
+  /** 后端 computed_total_tokens 口径的总量 */
+  total_tokens: number;
+  /** 按本机价格表逐行折算（无价格模型为 0） */
+  cost_usd: number;
+  cost_cny: number;
+  /** 会话 id（老库无该列 / 无会话维度为 null） */
+  session_id: string | null;
+  /** 项目（能低成本拿到的来源才给） */
+  project: string | null;
+  /** 请求耗时 ms（来源库真实 duration_ms > 0 才给；无该列 / NULL / 0 为 null，
+   *  界面显示灰化「—」——不做估算回退） */
+  duration_ms: number | null;
+  /** 首字延迟 ms（仅 zcode / dsh 有真实数据） */
+  ttft_ms: number | null;
+}
+
+/** 请求日志的全范围汇总（当前筛选条件下的指标卡数据；不是当前页聚合）。
+ *  缓存命中率口径分源：included 源（zcode/codex/dsh/opencode/minimaxcode）
+ *  输入已含缓存读，分母 = Σinput；separate 源（claude/kimi）缓存读写单独成列，
+ *  分母 = Σinput + Σcache_read + Σcache_write。分母为 0 为 null。 */
+export interface RequestLogSummary {
+  requests: number;
+  /** 按模型分组逐组乘价求和（无价格模型贡献 0） */
+  cost_usd: number;
+  /** 同上 × 当前汇率 */
+  cost_cny: number;
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+  cache_write_tokens: number;
+  total_tokens: number;
+  /** 0-1；分母为 0 为 null（界面显示「—」） */
+  cache_hit_rate: number | null;
+}
+
+/** 请求日志分页结果 */
+export interface RequestLogsPage {
+  total: number;
+  rows: RequestLogRow[];
+  /** 当前筛选条件下的全范围汇总（指标卡） */
+  summary: RequestLogSummary;
+  /** 本次查询**打开 / 查询失败**被跳过的来源名（库不存在 = 未安装 / 未用过，
+   *  属正常 0 条，不在这里）。total > 0 时页面用它弱提示「数据可能不完整」。 */
+  failed_sources: string[];
+}
+
+/** 模型筛选下拉项：区间内出现过的模型 + 请求条数（上限 100） */
+export interface RequestLogModelCount {
+  model_id: string;
+  count: number;
+}

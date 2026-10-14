@@ -57,7 +57,7 @@ pub fn sessions_dir() -> Result<PathBuf, String> {
 }
 
 /// 自有导入库路径：~/.zbar/codex.sqlite
-fn codex_db_path() -> Result<PathBuf, String> {
+pub(crate) fn codex_db_path() -> Result<PathBuf, String> {
     Ok(config_dir()?.join("codex.sqlite"))
 }
 
@@ -65,6 +65,47 @@ fn codex_db_path() -> Result<PathBuf, String> {
 /// 最近 N 笔请求，started_at 降序 LIMIT）：窗口内行数可能很大，以最近 N
 /// 笔为界保证查询成本有硬上限；最新会话（排序前几名）必然在内层结果中
 const WINDOW_SCAN_ROWS: i64 = 2000;
+
+/// 导入库建表 DDL（`open_codex_db` 与测试共用，避免测试手抄结构漂移）。
+const SCHEMA_SQL: &str = "PRAGMA journal_mode=WAL;
+     CREATE TABLE IF NOT EXISTS model_usage (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id TEXT NOT NULL,
+        event_seq INTEGER NOT NULL,
+        started_at INTEGER NOT NULL,
+        model_id TEXT NOT NULL DEFAULT '',
+        provider_id TEXT NOT NULL DEFAULT 'codex',
+        input_tokens INTEGER NOT NULL DEFAULT 0,
+        output_tokens INTEGER NOT NULL DEFAULT 0,
+        cache_read_input_tokens INTEGER NOT NULL DEFAULT 0,
+        cache_creation_input_tokens INTEGER NOT NULL DEFAULT 0,
+        reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+        computed_total_tokens INTEGER NOT NULL DEFAULT 0,
+        model_revision_at INTEGER NOT NULL DEFAULT 0,
+        UNIQUE(session_id, event_seq)
+     );
+     CREATE INDEX IF NOT EXISTS idx_codex_model_usage_started ON model_usage(started_at);
+     CREATE INDEX IF NOT EXISTS idx_codex_mu_session ON model_usage(session_id);
+     CREATE TABLE IF NOT EXISTS file_progress (
+        path   TEXT    PRIMARY KEY,
+        offset INTEGER NOT NULL,
+        size   INTEGER NOT NULL
+     );
+     CREATE TABLE IF NOT EXISTS session_meta (
+        session_id  TEXT PRIMARY KEY,
+        cwd         TEXT,
+        project_key TEXT,
+        captured_at INTEGER
+     );
+     CREATE TABLE IF NOT EXISTS rate_limits_state (
+        id                 INTEGER PRIMARY KEY CHECK (id = 1),
+        observed_at        INTEGER NOT NULL,
+        plan_type          TEXT,
+        primary_pct        REAL,
+        primary_reset_at   INTEGER,
+        secondary_pct      REAL,
+        secondary_reset_at INTEGER
+     );";
 
 /// 打开（必要时创建）导入库并确保表结构就绪。这是自有库，读写均可用。
 fn open_codex_db() -> Result<Connection, String> {
@@ -75,48 +116,8 @@ fn open_codex_db() -> Result<Connection, String> {
     // 应用可能在启动时被多个实例同时唤起，结构迁移需要给另一实例提交事务留出时间。
     conn.busy_timeout(std::time::Duration::from_secs(10))
         .map_err(|e| format!("设置 busy_timeout 失败: {e}"))?;
-    conn.execute_batch(
-        "PRAGMA journal_mode=WAL;
-         CREATE TABLE IF NOT EXISTS model_usage (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            session_id TEXT NOT NULL,
-            event_seq INTEGER NOT NULL,
-            started_at INTEGER NOT NULL,
-            model_id TEXT NOT NULL DEFAULT '',
-            provider_id TEXT NOT NULL DEFAULT 'codex',
-            input_tokens INTEGER NOT NULL DEFAULT 0,
-            output_tokens INTEGER NOT NULL DEFAULT 0,
-            cache_read_input_tokens INTEGER NOT NULL DEFAULT 0,
-            cache_creation_input_tokens INTEGER NOT NULL DEFAULT 0,
-            reasoning_tokens INTEGER NOT NULL DEFAULT 0,
-            computed_total_tokens INTEGER NOT NULL DEFAULT 0,
-            model_revision_at INTEGER NOT NULL DEFAULT 0,
-            UNIQUE(session_id, event_seq)
-         );
-         CREATE INDEX IF NOT EXISTS idx_codex_model_usage_started ON model_usage(started_at);
-         CREATE INDEX IF NOT EXISTS idx_codex_mu_session ON model_usage(session_id);
-         CREATE TABLE IF NOT EXISTS file_progress (
-            path   TEXT    PRIMARY KEY,
-            offset INTEGER NOT NULL,
-            size   INTEGER NOT NULL
-         );
-         CREATE TABLE IF NOT EXISTS session_meta (
-            session_id  TEXT PRIMARY KEY,
-            cwd         TEXT,
-            project_key TEXT,
-            captured_at INTEGER
-         );
-         CREATE TABLE IF NOT EXISTS rate_limits_state (
-            id                 INTEGER PRIMARY KEY CHECK (id = 1),
-            observed_at        INTEGER NOT NULL,
-            plan_type          TEXT,
-            primary_pct        REAL,
-            primary_reset_at   INTEGER,
-            secondary_pct      REAL,
-            secondary_reset_at INTEGER
-         );",
-    )
-    .map_err(|e| format!("初始化 Codex 导入库失败: {e}"))?;
+    conn.execute_batch(SCHEMA_SQL)
+        .map_err(|e| format!("初始化 Codex 导入库失败: {e}"))?;
     ensure_model_revision_column(&conn)?;
     Ok(conn)
 }
@@ -2264,4 +2265,53 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
+
+    /// 导入把 token_count 行落库并按 turn_context 归因模型；
+    /// 重复导入（重解析）不改变行数与模型归属（幂等）。
+    #[test]
+    fn import_one_file_attributes_model() {
+        let tmp = std::env::temp_dir().join(format!("zbar-codex-import-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).expect("创建临时目录失败");
+        let db_path = tmp.join("codex-import.sqlite");
+        let mut conn = Connection::open(&db_path).expect("打开临时库失败");
+        conn.execute_batch(SCHEMA_SQL).expect("初始化临时库失败");
+
+        let file = tmp.join("rollout-2026-08-16T13-55-42-01a00923-e47a-7463-9fb8-a5c4bad67de2.jsonl");
+        let lines = [
+            r#"{"timestamp":"2026-08-16T05:55:58.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[]}}"#,
+            // token_count 靠 turn_context 归因模型
+            r#"{"timestamp":"2026-08-16T05:55:58.500Z","type":"turn_context","payload":{"model":"gpt-5.1-codex"}}"#,
+            r#"{"timestamp":"2026-08-16T05:56:05.000Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":10,"output_tokens":5,"total_tokens":15}}}}"#,
+            r#"{"timestamp":"2026-08-16T06:36:05.000Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":10,"output_tokens":5,"total_tokens":15}}}}"#,
+            r#"{"timestamp":"2026-08-16T06:36:07.000Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":3,"output_tokens":1,"total_tokens":4}}}}"#,
+        ];
+        std::fs::write(&file, lines.join("\n") + "\n").expect("写入测试会话文件失败");
+
+        import_one_file(&mut conn, &file, None).expect("导入失败");
+        let rows = |conn: &Connection| -> Vec<(i64, String, i64)> {
+            let mut stmt = conn
+                .prepare("SELECT event_seq, model_id, computed_total_tokens FROM model_usage ORDER BY event_seq")
+                .unwrap();
+            stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap()
+        };
+        assert_eq!(
+            rows(&conn),
+            vec![
+                (1, "gpt-5.1-codex".to_string(), 15),
+                (2, "gpt-5.1-codex".to_string(), 15),
+                (3, "gpt-5.1-codex".to_string(), 4),
+            ]
+        );
+
+        // 重解析（known=None）幂等：行数与归属不变
+        import_one_file(&mut conn, &file, None).expect("重解析失败");
+        assert_eq!(rows(&conn).len(), 3, "重解析不应改变行数");
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
 }
+

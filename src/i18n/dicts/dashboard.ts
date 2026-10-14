@@ -1,7 +1,7 @@
 /**
  * 主窗口（Dashboard）词典：产品副标题、侧栏导航（同时作为页面标题）、
- * 页面说明与用量总览页（首页）/周额度对比页/价格设置页的完整文案，
- * 以及悬浮窗统计页的主窗口入口文案。
+ * 页面说明与用量总览页（首页）/请求日志页/周额度对比页/价格设置页的完整
+ * 文案，以及悬浮窗统计页的主窗口入口文案。
  *
  * 用词口径：金额一律称「花费」（与面板既有文案一致，不用「成本」）。
  */
@@ -10,13 +10,16 @@ export const dashboard = {
   // 侧栏产品标识副标题
   "dashboard.subtitle": "用量与额度管理",
 
-  // 侧栏导航项（同时用作页面标题）：用量总览 / 周额度对比 / 价格设置
+  // 侧栏导航项（同时用作页面标题）：用量总览 / 请求日志 / 周额度对比 / 价格设置
   "dashboard.overview": "用量总览",
+  "dashboard.logs": "请求日志",
   "dashboard.compare": "周额度对比",
   "dashboard.pricing": "价格设置",
 
   // 页面说明
   "dashboard.overview.desc": "跨服务用量、花费与趋势的汇总视图。",
+  "dashboard.logs.desc":
+    "逐个请求的明细：时间、模型、Token 构成、花费与耗时；仅本机记录，可按来源筛选。",
   "dashboard.compare.desc":
     "各订阅当前额度剩余、近 N 天已用比例趋势，以及本机与其他设备的 Token 对比。",
   "dashboard.pricing.desc": "模型单价维护与价格表更新。",
@@ -173,6 +176,9 @@ export const dashboard = {
   "dashboard.compare.trendShowAll": "全部显示",
   "dashboard.compare.trendFootnote":
     "折线为各系列周额度的「已用 %」（= 100 − 剩余），按采样时刻连线；无采样时段不连线。",
+  // 自定义范围下趋势卡的补充说明：额度快照只读到 COMPARE_HISTORY_DAYS 天前
+  "dashboard.compare.trendSnapshotNote":
+    "额度快照仅保留近 {days} 天，更早的日期不可选。",
   "dashboard.compare.tokensTitle": "Agent Token 对比",
   "dashboard.compare.tokensSub": "{range} · 本机与其他设备合并",
   "dashboard.compare.tokensLocal": "本机",
@@ -260,4 +266,112 @@ export const dashboard = {
   "dashboard.pricing.applying": "应用中…",
   "dashboard.pricing.applySelected": "应用选中",
   "dashboard.pricing.applySelectedCount": "应用选中 ({count})",
+
+  // ===== 请求日志页（大窗）：筛选行 / 明细表 / 分页条 / 详情抽屉 =====
+  // 时间范围前四项复用 dashboard.overview.range.*（同款分段控件文案必须一致），
+  // 只有「全部」是本页独有的第五档
+  "dashboard.logs.rangeLabel": "时间范围",
+  "dashboard.logs.range.all": "全部",
+  "dashboard.logs.sourceLabel": "来源",
+  "dashboard.logs.sourceAll": "全部来源",
+  "dashboard.logs.modelLabel": "模型",
+  "dashboard.logs.modelAll": "全部模型",
+  // 汇总指标行（当前筛选条件下的全范围聚合，不是当前页）
+  "dashboard.logs.metricsRequests": "总请求数",
+  "dashboard.logs.metricsCost": "总成本",
+  "dashboard.logs.metricsCostHint": "当前范围内没有可计价数据（请求未配置价格）",
+  "dashboard.logs.metricsCacheHit": "缓存命中率",
+  "dashboard.logs.metricsCacheHint":
+    "缓存读 token ÷ 输入 token（按来源口径合并；无输入数据时不显示）",
+  "dashboard.logs.tableTitle": "请求明细",
+  // 卡片副标题末项与页描述里的「仅本机」：本页没有「全部设备」口径
+  "dashboard.logs.localOnly": "仅本机记录",
+  "dashboard.logs.colTime": "时间",
+  "dashboard.logs.colSource": "来源",
+  "dashboard.logs.colModel": "模型",
+  "dashboard.logs.colInput": "输入",
+  "dashboard.logs.colOutput": "输出",
+  // 缓存读 / 缓存写合并列（值形如「12.3万 / 4.5万」，精确值在 title）
+  "dashboard.logs.colCache": "缓存",
+  "dashboard.logs.cacheCellTitle": "缓存读 {read} · 缓存写 {write}",
+  "dashboard.logs.colCost": "花费",
+  "dashboard.logs.colDuration": "耗时",
+  "dashboard.logs.colTtft": "首字",
+  // 速度列：数值 + 小号 t/s 单位；≈ 表示按总耗时估算的近似速度
+  "dashboard.logs.colSpeed": "速度",
+  "dashboard.logs.rowHint": "点击行查看详情",
+  "dashboard.logs.cellNoData": "无数据",
+  // 耗时 / 首字 / 速度缺失说明：讲清是数据源不落盘（而不是加载失败），
+  // 避免被当成页面故障
+  "dashboard.logs.noDurationTitle":
+    "该来源的会话记录不含耗时数据（如 Codex 会话文件无耗时、旧版 Claude Code 不落盘耗时）",
+  "dashboard.logs.noTtftTitle": "该来源的会话记录不含首字数据",
+  "dashboard.logs.noSpeedTitle": "该来源未记录耗时，无法计算速度",
+  "dashboard.logs.unpriced": "未定价",
+  "dashboard.logs.unpricedHint": "该模型未配置价格，花费按 0 计",
+  "dashboard.logs.emptyTitle": "该时间范围内没有请求记录",
+  "dashboard.logs.emptyHint":
+    "换个时间范围或来源试试。\n未安装 / 未使用过的来源不会出现在这里。",
+  // 模型筛选无结果：保留选中值，给说明 + 一键清除（不静默清空）
+  "dashboard.logs.emptyModelTitle": "该模型在当前条件下没有请求",
+  "dashboard.logs.emptyModelHint":
+    "当前来源 / 时间范围下没有「{model}」的请求记录；可清除模型筛选查看全部模型。",
+  "dashboard.logs.clearModel": "清除模型筛选",
+  // total > 0 但当前页没有行（深页 / 页码越界回收帧）
+  "dashboard.logs.pageEmptyHint":
+    "当前页没有数据，可能已超出记录范围，请返回上一页。",
+  "dashboard.logs.errorTitle": "加载失败",
+  "dashboard.logs.errorReason": "原因：{error}",
+  "dashboard.logs.retry": "重新加载",
+  // 单源取数失败（有数据时的弱提示，对齐总览页 partialFailures 惯例）
+  "dashboard.logs.partialFailures":
+    "部分来源本次未取到，数据可能不完整：{names}",
+  "dashboard.logs.pagePrev": "上一页",
+  "dashboard.logs.pageNext": "下一页",
+  "dashboard.logs.pageInfo": "第 {page} / {total} 页",
+  "dashboard.logs.pageTotal": "共 {n} 条",
+  "dashboard.logs.detailTitle": "请求详情",
+  "dashboard.logs.close": "关闭",
+  "dashboard.logs.detailBasic": "基本信息",
+  "dashboard.logs.detailSource": "来源",
+  "dashboard.logs.detailModel": "模型",
+  "dashboard.logs.detailProvider": "Provider",
+  "dashboard.logs.detailSession": "会话 ID",
+  "dashboard.logs.detailProject": "项目",
+  "dashboard.logs.detailTokens": "Token 明细",
+  "dashboard.logs.detailInput": "输入",
+  "dashboard.logs.detailOutput": "输出",
+  "dashboard.logs.detailCacheRead": "缓存读",
+  "dashboard.logs.detailCacheWrite": "缓存写",
+  "dashboard.logs.detailReasoning": "思考",
+  "dashboard.logs.detailTotal": "合计",
+  "dashboard.logs.detailCost": "花费",
+  "dashboard.logs.detailPerf": "性能",
+  "dashboard.logs.detailDuration": "耗时",
+  "dashboard.logs.detailTtft": "首字",
+  "dashboard.logs.detailSpeed": "速度",
+  "dashboard.logs.speedApproxHint": "无首字数据，按总耗时估算的近似速度",
+
+  // ===== 自定义时间范围（总览 / 日志 / 对比三页共用的页头时间范围控件）=====
+  // 触发按钮显示当前范围标签：生效的预设名，或自定义区间的「MM-DD ~ MM-DD」
+  // 摘要（自定义时带日历图标 + 高亮描边）；面板顶部预设行为各页现有档位
+  "dashboard.customRange": "自定义",
+  "dashboard.customRange.title": "时间范围",
+  "dashboard.customRange.selectedHint": "自定义范围 {range}（点开可修改）",
+  "dashboard.customRange.presets": "快捷范围",
+  "dashboard.customRange.start": "开始日期",
+  "dashboard.customRange.end": "结束日期",
+  // 字段卡尚未选到该端时的占位
+  "dashboard.customRange.empty": "未选择",
+  "dashboard.customRange.apply": "应用",
+  "dashboard.customRange.cancel": "取消",
+  // 日历月份导航（‹ / › 与「回本月」按钮的可访问名与悬停说明）
+  "dashboard.customRange.prevMonth": "上个月",
+  "dashboard.customRange.nextMonth": "下个月",
+  "dashboard.customRange.thisMonth": "回到本月",
+  // 面板内说明可选范围下限（各页限制不同：取数窗口 / 额度快照保留期）
+  "dashboard.customRange.minHint": "可选最早日期：{date}",
+  "dashboard.customRange.errorIncomplete": "请选择起始与结束日期",
+  "dashboard.customRange.errorOrder": "起始日期不能晚于结束日期",
+  "dashboard.customRange.errorOutOfRange": "所选日期超出可选范围",
 };

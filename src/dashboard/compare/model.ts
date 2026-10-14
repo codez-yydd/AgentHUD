@@ -112,22 +112,38 @@ export const LOCAL_COMPARE_SOURCE: Record<CompareAgent, CompareTokenSource> = {
 
 // ===== 页头时间范围 =====
 
-/** 页头时间范围预设（趋势切片 + Token 统计周期） */
-export type CompareRange = "7d" | "30d" | "90d";
+/** 页头时间范围预设档（趋势切片 + Token 统计周期） */
+export type ComparePresetRange = "7d" | "30d" | "90d";
+
+/** 页头时间范围选择：预设档或自定义区间（"custom" 只在页面选中自定义档时使用） */
+export type CompareRange = ComparePresetRange | "custom";
 
 /** 各预设覆盖的自然日数（含今天） */
-export const COMPARE_RANGE_DAYS: Record<CompareRange, number> = {
+export const COMPARE_RANGE_DAYS: Record<ComparePresetRange, number> = {
   "7d": 7,
   "30d": 30,
   "90d": 90,
 };
 
 /** 全部范围预设（顺序即页头分段顺序）。
- *  Token 取数一次覆盖这里全部预设，范围切换只做视图选择（不重取）。 */
-export const COMPARE_RANGES: CompareRange[] = ["7d", "30d", "90d"];
+ *  Token 取数一次覆盖这里的全部预设（+ 可选自定义区间），范围切换只做视图选择。 */
+export const COMPARE_RANGES: ComparePresetRange[] = ["7d", "30d", "90d"];
+
+/** 时间窗口 [fromMs, toMs)：预设档 toMs = 取数时刻（本代际的 nowMs）；
+ *  自定义区间为所选自然日半开区间（fromMs = 起始日 0 点，toMs = 结束日次日 0 点）。 */
+export interface CompareWindow {
+  fromMs: number;
+  toMs: number;
+}
+
+/** 窗口取数缓存键（含起止毫秒）：不同自定义区间、不同代际的预设窗口互不命中 */
+export function windowKeyOf(win: CompareWindow): string {
+  return `${win.fromMs}|${win.toMs}`;
+}
 
 /** 额度历史固定取数窗口（天）：矩阵的「当前剩余」不随页头范围缩水，
- *  范围切换只重新切片折线，与总览页的「90 天窗口一次取数」同一思路。 */
+ *  范围切换只重新切片折线，与总览页的「90 天窗口一次取数」同一思路。
+ *  也是自定义区间可选最早日期与额度趋势数据的保留期（见 ComparePage）。 */
 export const COMPARE_HISTORY_DAYS = 90;
 
 /** N 天前（含今天共 N 天）的本地自然日 0 点 */
@@ -138,14 +154,76 @@ function startOfDaysAgo(days: number, nowMs: number): number {
   return d.getTime();
 }
 
-/** 页头范围起点（本地自然日 0 点，含今天共 N 天） */
-export function rangeStartMs(range: CompareRange, nowMs = Date.now()): number {
+/** 预设档的范围起点（本地自然日 0 点，含今天共 N 天） */
+export function rangeStartMs(
+  range: ComparePresetRange,
+  nowMs = Date.now()
+): number {
   return startOfDaysAgo(COMPARE_RANGE_DAYS[range], nowMs);
 }
 
 /** 额度历史取数起点（固定 90 天窗口） */
 export function historyStartMs(nowMs = Date.now()): number {
   return startOfDaysAgo(COMPARE_HISTORY_DAYS, nowMs);
+}
+
+/**
+ * 一次取数覆盖的全部窗口：四个预设档 + 可选自定义区间（顺序即展示顺序）。
+ * 预设窗口的起止都取本代际的 nowMs，与 publish / 远端懒取的窗口键保持一致
+ * （否则命不中同一份缓存）。
+ */
+export function compareWindows(
+  custom: CompareWindow | null,
+  nowMs = Date.now()
+): { key: CompareRange; win: CompareWindow }[] {
+  const list: { key: CompareRange; win: CompareWindow }[] = COMPARE_RANGES.map(
+    (range) => ({
+      key: range,
+      win: { fromMs: rangeStartMs(range, nowMs), toMs: nowMs },
+    })
+  );
+  if (custom) {
+    list.push({
+      key: "custom",
+      win: { fromMs: custom.fromMs, toMs: custom.toMs },
+    });
+  }
+  return list;
+}
+
+/** 页头当前选择 → 窗口（自定义优先；两者互斥由页面保证） */
+export function selectedWindow(
+  range: ComparePresetRange,
+  custom: CompareWindow | null,
+  nowMs = Date.now()
+): CompareWindow {
+  if (custom) return { fromMs: custom.fromMs, toMs: custom.toMs };
+  return { fromMs: rangeStartMs(range, nowMs), toMs: nowMs };
+}
+
+/**
+ * 把若干窗口的并集拆成互不重叠的相邻段（升序），只保留真正落在某个窗口内的段。
+ *
+ * 仅 Cursor 需要（见 useCompareData.loadLocalTokenTotals）：其后端把事件归属到
+ * 「首个命中的区间」（cursor.rs 按 periods 顺序 position 匹配），重叠区间会互相
+ * 截断。用互斥段一次取回后，按「段完整落在窗口内」累加即可还原各窗口合计。
+ * 原有三个预设档全是「以此刻结尾的嵌套窗口」，本函数输出的分段与改动前的
+ * 手工相邻区间写法完全一致。
+ */
+export function disjointSegments(windows: CompareWindow[]): CompareWindow[] {
+  const points = [
+    ...new Set(windows.flatMap((win) => [win.fromMs, win.toMs])),
+  ].sort((a, b) => a - b);
+  const segments: CompareWindow[] = [];
+  for (let i = 0; i + 1 < points.length; i++) {
+    const fromMs = points[i];
+    const toMs = points[i + 1];
+    if (toMs <= fromMs) continue;
+    if (windows.some((win) => win.fromMs <= fromMs && toMs <= win.toMs)) {
+      segments.push({ fromMs, toMs });
+    }
+  }
+  return segments;
 }
 
 // ===== 额度系列与采样 =====
@@ -440,16 +518,18 @@ export function sumBuckets(buckets: WeeklyTokenBucket[]): {
   return { tokens, requests };
 }
 
-/** 本地「多周期一次取数」结果 → 周期起点（reset_at）→ 合计。
+/** 本地「多窗口一次取数」结果 → 窗口键（`${起点}|${终点}`）→ 合计。
  *  后端把入参的 reset_at / end_at 原样回填到每个桶（见 db::query_period_buckets
- *  及各来源实现），因此按起点对号入座即可，不依赖返回顺序。 */
-export function bucketTotalsByStart(
+ *  及各来源实现），因此按起止对号入座即可，不依赖返回顺序；键必须含 end_at：
+ *  自定义区间可能与预设档共享同一个起点（只是终点不同），只按起点会串桶。 */
+export function bucketTotalsByWindow(
   buckets: WeeklyTokenBucket[]
-): Map<number, { tokens: number; requests: number }> {
-  const out = new Map<number, { tokens: number; requests: number }>();
+): Map<string, { tokens: number; requests: number }> {
+  const out = new Map<string, { tokens: number; requests: number }>();
   for (const bucket of buckets) {
-    const previous = out.get(bucket.reset_at);
-    out.set(bucket.reset_at, {
+    const key = windowKeyOf({ fromMs: bucket.reset_at, toMs: bucket.end_at });
+    const previous = out.get(key);
+    out.set(key, {
       tokens: (previous?.tokens ?? 0) + bucket.total_tokens,
       requests: (previous?.requests ?? 0) + bucket.requests,
     });

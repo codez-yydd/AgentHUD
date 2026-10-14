@@ -36,6 +36,7 @@ mod provider_quota;
 mod qoder;
 mod quota;
 mod quota_history;
+mod request_logs;
 mod session_hud;
 mod shortcut;
 mod stepfun;
@@ -56,10 +57,10 @@ use tauri::{
 };
 use tauri_plugin_updater::UpdaterExt;
 
-/// 计费所需的字段抽象。ModelStat 与 BucketModelStat 都实现它，
-/// 这样 cost_for 可同时服务 compute_cost 和 get_trend 等
-/// （get_codex_usage / get_claude_usage 的桶内模型聚合同款）。
-trait Billable {
+/// 计费所需的字段抽象。ModelStat / BucketModelStat / request_logs::RequestLogRow
+/// 都实现它，这样 cost_for 可同时服务 compute_cost、get_trend 与请求日志页的
+/// 逐行折算（get_codex_usage / get_claude_usage 的桶内模型聚合同款）。
+pub(crate) trait Billable {
     fn model_id(&self) -> &str;
     fn input_tokens(&self) -> i64;
     fn output_tokens(&self) -> i64;
@@ -105,7 +106,7 @@ impl Billable for db::BucketModelStat {
 /// 「小写 + 点号归一」兜底（价格条目与 db 的 model_id 大小写或点号/连字符写法可能
 /// 不一致，让任何形态都能算出花费）。原始形态恒优先，模型名自身带 "/" 时不会被
 /// 截断形态抢先命中。线性扫描仅在 miss 时发生。
-fn cost_for<B: Billable>(s: &B, map: &BTreeMap<String, ModelPrice>) -> f64 {
+pub(crate) fn cost_for<B: Billable>(s: &B, map: &BTreeMap<String, ModelPrice>) -> f64 {
     let lookup = |p: &ModelPrice| {
         let non_cache_input =
             (s.input_tokens() - s.cache_read_tokens()).max(0) as f64;
@@ -131,7 +132,7 @@ fn cost_for<B: Billable>(s: &B, map: &BTreeMap<String, ModelPrice>) -> f64 {
 
 /// 当前 USD→CNY 汇率（与 Cursor 配置共用同一来源，每日自动更新；非法值回退 7.2）。
 /// 价格只存美元，人民币花费 = 美元花费 × 该汇率实时折算。
-fn load_fx_rate() -> f64 {
+pub(crate) fn load_fx_rate() -> f64 {
     let rate = cursor::load_cursor_config()
         .map(|c| c.usd_cny_rate)
         .unwrap_or(7.2);
@@ -2559,6 +2560,9 @@ pub fn run() {
             get_opencode_debug,
             get_minimaxcode_usage,
             get_minimaxcode_debug,
+            // 主窗口「请求日志」页：7 个本地来源的请求级明细分页 + 模型筛选清单
+            request_logs::get_request_logs,
+            request_logs::get_request_log_models,
             list_accounts,
             capture_account,
             switch_account,

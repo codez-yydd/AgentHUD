@@ -1195,11 +1195,14 @@ export const en: typeof zh = {
     "dashboard.subtitle": "Usage & quota console",
 
     "dashboard.overview": "Overview",
+    "dashboard.logs": "Request logs",
     "dashboard.compare": "Weekly compare",
     "dashboard.pricing": "Pricing",
 
     "dashboard.overview.desc":
       "Aggregated usage, cost and trends across services.",
+    "dashboard.logs.desc":
+      "Per-request details: time, model, token breakdown, cost and duration; this machine only, filterable by source.",
     "dashboard.compare.desc":
       "Weekly quota left per subscription, used-% trends over the selected range, and local vs. other-device token comparison.",
     "dashboard.pricing.desc":
@@ -1358,6 +1361,8 @@ export const en: typeof zh = {
     "dashboard.compare.trendShowAll": "Show all",
     "dashboard.compare.trendFootnote":
       "Lines show each series' weekly quota used % (= 100 − remaining), connected by sample time; periods without samples are not connected.",
+    "dashboard.compare.trendSnapshotNote":
+      "Quota snapshots only cover the last {days} days; earlier dates cannot be selected.",
     "dashboard.compare.tokensTitle": "Agent token comparison",
     "dashboard.compare.tokensSub": "{range} · local + other devices merged",
     "dashboard.compare.tokensLocal": "Local",
@@ -1449,5 +1454,111 @@ export const en: typeof zh = {
     "dashboard.pricing.applying": "Applying…",
     "dashboard.pricing.applySelected": "Apply selected",
     "dashboard.pricing.applySelectedCount": "Apply selected ({count})",
+
+    "dashboard.logs.rangeLabel": "Time range",
+    "dashboard.logs.range.all": "All",
+    "dashboard.logs.sourceLabel": "Source",
+    "dashboard.logs.sourceAll": "All sources",
+    "dashboard.logs.modelLabel": "Model",
+    "dashboard.logs.modelAll": "All models",
+    "dashboard.logs.metricsRequests": "Total requests",
+    "dashboard.logs.metricsCost": "Total cost",
+    "dashboard.logs.metricsCostHint":
+      "Nothing priced in this range (models here have no price configured)",
+    "dashboard.logs.metricsCacheHit": "Cache hit rate",
+    "dashboard.logs.metricsCacheHint":
+      "Cache-read tokens ÷ input tokens (merged per source convention; shown as — when there is no input)",
+    "dashboard.logs.tableTitle": "Request details",
+    "dashboard.logs.localOnly": "This machine only",
+    "dashboard.logs.colTime": "Time",
+    "dashboard.logs.colSource": "Source",
+    "dashboard.logs.colModel": "Model",
+    "dashboard.logs.colInput": "Input",
+    "dashboard.logs.colOutput": "Output",
+    "dashboard.logs.colCache": "Cache",
+    "dashboard.logs.cacheCellTitle":
+      "Cache read {read} · cache write {write}",
+    "dashboard.logs.colCost": "Cost",
+    "dashboard.logs.colDuration": "Duration",
+    "dashboard.logs.colTtft": "TTFT",
+    "dashboard.logs.colSpeed": "Speed",
+    "dashboard.logs.rowHint": "Click a row for details",
+    "dashboard.logs.cellNoData": "No data",
+    "dashboard.logs.noDurationTitle":
+      "This source's session records contain no duration data (e.g. Codex session files have no duration; older Claude Code versions do not persist it)",
+    "dashboard.logs.noTtftTitle":
+      "This source's session records contain no TTFT data",
+    "dashboard.logs.noSpeedTitle":
+      "This source records no duration, so speed cannot be computed",
+    "dashboard.logs.unpriced": "Unpriced",
+    "dashboard.logs.unpricedHint":
+      "This model has no price configured; cost counted as 0",
+    "dashboard.logs.emptyTitle": "No requests in this time range",
+    "dashboard.logs.emptyHint":
+      "Try another time range or source.\nSources that are not installed or never used do not appear here.",
+    "dashboard.logs.emptyModelTitle":
+      "No requests for this model under the current filters",
+    "dashboard.logs.emptyModelHint":
+      "No requests for \"{model}\" in the current source / time range. Clear the model filter to see all models.",
+    "dashboard.logs.clearModel": "Clear model filter",
+    "dashboard.logs.pageEmptyHint":
+      "No data on this page — it may be beyond the record range; go back a page.",
+    "dashboard.logs.errorTitle": "Failed to load",
+    "dashboard.logs.errorReason": "Reason: {error}",
+    "dashboard.logs.retry": "Reload",
+    "dashboard.logs.partialFailures":
+      "Some sources could not be read this time, so data may be incomplete: {names}",
+    "dashboard.logs.pagePrev": "Prev",
+    "dashboard.logs.pageNext": "Next",
+    "dashboard.logs.pageInfo": "Page {page} / {total}",
+    "dashboard.logs.pageTotal": "{n} requests",
+    "dashboard.logs.detailTitle": "Request details",
+    "dashboard.logs.close": "Close",
+    "dashboard.logs.detailBasic": "Basic",
+    "dashboard.logs.detailSource": "Source",
+    "dashboard.logs.detailModel": "Model",
+    "dashboard.logs.detailProvider": "Provider",
+    "dashboard.logs.detailSession": "Session ID",
+    "dashboard.logs.detailProject": "Project",
+    "dashboard.logs.detailTokens": "Token breakdown",
+    "dashboard.logs.detailInput": "Input",
+    "dashboard.logs.detailOutput": "Output",
+    "dashboard.logs.detailCacheRead": "Cache read",
+    "dashboard.logs.detailCacheWrite": "Cache write",
+    "dashboard.logs.detailReasoning": "Reasoning",
+    "dashboard.logs.detailTotal": "Total",
+    "dashboard.logs.detailCost": "Cost",
+    "dashboard.logs.detailPerf": "Performance",
+    "dashboard.logs.detailDuration": "Duration",
+    "dashboard.logs.detailTtft": "TTFT",
+    "dashboard.logs.detailSpeed": "Speed",
+    "dashboard.logs.speedApproxHint":
+      "No TTFT data; speed approximated from total duration",
+
+    // ===== Custom time range (shared range control of the three pages) =====
+    // Trigger shows the active preset name, or the "MM-DD ~ MM-DD" summary when
+    // a custom range is applied (with a calendar icon and an accent outline);
+    // the panel's preset row mirrors each page's existing presets
+    "dashboard.customRange": "Custom",
+    "dashboard.customRange.title": "Time range",
+    "dashboard.customRange.selectedHint": "Custom range {range} (click to edit)",
+    "dashboard.customRange.presets": "Quick ranges",
+    "dashboard.customRange.start": "Start date",
+    "dashboard.customRange.end": "End date",
+    // Placeholder while that end of the range has not been picked yet
+    "dashboard.customRange.empty": "Not set",
+    "dashboard.customRange.apply": "Apply",
+    "dashboard.customRange.cancel": "Cancel",
+    // Calendar month navigation (accessible name + tooltip)
+    "dashboard.customRange.prevMonth": "Previous month",
+    "dashboard.customRange.nextMonth": "Next month",
+    "dashboard.customRange.thisMonth": "Back to current month",
+    // Earliest selectable date (page specific: fetch window / snapshot retention)
+    "dashboard.customRange.minHint": "Earliest date: {date}",
+    "dashboard.customRange.errorIncomplete": "Pick both a start and an end date",
+    "dashboard.customRange.errorOrder":
+      "Start date cannot be later than the end date",
+    "dashboard.customRange.errorOutOfRange":
+      "Selected dates are outside the available range",
   } satisfies typeof dashboard),
 };

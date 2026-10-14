@@ -41,6 +41,7 @@ export function QuotaTrendCard({
   fromMs,
   toMs,
   rangeLabel,
+  note,
   pending = false,
 }: {
   series: TrendSeriesView[];
@@ -48,6 +49,8 @@ export function QuotaTrendCard({
   toMs: number;
   /** 页头当前范围文案（卡片副标题） */
   rangeLabel: string;
+  /** 补充说明（自定义区间下说明额度快照保留期；预设档不传） */
+  note?: string;
   /** 本机额度快照未就绪（首屏卡片骨架） */
   pending?: boolean;
 }) {
@@ -281,6 +284,7 @@ export function QuotaTrendCard({
           </div>
 
           <p className="db-linechart__foot">{t("dashboard.compare.trendFootnote")}</p>
+          {note != null && <p className="db-linechart__foot">{note}</p>}
         </div>
       )}
     </Card>

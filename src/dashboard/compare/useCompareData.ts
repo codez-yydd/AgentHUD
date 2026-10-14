@@ -4,15 +4,18 @@
  *
  * 设计要点（对齐窄窗 ComparePanel 的数据流）：
  *  - 额度历史固定取近 90 天（COMPARE_HISTORY_DAYS）：矩阵的「当前剩余」
- *    不随页头范围缩水，范围切换只重新切片折线；
+ *    不随页头范围缩水，范围切换只重新切片折线；该窗口也是自定义区间的可选
+ *    最早日期（更早没有额度数据，页面侧限制）；
  *  - 分级加载（页面不再整页转圈）：
  *      ① 本地额度快照 + 本地 Token 就绪即发布——矩阵卡与趋势卡先出本机部分
- *         （本地 Token 仍一次取回全部范围预设）；
+ *         （本地 Token 一次取回全部预设档窗口 + 当前自定义区间）；
  *      ② 远端快照 / 远端 Agent 快照到达后补全矩阵与趋势；
- *      ③ Token 对比卡的远端部分按当前范围懒取——首载只取当前选中范围的
- *         远端 usage（hour 桶），切到未取过的范围才取该范围并缓存，
- *         已有范围不重取；
+ *      ③ Token 对比卡的远端部分按窗口懒取——首载只取当前选中窗口的
+ *         远端 usage（hour 桶），切到未取过的窗口才取该窗口并缓存，
+ *         已有窗口不重取；
  *    各卡据此展示独立骨架，页面级 loading 只在首个结果到达前出现；
+ *  - 自定义区间是代际输入（customKey 进依赖）：变化即重建代际重取本机 / 远端
+ *    Token（窗口键含起止毫秒，不同自定义区间互不命中）；预设档切换不重建代际；
  *  - 同步配置与本地取数并行发起，只有远端部分等待配置（避免「先按未启用同步
  *    的本地口径取一遍、拿到设备配置后又全量重取」的双取）；getSyncConfig 失败
  *    或超时（SYNC_CONFIG_TIMEOUT_MS）按未启用同步处理，不卡首屏；
@@ -21,10 +24,10 @@
  *  - 各来源独立容错：单个 Agent 的 Token 取数失败按 0 处理（矩阵与折线不受影响），
  *    远端历史在汇总模式下降级为「仅本机」并置 remoteDegraded（弱提示条），
  *    指定设备时明确报错；
- *  - 模块级缓存：最近一次完整结果 + 设备筛选 + 生成它的中间态一起存在模块
- *    顶层变量里，再次进入页面立即用缓存渲染（无加载态，切范围懒取照常可用）；
- *    缓存超过 60 秒才后台静默刷新，手动刷新永远强制重取；generation 序号守卫：
- *    筛选变化 / 刷新 / 卸载后的旧结果一律丢弃。
+ *  - 模块级缓存：最近一次完整结果 + 设备筛选 + 自定义区间键 + 生成它的中间态
+ *    一起存在模块顶层变量里，再次进入页面立即用缓存渲染（无加载态，切范围懒取
+ *    照常可用）；缓存超过 60 秒才后台静默刷新，手动刷新永远强制重取；
+ *    generation 序号守卫：筛选变化 / 刷新 / 卸载后的旧结果一律丢弃。
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import type {
@@ -51,23 +54,28 @@ import {
 import { loadAgentVisibility } from "../../agentVisibility";
 import { mergeAgentQuotaSnapshots } from "../../agentQuota";
 import { useI18n } from "../../i18n";
+import type { CustomRangeValue } from "../CustomRangeMenu";
 import {
   COMPARE_AGENTS,
-  COMPARE_RANGES,
   LOCAL_COMPARE_SOURCE,
   agentColorOf,
   agentLabelOf,
-  bucketTotalsByStart,
+  bucketTotalsByWindow,
   buildQuotaTimelines,
+  compareWindows,
+  disjointSegments,
   historyStartMs,
   mergeQuotaSnapshots,
-  rangeStartMs,
+  selectedWindow,
   remoteSourceOf,
   sumBuckets,
   sumRemoteUsageIn,
   toQuotaSnapshot,
+  windowKeyOf,
   type CompareAgent,
+  type ComparePresetRange,
   type CompareRange,
+  type CompareWindow,
   type QuotaTimeline,
   type TokenComparison,
 } from "./model";
@@ -90,8 +98,8 @@ interface TokenTotals {
 export interface CompareRaw {
   /** 各额度系列的采样时间线（近 90 天，范围切片在视图层做；远端到达后补全） */
   timelines: QuotaTimeline[];
-  /** 各范围下的 Agent Token 对比（本机部分一次取全；远端按当前范围懒取，
-   *  未取过的范围可能缺键） */
+  /** 各范围下的 Agent Token 对比（本机部分一次取全预设档 + 当前自定义区间；
+   *  远端按窗口懒取，未取过的窗口可能缺键） */
   tokensByRange: Partial<Record<CompareRange, TokenComparison[]>>;
 }
 
@@ -131,16 +139,23 @@ interface Generation {
   enabledAgents: CompareAgent[];
   wantLocal: boolean;
   deviceFilter: string;
+  /** 本次代际覆盖的全部窗口（预设档 + 可选自定义区间）：Token 聚合按窗口键取值 */
+  windows: { key: CompareRange; win: CompareWindow }[];
+  /** 本次代际生效的自定义区间（未选自定义为 null）：缓存复用判定用它的键 */
+  custom: CustomRangeValue | null;
   zaiHistory: QuotaSnapshot[];
   remoteHistory: RemoteSnapshot[];
   agentHistory: AgentQuotaSnapshot[];
   remoteAgentHistory: RemoteAgentQuotaSnapshot[];
   accounts: AccountMeta[] | null;
-  /** 本机各 Agent：范围起点 → 合计（一次请求带回全部范围预设） */
-  localTotals: Map<CompareAgent, Map<number, { tokens: number; requests: number }>>;
-  /** 远端 usage 缓存：`${agent}|${range}` → 桶数据（懒取，已有范围不重取） */
+  /** 本机各 Agent：窗口键（`${起点}|${终点}`）→ 合计（一次请求带回全部窗口） */
+  localTotals: Map<
+    CompareAgent,
+    Map<string, { tokens: number; requests: number }>
+  >;
+  /** 远端 usage 缓存：`${agent}|${窗口键}` → 桶数据（懒取，已有窗口不重取） */
   remoteUsage: Map<string, RemoteUsage>;
-  /** 在途的远端范围请求（去重，避免同一范围并发重复请求） */
+  /** 在途的远端窗口请求（去重，避免同一窗口并发重复请求） */
   remoteInflight: Set<string>;
   syncConfig: SyncConfig | null;
   degraded: boolean;
@@ -150,14 +165,17 @@ interface Generation {
   cleanup: (() => void) | null;
 }
 
-/** 模块级结果缓存（含设备筛选、设备列表与 generation 中间态）：切页（条件
- *  渲染 = 卸载）后重进即刻渲染，无加载态；中间态让命中缓存后的范围切换仍能
- *  懒取远端补全（否则重建视图时会丢掉本机部分）。只存在于本窗口的 JS 模块
- *  内存，不落盘。 */
+/** 模块级结果缓存（含设备筛选、自定义区间键、设备列表与 generation 中间态）：
+ *  切页（条件渲染 = 卸载）后重进即刻渲染，无加载态；中间态让命中缓存后的范围
+ *  切换仍能懒取远端补全（否则重建视图时会丢掉本机部分）。只存在于本窗口的 JS
+ *  模块内存，不落盘。 */
 let compareCache: {
   data: CompareRaw;
   at: number;
   deviceFilter: string;
+  /** 生成该缓存时的自定义区间键（""=当时未选自定义）：缓存复用判定用，
+   *  避免不同自定义区间命中同一份中间态（窗口键对不上会得到空 Token） */
+  customKey: string;
   /** 设备筛选选项（同步开启时缓存，命中缓存后筛选下拉不闪空） */
   devices: DeviceInfo[];
   state: Generation;
@@ -169,50 +187,72 @@ function shortError(error: unknown): string {
   return text.length > 120 ? text.slice(0, 117) + "…" : text;
 }
 
-/** 远端 usage 缓存键 */
-function remoteKey(agent: CompareAgent, range: CompareRange): string {
-  return `${agent}|${range}`;
+/** 自定义区间 → 缓存键（""=未选自定义） */
+function customKeyOf(custom: CustomRangeValue | null): string {
+  return custom ? windowKeyOf(custom) : "";
 }
 
-/** 本机某 Agent 在全部范围预设下的 Token 合计（一次请求带回全部区间）。 */
+/** 远端 usage 缓存键：Agent + 窗口键（含起止毫秒） */
+function remoteKeyOf(agent: CompareAgent, win: CompareWindow): string {
+  return `${agent}|${windowKeyOf(win)}`;
+}
+
+/** 本机某 Agent 在全部窗口（预设档 + 可选自定义区间）下的 Token 合计
+ *  （一次请求带回全部区间，按窗口键对号入座）。 */
 async function loadLocalTokenTotals(
   agent: CompareAgent,
-  rangeFroms: number[],
-  nowMs: number
-): Promise<Map<number, { tokens: number; requests: number }>> {
+  windows: CompareWindow[]
+): Promise<Map<string, { tokens: number; requests: number }>> {
   if (agent === "cursor") {
-    // Cursor 后端把事件归属到「首个命中的区间」（cursor.rs 用 position
-    // 匹配），嵌套区间会互相截断（7 天的用量不会再计入 30/90 天桶），
-    // 因此把三个嵌套范围改写成互不重叠的相邻区间一次取回
-    // （[90d,30d) + [30d,7d) + [7d,now)），再按「区间起点 ≥ 范围起点」
-    // 累加还原各范围合计：90d = 三段和、30d = 后两段和、7d = 末段。
-    // 其余来源都是逐区间独立聚合，可以直接传嵌套区间。
-    const ascending = [...rangeFroms].sort((a, b) => a - b);
-    const segments: [number, number][] = ascending
-      .slice(1)
-      .map((from, index) => [ascending[index], from]);
-    segments.push([ascending[ascending.length - 1], nowMs]);
+    // Cursor 后端把事件归属到「首个命中的区间」（cursor.rs 用 periods 顺序
+    // position 匹配），重叠区间会互相截断（7 天的用量不会再计入 30/90 天桶），
+    // 因此把全部窗口的并集改写成互不重叠的相邻段一次取回（自定义区间可能
+    // 不以「此刻」结尾，故用通用的并集拆分；对原有三档预设结果完全等价），
+    // 再按「段完整落在窗口内」累加还原各窗口合计。
+    const segments = disjointSegments(windows);
     const buckets = await getCompareTokensForAgent(
       LOCAL_COMPARE_SOURCE[agent],
-      segments
+      segments.map((segment): [number, number] => [
+        segment.fromMs,
+        segment.toMs,
+      ])
     );
-    const totals = new Map<number, { tokens: number; requests: number }>();
-    for (const from of rangeFroms) {
+    const totals = new Map<string, { tokens: number; requests: number }>();
+    for (const win of windows) {
       totals.set(
-        from,
-        sumBuckets(buckets.filter((bucket) => bucket.reset_at >= from))
+        windowKeyOf(win),
+        sumBuckets(
+          buckets.filter(
+            (bucket) =>
+              bucket.reset_at >= win.fromMs && bucket.end_at <= win.toMs
+          )
+        )
       );
     }
     return totals;
   }
-  // 传的是后端来源名（opencodego → "opencode"），不是 AgentId
-  const periods: [number, number][] = rangeFroms.map((from) => [from, nowMs]);
-  return bucketTotalsByStart(
+  // 传的是后端来源名（opencodego → "opencode"），不是 AgentId；其余来源都是
+  // 逐区间独立聚合，可以直接传全部窗口（含自定义区间）
+  const periods: [number, number][] = windows.map((win) => [
+    win.fromMs,
+    win.toMs,
+  ]);
+  return bucketTotalsByWindow(
     await getCompareTokensForAgent(LOCAL_COMPARE_SOURCE[agent], periods)
   );
 }
 
-export function useCompareData(range: CompareRange): CompareDataState {
+/**
+ * 页头时间范围选择：预设档 + 可选自定义区间（互斥，页面保证两者不同时生效）。
+ *
+ * 自定义区间一旦变化即重建代际：本机 Token 与远端 usage 都按窗口（含起止毫秒）
+ * 取数并缓存，窗口键含起止毫秒，不同自定义区间不会互相命中；预设档切换不重建
+ * 代际（本地一次取回全部预设窗口，远端按窗口懒取），与改动前一致。
+ */
+export function useCompareData(
+  range: ComparePresetRange,
+  custom: CustomRangeValue | null
+): CompareDataState {
   const { t } = useI18n();
   const [data, setData] = useState<CompareRaw | null>(null);
   const [loading, setLoading] = useState(true);
@@ -226,14 +266,21 @@ export function useCompareData(range: CompareRange): CompareDataState {
   const [devices, setDevices] = useState<DeviceInfo[]>([]);
   const [deviceFilter, setDeviceFilter] = useState<string>("all");
   const [nonce, setNonce] = useState(0);
+  // 自定义区间键（""=未选自定义）：作为代际依赖与缓存复用判定，避免对象字面量
+  // 每次渲染都变导致代际重建
+  const customKey = customKeyOf(custom);
 
   // generation 守卫：筛选 / 刷新 / 卸载后旧结果一律丢弃
   const genRef = useRef(0);
   const genStateRef = useRef<Generation | null>(null);
   // 手动刷新标记：强制重取（跳过缓存）
   const manualRef = useRef(false);
-  // 当前页头范围（懒取远端 usage 用；避免把 range 塞进 generation 依赖）
+  // 当前页头预设档（懒取远端 usage 用；避免把 range 塞进 generation 依赖）
   const rangeRef = useRef(range);
+  // 当前自定义区间（generation 依赖只有 customKey 字符串；代际创建时从这里取
+  // 快照，渲染期同步即可保证 run() 读到的是最新值）
+  const customRef = useRef(custom);
+  customRef.current = custom;
   // 最近一次发布的结果（缓存写入用）
   const publishedRef = useRef<CompareRaw | null>(null);
   // 设备列表（写进缓存，命中缓存后筛选下拉不闪空；不参与 generation 依赖）
@@ -262,20 +309,20 @@ export function useCompareData(range: CompareRange): CompareDataState {
         t
       );
 
-      // Token 口径沿用「按 Agent 实际用量」：本机按来源名聚合区间，
-      // 远端按桶与范围的区间重叠求和；两者相加即合并结果。
+      // Token 口径沿用「按 Agent 实际用量」：本机按来源名聚合窗口，
+      // 远端按桶与窗口的区间重叠求和；两者相加即合并结果。
+      // 窗口集合 = 预设档 + 当前自定义区间（自定义档只在其生效的代际里出现）
       const tokensByRange: Partial<Record<CompareRange, TokenComparison[]>> = {};
-      for (const rangeKey of COMPARE_RANGES) {
-        const fromMs = rangeStartMs(rangeKey, g.nowMs);
+      for (const { key, win } of g.windows) {
         const rows: TokenComparison[] = [];
         for (const agent of g.enabledAgents) {
-          const local = g.localTotals.get(agent)?.get(fromMs) ?? {
+          const local = g.localTotals.get(agent)?.get(windowKeyOf(win)) ?? {
             tokens: 0,
             requests: 0,
           };
-          const remote = g.remoteUsage.get(remoteKey(agent, rangeKey));
+          const remote = g.remoteUsage.get(remoteKeyOf(agent, win));
           const remoteSum = remote
-            ? sumRemoteUsageIn(remote, fromMs, g.nowMs)
+            ? sumRemoteUsageIn(remote, win.fromMs, win.toMs)
             : { tokens: 0, requests: 0 };
           const totals: TokenTotals = {
             localTokens: local.tokens,
@@ -301,7 +348,7 @@ export function useCompareData(range: CompareRange): CompareDataState {
             b.remoteTokens -
             (a.localTokens + a.remoteTokens)
         );
-        tokensByRange[rangeKey] = rows;
+        tokensByRange[key] = rows;
       }
 
       const next: CompareRaw = { timelines, tokensByRange };
@@ -317,35 +364,30 @@ export function useCompareData(range: CompareRange): CompareDataState {
    * 范围的远端贡献）。仅本机口径的筛选下，该范围的 Token 数据在远端到达前
    * 保持骨架态。
    */
-  const ensureRemoteRange = useCallback(
-    async (rangeKey: CompareRange): Promise<void> => {
+  const ensureRemoteWindow = useCallback(
+    async (win: CompareWindow): Promise<void> => {
       const g = genStateRef.current;
       if (!g || !g.remoteWanted || !g.syncConfig) return;
       const config = g.syncConfig;
       const targets = g.enabledAgents.filter((agent) => remoteSourceOf(agent));
       const pending = targets.filter(
-        (agent) => !g.remoteUsage.has(remoteKey(agent, rangeKey))
+        (agent) => !g.remoteUsage.has(remoteKeyOf(agent, win))
       );
       if (pending.length === 0) return;
-      // 具体设备筛选下本机 Token 不取数：该范围只能等远端到达，期间给骨架
+      // 具体设备筛选下本机 Token 不取数：该窗口只能等远端到达，期间给骨架
       if (!g.wantLocal) setTokensPending(true);
       await Promise.all(
         pending.map(async (agent) => {
-          const key = remoteKey(agent, rangeKey);
+          const key = remoteKeyOf(agent, win);
           if (g.remoteInflight.has(key)) return;
           g.remoteInflight.add(key);
           try {
-            const remote = await remoteUsage(
-              rangeStartMs(rangeKey, g.nowMs),
-              g.nowMs,
-              "hour",
-              {
-                excludeDevice:
-                  g.deviceFilter === "all" ? config.device_id : undefined,
-                devices: g.deviceFilter === "all" ? undefined : g.deviceFilter,
-                source: remoteSourceOf(agent),
-              }
-            );
+            const remote = await remoteUsage(win.fromMs, win.toMs, "hour", {
+              excludeDevice:
+                g.deviceFilter === "all" ? config.device_id : undefined,
+              devices: g.deviceFilter === "all" ? undefined : g.deviceFilter,
+              source: remoteSourceOf(agent),
+            });
             if (genRef.current !== g.gen) return;
             g.remoteUsage.set(key, remote);
           } catch {
@@ -371,7 +413,9 @@ export function useCompareData(range: CompareRange): CompareDataState {
 
       const nowMs = Date.now();
       const historyFromMs = historyStartMs(nowMs);
-      const rangeFroms = COMPARE_RANGES.map((item) => rangeStartMs(item, nowMs));
+      // 本次代际覆盖的窗口：预设档 + 当前自定义区间（从 ref 取渲染期最新值）
+      const custom = customRef.current;
+      const windows = compareWindows(custom, nowMs);
       const visibility = loadAgentVisibility();
       const enabledAgents = COMPARE_AGENTS.filter((agent) => visibility[agent]);
       const wantLocal = deviceFilter === "all" || deviceFilter === "local";
@@ -384,6 +428,8 @@ export function useCompareData(range: CompareRange): CompareDataState {
         enabledAgents,
         wantLocal,
         deviceFilter,
+        windows,
+        custom,
         zaiHistory: [],
         remoteHistory: [],
         agentHistory: [],
@@ -431,7 +477,7 @@ export function useCompareData(range: CompareRange): CompareDataState {
         }
       });
 
-      // ===== ① 本地：额度历史（本机）+ 本地 Token（全部范围一次取回）=====
+      // ===== ① 本地：额度历史（本机）+ 本地 Token（全部窗口一次取回）=====
       const localTasks: Promise<unknown>[] = [];
       if (wantLocal) {
         // all=true：本机历史含全部账号的快照，按指纹分组正是要利用它
@@ -451,7 +497,10 @@ export function useCompareData(range: CompareRange): CompareDataState {
         );
         for (const agent of enabledAgents) {
           localTasks.push(
-            loadLocalTokenTotals(agent, rangeFroms, nowMs)
+            loadLocalTokenTotals(
+              agent,
+              windows.map((item) => item.win)
+            )
               .then((totals) => {
                 g.localTotals.set(agent, totals);
               })
@@ -492,7 +541,7 @@ export function useCompareData(range: CompareRange): CompareDataState {
       setTokensPending(!wantLocal);
       setLoading(false);
 
-      // ===== ②③ 远端：快照补全矩阵与趋势；当前范围 remote usage 并行懒取 =====
+      // ===== ②③ 远端：快照补全矩阵与趋势；当前窗口 remote usage 并行懒取 =====
       const config = await syncPromise;
       g.cleanup = null;
       if (!isCurrent()) return;
@@ -505,6 +554,7 @@ export function useCompareData(range: CompareRange): CompareDataState {
           data: publishedRef.current ?? { timelines: [], tokensByRange: {} },
           at: Date.now(),
           deviceFilter,
+          customKey: customKeyOf(custom),
           devices: devicesRef.current,
           state: g,
         };
@@ -546,8 +596,11 @@ export function useCompareData(range: CompareRange): CompareDataState {
             g.degraded = true;
           })
       );
-      // 当前选中范围的远端 usage 懒取（与快照并行，不额外串行）
-      remoteTasks.push(ensureRemoteRange(rangeRef.current));
+      // 当前选中窗口（预设档取本代际 nowMs / 自定义取所选区间）的远端 usage
+      // 懒取（与快照并行，不额外串行）
+      remoteTasks.push(
+        ensureRemoteWindow(selectedWindow(rangeRef.current, custom, nowMs))
+      );
 
       try {
         await Promise.all(remoteTasks);
@@ -565,19 +618,27 @@ export function useCompareData(range: CompareRange): CompareDataState {
         data: publishedRef.current ?? { timelines: [], tokensByRange: {} },
         at: Date.now(),
         deviceFilter,
+        customKey: customKeyOf(custom),
         devices: devicesRef.current,
         state: g,
       };
     },
-    [applyDevices, deviceFilter, ensureRemoteRange, publish, t]
+    [applyDevices, customKey, deviceFilter, ensureRemoteWindow, publish, t]
   );
 
-  // 设备筛选 / 手动刷新触发新 generation；命中未过期缓存时完全不取数
+  // 设备筛选 / 自定义区间 / 手动刷新触发新 generation；命中可用缓存时完全不取数。
+  // 自定义区间是代际输入（本机 Token 与远端 usage 都按窗口取数），故纳入依赖；
+  // 预设档切换不重建代际（懒取远端 + 本地已有全部预设窗口）。
   useEffect(() => {
     const manual = manualRef.current;
     manualRef.current = false;
     const cached = manual ? null : compareCache;
-    const reusable = cached != null && cached.deviceFilter === deviceFilter;
+    const reusable =
+      cached != null &&
+      cached.deviceFilter === deviceFilter &&
+      // 未选自定义时可直接复用任意缓存（预设窗口都在里面）；选了自定义则要求
+      // 缓存正是同一个自定义区间——否则窗口键对不上，Token 会算成 0
+      (customKey === "" || cached.customKey === customKey);
     if (reusable && cached) {
       // 缓存命中：立即渲染（无加载态）；同时恢复中间态与设备列表，范围切换的
       // 远端懒取仍能补全（否则重建视图会丢掉本机部分）
@@ -616,13 +677,17 @@ export function useCompareData(range: CompareRange): CompareDataState {
       genRef.current += 1;
       genStateRef.current?.cleanup?.();
     };
-  }, [deviceFilter, nonce, run]);
+  }, [customKey, deviceFilter, nonce, run]);
 
-  // 范围切换：未取过的范围懒取远端 usage（已有范围命中缓存不重取）
+  // 范围切换：未取过的窗口懒取远端 usage（已有窗口命中缓存不重取）。
+  // 预设窗口的起止取本代际的 nowMs（与 run / publish 的窗口键一致，否则
+  // 取回来的数据会在发布时命不中缓存位）；自定义区间用所选起止。
   useEffect(() => {
     rangeRef.current = range;
-    void ensureRemoteRange(range);
-  }, [range, ensureRemoteRange]);
+    const g = genStateRef.current;
+    if (!g) return;
+    void ensureRemoteWindow(selectedWindow(range, customRef.current, g.nowMs));
+  }, [customKey, range, ensureRemoteWindow]);
 
   const reload = useCallback(() => {
     manualRef.current = true;

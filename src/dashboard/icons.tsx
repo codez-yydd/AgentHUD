@@ -30,6 +30,29 @@ export function OverviewIcon({ className }: IconProps) {
   );
 }
 
+/** 请求日志：列表线条（每行 = 一次请求的日志语义） */
+export function LogsIcon({ className }: IconProps) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden
+    >
+      <path d="M9 6h11" />
+      <path d="M9 12h11" />
+      <path d="M9 18h11" />
+      <path d="M4.5 6h.01" />
+      <path d="M4.5 12h.01" />
+      <path d="M4.5 18h.01" />
+    </svg>
+  );
+}
+
 /** 周额度对比：双向箭头（两个口径对照的通用语义） */
 export function CompareIcon({ className }: IconProps) {
   return (

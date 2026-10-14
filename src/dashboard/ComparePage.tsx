@@ -1,7 +1,7 @@
 /**
  * 周额度对比页（主窗口大窗版，300px 窄窗 ComparePanel 的大窗形态）。
  *
- * 结构：页头（设备筛选 + 时间范围 7/30/90 天 + 刷新）→ 额度矩阵（行 =
+ * 结构：页头（设备筛选 + 时间范围触发按钮 + 刷新）→ 额度矩阵（行 =
  * Agent、行内每系列一块：周额度剩余 / 重置时刻 / 5 小时窗口）→ 额度趋势
  * （多序列 SVG 折线，图例可开关）→ Token 对比（本机 + 其他设备分段）。
  *
@@ -20,19 +20,26 @@ import { AlertBanner, EmptyState } from "../layout";
 import { DropdownMenu } from "../DropdownMenu";
 import { RefreshIcon } from "./icons";
 import { useDarkTheme } from "./primitives";
+import {
+  CustomRangeMenu,
+  formatRangeSummary,
+  type CustomRangeValue,
+} from "./CustomRangeMenu";
 import { QuotaMatrixCard } from "./compare/QuotaMatrixCard";
 import { QuotaTrendCard, type TrendSeriesView } from "./compare/QuotaTrendCard";
 import { TokensCompareCard } from "./compare/TokensCompareCard";
 import {
+  COMPARE_HISTORY_DAYS,
   buildQuotaMatrix,
+  historyStartMs,
   rangeStartMs,
   seriesColorOf,
-  type CompareRange,
+  type ComparePresetRange,
 } from "./compare/model";
 import { useCompareData } from "./compare/useCompareData";
 
 /** 页头范围分段（顺序即展示顺序；默认近 30 天，兼顾趋势可读性与跨度） */
-const RANGES: { range: CompareRange; labelKey: MessageKey }[] = [
+const RANGES: { range: ComparePresetRange; labelKey: MessageKey }[] = [
   { range: "7d", labelKey: "dashboard.overview.range.7d" },
   { range: "30d", labelKey: "dashboard.overview.range.30d" },
   { range: "90d", labelKey: "dashboard.overview.range.90d" },
@@ -46,8 +53,10 @@ function timeText(ms: number): string {
 }
 
 export function ComparePage() {
-  const { t } = useI18n();
-  const [range, setRange] = useState<CompareRange>("30d");
+  const { locale, t } = useI18n();
+  const [range, setRange] = useState<ComparePresetRange>("30d");
+  /** 自定义区间（非空 = 自定义模式，优先于预设档；选预设即清空） */
+  const [customRange, setCustomRange] = useState<CustomRangeValue | null>(null);
   const {
     data,
     loading,
@@ -62,7 +71,7 @@ export function ComparePage() {
     deviceFilter,
     setDeviceFilter,
     reload,
-  } = useCompareData(range);
+  } = useCompareData(range, customRange);
 
   const syncEnabled = !!syncConfig?.enabled && !!syncConfig.device_token;
   // 设备筛选项：全部 + 本机（带设备名）+ 其他设备（名称 + 指纹前 6 位）。
@@ -89,8 +98,17 @@ export function ComparePage() {
     ],
     [devices, syncConfig, t]
   );
-  // 页头范围在额度时间线上的切片起点（本地今日 0 点往前推 N-1 天）
-  const fromMs = useMemo(() => rangeStartMs(range), [range]);
+  // 页头范围的窗口：预设档起点 = 本地今日 0 点往前推 N-1 天（终点取当下时刻）；
+  // 自定义区间用所选自然日半开区间（终点次日 0 点，趋势 X 轴按所选范围铺）
+  const fromMs = useMemo(
+    () => (customRange ? customRange.fromMs : rangeStartMs(range)),
+    [range, customRange]
+  );
+  const toMs = customRange ? customRange.toMs : Date.now();
+  // 自定义区间可选最早日期 = 额度快照保留期起点（historyStartMs，固定
+  // COMPARE_HISTORY_DAYS 天窗口）：更早的区间既没有额度采样（趋势没有数据），
+  // 本机 Token 取数（Cursor events 分页）也会明显变慢，故与 90 天预设档同起点
+  const minMs = useMemo(() => historyStartMs(), []);
   // 暗色主题下系列色走提亮色阶（深档色在 slate-900 底上几乎不可见，见 model.ts）
   const dark = useDarkTheme();
 
@@ -101,26 +119,31 @@ export function ComparePage() {
     [data, dark]
   );
 
-  // Token 对比：本机部分取数一次拿全，远端按当前范围懒取（未取过的范围
-  // 首次切换时才请求，切回已有范围不重取）
-  const tokens = data?.tokensByRange[range] ?? [];
+  // Token 对比：本机部分取数一次拿全（预设档 + 当前自定义区间），远端按窗口
+  // 懒取（未取过的窗口首次切换时才请求，切回已有窗口不重取）
+  const tokens =
+    data?.tokensByRange[customRange ? "custom" : range] ?? [];
 
   // 趋势序列：按页头范围切片采样点后交给折线图
   const trend: TrendSeriesView[] = useMemo(() => {
     if (!data) return [];
     const seriesList = data.timelines.map((item) => item.series);
     const nowMs = Date.now();
+    const timelineTo = customRange ? customRange.toMs : nowMs;
     return data.timelines.map((timeline) => ({
       id: timeline.series.id,
       label: timeline.series.label,
       color: seriesColorOf(seriesList, timeline.series.id, dark),
       points: timeline.samples.filter(
-        (sample) => sample.ts >= fromMs && sample.ts <= nowMs
+        (sample) => sample.ts >= fromMs && sample.ts <= timelineTo
       ),
     }));
-  }, [data, fromMs, dark]);
+  }, [data, customRange, fromMs, dark]);
 
-  const rangeLabel = t(RANGES.find((item) => item.range === range)!.labelKey);
+  // 时间范围展示名（三张卡副标题共用）：自定义时显示区间摘要
+  const rangeLabel = customRange
+    ? formatRangeSummary(customRange.fromMs, customRange.toMs, locale)
+    : t(RANGES.find((item) => item.range === range)!.labelKey);
   const hasRemote = syncEnabled && deviceFilter !== "local";
   // 空态：额度与 Token 都没有可展示的数据（未启用任何 Agent / 从未采样）——
   // 必须在三张卡都就绪（非骨架态）之后才判定，否则会把「还在加载」说成空
@@ -148,25 +171,23 @@ export function ComparePage() {
               onChange={setDeviceFilter}
             />
           )}
-          <div
-            className="db-seg"
-            role="group"
-            aria-label={t("dashboard.compare.rangeLabel")}
-          >
-            {RANGES.map(({ range: value, labelKey }) => (
-              <button
-                key={value}
-                type="button"
-                onClick={() => setRange(value)}
-                className={`db-seg__btn ${
-                  range === value ? "db-seg__btn--active" : ""
-                }`}
-                aria-pressed={range === value}
-              >
-                {t(labelKey)}
-              </button>
-            ))}
-          </div>
+          {/* 时间范围：单个触发按钮 + 弹出面板（三档预设收进面板顶部快捷行，
+              可选最早日期 = 额度快照保留期） */}
+          <CustomRangeMenu
+            value={customRange}
+            onChange={setCustomRange}
+            minMs={minMs}
+            triggerLabel={rangeLabel}
+            ariaLabel={t("dashboard.compare.rangeLabel")}
+            presets={RANGES.map(({ range: presetRange, labelKey }) => ({
+              label: t(labelKey),
+              active: customRange == null && range === presetRange,
+              onClick: () => {
+                setRange(presetRange);
+                setCustomRange(null);
+              },
+            }))}
+          />
           <button
             type="button"
             className="db-btn"
@@ -226,14 +247,22 @@ export function ComparePage() {
         />
       ) : (
         <>
-          {/* 三张卡各自带骨架：本地快照 / 远端补全 / 当前范围 Token 分级就绪 */}
+          {/* 三张卡各自带骨架：本地快照 / 远端补全 / 当前窗口 Token 分级就绪 */}
           <QuotaMatrixCard rows={matrix} pending={quotaPending} />
           <QuotaTrendCard
             series={trend}
             fromMs={fromMs}
-            toMs={Date.now()}
+            toMs={toMs}
             rangeLabel={rangeLabel}
             pending={quotaPending}
+            /* 自定义区间可跨到额度快照保留期边缘：说明数据只到哪一天 */
+            note={
+              customRange
+                ? t("dashboard.compare.trendSnapshotNote", {
+                    days: COMPARE_HISTORY_DAYS,
+                  })
+                : undefined
+            }
           />
           <TokensCompareCard
             rows={tokens}

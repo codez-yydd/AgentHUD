@@ -80,6 +80,34 @@
   --db-heat-gap: 2px;
   /* 星期标签列宽（底部月份标签行以同一宽度对齐网格） */
   --db-heat-label-w: 26px;
+
+  /* 请求日志页（详情抽屉）：抽屉底是**实底**（不能用 slate-900 类——暗色下
+     slate 变量整体反转，会变成浅底浅字）；遮罩固定半透明深色 */
+  --db-drawer-bg: #ffffff;
+  --db-mask: rgba(15, 23, 42, 0.42);
+
+  /* 自定义时间范围面板（页头时间范围触发按钮展开的浮层）：浮层必须是实底，
+     不能复用半透明的 --db-card-bg（下层卡片 / 表格内容会透出来）；暗色值见
+     .dark 段 */
+  --db-pop-bg: #ffffff;
+  --db-pop-shadow: 0 10px 30px rgba(15, 23, 42, 0.18);
+
+  /* 时间范围控件（触发按钮 / 面板预设行 / 起止字段卡 / 自绘日历格）：主色沿用
+     项目 sky 系，与 --db-seg-active-text 同源（亮 = sky-600）；暗色整体提亮
+     一档，见 .dark 段。solid = 起止日实心块与「应用」按钮底 */
+  --db-cal-accent-text: #0284c7;
+  --db-cal-accent-bg: rgba(2, 132, 199, 0.08);
+  --db-cal-accent-border: rgba(2, 132, 199, 0.55);
+  --db-cal-accent-border-soft: rgba(2, 132, 199, 0.32);
+  --db-cal-accent-ring: rgba(2, 132, 199, 0.16);
+  --db-cal-solid: #0284c7;
+  --db-cal-solid-text: #ffffff;
+  --db-cal-range-bg: rgba(2, 132, 199, 0.12);
+  --db-cal-range-text: #075985;
+  --db-cal-hover-bg: rgba(15, 23, 42, 0.06);
+  --db-cal-outside: rgba(51, 65, 85, 0.3);
+  --db-cal-today-ring: rgba(2, 132, 199, 0.75);
+  --db-cal-field-bg: rgba(15, 23, 42, 0.03);
 }
 
 /* 不透明普通窗：页面自己铺满，滚动交给主区（.db-main）单一容器，
@@ -434,6 +462,354 @@ body {
   font-size: 11px;
 }
 
+/* ---- 时间范围控件（页头单个触发按钮 + 弹出面板） ----
+   形态参考 cc-switch 的 UsageDateRangePicker：触发按钮显示当前范围标签 +
+   chevron（自定义时带日历图标 + 主色高亮）；面板内是预设快捷行 / 起止字段卡 /
+   自绘单月日历。面板底走实底 --db-pop-bg，弹层内一律用 --db-* 变量，不写
+   slate-900 类（.dark 会反转 slate 色板）。
+   z-index 30：高于表格 sticky 表头（z-index 1）与卡片内容，低于详情抽屉（40）。 */
+.db-range-menu {
+  position: relative;
+  display: inline-flex;
+  min-width: 0;
+}
+
+/* 触发按钮：与 .db-btn 同档高度与圆角，单行省略，超长摘要不撑破页头 */
+.db-range-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  max-width: 240px;
+  padding: 0 9px 0 12px;
+  border: 1px solid var(--db-border);
+  border-radius: 10px;
+  background: var(--db-card-bg);
+  font-family: inherit;
+  font-size: 12px;
+  color: var(--db-text);
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+.db-range-trigger:hover {
+  background: var(--db-hover);
+}
+
+/* 自定义生效：主色描边 + 浅底 + 主色文字（与预设档的「无描边」形态区分） */
+.db-range-trigger--active {
+  border-color: var(--db-cal-accent-border);
+  background: var(--db-cal-accent-bg);
+  color: var(--db-cal-accent-text);
+}
+
+.db-range-trigger__label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.db-range-trigger__icon {
+  flex: none;
+  width: 14px;
+  height: 14px;
+}
+
+.db-range-trigger__chevron {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  color: var(--db-text-dim);
+  transition: transform 0.15s ease;
+}
+
+.db-range-trigger__chevron.is-open {
+  transform: rotate(180deg);
+}
+
+/* 面板：右缘对齐触发器（触发器在页头最右，向左展开不探出主区）；
+   固定宽度 + max-width 兜底 900px 窄窗（主区约 700px 仍可完整展开） */
+.db-range-panel {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 30;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 500px;
+  max-width: calc(100vw - 24px);
+  padding: 12px;
+  border: 1px solid var(--db-border);
+  border-radius: 12px;
+  background: var(--db-pop-bg);
+  box-shadow: var(--db-pop-shadow);
+}
+
+/* 下方空间不足时的翻转位置（组件按可用空间切换） */
+.db-range-panel--up {
+  top: auto;
+  bottom: calc(100% + 6px);
+}
+
+/* ---- 预设快捷行（各页现有档位；点一下即生效并收起） ---- */
+.db-range-presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.db-range-preset {
+  padding: 4px 10px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: var(--db-seg-bg);
+  font-family: inherit;
+  font-size: 11px;
+  color: var(--db-text-dim);
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.db-range-preset:hover {
+  background: var(--db-hover);
+  color: var(--db-text);
+}
+
+/* 当前生效档：主色描边（+ 主色文字），与自定义触发按钮同一套强调色 */
+.db-range-preset--active {
+  border-color: var(--db-cal-accent-border);
+  background: var(--db-cal-accent-bg);
+  color: var(--db-cal-accent-text);
+  font-weight: 600;
+}
+
+/* ---- 左右两列：左 = 起止字段卡 / 说明 / 操作，右 = 自绘日历 ----
+   stretch：左列与日历同高，操作行靠 margin-top:auto 贴到底部对齐 */
+.db-range-cols {
+  display: flex;
+  align-items: stretch;
+  gap: 14px;
+}
+
+.db-range-fields {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* 起止字段卡：小标签 + 日期文本；点卡片激活该字段（日历点选的目标） */
+.db-range-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 7px 10px;
+  border: 1px solid var(--db-border);
+  border-radius: 10px;
+  background: var(--db-cal-field-bg);
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease, background 0.15s ease;
+}
+
+.db-range-field:hover {
+  border-color: var(--db-cal-accent-border-soft);
+}
+
+/* 激活态：主色描边 + ring（与日历的选点目标联动） */
+.db-range-field--active {
+  border-color: var(--db-cal-accent-border);
+  background: var(--db-pop-bg);
+  box-shadow: 0 0 0 3px var(--db-cal-accent-ring);
+}
+
+.db-range-field__label {
+  font-size: 10px;
+  color: var(--db-text-dim);
+}
+
+.db-range-field__value {
+  font-size: 13px;
+  color: var(--db-text);
+}
+
+/* 尚未选到该端：占位文案弱化，并回退正文字体（"未选择" 不是数字） */
+.db-range-field__value--empty {
+  font-family: inherit;
+  color: var(--db-text-dim);
+}
+
+.db-range-panel__hint {
+  margin: 0;
+  font-size: 10px;
+  line-height: 1.5;
+  color: var(--db-text-dim);
+}
+
+.db-range-panel__error {
+  margin: 0;
+  font-size: 10px;
+  line-height: 1.5;
+  color: var(--db-accent-amber);
+}
+
+.db-range-panel__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  /* 贴到左列底部：与日历列下缘对齐，面板整体重心更稳 */
+  margin-top: auto;
+}
+
+/* 应用：面板里唯一主操作，用主色实底（比 .db-btn--primary 更贴合日历主色） */
+.db-range-panel__apply {
+  border-color: transparent;
+  background: var(--db-cal-solid);
+  color: var(--db-cal-solid-text);
+}
+
+.db-range-panel__apply:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+
+/* ---- 自绘单月日历（详细状态见 DateRangeCalendar.tsx） ---- */
+.db-cal {
+  flex: none;
+  width: 224px;
+}
+
+/* 月份导航行：‹ 月份名 ›（点月份名回本月） */
+.db-cal__nav {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-bottom: 6px;
+}
+
+.db-cal__navbtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  flex: none;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  font-family: inherit;
+  font-size: 14px;
+  line-height: 1;
+  color: var(--db-text-dim);
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.db-cal__navbtn:hover:not(:disabled) {
+  background: var(--db-hover);
+  color: var(--db-text);
+}
+
+.db-cal__navbtn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.db-cal__title {
+  flex: 1;
+  min-width: 0;
+  padding: 3px 6px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--db-text);
+  text-align: center;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.db-cal__title:hover {
+  background: var(--db-hover);
+}
+
+/* 周标题行 + 日格：7 列网格（周一开头，与热力图口径一致） */
+.db-cal__weekdays,
+.db-cal__grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 2px;
+}
+
+.db-cal__weekdays {
+  margin-bottom: 2px;
+}
+
+.db-cal__weekday {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 20px;
+  font-size: 10px;
+  color: var(--db-text-dim);
+}
+
+.db-cal__day {
+  height: 28px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  font-family: inherit;
+  font-size: 12px;
+  color: var(--db-text);
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.db-cal__day:hover:not(:disabled) {
+  background: var(--db-cal-hover-bg);
+}
+
+/* 非本月 / 超出可选区间（minMs 之前、maxMs 之后）：淡化且不可点 */
+.db-cal__day--outside,
+.db-cal__day:disabled {
+  color: var(--db-cal-outside);
+  cursor: default;
+}
+
+.db-cal__day:disabled:hover {
+  background: transparent;
+}
+
+/* 选中范围内（起止之间）：浅色底 */
+.db-cal__day--in-range {
+  background: var(--db-cal-range-bg);
+  color: var(--db-cal-range-text);
+}
+
+/* 起 / 止日：主色实心圆角块（悬停不变色，保持"已选中"的确定感） */
+.db-cal__day--edge,
+.db-cal__day--edge:hover:not(:disabled) {
+  background: var(--db-cal-solid);
+  color: var(--db-cal-solid-text);
+  font-weight: 600;
+}
+
+/* 今日：描边环（范围内浅底 / 实心块之外仍可辨；实心块上不再叠环） */
+.db-cal__day--today {
+  box-shadow: inset 0 0 0 1.5px var(--db-cal-today-ring);
+}
+
+.db-cal__day--today.db-cal__day--edge {
+  box-shadow: none;
+}
+
 /* ---- 通用按钮（刷新 / 重新加载） ---- */
 .db-btn {
   display: inline-flex;
@@ -585,6 +961,17 @@ body {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* 「范围内 Token」卡的自定义区间摘要行（仅自定义范围下渲染）：比副行再小一档 */
+.db-metric__range {
+  margin-top: 5px;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 10px;
+  color: var(--db-text-dim);
 }
 
 /* ---- 骨架（加载态） ---- */
@@ -2154,6 +2541,396 @@ body {
   word-break: break-all;
 }
 
+/* ============================================================
+ * 请求日志页（大窗）：筛选行 / 明细表 / 分页条 / 详情抽屉
+ * 颜色全部走 --db-* 变量（亮暗两套），抽屉底不使用 slate 工具类
+ *（.dark 会反转 slate 色板，弹层要实底）。
+ * ============================================================ */
+
+/* ---- 筛选行：来源 / 模型下拉 ---- */
+.db-logs-filters {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: -6px;
+}
+
+/* ---- 明细表：10 列按 1100 默认窗口的内容区（约 840px）排布——固定列宽合计
+   = 表 min-width：96 + 72 + 150 + 64 + 64 + 100 + 68 + 58 + 56 + 72 = 800px
+   （模型列取 min，富余归它，上限仍 320）；更窄的窗口 / 超长数值（跨年时间、
+   十亿级 token）由 .db-table-wrap 横向滚动兜底，绝不把数值挤成两行 ---- */
+.db-logs-table {
+  min-width: 800px;
+}
+
+.db-logs__col-time {
+  width: 96px;
+  white-space: nowrap;
+}
+
+.db-logs__col-source {
+  width: 72px;
+  white-space: nowrap;
+}
+
+/* 模型列：可变宽（吃掉富余），内容单行截断，完整名走 title */
+.db-logs__col-model {
+  min-width: 150px;
+  max-width: 320px;
+}
+
+/* 数值列：按列内常见最长值给固定宽（zh 紧凑 token「9999.9万」、"$0.1234"、
+   "99.9s"、"0.35s"、"≈45.2 t/s"），更长的值仍由列自适应撑开 */
+.db-logs__col-input,
+.db-logs__col-output {
+  width: 64px;
+}
+
+/* 缓存列（缓存读 / 缓存写合并）：两项并列 + 中间分隔，略宽于普通数值列 */
+.db-logs__col-cache {
+  width: 100px;
+}
+
+.db-logs__col-cost {
+  width: 68px;
+}
+
+.db-logs__col-duration {
+  width: 58px;
+}
+
+.db-logs__col-ttft {
+  width: 56px;
+}
+
+.db-logs__col-speed {
+  width: 72px;
+}
+
+/* 速度单位（t/s）：小一号弱色，数值仍为主信息（对齐面板「数值 + 单位」的
+   分层排版；≈ 只在按总耗时估算的近似速度前出现） */
+.db-logs__speed-unit {
+  margin-left: 2px;
+  font-size: 10px;
+  color: var(--db-text-dim);
+}
+
+.db-logs__model {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 取数中（表内仍是旧行）：整体压暗且不可交互（旧行不能点开抽屉）；
+   aria-busy 由组件侧同步设置 */
+.db-table-wrap--busy {
+  opacity: 0.55;
+  pointer-events: none;
+}
+
+/* 行可点击打开详情：指针 + 键盘焦点圈（数值列不换行由 .db-table__num 兜底） */
+.db-logs__row {
+  cursor: pointer;
+}
+
+.db-logs__row:focus-visible {
+  outline: 2px solid var(--db-accent-sky);
+  outline-offset: -2px;
+}
+
+/* ---- 页面版面：本页不整页滚动（其他三页依赖 .db-main 整页滚动，不能动
+   .db-page 本身）。日志页自己撑满主区高度、内部把溢出交给表格：
+   页头 / 筛选行 / 指标行 / 提示条 shrink-0，表格卡 flex:1 且 min-height:0
+   ——长列表只滚表体，分页条永远固定在卡底（900×640 最小窗口同样可用）。
+   .db-logs-page 必须排在 .db-page 之后（同特异性，靠源码顺序覆盖
+   min-height:100% 与 gap）。 ---- */
+.db-logs-page {
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  gap: 14px;
+}
+
+.db-logs-page > .db-page__header,
+.db-logs-page > .db-logs-filters,
+.db-logs-page > .db-hintbar,
+.db-logs-page > .db-logs-metrics {
+  flex: none;
+}
+
+/* 表格卡：卡片内部改 flex 列，表体滚动 + 分页条固定卡底 */
+.db-logs-card {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.db-logs-card > .db-card__body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.db-logs-card .db-table-wrap {
+  flex: 1;
+  min-height: 0;
+  /* 纵向内滚（长列表）+ 既有横向兜底（窄窗 / 超长数值） */
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+.db-logs-card .db-pager {
+  flex: none;
+}
+
+/* 当前页没有行的行内提示：占满表体位置，把分页条顶到卡底（与有行时一致） */
+.db-logs-card > .db-card__body > .db-empty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 26px 0;
+}
+
+/* 吸附表头：表体纵向滚动时表头不消失（横滚时 thead 跟着滚，天然对齐列）。
+   底色用卡片实底色（亮暗两套变量自动翻转），z-index 压在行内容之上；
+   下边框在 sticky 块里重画一次（行内容穿过时不会吃掉表头分隔线）。 */
+.db-logs-card .db-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--db-card-bg);
+  border-bottom: 1px solid var(--db-border);
+}
+
+/* ---- 汇总指标行：总请求数 / 总成本 / 缓存命中率 ----
+   紧凑单行（三格 inline 标签 + 数值），筛选项变化即刷新；加载中压暗旧值
+   （首载给骨架），错误 / 无数据态全「—」，不占额外高度影响表格可视行数。 */
+.db-logs-metrics {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: nowrap;
+}
+
+.db-logs-metrics--busy {
+  opacity: 0.55;
+}
+
+.db-logs-metric {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  padding: 7px 12px;
+  border: 1px solid var(--db-border);
+  border-radius: 10px;
+  background: var(--db-card-bg);
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.db-logs-metric__label {
+  font-size: 11px;
+  color: var(--db-text-dim);
+}
+
+.db-logs-metric__value {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--db-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.db-logs-metric__value--dash {
+  font-weight: 500;
+  color: var(--db-text-dim);
+}
+
+.db-logs-metric__skeleton {
+  width: 44px;
+  height: 14px;
+  align-self: center;
+}
+
+/* ---- 分页条：上一页 / 页码 / 下一页 / 总条数 ---- */
+.db-pager {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding-top: 12px;
+  margin-top: 2px;
+}
+
+/* 分页按钮比通用 .db-btn 矮一档（表格底部的次级操作） */
+.db-btn--sm {
+  height: 26px;
+  padding: 0 10px;
+  font-size: 11px;
+  border-radius: 8px;
+}
+
+.db-pager__info,
+.db-pager__total {
+  font-size: 11px;
+  color: var(--db-text-dim);
+  white-space: nowrap;
+}
+
+.db-pager__total {
+  margin-left: auto;
+}
+
+/* ---- 详情抽屉：遮罩 + 右侧滑入面板（宽 400px，窄窗按 92vw 收） ---- */
+/* 抽屉打开期间锁主区滚动（body 本身已是 overflow: hidden，锁 .db-main 即可；
+   抽屉正文区自身仍可滚） */
+.db-main--locked {
+  overflow: hidden;
+}
+
+.db-drawer-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  background: var(--db-mask);
+}
+
+.db-drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 41;
+  display: flex;
+  flex-direction: column;
+  width: 400px;
+  max-width: 92vw;
+  background: var(--db-drawer-bg);
+  border-left: 1px solid var(--db-border);
+  box-shadow: -12px 0 32px rgba(15, 23, 42, 0.22);
+  animation: db-drawer-in 0.18s ease-out;
+}
+
+@keyframes db-drawer-in {
+  from {
+    transform: translateX(24px);
+    opacity: 0;
+  }
+  to {
+    transform: none;
+    opacity: 1;
+  }
+}
+
+.db-drawer__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 16px 12px;
+  border-bottom: 1px solid var(--db-border);
+}
+
+.db-drawer__headline {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+.db-drawer__title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--db-text);
+  white-space: nowrap;
+}
+
+.db-drawer__sub {
+  font-size: 11px;
+  color: var(--db-text-dim);
+  white-space: nowrap;
+}
+
+.db-drawer__body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 14px 16px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.db-drawer__section-title {
+  margin: 0 0 6px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--db-text-dim);
+}
+
+/* 键值行：标签固定宽、值右对齐单行截断（长模型名 / 会话 id 不撑破面板） */
+.db-drawer__kv {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 5px 0;
+  border-bottom: 1px dashed var(--db-row-border);
+  font-size: 12px;
+}
+
+.db-drawer__kv:last-child {
+  border-bottom: none;
+}
+
+.db-drawer__k {
+  flex: none;
+  color: var(--db-text-dim);
+}
+
+.db-drawer__v {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: right;
+  color: var(--db-text);
+}
+
+/* ---- 抽屉花费：本机币种主显 + 另一币种次显 ---- */
+.db-drawer__money {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 3px;
+  padding-top: 2px;
+}
+
+.db-drawer__money-main {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--db-text);
+}
+
+.db-drawer__money-main--dim {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--db-text-dim);
+}
+
+.db-drawer__money-sub {
+  font-size: 11px;
+  color: var(--db-text-dim);
+}
+
 /* ---- 共享组件的大窗适配（仅主窗口作用域）----
    AlertBanner / EmptyState 来自 layout.tsx，悬浮面板仍在用同一份组件，
    不能在组件或 Tailwind 工具类上直接改字号。这里用 .db-page 的直接子元素
@@ -2312,4 +3089,28 @@ body {
   --db-heat-edge-strong: #7dd3fc;
   /* 未来格虚线（暗色）：在 slate-800 卡片底上比数据格描边略亮，保持可辨 */
   --db-heat-future: rgba(56, 189, 248, 0.45);
+
+  /* 请求日志页（详情抽屉）：暗色实底 slate-800 档 + 更重的遮罩 */
+  --db-drawer-bg: #1e293b;
+  --db-mask: rgba(2, 6, 23, 0.6);
+
+  /* 自定义时间范围面板：暗色实底 slate-800 档（与抽屉同档）+ 更重的投影 */
+  --db-pop-bg: #1e293b;
+  --db-pop-shadow: 0 10px 30px rgba(2, 6, 23, 0.55);
+
+  /* 时间范围控件（暗色）：主色提亮为 sky-400 档；起止实心块配深字保证对比
+     （亮蓝底 + 白字在深色界面里反而发灰），范围浅底 / 描边 / 环同步提亮 */
+  --db-cal-accent-text: #7dd3fc;
+  --db-cal-accent-bg: rgba(56, 189, 248, 0.12);
+  --db-cal-accent-border: rgba(56, 189, 248, 0.55);
+  --db-cal-accent-border-soft: rgba(56, 189, 248, 0.3);
+  --db-cal-accent-ring: rgba(56, 189, 248, 0.22);
+  --db-cal-solid: #38bdf8;
+  --db-cal-solid-text: #0f172a;
+  --db-cal-range-bg: rgba(56, 189, 248, 0.18);
+  --db-cal-range-text: #bae6fd;
+  --db-cal-hover-bg: rgba(226, 232, 240, 0.1);
+  --db-cal-outside: rgba(203, 213, 225, 0.25);
+  --db-cal-today-ring: rgba(56, 189, 248, 0.8);
+  --db-cal-field-bg: rgba(226, 232, 240, 0.05);
 }

@@ -25,16 +25,24 @@ import type { Hour5Info } from "./useOverviewData";
 export function AgentTable({
   rows,
   currency,
+  rangeLabel,
 }: {
   rows: AgentRow[];
   currency: Currency;
+  /** 自定义区间摘要（MM-DD ~ MM-DD；预设档不传）：作为卡片副标题前缀，
+   *  「范围内」列表头的数值口径由此可读 */
+  rangeLabel?: string;
 }) {
   const { locale, t } = useI18n();
 
   return (
     <Card
       title={t("dashboard.overview.agentTitle")}
-      sub={t("dashboard.overview.agentSub")}
+      sub={
+        rangeLabel != null
+          ? `${rangeLabel} · ${t("dashboard.overview.agentSub")}`
+          : t("dashboard.overview.agentSub")
+      }
     >
       {rows.length === 0 ? (
         <div className="db-empty">{t("dashboard.overview.agentEmpty")}</div>

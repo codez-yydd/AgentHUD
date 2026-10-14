@@ -87,7 +87,7 @@ fn projcache_dir() -> PathBuf {
 }
 
 /// 自有导入库路径：~/.zbar/dsh.sqlite
-fn dsh_db_path() -> Result<PathBuf, String> {
+pub(crate) fn dsh_db_path() -> Result<PathBuf, String> {
     Ok(config_dir()?.join("dsh.sqlite"))
 }
 

@@ -2,13 +2,14 @@
  * 用量总览页的派生视图：把取数结果（OverviewRaw）按当前「数据范围」
  * （本机 / 全部设备）合并，再按时间范围切片成指标卡 / 趋势图 / 热力图 /
  * Agent 表要用的结构。全部是纯函数，页面在范围、数据范围或语言变化时重算
- * （O(90 × agent 数)，无需再取数）。
+ * （预设档 O(90 × agent 数)，自定义区间最多 O(365 × agent 数)，均不再取数）。
  *
  * 数据范围语义（与菜单栏标题对齐）：local = 仅本机；all = 本机 + 其他设备
  * （同步开启时；未启用 / 远端失败时退化为仅本机，远端贡献为 0）。
  */
 import type { Currency } from "../../types";
 import { AGENT_COLOR } from "../../agentVisibility";
+import type { CustomRangeValue } from "../CustomRangeMenu";
 import {
   RANGE_DAYS,
   USAGE_AGENT_IDS,
@@ -16,8 +17,11 @@ import {
   dayOf,
   inputSideOf,
   addDayInto,
+  addLocalDays,
   emptyDay,
+  localDaysBetween,
   mergeDayMaps,
+  startOfLocalDay,
   sumDays,
   buildHeatColumns,
   buildMonthSpans,
@@ -118,8 +122,39 @@ export function scopeView(raw: OverviewRaw, scope: OverviewScope): OverviewView 
   };
 }
 
-/** 当前范围在取数窗口（365 天）内的日键切片（升序，末位为今天） */
-export function rangeKeys(raw: OverviewView, range: OverviewRange): string[] {
+/**
+ * 当前范围在取数窗口内的日键切片（升序，末位为今天）。
+ *
+ * - 预设档：取窗口末尾 N 天（RANGE_DAYS），口径与改动前一致；
+ * - 自定义区间（custom 非空时优先，忽略 range）：按「与窗口末位（今天）相差的
+ *   自然日数」定位下标后切片。**不能**改用「按日键（MM-DD）集合过滤」：MM-DD
+ *   只在 365 天窗口内唯一，窗口起点之前的日期会与窗口内某天同月同日（如窗口
+ *   起点前 30 天 = 窗口内第 335 天），过滤会误命中窗口外的同月同日。
+ *   区间只与窗口部分相交时取交集；完全落在窗口外（早于窗口起点或晚于今天）
+ *   返回空切片——页面已用 min/max 限制可选日期，这里只是诚实的防御。
+ */
+export function rangeKeys(
+  raw: OverviewView,
+  range: OverviewRange,
+  custom: CustomRangeValue | null = null
+): string[] {
+  if (custom) {
+    const total = raw.dayKeys.length;
+    if (total === 0) return [];
+    // 窗口末位（今天）的 0 点：由窗口起点 + 天数推出，不依赖切片时刻的 Date.now()
+    const lastDayStart = addLocalDays(raw.windowStartMs, total - 1);
+    const startIndex =
+      total - 1 - localDaysBetween(startOfLocalDay(custom.fromMs), lastDayStart);
+    const endIndex =
+      total -
+      1 -
+      localDaysBetween(startOfLocalDay(custom.toMs - 1), lastDayStart);
+    if (endIndex < 0 || startIndex > total - 1) return [];
+    return raw.dayKeys.slice(
+      Math.max(0, startIndex),
+      Math.min(total - 1, endIndex) + 1
+    );
+  }
   return raw.dayKeys.slice(-RANGE_DAYS[range]);
 }
 
@@ -141,8 +176,12 @@ export interface MetricSummary {
   yesterdayTokens: number;
 }
 
-export function summarize(raw: OverviewView, range: OverviewRange): MetricSummary {
-  const keys = rangeKeys(raw, range);
+export function summarize(
+  raw: OverviewView,
+  range: OverviewRange,
+  custom: CustomRangeValue | null = null
+): MetricSummary {
+  const keys = rangeKeys(raw, range, custom);
   const sum = sumDays(raw.merged, keys);
   // 今日恒为窗口最后一天（不随范围变化）
   const today = dayOf(raw.merged, raw.dayKeys[raw.dayKeys.length - 1]);
@@ -170,8 +209,12 @@ export interface TrendDay extends DayAgg {
   input: number;
 }
 
-export function trendSeries(raw: OverviewView, range: OverviewRange): TrendDay[] {
-  const keys = rangeKeys(raw, range);
+export function trendSeries(
+  raw: OverviewView,
+  range: OverviewRange,
+  custom: CustomRangeValue | null = null
+): TrendDay[] {
+  const keys = rangeKeys(raw, range, custom);
   return keys.map((key) => {
     const day = dayOf(raw.merged, key);
     return { key, ...day, input: inputSideOf(day) };
@@ -312,8 +355,12 @@ export interface AgentRow {
  * 今日 / 范围内 / 额度三个来源一一对应。
  * remoteRangeTokens 只在「全部设备」且该行确有远端贡献时大于 0。
  */
-export function buildAgentRows(raw: OverviewView, range: OverviewRange): AgentRow[] {
-  const keys = rangeKeys(raw, range);
+export function buildAgentRows(
+  raw: OverviewView,
+  range: OverviewRange,
+  custom: CustomRangeValue | null = null
+): AgentRow[] {
+  const keys = rangeKeys(raw, range, custom);
   const rows: AgentRow[] = [];
   for (const { id, days, remoteDays } of raw.perAgent) {
     const rangeSum = sumDays(days, keys);

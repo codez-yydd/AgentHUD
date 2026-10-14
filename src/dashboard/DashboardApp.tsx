@@ -1,9 +1,9 @@
 /**
- * 主窗口（Dashboard）应用壳：左侧固定侧栏（产品标识 + 三项导航 + 底部
+ * 主窗口（Dashboard）应用壳：左侧固定侧栏（产品标识 + 四项导航 + 底部
  * 语言/主题快捷切换）+ 右侧主区。
  *
  * 视图切换用组件内 state（对齐面板 App.tsx 的 view 模式，不引路由库）：
- * 三个页面当前共用同一种占位骨架，后续阶段各自填充真实内容。
+ * 用量总览 / 请求日志 / 周额度对比 / 价格设置 四个页面各自独立取数渲染。
  */
 import { useEffect, useRef, useState } from "react";
 import type { ComponentType } from "react";
@@ -16,13 +16,14 @@ import { APPEARANCE_CHANGED_EVENT, loadTheme, type Theme } from "../appearance";
 import { loadLocale } from "../i18n/locale";
 import { useI18n, type MessageKey } from "../i18n";
 import type { IconProps } from "./icons";
-import { CompareIcon, OverviewIcon, PricingIcon } from "./icons";
+import { CompareIcon, LogsIcon, OverviewIcon, PricingIcon } from "./icons";
 import { OverviewPage } from "./OverviewPage";
+import { LogsPage } from "./logs/LogsPage";
 import { ComparePage } from "./ComparePage";
 import { PricingPage } from "./PricingPage";
 
-/** 主区视图（后续阶段新增页面时在此扩展） */
-type View = "overview" | "compare" | "pricing";
+/** 主区视图（新增页面时在此扩展） */
+type View = "overview" | "logs" | "compare" | "pricing";
 
 /** 侧栏导航项：顺序即展示顺序；labelKey 同时用作页面标题词典键 */
 const NAV_ITEMS: {
@@ -31,6 +32,7 @@ const NAV_ITEMS: {
   Icon: ComponentType<IconProps>;
 }[] = [
   { view: "overview", labelKey: "dashboard.overview", Icon: OverviewIcon },
+  { view: "logs", labelKey: "dashboard.logs", Icon: LogsIcon },
   { view: "compare", labelKey: "dashboard.compare", Icon: CompareIcon },
   { view: "pricing", labelKey: "dashboard.pricing", Icon: PricingIcon },
 ];
@@ -140,6 +142,8 @@ export function DashboardApp() {
       <main className="db-main">
         {view === "overview" ? (
           <OverviewPage />
+        ) : view === "logs" ? (
+          <LogsPage />
         ) : view === "compare" ? (
           <ComparePage />
         ) : (

@@ -1,15 +1,24 @@
 /**
  * 用量总览页（主窗口首页）：跨 Agent 的用量 / 花费 / 趋势汇总。
  *
- * 结构：页头（数据范围 + 时间范围分段 + 刷新）→ 指标卡行 → 趋势图 →
+ * 结构：页头（数据范围 + 时间范围触发按钮 + 刷新）→ 指标卡行 → 趋势图 →
  * 热力图 → Agent 统计表。范围与数据范围切换只重新聚合（本地来源一次取满
  * 365 天，指标卡 / 趋势 / 表格按 90 天切片、热力图铺 52 周），刷新按钮才
  * 重新取数；切换页面重进命中模块级缓存即刻渲染；不做自动轮询（一期）。
+ * 时间范围预设档与自定义区间都收进页头单个触发按钮的弹出面板（预设档在面板
+ * 顶部快捷行，点一下即生效；见 CustomRangeMenu）：自定义区间在 365 天取数
+ * 窗口内按 [fromMs, toMs) 切片（derive.rangeKeys），同样不重新取数；
+ * 热力图固定 52 周窗口，不受时间范围影响（保持现状）。
  */
 import { useMemo, useState } from "react";
 import { useI18n, type MessageKey } from "../i18n";
 import { AlertBanner, EmptyState } from "../layout";
 import { RefreshIcon } from "./icons";
+import {
+  CustomRangeMenu,
+  formatRangeSummary,
+  type CustomRangeValue,
+} from "./CustomRangeMenu";
 import { AgentTable } from "./overview/AgentTable";
 import { HeatmapCard } from "./overview/HeatmapCard";
 import { MetricCards } from "./overview/MetricCards";
@@ -24,7 +33,13 @@ import {
   trendSeries,
 } from "./overview/derive";
 import { useOverviewData } from "./overview/useOverviewData";
-import type { OverviewRange, OverviewScope } from "./overview/model";
+import {
+  WINDOW_DAYS,
+  addLocalDays,
+  startOfLocalDay,
+  type OverviewRange,
+  type OverviewScope,
+} from "./overview/model";
 
 /** 页头范围分段（顺序即展示顺序；默认近 30 天，兼顾趋势可读性与跨度） */
 const RANGES: { range: OverviewRange; labelKey: MessageKey }[] = [
@@ -62,6 +77,8 @@ export function OverviewPage() {
     remotePending,
   } = useOverviewData();
   const [range, setRange] = useState<OverviewRange>("30d");
+  /** 自定义区间（非空 = 自定义模式，优先于预设档；选预设即清空） */
+  const [customRange, setCustomRange] = useState<CustomRangeValue | null>(null);
 
   // 同步未启用时只能看本机口径（远端无从取数）：偏好仍保留，控件禁用并脚注说明
   const effectiveScope: OverviewScope = syncEnabled ? scope : "local";
@@ -72,15 +89,22 @@ export function OverviewPage() {
     if (!data) return null;
     const scoped = scopeView(data, effectiveScope);
     return {
-      summary: summarize(scoped, range),
-      trend: trendSeries(scoped, range),
+      summary: summarize(scoped, range, customRange),
+      trend: trendSeries(scoped, range, customRange),
       heat: heatSeries(scoped),
-      rows: buildAgentRows(scoped, range),
+      rows: buildAgentRows(scoped, range, customRange),
     };
-  }, [data, range, effectiveScope]);
+  }, [data, range, customRange, effectiveScope]);
 
-  const rangeLabel = t(
-    RANGES.find((item) => item.range === range)!.labelKey
+  // 时间范围展示名（趋势 / 表格卡副标题共用）：自定义时显示区间摘要
+  const rangeLabel = customRange
+    ? formatRangeSummary(customRange.fromMs, customRange.toMs, locale)
+    : t(RANGES.find((item) => item.range === range)!.labelKey);
+  // 自定义区间可选最早日期：取数窗口（365 天）起点——更早的日期没有数据，
+  // 面板不放开（切范围只重新聚合，不会为此扩大取数窗口）
+  const minMs = useMemo(
+    () => startOfLocalDay(addLocalDays(Date.now(), -(WINDOW_DAYS - 1))),
+    []
   );
   // 空态：没有任何 Agent 有用量或额度可展示（未启用 / 全部无数据）
   const isEmpty = view != null && view.rows.length === 0;
@@ -121,25 +145,23 @@ export function OverviewPage() {
               </button>
             ))}
           </div>
-          <div
-            className="db-seg"
-            role="group"
-            aria-label={t("dashboard.overview.rangeLabel")}
-          >
-            {RANGES.map(({ range: value, labelKey }) => (
-              <button
-                key={value}
-                type="button"
-                onClick={() => setRange(value)}
-                className={`db-seg__btn ${
-                  range === value ? "db-seg__btn--active" : ""
-                }`}
-                aria-pressed={range === value}
-              >
-                {t(labelKey)}
-              </button>
-            ))}
-          </div>
+          {/* 时间范围：单个触发按钮 + 弹出面板（预设档收进面板顶部快捷行，
+              可选日期下限 = 365 天取数窗口起点） */}
+          <CustomRangeMenu
+            value={customRange}
+            onChange={setCustomRange}
+            minMs={minMs}
+            triggerLabel={rangeLabel}
+            ariaLabel={t("dashboard.overview.rangeLabel")}
+            presets={RANGES.map(({ range: presetRange, labelKey }) => ({
+              label: t(labelKey),
+              active: customRange == null && range === presetRange,
+              onClick: () => {
+                setRange(presetRange);
+                setCustomRange(null);
+              },
+            }))}
+          />
           <button
             type="button"
             className="db-btn"
@@ -232,14 +254,26 @@ export function OverviewPage() {
         />
       ) : (
         <>
-          <MetricCards summary={view.summary} currency={currency} range={range} />
+          <MetricCards
+            summary={view.summary}
+            currency={currency}
+            /* 自定义区间按非今日处理（范围内 ≠ 今日，第 4 卡仍展示今日 Token） */
+            range={customRange ? "custom" : range}
+            /* 自定义范围下把区间摘要标在「范围内 Token」卡上（预设档不显示，
+               卡片标题保持原有简洁） */
+            rangeLabel={customRange ? rangeLabel : undefined}
+          />
           <TrendCard
             series={view.trend}
             currency={currency}
             rangeLabel={rangeLabel}
           />
           <HeatmapCard series={view.heat} />
-          <AgentTable rows={view.rows} currency={currency} />
+          <AgentTable
+            rows={view.rows}
+            currency={currency}
+            rangeLabel={customRange ? rangeLabel : undefined}
+          />
           {/* 口径脚注：本机成本由后端按定价表 × 汇率折算，远端成本用同一份
               价格表在前端折算（与菜单栏标题同源），非账单金额 */}
           <p className="db-page__footnote">

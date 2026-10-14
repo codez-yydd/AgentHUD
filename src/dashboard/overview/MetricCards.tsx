@@ -14,7 +14,7 @@ import { formatCost, formatTokensLocale, formatTokensParts } from "../../format"
 import { useI18n } from "../../i18n";
 import type { Currency } from "../../types";
 import { costOf, type MetricSummary } from "./derive";
-import type { OverviewRange } from "./model";
+import type { OverviewRangeChoice } from "./model";
 
 /** 副行双列：不再把「输入 X · 输出 Y」拼成整行长串（窄窗 + 大字号档下必然
  *  折行）；两列各自 min-w-0 + 单行截断，截断后的完整文本由 title 兜底 */
@@ -65,11 +65,16 @@ export function MetricCards({
   summary,
   currency,
   range,
+  rangeLabel,
 }: {
   summary: MetricSummary;
   currency: Currency;
-  /** 当前页头范围：今日范围下第 4 卡换成「较昨日」 */
-  range: OverviewRange;
+  /** 当前页头范围：今日档下第 4 卡换成「较昨日」；自定义区间按非今日处理
+   *  （「范围内」与「今日」不是同一份数据，仍展示今日 Token 卡） */
+  range: OverviewRangeChoice;
+  /** 自定义区间摘要（MM-DD ~ MM-DD；预设档不传）：标在「范围内 Token」卡副行
+   *  下方，说明卡片数值覆盖的是哪一段自然日（自定义范围读不出档位名） */
+  rangeLabel?: string;
 }) {
   const { locale, t } = useI18n();
   const intlLocale = dateLocale(locale);
@@ -106,14 +111,21 @@ export function MetricCards({
         unit={tokens.unit}
         primary
         sub={
-          <SubPair
-            left={t("dashboard.overview.subInput", {
-              value: formatTokensLocale(summary.rangeInput, locale),
-            })}
-            right={t("dashboard.overview.subOutput", {
-              value: formatTokensLocale(summary.rangeOutput, locale),
-            })}
-          />
+          <>
+            <SubPair
+              left={t("dashboard.overview.subInput", {
+                value: formatTokensLocale(summary.rangeInput, locale),
+              })}
+              right={t("dashboard.overview.subOutput", {
+                value: formatTokensLocale(summary.rangeOutput, locale),
+              })}
+            />
+            {rangeLabel != null && (
+              <div className="db-metric__range num" title={rangeLabel}>
+                {rangeLabel}
+              </div>
+            )}
+          </>
         }
       />
       {/* 「估算花费」标签已表达估算语义，不再重复挂「估算」角标 */}

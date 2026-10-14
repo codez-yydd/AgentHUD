@@ -66,7 +66,7 @@ pub fn projects_dir() -> Result<PathBuf, String> {
 }
 
 /// 自有导入库路径：~/.zbar/claude.sqlite
-fn claude_db_path() -> Result<PathBuf, String> {
+pub(crate) fn claude_db_path() -> Result<PathBuf, String> {
     Ok(config_dir()?.join("claude.sqlite"))
 }
 
@@ -127,40 +127,41 @@ fn open_claude_db() -> Result<Connection, String> {
         }
     }
 
-    conn.execute_batch(
-        "PRAGMA journal_mode=WAL;
-         CREATE TABLE IF NOT EXISTS model_usage (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            session_id TEXT NOT NULL,
-            dedupe_key TEXT NOT NULL,
-            started_at INTEGER NOT NULL,
-            model_id TEXT NOT NULL DEFAULT '',
-            provider_id TEXT NOT NULL DEFAULT 'claude',
-            input_tokens INTEGER NOT NULL DEFAULT 0,
-            output_tokens INTEGER NOT NULL DEFAULT 0,
-            cache_read_input_tokens INTEGER NOT NULL DEFAULT 0,
-            cache_creation_input_tokens INTEGER NOT NULL DEFAULT 0,
-            reasoning_tokens INTEGER NOT NULL DEFAULT 0,
-            computed_total_tokens INTEGER NOT NULL DEFAULT 0,
-            duration_ms REAL,
-            updated_at INTEGER NOT NULL DEFAULT 0,
-            cwd TEXT,
-            project_key TEXT,
-            UNIQUE(dedupe_key)
-         );
-         CREATE INDEX IF NOT EXISTS idx_claude_model_usage_started ON model_usage(started_at);
-         CREATE INDEX IF NOT EXISTS idx_claude_model_usage_updated ON model_usage(updated_at);
-         CREATE INDEX IF NOT EXISTS idx_claude_mu_session ON model_usage(session_id);
-         CREATE TABLE IF NOT EXISTS file_progress (
-            path   TEXT    PRIMARY KEY,
-            offset INTEGER NOT NULL,
-            size   INTEGER NOT NULL
-         );",
-    )
-    .map_err(|e| format!("初始化 Claude 导入库失败: {e}"))?;
+    conn.execute_batch(SCHEMA_SQL)
+        .map_err(|e| format!("初始化 Claude 导入库失败: {e}"))?;
     ensure_project_columns(&conn)?;
     Ok(conn)
 }
+
+/// 导入库建表 DDL（`open_claude_db` 与测试共用，避免测试手抄结构漂移）
+const SCHEMA_SQL: &str = "PRAGMA journal_mode=WAL;
+     CREATE TABLE IF NOT EXISTS model_usage (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id TEXT NOT NULL,
+        dedupe_key TEXT NOT NULL,
+        started_at INTEGER NOT NULL,
+        model_id TEXT NOT NULL DEFAULT '',
+        provider_id TEXT NOT NULL DEFAULT 'claude',
+        input_tokens INTEGER NOT NULL DEFAULT 0,
+        output_tokens INTEGER NOT NULL DEFAULT 0,
+        cache_read_input_tokens INTEGER NOT NULL DEFAULT 0,
+        cache_creation_input_tokens INTEGER NOT NULL DEFAULT 0,
+        reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+        computed_total_tokens INTEGER NOT NULL DEFAULT 0,
+        duration_ms REAL,
+        updated_at INTEGER NOT NULL DEFAULT 0,
+        cwd TEXT,
+        project_key TEXT,
+        UNIQUE(dedupe_key)
+     );
+     CREATE INDEX IF NOT EXISTS idx_claude_model_usage_started ON model_usage(started_at);
+     CREATE INDEX IF NOT EXISTS idx_claude_model_usage_updated ON model_usage(updated_at);
+     CREATE INDEX IF NOT EXISTS idx_claude_mu_session ON model_usage(session_id);
+     CREATE TABLE IF NOT EXISTS file_progress (
+        path   TEXT    PRIMARY KEY,
+        offset INTEGER NOT NULL,
+        size   INTEGER NOT NULL
+     );";
 
 /// 进程内串行化补列迁移（kimi.rs ENSURE_DURATION_LOCK 同款）：
 /// 升级后首次启动多个查询命令并发 open，避免同时判缺列 + 交错重复 ALTER。
@@ -2389,4 +2390,56 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
+
+    /// 导入落库只写真实耗时（行内 durationMs，旧版 CLI 无该字段即 NULL）：
+    /// 同一 message.id 的流式累计行以「总量更大者胜」取末行，重解析幂等。
+    #[test]
+    fn import_one_file_persists_real_duration() {
+        let tmp = std::env::temp_dir().join(format!("zbar-claude-import-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).expect("创建临时目录失败");
+        let db_path = tmp.join("claude-import.sqlite");
+        let mut conn = Connection::open(&db_path).expect("打开临时库失败");
+        conn.execute_batch(SCHEMA_SQL).expect("初始化临时库失败");
+
+        let file = tmp.join("077cdc16-d987-44ac-b445-3f6d0abb4861.jsonl");
+        let lines = [
+            r#"{"timestamp":"2026-06-12T19:12:00.000Z","type":"user","message":{"role":"user"}}"#,
+            // 旧版 CLI 无 durationMs：耗时保持 NULL（不写估算）
+            r#"{"timestamp":"2026-06-12T19:12:05.000Z","type":"assistant","message":{"id":"msg_a","model":"glm-5.3","usage":{"input_tokens":10,"output_tokens":5}}}"#,
+            // 同 message.id 的流式累计行（末行即终值）
+            r#"{"timestamp":"2026-06-12T19:12:09.000Z","type":"assistant","message":{"id":"msg_a","model":"glm-5.3","usage":{"input_tokens":10,"output_tokens":20}}}"#,
+            // 新版 CLI 行内有真实耗时
+            r#"{"timestamp":"2026-06-12T19:13:07.500Z","type":"assistant","message":{"id":"msg_b","model":"glm-5.3","durationMs":7500,"usage":{"input_tokens":1,"output_tokens":1}}}"#,
+        ];
+        std::fs::write(&file, lines.join("\n") + "\n").expect("写入测试会话文件失败");
+
+        import_one_file(&mut conn, &file, None).expect("导入失败");
+        let rows = |conn: &Connection| -> Vec<(String, Option<f64>, i64)> {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT dedupe_key, duration_ms, computed_total_tokens
+                     FROM model_usage ORDER BY id",
+                )
+                .unwrap();
+            stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap()
+        };
+        assert_eq!(
+            rows(&conn),
+            vec![
+                ("msg_a".to_string(), None, 30), // 旧版行无真实耗时 → NULL
+                ("msg_b".to_string(), Some(7500.0), 2), // 行内 durationMs 原样落库
+            ]
+        );
+
+        // 重解析（文件被重写 / 续读路径）幂等：值不变
+        import_one_file(&mut conn, &file, None).expect("重解析失败");
+        assert_eq!(rows(&conn).len(), 2, "重解析不应新增行");
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
 }
+

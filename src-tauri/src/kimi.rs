@@ -83,7 +83,7 @@ pub fn sessions_dir() -> Result<PathBuf, String> {
 }
 
 /// 自有导入库路径：~/.zbar/kimi.sqlite
-fn kimi_db_path() -> Result<PathBuf, String> {
+pub(crate) fn kimi_db_path() -> Result<PathBuf, String> {
     Ok(config_dir()?.join("kimi.sqlite"))
 }
 

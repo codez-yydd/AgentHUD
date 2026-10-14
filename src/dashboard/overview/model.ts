@@ -42,10 +42,15 @@ export function agentLabel(id: UsageAgentId): string {
   return AGENT_VISIBILITY_OPTIONS.find((option) => option.id === id)?.label ?? id;
 }
 
-/** 页头时间范围预设 */
+/** 页头时间范围预设档（自定义区间不在此列：由 [fromMs, toMs) 直接决定，
+ *  见 derive.rangeKeys 与 CustomRangeMenu） */
 export type OverviewRange = "today" | "7d" | "30d" | "90d";
 
-/** 各预设覆盖的自然日数（含今天；趋势图与指标卡按此在 90 天窗口内切片） */
+/** 页头时间范围选择：预设档或自定义区间（"custom" 只在选中自定义档时出现，
+ *  供卡片判断「范围内是否等于今日」这类档位语义） */
+export type OverviewRangeChoice = OverviewRange | "custom";
+
+/** 各预设覆盖的自然日数（含今天；趋势图与指标卡按此在取数窗口内切片） */
 export const RANGE_DAYS: Record<OverviewRange, number> = {
   today: 1,
   "7d": 7,
@@ -324,6 +329,20 @@ export function buildDayKeys(fromMs: number, count: number): string[] {
   const keys: string[] = [];
   for (let i = 0; i < count; i++) keys.push(dayKeyOf(addLocalDays(fromMs, i)));
   return keys;
+}
+
+/**
+ * 两个本地自然日 0 点相差的自然日数（to − from；可为负）。
+ *
+ * 按 Y/M/D 经 UTC 归一后相减：直接拿毫秒差除以 86400000 会在夏令时切换那天
+ * 少算/多算一天（本地日长 23/25 小时）。
+ */
+export function localDaysBetween(fromDay: number, toDay: number): number {
+  const utcMidnight = (ms: number) => {
+    const d = new Date(ms);
+    return Date.UTC(d.getFullYear(), d.getMonth(), d.getDate());
+  };
+  return Math.round((utcMidnight(toDay) - utcMidnight(fromDay)) / 86_400_000);
 }
 
 /** 周一为首行的星期序号（周一 0 … 周日 6），热力图行序用 */

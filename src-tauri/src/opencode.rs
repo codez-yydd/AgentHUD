@@ -111,7 +111,7 @@ const MAX_TREND_BUCKETS: usize = 5_000;
 // ============================================================
 
 /// 自有导入库路径：~/.zbar/opencode.sqlite（与 dsh.sqlite / kimi.sqlite 同级）。
-fn opencode_db_path() -> Result<PathBuf, String> {
+pub(crate) fn opencode_db_path() -> Result<PathBuf, String> {
     Ok(config_dir()?.join("opencode.sqlite"))
 }
 

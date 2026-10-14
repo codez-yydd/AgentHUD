@@ -39,6 +39,9 @@ import type {
   RemoteSnapshot,
   RemoteAgentQuotaSnapshot,
   RemoteUsage,
+  RequestLogModelCount,
+  RequestLogSource,
+  RequestLogsPage,
   SessionsPage,
   PetConfig,
   CustomPetEntry,
@@ -531,6 +534,43 @@ export async function fetchKimiUsage(
 ): Promise<KimiSnapshot> {
   return invoke<KimiSnapshot>("get_kimi_usage", {
     req: { from_ms: fromMs, to_ms: toMs, bucket },
+  });
+}
+
+// ===== 请求日志（主窗口「请求日志」页）=====
+
+/** 拉取请求日志分页（7 个本地来源合并后按时间倒序；page 从 0 开始）。
+ *  options.agent 传**后端来源名**（RequestLogSource，不传 = 全部 7 源）；
+ *  options.model 传模型 id 精确筛选（不传 = 不筛）。
+ *  导入库不存在（未安装 / 未用过）按 0 条返回，不报错。 */
+export async function getRequestLogs(
+  fromMs: number,
+  toMs: number,
+  page: number,
+  pageSize: number,
+  options: { agent?: RequestLogSource; model?: string } = {}
+): Promise<RequestLogsPage> {
+  return invoke<RequestLogsPage>("get_request_logs", {
+    agent: options.agent ?? null,
+    model: options.model ?? null,
+    fromMs,
+    toMs,
+    page,
+    pageSize,
+  });
+}
+
+/** 拉取请求日志的模型筛选清单（区间内出现过的模型 + 请求条数，上限 100，
+ *  按条数降序）。options.agent 同 getRequestLogs。 */
+export async function getRequestLogModels(
+  fromMs: number,
+  toMs: number,
+  options: { agent?: RequestLogSource } = {}
+): Promise<RequestLogModelCount[]> {
+  return invoke<RequestLogModelCount[]>("get_request_log_models", {
+    agent: options.agent ?? null,
+    fromMs,
+    toMs,
   });
 }
 
