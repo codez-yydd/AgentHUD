@@ -29,6 +29,7 @@ import {
 import { formatResetStamp } from "./format";
 import { SectionCard } from "./layout";
 import { BrandIcon, type BrandIconName } from "./BrandIcon";
+import { DropdownMenu } from "./DropdownMenu";
 
 /** region 下拉选项（仅区分国内/国际站的 provider 传入） */
 export interface CredentialRegionOption {
@@ -927,22 +928,22 @@ export function CredentialFormDialog({
           )}
         </label>
 
-        {/* region 下拉：仅提供选项的 provider 显示 */}
+        {/* region 下拉：仅提供选项的 provider 显示。改用共用 DropdownMenu
+            （原生弹层暗色下选中项是系统灰底、文字对比不足），label 结构与
+            提交校验保持原样；组件默认外观与旁边输入框同族 */}
         {regionOptions && regionOptions.length > 0 && (
           <label className="flex flex-col gap-1 text-[10px] mb-2">
             <span className="text-slate-600">{t("credentials.region")}</span>
-            <select
+            <DropdownMenu
+              ariaLabel={t("credentials.region")}
+              options={regionOptions.map((opt) => ({
+                value: opt.value,
+                label: opt.label,
+              }))}
               value={region}
-              onChange={(e) => setRegion(e.target.value)}
-              className="w-full px-1.5 py-1 rounded-md bg-slate-900/5 border border-slate-900/10 text-[11px] focus:outline-none focus:border-sky-400/60"
-            >
-              <option value="">{t("credentials.regionNone")}</option>
-              {regionOptions.map((opt) => (
-                <option key={opt.value} value={opt.value}>
-                  {opt.label}
-                </option>
-              ))}
-            </select>
+              onChange={setRegion}
+              className="w-full"
+            />
           </label>
         )}
 

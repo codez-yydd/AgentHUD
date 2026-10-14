@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { UPDATE_READY_KEY, UPDATE_READY_EVENT } from "./updater";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { CredentialKind, Currency, PricingConfig, StatsTab } from "./types";
-import { fetchPin, setPin } from "./api";
+import { fetchPin, openMainWindow, setPin } from "./api";
 import { useDataCache } from "./DataCache";
 import { QuotaPanel } from "./QuotaPanel";
 import { RangePicker } from "./RangePicker";
@@ -19,6 +19,7 @@ import { SummaryTab } from "./SummaryTab";
 import { ProjectsPanel } from "./ProjectsPanel";
 import { GenericQuotaPanel } from "./GenericQuotaPanel";
 import { AddServiceMenu } from "./AddServiceMenu";
+import { DropdownMenu } from "./DropdownMenu";
 import {
   CredentialFormDialog,
   type CredentialOAuthFlow,
@@ -378,6 +379,20 @@ export function StatsPanel({
     /windows/i.test(navigator.userAgent);
   const [pinned, setPinned] = useState(false);
 
+  // 标题栏「主窗口」图标按钮打开失败的轻提示（建窗失败此前是纯静默：点了
+  // 没反应，用户只会以为按钮坏了）。提示胶囊展示在底部信息行（工具条内没有
+  // 放文字的位置），2.4s 后自动消失，不新增常驻 UI。
+  const [mainOpenFailed, setMainOpenFailed] = useState(false);
+  const mainOpenTimerRef = useRef<number | null>(null);
+  useEffect(
+    () => () => {
+      if (mainOpenTimerRef.current != null) {
+        window.clearTimeout(mainOpenTimerRef.current);
+      }
+    },
+    []
+  );
+
   useEffect(() => {
     if (!isWindows) return;
     fetchPin()
@@ -440,12 +455,16 @@ export function StatsPanel({
               : undefined
           }
         >
-          <div className="flex items-center gap-1.5 select-none">
-            <h1 className="text-[13px] font-bold text-slate-900/90 tracking-tight">
+          <div className="flex items-center gap-1.5 select-none min-w-0">
+            <h1 className="text-[13px] font-bold text-slate-900/90 tracking-tight truncate">
               ZCode Token
             </h1>
           </div>
-          <div className="flex items-center gap-0.5">
+          {/* shrink-0：窗口压到 300px 时标题先让位（truncate），按钮组不压缩。
+              含主窗口入口共 9 个 button（Windows 下；非 Windows 无置顶按钮为 8 个）：
+              9×22px + 8×2px 间距 = 214px ≤ 300 − 24(px-3) = 276px 可用宽度，
+              按钮不换行也不裁切；标题挤到约 62px 由 truncate 收尾 */}
+          <div className="flex items-center gap-0.5 shrink-0">
             <button
               onClick={onGoReports}
               className="toolbar-btn"
@@ -461,6 +480,50 @@ export function StatsPanel({
               title={syncEnabled ? t("stats.syncOn") : t("stats.syncOff")}
             >
               ⇅
+            </button>
+            {/* 主窗口（Dashboard 大窗）入口：显示器图标，与相邻工具按钮同款
+                尺寸/悬停样式。放大窗分析（与托盘标题同口径）是「去别的窗口」
+                的导航，与 ⇅（同步）这类入口同组 */}
+            <button
+              onClick={() => {
+                openMainWindow()
+                  .then(() => {
+                    // 成功：清掉上一次的失败提示
+                    if (mainOpenTimerRef.current != null) {
+                      window.clearTimeout(mainOpenTimerRef.current);
+                      mainOpenTimerRef.current = null;
+                    }
+                    setMainOpenFailed(false);
+                  })
+                  .catch(() => {
+                    setMainOpenFailed(true);
+                    if (mainOpenTimerRef.current != null) {
+                      window.clearTimeout(mainOpenTimerRef.current);
+                    }
+                    mainOpenTimerRef.current = window.setTimeout(() => {
+                      mainOpenTimerRef.current = null;
+                      setMainOpenFailed(false);
+                    }, 2400);
+                  });
+              }}
+              className="toolbar-btn"
+              title={t("dashboard.openMainWindow")}
+              aria-label={t("dashboard.openMainWindow")}
+            >
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                className="h-3.5 w-3.5"
+                aria-hidden
+              >
+                <rect x="2" y="3" width="20" height="14" rx="2" />
+                <path d="M8 21h8" />
+                <path d="M12 17v4" />
+              </svg>
             </button>
             <ThemeToggle />
             <LanguageToggle />
@@ -530,29 +593,33 @@ export function StatsPanel({
         {/* 设备筛选单独占一行，标签保持完整名称；未来新增 Agent 时横向滚动。 */}
         {tab !== "speed" && syncEnabled && (
           <div className="mt-2 flex items-center">
-            <select
-              value={deviceFilter}
-              onChange={(e) => setDeviceFilter(e.target.value)}
+            {/* 设备筛选：改用共用 DropdownMenu（原生弹层在 WebView2 暗色下
+                选中项灰底难读）；title/文案与原 select 一致 */}
+            <DropdownMenu
+              className="w-[4.75rem] shrink-0"
               title={t("stats.deviceFilter")}
-              className="num w-[4.75rem] shrink-0 px-1 py-1 rounded-md bg-slate-900/5 border border-slate-900/10 text-[10px] text-slate-900/80 focus:outline-none focus:border-sky-400/60"
-            >
-              <option value="all">{t("stats.deviceAll")}</option>
-              <option value="local">
-                {syncConfig?.device_name
-                  ? t("stats.deviceLocalName", { name: syncConfig.device_name })
-                  : t("stats.deviceLocal")}
-              </option>
-              {remoteDevices
-                .filter((d) => d.device_id !== syncConfig?.device_id)
-                .map((d) => (
-                  <option key={d.device_id} value={d.device_id}>
-                    {t("common.deviceOption", {
+              ariaLabel={t("stats.deviceFilter")}
+              options={[
+                { value: "all", label: t("stats.deviceAll") },
+                {
+                  value: "local",
+                  label: syncConfig?.device_name
+                    ? t("stats.deviceLocalName", { name: syncConfig.device_name })
+                    : t("stats.deviceLocal"),
+                },
+                ...remoteDevices
+                  .filter((d) => d.device_id !== syncConfig?.device_id)
+                  .map((d) => ({
+                    value: d.device_id,
+                    label: t("common.deviceOption", {
                       name: d.device_name,
                       id: d.device_id.slice(0, 6),
-                    })}
-                  </option>
-                ))}
-            </select>
+                    }),
+                  })),
+              ]}
+              value={deviceFilter}
+              onChange={setDeviceFilter}
+            />
           </div>
         )}
         {/* tab 栏：横向滚动区 + 右侧固定「＋添加服务」入口。渐隐遮罩只盖
@@ -803,8 +870,10 @@ export function StatsPanel({
         />
       )}
 
-      {/* 底部 */}
-      <div className="px-3 py-1.5 border-t border-slate-900/8 flex items-center justify-between text-[10px] text-slate-600/50">
+      {/* 底部：刷新时刻 + 价格设置入口。主窗口入口已回到标题栏图标按钮
+          （见上方工具条），打开失败的轻提示仍留在这一行——工具条内没有放
+          文字胶囊的位置，底部行有富余空间 */}
+      <div className="px-3 py-1.5 border-t border-slate-900/8 flex items-center justify-between gap-2 text-[10px] text-slate-600/50">
         <span className="num">
           {lastUpdate
             ? new Date(lastUpdate).toLocaleTimeString(dateLocale(locale), {
@@ -813,12 +882,21 @@ export function StatsPanel({
               })
             : ""}
         </span>
-        <button
-          onClick={onGoPricing}
-          className="hover:text-sky-600 transition-colors font-medium"
-        >
-          {t("stats.priceSettings")}
-        </button>
+        <div className="flex items-center gap-2 shrink-0">
+          {/* 打开失败的行内轻提示：与面板既有错误提示同色（bg-red-500/15 +
+              text-red-700），只是压成底部行里的一个小胶囊，2.4s 后自动消失 */}
+          {mainOpenFailed && (
+            <span className="px-1.5 py-0.5 rounded bg-red-500/15 text-red-700 whitespace-nowrap">
+              {t("dashboard.openMainWindowFailed")}
+            </span>
+          )}
+          <button
+            onClick={onGoPricing}
+            className="hover:text-sky-600 transition-colors font-medium"
+          >
+            {t("stats.priceSettings")}
+          </button>
+        </div>
       </div>
 
       {/* 「＋添加服务」→ 该服务的添加凭证弹层（复用 CredentialsCard 表单，

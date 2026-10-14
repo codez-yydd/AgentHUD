@@ -155,6 +155,9 @@ function CursorPanelContent({
         ? events.total_cost_usd * fxRate
         : events.total_cost_usd
       : 0;
+  // 26px 金额在 260px 窄窗 + 1.25 字号档下会超宽：值单行截断不折行，
+  // 完整金额由 title 悬浮兜底
+  const eventsCostText = formatCost(eventsCost, currency);
 
   // Cursor daily → TrendPoint（复用 TrendChart）
   const trendPoints: TrendPoint[] = (snapshot.daily ?? []).map((d) => ({
@@ -265,19 +268,22 @@ function CursorPanelContent({
       {/* events 概览（所选时间范围内的 Token 使用明细） */}
       {events && (
         <>
-          <div className="flex items-end justify-between">
-            <div>
-              <div className="text-[10px] uppercase tracking-wide text-slate-700/55">
+          <div className="flex items-end justify-between gap-2">
+            <div className="min-w-0">
+              <div className="text-[10px] uppercase tracking-wide text-slate-700/55 truncate">
                 {t("cursor.tokenSpend")}
                 <span className="ml-1 text-[8px] text-sky-600/50 normal-case">
                   {t("cursor.selectedRange")}
                 </span>
               </div>
-              <div className="num text-[26px] font-bold text-slate-900 leading-none mt-0.5">
-                {formatCost(eventsCost, currency)}
+              <div
+                className="num text-[26px] font-bold text-slate-900 leading-none mt-0.5 truncate"
+                title={eventsCostText}
+              >
+                {eventsCostText}
               </div>
             </div>
-            <div className="text-right">
+            <div className="text-right shrink-0">
               <div className="text-[10px] uppercase tracking-wide text-slate-700/55">
                 {t("common.totalTokens")}
               </div>
@@ -373,7 +379,10 @@ function CursorPanelContent({
                             <span className="text-slate-500/80">{m.requests}</span>
                             <span className="text-slate-700/25">·</span>
                             <span className="text-slate-700">{formatTokens(m.total_tokens)}</span>
-                            <span className="w-12 text-right text-slate-900/90">
+                            {/* 行尾花费列：自然宽 + shrink-0，金额随内容撑开，
+                                长金额（如 ¥1234.56）不再被固定 w-12 挤出列外；
+                                右端对齐由父级 justify-between 保证，与原先一致 */}
+                            <span className="shrink-0 whitespace-nowrap text-right text-slate-900/90">
                               {formatCost(
                                 currency === "cny"
                                   ? m.cost_usd * fxRate

@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- 窗口图标：与侧栏品牌标识同源（Vite 会打包该资源；dev 走 dev server） -->
+    <link rel="icon" type="image/png" href="/src/assets/logo.png" />
+    <title>ZBar</title>
+    <!--
+      主窗口（Dashboard）入口：1100×720 常规系统窗，承载用量统计 / 周额度
+      对比 / 价格设置等管理分析功能，与悬浮面板（index.html）共用同一套
+      i18n 词典与外观偏好（localStorage 键 zbar-theme / zbar-locale）。
+      页面是完整 React 应用（区别于 session-hud.html / pet.html 的零
+      React 薄壳）：
+      - /src/dashboard-main.tsx：入口（首帧前对齐主题/语言 + 挂载 Provider）；
+      - /src/dashboard/DashboardApp.tsx：应用壳（左侧栏 + 主区按 state 切换）；
+      - /src/dashboard.css：Tailwind 4 + 公共设计令牌子集（不复用 index.css
+        —— 那份含面板专属的透明底/圆角/#root 缩放规则，普通窗引入会穿帮）。
+      本窗可被用户点"×"关闭：Rust 侧做 prevent_close + hide（隐藏不销毁），
+      再次打开秒开，因此页面不需要处理关闭/退出逻辑。
+    -->
+    <script>
+      // 首帧前兜底：先按面板写入的主题键切 .dark，避免暗色用户看到白闪。
+      // 只读不写（appearance.ts 是唯一写入方）；主逻辑在 dashboard-main.tsx
+      // 启动时再同步一次（幂等），此处只为早于 CSS 生效。
+      try {
+        if (localStorage.getItem("zbar-theme") === "dark") {
+          document.documentElement.classList.add("dark");
+        }
+      } catch (_) {
+        /* 忽略：localStorage 不可用（隐私模式等）时按亮色渲染 */
+      }
+    </script>
+    <style>
+      /* 首帧占位样式：内联在 head，确保 WebView 首次绘制时（React 尚未挂载、
+         dashboard.css 尚未加载）就有可见内容。与 index.html 的透明占位不同：
+        本窗是不透明的普通窗口，占位自带亮/暗两套底色（与 dashboard.css 的
+        变量初始值一致），避免大片系统白底。React createRoot 会清空 #root
+        再挂载，此占位会被自动替换。 */
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        height: 100%;
+      }
+      body {
+        background: #f1f5f9;
+        color-scheme: light;
+      }
+      html.dark body {
+        background: #0f172a;
+        color-scheme: dark;
+      }
+      .zbar-boot {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        height: 100vh;
+        gap: 10px;
+      }
+      .zbar-boot__name {
+        font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text",
+          "PingFang SC", "Microsoft YaHei", sans-serif;
+        font-size: 15px;
+        font-weight: 600;
+        color: rgba(15, 23, 42, 0.5);
+        letter-spacing: 0.5px;
+      }
+      html.dark .zbar-boot__name {
+        color: rgba(226, 232, 240, 0.6);
+      }
+      .zbar-boot__dots {
+        display: flex;
+        gap: 5px;
+      }
+      .zbar-boot__dots span {
+        width: 5px;
+        height: 5px;
+        border-radius: 50%;
+        background: rgba(15, 23, 42, 0.32);
+        animation: zbar-pulse 1.2s infinite ease-in-out both;
+      }
+      html.dark .zbar-boot__dots span {
+        background: rgba(226, 232, 240, 0.4);
+      }
+      .zbar-boot__dots span:nth-child(2) {
+        animation-delay: 0.15s;
+      }
+      .zbar-boot__dots span:nth-child(3) {
+        animation-delay: 0.3s;
+      }
+      @keyframes zbar-pulse {
+        0%,
+        80%,
+        100% {
+          opacity: 0.25;
+          transform: scale(0.8);
+        }
+        40% {
+          opacity: 1;
+          transform: scale(1);
+        }
+      }
+    </style>
+  </head>
+
+  <body>
+    <div id="root">
+      <!-- React 挂载前的首帧占位：避免 WebView 冷启动期间显示空白 -->
+      <div class="zbar-boot">
+        <div class="zbar-boot__name">ZBar</div>
+        <div class="zbar-boot__dots"><span></span><span></span><span></span></div>
+      </div>
+    </div>
+    <script type="module" src="/src/dashboard-main.tsx"></script>
+  </body>
+</html>

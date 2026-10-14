@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
 import { StatsPanel } from "./StatsPanel";
 import { PricingPanel } from "./PricingPanel";
 import { SettingsPanel } from "./SettingsPanel";
@@ -18,6 +19,13 @@ import {
 } from "./api";
 import { startUpdateScheduler } from "./updater";
 import { useI18n } from "./i18n";
+import { loadLocale } from "./i18n/locale";
+import {
+  APPEARANCE_CHANGED_EVENT,
+  applyTheme,
+  loadTheme,
+  type Theme,
+} from "./appearance";
 import type { Currency, PricingConfig } from "./types";
 import {
   AGENT_VISIBILITY_EVENT,
@@ -48,7 +56,7 @@ type View =
   | "settings";
 
 export default function App() {
-  const { locale } = useI18n();
+  const { locale, setLocale } = useI18n();
   const [view, setView] = useState<View>("stats");
   // 币种从属语言：中文=人民币、英文=美元。语言是显式偏好，切换语言时币种跟随
   // （含启动对齐，菜单栏标题同步刷新）；价格表页仍可临时切换查看另一币种口径，
@@ -84,6 +92,47 @@ export default function App() {
     window.addEventListener(ADD_SERVICE_EVENT, open);
     return () => window.removeEventListener(ADD_SERVICE_EVENT, open);
   }, []);
+
+  // 外观双向同步（补面板侧跟随）：主题/语言切换后 applyTheme / setLocale 都会
+  // 广播 zbar://appearance-changed——面板此前只发不收，在主窗口里切主题/语言后
+  // 本窗要重启才生效。这里补上「跟随者」分支：收到广播重读 localStorage，
+  // 与当前 DOM / i18n 状态不同才应用（相同即跳过，避免再 emit 造成回声循环：
+  // applyTheme 与 setLocale 都会再次广播，主窗口侧同样有同值守卫）。
+  // 监听失败静默：保持启动时读取的偏好。
+  const localeRef = useRef(locale);
+  localeRef.current = locale;
+
+  useEffect(() => {
+    let dispose: (() => void) | undefined;
+    let cancelled = false;
+    listen(APPEARANCE_CHANGED_EVENT, () => {
+      // 主题：以 <html> 现有类为本窗当前值（ThemeToggle 切换后即时同步）
+      const nextTheme: Theme = loadTheme();
+      const currentTheme: Theme = document.documentElement.classList.contains(
+        "dark"
+      )
+        ? "dark"
+        : "light";
+      if (nextTheme !== currentTheme) applyTheme(nextTheme);
+      // 语言：与当前不同才 setLocale（同值调用虽幂等但会再广播一次）
+      const nextLocale = loadLocale();
+      if (nextLocale && nextLocale !== localeRef.current) {
+        setLocale(nextLocale);
+      }
+    })
+      .then((unlisten) => {
+        // effect 已清理（StrictMode 双挂载 / 快速卸载）时立即退订
+        if (cancelled) unlisten();
+        else dispose = unlisten;
+      })
+      .catch(() => {
+        /* 静默：保持启动时读取的主题与语言 */
+      });
+    return () => {
+      cancelled = true;
+      dispose?.();
+    };
+  }, [setLocale]);
 
   const handleAgentVisibilityChange = (id: AgentId, visible: boolean) => {
     // 显式关闭标记：设置页手动关闭的凭证型 agent，此后 presence 无→有

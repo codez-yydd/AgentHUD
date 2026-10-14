@@ -92,11 +92,14 @@ export function Metric({
 }) {
   return (
     <div className="card-base rounded-xl py-2 text-center" title={title}>
-      <div className="text-[9px] text-slate-500">{label}</div>
+      {/* 标签与数值均单行截断：260px 窄窗 + 1.25 字号档下值（如「≈ 99.9 t/s」）
+          在空格处折行会顶破卡片；截断后的完整值由 title 悬浮兜底 */}
+      <div className="text-[9px] text-slate-500 truncate">{label}</div>
       <div
-        className={`num text-[13px] font-semibold mt-0.5 ${
+        className={`num text-[13px] font-semibold mt-0.5 truncate ${
           accent || "text-slate-900/85"
         }`}
+        title={value}
       >
         {value}
       </div>
@@ -118,14 +121,20 @@ export function DetailRow({
 }) {
   return (
     <div className="flex items-center gap-2 text-[11px]">
-      <span className="text-slate-700/60 w-14 shrink-0">{label}</span>
+      {/* 标签/数值列宽由 w-14（3.5rem）加宽到 w-16（4rem）：中文标签与
+          「999.99万」级数值不再被挤成两行；两列均单行截断，完整文本由
+          title 悬浮兜底 */}
+      <span className="text-slate-700/60 w-16 shrink-0 truncate">{label}</span>
       <div className="flex-1 h-1 rounded-full bg-slate-900/8 overflow-hidden">
         <div
           className={`h-full rounded-full ${color} opacity-70`}
           style={{ width: `${Math.min(pct * 100, 100)}%` }}
         />
       </div>
-      <span className="num text-slate-900/85 font-medium w-14 text-right">
+      <span
+        className="num text-slate-900/85 font-medium w-16 shrink-0 text-right truncate"
+        title={value}
+      >
         {value}
       </span>
     </div>
@@ -165,14 +174,14 @@ export function SpeedMetricsGrid({
   if (hasTps) {
     cards.push({
       label: speedLabel,
-      value: `${approxPrefix}${formatTps(overall.avg_tps!)} t/s`,
+      value: `${approxPrefix}${formatTps(overall.avg_tps!)}\u00A0t/s`,
       accent: "text-sky-700",
     });
   }
   if (hasMax) {
     cards.push({
       label: t("common.fastestRequest"),
-      value: `${approxPrefix}${formatTps(overall.max_tps!)} t/s`,
+      value: `${approxPrefix}${formatTps(overall.max_tps!)}\u00A0t/s`,
       accent: "text-sky-700/80",
     });
   }
@@ -370,9 +379,11 @@ export function TrendChart<M extends TrendMetric>({
               onMouseEnter={() => setHoverIdx(i)}
               onMouseLeave={() => setHoverIdx(null)}
             >
-              {/* tooltip */}
+              {/* tooltip：深底浅字写死色值——暗色下 slate 变量整体反转，
+                  bg-slate-900/90 会翻成浅底，与 text-white 叠成看不见的白字，
+                  故与报告页热力图 tooltip 同款：固定深底 + 固定浅字 */}
               {isHover && (
-                <div className="absolute bottom-full mb-1 left-1/2 -translate-x-1/2 z-10 whitespace-nowrap rounded-lg bg-slate-900/90 text-white px-2 py-1.5 text-[9px] leading-tight pointer-events-none shadow-lg">
+                <div className="absolute bottom-full mb-1 left-1/2 -translate-x-1/2 z-10 whitespace-nowrap rounded-lg bg-[rgba(10,12,20,0.88)] text-[#e5eaf0] px-2 py-1.5 text-[9px] leading-tight pointer-events-none shadow-lg">
                   <div className="num font-medium">{d.label}</div>
                   <div className="num">
                     {formatCost(

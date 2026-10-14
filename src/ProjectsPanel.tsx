@@ -11,6 +11,7 @@ import { sourceMeta } from "./agentVisibility";
 import { resolveRange } from "./RangePicker";
 import { useI18n } from "./i18n";
 import { AlertBanner, BtnSecondary, EmptyState, LoadingState } from "./layout";
+import { DropdownMenu } from "./DropdownMenu";
 
 interface Props {
   /** 与 StatsPanel 顶栏共享的时间范围状态（沿用现有范围传递方式） */
@@ -394,19 +395,24 @@ export function ProjectsPanel({ preset, custom, currency, fxRate }: Props) {
           >
             {t("projects.sessionsOf", { name: selName })}
           </span>
-          <select
-            value={sourceFilter ?? ""}
-            onChange={(e) => setSourceFilter(e.target.value || null)}
+          {/* 会话来源筛选：改用共用 DropdownMenu（原生弹层暗色下选中项灰底
+              难读）；空值哨兵沿用原 select 语义（"" = 全部 → 回写 null），
+              align=end 让弹层贴行尾右缘，窄面板内不探出边界 */}
+          <DropdownMenu
+            className="w-[4.75rem] shrink-0"
+            align="end"
             title={t("projects.agentFilter")}
-            className="num w-[4.75rem] shrink-0 px-1 py-1 rounded-md bg-slate-900/5 border border-slate-900/10 text-[10px] text-slate-900/80 focus:outline-none focus:border-sky-400/60"
-          >
-            <option value="">{t("projects.all")}</option>
-            {filterOptions.map((s) => (
-              <option key={s} value={s}>
-                {sourceMeta(s).label}
-              </option>
-            ))}
-          </select>
+            ariaLabel={t("projects.agentFilter")}
+            options={[
+              { value: "", label: t("projects.all") },
+              ...filterOptions.map((s) => ({
+                value: s,
+                label: sourceMeta(s).label,
+              })),
+            ]}
+            value={sourceFilter ?? ""}
+            onChange={(next) => setSourceFilter(next || null)}
+          />
         </div>
       )}
 

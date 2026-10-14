@@ -559,9 +559,13 @@ export function PricingPanel({ currency, onCurrencyChange, onBack }: Props) {
                           </span>
                         )}
                       </div>
-                      <div className="mt-0.5 text-[10px] text-slate-700/60 num whitespace-nowrap">
-                        $ {fmtTriplet(i.default)}
-                        <span className="text-slate-700/40 ml-1.5">
+                      {/* 价格行：整行不再 nowrap——窄窗下允许在「≈ ¥」前折到
+                          第二行（两段各自 nowrap，三元组自身不断开） */}
+                      <div className="mt-0.5 text-[10px] text-slate-700/60 num">
+                        <span className="whitespace-nowrap">
+                          $ {fmtTriplet(i.default)}
+                        </span>{" "}
+                        <span className="text-slate-700/40 whitespace-nowrap ml-1">
                           ≈ ¥ {fmtTriplet(scaleCny(i.default, fxRate))}
                         </span>
                       </div>
@@ -603,8 +607,10 @@ export function PricingPanel({ currency, onCurrencyChange, onBack }: Props) {
                         <span className="text-slate-700/35 mx-1">→</span>
                         <span className="text-sky-600/90 font-medium whitespace-nowrap">
                           $ {fmtTriplet(i.default)}
-                        </span>
-                        <span className="text-slate-700/40 ml-1.5 whitespace-nowrap">
+                        </span>{" "}
+                        {/* 显式空格 = 「≈ ¥」前的折行点（此前后段只有 margin，
+                            没有换行机会，窄窗下整串溢出） */}
+                        <span className="text-slate-700/40 whitespace-nowrap ml-1">
                           ≈ ¥ {fmtTriplet(scaleCny(i.default, fxRate))}
                         </span>
                       </div>

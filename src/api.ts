@@ -349,6 +349,14 @@ export async function setPanelSticky(sticky: boolean): Promise<void> {
   await invoke("set_panel_sticky", { sticky });
 }
 
+/** 打开主窗口（Dashboard 管理/分析大窗）：窗口已存在则显示并聚焦，
+ *  不存在则由 Rust 侧 main_window.rs 建窗（1100×720 普通系统窗）。
+ *  主窗口"关闭=隐藏不销毁"，所以反复调用即秒开；建窗失败时 reject，
+ *  调用方自行决定是否提示（面板侧静默，不打断交互）。 */
+export async function openMainWindow(): Promise<void> {
+  await invoke("open_main_window");
+}
+
 // ===== 周额度追踪 / 对比页 =====
 
 /** 读取额度快照历史（按 ts 升序）。默认当前账号视角；all=true 返回

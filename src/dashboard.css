@@ -1,0 +1,2315 @@
+/**
+ * 主窗口（Dashboard）样式：Tailwind 4 + 项目公共设计令牌的精简子集。
+ *
+ * 为什么不直接复用 index.css：那份是悬浮面板专用入口样式——html/body/#root
+ * 被设为透明底 + 16px 圆角（透出原生 popover 毛玻璃）、#root 还带
+ * transform: scale(--ui-scale) 整体缩放，另有 .panel-shell / 拖拽热区 /
+ * 报告页等面板专属规则。主窗口是 decorations:true 的不透明普通系统窗，
+ * 引入会直接穿帮（透底、圆角、缩放错位）。因此本文件只搬运与窗口形态
+ * 无关的公共令牌，并按大窗场景重排布局变量。
+ *
+ * 与 index.css 保持同源的部分（若上游调整需同步，见每段注释）：
+ *  - 字体栈 / 字号 / 抗锯齿 / 等宽数字（.num）；
+ *  - Tailwind v4 主题变量：--color-surface / --color-elevated 的亮暗映射；
+ *  - .dark 下的 Tailwind 变量翻转表（slate 反转 + 品牌深档提亮）——
+ *    面板靠这套映射实现"只写一套工具类、暗色自动翻转"，主窗口沿用同一
+ *    映射才能与面板视觉一致（暗色系同为 slate-900 底）。
+ */
+@import "tailwindcss";
+
+@theme {
+  /* 语义表面色：与 index.css 同源（亮=白，暗色下由 .dark 覆盖为深灰，
+     供 bg-surface/* 这类工具类使用） */
+  --color-surface: #ffffff;
+  /* 浮层底：弹窗/日历等近实底浮层专用 */
+  --color-elevated: #ffffff;
+}
+
+:root {
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI",
+    "PingFang SC", "Microsoft YaHei", sans-serif;
+  font-size: 13px;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-variant-numeric: tabular-nums;
+
+  /* 主窗口页面变量（面板的 --panel-* 是玻璃面板专用，不复用）：
+     亮色 = slate-100 底 + 白色侧栏；暗色在 .dark 覆盖为 slate-900 系 */
+  --db-bg: #f1f5f9;
+  --db-sidebar-bg: #ffffff;
+  --db-border: rgba(15, 23, 42, 0.08);
+  --db-text: #1f2937;
+  --db-text-dim: rgba(51, 65, 85, 0.62);
+  --db-hover: rgba(15, 23, 42, 0.05);
+  --db-active-bg: rgba(14, 165, 233, 0.12);
+  --db-active-text: #0284c7;
+  --scrollbar-thumb: rgba(15, 23, 42, 0.18);
+  --scrollbar-thumb-hover: rgba(15, 23, 42, 0.28);
+
+  /* 用量总览页（首页）内容面变量：卡片/分段控件/骨架/热力色阶/浮层提示 */
+  --db-card-bg: #ffffff;
+  --db-card-shadow: 0 1px 3px rgba(15, 23, 42, 0.05);
+  --db-seg-bg: rgba(15, 23, 42, 0.05);
+  --db-seg-active-bg: #ffffff;
+  --db-seg-active-text: #0284c7;
+  --db-row-border: rgba(15, 23, 42, 0.05);
+  --db-skeleton: rgba(15, 23, 42, 0.07);
+  --db-track: rgba(15, 23, 42, 0.08);
+  --db-chip-bg: rgba(16, 185, 129, 0.12);
+  --db-chip-text: #047857;
+  --db-tip-bg: rgba(15, 23, 42, 0.94);
+  --db-tip-text: #ffffff;
+  --db-tip-border: transparent;
+  --db-accent-sky: #0284c7;
+  --db-accent-emerald: #059669;
+  --db-accent-violet: #7c3aed;
+  --db-accent-amber: #b45309;
+  /* 热力图色阶（0 = 无数据 / 空位中性底，1..4 强调色渐进）。
+     格子为 52 周流式网格（aspect-square 自适应边长），有数据的格子带 1px
+     同族细边框，悬停放大并提亮边框；暗色两套变量见文件尾部 .dark 段 */
+  --db-heat-0: #eef2f6;
+  --db-heat-1: #d8ebfb;
+  --db-heat-2: #a5d3f5;
+  --db-heat-3: #5aaeea;
+  --db-heat-4: #1786cd;
+  --db-heat-edge: rgba(23, 134, 205, 0.3);
+  --db-heat-edge-strong: rgba(23, 134, 205, 0.75);
+  /* 每日模式「未来格」虚线（这一格还没到）：比数据格描边略重，保证在白卡
+     底色上可辨，又不与色阶 / 无数据灰格抢眼 */
+  --db-heat-future: rgba(23, 134, 205, 0.5);
+  --db-heat-gap: 2px;
+  /* 星期标签列宽（底部月份标签行以同一宽度对齐网格） */
+  --db-heat-label-w: 26px;
+}
+
+/* 不透明普通窗：页面自己铺满，滚动交给主区（.db-main）单一容器，
+   避免窗口级与内容级双滚动条 */
+html,
+body,
+#root {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+}
+
+body {
+  background: var(--db-bg);
+  color: var(--db-text);
+  color-scheme: light;
+  overflow: hidden;
+}
+
+/* 等宽数字（与 index.css 的 .num 同源） */
+.num {
+  font-family: "SF Mono", "JetBrains Mono", ui-monospace, monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ============================================================
+ * 应用壳：左侧固定侧栏 + 右侧主区（主区 flex-1 自适应并独立滚动）
+ * ============================================================ */
+.db-shell {
+  display: flex;
+  height: 100%;
+}
+
+.db-sidebar {
+  display: flex;
+  flex-direction: column;
+  /* 固定宽侧栏：窗口拉伸时只有主区变化（对齐 1100×720 大窗的信息层级） */
+  width: 200px;
+  flex: none;
+  background: var(--db-sidebar-bg);
+  border-right: 1px solid var(--db-border);
+}
+
+/* ---- 产品标识 ---- */
+.db-brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 16px 14px 14px;
+}
+
+/* 软件 logo 图标：原 "Z" 文字方块已替换为真实图标（src/assets/logo.png，
+   128px 透明底 PNG，由 Vite 打包）。尺寸与圆角沿用原文字方块的 28px / 9px，
+   保证侧栏排版不变；图标自带透明底，原先的渐变背景与文字排版样式移除。 */
+.db-brand__logo-img {
+  width: 28px;
+  height: 28px;
+  flex: none;
+  border-radius: 9px;
+  object-fit: contain;
+  user-select: none;
+}
+
+.db-brand__name {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--db-text);
+  letter-spacing: 0.01em;
+  line-height: 1.2;
+}
+
+.db-brand__tagline {
+  margin-top: 1px;
+  font-size: 10px;
+  color: var(--db-text-dim);
+}
+
+/* ---- 导航 ---- */
+.db-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 4px 8px;
+}
+
+.db-nav__item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 8px 10px;
+  border: none;
+  border-radius: 10px;
+  background: transparent;
+  font-size: 12px;
+  color: var(--db-text-dim);
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.db-nav__item:hover {
+  background: var(--db-hover);
+  color: var(--db-text);
+}
+
+.db-nav__item--active {
+  background: var(--db-active-bg);
+  color: var(--db-active-text);
+  font-weight: 600;
+}
+
+.db-nav__icon {
+  display: flex;
+  flex: none;
+}
+
+/* ---- 侧栏底部：语言 / 主题快捷切换 ---- */
+.db-sidebar__footer {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 12px;
+  border-top: 1px solid var(--db-border);
+}
+
+/* 图标按钮（LanguageToggle / ThemeToggle 经 className 复用；
+   面板的 .toolbar-btn 是 22px 小圆角按钮，大窗用 28px 更顺手） */
+.db-icon-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  font-size: 12px;
+  line-height: 1;
+  color: var(--db-text-dim);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.db-icon-btn:hover {
+  color: var(--db-text);
+  background: var(--db-hover);
+}
+
+.db-icon-btn:active {
+  transform: scale(0.94);
+}
+
+/* ============================================================
+ * 主区与页面骨架
+ * ============================================================ */
+.db-main {
+  flex: 1;
+  /* min-width: 0：flex 子项默认按内容撑宽，长内容会把主区顶出窗口 */
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+}
+
+.db-page {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  flex: 1;
+  min-height: 100%;
+  padding: 26px 30px 30px;
+  /* 超宽约束：1920/2560 最大化时卡片与表格不再拉满全宽（内容列 1280 居中，
+     两侧留白）；窗口较窄时 width:100% 生效，布局与原来一致 */
+  width: 100%;
+  max-width: 1280px;
+  margin: 0 auto;
+}
+
+.db-page__title {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--db-text);
+  letter-spacing: -0.01em;
+}
+
+.db-page__desc {
+  margin-top: 5px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--db-text-dim);
+}
+
+/* ============================================================
+ * 用量总览页（首页）：页头 / 卡片 / 分段控件 / 指标卡 / 趋势图 /
+ * 热力图 / Agent 表 / 骨架。样式只在主窗口生效，颜色全部走 --db-* 变量，
+ * 亮暗由上面的两套变量切换，组件里不再写 .dark 分支。
+ * ============================================================ */
+
+/* ---- 页头：标题 + 范围分段 + 刷新 ---- */
+.db-page__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+  flex-wrap: wrap;
+}
+
+.db-page__actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.db-page__updated {
+  font-size: 11px;
+  color: var(--db-text-dim);
+  white-space: nowrap;
+}
+
+/* 页头「远端合并中」弱标记：本机数据已可见、其他设备仍在后台合并 */
+.db-page__merging {
+  font-size: 11px;
+  color: var(--db-accent-sky);
+  opacity: 0.85;
+  white-space: nowrap;
+}
+
+.db-page__footnote {
+  margin-top: -4px;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--db-text-dim);
+}
+
+/* ---- 卡片 ---- */
+.db-card {
+  background: var(--db-card-bg);
+  border: 1px solid var(--db-border);
+  border-radius: 16px;
+  box-shadow: var(--db-card-shadow);
+}
+
+.db-card__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 15px 18px 0;
+}
+
+.db-card__headline {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+.db-card__title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--db-text);
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+}
+
+.db-card__sub {
+  font-size: 11px;
+  color: var(--db-text-dim);
+  /* 长副标题允许换行（此前 nowrap + ellipsis 会把「近 30 天 · 各系列已用
+     比例随时间变化」这类文案截断；卡片头随内容自然增高） */
+  min-width: 0;
+}
+
+.db-card__action {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+}
+
+.db-card__body {
+  padding: 14px 18px 16px;
+}
+
+/* ---- 分段控件（时间范围） ---- */
+.db-seg {
+  display: inline-flex;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 11px;
+  background: var(--db-seg-bg);
+}
+
+.db-seg__btn {
+  padding: 5px 12px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  font-family: inherit;
+  font-size: 12px;
+  color: var(--db-text-dim);
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.db-seg__btn:hover {
+  color: var(--db-text);
+  background: var(--db-hover);
+}
+
+.db-seg__btn--active {
+  background: var(--db-seg-active-bg);
+  color: var(--db-seg-active-text);
+  font-weight: 600;
+}
+
+/* 禁用态（总览页「全部设备」在未启用同步时不可选）：保留激活高亮，
+   只降透明度并禁用指针，避免看起来仍可点击 */
+.db-seg__btn:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.db-seg__btn:disabled.db-seg__btn--active {
+  opacity: 0.8;
+}
+
+.db-seg__btn:disabled:hover {
+  background: transparent;
+  color: var(--db-text-dim);
+}
+
+.db-seg__btn:disabled.db-seg__btn--active:hover {
+  background: var(--db-seg-active-bg);
+  color: var(--db-seg-active-text);
+}
+
+/* 卡片头里的紧凑分段控件（趋势图指标切换）：比页头范围分段小一档 */
+.db-seg--sm {
+  border-radius: 9px;
+  padding: 2px;
+}
+
+.db-seg--sm .db-seg__btn {
+  padding: 3px 9px;
+  border-radius: 7px;
+  font-size: 11px;
+}
+
+/* ---- 通用按钮（刷新 / 重新加载） ---- */
+.db-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 13px;
+  border: 1px solid var(--db-border);
+  border-radius: 10px;
+  background: var(--db-card-bg);
+  font-family: inherit;
+  font-size: 12px;
+  color: var(--db-text);
+  cursor: pointer;
+  transition: background 0.15s ease, opacity 0.15s ease;
+}
+
+.db-btn:hover:not(:disabled) {
+  background: var(--db-hover);
+}
+
+.db-btn:active:not(:disabled) {
+  transform: scale(0.98);
+}
+
+.db-btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.db-spin {
+  animation: db-spin 1s linear infinite;
+}
+
+@keyframes db-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ---- 弱提示条（对比页：汇总模式远端降级）----
+   比 AlertBanner 轻一档：不抢主数据，只说明口径变化 */
+.db-hintbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: -6px;
+  padding: 7px 11px;
+  border: 1px solid var(--db-border);
+  border-radius: 10px;
+  background: var(--db-hover);
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--db-text-dim);
+}
+
+/* ---- 专用错误态（总览页全部 Agent 取数失败）----
+   与「暂无用量数据」采集引导空态区分：借错误提示条的色语言做居中提示块 */
+.db-errorstate {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 34px 20px;
+  border: 1px solid rgba(244, 63, 94, 0.24);
+  border-radius: 16px;
+  background: rgba(244, 63, 94, 0.06);
+  text-align: center;
+}
+
+.db-errorstate__title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--db-text);
+}
+
+.db-errorstate__reason {
+  max-width: 560px;
+  font-size: 11px;
+  line-height: 1.7;
+  color: var(--db-text-dim);
+  /* 长错误串（路径 / URL）不撑破卡片，只在需要时断行 */
+  overflow-wrap: anywhere;
+}
+
+/* ---- 指标卡行 ---- */
+.db-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.db-metric {
+  padding: 15px 17px 16px;
+}
+
+.db-metric__label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 11px;
+  color: var(--db-text-dim);
+}
+
+.db-metric__value {
+  display: flex;
+  align-items: baseline;
+  gap: 3px;
+  margin-top: 10px;
+  font-size: 27px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: -0.02em;
+  /* 默认中性色：只有主指标（范围内 Token）走强调色，四卡并排时主次分明 */
+  color: var(--db-text);
+  /* 极致值兜底（超长金额 + 大字号档）：单行截断不折行、不撑破卡片 */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.db-metric__value--primary {
+  color: var(--db-accent-sky);
+}
+
+.db-metric__unit {
+  font-size: 15px;
+  font-weight: 600;
+  opacity: 0.75;
+}
+
+.db-metric__sub {
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--db-text-dim);
+}
+
+/* 副行双列（第 1/2 卡）：两列等宽各自单行截断，替代原先「A · B」整行长串 */
+.db-metric__subgrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.db-metric__subcell {
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ---- 骨架（加载态） ---- */
+.db-skeleton {
+  border-radius: 6px;
+  background: var(--db-skeleton);
+  animation: db-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes db-pulse {
+  0%,
+  100% {
+    opacity: 0.55;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+.db-skeleton-bars {
+  display: flex;
+  align-items: flex-end;
+  gap: 4px;
+  /* 与真实趋势图同高（见 .db-chart__plot）：骨架 → 内容的加载跳动最小 */
+  height: clamp(190px, 26vh, 320px);
+}
+
+.db-skeleton-bars__col {
+  display: flex;
+  flex: 1 1 0;
+  align-items: flex-end;
+  height: 100%;
+}
+
+.db-skeleton-bars__col .db-skeleton {
+  width: 100%;
+}
+
+/* 卡片内骨架堆叠（对比页各卡独立骨架：额度矩阵 / Token 行） */
+.db-skeleton-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.db-skeleton-stack--rows {
+  gap: 12px;
+}
+
+/* ---- 趋势图（输入侧 / 输出堆叠柱 + 可按指标切换） ---- */
+.db-chart__plot {
+  position: relative;
+  display: flex;
+  align-items: flex-end;
+  gap: 3px;
+  /* 图高随窗口自适应：190px 起（矮窗不塌），随视口高度放大，封顶 320px
+     （原来固定 190px，最大化后柱图偏矮、纵向留白） */
+  height: clamp(190px, 26vh, 320px);
+  padding-top: 14px;
+}
+
+/* 横向网格线 + 数值刻度（纵轴）：绝对定位铺在柱体后面（DOM 在前、无 z-index，
+   柱列自身 position:relative 因此画在上层），刻度贴线右侧不压柱顶 */
+.db-chart__grid {
+  position: absolute;
+  inset: 14px 0 0;
+  pointer-events: none;
+}
+
+.db-chart__grid-line {
+  position: absolute;
+  left: 0;
+  right: 0;
+  border-top: 1px dashed var(--db-row-border);
+}
+
+.db-chart__grid-label {
+  position: absolute;
+  right: 0;
+  bottom: 2px;
+  padding: 0 3px;
+  border-radius: 4px;
+  /* 半透明卡底上给刻度一个衬底，跨过柱体时仍可读 */
+  background: var(--db-card-bg);
+  font-size: 9px;
+  color: var(--db-text-dim);
+}
+
+.db-chart__col {
+  display: flex;
+  flex: 1 1 0;
+  min-width: 0;
+  height: 100%;
+  flex-direction: column;
+  justify-content: flex-end;
+  align-items: center;
+  position: relative;
+  border-radius: 6px;
+  transition: background 0.15s ease;
+}
+
+.db-chart__col--hover {
+  background: var(--db-hover);
+}
+
+/* 柱间距/柱宽随天数自适应：>30 天收窄间距、≤7 天放宽柱宽
+   （趋势图与刻度行共用同一修饰类，保持列对齐） */
+.db-chart__plot--dense {
+  gap: 1px;
+}
+
+.db-chart__plot--dense .db-bar {
+  max-width: 100%;
+}
+
+.db-chart__plot--sparse .db-bar {
+  max-width: 74px;
+}
+
+.db-bar {
+  display: flex;
+  width: 100%;
+  max-width: 34px;
+  /* column-reverse：输入侧在下、输出在上 */
+  flex-direction: column-reverse;
+  border-radius: 5px 5px 2px 2px;
+  overflow: hidden;
+}
+
+.db-bar__input {
+  background: linear-gradient(180deg, #38bdf8 0%, #0284c7 100%);
+}
+
+.db-bar__output {
+  background: linear-gradient(180deg, #a78bfa 0%, #7c3aed 100%);
+}
+
+/* 非 Token 指标的单一序列色（花费 / 请求无输入输出拆分，整柱一段） */
+.db-bar__cost {
+  background: linear-gradient(180deg, #fbbf24 0%, #d97706 100%);
+}
+
+.db-bar__requests {
+  background: linear-gradient(180deg, #34d399 0%, #059669 100%);
+}
+
+.db-chart__axis {
+  display: flex;
+  gap: 3px;
+  margin-top: 6px;
+}
+
+.db-chart__tick {
+  flex: 1 1 0;
+  min-width: 0;
+  font-size: 10px;
+  color: var(--db-text-dim);
+  text-align: center;
+  white-space: nowrap;
+}
+
+.db-chart__tick--first {
+  text-align: left;
+}
+
+.db-chart__tick--last {
+  text-align: right;
+  color: var(--db-active-text);
+}
+
+.db-chart__tick--hidden {
+  visibility: hidden;
+}
+
+.db-chart__foot {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 8px;
+  font-size: 10px;
+  color: var(--db-text-dim);
+}
+
+.db-chart__note {
+  flex: 1;
+  text-align: right;
+}
+
+/* 峰值行：图脚左侧的强调信息（TrendCard 的「峰值 X（日期）」） */
+.db-chart__peak {
+  font-weight: 600;
+  color: var(--db-accent-amber);
+}
+
+.db-legend {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  font-size: 10px;
+  color: var(--db-text-dim);
+}
+
+.db-legend__item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.db-swatch {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+}
+
+.db-swatch--input {
+  background: linear-gradient(180deg, #38bdf8 0%, #0284c7 100%);
+}
+
+.db-swatch--output {
+  background: linear-gradient(180deg, #a78bfa 0%, #7c3aed 100%);
+}
+
+/* ---- 悬停浮层（趋势图 / 热力图 / 折线图共用） ----
+   定位语义：默认贴所在容器顶部向内展开（top: 8px 预留顶部安全区），
+   横向由调用方给的 left:%（配 translateX(-50%)）跟随数据点——不再向上
+   弹出压住卡片标题与图例；热力图另有向下 / 向上两档（见修饰类）。 */
+.db-tip {
+  position: absolute;
+  top: 8px;
+  bottom: auto;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 128px;
+  padding: 8px 10px;
+  border: 1px solid var(--db-tip-border);
+  border-radius: 10px;
+  background: var(--db-tip-bg);
+  color: var(--db-tip-text);
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: nowrap;
+  pointer-events: none;
+  box-shadow: 0 8px 22px rgba(15, 23, 42, 0.22);
+}
+
+/* 热力图上半行：向下弹出（覆盖邻格，但不压卡片头/月份标签行）。
+   浮层落在网格与卡片体内（.db-tip 默认贴容器顶部，--down 向下展开）；
+   逐日模式的容器是单个格子，周/累计模式的容器是整列（列 tooltip） */
+.db-tip--down {
+  top: calc(100% + 6px);
+}
+
+/* 热力图下半行：向上弹出（下方没有足够空间时的兜底方向）。
+   第 4 行（第一档 up）浮层顶 ≈ 网格顶 + 14px，压住上方邻格但不越出网格与卡头 */
+.db-tip--up {
+  top: auto;
+  bottom: calc(100% + 8px);
+}
+
+.db-tip--left {
+  left: 0;
+  transform: none;
+}
+
+.db-tip--right {
+  left: auto;
+  right: 0;
+  transform: none;
+}
+
+.db-tip__title {
+  margin-bottom: 2px;
+  font-weight: 600;
+  opacity: 0.95;
+}
+
+.db-tip__row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.db-tip__label {
+  opacity: 0.68;
+}
+
+/* 当前所选指标那一行：加粗突出（tooltip 里其余行是对照信息） */
+.db-tip__row--strong {
+  font-weight: 600;
+}
+
+/* ---- 活跃热力图（ZCode 风格：52 周流式网格铺满卡片宽度） ----
+   .db-heat__grid 是 52 列的 CSS Grid（repeat(52, minmax(0,1fr))），每列 7 个
+   aspect-square 格子纵向 flex 排列：格子边长 = 列宽自适应（1100px 窗下约
+   19px、1280px 内容宽下约 22px，900px 最小窗宽下约 8px），minmax(0,1fr) 保证
+   任何宽度都不出横向滚动。底部月份标签行与网格同一套 52 列网格（标签按跨度
+   span 合并、最多 12 个），星期标签列与网格行高对齐。
+   统计卡占满网格下方整行（网格已铺满宽度，不再并排）；.db-heat 保留
+   flex-wrap，窗口极窄时统计卡自然落到下一行。 */
+.db-heat {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 18px 20px;
+}
+
+/* 卡片头操作区：模式分段 + 色阶图例（窄窗时允许换行，不挤压标题） */
+.db-heat__actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 10px 12px;
+}
+
+/* 热力图卡片头：模式分段 + 图例较宽，窗口收窄时卡片头整体换行，
+   标题与操作区各占一行（不把标题挤到省略/换行） */
+.db-card--heat .db-card__head {
+  flex-wrap: wrap;
+}
+
+.db-heat__chart {
+  flex: 1 1 100%;
+  min-width: 0;
+}
+
+.db-heat__body {
+  display: flex;
+  align-items: stretch;
+  gap: 6px;
+  min-width: 0;
+}
+
+/* 星期标签列：7 格等高，与网格行严格对齐 */
+.db-heat__weekdays {
+  display: flex;
+  flex-direction: column;
+  gap: var(--db-heat-gap);
+  width: var(--db-heat-label-w);
+  flex: none;
+}
+
+.db-heat__weekday {
+  flex: 1 1 0;
+  display: flex;
+  align-items: center;
+  font-size: 10px;
+  line-height: 1;
+  color: var(--db-text-dim);
+  white-space: nowrap;
+}
+
+.db-heat__grid {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: repeat(52, minmax(0, 1fr));
+  gap: var(--db-heat-gap);
+}
+
+.db-heat__col {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--db-heat-gap);
+  min-width: 0;
+}
+
+.db-heat__cell {
+  display: block;
+  width: 100%;
+  aspect-ratio: 1;
+  border-radius: 4px;
+  background: var(--db-heat-0);
+  transition: transform 0.12s ease, box-shadow 0.12s ease;
+}
+
+/* 未来格（每日模式下今天之后的日期 / 取数窗口外的空格）：透明底 + 1px 虚线
+   边框，语义是「这一格还没到」——与无数据灰格（--l0 实底）区分；虚线在亮暗
+   两套下都可见但不抢眼（--db-heat-future 两套各有取值，border-box 下不改变
+   格子尺寸，52 列网格不错位） */
+.db-heat__cell--future {
+  background: transparent;
+  border: 1px dashed var(--db-heat-future);
+}
+
+/* 今日格（每日模式）：亮蓝细环标出「今天」，当前周进度一目了然；用 outline
+   而非 box-shadow，避免覆盖 1..4 档的内描边（悬停时提亮）等既有阴影 */
+.db-heat__cell--today {
+  outline: 1.5px solid var(--db-accent-sky);
+  outline-offset: 0;
+}
+
+.db-heat__cell--l0 {
+  background: var(--db-heat-0);
+}
+.db-heat__cell--l1 {
+  background: var(--db-heat-1);
+}
+.db-heat__cell--l2 {
+  background: var(--db-heat-2);
+}
+.db-heat__cell--l3 {
+  background: var(--db-heat-3);
+}
+.db-heat__cell--l4 {
+  background: var(--db-heat-4);
+}
+
+/* 有数据的格子（1..4 档）带 1px 细边框（同族色），0 档无边框（未来格为虚线，见上） */
+.db-heat__cell--l1,
+.db-heat__cell--l2,
+.db-heat__cell--l3,
+.db-heat__cell--l4 {
+  box-shadow: inset 0 0 0 1px var(--db-heat-edge);
+}
+
+/* 逐日模式的格子容器：与格子同尺寸，悬停时放大并提亮边框 */
+.db-heat__cell-wrap {
+  position: relative;
+  display: block;
+  width: 100%;
+  aspect-ratio: 1;
+}
+
+.db-heat__cell-wrap:hover {
+  z-index: 2;
+}
+
+.db-heat__cell-wrap:hover .db-heat__cell {
+  transform: scale(1.1);
+}
+
+.db-heat__cell-wrap:hover .db-heat__cell--l1,
+.db-heat__cell-wrap:hover .db-heat__cell--l2,
+.db-heat__cell-wrap:hover .db-heat__cell--l3,
+.db-heat__cell-wrap:hover .db-heat__cell--l4 {
+  box-shadow: inset 0 0 0 1px var(--db-heat-edge-strong);
+}
+
+/* 底部月份标签行：与 52 列网格同列对齐（左侧让出星期标签列宽） */
+.db-heat__monthrow {
+  display: flex;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.db-heat__monthrow-spacer {
+  width: var(--db-heat-label-w);
+  flex: none;
+}
+
+.db-heat__months {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: repeat(52, minmax(0, 1fr));
+  gap: var(--db-heat-gap);
+}
+
+.db-heat__month {
+  font-size: 10px;
+  line-height: 1.4;
+  color: var(--db-text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+/* 口径脚注：90 天之后只有本地来源（Cursor 与其他设备不覆盖） */
+.db-heat__foot {
+  flex: 1 1 100%;
+  margin: 0;
+  font-size: 10px;
+  line-height: 1.6;
+  color: var(--db-text-dim);
+}
+
+.db-heat__legend {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+  color: var(--db-text-dim);
+}
+
+/* 图例里的色阶样例：比网格格子小一档（自适应格子边长在卡片头里过重） */
+.db-heat__legend .db-heat__cell {
+  width: 12px;
+  height: 12px;
+  aspect-ratio: auto;
+  border-radius: 3px;
+}
+
+/* 图例里的分组分隔：左「少→多」4 档色阶，右「无数据」灰格 */
+.db-heat__legend-sep {
+  width: 1px;
+  height: 10px;
+  margin: 0 3px;
+  background: var(--db-border);
+}
+
+/* 统计区：网格已铺满整行，三张紧凑统计卡在网格下方整行铺开 */
+.db-heat__aside {
+  flex: 1 1 420px;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 12px;
+  align-content: start;
+}
+
+.db-heat__stat {
+  padding: 11px 14px;
+  border-radius: 10px;
+  background: var(--db-hover);
+}
+
+.db-heat__stat-label {
+  font-size: 11px;
+  color: var(--db-text-dim);
+}
+
+.db-heat__stat-value {
+  margin-top: 5px;
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--db-text);
+}
+
+/* ---- Agent 统计表 ---- */
+/* 表格横向滚动容器：最窄窗（900px）下 6 列的最小内容宽（周额度 250 + 5小时
+   140 + 四个数值列）会超过卡片，交给容器横向滚动，而不是把数值挤成两行或
+   裁切卡片。overscroll-behavior-x 只约束横向链，不影响纵向滚轮（与价格表
+   去掉 contain 的取舍不冲突）；圆角内滚动让滚动条与卡片圆角贴合。 */
+.db-table-wrap {
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  border-radius: 8px;
+}
+
+.db-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.db-table th {
+  padding: 0 10px 9px;
+  border-bottom: 1px solid var(--db-border);
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--db-text-dim);
+  text-align: left;
+}
+
+.db-table td {
+  padding: 10px;
+  border-bottom: 1px solid var(--db-row-border);
+  vertical-align: middle;
+  color: var(--db-text);
+}
+
+.db-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.db-table tbody tr:hover {
+  background: var(--db-hover);
+}
+
+.db-table__num,
+.db-table th.db-table__num {
+  text-align: right;
+  /* 数值单元格单行：「999.99亿」不在数字与单位间折行；「含远端」标记与
+     数值同行维持（窄窗下由 .db-table-wrap 横向滚动兜底） */
+  white-space: nowrap;
+}
+
+.db-table th.db-table__quota {
+  width: 250px;
+  text-align: right;
+}
+
+/* 5 小时列：与周额度列同款色条/百分数，列宽更紧凑（无窗口文字标签）。
+   140px 对齐 .db-quota__track 主条列宽——「88% ↻ 12-31 23:59」整行完整可见，
+   不得再收窄（收窄会把重置时刻挤掉或折行）。 */
+.db-table th.db-table__quota--compact {
+  width: 140px;
+  text-align: right;
+}
+
+.db-table__dash {
+  display: block;
+  text-align: right;
+  color: var(--db-text-dim);
+  opacity: 0.65;
+}
+
+.db-agent {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.db-agent__icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  flex: none;
+}
+
+.db-agent__name {
+  font-weight: 500;
+}
+
+.db-quota {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 5px;
+}
+
+.db-quota__row {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 11px;
+  /* 单行不换行：紧凑的 5 小时列（120px）内「百分比 + ↻ 时间」并排不错位 */
+  white-space: nowrap;
+}
+
+.db-quota__pct {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.db-quota__label,
+.db-quota__reset {
+  font-size: 10px;
+  color: var(--db-text-dim);
+}
+
+/* 月额度组（provider 通道 monthly 窗口，如 OpenCode Go）：与主行同构的紧凑版
+   ——小一号的「月 + 百分数 + ↻ 时间」行 + 更细的进度条；组内间距比主行紧，
+   读作「一行配一条」，整体右对齐落在 140px 主条列宽内（不换行不错位） */
+.db-quota__monthly {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+}
+
+/* 月额度标签行：位于主条下方，比主行小一号；百分比沿用 remainingTextColor 配色 */
+.db-quota__row--monthly {
+  gap: 4px;
+  font-size: 10px;
+}
+
+.db-quota__row--monthly .db-quota__pct {
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.db-quota__track {
+  width: 140px;
+  height: 4px;
+  border-radius: 999px;
+  background: var(--db-track);
+  overflow: hidden;
+}
+
+/* 月额度细进度条：宽度与主条一致（右对齐不参差），高度约主条一半 */
+.db-quota__track--mini {
+  height: 3px;
+}
+
+.db-quota__fill {
+  height: 100%;
+  border-radius: 999px;
+  transition: width 0.4s ease;
+}
+
+/* 5 小时列（紧凑档）：色条比周额度列短，不加窗口文字标签 */
+.db-quota--compact .db-quota__track {
+  width: 76px;
+}
+
+/* ---- 卡片内空态 ---- */
+.db-empty {
+  padding: 26px 0;
+  text-align: center;
+  font-size: 12px;
+  color: var(--db-text-dim);
+}
+
+/* ============================================================
+ * 周额度对比页（大窗）：设备下拉 / 额度矩阵 / 折线图 / Token 对比
+ * ============================================================ */
+
+/* ---- 额度矩阵：行 = Agent，行内每系列一块 ---- */
+.db-matrix {
+  display: flex;
+  flex-direction: column;
+}
+
+.db-matrix__row {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  padding: 14px 0;
+  border-bottom: 1px solid var(--db-row-border);
+}
+
+.db-matrix__row:last-child {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+
+.db-matrix__row:first-child {
+  padding-top: 0;
+}
+
+.db-matrix__agent {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 150px;
+  flex: none;
+  padding-top: 4px;
+}
+
+.db-matrix__cells {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  flex: 1;
+  min-width: 0;
+}
+
+/* 单个额度系列块 */
+.db-qcell {
+  width: 208px;
+  padding: 11px 12px 10px;
+  border: 1px solid var(--db-border);
+  border-radius: 12px;
+  background: var(--db-hover);
+}
+
+.db-qcell__head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.db-qcell__dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 2px;
+  flex: none;
+}
+
+.db-qcell__label {
+  flex: 1;
+  min-width: 0;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--db-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.db-qcell__kind {
+  flex: none;
+  font-size: 10px;
+  color: var(--db-text-dim);
+}
+
+.db-qcell__value {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  margin-top: 8px;
+}
+
+.db-qcell__pct {
+  font-size: 22px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: -0.02em;
+}
+
+.db-qcell__track {
+  height: 4px;
+  margin-top: 9px;
+  border-radius: 999px;
+  background: var(--db-track);
+  overflow: hidden;
+}
+
+.db-qcell__fill {
+  height: 100%;
+  border-radius: 999px;
+  transition: width 0.4s ease;
+}
+
+.db-qcell__foot {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 8px;
+  font-size: 10px;
+  color: var(--db-text-dim);
+}
+
+.db-qcell__reset {
+  white-space: nowrap;
+}
+
+.db-qcell__reset--none {
+  opacity: 0.55;
+}
+
+.db-qcell__hour5 {
+  white-space: nowrap;
+}
+
+/* ---- 额度折线图 ---- */
+.db-linechart {
+  position: relative;
+}
+
+/* 绘图区：悬停浮层的定位参照（贴住 svg 上沿而不是整块卡片） */
+.db-linechart__plot {
+  position: relative;
+}
+
+.db-linechart__svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  overflow: visible;
+}
+
+.db-linechart__grid {
+  stroke: var(--db-row-border);
+  stroke-width: 1;
+}
+
+.db-linechart__label {
+  font-size: 10px;
+  fill: var(--db-text-dim);
+}
+
+.db-linechart__hover-line {
+  stroke: var(--db-accent-sky);
+  stroke-width: 1;
+  stroke-dasharray: 3 3;
+  opacity: 0.7;
+}
+
+.db-linechart__foot {
+  margin-top: 4px;
+  font-size: 10px;
+  color: var(--db-text-dim);
+}
+
+/* 图例按钮（折线图系列开关） */
+.db-legend--wrap {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  max-width: 520px;
+  row-gap: 6px;
+}
+
+.db-legend__btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 5px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  font-family: inherit;
+  font-size: 10px;
+  color: var(--db-text-dim);
+  cursor: pointer;
+  transition: background 0.15s ease, opacity 0.15s ease;
+}
+
+.db-legend__btn:hover {
+  background: var(--db-hover);
+  color: var(--db-text);
+}
+
+.db-legend__btn--off {
+  opacity: 0.38;
+}
+
+.db-legend__btn-label {
+  max-width: 130px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.db-legend__reset {
+  border: none;
+  background: transparent;
+  font-family: inherit;
+  font-size: 10px;
+  color: var(--db-active-text);
+  cursor: pointer;
+  padding: 2px 4px;
+}
+
+/* ---- Token 对比 ---- */
+.db-tokencmp {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.db-tokencmp__row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.db-tokencmp__agent {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 150px;
+  flex: none;
+}
+
+.db-tokencmp__bar {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  height: 14px;
+  border-radius: 5px;
+  background: var(--db-track);
+  overflow: hidden;
+}
+
+.db-tokencmp__seg {
+  height: 100%;
+  transition: width 0.4s ease;
+}
+
+.db-tokencmp__seg--local {
+  background: linear-gradient(180deg, #38bdf8 0%, #0284c7 100%);
+}
+
+.db-tokencmp__seg--remote {
+  background: linear-gradient(180deg, #a78bfa 0%, #7c3aed 100%);
+}
+
+/* 数值区：总量/请求数一行、本机|其他设备明细独立第二行。宽上限 300px（不再
+   固定 300px），窄窗下先把宽度让给色条；内部各数值单行截断不折行 */
+.db-tokencmp__numbers {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 3px;
+  max-width: 300px;
+  min-width: 0;
+  flex: none;
+}
+
+.db-tokencmp__numbers-main {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  max-width: 100%;
+  min-width: 0;
+}
+
+.db-tokencmp__total {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--db-text);
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.db-tokencmp__requests {
+  font-size: 10px;
+  color: var(--db-text-dim);
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.db-tokencmp__split {
+  font-size: 10px;
+  color: var(--db-text-dim);
+  max-width: 100%;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.db-tokencmp__foot {
+  margin-top: 2px;
+  font-size: 10px;
+  line-height: 1.6;
+  color: var(--db-text-dim);
+}
+
+/* ============================================================
+ * 价格设置页（大窗）：工具条 / 宽表 / 差异面板 / 新增表单 / 隐藏名单
+ * ============================================================ */
+
+/* ---- 按钮补充变体 ---- */
+.db-btn--primary {
+  border-color: transparent;
+  background: var(--db-active-text);
+  color: #fff;
+}
+
+.db-btn--primary:hover:not(:disabled) {
+  background: var(--db-active-text);
+  filter: brightness(1.08);
+}
+
+.db-btn--badge {
+  position: relative;
+}
+
+/* 差异数红点（「检查价格更新」按钮右上） */
+.db-dot {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: #f43f5e;
+  color: #fff;
+  font-size: 10px;
+  line-height: 1;
+}
+
+/* 文本型小按钮（刷新汇率 / 展开隐藏名单） */
+.db-linkbtn {
+  border: none;
+  background: transparent;
+  font-family: inherit;
+  font-size: 11px;
+  color: var(--db-active-text);
+  cursor: pointer;
+  padding: 0;
+}
+
+.db-linkbtn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.db-linkbtn--block {
+  display: block;
+  color: var(--db-text-dim);
+  text-align: left;
+}
+
+/* ---- 工具行：单位/汇率 + 检查结论 + 模型数 ---- */
+.db-pricing__meta {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: -6px;
+  font-size: 11px;
+  color: var(--db-text-dim);
+}
+
+.db-pricing__status {
+  font-weight: 600;
+}
+
+.db-pricing__status--ok {
+  color: var(--db-accent-emerald);
+}
+
+.db-pricing__status--warn {
+  color: var(--db-accent-amber);
+}
+
+.db-pricing__count {
+  margin-left: auto;
+}
+
+/* 价格设置页页头吸顶：页头内含「保存」，长价格表滚动时保存动作始终可见。
+   负外边距抵消顶部内边距，静态布局与其它页头保持一致；背景用页面底色，
+   内容从下方滚过时不透出 */
+.db-page__header--sticky {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  margin-top: -10px;
+  padding-top: 10px;
+  padding-bottom: 6px;
+  margin-bottom: -6px;
+  background: var(--db-bg);
+}
+
+/* 未保存改动提示（dirty 时紧贴保存按钮左侧） */
+.db-pricing__dirty {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--db-accent-amber);
+  white-space: nowrap;
+}
+
+/* 保存按钮 dirty 视觉态：主色描边环，扫一眼即知有改动待落盘 */
+.db-btn--dirty {
+  box-shadow: 0 0 0 3px rgba(14, 165, 233, 0.28);
+}
+
+/* 应用价格更新成功后的轻提示（与「未保存」互斥展示） */
+.db-pricing__flash {
+  font-weight: 600;
+  color: var(--db-accent-emerald);
+}
+
+/* 币种切换的「仅本页查看」标注（临时口径，不影响全局币种） */
+.db-pricing__viewonly {
+  font-size: 10px;
+  color: var(--db-text-dim);
+  white-space: nowrap;
+  cursor: default;
+}
+
+/* ---- 搜索框（价格表卡片右上） ---- */
+.db-search {
+  width: 220px;
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--db-border);
+  border-radius: 9px;
+  background: var(--db-card-bg);
+  font-family: inherit;
+  font-size: 12px;
+  color: var(--db-text);
+  outline: none;
+}
+
+.db-search::placeholder {
+  color: var(--db-text-dim);
+}
+
+.db-search:focus {
+  border-color: var(--db-active-text);
+}
+
+/* ---- 价格表首屏骨架行高 ----
+   对齐真实行：td 上下留白 20 + 输入框 26 + ¥ 折算副行（3 + 12）≈ 61px；
+   $ 口径没有折算副行（英文界面），组件加 --usd 修饰类降到 46px。
+   ≤980px 回退下 ¥ 副行被隐藏（见文件末尾媒体查询），同样降到 46px。 */
+.db-price-skeleton__row {
+  height: 61px;
+}
+
+.db-price-skeleton__row--usd {
+  height: 46px;
+}
+
+/* ---- 价格宽表（吸顶表头 + 行内编辑） ---- */
+.db-price-wrap {
+  /* 表格区高度自适应：上限随视口（约七成高、封顶 720px），矮窗/内容少时
+     不出现内层滚动条。原值固定 520px 在 1080p 以上偏矮，形成"小窗式"滚动区；
+     并去掉 overscroll-behavior: contain——contain 会截断滚轮链，指针停在表格
+     内时页面滚不动（滚轮陷阱），现在到边界后由页面级滚动接管 */
+  max-height: min(70vh, 720px);
+  overflow: auto;
+}
+
+.db-price-table {
+  min-width: 720px;
+}
+
+.db-price-table th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  /* 吸顶需要不透明底：--db-sidebar-bg 就是亮/暗两套的实底色（白 / slate-800） */
+  background: var(--db-sidebar-bg);
+}
+
+.db-price-name {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.db-price-name__display {
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.db-price-name__id {
+  font-size: 10px;
+  color: var(--db-text-dim);
+  word-break: break-all;
+}
+
+.db-price-cell {
+  width: 130px;
+}
+
+.db-price-input {
+  display: flex;
+  align-items: center;
+  height: 26px;
+  padding: 0 6px;
+  border: 1px solid var(--db-border);
+  border-radius: 7px;
+  background: var(--db-card-bg);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.db-price-input:focus-within {
+  border-color: var(--db-active-text);
+  box-shadow: 0 0 0 2px var(--db-active-bg);
+}
+
+.db-price-input__symbol {
+  font-size: 11px;
+  color: var(--db-text-dim);
+  padding-right: 3px;
+}
+
+.db-price-input__field {
+  width: 100%;
+  border: none;
+  background: transparent;
+  font-size: 12px;
+  color: var(--db-text);
+  text-align: right;
+  outline: none;
+}
+
+.db-price-input__field::placeholder {
+  color: var(--db-text-dim);
+  opacity: 0.6;
+}
+
+.db-price-cell__cny {
+  display: block;
+  margin-top: 3px;
+  font-size: 10px;
+  text-align: right;
+  color: var(--db-text-dim);
+}
+
+.db-price-table__ops {
+  width: 56px;
+  text-align: right;
+}
+
+.db-price-remove {
+  width: 22px;
+  height: 22px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  font-size: 13px;
+  line-height: 1;
+  color: var(--db-text-dim);
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.db-price-remove:hover {
+  background: rgba(244, 63, 94, 0.12);
+  color: #f43f5e;
+}
+
+/* ---- 来源 / 差异 小标签 ---- */
+.db-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.db-tag--configured {
+  background: var(--db-chip-bg);
+  color: var(--db-chip-text);
+}
+
+.db-tag--unpriced {
+  background: var(--db-track);
+  color: var(--db-text-dim);
+}
+
+.db-tag--manual {
+  background: rgba(14, 165, 233, 0.14);
+  color: var(--db-active-text);
+}
+
+.db-tag--new {
+  background: rgba(16, 185, 129, 0.15);
+  color: var(--db-accent-emerald);
+}
+
+.db-tag--changed {
+  background: rgba(245, 158, 11, 0.16);
+  color: var(--db-accent-amber);
+}
+
+.db-tag--ref {
+  background: rgba(245, 158, 11, 0.14);
+  color: var(--db-accent-amber);
+  font-weight: 500;
+}
+
+/* Agent 表「含远端」标记：该行范围内 Token 含其他设备贡献（总览页「全部设备」） */
+.db-tag--remote {
+  margin-left: 6px;
+  padding: 0 6px;
+  background: rgba(14, 165, 233, 0.14);
+  color: var(--db-active-text);
+  font-weight: 500;
+  font-size: 10px;
+  vertical-align: 1px;
+}
+
+/* ---- 差异面板 ---- */
+.db-diff__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.db-diff__hint {
+  margin-bottom: 8px;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--db-text-dim);
+}
+
+.db-diff__meta {
+  margin-bottom: 10px;
+  font-size: 11px;
+  color: var(--db-text-dim);
+}
+
+.db-diff__meta-cache {
+  margin-left: 6px;
+  color: var(--db-accent-amber);
+}
+
+.db-diff__warn {
+  margin-bottom: 10px;
+  padding: 9px 11px;
+  border: 1px solid rgba(245, 158, 11, 0.28);
+  border-radius: 10px;
+  background: rgba(245, 158, 11, 0.1);
+}
+
+.db-diff__warn-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--db-accent-amber);
+}
+
+.db-diff__warn-list {
+  margin-top: 5px;
+  max-height: 96px;
+  overflow-y: auto;
+  font-size: 10px;
+  line-height: 1.7;
+  color: var(--db-text-dim);
+  word-break: break-all;
+  list-style: none;
+  padding: 0;
+}
+
+.db-diff__warn-hint {
+  margin-top: 4px;
+  font-size: 10px;
+  color: var(--db-text-dim);
+}
+
+.db-diff__list {
+  max-height: 300px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.db-diff__item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 6px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.db-diff__item:hover {
+  background: var(--db-hover);
+}
+
+.db-diff__check {
+  width: 14px;
+  height: 14px;
+  flex: none;
+  accent-color: #0ea5e9;
+}
+
+.db-diff__model {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--db-text);
+  word-break: break-all;
+}
+
+.db-diff__price {
+  flex: none;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--db-text-dim);
+  white-space: nowrap;
+}
+
+.db-diff__old {
+  color: var(--db-text-dim);
+}
+
+.db-diff__arrow {
+  color: var(--db-text-dim);
+  opacity: 0.7;
+}
+
+.db-diff__new {
+  color: var(--db-active-text);
+  font-weight: 600;
+}
+
+.db-diff__cny {
+  color: var(--db-text-dim);
+}
+
+/* ---- 新增模型表单 ---- */
+.db-addmodel {
+  display: flex;
+  align-items: flex-end;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.db-addmodel__id {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  width: 280px;
+}
+
+.db-addmodel__price {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  width: 130px;
+}
+
+.db-addmodel__label {
+  font-size: 11px;
+  color: var(--db-text-dim);
+}
+
+.db-addmodel__input,
+.db-addmodel__box {
+  display: flex;
+  align-items: center;
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--db-border);
+  border-radius: 9px;
+  background: var(--db-card-bg);
+}
+
+.db-addmodel__input {
+  font-size: 12px;
+  color: var(--db-text);
+  outline: none;
+}
+
+.db-addmodel__input:focus,
+.db-addmodel__box:focus-within {
+  border-color: var(--db-active-text);
+}
+
+.db-addmodel__symbol {
+  font-size: 12px;
+  color: var(--db-text-dim);
+  padding-right: 4px;
+}
+
+.db-addmodel__num {
+  width: 100%;
+  border: none;
+  background: transparent;
+  font-size: 12px;
+  color: var(--db-text);
+  text-align: right;
+  outline: none;
+}
+
+.db-addmodel__submit {
+  height: 32px;
+}
+
+/* ---- 隐藏模型列表 ---- */
+.db-hiddenlist {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  list-style: none;
+  padding: 0;
+}
+
+.db-hiddenlist__item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.db-hiddenlist__name {
+  min-width: 0;
+  font-size: 11px;
+  color: var(--db-text);
+  word-break: break-all;
+}
+
+/* ---- 共享组件的大窗适配（仅主窗口作用域）----
+   AlertBanner / EmptyState 来自 layout.tsx，悬浮面板仍在用同一份组件，
+   不能在组件或 Tailwind 工具类上直接改字号。这里用 .db-page 的直接子元素
+   选择器做作用域覆盖：dashboard.css 不在 @layer 内，未分层样式优先级高于
+   Tailwind 的 utilities 层，面板（.panel-shell 作用域）完全不受影响。 */
+.db-page > .text-\[11px\] {
+  /* AlertBanner 提示条：11px → 12.5px，留白同步放宽（大窗不缺这一行高度） */
+  margin-bottom: 0;
+  padding: 9px 12px;
+  font-size: 12.5px;
+}
+
+/* EmptyState 空态 / 错误态的标题与说明 */
+.db-page > .flex-1 > .text-xs {
+  font-size: 14px;
+}
+
+.db-page > .flex-1 > .text-\[10px\] {
+  font-size: 12px;
+  max-width: 460px;
+}
+
+/* ---- 窄窗回退（窗口 ≤980px：侧栏 200 + 主区约 780，内容区约 720）：
+   指标卡改 2×2（2×2 时每张更宽，字号不降档）、价格表收列（撤掉 min-width
+   的横向滚动、隐藏 ¥ 折算副行、收窄 $ 输入列），避免固定 4 列 / 固定表宽
+   把数字挤出卡片。
+   热力图不需要专门回退：52 列网格是 minmax(0,1fr) 自适应（格子压到约 11px
+   仍完整显示），统计区在网格下方整行铺开，任何宽度都不出横向滚动 ---- */
+@media (max-width: 980px) {
+  .db-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  /* Agent 表不做收列/隐藏列：数值列 nowrap + 5h 列 140px 保证「88% ↻ 时间」
+     完整可见，窄窗下由 .db-table-wrap 横向滚动承接（列多但语义完整） */
+  .db-price-table {
+    min-width: 0;
+  }
+
+  .db-price-cell {
+    width: 92px;
+  }
+
+  .db-price-cell__cny {
+    display: none;
+  }
+
+  /* ¥ 折算副行隐藏后价格行只有 ~46px：骨架行高同步收窄 */
+  .db-price-skeleton__row {
+    height: 46px;
+  }
+}
+
+/* 滚动条（与 index.css 同款细条；本窗是普通窗，无热区避让需求） */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover);
+}
+
+/* ============================================================
+ * 暗色主题：与 index.css 尾部的 .dark 映射表同源（仅保留主窗口用得到的
+ * 条目：slate 反转 + 品牌深档提亮 + surface/elevated），并补主窗口自身
+ * 变量的暗色值。主窗口的 Tailwind 工具类只写亮色一套，靠这张映射整体
+ * 翻转，与面板行为一致。
+ * 注意暗色底是 slate-900 系（#0f172a，与面板 --panel-bg 同源），
+ * 侧栏略亮一档用 slate-800（#1e293b）拉开层次。
+ * ============================================================ */
+.dark {
+  color-scheme: dark;
+  /* slate 反转：深档文字变浅；浅档文字/图形变中灰 */
+  --color-slate-300: #475569;
+  --color-slate-400: #64748b;
+  --color-slate-500: #7c8ba3;
+  --color-slate-600: #8b9bb0;
+  --color-slate-700: #94a3b8;
+  --color-slate-800: #cbd5e1;
+  --color-slate-900: #e2e8f0;
+  /* 玻璃表面：中灰（bg-surface/低 alpha 在深底上呈递进的亮面） */
+  --color-surface: #64748b;
+  /* 浮层底：深色近实底，保证浮层内文字对比 */
+  --color-elevated: #1e293b;
+  /* 品牌深档（文字用）提亮为对应浅档；实底 -500 不动（配白字） */
+  --color-sky-600: #38bdf8;
+  --color-sky-700: #7dd3fc;
+  --color-violet-600: #a78bfa;
+  --color-violet-700: #c4b5fd;
+  --color-emerald-600: #34d399;
+  --color-emerald-700: #6ee7b7;
+  --color-amber-600: #fbbf24;
+  --color-amber-700: #fcd34d;
+  /* amber-800：AlertBanner warning 文字色（亮色下是深棕），暗底上必须提到
+     浅档才有对比度；error/info/success 用的 red-700 / sky-700 / emerald-700
+     已在上方映射，无同类漏项 */
+  --color-amber-800: #fcd34d;
+  --color-orange-700: #fdba74;
+  --color-blue-600: #60a5fa;
+  --color-blue-700: #93c5fd;
+  --color-teal-600: #2dd4bf;
+  --color-teal-700: #5eead4;
+  --color-yellow-700: #fde047;
+  --color-red-600: #f87171;
+  --color-red-700: #fca5a5;
+  --color-rose-600: #fb7185;
+
+  /* 主窗口页面变量：slate-900 系底 + slate-800 侧栏 */
+  --db-bg: #0f172a;
+  --db-sidebar-bg: #1e293b;
+  --db-border: rgba(226, 232, 240, 0.1);
+  --db-text: #e5e7eb;
+  --db-text-dim: rgba(203, 213, 225, 0.66);
+  --db-hover: rgba(226, 232, 240, 0.08);
+  --db-active-bg: rgba(56, 189, 248, 0.16);
+  --db-active-text: #7dd3fc;
+  --scrollbar-thumb: rgba(226, 232, 240, 0.18);
+  --scrollbar-thumb-hover: rgba(226, 232, 240, 0.28);
+
+  /* 用量总览页内容面：卡片用 slate-800 半透明，浮层提示加一圈浅边 */
+  --db-card-bg: rgba(30, 41, 59, 0.72);
+  --db-card-shadow: none;
+  --db-seg-bg: rgba(226, 232, 240, 0.08);
+  --db-seg-active-bg: rgba(56, 189, 248, 0.2);
+  --db-seg-active-text: #7dd3fc;
+  --db-row-border: rgba(226, 232, 240, 0.07);
+  --db-skeleton: rgba(226, 232, 240, 0.09);
+  --db-track: rgba(226, 232, 240, 0.12);
+  --db-chip-bg: rgba(52, 211, 153, 0.16);
+  --db-chip-text: #34d399;
+  --db-tip-bg: rgba(15, 23, 42, 0.96);
+  --db-tip-text: #f1f5f9;
+  --db-tip-border: rgba(226, 232, 240, 0.14);
+  /* 下拉弹层（暗色）：见 src/DropdownMenu.tsx —— 组件已提升为两窗口共用并
+     改用 Tailwind 工具类（弹层底走 bg-elevated，暗色自动翻到 slate-800 档） */
+  --db-accent-sky: #38bdf8;
+  --db-accent-emerald: #34d399;
+  --db-accent-violet: #a78bfa;
+  --db-accent-amber: #fbbf24;
+  /* 热力色阶（暗色）：格子为 52 周流式网格（边长随列宽自适应），0/1/2/3 档
+     在 slate-800 卡片底上按亮度逐档可辨，4 档为实底品牌蓝 #38bdf8（与 3 档
+     区分明显）；有数据的格子带一档亮蓝细边框 */
+  --db-heat-0: rgba(148, 163, 184, 0.14);
+  --db-heat-1: rgba(56, 189, 248, 0.22);
+  --db-heat-2: rgba(56, 189, 248, 0.42);
+  --db-heat-3: rgba(56, 189, 248, 0.66);
+  --db-heat-4: #38bdf8;
+  --db-heat-edge: rgba(56, 189, 248, 0.34);
+  --db-heat-edge-strong: #7dd3fc;
+  /* 未来格虚线（暗色）：在 slate-800 卡片底上比数据格描边略亮，保持可辨 */
+  --db-heat-future: rgba(56, 189, 248, 0.45);
+}

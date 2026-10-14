@@ -16,6 +16,7 @@ import { theme } from "./dicts/theme";
 import { projects } from "./dicts/projects";
 import { share } from "./dicts/share";
 import { credentials } from "./dicts/credentials";
+import { dashboard } from "./dicts/dashboard";
 import { zh } from "./zh";
 
 export const en: typeof zh = {
@@ -39,7 +40,9 @@ export const en: typeof zh = {
 
     // 额度 / 指标通用
     "common.refreshIn": "Refreshes in {time}",
-    "common.remaining": "{pct}% left",
+    // 剩余额度百分比：紧跟数值都有窗口标签（5h/Week/MCP），英文不再带
+    // "left" 后缀——260px 窄窗固定列宽下 "88% left" 会溢出（zh「剩 88%」不变）
+    "common.remaining": "{pct}%",
     "common.cacheHit": "Cache hit {pct}",
     "common.hour5": "5h",
     "common.weekly": "Week",
@@ -1187,4 +1190,264 @@ export const en: typeof zh = {
     "credentials.guide.doubao":
       "Get an API key from Volcengine Ark and paste it here; usage and quota will appear automatically once connected.",
   } satisfies typeof credentials),
+
+  ...({
+    "dashboard.subtitle": "Usage & quota console",
+
+    "dashboard.overview": "Overview",
+    "dashboard.compare": "Weekly compare",
+    "dashboard.pricing": "Pricing",
+
+    "dashboard.overview.desc":
+      "Aggregated usage, cost and trends across services.",
+    "dashboard.compare.desc":
+      "Weekly quota left per subscription, used-% trends over the selected range, and local vs. other-device token comparison.",
+    "dashboard.pricing.desc":
+      "Model unit-price maintenance and pricing table updates.",
+
+    "dashboard.mainWindow": "Main window",
+    "dashboard.openMainWindow": "Open main window",
+    // Inline hint when the dashboard window cannot be created
+    "dashboard.openMainWindowFailed": "Open failed",
+
+    // ===== Overview page: header & states =====
+    "dashboard.overview.rangeLabel": "Time range",
+    "dashboard.overview.range.today": "Today",
+    "dashboard.overview.range.7d": "Last 7 days",
+    "dashboard.overview.range.30d": "Last 30 days",
+    "dashboard.overview.range.90d": "Last 90 days",
+    // Data scope (this machine / all devices): defaults to All devices to match
+    // the menu-bar title scope
+    "dashboard.overview.scopeLabel": "Data scope",
+    "dashboard.overview.scope.local": "This machine",
+    "dashboard.overview.scope.all": "All devices",
+    // Multi-device sync off: scope control is disabled, explain why
+    "dashboard.overview.syncDisabledHint":
+      "Multi-device sync is off, so only this machine's data is shown. Turn on sync to merge other devices (same scope as the menu-bar title).",
+    // Remote fetch failed while in All-devices scope: degraded to local-only
+    "dashboard.overview.remoteDegraded":
+      "Other devices' data could not be fetched this time; showing this machine only",
+    // Progressive render: local data is visible while remote devices still merge
+    "dashboard.overview.remoteMerging": "Merging remote…",
+    // Marker next to tokens-in-range when the row includes other devices' usage
+    "dashboard.overview.remoteIncluded": "incl. remote",
+    "dashboard.overview.remoteIncludedHint":
+      "Includes usage uploaded from other devices",
+    "dashboard.overview.lastUpdated": "Updated {time}",
+    "dashboard.overview.errorBanner": "Failed to load data: {error}",
+    "dashboard.overview.partialFailures":
+      "Some agents failed to load and were skipped: {names}",
+    "dashboard.overview.emptyTitle": "No usage data yet",
+    "dashboard.overview.emptyHint":
+      "No local usage collected from any agent yet.\nOpen the matching agent's stats in the panel once, or install and run a supported CLI, then reload.",
+    "dashboard.overview.retry": "Reload",
+    // Dedicated error state when every agent failed (no usable data at all)
+    "dashboard.overview.errorTitle": "Failed to load",
+    "dashboard.overview.errorReason": "Reason: {error}",
+
+    // ===== Overview page: metric cards =====
+    // Cards 1/2 have a fixed two-column sub line (in|out, avg|today); each
+    // column truncates on its own, so no "A · B" joined single line here
+    "dashboard.overview.rangeTokens": "Tokens in range",
+    "dashboard.overview.subInput": "In {value}",
+    "dashboard.overview.subOutput": "Out {value}",
+    "dashboard.overview.estCost": "Estimated cost",
+    "dashboard.overview.subAvg": "avg {value}/day",
+    "dashboard.overview.subToday": "today {value}",
+    "dashboard.overview.requestCount": "Requests",
+    "dashboard.overview.dailyAvgRequests": "avg {n}/day",
+    "dashboard.overview.todayTokens": "Tokens today",
+    "dashboard.overview.todayRequests": "{n} requests today",
+    // 4th card on the "today" range (the today-token card would duplicate
+    // "Tokens in range"): shows the change vs yesterday plus yesterday's tokens
+    "dashboard.overview.vsYesterday": "vs yesterday",
+    "dashboard.overview.yesterdayTokens": "Yesterday {n}",
+
+    // ===== Overview page: trend chart =====
+    "dashboard.overview.trendTitle": "Usage trend",
+    // Metric switch group (aria-label): cost / token / requests
+    "dashboard.overview.metricLabel": "Metric",
+    "dashboard.overview.trendSub": "{range} · {total} total",
+    "dashboard.overview.seriesInput": "Input side",
+    "dashboard.overview.seriesOutput": "Output",
+    "dashboard.overview.peak": "Peak {value} ({date})",
+    "dashboard.overview.ttTotal": "Total",
+    "dashboard.overview.ttOutput": "Output",
+    "dashboard.overview.ttInput": "Input side",
+    "dashboard.overview.ttRequests": "Requests",
+    "dashboard.overview.ttCost": "Cost",
+    "dashboard.overview.splitNote":
+      "* Cursor and legacy data have no per-day input/output split; their tokens count as input side",
+
+    // ===== Overview page: heatmap (52 weeks, ZCode-style, three modes) =====
+    "dashboard.overview.heatTitle": "Activity heatmap",
+    "dashboard.overview.heatSub": "Last 52 weeks (fixed window)",
+    // Total covers the 52 natural weeks shown in the grid
+    "dashboard.overview.heatTotal": "52-week total",
+    "dashboard.overview.heatActiveDays": "Active days",
+    "dashboard.overview.heatActiveAvg": "Avg / active day",
+    "dashboard.overview.heatLess": "Less",
+    "dashboard.overview.heatMore": "More",
+    // The legend keeps only levels 1..4; the no-data grey cell gets its own label
+    "dashboard.overview.heatNoData": "No data",
+    // Aggregation mode switch (pure client-side, no refetch)
+    "dashboard.overview.heatModeLabel": "Aggregation",
+    "dashboard.overview.heatMode.daily": "Daily",
+    "dashboard.overview.heatMode.weekly": "Weekly",
+    "dashboard.overview.heatMode.cumulative": "Cumulative",
+    // Column tooltips in weekly / cumulative modes
+    "dashboard.overview.heatWeekTotal": "This week",
+    "dashboard.overview.heatCumTotal": "Cumulative to week",
+    // Cursor and other devices only cover the last 90 days
+    "dashboard.overview.heatFootnote":
+      "The last 90 days include Cursor and other devices; earlier cells are local-only (excluding Cursor).",
+
+    // ===== Overview page: agent table =====
+    "dashboard.overview.agentTitle": "Agent usage",
+    "dashboard.overview.agentSub": "Sorted by tokens in range",
+    "dashboard.overview.colAgent": "Agent",
+    "dashboard.overview.colToday": "Tokens today",
+    "dashboard.overview.colRange": "Tokens in range",
+    "dashboard.overview.colCost": "Cost in range",
+    "dashboard.overview.colQuota": "Weekly quota left",
+    // 5-hour window left (Z.ai / Codex / Claude / Kimi snapshots and the
+    // same-named provider-quota window; agents without it show "--")
+    "dashboard.overview.colHour5": "5h",
+    "dashboard.overview.colHour5Hint":
+      "Quota left in the rolling 5-hour window (only for subscriptions that have it, otherwise --)",
+    "dashboard.overview.hour5ResetHint": "5h window · resets {time}",
+    "dashboard.overview.unpriced": "Unpriced",
+    "dashboard.overview.agentEmpty": "No agent usage data yet",
+    "dashboard.overview.billingCycle": "billing cycle",
+    // Short label for the weekly quota row in the agent table (pairs with "Mo" below)
+    "dashboard.overview.weekShort": "Wk",
+    // Monthly quota second-line label (provider monthly window, e.g. OpenCode Go)
+    "dashboard.overview.monthlyShort": "Mo",
+    "dashboard.overview.costFootnote":
+      "Same source as the menu bar: this machine + other devices (when sync is on), estimated with this machine's price table (USD price × current FX rate); not a billable amount. Cursor details are not uploaded, so Cursor counts are local-only.",
+
+    // ===== Compare page (wide window) =====
+    "dashboard.compare.device": "Device",
+    "dashboard.compare.deviceAll": "All (merged)",
+    "dashboard.compare.rangeLabel": "Time range",
+    "dashboard.compare.errorBanner": "Failed to load data: {error}",
+    "dashboard.compare.remoteHistoryFailed":
+      "Failed to load remote quota history: {msg}",
+    // Summary mode fell back to local-only because remote history failed
+    "dashboard.compare.remoteDegraded":
+      "Other-device data was unavailable this time; local figures only",
+    "dashboard.compare.emptyTitle": "No weekly quota data yet",
+    "dashboard.compare.emptyHint":
+      "Weekly quotas are sampled automatically while the app runs.\nKeep it running to collect data, or open the matching agent's stats once before refreshing.",
+    "dashboard.compare.retry": "Reload",
+    "dashboard.compare.matrixTitle": "Weekly quota left by agent",
+    "dashboard.compare.matrixSub":
+      "Latest sample per series (local + other devices, deduplicated)",
+    // The card subtitle states the most recent sampling time directly
+    // (was a native title tooltip on each quota block)
+    "dashboard.compare.matrixSampledLatest": "Latest sample {time}",
+    // Accessible name / tooltip for the ↻ reset time (the glyph alone says nothing)
+    "dashboard.compare.matrixNextReset": "Next reset",
+    "dashboard.compare.matrixEmpty": "No quota series to show",
+    "dashboard.compare.matrixNoData": "No data",
+    "dashboard.compare.trendTitle": "Weekly quota trend",
+    "dashboard.compare.trendSub": "{range} · used ratio over time",
+    "dashboard.compare.trendEmpty": "No quota samples in this range",
+    "dashboard.compare.trendLegendHint":
+      "Click a legend item to show / hide a series",
+    "dashboard.compare.trendShowAll": "Show all",
+    "dashboard.compare.trendFootnote":
+      "Lines show each series' weekly quota used % (= 100 − remaining), connected by sample time; periods without samples are not connected.",
+    "dashboard.compare.tokensTitle": "Agent token comparison",
+    "dashboard.compare.tokensSub": "{range} · local + other devices merged",
+    "dashboard.compare.tokensLocal": "Local",
+    "dashboard.compare.tokensRemote": "Other devices",
+    "dashboard.compare.tokensRequests": "{count} requests",
+    "dashboard.compare.tokensEmpty": "No token usage to compare in this range",
+    "dashboard.compare.tokensFootnote":
+      "Tokens = actual usage per agent in the selected range: local aggregation plus uploaded data from synced devices. Cursor details are not uploaded, so it is local-only.",
+    "dashboard.compare.footnote":
+      "Quota % = used ratio of each subscription's weekly window (local and remote samples deduplicated by time + account, keeping the higher value); tokens = actual usage of enabled agents in the selected range. They are different metrics.",
+
+    // ===== Pricing page (wide window) =====
+    "dashboard.pricing.currencyLabel": "Currency",
+    "dashboard.pricing.cny": "¥ CNY",
+    "dashboard.pricing.usd": "$ USD",
+    // View-only currency switch for this page (the persisted global currency
+    // follows the interface language and lives in the panel)
+    "dashboard.pricing.currencyViewOnly": "this page only",
+    "dashboard.pricing.currencyViewOnlyHint":
+      "View-only for this page; does not change the global currency (the global currency follows the interface language and can be switched in the floating panel).",
+    // Unsaved-changes hint + Save button dirty label
+    "dashboard.pricing.dirtyHint": "{count} unsaved",
+    "dashboard.pricing.saveDirty": "Save *",
+    // Light confirmation after applying price updates
+    "dashboard.pricing.appliedCount": "Applied {count}",
+    "dashboard.pricing.unitHint":
+      "Unit: $/million tokens. CNY is converted for display at rate {rate}.",
+    "dashboard.pricing.fxRefresh": "Refresh FX rate",
+    "dashboard.pricing.fxRefreshing": "Updating…",
+    "dashboard.pricing.checkUpdates": "Check price updates",
+    "dashboard.pricing.syncModelsdev": "Sync from models.dev",
+    "dashboard.pricing.syncing": "Syncing…",
+    "dashboard.pricing.syncFailHint":
+      "configure a network proxy in Settings and retry",
+    "dashboard.pricing.upToDate": "Up to date ✓",
+    "dashboard.pricing.missingCount": "{count} models unpriced",
+    "dashboard.pricing.tableTitle": "Model prices",
+    "dashboard.pricing.tableSub":
+      "Input / output / cache read in $ per million tokens; click Save (top right) to persist edits",
+    "dashboard.pricing.searchPlaceholder": "Search model ID / display name",
+    "dashboard.pricing.filterEmpty": "No matching models",
+    "dashboard.pricing.count": "{n} models",
+    "dashboard.pricing.colModel": "Model",
+    "dashboard.pricing.colInput": "Input",
+    "dashboard.pricing.colOutput": "Output",
+    "dashboard.pricing.colCacheRead": "Cache read",
+    "dashboard.pricing.colSource": "Source",
+    "dashboard.pricing.colActions": "Actions",
+    "dashboard.pricing.sourceConfigured": "Priced",
+    "dashboard.pricing.sourceUnpriced": "Unpriced",
+    "dashboard.pricing.sourceManual": "Manual",
+    "dashboard.pricing.removeModel": "Remove from list",
+    "dashboard.pricing.addTitle": "Add model price",
+    "dashboard.pricing.addIdLabel": "Model ID",
+    "dashboard.pricing.addPlaceholder": "e.g. glm-5.4-flash",
+    "dashboard.pricing.add": "Add",
+    "dashboard.pricing.addEmptyId": "Enter a model ID",
+    "dashboard.pricing.addExists":
+      "This model is already listed (case / invisible-character variants count as the same model)",
+    "dashboard.pricing.hiddenTitle": "Hidden models",
+    "dashboard.pricing.hiddenCount": "{count} models hidden",
+    "dashboard.pricing.restore": "Restore",
+    "dashboard.pricing.noModels":
+      "No model data yet. Make sure some usage has been recorded, or add a model price manually.",
+    "dashboard.pricing.footnote":
+      "Prices are a local unit-price configuration used only for this app's cost estimates (not a billable amount); applying reference prices never overwrites unselected entries.",
+
+    // ===== Price diff panel (built-in reference / models.dev) =====
+    "dashboard.pricing.diffTitle": "Price updates · built-in reference",
+    "dashboard.pricing.diffTitleModelsdev": "Price updates · models.dev",
+    "dashboard.pricing.diffHint":
+      "Reference comparison is offline. Items marked ≈ matched a base model by variant name; please confirm before applying.",
+    "dashboard.pricing.diffHintModelsdev":
+      "Official vendor prices from models.dev (whitelisted vendors only, no proxy channels). Items marked ≈ still matched a base model by variant name; please confirm before applying.",
+    "dashboard.pricing.modelsdevFetchedAt": "Data fetched: {time}",
+    "dashboard.pricing.modelsdevFromCache": "cached (offline)",
+    "dashboard.pricing.missingWarn":
+      "{count} models are in use but have no price (cost counted as 0):",
+    "dashboard.pricing.addPriceBelow":
+      "Add prices manually in the model list below",
+    "dashboard.pricing.badgeNew": "New",
+    "dashboard.pricing.badgeChanged": "Changed",
+    "dashboard.pricing.refFrom":
+      "Reference price taken from base model {model} (same family variant); confirm before applying",
+    "dashboard.pricing.old": "old",
+    "dashboard.pricing.unpriced": "unpriced",
+    "dashboard.pricing.noDiff": "No differences, prices are up to date",
+    "dashboard.pricing.collapse": "Collapse",
+    "dashboard.pricing.applying": "Applying…",
+    "dashboard.pricing.applySelected": "Apply selected",
+    "dashboard.pricing.applySelectedCount": "Apply selected ({count})",
+  } satisfies typeof dashboard),
 };

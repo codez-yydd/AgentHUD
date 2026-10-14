@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "dashboard",
+  "description": "Minimal capability for the main dashboard window (core APIs only for now; custom commands like open_main_window are not ACL-gated). Extend permissions as later phases need them.",
+  "windows": ["main-window"],
+  "permissions": ["core:default"]
+}

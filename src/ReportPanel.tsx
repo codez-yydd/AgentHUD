@@ -79,6 +79,7 @@ import { ShareCardModal } from "./ShareCard";
 import { useI18n, type TFn } from "./i18n";
 import { dateLocale, type Locale } from "./i18n/locale";
 import { loadCache, saveCache, removeCache } from "./cache";
+import { DropdownMenu } from "./DropdownMenu";
 
 interface Props {
   pricing: PricingConfig;
@@ -1848,27 +1849,33 @@ export function ReportContent({
       <div className="px-3 pt-2.5 pb-2 border-b border-slate-900/8 shrink-0 bg-[rgb(var(--panel-bg)/0.92)] backdrop-blur-sm">
         <div className="flex items-center justify-between gap-2">
           {syncEnabled ? (
-            <select
-              value={deviceFilter}
-              onChange={(event) => setDeviceFilter(event.target.value)}
-              className="input-box num flex-1 min-w-0 text-[10px] py-1"
+            /* 设备筛选：改用共用 DropdownMenu（原生弹层在 WebView2 暗色下
+                选中项灰底难读）；title 与选项文案与原 select 一致 */
+            <DropdownMenu
+              className="flex-1 min-w-0"
               title={t("stats.deviceFilter")}
-            >
-              <option value="all">{t("report.allDevices")}</option>
-              <option value="local">
-                {syncConfig?.device_name
-                  ? t("stats.deviceLocalName", { name: syncConfig.device_name })
-                  : t("stats.deviceLocal")}
-              </option>
-              {remoteDevices.filter((device) => device.device_id !== syncConfig?.device_id).map((device) => (
-                <option key={device.device_id} value={device.device_id}>
-                  {t("common.deviceOption", {
-                    name: device.device_name,
-                    id: device.device_id.slice(0, 6),
-                  })}
-                </option>
-              ))}
-            </select>
+              ariaLabel={t("stats.deviceFilter")}
+              options={[
+                { value: "all", label: t("report.allDevices") },
+                {
+                  value: "local",
+                  label: syncConfig?.device_name
+                    ? t("stats.deviceLocalName", { name: syncConfig.device_name })
+                    : t("stats.deviceLocal"),
+                },
+                ...remoteDevices
+                  .filter((device) => device.device_id !== syncConfig?.device_id)
+                  .map((device) => ({
+                    value: device.device_id,
+                    label: t("common.deviceOption", {
+                      name: device.device_name,
+                      id: device.device_id.slice(0, 6),
+                    }),
+                  })),
+              ]}
+              value={deviceFilter}
+              onChange={setDeviceFilter}
+            />
           ) : (
             <span />
           )}

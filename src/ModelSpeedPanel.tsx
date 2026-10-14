@@ -359,8 +359,10 @@ export function ModelSpeedPanel({ refreshToken = 0 }: { refreshToken?: number })
         <div className="grid grid-cols-[1.08fr_1fr] gap-2 mt-3">
           <div className="speed-fastest-block">
             <div className="speed-kicker">{t("speed.fastest")}</div>
-            <div className="flex items-baseline gap-1 mt-1">
-              <span className="speed-fastest-value num">{tps(fastest)}</span>
+            {/* 最快值 2rem：260px 窄窗 + 1.25 字号档下会顶破左列——
+                单行截断（min-w-0 + truncate），单位 t/s 保持可见 */}
+            <div className="flex items-baseline gap-1 mt-1 min-w-0">
+              <span className="speed-fastest-value num min-w-0 truncate">{tps(fastest)}</span>
               <span className="speed-fastest-unit">t/s</span>
             </div>
             <div className="speed-fastest-caption">{t("speed.fastestHint")}</div>

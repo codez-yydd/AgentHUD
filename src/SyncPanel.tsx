@@ -30,6 +30,7 @@ import {
   LoadingState,
 } from "./layout";
 import { useI18n, type TFn } from "./i18n";
+import { DropdownMenu } from "./DropdownMenu";
 
 interface Props {
   onBack: () => void;
@@ -682,21 +683,23 @@ function MergeDialog({
             count: source.record_count ?? 0,
           })}
         </p>
-        <select
-          value={target}
-          onChange={(e) => setTarget(e.target.value)}
-          className="w-full mb-2 px-1.5 py-1 rounded-md bg-slate-900/5 border border-slate-900/10 text-[11px] focus:outline-none focus:border-sky-400/60"
-        >
-          {candidates.map((d) => (
-            <option key={d.device_id} value={d.device_id}>
-              {t("common.deviceOption", {
+        {/* 目标设备下拉：改用共用 DropdownMenu（原生弹层暗色下选中项灰底难读）；
+            选项文案与原 select 完全一致（设备名 + 本机徽标），宽度吃满对话框 */}
+        <DropdownMenu
+          className="w-full mb-2"
+          ariaLabel={t("sync.mergeInto")}
+          options={candidates.map((d) => ({
+            value: d.device_id,
+            label:
+              t("common.deviceOption", {
                 name: d.device_name,
                 id: d.device_id.slice(0, 6),
-              })}
-              {d.device_id === localDeviceId ? ` · ${t("sync.localBadge")}` : ""}
-            </option>
-          ))}
-        </select>
+              }) +
+              (d.device_id === localDeviceId ? ` · ${t("sync.localBadge")}` : ""),
+          }))}
+          value={target}
+          onChange={setTarget}
+        />
         {targetIsLocal ? (
           <p className="text-[10px] text-amber-700/80 leading-relaxed mb-2">
             {t("sync.mergeLocalWarn")}

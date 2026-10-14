@@ -1,6 +1,8 @@
 import type { ReactNode } from "react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
 import {
+  APPEARANCE_CHANGED_EVENT,
   loadTheme,
   toggleTheme as flipTheme,
   type Theme,
@@ -15,6 +17,29 @@ import { useI18n } from "./i18n";
 export function ThemeToggle({ className = "toolbar-btn" }: { className?: string }) {
   const [theme, setTheme] = useState<Theme>(() => loadTheme());
   const { t } = useI18n();
+
+  // 双向同步闭环的按钮侧：本窗（面板 / 主窗口）以外的窗口切换主题后会广播
+  // zbar://appearance-changed（.dark 类已由跟随方切好），但本按钮的状态只在
+  // 挂载时读一次 localStorage——不重读会停在上一次的主题，出现「显示太阳
+  // 但已是暗色」的错位（再点一次要按两下才回到亮色）。这里重读偏好同步图标；
+  // 只读不写、不广播，自身点击触发的广播重读后同值（setState 幂等跳过），
+  // 不构成回声。监听失败静默，保持挂载时读取的偏好。
+  useEffect(() => {
+    let dispose: (() => void) | undefined;
+    let cancelled = false;
+    listen(APPEARANCE_CHANGED_EVENT, () => setTheme(loadTheme()))
+      .then((unlisten) => {
+        if (cancelled) unlisten();
+        else dispose = unlisten;
+      })
+      .catch(() => {
+        /* 静默：保持挂载时读取的主题 */
+      });
+    return () => {
+      cancelled = true;
+      dispose?.();
+    };
+  }, []);
 
   return (
     <button
@@ -207,7 +232,12 @@ export function HeroMetric({
         <span className="section-title">{label}</span>
         {badge}
       </div>
-      <div className={`num text-[26px] font-bold leading-none tracking-tight ${valueColor[accent]}`}>
+      {/* 大号数值（26px）单行截断：260px 窄窗 + 1.25 字号档下长金额（如
+          「约 ¥123,456.78」）不折行顶破英雄卡；完整值由 title 悬浮兜底 */}
+      <div
+        className={`num text-[26px] font-bold leading-none tracking-tight truncate ${valueColor[accent]}`}
+        title={value}
+      >
         {value}
       </div>
       {footer && (
@@ -443,15 +473,28 @@ export function MetricPair({
 }) {
   return (
     <div className="grid grid-cols-2 gap-3">
-      <div>
-        <div className="text-[9px] text-slate-500">{left.label}</div>
-        <div className="num text-[13px] font-semibold text-slate-800 mt-0.5">
+      <div className="min-w-0">
+        <div className="text-[9px] text-slate-500 truncate">{left.label}</div>
+        <div
+          className="num text-[13px] font-semibold text-slate-800 mt-0.5 truncate"
+          title={left.value}
+        >
           {left.value}
         </div>
       </div>
-      <div>
-        <div className="text-[9px] text-slate-500">{right.label}</div>
-        <div className="mt-1">{right.value}</div>
+      <div className="min-w-0">
+        <div className="text-[9px] text-slate-500 truncate">{right.label}</div>
+        {/* 右侧值是 ReactNode：字符串（百分比/请求数）加截断保护，组件
+            （如占比条）原样渲染，避免把弹性条截成固定宽 */}
+        <div className="mt-1 min-w-0">
+          {typeof right.value === "string" ? (
+            <span className="block truncate" title={right.value}>
+              {right.value}
+            </span>
+          ) : (
+            right.value
+          )}
+        </div>
       </div>
     </div>
   );

@@ -18,6 +18,7 @@ mod kimi;
 mod kimi_oauth;
 mod local_agents;
 mod longcat;
+mod main_window;
 mod minimax;
 mod minimaxcode;
 mod mimo;
@@ -2152,8 +2153,13 @@ fn spawn_fx_rate_refresher() {
 
 /// 初始化托盘图标
 fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
+    // 右键菜单两项：「打开主窗口」（Dashboard 管理/分析大窗，见
+    // main_window.rs）与「退出 ZBar」。左键单击仍是切换悬浮面板
+    //（show_menu_on_left_click(false) + 下方 Click 分支），主窗口入口
+    // 只在右键菜单里，避免与左键"切换面板"的既有习惯冲突。
+    let open_main_item = MenuItem::with_id(app, "open-main", "打开主窗口", true, None::<&str>)?;
     let quit_item = MenuItem::with_id(app, "quit", "退出 ZBar", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&quit_item])?;
+    let menu = Menu::with_items(app, &[&open_main_item, &quit_item])?;
 
     // 初始标题只用占位文字：真实标题（今日花费 + token）的生成依次做
     // SQLite 查询、开启同步后的远程 HTTP、Cursor events 冷缓存全量分页拉取，
@@ -2167,8 +2173,17 @@ fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| {
-            if event.id().as_ref() == "quit" {
-                app.exit(0);
+            match event.id().as_ref() {
+                "quit" => app.exit(0),
+                // 打开主窗口：on_menu_event 本身在主线程回调，可直接走
+                // 建窗/聚焦主体（内部自判"已存在则显示聚焦"）；失败只记
+                // 日志，不 panic、不影响托盘后续交互
+                "open-main" => {
+                    if let Err(e) = main_window::open_main_window_on_main_thread(app) {
+                        eprintln!("[zbar-main-window] 打开主窗口失败: {e}");
+                    }
+                }
+                _ => {}
             }
         })
         .on_tray_icon_event(|tray, event| {
@@ -2360,6 +2375,16 @@ pub fn run() {
                         session_hud::handle_session_hud_window_destroyed(window.app_handle());
                     }
                 }
+                // 主窗口（Dashboard）：点系统"×"= 隐藏不销毁（常驻秒开）。
+                // webview 与页面状态原样保留，再次打开走 show + focus；应用
+                // 退出仍由托盘"退出 ZBar"完成。只拦 main-window 一个 label，
+                // panel/pet/session-hud 的关闭路径（各自 Destroyed 挂点）不受影响
+                WindowEvent::CloseRequested { api, .. } => {
+                    if window.label() == main_window::MAIN_WINDOW_LABEL {
+                        api.prevent_close();
+                        let _ = window.hide();
+                    }
+                }
                 _ => {}
             }
             // 失焦时自动隐藏面板（保留窗口本身，不销毁）
@@ -2410,6 +2435,13 @@ pub fn run() {
                 prevent_app_nap();
             }
             setup_tray(app.handle())?;
+            // 主窗口预热：托盘初始化后立即预建隐藏的主窗口，dashboard.html 的
+            // WebView 提前加载（建窗本身走主线程异步路径，不阻塞启动关键路径），
+            // 首次「打开主窗口」只剩 show + focus（见 main_window.rs 的
+            // prebuild_main_window 注释）。失败只记日志，首次打开仍能正常建窗。
+            if let Err(e) = main_window::prebuild_main_window(app.handle()) {
+                eprintln!("[zbar-main-window] 预建主窗口失败: {e}");
+            }
             spawn_title_updater(app.handle().clone());
             spawn_fx_rate_refresher();
 
@@ -2561,6 +2593,8 @@ pub fn run() {
             // 悬浮窗热区拖拽尺寸会话："用户调整中"标志置位/清除 + 结束即时落盘核校
             session_hud::session_hud_resize_begin,
             session_hud::session_hud_resize_end,
+            // 主窗口（Dashboard）：托盘菜单与悬浮窗统计页按钮共用的打开入口
+            main_window::open_main_window,
             model_speed::get_model_speed,
             pets::import_pet,
             pets::list_custom_pets,

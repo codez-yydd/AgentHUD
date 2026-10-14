@@ -182,6 +182,21 @@ function AgentCostCard({
   };
   const brand = brandMap[agent.id];
 
+  // 速度行：平均语义直接写在卡片上（request_average 带 ≈；含远端合并时速度
+  // 仅代表本机，标签写「本机平均速度」）。260px 窄窗 + 1.25 字号档下整行会
+  // 被挤宽——truncate 单行省略，完整文案 + TTFT 提示由 title 悬浮兜底。
+  const speedText =
+    agent.avgTps != null
+      ? `⚡ ${speedLocal ? t("common.avgSpeedLocal") : t("common.avgSpeed")} ` +
+        `${agent.speedQuality === "request_average" ? "≈" : ""}${formatTps(agent.avgTps)} t/s`
+      : null;
+  const speedTitle =
+    speedText == null
+      ? undefined
+      : agent.avgTtftMs != null
+        ? `${speedText} · ${t("common.ttft")} ${formatMs(agent.avgTtftMs)}`
+        : speedText;
+
   return (
     <div
       className="rounded-xl px-2.5 py-2 border shrink-0"
@@ -221,24 +236,13 @@ function AgentCostCard({
               {t("common.cacheHit", { pct: `${Math.round(agent.cacheHitPct)}%` })}
             </div>
           )}
-          {agent.avgTps != null && (
+          {speedText && (
             <div
-              className="num text-[9px] font-medium mt-0.5 whitespace-nowrap"
+              className="num text-[9px] font-medium mt-0.5 truncate"
               style={{ color: agent.color }}
-              title={
-                agent.avgTtftMs != null
-                  ? `${t("common.ttft")} ${formatMs(agent.avgTtftMs)}`
-                  : undefined
-              }
+              title={speedTitle}
             >
-              {/* 平均语义直接写在卡片上：request_average 带 ≈；含远端合并时
-                  速度仅代表本机（远端无耗时数据），标签写「本机平均速度」 */}
-              ⚡{" "}
-              {speedLocal
-                ? t("common.avgSpeedLocal")
-                : t("common.avgSpeed")}{" "}
-              {agent.speedQuality === "request_average" ? "≈" : ""}
-              {formatTps(agent.avgTps)} t/s
+              {speedText}
             </div>
           )}
         </div>
@@ -571,7 +575,7 @@ function QuotaMiniRow({
           {resetText}
         </span>
         <span
-          className="num text-[9px] font-medium w-12 text-right shrink-0 whitespace-nowrap"
+          className="num text-[9px] font-medium text-right shrink-0 whitespace-nowrap"
           style={{ color: remainingTextColor(remain) }}
         >
           {t("common.remaining", { pct: Math.round(remain) })}

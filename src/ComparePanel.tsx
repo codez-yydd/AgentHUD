@@ -38,6 +38,7 @@ import {
 import { useI18n } from "./i18n";
 import { mergeAgentQuotaSnapshots } from "./agentQuota";
 import { loadCache, saveCache } from "./cache";
+import { DropdownMenu } from "./DropdownMenu";
 
 interface Props {
   agentVisibility: AgentVisibility;
@@ -655,29 +656,34 @@ export function CompareContent({ agentVisibility }: Props) {
           页面外壳上移 ReportsPanel 后保留在此） */}
       <div className="px-3 pt-2.5 pb-2 border-b border-slate-900/8 shrink-0 flex items-center justify-between gap-2">
         {syncEnabled ? (
-          <div className="flex items-center gap-1.5 flex-1 min-w-0">
-            <span className="text-[10px] text-slate-500 shrink-0">{t("compare.device")}</span>
-            <select
-              value={deviceFilter}
-              onChange={(e) => setDeviceFilter(e.target.value)}
-              className="input-box flex-1 text-[10px] py-1"
-            >
-              <option value="all">{t("compare.all")}</option>
-              <option value="local">
-                {syncConfig?.device_name
+          /* 设备筛选：改用共用 DropdownMenu（原生弹层在 WebView2 暗色下
+             选中项灰底难读）；「设备」前置说明由组件 label 渲染，勾选与
+             选中底由组件统一提供 */
+          <DropdownMenu
+            className="flex-1 min-w-0"
+            label={t("compare.device")}
+            ariaLabel={t("compare.device")}
+            options={[
+              { value: "all", label: t("compare.all") },
+              {
+                value: "local",
+                label: syncConfig?.device_name
                   ? t("stats.deviceLocalName", { name: syncConfig.device_name })
-                  : t("stats.deviceLocal")}
-              </option>
-              {remoteDevices.filter((d) => d.device_id !== syncConfig?.device_id).map((d) => (
-                <option key={d.device_id} value={d.device_id}>
-                  {t("common.deviceOption", {
+                  : t("stats.deviceLocal"),
+              },
+              ...remoteDevices
+                .filter((d) => d.device_id !== syncConfig?.device_id)
+                .map((d) => ({
+                  value: d.device_id,
+                  label: t("common.deviceOption", {
                     name: d.device_name,
                     id: d.device_id.slice(0, 6),
-                  })}
-                </option>
-              ))}
-            </select>
-          </div>
+                  }),
+                })),
+            ]}
+            value={deviceFilter}
+            onChange={setDeviceFilter}
+          />
         ) : (
           <span />
         )}

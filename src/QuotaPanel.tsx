@@ -1,6 +1,11 @@
 import { useEffect, useState } from "react";
 import { useDataCache } from "./DataCache";
-import { formatCountdownCore, formatResetStamp, levelLabel } from "./format";
+import {
+  formatCountdownCore,
+  formatResetStamp,
+  formatTokens,
+  levelLabel,
+} from "./format";
 import { remainingGradient, remainingTextColor } from "./widgets";
 import { useI18n } from "./i18n";
 import { useResetDisplay } from "./resetDisplay";
@@ -56,9 +61,9 @@ export function QuotaPanel() {
   const planBadge = quota?.level ? levelLabel(quota.level) : "—";
 
   return (
-    <div className="relative mb-1 card-base rounded-2xl px-3 py-2.5">
+    <div className="relative mb-1 card-base rounded-2xl px-3 py-2">
       {/* 标题行 */}
-      <div className="flex items-center justify-between mb-1.5">
+      <div className="flex items-center justify-between mb-1">
         <div className="flex items-center gap-1.5">
           <span className="text-[10px] uppercase tracking-wide text-slate-700/55">
             Coding Plan
@@ -100,7 +105,7 @@ export function QuotaPanel() {
           usedPct={quota.weekly.percentage}
           resetAt={quota.weekly.nextResetTime}
           now={now}
-          className="mt-1.5"
+          className="mt-1"
           delta={todayDelta}
         />
       )}
@@ -113,7 +118,7 @@ export function QuotaPanel() {
           now={now}
           currentValue={quota.mcp.currentValue}
           total={quota.mcp.usage}
-          className="mt-1.5"
+          className="mt-1"
         />
       )}
 
@@ -272,36 +277,35 @@ function AccountQuotaRow({
   );
 }
 
-/** 额度条中列的重置时间展示（QuotaBar / McpBar 共用）：
- *  仅倒计时（默认）与历史渲染逐字一致；双开改纵向两行（次行时间点用更弱
- *  前景色）；仅时间点在原位单行替换；双关留空占位保持 grid 列结构。 */
-function ResetSpan({ resetAt, now }: { resetAt: number; now: number }) {
+/** 额度条行内的重置时间（QuotaBar / McpBar 共用；原独立列 ResetSpan 已并入行内）：
+ *  三态按 useResetDisplay——倒计时开启（双开或仅倒计时）显示精简倒计时「↻ 3h48m」，
+ *  双开时时间点移入 title；仅时间点显示「↻ 10-15 05:17」；两者都关返回 null
+ *  （不渲染空节点，避免 flex gap 白占宽）。
+ *  完整文案（含「后刷新 / 重置于」本地化后缀）统一由 title 悬浮兜底；
+ *  260px 窄窗下行内空间不足时按 min-w-0 + truncate 省略。 */
+function ResetInline({ resetAt, now }: { resetAt: number; now: number }) {
   const { t } = useI18n();
   const display = useResetDisplay();
-  if (!display.countdown && !display.datetime) return <span />;
-  if (display.countdown && display.datetime) {
-    return (
-      <span className="flex flex-col items-end pr-1">
-        <span className="num text-slate-700/40 text-right whitespace-nowrap">
-          ↻ {t("common.refreshIn", { time: formatCountdownCore(resetAt - now) })}
-        </span>
-        <span className="num text-slate-700/30 text-right whitespace-nowrap">
-          {t("common.resetAt", { time: formatResetStamp(resetAt) })}
-        </span>
-      </span>
-    );
-  }
+  if (!display.countdown && !display.datetime) return null;
+  const countdown = formatCountdownCore(resetAt - now);
+  const stamp = formatResetStamp(resetAt);
+  const title = `↻ ${t("common.refreshIn", { time: countdown })} · ${t(
+    "common.resetAt",
+    { time: stamp }
+  )}`;
   return (
-    <span className="num text-slate-700/40 text-right pr-1 whitespace-nowrap">
-      ↻{" "}
-      {display.datetime
-        ? t("common.resetAt", { time: formatResetStamp(resetAt) })
-        : t("common.refreshIn", { time: formatCountdownCore(resetAt - now) })}
+    <span
+      className="num text-[8px] text-slate-700/45 min-w-0 truncate"
+      title={title}
+    >
+      {display.countdown ? `↻ ${countdown}` : `↻ ${stamp}`}
     </span>
   );
 }
 
-/** 单条额度进度条（剩余版：填充剩余量，颜色随剩余渐变） */
+/** 单条额度进度条（剩余版：填充剩余量，颜色随剩余渐变）。
+ *  单行内联布局：标签 / 进度条(flex-1) / 剩余% / 重置倒计时 / 今日增量 同行，
+ *  三组额度纵向占用由原三行结构（约 34px/组）压到约 16px/组。 */
 function QuotaBar({
   label,
   usedPct,
@@ -327,22 +331,17 @@ function QuotaBar({
   const hasDelta = delta != null && delta[1] >= 2 && deltaPct > 0;
 
   return (
-    <div className={className}>
-      <div className="grid grid-cols-[3.25rem_minmax(0,1fr)_3.25rem] items-center gap-2 text-[10px] mb-0.5">
-        <span className="text-slate-700/60">{label}</span>
-        {resetAt && resetAt > now ? (
-          <ResetSpan resetAt={resetAt} now={now} />
-        ) : (
-          <span />
-        )}
-        <span
-          className="num font-semibold text-right"
-          style={{ color: remainingTextColor(remaining) }}
-        >
-          {t("common.remaining", { pct: Math.round(remaining) })}
-        </span>
-      </div>
-      <div className="h-1.5 rounded-full bg-slate-900/8 overflow-hidden">
+    <div className={`flex items-center gap-1.5 ${className}`}>
+      {/* 标签固定 w-9（36px，中英文标签都放得下）单行截断，完整文本 title 兜底 */}
+      <span
+        className="text-[10px] text-slate-700/60 w-9 shrink-0 truncate"
+        title={label}
+      >
+        {label}
+      </span>
+      {/* 进度条吃掉剩余宽度。轨道仍用原 bg-slate-900/8：widgets 的共用 ProgressBar
+          轨道是 /10，换用会改动配色，故继续就地渲染 */}
+      <div className="flex-1 min-w-0 h-1.5 rounded-full bg-slate-900/8 overflow-hidden">
         <div
           className="h-full rounded-full transition-all duration-500"
           style={{
@@ -351,21 +350,36 @@ function QuotaBar({
           }}
         />
       </div>
-      {/* 今日增量 */}
+      {/* 剩余口径与配色不变（remainingTextColor） */}
+      <span
+        className="num text-[10px] font-semibold shrink-0"
+        style={{ color: remainingTextColor(remaining) }}
+      >
+        {t("common.remaining", { pct: Math.round(remaining) })}
+      </span>
+      {resetAt != null && resetAt > now && <ResetInline resetAt={resetAt} now={now} />}
+      {/* 今日增量：原独立副行并入本行（8px 紧凑「↑N%」，完整本地化文案 title 兜底） */}
       {hasDelta && (
-        <div className="text-[9px] mt-0.5">
-          <span className="num text-slate-700/50">
-            {t("quota.todayDelta", { pct: deltaPct })}
-          </span>
-        </div>
+        <span
+          className="num text-[8px] text-slate-700/45 shrink-0"
+          title={t("quota.todayDelta", { pct: deltaPct })}
+        >
+          ↑{deltaPct}%
+        </span>
       )}
     </div>
   );
 }
 
-/** MCP 月度额度条：与 QuotaBar 同款（剩余版）。
- *  - 中间列显示刷新倒计时（若接口无 nextResetTime 则留空）
- *  - 进度条下方副信息行：绝对值「已用 / 总量」 */
+/** MCP 绝对值行内紧凑格式：千级以内原样（12/1000），上万后单个数值超 5 位，
+ *  连同进度条一起挤压行内空间，改用 formatTokens 缩写（12345 → 12.3K） */
+function compactAbs(n: number): string {
+  return n >= 10_000 ? formatTokens(n) : String(n);
+}
+
+/** MCP 月度额度条：与 QuotaBar 同款单行内联布局（剩余版）。
+ *  - 标签固定文本 "MCP"；中间倒计时接口通常不返回（无 nextResetTime 则不渲染）
+ *  - 绝对值「已用 / 总量」由原独立副行并入本行（8px 紧凑串，原始值 title 兜底） */
 function McpBar({
   usedPct,
   resetAt,
@@ -385,27 +399,21 @@ function McpBar({
   const used = Math.min(Math.max(usedPct, 0), 100);
   const remaining = 100 - used;
 
-  // 有绝对值时显示 "已用 / 总量"
-  const hasAbs =
-    typeof currentValue === "number" && typeof total === "number";
+  // 行内绝对值：两端都有值时给出「已用/总量」紧凑串 + 原始值（title 悬浮可查）
+  const abs =
+    typeof currentValue === "number" && typeof total === "number"
+      ? {
+          text: `${compactAbs(currentValue)}/${compactAbs(total)}`,
+          title: `${currentValue} / ${total}`,
+        }
+      : null;
 
   return (
-    <div className={className}>
-      <div className="grid grid-cols-[3.25rem_minmax(0,1fr)_3.25rem] items-center gap-2 text-[10px] mb-0.5">
-        <span className="text-slate-700/60">MCP</span>
-        {resetAt && resetAt > now ? (
-          <ResetSpan resetAt={resetAt} now={now} />
-        ) : (
-          <span />
-        )}
-        <span
-          className="num font-semibold text-right"
-          style={{ color: remainingTextColor(remaining) }}
-        >
-          {t("common.remaining", { pct: Math.round(remaining) })}
-        </span>
-      </div>
-      <div className="h-1.5 rounded-full bg-slate-900/8 overflow-hidden">
+    <div className={`flex items-center gap-1.5 ${className}`}>
+      <span className="text-[10px] text-slate-700/60 w-9 shrink-0 truncate">
+        MCP
+      </span>
+      <div className="flex-1 min-w-0 h-1.5 rounded-full bg-slate-900/8 overflow-hidden">
         <div
           className="h-full rounded-full transition-all duration-500"
           style={{
@@ -414,10 +422,20 @@ function McpBar({
           }}
         />
       </div>
-      {hasAbs && (
-        <div className="text-[9px] text-slate-700/50 mt-0.5 num">
-          {currentValue} / {total}
-        </div>
+      <span
+        className="num text-[10px] font-semibold shrink-0"
+        style={{ color: remainingTextColor(remaining) }}
+      >
+        {t("common.remaining", { pct: Math.round(remaining) })}
+      </span>
+      {resetAt != null && resetAt > now && <ResetInline resetAt={resetAt} now={now} />}
+      {abs && (
+        <span
+          className="num text-[8px] text-slate-700/45 shrink-0"
+          title={abs.title}
+        >
+          {abs.text}
+        </span>
       )}
     </div>
   );
