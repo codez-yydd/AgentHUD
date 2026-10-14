@@ -1949,15 +1949,19 @@ pub(crate) fn build_kimi_agent() -> ureq::Agent {
 // token、再用 401 清缓存，日志无限刷屏且永远不可能成功。故加进程内熔断：
 // 连续 MAX_REFRESH_FAILURES 次「需重登」失败后停止自动重试，等凭据真正变化
 // （用户重新登录 / 删除重录）时自动恢复。
+//
+// 本段的状态机与常量是 crate 内唯一的续期熔断实现，由 kimi 两条链路与
+// gemini.rs（Google refresh_token 链路）共用：改动会同时影响两个 provider，
+// 勿只按单条链路的语义单独修改。
 
-/// 自动续期连续失败多少次触发熔断。两条链路（CLI 凭据 resolve_request_token
-/// 与凭证体系 resolve_credential_token）共用同一阈值，改这里即两边同时生效——
-/// 不要给某条链路另立常量。
+/// 自动续期连续失败多少次触发熔断。三条链路（CLI 凭据 resolve_request_token、
+/// 凭证体系 resolve_credential_token 与 gemini.rs 的 Google 刷新）共用同一
+/// 阈值，改这里即全部同时生效——不要给某条链路另立常量。
 ///
 /// 为什么是 10：单次失败可能是服务端抖动或代理瞬时故障，凭证链路 120s 一轮，
 /// 连续 10 轮（约 20 分钟）仍失败才足以判定 refresh_token 已死；阈值太低会把
 /// 短暂网络问题误判为需重登，反而停掉了本可自愈的自动续期。
-const MAX_REFRESH_FAILURES: u32 = 10;
+pub(crate) const MAX_REFRESH_FAILURES: u32 = 10;
 
 /// 「需重登」类失败的文案前缀：refresh_failure_message 的 400/401/403 分支
 /// 必须以此开头，熔断按前缀分类错误串（先复用该常量拼文案，再单测锚定；
@@ -1965,8 +1969,9 @@ const MAX_REFRESH_FAILURES: u32 = 10;
 const RELOGIN_FAILURE_PREFIX: &str = "refresh_token 已失效";
 
 /// 一次刷新尝试的结果（熔断只对 RequiresRelogin 计数）。
+/// pub(crate)：kimi 两条链路与 gemini.rs 的 Google 刷新共用一个分类口径。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum RefreshOutcome {
+pub(crate) enum RefreshOutcome {
     /// 刷新成功 → 计数清零并解除熔断
     Success,
     /// 需重登类失败（refresh_token 被服务端拒绝/已失效）→ 计数 +1
@@ -1978,15 +1983,17 @@ enum RefreshOutcome {
 /// 单个凭据的续期熔断状态。
 /// credential_hash 是当前 refresh_token / 凭证 secret 的进程内指纹——绝不存
 /// 明文、不进日志，仅用于判断「用户是否换了凭据」。
+/// pub(crate)：gemini.rs 用同款状态机（字段仍只在本模块内读写）。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-struct RefreshCircuitState {
+pub(crate) struct RefreshCircuitState {
     credential_hash: u64,
     consecutive_failures: u32,
     tripped: bool,
 }
 
 /// refresh_token / secret 的进程内指纹（判断凭据是否变化用；不可逆、不落盘）。
-fn credential_fingerprint(secret: &str) -> u64 {
+/// pub(crate)：gemini.rs 对 Google 的 refresh_token 用同一指纹口径。
+pub(crate) fn credential_fingerprint(secret: &str) -> u64 {
     let mut hasher = DefaultHasher::new();
     secret.hash(&mut hasher);
     hasher.finish()
@@ -1995,7 +2002,7 @@ fn credential_fingerprint(secret: &str) -> u64 {
 /// 进入刷新前判定（纯函数）：凭据指纹变化（用户重新登录 CLI / 删除重录凭证）
 /// → 计数与熔断一起清零（这是熔断后唯一的自动恢复机制，必须精确）。
 /// 返回 (新状态, 是否跳过本次刷新)：tripped 时跳过，不再白打一次 HTTP。
-fn circuit_before_refresh(
+pub(crate) fn circuit_before_refresh(
     state: RefreshCircuitState,
     credential_hash: u64,
 ) -> (RefreshCircuitState, bool) {
@@ -2012,7 +2019,7 @@ fn circuit_before_refresh(
 /// 刷新结果回写（纯函数）：返回 (新状态, 本次是否刚触发熔断)。
 /// 指纹不匹配（刷新 HTTP 期间用户已重新登录）→ 本次结果按陈旧结果丢弃，
 /// 不污染新凭据的计数。just_tripped 用于只打一条汇总日志，之后静默。
-fn circuit_after_refresh(
+pub(crate) fn circuit_after_refresh(
     state: RefreshCircuitState,
     credential_hash: u64,
     outcome: RefreshOutcome,

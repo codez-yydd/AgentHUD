@@ -9,7 +9,11 @@
 //!    vertex-ai → pending 条目（不支持非 OAuth 认证方式）；
 //! 2. access_token 缺失或 expiry_date 过期 → POST oauth2.googleapis.com/token
 //!    刷新（client_id/secret 优先从本机 gemini-cli 安装的 oauth2.js 提取，
-//!    失败用内置常量），成功后原子写回 oauth_creds.json；
+//!    失败用内置常量），成功后原子写回 oauth_creds.json；连续「需重登」
+//!    （401/403/400，Google 对失效 refresh_token 返 400 invalid_grant）失败
+//!    达 MAX_REFRESH_FAILURES 次后熔断，停止自动重试（复用 kimi.rs
+//!    「OAuth 自动续期熔断」状态机，见 GEMINI_REFRESH_CIRCUIT），
+//!    refresh_token 变化（重新运行 gemini 登录）自动恢复；
 //! 3. loadCodeAssist 拿 cloudaicompanionProject；ineligibleTiers 出现
 //!    UNSUPPORTED_CLIENT → 「账号不支持 Code Assist」；
 //! 4. 无 project → 回退 cloudresourcemanager 项目列表选 gen-lang-client*；
@@ -22,11 +26,15 @@
 //! - 安全：错误消息中文且不含 token/client_secret 片段；凭证只在 Rust 内部
 //!   构造鉴权头，永不下发前端、不进日志。
 
+use crate::kimi::{
+    circuit_after_refresh, circuit_before_refresh, credential_fingerprint,
+    RefreshCircuitState, MAX_REFRESH_FAILURES,
+};
 use crate::provider_quota::{
     flatten_response, now_ms, quota_http_agent, ProviderQuotaEntry, ProviderQuotaWindow,
 };
 use std::path::PathBuf;
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 
 /// OAuth 刷新端点（Google 公共）。
 const TOKEN_ENDPOINT: &str = "https://oauth2.googleapis.com/token";
@@ -454,6 +462,81 @@ fn extract_js_string_const(content: &str, name: &str) -> Option<String> {
 // 网络层（ureq 同步；调用方 spawn_blocking）
 // ============================================================
 
+// ===== OAuth 自动续期熔断（复用 kimi.rs 状态机）=====
+//
+// 背景：refresh_token 一旦被 Google 判失效（实测 HTTP 400 invalid_grant），
+// 只有重新运行 gemini 登录才能救活。旧实现每轮额度轮询（120s 一轮）都会白打
+// 一次刷新 HTTP，错误以面板 error 条目反复呈现且永远不可能成功。故接入
+// kimi.rs「OAuth 自动续期熔断」段的状态机：连续 MAX_REFRESH_FAILURES 次
+// 「需重登」失败后停止自动重试，等 refresh_token 真正变化时自动恢复。
+// 与 kimi 的差异：gemini 不打逐轮终端日志（错误只进面板条目），只打熔断那
+// 一条汇总日志；刷新成功会原子写回 oauth_creds.json（见 write_back_creds）。
+
+/// 「需重登」类失败的文案前缀：refresh_failure_message 的 400/401/403 分支
+/// 必须以此开头，熔断按前缀分类错误串（改文案必须同步
+/// classify_gemini_refresh_error，勿只改一处）。
+const GEMINI_RELOGIN_FAILURE_PREFIX: &str = "Gemini 登录已失效（需重新运行 gemini 登录）";
+
+/// 刷新失败的 HTTP 状态 → 用户可执行的中文原因（纯函数，便于单测与熔断分类）。
+///
+/// 为什么把 400/401/403 单独分类：Google 对失效的 refresh_token 返回
+/// HTTP 400 invalid_grant（401/403 同理属凭据被拒），是「凭据已死、必须重登」
+/// 而非网络问题；旧实现把它写成「令牌刷新失败（HTTP 400）」，用户会以为是
+/// 网络抖动。其余状态保持原文案（网络/服务类，熔断不计数）。
+fn refresh_failure_message(status: u16) -> String {
+    if matches!(status, 400 | 401 | 403) {
+        format!("{GEMINI_RELOGIN_FAILURE_PREFIX}（HTTP {status}）")
+    } else {
+        format!("Gemini 令牌刷新失败（HTTP {status}）")
+    }
+}
+
+/// 刷新错误串 → 熔断事件（纯函数，复用 kimi.rs 的分类枚举）：只有以「需重登」
+/// 前缀开头才计数；网络失败、响应解析失败、缺少 access_token 等一律归网络类
+/// 不计数（宁可少判也不误停续期）。
+fn classify_gemini_refresh_error(err: &str) -> crate::kimi::RefreshOutcome {
+    if err.starts_with(GEMINI_RELOGIN_FAILURE_PREFIX) {
+        crate::kimi::RefreshOutcome::RequiresRelogin
+    } else {
+        crate::kimi::RefreshOutcome::NetworkFailure
+    }
+}
+
+/// Gemini 链路的续期熔断状态（进程内，不持久化）。
+///
+/// 为什么不持久化：与 kimi 同口径——重启后最多再打 MAX_REFRESH_FAILURES 次
+/// 刷新、再记同样多轮面板 error，代价可接受；若落盘还要在「重新登录检测」
+/// （指纹比对）之外再维护过期清理，收益不抵复杂度。每轮 fetch_entries_from
+/// 重新 parse_creds 拿到的 refresh_token 指纹变化即自动恢复。
+static GEMINI_REFRESH_CIRCUIT: OnceLock<Mutex<RefreshCircuitState>> = OnceLock::new();
+
+fn gemini_refresh_circuit() -> &'static Mutex<RefreshCircuitState> {
+    GEMINI_REFRESH_CIRCUIT.get_or_init(|| Mutex::new(RefreshCircuitState::default()))
+}
+
+/// 进入刷新前：记录/重置指纹，返回是否应跳过刷新（短持锁，HTTP 在锁外）。
+fn gemini_circuit_before_refresh(credential_hash: u64) -> bool {
+    let mut state = gemini_refresh_circuit()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let (next, skip) = circuit_before_refresh(*state, credential_hash);
+    *state = next;
+    skip
+}
+
+/// 回写刷新结果：返回本次是否刚触发熔断（调用方据此打唯一一条汇总日志）。
+fn gemini_circuit_after_refresh(
+    credential_hash: u64,
+    outcome: crate::kimi::RefreshOutcome,
+) -> bool {
+    let mut state = gemini_refresh_circuit()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let (next, just_tripped) = circuit_after_refresh(*state, credential_hash, outcome);
+    *state = next;
+    just_tripped
+}
+
 /// Token 刷新结果（成功响应里的三个字段）。
 struct RefreshOutcome {
     access_token: String,
@@ -482,7 +565,7 @@ fn refresh_access_token(
     let (status, body) =
         flatten_response(resp).map_err(|e| format!("Gemini 令牌刷新请求失败: {e}"))?;
     if status != 200 {
-        return Err(format!("Gemini 令牌刷新失败（HTTP {status}）"));
+        return Err(refresh_failure_message(status));
     }
     let body = body.unwrap_or_default();
     let v: serde_json::Value = serde_json::from_str(&body)
@@ -694,15 +777,27 @@ fn fetch_entries_from(home: &std::path::Path) -> Vec<ProviderQuotaEntry> {
 
     let agent = quota_http_agent();
 
-    // 过期 → 刷新（成功原子写回后重新读一次 id_token，保持 email 展示最新）
+    // 过期 → 刷新（成功原子写回后重新读一次 id_token，保持 email 展示最新）；
+    // 连续「需重登」失败达 MAX_REFRESH_FAILURES 次熔断（GEMINI_REFRESH_CIRCUIT），
+    // 之后跳过刷新 HTTP，直接给 error 条目（与 kimi 两条链路口径一致）
     if needs_refresh(&creds, now_ms()) {
         let Some(refresh_token) = creds.refresh_token.as_deref().filter(|t| !t.is_empty()) else {
             return vec![error(
                 "Gemini 登录态已失效，请在终端重新运行 gemini 登录".to_string(),
             )];
         };
+        // 指纹供熔断判定：refresh_token 变化（用户重新登录 gemini）自动清零解熔断
+        let credential_hash = credential_fingerprint(refresh_token);
+        if gemini_circuit_before_refresh(credential_hash) {
+            // 熔断中：该 refresh_token 已连续被 Google 判失效（只有重新登录能
+            // 救活）——不再白打刷新 HTTP，也不再逐轮产出刷新失败文案
+            return vec![error(
+                "Gemini 登录态已失效，请在终端重新运行 gemini 登录".to_string(),
+            )];
+        }
         match refresh_access_token(&agent, refresh_token) {
             Ok(outcome) => {
+                gemini_circuit_after_refresh(credential_hash, crate::kimi::RefreshOutcome::Success);
                 // 写回失败不阻断本轮查询（新 token 本轮仍可用），只记日志；
                 // 文件未更新的后果是下一轮重新刷新一次，可接受
                 if let Err(e) = write_back_creds(&creds_path, &outcome) {
@@ -714,7 +809,19 @@ fn fetch_entries_from(home: &std::path::Path) -> Vec<ProviderQuotaEntry> {
                 }
             }
             Err(e) => {
-                return vec![error(format!("{e}，请在终端重新运行 gemini 登录"))];
+                let outcome = classify_gemini_refresh_error(&e);
+                if gemini_circuit_after_refresh(credential_hash, outcome) {
+                    // 只打一条汇总日志，之后静默（逐轮刷屏到此为止）
+                    eprintln!(
+                        "[zbar-gemini] OAuth 续期连续 {MAX_REFRESH_FAILURES} 次失败（refresh_token 已失效），已停止自动重试；请在终端重新运行 gemini 登录"
+                    );
+                }
+                // 「需重登」类文案已自带重登指引，不再重复追加；网络类保持原追加口径
+                let message = match outcome {
+                    crate::kimi::RefreshOutcome::RequiresRelogin => e,
+                    _ => format!("{e}，请在终端重新运行 gemini 登录"),
+                };
+                return vec![error(message)];
             }
         }
     }
@@ -1104,5 +1211,75 @@ mod tests {
         assert_eq!(entries[0].status, "error");
 
         std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// 刷新失败分类与熔断事件映射：400/401/403（refresh_token 已死）→ 需重登；
+    /// 5xx / 网络 / 解析类保持现文案 → 网络类（不计数、不熔断）；前缀锚定。
+    #[test]
+    fn refresh_failure_classification() {
+        for status in [400, 401, 403] {
+            let msg = refresh_failure_message(status);
+            assert!(msg.starts_with(GEMINI_RELOGIN_FAILURE_PREFIX), "{msg}");
+            assert!(msg.contains(&status.to_string()), "{msg}");
+            assert_eq!(
+                classify_gemini_refresh_error(&msg),
+                crate::kimi::RefreshOutcome::RequiresRelogin,
+                "{msg}"
+            );
+        }
+        for status in [429, 500, 502, 503] {
+            let msg = refresh_failure_message(status);
+            assert!(!msg.starts_with(GEMINI_RELOGIN_FAILURE_PREFIX), "{msg}");
+            assert!(msg.contains(&status.to_string()), "{msg}");
+            assert_eq!(
+                classify_gemini_refresh_error(&msg),
+                crate::kimi::RefreshOutcome::NetworkFailure,
+                "{msg}"
+            );
+        }
+        // 网络 / 解析 / 缺字段类错误 → 网络类（不计数，不误停续期）
+        for msg in [
+            "Gemini 令牌刷新请求失败: timeout",
+            "Gemini 令牌刷新响应解析失败",
+            "Gemini 令牌刷新响应缺少 access_token",
+        ] {
+            assert_eq!(
+                classify_gemini_refresh_error(msg),
+                crate::kimi::RefreshOutcome::NetworkFailure,
+                "{msg}"
+            );
+        }
+        // 前缀锚定：必须整串以前缀开头，前缀出现在中间不算「需重登」
+        assert_eq!(
+            classify_gemini_refresh_error(&format!("{GEMINI_RELOGIN_FAILURE_PREFIX}（HTTP 400）")),
+            crate::kimi::RefreshOutcome::RequiresRelogin
+        );
+        assert_eq!(
+            classify_gemini_refresh_error(&format!("提示：{GEMINI_RELOGIN_FAILURE_PREFIX}")),
+            crate::kimi::RefreshOutcome::NetworkFailure
+        );
+    }
+
+    /// Gemini 链路熔断接线：连续「需重登」失败第 10 次熔断并跳过刷新 HTTP；
+    /// refresh_token 指纹变化（重新登录 gemini）自动解熔断恢复。用例开头喂
+    /// 独立指纹，避免与其它用例共享静态状态时相互影响。
+    #[test]
+    fn refresh_circuit_wiring_trips_and_recovers() {
+        use crate::kimi::{RefreshOutcome as CircuitOutcome, MAX_REFRESH_FAILURES};
+        let dead = credential_fingerprint("gemini-rt-dead");
+        assert!(!gemini_circuit_before_refresh(dead), "新指纹首轮不该跳过刷新");
+        for i in 1..MAX_REFRESH_FAILURES {
+            let just_tripped =
+                gemini_circuit_after_refresh(dead, CircuitOutcome::RequiresRelogin);
+            assert!(!just_tripped, "第 {i} 次失败不该报熔断");
+        }
+        assert!(
+            gemini_circuit_after_refresh(dead, CircuitOutcome::RequiresRelogin),
+            "第 {MAX_REFRESH_FAILURES} 次失败应触发熔断"
+        );
+        assert!(gemini_circuit_before_refresh(dead), "熔断后应跳过刷新 HTTP");
+        // 换 refresh_token（重新登录）→ 指纹变化，自动清零解熔断
+        let fresh = credential_fingerprint("gemini-rt-fresh");
+        assert!(!gemini_circuit_before_refresh(fresh), "指纹变化应解熔断并恢复刷新");
     }
 }
