@@ -615,9 +615,17 @@ fn today_snapshots() -> Result<Vec<QuotaSnapshot>, String> {
     Ok(all.into_iter().filter(|s| s.ts >= today_start).collect())
 }
 
+/// 回落切段上限：今日序列中 weekly_pct 的回落次数超过此值即判定数据源异常，
+/// 整体回退"峰值 − 首条"安全口径（见 today_deltas 文档）。
+/// 取值依据：真实重置（自然周重置 + 少量重置券/补差价）一天至多 1-3 次，
+/// 5 已宽裕；前端 DataCache.tsx::loadAccountTodayDeltas 有同名同值常量
+/// （前端还要合并远端设备采样），两侧勿单独改动。
+const MAX_DROP_SEGMENTS: usize = 5;
+
 /// 一批账号的今日增量（多账号一次文件读取算完，避免逐账号重复解析全量历史）。
 /// 单账号增量 = 按时间升序逐条遍历今日快照、遇 weekly_pct 回落即切段，
 /// 逐段累计 (段末值 − 段首值) 后求和；返回 (增量, 采样数)。
+/// 回落次数超过 MAX_DROP_SEGMENTS 的账号整体回退"今日峰值 − 今日首条"（见下）。
 ///
 /// 为什么不用"今日峰值 − 今日首条"：weekly_pct 在一天内并非单调不回落的量——
 /// 周额度重置、使用重置券、补差价/重新订阅都会让已用百分比回落。旧公式在
@@ -626,6 +634,16 @@ fn today_snapshots() -> Result<Vec<QuotaSnapshot>, String> {
 /// 周期，口径错乱。分段累计把每次回落视为一次重置事件切开，只累加各段内
 /// 真实消耗——注意多段累计允许超过 100（一天内多次重置后的各段消耗都算
 /// 今日真实消耗），不做截断。
+///
+/// 数据源异常防护（为什么要有回落次数上限）：前端会把本机快照与其他设备
+/// 同步上来的快照按 ts 合并后再走同一分段算法，"回落 = 重置"的假设只在
+/// 数据源可信时成立。其他设备旧版本的凭证错配 bug 会持续上传"本账号指纹 +
+/// 别的账号数值"的脏快照，脏值与本机正确值按 ts 交错 → 序列反复"回落又
+/// 上涨"，每对振荡都被当成一次重置逐段累计，几百条采样能累计出数万百分比
+/// （线上实际出现"↑今日 79963%"）。真实重置一天至多 1-3 次，故回落次数
+/// 超过 MAX_DROP_SEGMENTS 即判定该账号序列来源异常，整体回退旧公式
+/// "峰值 − 首条"：结果恒有界（weekly_pct ∈ [0,100]，差值 ≤ 100），
+/// 宁可少算也不让徽标显示爆炸数字。
 ///
 /// 账号严格匹配：快照 account 为 None（旧版本写入、归属无法分辨）的行
 /// 不参与任何账号——切号当日的旧混合序列一旦被计入，峰值与首条分属不同
@@ -638,7 +656,7 @@ pub fn today_deltas(
 }
 
 /// today_deltas 的纯计算部分（已过滤为"今日"的快照，便于单测注入）。
-/// 分段累计语义见 today_deltas 文档注释。
+/// 分段累计与"回落次数超限回退旧公式"语义见 today_deltas 文档注释。
 fn today_deltas_from(
     today: &[QuotaSnapshot],
     accounts: &[String],
@@ -656,10 +674,28 @@ fn today_deltas_from(
         }
     }
     for (acc, snaps) in grouped {
+        // 数据源异常防护：先数一次回落次数（cur < prev），超上限该账号整体
+        // 回退旧公式。必须在分段累计之前判定：振荡序列一旦进入分段累计，
+        // 每对"回落又上涨"都会被结算成一段消耗，结果不可控（见函数文档）。
+        let drops = snaps
+            .windows(2)
+            .filter(|w| w[1].weekly_pct < w[0].weekly_pct)
+            .count();
+        if drops > MAX_DROP_SEGMENTS {
+            let start = snaps.first().map(|s| s.weekly_pct).unwrap_or(0);
+            let peak = snaps.iter().map(|s| s.weekly_pct).max().unwrap_or(0);
+            // peak 恒 >= start（peak 是全集最大值），差值有界 ≤100
+            out.insert(
+                acc.to_string(),
+                (peak.saturating_sub(start), snaps.len() as u32),
+            );
+            continue;
+        }
         // 分段累计：seg_start = 当前段首值，last = 上一条值。
-        // 当前条低于上一条 = 检测到一次回落（周重置/重置券/补差价等重置事件），
-        // 先结算上一段 (last − seg_start) 再从此条开新段；段内单调不减，
-        // 差值恒非负，无需再取 max。遍历结束后单独结算最后一段。
+        // 当前条低于上一条 = 检测到一次回落（周重置/重置券/补差价等重置事件，
+        // 已由上方上限校验过滤掉数据源异常场景），先结算上一段 (last − seg_start)
+        // 再从此条开新段；段内单调不减，差值恒非负，无需再取 max。
+        // 遍历结束后单独结算最后一段。
         let mut seg_start = snaps.first().map(|s| s.weekly_pct).unwrap_or(0);
         let mut last = seg_start;
         // u64 累计：多段求和理论上可超出 u32 上限，先放宽再夹回 u32
@@ -1073,6 +1109,68 @@ mod tests {
         ];
         let deltas = today_deltas_from(&snaps, &["A".to_string()]);
         assert_eq!(deltas["A"], (0, 3), "每段段末−段首均为 0，累计 0");
+    }
+
+    /// 今日增量振荡防护：脏数据源（旧版设备凭证错配上传的错值与本机正确值
+    /// 按 ts 交错）让序列反复"回落又上涨"——13/87 交替 20 次产生 19 次回落，
+    /// 分段累计会把它当成 19 次重置逐段累加（≈74×19≈1406，线上的数万百分比
+    /// 即此机制几百条采样的放大），必须回退旧公式"峰值 − 首条"= 87−13 = 74
+    #[test]
+    fn today_deltas_falls_back_on_oscillating_source() {
+        let mut snaps = Vec::new();
+        for i in 0..(MAX_DROP_SEGMENTS * 4) {
+            // 13/87 交替：每条都相对上一条形成回落或回涨
+            let pct = if i % 2 == 0 { 13 } else { 87 };
+            snaps.push(snap_of(1_000 + i as i64 * 1_000, "A", pct));
+        }
+        let deltas = today_deltas_from(&snaps, &["A".to_string()]);
+        assert_eq!(
+            deltas["A"],
+            (74, (MAX_DROP_SEGMENTS * 4) as u32),
+            "回落超上限应回退峰值−首条=74，绝不累计出上千"
+        );
+    }
+
+    /// 今日增量回落上限边界：恰 MAX_DROP_SEGMENTS 次回落仍按分段累计
+    /// （真实重置+重置券的宽裕上限内），结果 = 各段真实消耗之和
+    #[test]
+    fn today_deltas_keeps_segments_at_drop_limit() {
+        let mut pics = vec![10u32, 20]; // 第 1 段：消耗 10
+        for _ in 0..MAX_DROP_SEGMENTS {
+            pics.extend([0, 15]); // 每次回落 15→0 后回升到 15：每段消耗 15
+        }
+        let snaps: Vec<QuotaSnapshot> = pics
+            .iter()
+            .enumerate()
+            .map(|(i, pct)| snap_of(1_000 + i as i64 * 1_000, "A", *pct))
+            .collect();
+        let deltas = today_deltas_from(&snaps, &["A".to_string()]);
+        assert_eq!(
+            deltas["A"],
+            (10 + 15 * MAX_DROP_SEGMENTS as u32, snaps.len() as u32),
+            "回落恰在上限内应走分段累计"
+        );
+    }
+
+    /// 今日增量回落上限边界：回落 MAX_DROP_SEGMENTS+1 次即超限，
+    /// 该账号整体回退"峰值 − 首条"（与上一用例仅差一次回落，形成对照）
+    #[test]
+    fn today_deltas_falls_back_just_above_drop_limit() {
+        let mut pics = vec![10u32, 20];
+        for _ in 0..(MAX_DROP_SEGMENTS + 1) {
+            pics.extend([0, 15]);
+        }
+        let snaps: Vec<QuotaSnapshot> = pics
+            .iter()
+            .enumerate()
+            .map(|(i, pct)| snap_of(1_000 + i as i64 * 1_000, "A", *pct))
+            .collect();
+        let deltas = today_deltas_from(&snaps, &["A".to_string()]);
+        assert_eq!(
+            deltas["A"],
+            (10, snaps.len() as u32),
+            "回落超上限一次即回退峰值20−首条10=10"
+        );
     }
 
     /// 防抖联合判断：同秒不同账号的采样不得互相吞掉（多账号并行查询

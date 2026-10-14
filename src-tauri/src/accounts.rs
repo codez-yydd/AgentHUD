@@ -806,14 +806,29 @@ pub struct AccountQuotaEntry {
 ///    可能混入其他账号的同前缀 key，固定序 pick 会错取）；
 /// 3. 固定序 pick（老快照无 login_provider 也走这里）。
 ///
+/// allow_config_fallback=false（本机存在 ≥2 个账号快照时由 account_quotas 传入）
+/// 只走第 1 级，第 1 级落空直接 None：第 2/3 级读的是快照自身 config_providers，
+/// 但上面已说明它无法与快照身份精确对应（切换前刷新会刷进现场 config、3.12+
+/// 起 apiKey 不随登录刷新），多账号下取到别的账号的键就会让额度面板张冠李戴
+/// （Pro 显示成 Max、未使用账号出现"今日增量"），且错配结果会以本账号指纹
+/// 写入 quota_history 并经远端同步传播。单快照（单账号用户）传 true，行为与
+/// 收紧前完全一致。
+///
 /// base_url：第 1 级与 pick_from_config 第 1 级同口径（取 coding-plan
 /// provider 的 options.baseURL），但**只从快照自身的 config_providers 取**——
 /// 快照查询与当前登录态无关，绝不读现场 config.json；取不到给空串由
 /// base_from_provider_url 兜底。第 2/3 级的 base_url 随选中 provider 返回。
-fn snapshot_credential(snap: &AccountSnapshot) -> Option<(String, String, String)> {
-    // 第 1 级：快照自己的凭证原文（老快照/跨平台搬运时密文解不开属正常，静默回退）
+fn snapshot_credential(
+    snap: &AccountSnapshot,
+    allow_config_fallback: bool,
+) -> Option<(String, String, String)> {
+    // 第 1 级：快照自己的凭证原文（老快照/跨平台搬运时密文解不开属正常，
+    // 单账号下静默回退 config_providers；多账号下无精确归属即报"无凭证"）
     if let Some((credential_key, api_key)) = snapshot_plan_credential(snap) {
         return Some((credential_key, api_key, snapshot_base_url(snap)));
+    }
+    if !allow_config_fallback {
+        return None;
     }
     // 第 2 级：捕获时记录的 login_provider
     if let Some(key) = &snap.login_provider {
@@ -833,8 +848,9 @@ fn snapshot_credential(snap: &AccountSnapshot) -> Option<(String, String, String
 /// 账号级套餐凭证键（挑选口径与 quota.rs 的 pick_from_config 第 1 级一致），
 /// identity 用快照指纹（快照 fingerprint 即该账号 user_id，与键名
 /// `:account:<identity>` 同源）。任何一步失败——credentials_raw 非法 JSON/
-/// 非对象、解密失败（跨平台 secret 不同）、无匹配键——一律静默 None，
-/// 由调用方回退 config_providers 路径。
+/// 非对象、解密失败（跨平台 secret 不同）、无匹配键、指纹不命中的多候选
+/// 歧义——一律静默 None，由调用方按 allow_config_fallback 决定是否回退
+/// config_providers 路径。
 fn snapshot_plan_credential(snap: &AccountSnapshot) -> Option<(String, String)> {
     let creds: Value = serde_json::from_str(&snap.credentials_raw).ok()?;
     let secret = crate::zcode_crypto::credential_secret();
@@ -864,6 +880,8 @@ fn snapshot_base_url(snap: &AccountSnapshot) -> String {
 ///
 /// 数据来源是各快照捕获时保存的 Coding Plan provider（含 apiKey/baseURL），
 /// 与当前登录无关——切换账号后仍能查到其他账号的额度。
+/// 凭证必须能与快照身份精确对应：多账号时不走无法判定归属的 config 回退，
+/// 落空的账号直接报"无可用 Coding Plan 凭证"，绝不猜（见 snapshot_credential）。
 /// 只读快照目录与实时指纹，全程不持 ACCOUNTS_LOCK（与切换/捕获写事务互不阻塞）；
 /// 各账号 HTTP 用 std::thread::scope 并行（单账号 15s 超时独立计时，不叠加）。
 ///
@@ -887,10 +905,18 @@ pub fn account_quotas() -> Result<Vec<AccountQuotaEntry>, String> {
             )
         })
         .collect();
-    // 指纹与凭证打包进线程：查询成功后写采样需要知道归属账号
+    // 指纹与凭证打包进线程：查询成功后写采样需要知道归属账号。
+    // 多账号（≥2 个快照）时禁用 config_providers 回退（见 snapshot_credential）：
+    // 该路径无法与快照身份精确对应，宁可提示"无凭证"也不查成别的账号。
+    let allow_config_fallback = snapshots.len() < 2;
     let jobs: Vec<_> = snapshots
         .iter()
-        .map(|snap| (snap.fingerprint.clone(), snapshot_credential(snap)))
+        .map(|snap| {
+            (
+                snap.fingerprint.clone(),
+                snapshot_credential(snap, allow_config_fallback),
+            )
+        })
         .collect();
 
     let results: Vec<_> = std::thread::scope(|scope| {
@@ -1658,7 +1684,8 @@ mod tests {
     /// 快照凭证选择：login_provider 优先——即使混入的其他账号 key 在固定序里
     /// 更靠前，也必须用捕获时记录的那个；字段缺失或其 apiKey 失效则回退固定序。
     /// 本用例的 credentials_raw 不含账号级套餐凭证键（`{"k":"v"}`），
-    /// snapshot_credential 第 1 级落空，验证的正是第 2/3 级（config_providers）语义。
+    /// snapshot_credential 第 1 级落空，验证的正是第 2/3 级（config_providers）
+    /// 语义——故按单账号传 allow_config_fallback=true。
     #[test]
     fn snapshot_credential_prefers_login_provider() {
         let mut snap = sample_snapshot("u1", "一号");
@@ -1675,13 +1702,13 @@ mod tests {
         .unwrap();
 
         // 无 login_provider（老快照）→ 固定序选 bigmodel
-        let got = snapshot_credential(&snap).unwrap();
+        let got = snapshot_credential(&snap, true).unwrap();
         assert_eq!(got.0, "builtin:bigmodel-coding-plan");
         assert_eq!(got.1, "keyA-other-account");
 
         // 记录了 zai → 必须用 zai 的凭证（bigmodel 虽在固定序优先也不得命中）
         snap.login_provider = Some("builtin:zai-coding-plan".into());
-        let got = snapshot_credential(&snap).unwrap();
+        let got = snapshot_credential(&snap, true).unwrap();
         assert_eq!(got.0, "builtin:zai-coding-plan");
         assert_eq!(got.1, "keyB-this-account");
         assert_eq!(got.2, "https://api.z.ai/api/anthropic");
@@ -1690,7 +1717,7 @@ mod tests {
         snap.config_providers
             .get_mut("builtin:zai-coding-plan")
             .unwrap()["options"]["apiKey"] = serde_json::json!("");
-        let got = snapshot_credential(&snap).unwrap();
+        let got = snapshot_credential(&snap, true).unwrap();
         assert_eq!(got.0, "builtin:bigmodel-coding-plan");
     }
 
@@ -1734,7 +1761,7 @@ mod tests {
         })
         .to_string();
 
-        let got = snapshot_credential(&snap).unwrap();
+        let got = snapshot_credential(&snap, true).unwrap();
         assert_eq!(got.1, "plan-key-111", "必须命中快照指纹（111）的凭证");
         assert!(
             got.0.ends_with(":account:111:api-key"),
@@ -1747,8 +1774,9 @@ mod tests {
         );
     }
 
-    /// 第 1 级无匹配（老快照的 credentials_raw 没有新形态键）→ 静默回退第 2/3 级，
-    /// login_provider 优先与固定序语义不变，base_url 随选中 provider 返回
+    /// 第 1 级无匹配（老快照的 credentials_raw 没有新形态键）→ 单账号
+    /// （allow_config_fallback=true）静默回退第 2/3 级，login_provider 优先
+    /// 与固定序语义不变，base_url 随选中 provider 返回
     #[test]
     fn snapshot_credential_falls_back_without_plan_keys() {
         let mut snap = snapshot_with_providers("111");
@@ -1756,7 +1784,7 @@ mod tests {
         // 老版本 ZCode 的凭证原文：只有身份键，没有账号级套餐凭证键
         snap.credentials_raw = r#"{"zcodejwttoken":"jwt"}"#.into();
 
-        let got = snapshot_credential(&snap).unwrap();
+        let got = snapshot_credential(&snap, true).unwrap();
         assert_eq!(got.0, "builtin:zai-coding-plan");
         assert_eq!(got.1, "config-key-zai");
         assert_eq!(got.2, "https://api.z.ai/api/anthropic");
@@ -1774,7 +1802,7 @@ mod tests {
         })
         .to_string();
 
-        let got = snapshot_credential(&snap).unwrap();
+        let got = snapshot_credential(&snap, true).unwrap();
         assert_eq!(got.0, "builtin:zai-coding-plan", "解不开时回退 config_providers");
         assert_eq!(got.1, "config-key-zai");
     }
@@ -1787,14 +1815,65 @@ mod tests {
             let mut snap = snapshot_with_providers("111");
             snap.login_provider = Some("builtin:zai-coding-plan".into());
             snap.credentials_raw = raw.into();
-            let got = snapshot_credential(&snap)
+            let got = snapshot_credential(&snap, true)
                 .unwrap_or_else(|| panic!("credentials_raw={raw:?} 时应回退 config_providers"));
             assert_eq!(got.1, "config-key-zai", "credentials_raw={raw:?}");
         }
         // 第 1/2/3 级全落空（config_providers 无可用凭证）→ None 契约不变
         let mut empty = sample_snapshot("111", "一号");
         empty.credentials_raw = "not json".into();
-        assert!(snapshot_credential(&empty).is_none());
+        assert!(snapshot_credential(&empty, true).is_none());
+    }
+
+    /// 多账号（本机 ≥2 个快照）收紧：第 1 级落空时禁止 config 回退——快照的
+    /// config_providers/login_provider 无法与快照身份精确对应（切换前刷新会把
+    /// 现场 config 刷进被切走账号的快照），即使里面有可用凭证也一律 None，交由
+    /// account_quotas 提示"请切换到该账号后重新捕获"（宁缺毋错，绝不查成别的
+    /// 账号）；同一份快照按单账号（true）仍保持原三级回退语义
+    #[test]
+    fn snapshot_credential_multi_account_skips_config_fallback() {
+        let mut snap = snapshot_with_providers("111");
+        snap.login_provider = Some("builtin:zai-coding-plan".into());
+        // 老快照：凭证原文里没有账号级套餐凭证键，config_providers 里却有可用凭证
+        snap.credentials_raw = r#"{"zcodejwttoken":"jwt"}"#.into();
+
+        assert!(
+            snapshot_credential(&snap, false).is_none(),
+            "多账号时不得回退 config_providers（该凭证可能属于其他账号）"
+        );
+        // 单账号（老行为）语义不变：回退到 login_provider 指定的 config 凭证
+        assert_eq!(snapshot_credential(&snap, true).unwrap().1, "config-key-zai");
+
+        // 凭证原文损坏（非 JSON）同样不回退 config，只报"无凭证"
+        snap.credentials_raw = "not json".into();
+        assert!(snapshot_credential(&snap, false).is_none());
+    }
+
+    /// 多账号收紧不影响第 1 级：快照自带 credentials_raw 里被快照指纹精确命中的
+    /// 账号级套餐凭证键照常可用（base_url 仍取自快照自身 config_providers，
+    /// allow_config_fallback 开关对命中的第 1 级无影响）
+    #[test]
+    fn snapshot_credential_multi_account_uses_matching_plan_key() {
+        let mut snap = snapshot_with_providers("111");
+        snap.login_provider = Some("builtin:bigmodel-coding-plan".into());
+        // 同一份凭证原文里混有外账号（222）的键，本账号（111）键不在首位
+        snap.credentials_raw = serde_json::json!({
+            "zcodejwttoken": "jwt",
+            "account-provider:coding-plan:account:bigmodel-team-coding-plan:account:222:api-key": "plan-key-222",
+            "account-provider:coding-plan:account:bigmodel-individual-coding-plan:account:111:api-key": "plan-key-111"
+        })
+        .to_string();
+
+        let got = snapshot_credential(&snap, false).unwrap();
+        assert_eq!(got.1, "plan-key-111", "必须命中快照指纹（111）的凭证");
+        assert!(
+            got.0.ends_with(":account:111:api-key"),
+            "第 1 级返回 credentials.json 原始键名（诊断用），实得 {}",
+            got.0
+        );
+        assert_eq!(got.2, "https://open.bigmodel.cn/api/anthropic");
+        // 单账号路径同样优先第 1 级，两开关结果一致
+        assert_eq!(snapshot_credential(&snap, true).unwrap().1, "plan-key-111");
     }
 
     /// 构造纯文本 JWT（decrypt_value 对非 enc:v1: 值原样放行，测试无需真实 secret）

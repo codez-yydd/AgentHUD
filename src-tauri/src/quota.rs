@@ -161,11 +161,23 @@ fn plan_key_identity(name: &str) -> Option<&str> {
 /// 从 credentials.json 解析结果中挑选账号级套餐凭证（纯函数，便于单测）：
 /// - 只认 is_account_provider_plan_key 命中的键；
 /// - 值为空/纯空白、解密失败（跨平台 secret 不同）的键跳过；
-/// - identity（当前账号指纹）匹配者优先，否则取第一个非空键。
+/// - identity（当前账号指纹）匹配者优先；
+/// - identity 已给定但无一命中时，仅当候选恰为 1 个才回退取该候选（单账号
+///   场景该键必然属于本账号），候选 ≥2 个返回 None——见下方多账号说明；
+/// - identity 为 None（现场路径指纹解不出，credentials.json 即当前登录态）
+///   取第一个非空键，兜底语义不变。
 ///
 /// 返回值是 (credentials.json 的键名, 解密后的 apiKey)。
 /// pub(crate)：accounts.rs 的 snapshot_credential 需按"快照自己的凭证原文 +
 /// 快照指纹"复现同一挑选口径（多账号面板不能依赖现场 config.json）。
+///
+/// 为何指纹不命中时多候选必须返回 None：快照的 credentials_raw 是捕获时现场
+/// credentials.json 的**全量原文**，ZCode 的套餐键跨账号累积存在，里面本就
+/// 混着其他账号的键。指纹不命中意味着解不开/没有本账号的键，此时"取第一个
+/// 非空键"取到的极可能是别的账号——额度面板会拿 A 的凭证查出 B 的套餐
+/// （Pro 显示成 Max、未使用账号出现"今日增量"），且错配结果会以本账号指纹
+/// 写入 quota_history 并同步传播到其他设备。无法判定归属时宁缺毋错：返回
+/// None 让调用方提示用户切换到该账号后重新捕获。
 pub(crate) fn pick_account_provider_plan_key(
     creds: &serde_json::Value,
     identity: Option<&str>,
@@ -193,6 +205,12 @@ pub(crate) fn pick_account_provider_plan_key(
         {
             return Some(found.clone());
         }
+        // 指纹不命中：仅单候选可安全回退（此时唯一可用键必然属于本账号）；
+        // 多候选无法判定归属，返回 None（宁可显示"无凭证"，绝不猜）
+        if candidates.len() == 1 {
+            return candidates.into_iter().next();
+        }
+        return None;
     }
     candidates.into_iter().next()
 }
@@ -724,11 +742,15 @@ mod tests {
         let got = pick_account_provider_plan_key(&creds, Some("222"), b"secret").unwrap();
         assert_eq!(got.1, "key-222");
 
-        // identity 无匹配（或指纹解密失败为 None）→ 取第一个非空键
-        let got = pick_account_provider_plan_key(&creds, Some("999"), b"secret").unwrap();
-        assert!(got.1 == "key-111" || got.1 == "key-222", "应回退到非空键");
+        // identity 无匹配且候选 ≥2 个 → None（多账号无法判定归属，宁缺毋错）
+        assert!(pick_account_provider_plan_key(&creds, Some("999"), b"secret").is_none());
+        // identity 为 None（现场路径指纹解不出，credentials.json 即当前登录态）
+        // → 取第一个非空键，兜底语义不变
         let got_none = pick_account_provider_plan_key(&creds, None, b"secret").unwrap();
-        assert_eq!(got_none.1, got.1, "无指纹与指纹不匹配同一回退口径");
+        assert!(
+            got_none.1 == "key-111" || got_none.1 == "key-222",
+            "无指纹应取第一个非空键"
+        );
 
         // 无匹配键 / 非对象 / 仅有空值 → None
         assert!(pick_account_provider_plan_key(
@@ -746,6 +768,40 @@ mod tests {
             b"secret"
         )
         .is_none());
+    }
+
+    /// 多账号收紧：identity 已给定但指纹不命中时，只有"可用候选恰 1 个"才允许
+    /// 回退（单账号场景该键必然属于本账号）；候选 ≥2 个返回 None。快照的
+    /// credentials_raw 是捕获时现场全量原文（含其他账号的键），猜归属正是多账号
+    /// 面板张冠李戴（Pro 显示成 Max、未使用账号出现"今日增量"）的根因。
+    #[test]
+    fn pick_account_provider_plan_key_ambiguous_identity_returns_none() {
+        // 指纹不命中 + 2 个可用候选 → None
+        let two = serde_json::json!({
+            "account-provider:coding-plan:account:bigmodel-team-coding-plan:account:222:api-key": "key-222",
+            "account-provider:coding-plan:account:bigmodel-individual-coding-plan:account:111:api-key": "key-111"
+        });
+        assert!(pick_account_provider_plan_key(&two, Some("999"), b"secret").is_none());
+
+        // 指纹不命中 + 恰 1 个可用候选 → 回退取该候选（单账号场景）
+        let one = serde_json::json!({
+            "zcodejwttoken": "jwt",
+            "account-provider:coding-plan:account:bigmodel-individual-coding-plan:account:111:api-key": "key-111"
+        });
+        let got = pick_account_provider_plan_key(&one, Some("999"), b"secret").unwrap();
+        assert_eq!(got.1, "key-111");
+
+        // 候选按"可用键"计：空值/解密失败的键已先被过滤，不参与计数
+        let one_usable = serde_json::json!({
+            "account-provider:coding-plan:account:bigmodel-individual-coding-plan:account:111:api-key": "key-111",
+            "account-provider:coding-plan:account:bigmodel-team-coding-plan:account:222:api-key": "   "
+        });
+        let got = pick_account_provider_plan_key(&one_usable, Some("999"), b"secret").unwrap();
+        assert_eq!(got.1, "key-111");
+
+        // identity 为 None → 取第一个非空键（现状回归，现场路径依赖此兜底）
+        let got = pick_account_provider_plan_key(&two, None, b"secret").unwrap();
+        assert!(got.1 == "key-111" || got.1 == "key-222");
     }
 
     /// 解密失败的密文键（跨平台 secret 不同）静默跳过，退回其他可用键；
