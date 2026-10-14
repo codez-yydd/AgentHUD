@@ -808,6 +808,24 @@ function schedulePersist(key: string, value: unknown): void {
   }, PERSIST_DEBOUNCE_MS);
 }
 
+/** 今日增量持久化载荷：带本地日期戳（dateStr），跨天冷启动据此丢弃昨日值 */
+interface DatedTodayDelta {
+  date: string;
+  delta: [number, number];
+}
+
+/** 冷启动恢复今日增量缓存：日期非本地"今天"（含旧版无日期的裸数组格式）一律
+ *  返回 null——昨日增量被当成今日展示会一直停在旧值，直到 60s 一轮的
+ *  多端合并计算返回；丢弃最多让今日徽标晚一轮出现（期间按 null 不显示）。 */
+function loadTodayDeltaCache(): [number, number] | null {
+  const cached = loadCache<Partial<DatedTodayDelta>>("zbar-today-delta");
+  if (!cached || cached.date !== dateStr(Date.now())) return null;
+  const d = cached.delta;
+  return Array.isArray(d) && typeof d[0] === "number" && typeof d[1] === "number"
+    ? [d[0], d[1]]
+    : null;
+}
+
 const Ctx = createContext<DataCacheValue | null>(null);
 
 interface ProviderProps {
@@ -901,19 +919,26 @@ export function DataProvider({ pricing, credentialPresence, children }: Provider
   const [quota, setQuota] = useState<QuotaResult | null>(
     () => loadCache<QuotaResult>("zbar-quota")
   );
+  // 今日增量（本机 30s 路径的全局值；多端合并值在下方派生层优先覆盖）。
+  // 恢复走 loadTodayDeltaCache：带日期校验，旧版无日期的裸数组与昨日值
+  // 一律丢弃，避免跨天冷启动把昨天的增量当作今天展示
   const [todayDelta, setTodayDelta] = useState<[number, number] | null>(
-    () => loadCache<[number, number]>("zbar-today-delta")
+    loadTodayDeltaCache
   );
   const [agentQuotaDeltas, setAgentQuotaDeltas] = useState<AgentQuotaDeltaMap>({});
   const [quotaError, setQuotaError] = useState<string | null>(null);
   // 多账号额度（低频 60s 一轮 + 账号操作后手动刷，持久化供冷启动秒显）。
-  // 旧版本缓存条目无 today_delta/fingerprint，恢复时补默认值规范化
+  // 恢复时规范化：旧版本缓存条目无 fingerprint，补空串默认值；
+  // today_delta 无日期戳、跨天会残留，一律清掉（见下）
   const [accountQuotas, setAccountQuotas] = useState<AccountQuotaEntry[]>(
     () =>
       (loadCache<AccountQuotaEntry[]>("zbar-account-quotas") ?? []).map((e) => ({
         ...e,
         fingerprint: e.fingerprint ?? "",
-        today_delta: e.today_delta ?? null,
+        // 今日增量只是展示加速字段（下一轮 60s 多端合并会重算），冷启动一律
+        // 清掉：缓存里该值无日期戳，跨天残留会把昨日增量显示在账号行上；
+        // 清掉最多让账号行今日徽标晚一轮（60s）出现
+        today_delta: null,
       }))
   );
   // 各账号今日增量（fingerprint → [增量百分比, 采样数]）：本机全部快照 +
@@ -1839,9 +1864,15 @@ export function DataProvider({ pricing, credentialPresence, children }: Provider
   maybeAutoSwitchRef.current = maybeAutoSwitch;
 
   /** 各账号今日增量（多端合并）：本机全部账号快照 + 远端其他设备的快照
-   *  （排除本机设备防重复），按账号指纹分组算"今日峰值 − 今日首条"。
+   *  （排除本机设备防重复），按账号指纹分组、时间升序分段累计今日增量——
+   *  遇 weekly_pct 回落（周重置/重置券/补差价等重置事件）即结算当前段并开
+   *  新段，增量 = Σ(段末 − 段首)，多段累计可超过 100。之所以不用"峰值 −
+   *  首条"：回落会让峰值冻结在重置前的最高点，用到 100% 后用重置券后徽标
+   *  从此恒定不动；当天周重置还会让首条与峰值分属两个额度周期。
    *  额度百分比是账号服务端总量而非设备增量，多设备采样互补合并后
-   *  首条/峰值语义仍正确——本机离线时段其他设备的消耗由此补全。
+   *  分段语义仍正确——本机离线时段其他设备的消耗由此补全。
+   *  与后端 quota_history::today_deltas_from 同口径（同一算法两端各一份
+   *  实现），两侧勿单独改动。
    *  失败静默保留旧值（后端 account_quotas 的本机 today_delta 仍在兜底）。 */
   const loadAccountTodayDeltas = useCallback(() => {
     const from = todayStartMs();
@@ -1856,7 +1887,7 @@ export function DataProvider({ pricing, credentialPresence, children }: Provider
     Promise.all([localPromise, remotePromise])
       .then(([local, remote]) => {
         // 只取今日 + 带账号指纹的采样（无指纹的旧版快照归属不明，不参与），
-        // 按 (ts, account) 去重后时间升序，逐账号记首条与峰值
+        // 按 (ts, account) 去重后时间升序，逐账号分段累计
         const seen = new Set<string>();
         const list = [...local, ...remote]
           .filter((s): s is QuotaSnapshot & { account: string } =>
@@ -1869,19 +1900,35 @@ export function DataProvider({ pricing, credentialPresence, children }: Provider
             seen.add(key);
             return true;
           });
-        const groups = new Map<string, { start: number; peak: number; n: number }>();
+        // segStart = 当前段首值，last = 上一条值，total = 已结算段累计，n = 采样数
+        const groups = new Map<
+          string,
+          { segStart: number; last: number; total: number; n: number }
+        >();
         for (const s of list) {
           const g = groups.get(s.account);
           if (!g) {
-            groups.set(s.account, { start: s.weekly_pct, peak: s.weekly_pct, n: 1 });
+            groups.set(s.account, {
+              segStart: s.weekly_pct,
+              last: s.weekly_pct,
+              total: 0,
+              n: 1,
+            });
           } else {
-            g.peak = Math.max(g.peak, s.weekly_pct);
+            // 低于上一条 = 检测到一次回落（周重置/重置券/补差价等重置事件）：
+            // 先结算上一段再从此条开新段；段内单调不减，差值天然非负
+            if (s.weekly_pct < g.last) {
+              g.total += Math.max(0, g.last - g.segStart);
+              g.segStart = s.weekly_pct;
+            }
+            g.last = s.weekly_pct;
             g.n += 1;
           }
         }
         const out: Record<string, [number, number]> = {};
         for (const [acc, g] of groups) {
-          out[acc] = [Math.max(0, g.peak - g.start), g.n];
+          // 遍历结束结算最后一段（单段序列即 末值 − 首值，与旧公式一致）
+          out[acc] = [Math.max(0, g.total + (g.last - g.segStart)), g.n];
         }
         setAccountTodayDeltas(out);
       })
@@ -2259,7 +2306,13 @@ export function DataProvider({ pricing, credentialPresence, children }: Provider
     if (quota) saveCache("zbar-quota", quota);
   }, [quota]);
   useEffect(() => {
-    if (todayDelta) schedulePersist("zbar-today-delta", todayDelta);
+    // 带日期戳持久化：冷启动由 loadTodayDeltaCache 校验日期，跨天残留不恢复
+    if (todayDelta) {
+      schedulePersist("zbar-today-delta", {
+        date: dateStr(Date.now()),
+        delta: todayDelta,
+      } satisfies DatedTodayDelta);
+    }
   }, [todayDelta]);
   useEffect(() => {
     schedulePersist("zbar-account-quotas", accountQuotas);

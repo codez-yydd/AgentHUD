@@ -616,7 +616,16 @@ fn today_snapshots() -> Result<Vec<QuotaSnapshot>, String> {
 }
 
 /// 一批账号的今日增量（多账号一次文件读取算完，避免逐账号重复解析全量历史）。
-/// 单账号增量 = 该账号今日峰值百分比 - 今日起始百分比；返回 (增量, 采样数)。
+/// 单账号增量 = 按时间升序逐条遍历今日快照、遇 weekly_pct 回落即切段，
+/// 逐段累计 (段末值 − 段首值) 后求和；返回 (增量, 采样数)。
+///
+/// 为什么不用"今日峰值 − 今日首条"：weekly_pct 在一天内并非单调不回落的量——
+/// 周额度重置、使用重置券、补差价/重新订阅都会让已用百分比回落。旧公式在
+/// 回落场景失真：用到 100% 后用重置券，峰值冻结在 100，增量从此恒定不动
+/// （用户实际观察到"徽标卡死"）；当天发生周重置时首条与峰值还分属两个额度
+/// 周期，口径错乱。分段累计把每次回落视为一次重置事件切开，只累加各段内
+/// 真实消耗——注意多段累计允许超过 100（一天内多次重置后的各段消耗都算
+/// 今日真实消耗），不做截断。
 ///
 /// 账号严格匹配：快照 account 为 None（旧版本写入、归属无法分辨）的行
 /// 不参与任何账号——切号当日的旧混合序列一旦被计入，峰值与首条分属不同
@@ -629,13 +638,14 @@ pub fn today_deltas(
 }
 
 /// today_deltas 的纯计算部分（已过滤为"今日"的快照，便于单测注入）。
+/// 分段累计语义见 today_deltas 文档注释。
 fn today_deltas_from(
     today: &[QuotaSnapshot],
     accounts: &[String],
 ) -> std::collections::HashMap<String, (u32, u32)> {
     let mut out = std::collections::HashMap::new();
     let wanted: std::collections::HashSet<&str> = accounts.iter().map(|s| s.as_str()).collect();
-    // 按账号分组（保持传入顺序即时间升序，首条即起始）
+    // 按账号分组（保持传入顺序即时间升序）
     let mut grouped: std::collections::HashMap<&str, Vec<&QuotaSnapshot>> =
         std::collections::HashMap::new();
     for snap in today {
@@ -646,10 +656,28 @@ fn today_deltas_from(
         }
     }
     for (acc, snaps) in grouped {
-        let start = snaps.first().map(|s| s.weekly_pct).unwrap_or(0);
-        let peak = snaps.iter().map(|s| s.weekly_pct).max().unwrap_or(0);
-        // peak 一定 >= start；增量用峰值减起点，反映当日真实消耗
-        out.insert(acc.to_string(), (peak.saturating_sub(start), snaps.len() as u32));
+        // 分段累计：seg_start = 当前段首值，last = 上一条值。
+        // 当前条低于上一条 = 检测到一次回落（周重置/重置券/补差价等重置事件），
+        // 先结算上一段 (last − seg_start) 再从此条开新段；段内单调不减，
+        // 差值恒非负，无需再取 max。遍历结束后单独结算最后一段。
+        let mut seg_start = snaps.first().map(|s| s.weekly_pct).unwrap_or(0);
+        let mut last = seg_start;
+        // u64 累计：多段求和理论上可超出 u32 上限，先放宽再夹回 u32
+        // （实际一天内的重置次数远不足以逼近），对现有返回类型无影响
+        let mut total: u64 = 0;
+        for snap in snaps.iter().skip(1) {
+            let pct = snap.weekly_pct;
+            if pct < last {
+                total += u64::from(last - seg_start);
+                seg_start = pct;
+            }
+            last = pct;
+        }
+        total += u64::from(last - seg_start);
+        out.insert(
+            acc.to_string(),
+            (total.min(u64::from(u32::MAX)) as u32, snaps.len() as u32),
+        );
     }
     // 请求了但今日无采样的账号给 (0, 0)，前端按采样数<2 自然不显示
     for acc in accounts {
@@ -986,6 +1014,65 @@ mod tests {
         assert_eq!(deltas["A"], (20, 2), "A：峰值40-起始20=20，2条采样");
         assert_eq!(deltas["B"], (35, 2), "B：峰值85-起始50=35，2条采样");
         assert_eq!(deltas["C"], (0, 0), "今日无采样的账号给(0,0)");
+    }
+
+    /// 今日增量分段累计：用到 100% 后用重置券（weekly_pct 回落到 0）再涨到 30，
+    /// 增量应为 (100−10)+(30−0)=120，而非旧公式"峰值100−首条10=90"——
+    /// 旧公式还把峰值冻结在 100、后续增量恒定不动（用户观察到的徽标卡死）。
+    /// 多段累计允许超过 100：一天内多次重置后的各段消耗都是今日真实消耗，
+    /// 不做截断（显示层直接展示 u32/number，无 100 上限）。
+    #[test]
+    fn today_deltas_counts_segments_across_reset_coupon() {
+        let snaps = vec![
+            snap_of(1_000, "A", 10),
+            snap_of(2_000, "A", 40),
+            snap_of(3_000, "A", 100),
+            snap_of(4_000, "A", 0), // 重置券：回落切段
+            snap_of(5_000, "A", 30),
+        ];
+        let deltas = today_deltas_from(&snaps, &["A".to_string()]);
+        assert_eq!(deltas["A"], (120, 5), "分段累计 (100-10)+(30-0)=120，不截断");
+    }
+
+    /// 今日增量分段累计：当天发生周重置（3→50→0→40），
+    /// 增量 = (50−3)+(40−0)=87，而不是把重置前后混成一段
+    /// （首条与峰值分属两个额度周期会得到 50−3=47，漏掉重置后的消耗）
+    #[test]
+    fn today_deltas_splits_on_weekly_reset() {
+        let snaps = vec![
+            snap_of(1_000, "A", 3),
+            snap_of(2_000, "A", 50),
+            snap_of(3_000, "A", 0), // 周重置
+            snap_of(4_000, "A", 40),
+        ];
+        let deltas = today_deltas_from(&snaps, &["A".to_string()]);
+        assert_eq!(deltas["A"], (87, 4), "(50-3)+(40-0)=87");
+    }
+
+    /// 今日增量无回落回归：序列单调上涨时退化为"峰值 − 起始"，
+    /// 与旧公式结果一致（升级后历史正常日期的展示不变）
+    #[test]
+    fn today_deltas_matches_old_formula_without_drop() {
+        let snaps = vec![
+            snap_of(1_000, "A", 5),
+            snap_of(2_000, "A", 20),
+            snap_of(3_000, "A", 35),
+        ];
+        let deltas = today_deltas_from(&snaps, &["A".to_string()]);
+        assert_eq!(deltas["A"], (30, 3), "无回落时等价于峰值35-起始5=30");
+    }
+
+    /// 今日增量持续小幅回落（采样抖动）：每次回落都切段，段内差为 0，
+    /// 累计为 0 而不是把负差当成消耗（分段口径天然把回落噪声吃掉）
+    #[test]
+    fn today_deltas_ignores_small_dips() {
+        let snaps = vec![
+            snap_of(1_000, "A", 50),
+            snap_of(2_000, "A", 49),
+            snap_of(3_000, "A", 48),
+        ];
+        let deltas = today_deltas_from(&snaps, &["A".to_string()]);
+        assert_eq!(deltas["A"], (0, 3), "每段段末−段首均为 0，累计 0");
     }
 
     /// 防抖联合判断：同秒不同账号的采样不得互相吞掉（多账号并行查询
