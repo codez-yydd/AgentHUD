@@ -35,14 +35,18 @@
 //!   运行时才刷新，应用打开时大概率已过期，故过期时用 refresh_token 调
 //!   POST {oauthHost}/api/oauth/token 换新——新 token 只存内存缓存，绝不
 //!   写回凭据文件（CLI 自己管理该文件，应用只读；refresh_token 实测非
-//!   rotation 型可复用，内存刷新不影响 CLI）。
+//!   rotation 型可复用，内存刷新不影响 CLI）。refresh_token 一旦被服务端判失效
+//!   （invalid_grant），自动续期永远不可能成功，故两条链路都有失效熔断
+//!   （见「OAuth 自动续期熔断」段）：连续多次「需重登」失败后停止重试。
 //!
 //! 实现方式与 claude.rs 同构：原始 jsonl 只读 + 派生自有库 ~/.zbar/kimi.sqlite，
 //! file_progress 偏移增量续读。
 
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
+use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 use std::io::{BufRead, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
@@ -1938,6 +1942,122 @@ pub(crate) fn build_kimi_agent() -> ureq::Agent {
     builder.build()
 }
 
+// ===== OAuth 自动续期熔断 =====
+//
+// 背景：refresh_token 一旦被服务端判定失效（实测 HTTP 400 invalid_grant），
+// 只有重新登录才能救活。旧实现每轮额度轮询都会白打一次刷新 HTTP、回退旧
+// token、再用 401 清缓存，日志无限刷屏且永远不可能成功。故加进程内熔断：
+// 连续 MAX_REFRESH_FAILURES 次「需重登」失败后停止自动重试，等凭据真正变化
+// （用户重新登录 / 删除重录）时自动恢复。
+
+/// 自动续期连续失败多少次触发熔断。两条链路（CLI 凭据 resolve_request_token
+/// 与凭证体系 resolve_credential_token）共用同一阈值，改这里即两边同时生效——
+/// 不要给某条链路另立常量。
+///
+/// 为什么是 10：单次失败可能是服务端抖动或代理瞬时故障，凭证链路 120s 一轮，
+/// 连续 10 轮（约 20 分钟）仍失败才足以判定 refresh_token 已死；阈值太低会把
+/// 短暂网络问题误判为需重登，反而停掉了本可自愈的自动续期。
+const MAX_REFRESH_FAILURES: u32 = 10;
+
+/// 「需重登」类失败的文案前缀：refresh_failure_message 的 400/401/403 分支
+/// 必须以此开头，熔断按前缀分类错误串（先复用该常量拼文案，再单测锚定；
+/// 改文案必须同步本常量，勿只改一处）。
+const RELOGIN_FAILURE_PREFIX: &str = "refresh_token 已失效";
+
+/// 一次刷新尝试的结果（熔断只对 RequiresRelogin 计数）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RefreshOutcome {
+    /// 刷新成功 → 计数清零并解除熔断
+    Success,
+    /// 需重登类失败（refresh_token 被服务端拒绝/已失效）→ 计数 +1
+    RequiresRelogin,
+    /// 网络类失败（抖动/服务不可用/响应异常）→ 不计数、不清零、不熔断
+    NetworkFailure,
+}
+
+/// 单个凭据的续期熔断状态。
+/// credential_hash 是当前 refresh_token / 凭证 secret 的进程内指纹——绝不存
+/// 明文、不进日志，仅用于判断「用户是否换了凭据」。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct RefreshCircuitState {
+    credential_hash: u64,
+    consecutive_failures: u32,
+    tripped: bool,
+}
+
+/// refresh_token / secret 的进程内指纹（判断凭据是否变化用；不可逆、不落盘）。
+fn credential_fingerprint(secret: &str) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    secret.hash(&mut hasher);
+    hasher.finish()
+}
+
+/// 进入刷新前判定（纯函数）：凭据指纹变化（用户重新登录 CLI / 删除重录凭证）
+/// → 计数与熔断一起清零（这是熔断后唯一的自动恢复机制，必须精确）。
+/// 返回 (新状态, 是否跳过本次刷新)：tripped 时跳过，不再白打一次 HTTP。
+fn circuit_before_refresh(
+    state: RefreshCircuitState,
+    credential_hash: u64,
+) -> (RefreshCircuitState, bool) {
+    if state.credential_hash != credential_hash {
+        let reset = RefreshCircuitState {
+            credential_hash,
+            ..RefreshCircuitState::default()
+        };
+        return (reset, false);
+    }
+    (state, state.tripped)
+}
+
+/// 刷新结果回写（纯函数）：返回 (新状态, 本次是否刚触发熔断)。
+/// 指纹不匹配（刷新 HTTP 期间用户已重新登录）→ 本次结果按陈旧结果丢弃，
+/// 不污染新凭据的计数。just_tripped 用于只打一条汇总日志，之后静默。
+fn circuit_after_refresh(
+    state: RefreshCircuitState,
+    credential_hash: u64,
+    outcome: RefreshOutcome,
+) -> (RefreshCircuitState, bool) {
+    if state.credential_hash != credential_hash {
+        return (state, false);
+    }
+    match outcome {
+        RefreshOutcome::Success => (
+            RefreshCircuitState {
+                consecutive_failures: 0,
+                tripped: false,
+                ..state
+            },
+            false,
+        ),
+        RefreshOutcome::RequiresRelogin => {
+            let consecutive_failures = state.consecutive_failures.saturating_add(1);
+            let tripped = consecutive_failures >= MAX_REFRESH_FAILURES;
+            let just_tripped = tripped && !state.tripped;
+            (
+                RefreshCircuitState {
+                    consecutive_failures,
+                    tripped,
+                    ..state
+                },
+                just_tripped,
+            )
+        }
+        // 网络抖动不计数也不清零：连续口径只针对「需重登」失败
+        RefreshOutcome::NetworkFailure => (state, false),
+    }
+}
+
+/// 刷新错误串 → 熔断事件（纯函数）。「需重登」类只由 refresh_failure_message
+/// 的 400/401/403 分支产出，以 RELOGIN_FAILURE_PREFIX 开头；网络失败、响应
+/// 解析失败、缺少 access_token 等一律归网络类不计数（宁可少判也不误停续期）。
+fn classify_refresh_error(err: &str) -> RefreshOutcome {
+    if err.starts_with(RELOGIN_FAILURE_PREFIX) {
+        RefreshOutcome::RequiresRelogin
+    } else {
+        RefreshOutcome::NetworkFailure
+    }
+}
+
 /// 刷新失败的 HTTP 状态 + 响应体 → 用户可执行的中文原因（纯函数，便于单测）。
 ///
 /// 为什么单独分类：实测（2026-10 本机真实凭据）服务端对失效的 refresh_token
@@ -1950,11 +2070,12 @@ fn refresh_failure_message(status: u16, body: Option<&str>) -> String {
     match status {
         400 | 401 | 403 => {
             let detail = body.and_then(oauth_error_detail);
+            // 前缀用 RELOGIN_FAILURE_PREFIX 拼接（与熔断分类锚定，见该常量注释）
             match detail {
                 Some(d) => {
-                    format!("refresh_token 已失效（需重新登录 Kimi Code CLI）：{d}")
+                    format!("{RELOGIN_FAILURE_PREFIX}（需重新登录 Kimi Code CLI）：{d}")
                 }
-                None => "refresh_token 已失效（需重新登录 Kimi Code CLI）".to_string(),
+                None => format!("{RELOGIN_FAILURE_PREFIX}（需重新登录 Kimi Code CLI）"),
             }
         }
         _ => format!("刷新请求失败（网络错误或服务不可用）: HTTP {status}"),
@@ -2016,14 +2137,46 @@ fn refresh_oauth_token(refresh_token: &str) -> Result<OAuthTokenCache, String> {
     })
 }
 
+/// CLI 凭据链路的续期熔断状态（进程内，不持久化）。
+///
+/// 为什么不持久化：重启后最多再打 MAX_REFRESH_FAILURES 次刷新、再记同样多
+/// 条日志，代价可接受；若落盘则要在「重新登录检测」（指纹比对）之外再维护
+/// 过期清理逻辑，收益不抵复杂度。凭据文件 refresh_token 变化由指纹兜底恢复。
+static CLI_REFRESH_CIRCUIT: OnceLock<Mutex<RefreshCircuitState>> = OnceLock::new();
+
+fn cli_refresh_circuit() -> &'static Mutex<RefreshCircuitState> {
+    CLI_REFRESH_CIRCUIT.get_or_init(|| Mutex::new(RefreshCircuitState::default()))
+}
+
+/// 进入刷新前：记录/重置指纹，返回是否应跳过刷新（短持锁，HTTP 在锁外）。
+fn cli_circuit_before_refresh(credential_hash: u64) -> bool {
+    let mut state = cli_refresh_circuit()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let (next, skip) = circuit_before_refresh(*state, credential_hash);
+    *state = next;
+    skip
+}
+
+/// 回写刷新结果：返回本次是否刚触发熔断（调用方据此打唯一一条汇总日志）。
+fn cli_circuit_after_refresh(credential_hash: u64, outcome: RefreshOutcome) -> bool {
+    let mut state = cli_refresh_circuit()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let (next, just_tripped) = circuit_after_refresh(*state, credential_hash, outcome);
+    *state = next;
+    just_tripped
+}
+
 /// 解析额度请求的 Bearer token（含 OAuth 内存续期）。优先级：
 /// a. 内存缓存的新 access_token（未过期）；
 /// b. 凭据文件的 access_token（未过期 → 直接用并同步内存缓存；CLI 运行
 ///    期间会自己刷新文件里的 token）；
 /// c. 文件 token 过期但有 refresh_token → POST 刷新端点换新（仅进内存
-///    缓存，不写文件）；
-/// d. 刷新失败（网络/HTTP 错误）→ 回退文件旧 access_token 试一次，由
-///    /usages 的 401 分支给出最终指引。
+///    缓存，不写文件）；连续「需重登」类失败达 MAX_REFRESH_FAILURES 次后
+///    熔断（CLI_REFRESH_CIRCUIT），之后跳过刷新直接走 d，直至凭据变化；
+/// d. 刷新失败（网络/HTTP 错误）或熔断中 → 回退文件旧 access_token 试一次，
+///    由 /usages 的 401 分支给出最终指引。
 /// 并发：锁只保护缓存读写，刷新 HTTP 在锁外执行，偶发重复刷新无害
 /// （refresh_token 可复用）。
 fn resolve_request_token() -> Result<String, String> {
@@ -2050,17 +2203,36 @@ fn resolve_request_token() -> Result<String, String> {
                 return Ok(oauth.access_token);
             }
             // c. 过期但有 refresh_token → 换新（只进内存，不写文件）
+            let credential_hash = credential_fingerprint(&oauth.refresh_token);
+            if cli_circuit_before_refresh(credential_hash) {
+                // 熔断中：该 refresh_token 已连续被服务端判失效（只有重新登录
+                // 能救活），不再打刷新 HTTP、不再打逐轮日志；直接回退旧文件
+                // token，由 /usages 的 401 分支给出最终指引
+                return Ok(oauth.access_token);
+            }
             match refresh_oauth_token(&oauth.refresh_token) {
                 Ok(fresh) => {
                     let token = fresh.access_token.clone();
                     store_oauth_cache(token.clone(), fresh.expires_at_ms);
+                    cli_circuit_after_refresh(credential_hash, RefreshOutcome::Success);
                     Ok(token)
                 }
                 Err(e) => {
                     // d. 刷新失败 → 回退旧 token 试一次
-                    eprintln!(
-                        "[zbar-kimi] OAuth token 自动续期失败（回退凭据文件 token 重试）: {e}"
+                    let just_tripped = cli_circuit_after_refresh(
+                        credential_hash,
+                        classify_refresh_error(&e),
                     );
+                    if just_tripped {
+                        // 只打一条汇总日志，之后静默（逐轮刷屏到此为止）
+                        eprintln!(
+                            "[zbar-kimi] OAuth 续期连续 {MAX_REFRESH_FAILURES} 次失败（refresh_token 已失效），已停止自动重试；请重新登录 Kimi Code CLI 或在应用内重新网页登录"
+                        );
+                    } else {
+                        eprintln!(
+                            "[zbar-kimi] OAuth token 自动续期失败（回退凭据文件 token 重试）: {e}"
+                        );
+                    }
                     Ok(oauth.access_token)
                 }
             }
@@ -2591,8 +2763,49 @@ fn refresh_credential_token(
     })
 }
 
+/// 凭证体系链路的续期熔断状态（key = credential_id，进程内，不持久化；阈值
+/// 与 CLI 链路共用 MAX_REFRESH_FAILURES）。
+///
+/// 为什么不清理已删除凭证的状态：HashMap 体量极小（每条凭证一个定长状态），
+/// 且重新添加凭证必然带来新 secret → 指纹不同自动重置，无需删除钩子；
+/// 重启后状态归零也只会多打最多 MAX_REFRESH_FAILURES 次换新请求。
+static CREDENTIAL_REFRESH_CIRCUIT: OnceLock<Mutex<HashMap<String, RefreshCircuitState>>> =
+    OnceLock::new();
+
+fn credential_refresh_circuit() -> &'static Mutex<HashMap<String, RefreshCircuitState>> {
+    CREDENTIAL_REFRESH_CIRCUIT.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// 进入换新前：记录/重置指纹，返回是否应跳过换新（短持锁，HTTP 在锁外）。
+fn credential_circuit_before_refresh(credential_id: &str, credential_hash: u64) -> bool {
+    let mut map = credential_refresh_circuit()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let entry = map.entry(credential_id.to_string()).or_default();
+    let (next, skip) = circuit_before_refresh(*entry, credential_hash);
+    *entry = next;
+    skip
+}
+
+/// 回写换新结果：返回本次是否刚触发熔断（调用方据此打唯一一条汇总日志）。
+fn credential_circuit_after_refresh(
+    credential_id: &str,
+    credential_hash: u64,
+    outcome: RefreshOutcome,
+) -> bool {
+    let mut map = credential_refresh_circuit()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let entry = map.entry(credential_id.to_string()).or_default();
+    let (next, just_tripped) = circuit_after_refresh(*entry, credential_hash, outcome);
+    *entry = next;
+    just_tripped
+}
+
 /// 解析单条凭证查询用的 Bearer token（apiKey 直接用；token 型查缓存/换新，
-/// 换新成功写入内存缓存。锁内只做读写判断，换新 HTTP 在锁外）。
+/// 换新成功写入内存缓存。锁内只做读写判断，换新 HTTP 在锁外）。token 型连续
+/// 「需重登」类失败达 MAX_REFRESH_FAILURES 次后熔断（CREDENTIAL_REFRESH_CIRCUIT），
+/// 之后不再发换新 HTTP，直接按 Rejected 返回（条目文案不变），直至 secret 变化。
 fn resolve_credential_token(
     credential_id: &str,
     kind: &str,
@@ -2619,13 +2832,42 @@ fn resolve_credential_token(
             }
         }
     }
-    let fresh = refresh_credential_token(oauth_host, secret)?;
-    let token = fresh.access_token.clone();
-    credential_token_cache()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .insert(credential_id.to_string(), fresh);
-    Ok(token)
+    let credential_hash = credential_fingerprint(secret);
+    if credential_circuit_before_refresh(credential_id, credential_hash) {
+        // 熔断中：secret 已连续被服务端拒绝（需重登），不再白打换新 HTTP；
+        // 直接按「登录已失效」返回，条目继续显示既有引导文案
+        return Err(CredentialTokenFailure::Rejected);
+    }
+    match refresh_credential_token(oauth_host, secret) {
+        Ok(fresh) => {
+            let token = fresh.access_token.clone();
+            credential_token_cache()
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .insert(credential_id.to_string(), fresh);
+            credential_circuit_after_refresh(
+                credential_id,
+                credential_hash,
+                RefreshOutcome::Success,
+            );
+            Ok(token)
+        }
+        Err(failure) => {
+            // Rejected 天然就是「需重登」类；Network 不计数（可能是抖动）
+            let outcome = match &failure {
+                CredentialTokenFailure::Rejected => RefreshOutcome::RequiresRelogin,
+                CredentialTokenFailure::Network(_) => RefreshOutcome::NetworkFailure,
+            };
+            let just_tripped =
+                credential_circuit_after_refresh(credential_id, credential_hash, outcome);
+            if just_tripped {
+                eprintln!(
+                    "[zbar-kimi] 凭证 {credential_id} 的 OAuth 续期连续 {MAX_REFRESH_FAILURES} 次失败（refresh_token 已失效），已停止自动重试；请删除该凭证后重新添加（支持网页登录）"
+                );
+            }
+            Err(failure)
+        }
+    }
 }
 
 /// GET {api_base}/usages 单凭证查询（展平为 (HTTP 状态码, 响应体)；
@@ -4219,5 +4461,139 @@ mod tests {
         let msg = refresh_failure_message(503, Some(real));
         assert!(msg.contains("网络错误或服务不可用"), "{msg}");
         assert!(msg.contains("503"), "{msg}");
+    }
+
+    /// 便捷：走一遍「进入刷新前」记录指纹，得到可回写结果的初始状态
+    /// （circuit_after_refresh 对指纹不匹配的陈旧结果一律丢弃）。
+    fn circuit_enter(secret: &str) -> (u64, RefreshCircuitState) {
+        let hash = credential_fingerprint(secret);
+        (
+            hash,
+            circuit_before_refresh(RefreshCircuitState::default(), hash).0,
+        )
+    }
+
+    /// 熔断计数：连续「需重登」失败第 9 次不熔断、第 10 次熔断，且熔断后
+    /// 进入刷新前判定直接跳过（不再白打 HTTP、不再逐轮刷日志）。
+    #[test]
+    fn refresh_circuit_trips_on_tenth_relogin_failure() {
+        let (hash, mut state) = circuit_enter("rt-dead");
+        for i in 1..MAX_REFRESH_FAILURES {
+            let (next, just_tripped) =
+                circuit_after_refresh(state, hash, RefreshOutcome::RequiresRelogin);
+            state = next;
+            assert_eq!(state.consecutive_failures, i);
+            assert!(!state.tripped, "第 {i} 次失败不该熔断");
+            assert!(!just_tripped, "第 {i} 次失败不该报汇总日志");
+        }
+        let (state, just_tripped) =
+            circuit_after_refresh(state, hash, RefreshOutcome::RequiresRelogin);
+        assert_eq!(state.consecutive_failures, MAX_REFRESH_FAILURES);
+        assert!(
+            state.tripped,
+            "连续 {MAX_REFRESH_FAILURES} 次需重登失败应熔断"
+        );
+        assert!(just_tripped, "首次熔断要打唯一一条汇总日志");
+
+        let (state, skip) = circuit_before_refresh(state, hash);
+        assert!(skip, "熔断中必须跳过刷新");
+        assert!(state.tripped);
+    }
+
+    /// 凭据指纹变化（用户重新登录 CLI / 删除重录凭证）→ 计数与熔断清零，
+    /// 这是熔断后唯一的恢复机制；换凭据期间返回的陈旧结果不得污染新计数。
+    #[test]
+    fn refresh_circuit_resets_on_credential_change() {
+        let (dead, mut state) = circuit_enter("rt-dead");
+        for _ in 0..MAX_REFRESH_FAILURES {
+            state = circuit_after_refresh(state, dead, RefreshOutcome::RequiresRelogin).0;
+        }
+        assert!(state.tripped);
+
+        let fresh = credential_fingerprint("rt-fresh");
+        let (state, skip) = circuit_before_refresh(state, fresh);
+        assert!(!skip, "换凭据后必须恢复自动续期");
+        assert_eq!(state.consecutive_failures, 0);
+        assert!(!state.tripped);
+        assert_eq!(state.credential_hash, fresh);
+        // 旧凭据的失败结果（HTTP 返回晚于用户重新登录）必须丢弃
+        let (state, just_tripped) =
+            circuit_after_refresh(state, dead, RefreshOutcome::RequiresRelogin);
+        assert!(!just_tripped);
+        assert_eq!(state.consecutive_failures, 0, "陈旧结果不得污染新凭据计数");
+        assert!(!state.tripped);
+    }
+
+    /// 成功 → 清零；网络失败不计数、不清零（连续口径只认「需重登」）。
+    #[test]
+    fn refresh_circuit_ignores_network_and_clears_on_success() {
+        let (hash, mut state) = circuit_enter("rt-x");
+        for _ in 0..3 {
+            state = circuit_after_refresh(state, hash, RefreshOutcome::RequiresRelogin).0;
+        }
+        assert_eq!(state.consecutive_failures, 3);
+
+        let (after_network, just_tripped) =
+            circuit_after_refresh(state, hash, RefreshOutcome::NetworkFailure);
+        assert_eq!(
+            after_network.consecutive_failures, 3,
+            "网络失败不计数也不清零"
+        );
+        assert!(!after_network.tripped);
+        assert!(!just_tripped);
+
+        let (after_success, _) =
+            circuit_after_refresh(after_network, hash, RefreshOutcome::Success);
+        assert_eq!(after_success.consecutive_failures, 0);
+        assert!(!after_success.tripped);
+    }
+
+    /// 熔断分类与 refresh_failure_message 文案锚定：4xx（含无 body / 坏 body）
+    /// 归「需重登」，5xx 与网络/解析异常归网络类。改 refresh_failure_message
+    /// 的 400/401/403 前缀会让本测试先红（提示同步 RELOGIN_FAILURE_PREFIX）。
+    #[test]
+    fn classify_refresh_error_anchors_on_failure_message() {
+        let real = r#"{"error":"invalid_grant","error_description":"The provided authorization grant is invalid"}"#;
+        for status in [400u16, 401, 403] {
+            assert_eq!(
+                classify_refresh_error(&refresh_failure_message(status, Some(real))),
+                RefreshOutcome::RequiresRelogin,
+                "HTTP {status} 应归需重登"
+            );
+            assert_eq!(
+                classify_refresh_error(&refresh_failure_message(status, None)),
+                RefreshOutcome::RequiresRelogin,
+                "HTTP {status} 无 body 也应归需重登"
+            );
+        }
+        assert_eq!(
+            classify_refresh_error(&refresh_failure_message(503, Some(real))),
+            RefreshOutcome::NetworkFailure
+        );
+        assert_eq!(
+            classify_refresh_error("刷新请求失败（网络错误或服务不可用）: timeout"),
+            RefreshOutcome::NetworkFailure
+        );
+        assert_eq!(
+            classify_refresh_error("解析刷新响应失败: expected value"),
+            RefreshOutcome::NetworkFailure
+        );
+        assert_eq!(
+            classify_refresh_error("刷新响应缺少 access_token"),
+            RefreshOutcome::NetworkFailure
+        );
+    }
+
+    /// 指纹只用于区分凭据、不泄露内容：同 token 同 hash、不同 token 不同 hash。
+    #[test]
+    fn credential_fingerprint_distinguishes_tokens() {
+        assert_eq!(
+            credential_fingerprint("rt-abc"),
+            credential_fingerprint("rt-abc")
+        );
+        assert_ne!(
+            credential_fingerprint("rt-abc"),
+            credential_fingerprint("rt-abd")
+        );
     }
 }
