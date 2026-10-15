@@ -1,9 +1,10 @@
 /**
  * 请求日志页（主窗口第四页）：7 个本地来源的请求级明细，按时间倒序分页。
  *
- * 结构：页头（标题 + 时间范围触发按钮 + 刷新）→ 筛选行（来源 / 模型下拉，
- * 模型选项带请求条数）→ 汇总指标行（总请求数 / 总成本 / 缓存命中率，当前筛选
- * 条件下的**全范围**聚合）→ 明细表（10 列）→ 分页条 → 详情抽屉。
+ * 结构：页头（标题 + 时间范围触发按钮 + 自动刷新间隔 + 刷新）→ 筛选行
+ * （来源 / 模型下拉，模型选项带请求条数）→ 汇总指标行（总请求数 / 总成本 /
+ * 缓存命中率，当前筛选条件下的**全范围**聚合）→ 明细表（10 列）→ 分页条 →
+ * 详情抽屉。
  *
  * 版面：本页是唯一「不整页滚动」的页（.db-logs-page：flex 列 + 内部滚动），
  * 表格卡 flex:1、表体 .db-table-wrap 纵向滚动 + sticky 表头，分页条固定卡底
@@ -26,6 +27,11 @@
  *  - 页码文案与分页按钮基于「已生效页码」（rowsPage，即当前表格里那批数据所属
  *    的页），翻页等待期不会出现「第 3 页」配第 2 页数据的错位；
  *  - 「刷新」按钮重取明细 + 清单（不做模块级缓存，见 useLogsData）；
+ *  - 页头「自动刷新」下拉选间隔（关闭 / 5 / 10 / 30 / 60 秒，默认 30 秒，
+ *    localStorage 键 zbar-logs-refresh-ms 持久化）：间隔 > 0 时定时走
+ *    useLogsData 的**静默**刷新（不置 loading——刷新按钮不转圈、表格与指标
+ *    不压暗、不闪骨架），保持当前筛选与页码；document.hidden（主窗口被关闭
+ *    隐藏）时跳过本次，避免后台空转查询；
  *  - 部分来源取数失败时用一行 .db-hintbar 弱提示（有数据才提示，不打断）。
  */
 import { useEffect, useMemo, useState } from "react";
@@ -59,6 +65,40 @@ function timeText(ms: number): string {
   const d = new Date(ms);
   const p = (n: number) => String(n).padStart(2, "0");
   return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+
+/**
+ * 自动刷新间隔档位（页头下拉）：关闭 / 5 / 10 / 30 / 60 秒。取值即毫秒数
+ * （0 = 关闭），数组顺序即下拉展示顺序；默认 30 秒。
+ */
+const REFRESH_MS_OPTIONS = [0, 5000, 10000, 30000, 60000];
+const REFRESH_MS_DEFAULT = 30000;
+
+/** 间隔偏好持久化键（与热力图模式 zbar-heat-mode 同款：只记用户选择，不参与
+ *  取数语义；重启后停留在上次选的档位，不被重置回默认） */
+const REFRESH_MS_KEY = "zbar-logs-refresh-ms";
+
+/** 读取间隔偏好：缺省 / 空串 / 非法值一律回退 30 秒（注意 "0" 是合法档位） */
+function loadRefreshMs(): number {
+  try {
+    const saved = localStorage.getItem(REFRESH_MS_KEY);
+    if (saved) {
+      const ms = Number(saved);
+      if (REFRESH_MS_OPTIONS.includes(ms)) return ms;
+    }
+  } catch {
+    /* 存储不可用：回退默认间隔 */
+  }
+  return REFRESH_MS_DEFAULT;
+}
+
+/** 写入间隔偏好（失败静默：记忆仅锦上添花，不影响刷新行为） */
+function saveRefreshMs(ms: number): void {
+  try {
+    localStorage.setItem(REFRESH_MS_KEY, String(ms));
+  } catch {
+    /* 忽略：QuotaExceededError、隐私模式等 */
+  }
 }
 
 /**
@@ -146,6 +186,8 @@ export function LogsPage() {
   const [page, setPage] = useState(1);
   /** 详情抽屉当前行（null = 关闭） */
   const [active, setActive] = useState<RequestLogRow | null>(null);
+  /** 自动刷新间隔（毫秒，0 = 关闭）；偏好懒初始化，只在挂载时读一次 */
+  const [refreshMs, setRefreshMs] = useState<number>(() => loadRefreshMs());
 
   const {
     rows,
@@ -193,11 +235,52 @@ export function LogsPage() {
     setPage(1);
   }
 
+  /** 切换自动刷新间隔：立即生效（定时器由下方 effect 按新间隔重建）并持久化 */
+  function changeRefreshMs(next: number) {
+    if (!REFRESH_MS_OPTIONS.includes(next)) return;
+    setRefreshMs(next);
+    saveRefreshMs(next);
+  }
+
   // 页码越界回收：数据变少（刷新 / 清筛选后总条数下降）时把页码收进范围。
   // 判定基于「已生效页码」与已到手的 total，避免用待请求的页码做递归。
   useEffect(() => {
     if (!loading && total > 0 && rowsPage > pages) setPage(pages);
   }, [loading, total, rowsPage, pages]);
+
+  // 自动刷新：间隔 > 0 时定时重取「当前筛选 + 当前页码」的明细。
+  //  - 走静默刷新（reload({silent:true})）：不置 loading——刷新按钮不转圈、
+  //    表格与指标不压暗，也不会闪骨架；
+  //  - 主窗口关闭只是 hide（WebView 仍存活），document.hidden 时跳过本次，
+  //    避免后台空转查询（重新显示后按剩余间隔继续）；
+  //  - 间隔变化即重建定时器（依赖 refreshMs），切「关闭」由 cleanup 清掉，
+  //    页面卸载（切到其他页）时同样清理。
+  useEffect(() => {
+    if (refreshMs <= 0) return;
+    const timer = window.setInterval(() => {
+      if (document.hidden) return;
+      reload({ silent: true });
+    }, refreshMs);
+    return () => window.clearInterval(timer);
+  }, [refreshMs, reload]);
+
+  // 间隔下拉选项：关闭 / 5 / 10 / 30 / 60 秒（选项顺序即 REFRESH_MS_OPTIONS；
+  // 选中项由 value 匹配，组件自动带 ✓）
+  const refreshOptions: DropdownOption[] = useMemo(
+    () =>
+      REFRESH_MS_OPTIONS.map((ms) => ({
+        value: String(ms),
+        label:
+          ms === 0
+            ? t("dashboard.logs.autoRefreshOff")
+            : t("dashboard.logs.autoRefreshSec", { n: ms / 1000 }),
+      })),
+    [t]
+  );
+  // 当前档位文案（触发器与 title / aria 共用；值必在选项里，兜底为空串）
+  const refreshLabel =
+    refreshOptions.find((option) => option.value === String(refreshMs))?.label ??
+    "";
 
   // 来源下拉：全部 + 7 个来源（显示名与总览页 agentLabel 同一份品牌元数据）
   const sourceOptions: DropdownOption[] = useMemo(
@@ -296,10 +379,20 @@ export function LogsPage() {
               onClick: () => changeRange(presetRange),
             }))}
           />
+          {/* 自动刷新间隔：触发按钮显示「自动刷新 + 当前档」，选择即生效并持久化
+              （长文案 / 完整语义放 title 与 aria-label，页头保持紧凑） */}
+          <DropdownMenu
+            label={t("dashboard.logs.autoRefresh")}
+            ariaLabel={t("dashboard.logs.autoRefreshHint", { value: refreshLabel })}
+            title={t("dashboard.logs.autoRefreshHint", { value: refreshLabel })}
+            options={refreshOptions}
+            value={String(refreshMs)}
+            onChange={(next) => changeRefreshMs(Number(next))}
+          />
           <button
             type="button"
             className="db-btn"
-            onClick={reload}
+            onClick={() => reload()}
             disabled={loading}
           >
             <RefreshIcon className={`h-3.5 w-3.5 ${loading ? "db-spin" : ""}`} />
@@ -356,7 +449,7 @@ export function LogsPage() {
           <button
             type="button"
             className="db-btn"
-            onClick={reload}
+            onClick={() => reload()}
             disabled={loading}
           >
             <RefreshIcon className={`h-3.5 w-3.5 ${loading ? "db-spin" : ""}`} />
@@ -390,7 +483,11 @@ export function LogsPage() {
             title={t("dashboard.logs.emptyTitle")}
             hint={t("dashboard.logs.emptyHint")}
             action={
-              <button type="button" className="db-btn mt-1" onClick={reload}>
+              <button
+                type="button"
+                className="db-btn mt-1"
+                onClick={() => reload()}
+              >
                 {t("dashboard.logs.retry")}
               </button>
             }

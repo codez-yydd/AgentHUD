@@ -8,6 +8,10 @@
  *    因此永远与当前筛选条件一致（翻页时数值不变，只是重新下发）；
  *  - 请求序号守卫（reqIdRef）：并发触发时只有最新一次请求的结果落 state，
  *    旧请求（含刚被筛掉的来源）的结果一律丢弃；
+ *  - reload 支持**静默刷新**（reload({ silent: true })，页面自动刷新用）：
+ *    不置 loading——刷新按钮不转圈、表格与指标不压暗、不闪骨架；失败也不
+ *    改写当前视图（保留上次成功的数据与「上次刷新」时刻），避免后台的偶发
+ *    失败把用户正在看的表格清空成错误态（手动刷新仍是完整语义）；
  *  - 未安装 / 未用过来源由后端按 0 条返回，这里静默（total 0 → 页面空态），
  *    只有真正的错误才进 error；
  *  - 模型清单与明细分成两个请求：清单只依赖「来源 + 时间范围」，翻页不重取；
@@ -59,7 +63,9 @@ export interface LogsDataState {
   lastUpdatedAt: number | null;
   /** 当前「来源 + 范围」的模型清单；尚未取到 / 出错时为 null */
   models: RequestLogModelCount[] | null;
-  reload: () => void;
+  /** 重取明细 + 清单（不做模块级缓存）。silent = true 走静默刷新：不置
+   *  loading、失败不改写当前视图，供页面的自动刷新定时器使用 */
+  reload: (options?: { silent?: boolean }) => void;
 }
 
 /** 错误信息截断（与 useOverviewData.shortError 同款：后端错误可能是长中文串） */
@@ -91,6 +97,9 @@ export function useLogsData({
   // 明细 / 清单各自的请求序号（互不干扰：清单慢于明细时不该丢弃清单结果）
   const rowsReqRef = useRef(0);
   const modelsReqRef = useRef(0);
+  // 下一次请求是否静默（reload({silent:true}) 置位）：由明细 effect 开头消费并
+  // 复位；清单 effect 没有 loading 语义，不受该标记影响
+  const silentRef = useRef(false);
 
   // 明细：筛选、页码与手动刷新触发；窗口在 effect 内取「此刻」计算，
   // 不进依赖（Date.now() 每次渲染都变，进依赖会把 effect 变成每次渲染都跑）；
@@ -98,8 +107,11 @@ export function useLogsData({
   useEffect(() => {
     const reqId = ++rowsReqRef.current;
     const isCurrent = () => reqId === rowsReqRef.current;
+    const silent = silentRef.current;
+    silentRef.current = false;
     const { fromMs, toMs } = custom ?? rangeWindow(range, Date.now());
-    setLoading(true);
+    // 静默刷新保持现有画面：不置 loading（按钮不转圈、表格不压暗）
+    if (!silent) setLoading(true);
     getRequestLogs(fromMs, toMs, page - 1, LOG_PAGE_SIZE, {
       agent: source ? (source as RequestLogSource) : undefined,
       model: model || undefined,
@@ -117,6 +129,12 @@ export function useLogsData({
       })
       .catch((e) => {
         if (!isCurrent()) return;
+        // 本次已是最新请求：先把 loading 收掉（静默刷新未置位，这里幂等；
+        // 若上一笔被本笔取代且仍挂着 loading，也不会把转圈态留在界面上）
+        setLoading(false);
+        // 静默刷新失败：保留当前视图（上次成功的数据），由下一次定时或用户
+        // 手动刷新再试，不因后台偶发失败清空表格 / 闪错误态
+        if (silent) return;
         // 失败时清空列表与汇总：筛选刚变过，留着上一条件的数据会误导
         setRows([]);
         setRowsPage(page);
@@ -124,7 +142,6 @@ export function useLogsData({
         setSummary(null);
         setFailedSources([]);
         setError(shortError(e));
-        setLoading(false);
       });
   }, [custom, range, source, model, page, nonce]);
 
@@ -149,7 +166,10 @@ export function useLogsData({
       });
   }, [range, source, modelsKey, nonce]);
 
-  const reload = useCallback(() => setNonce((n) => n + 1), []);
+  const reload = useCallback((options?: { silent?: boolean }) => {
+    silentRef.current = options?.silent === true;
+    setNonce((n) => n + 1);
+  }, []);
 
   return {
     rows,

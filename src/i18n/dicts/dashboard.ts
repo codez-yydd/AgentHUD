@@ -272,6 +272,12 @@ export const dashboard = {
   // 只有「全部」是本页独有的第五档
   "dashboard.logs.rangeLabel": "时间范围",
   "dashboard.logs.range.all": "全部",
+  // 页头自动刷新间隔（关闭 / 5 / 10 / 30 / 60 秒，默认 30 秒）：触发按钮显示
+  // 「自动刷新 + 当前档」，完整语义放 title 与 aria-label，页头保持紧凑
+  "dashboard.logs.autoRefresh": "自动刷新",
+  "dashboard.logs.autoRefreshOff": "关闭",
+  "dashboard.logs.autoRefreshSec": "{n} 秒",
+  "dashboard.logs.autoRefreshHint": "自动刷新间隔：{value}",
   "dashboard.logs.sourceLabel": "来源",
   "dashboard.logs.sourceAll": "全部来源",
   "dashboard.logs.modelLabel": "模型",

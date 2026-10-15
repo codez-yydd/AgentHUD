@@ -1457,6 +1457,13 @@ export const en: typeof zh = {
 
     "dashboard.logs.rangeLabel": "Time range",
     "dashboard.logs.range.all": "All",
+    // Header auto-refresh interval (Off / 5s / 10s / 30s / 60s, default 30s):
+    // the trigger shows "Auto-refresh" + the active option, the full sentence
+    // lives in title/aria-label to keep the header compact
+    "dashboard.logs.autoRefresh": "Auto-refresh",
+    "dashboard.logs.autoRefreshOff": "Off",
+    "dashboard.logs.autoRefreshSec": "{n}s",
+    "dashboard.logs.autoRefreshHint": "Auto-refresh interval: {value}",
     "dashboard.logs.sourceLabel": "Source",
     "dashboard.logs.sourceAll": "All sources",
     "dashboard.logs.modelLabel": "Model",
