@@ -28,8 +28,11 @@
  * 关闭路径：点击组件外、Esc、取消（Esc / 取消都把焦点交还触发器）；
  * 应用后同样关闭。面板贴在触发器下方，下方空间不足且上方更宽裕时翻到上方
  * （量的是缩放后视觉坐标，与 --ui-scale 兼容）；右缘对齐触发器（触发器在页头
- * 范围区，向左展开不探出主区），max-width calc(100vw - 24px) + 展开后水平
- * 夹取兜底 900×640 最小窗口（向左仍溢出时整体右移，保证面板完整可见）。
+ * 范围区，向左展开不探出主区），max-width calc(100vw - 24px) + 展开后水平 /
+ * 垂直夹取兜底 900×640 最小窗口（向左仍溢出时整体右移，保证面板完整可见）。
+ * 夹取边界是最近裁切祖先（主区滚动容器 .db-main、日志页 .db-logs-page 等
+ * overflow 容器）的可见盒而非视口——页头 actions 因窗口过窄换行贴主区左缘
+ * 时，按视口夹取会把面板左半裁进侧边栏外，必须以真正裁切者的可见区域为准。
  *
  * 配色全部走 --db-* 变量（面板底用实底 --db-pop-bg，不写 slate-900 类——
  * 本项目 .dark 会反转 slate 色板），亮暗两套见 dashboard.css。
@@ -126,6 +129,26 @@ function CalendarIcon() {
   );
 }
 
+/** 从 start 的父级向上找最近的裁切祖先：overflowX / overflowY 任一命中
+ *  auto / scroll / hidden / clip / overlay 即返回该元素——超出其 padding box
+ *  的内容会被直接裁掉（且大多滚不到），面板的夹取兜底要以它的可见盒为边界
+ *  （如主区滚动容器 .db-main、日志页 .db-logs-page）。到顶没有则返回 null。 */
+function nearestClipAncestor(start: HTMLElement | null): HTMLElement | null {
+  const clipOverflows = ["auto", "scroll", "hidden", "clip", "overlay"];
+  let node = start?.parentElement ?? null;
+  while (node) {
+    const style = getComputedStyle(node);
+    if (
+      clipOverflows.includes(style.overflowX) ||
+      clipOverflows.includes(style.overflowY)
+    ) {
+      return node;
+    }
+    node = node.parentElement;
+  }
+  return null;
+}
+
 export function CustomRangeMenu({
   value,
   onChange,
@@ -155,8 +178,10 @@ export function CustomRangeMenu({
   const [open, setOpen] = useState(false);
   // 面板展开方向：down 正常向下；up 下方空间不足时翻到触发器上方
   const [placement, setPlacement] = useState<"down" | "up">("down");
-  // 水平兜底位移：面板默认右缘对齐触发器，触发器左侧空间不足（900px 最小
-  // 窗口下触发器右侧还有刷新按钮 / 时间戳）时整体右移，保证不被主区裁掉
+  // 水平兜底位移：面板默认右缘对齐触发器，触发器左侧空间不足（页头 actions
+  // 因窗口过窄换行贴主区左缘时最典型）时整体右移；夹取边界取最近裁切祖先
+  // （.db-main / .db-logs-page 等滚动或 overflow 容器）的可见盒而非视口——
+  // 换行贴左时按视口夹取会把面板左半裁进侧边栏外，必须以真正裁切者为准
   const [shiftX, setShiftX] = useState(0);
   // 草稿状态：面板打开时按当前值（或默认近 7 天）重置，应用前不影响页面
   const [fromDay, setFromDay] = useState<number | null>(null);
@@ -223,9 +248,12 @@ export function CustomRangeMenu({
     };
   }, [open]);
 
-  // 展开后（绘制前）量一次空间：下方装不下面板而上方的空间更大时翻到上方；
-  // 同时把面板水平方向夹进视口（12px 安全边距）——主区是滚动容器，向左溢出
-  // 的部分会被裁掉且无法滚到，必须主动右移（与 DropdownMenu 同款测量做法，
+  // 展开后（绘制前）量一次空间：真正裁切面板的是最近的 overflow 祖先（主区
+  // 滚动容器 .db-main、日志页 .db-logs-page 等），上下可用空间与水平夹取都以
+  // 该祖先的可见盒为边界（组件外没有 overflow 容器时退回视口）——页头
+  // actions 因窗口过窄换行贴主区左缘时，按视口量会把面板左半裁进侧边栏外。
+  // 下方装不下面板而上方更宽裕时翻到上方；水平夹进可见盒（12px 安全边距），
+  // 向左溢出的部分无法滚到，必须主动右移（与 DropdownMenu 同款测量做法，
   // 量的是缩放后的视觉坐标，与 --ui-scale 兼容）
   useLayoutEffect(() => {
     if (!open) {
@@ -238,14 +266,19 @@ export function CustomRangeMenu({
     if (!panel || !trigger) return;
     const triggerRect = trigger.getBoundingClientRect();
     const panelRect = panel.getBoundingClientRect();
-    const spaceBelow = window.innerHeight - triggerRect.bottom;
-    const spaceAbove = triggerRect.top;
+    const clipRect = nearestClipAncestor(rootRef.current)?.getBoundingClientRect();
+    const viewLeft = clipRect?.left ?? 0;
+    const viewRight = clipRect?.right ?? window.innerWidth;
+    const viewTop = clipRect?.top ?? 0;
+    const viewBottom = clipRect?.bottom ?? window.innerHeight;
+    const spaceBelow = viewBottom - triggerRect.bottom;
+    const spaceAbove = triggerRect.top - viewTop;
     setPlacement(
       panelRect.height + 8 > spaceBelow && spaceAbove > spaceBelow ? "up" : "down"
     );
     const margin = 12;
-    const overflowLeft = margin - panelRect.left;
-    const overflowRight = panelRect.right - (window.innerWidth - margin);
+    const overflowLeft = viewLeft + margin - panelRect.left;
+    const overflowRight = panelRect.right - (viewRight - margin);
     setShiftX(
       overflowLeft > 0 ? overflowLeft : overflowRight > 0 ? -overflowRight : 0
     );
