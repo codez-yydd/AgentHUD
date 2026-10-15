@@ -1,8 +1,8 @@
-# AgentHUD · ZCode Token Monitor
+# AgentHUD · Multi-Agent Usage Monitor
 
 ![Tauri](https://img.shields.io/badge/Tauri-2.0-orange) ![React](https://img.shields.io/badge/React-19-blue) ![TypeScript](https://img.shields.io/badge/TypeScript-5.8-3178c6) ![TailwindCSS](https://img.shields.io/badge/Tailwind-v4-38bdf8) ![Rust](https://img.shields.io/badge/Rust-edition%202021-dea584) ![License](https://img.shields.io/badge/License-MIT-yellow) ![Platform](https://img.shields.io/badge/Platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey) [![GitHub Repo](https://img.shields.io/badge/GitHub-codez--yydd%2FAgentHUD-181717?logo=github)](https://github.com/codez-yydd/AgentHUD) [![Gitee Repo](https://img.shields.io/badge/Gitee-codezwx%2FAgentHUD-C71D23?logo=gitee)](https://gitee.com/codezwx/AgentHUD)
 
-A lightweight menu-bar floating panel that tracks the Token usage and cost of the [ZCode](https://z.ai) CLI in real time. Click the menu-bar icon to summon a vibrancy panel showing today's / 7-day / 30-day breakdowns, grouped by model.
+A lightweight tray-resident monitoring companion that tracks Token usage, subscription quotas and spending across multiple CLI agents in real time — [Z.ai (ZCode)](https://z.ai), Codex, Claude, Cursor, Kimi Code, and more. Summon a vibrancy floating panel from the tray for today / 7-day / 30-day breakdowns grouped by model; a full dashboard window (usage overview / request logs / weekly quota compare / pricing settings), a session token HUD, a desktop pet and cross-device sync are also included.
 
 > On macOS: the menu-bar title shows today's cost + total tokens in real time; clicking the icon pops a popover panel hugging the menu bar; the Dock icon is hidden, and the panel auto-dismisses on blur.
 
@@ -137,7 +137,7 @@ Both repositories have exactly the same content — the latest version can be ob
 - **🖥️ Kimi Code usage stats** — parses local `~/.kimi-code/sessions` session records (`wire.jsonl`) to tally token usage, cost and **token output speed (TPS)**; on machines signed in to the Kimi Code CLI, local credentials are detected automatically (OAuth expiry renewed in the background — no configuration needed) to fetch subscription quotas live: **5-hour rolling window / cycle quota** progress bars with reset countdowns, booster wallet balance and official membership tier name; the "Other accounts" section at the bottom of the panel supports **OAuth web sign-in** (device-code flow, no CLI required) as well as pasting an API key / OAuth token manually, stacking multiple accounts (China / International region).
 - **🟢 MiniMax Code usage stats** — parses MiniMax Code's local data (`~/.minimax`) to tally token usage and cost; the same page shows the MiniMax Coding Plan subscription quota at the top (**5-hour / weekly** progress bars with reset countdowns), fetched with an `sk-cp-` API key added at the bottom of the panel (so it also works without MiniMax Code installed, when the subscription is used from another agent; without a key it shows local usage only, with no empty placeholder block).
 - **🐋 DeepSeek Harness usage stats** — parses local `~/.dsh` session event logs to tally token usage, cost and **true generation speed (with TTFT)**; the "DeepSeek platform balance" section at the bottom of the panel accepts a **DeepSeek open platform API key** and shows the account balance with its granted / topped-up breakdown (DSH itself is pay-as-you-go and has no subscription quota window).
-- **🔑 Universal credential manager** — every agent panel has a built-in credentials entry (no credential config on the settings page): each service accepts **multiple credentials** (multi-account / multi-subscription, displayed stacked), with notes (to distinguish plan tiers), editing and deletion; some services also offer a **region** choice (China / International). Credentials are stored in plain text locally under `~/.zbar/credentials/` (directory mode 700, file mode 600, this machine only). See [Credentials](#credentials).
+- **🔑 Universal credential manager** — every agent panel has a built-in credentials entry (no credential config on the settings page): each service accepts **multiple credentials** (multi-account / multi-subscription, displayed stacked), with notes (to distinguish plan tiers), editing and deletion; some services also offer a **region** choice (China / International). Credentials are stored in plain text locally under `~/.agenthud/credentials/` (directory mode 700, file mode 600, this machine only). See [Credentials](#credentials).
 - **🧩 10 new subscription / quota services** — credential-driven and hidden by default; each appears once a credential is added or the service is enabled, grouped by credential type:
   - **API Key** (create a key in the service console and paste it): MiniMax (5-hour + weekly dual windows), Tongyi Lingma Coding Plan (5h / weekly / monthly windows)
   - **Manual cookie** (copy the cookie from browser DevTools and paste): Qoder (LLM credits), LongCat by Meituan (token quota + booster packs), Xiaomi MiMo (balance + credits), Alibaba Cloud Bailian token packs (5h / 7-day windows, Team / Personal variants)
@@ -151,7 +151,7 @@ Both repositories have exactly the same content — the latest version can be ob
 
 **💰 Pricing & billing**
 
-- **Pricing config** — **CNY / USD** dual currency; set input / output / cache-read unit prices (per million tokens) for each model, persisted to `~/.zbar/pricing.json`; one-click "check price updates" pulls the latest community-maintained prices from [models.dev](https://models.dev) (CNY reference prices converted at the current FX rate).
+- **Pricing config** — set **USD** unit prices (per million tokens) for input / output / cache-read on each model, persisted to `~/.agenthud/pricing.json`, with CNY costs converted automatically at the current FX rate; a one-click "check price updates" compares against the built-in reference table offline (pricing data from the open-source [cc-switch](https://github.com/farion1231/cc-switch) project, no network access).
 - **Cache-aware billing** — `input_tokens` already includes cache-read tokens; cache-read is billed at the cache rate and non-cache input at the input rate, avoiding double counting.
 - **💱 Auto FX rate** — the USD→CNY rate is refreshed online daily by default (manual input supported); used to convert USD costs across services and for CNY reference prices.
 
@@ -176,7 +176,7 @@ Both repositories have exactly the same content — the latest version can be ob
 | Desktop | [Tauri 2](https://tauri.app/) (Rust backend + WebView frontend) |
 | Frontend | React 19 + TypeScript + Vite 7 |
 | Styling | Tailwind CSS v4 (`@tailwindcss/vite`) |
-| Database | SQLite (`rusqlite`, read-only access to the ZCode DB) |
+| Database | SQLite (`rusqlite`, read-only access to local agent DBs such as ZCode / OpenCode) |
 | macOS native | `objc2` / `objc2-app-kit` (vibrancy tuning, Accessory mode to hide Dock) |
 
 ---
@@ -209,7 +209,7 @@ AgentHUD/
 │   ├── src/
 │   │   ├── lib.rs            # App entry, tray, panel logic, Tauri commands
 │   │   ├── db.rs             # Read-only SQLite queries (stats / model list)
-│   │   ├── pricing.rs        # Pricing config read/write + models.dev updates
+│   │   ├── pricing.rs        # Pricing config read/write + built-in reference table diff check
 │   │   ├── quota.rs          # Coding Plan quota queries (auto ZCode-client credentials; 5h / weekly / MCP)
 │   │   ├── quota_history.rs  # Quota snapshot history (JSONL, 90-day retention)
 │   │   ├── cursor.rs         # Cursor usage stats (auto credentials / cookie / API)
@@ -239,7 +239,7 @@ AgentHUD/
    - **Windows**: Microsoft Edge WebView2 + MSVC build tools
    - **Linux**: `webkit2gtk`, `libayatana-appindicator`, etc. (see [Tauri docs](https://v2.tauri.app/start/prerequisites/))
 
-4. **ZCode CLI** installed and having produced usage records (DB at `~/.zcode/cli/db/db.sqlite`)
+4. At least one supported CLI agent installed and having produced usage records (e.g. **ZCode CLI**, DB at `~/.zcode/cli/db/db.sqlite`; Codex / Claude / Cursor / Kimi Code sources are optional)
 
 ---
 
@@ -332,16 +332,12 @@ Lookup priority:
 
 Edit visually via the "⚙ Pricing" page inside the panel, or edit the file directly:
 
-**Path: `~/.zbar/pricing.json`**
+**Path: `~/.agenthud/pricing.json`** (USD prices only; CNY costs are converted automatically at the current FX rate — no separate maintenance needed)
 
 ```json
 {
-  "cny": {
-    "glm-4.6": { "input": 10, "output": 30, "cache_read": 1 },
-    "glm-4.5-air": { "input": 2, "output": 6, "cache_read": 0.2 }
-  },
   "usd": {
-    "glm-4.6": { "input": 1.4, "output": 4.2, "cache_read": 0.14 }
+    "glm-4.6": { "input": 0.6, "output": 2.2, "cache_read": 0.11 }
   }
 }
 ```
@@ -349,10 +345,9 @@ Edit visually via the "⚙ Pricing" page inside the panel, or edit the file dire
 - Unit: price **per million tokens**
 - Three fields: `input` (non-cache input), `output`, `cache_read`
 - Only fill in the models you want billed; unpriced models show `—` and are flagged ⚠
+- The FX rate is configured centrally under "Settings → FX rate" (auto-updated daily); CNY cost = USD cost × rate
 
-The panel also supports one-click "check price updates": pull the latest community-maintained prices for all vendors from [models.dev](https://models.dev) (USD per million tokens), convert them to CNY reference prices at the current FX rate, and merge them into the local price table.
-
-In the panel, "⚙ Pricing → open directory" opens `~/.zbar/` directly in Finder.
+The panel also supports one-click "check price updates": it compares offline against the built-in reference table (no network access), whose pricing data comes from the cost-pricing module of the open-source [cc-switch](https://github.com/farion1231/cc-switch) project (plus Z.ai-specific models); confirmed differences are merged into the local price table. When a new model ships, add it to `public/pricing-defaults.json` and release.
 
 ### Coding Plan Quota Monitor
 
@@ -364,7 +359,7 @@ Quota data is fetched live via `GET /api/monitor/usage/quota/limit` and auto-ref
 
 ### Global Hotkey
 
-Summon / hide the panel with `alt+shift+z` by default; change or disable it under "⚙ Pricing → Global hotkey". Persisted to `~/.zbar/shortcut.json`:
+Summon / hide the panel with `alt+shift+z` by default; change or disable it under "⚙ Pricing → Global hotkey". Persisted to `~/.agenthud/shortcut.json`:
 
 ```json
 {
@@ -386,7 +381,7 @@ Notes:
 
 Reads the local Cursor app's login credentials automatically (Cursor must be installed and signed in) — no configuration needed.
 
-**FX rate** (Settings → FX rate): USD→CNY refreshed online daily by default, or entered manually; USD costs across services are converted to CNY at this rate. The config is stored at `~/.zbar/cursor.json` (locally only).
+**FX rate** (Settings → FX rate): USD→CNY refreshed online daily by default, or entered manually; USD costs across services are converted to CNY at this rate. The config is stored at `~/.agenthud/cursor.json` (locally only).
 
 ### Kimi Code Stats
 
@@ -402,7 +397,7 @@ Services that cannot be auto-detected from the local sign-in state (ZCode / Code
 
 - **Stacked credentials** — each service accepts multiple credentials (multi-account / multi-subscription), displayed stacked in the panel; notes (e.g. to distinguish plan tiers), editing and deletion are supported.
 - **Region** — some services offer a China / International region choice.
-- **Local storage** — one JSON file per service, stored in plain text under `~/.zbar/credentials/` (directory mode 700, file mode 600); this machine only, never synced.
+- **Local storage** — one JSON file per service, stored in plain text under `~/.agenthud/credentials/` (directory mode 700, file mode 600); this machine only, never synced.
 
 By credential type:
 
@@ -418,7 +413,7 @@ For the exact steps, follow the in-app guidance shown when adding a credential.
 
 ### Weekly Compare & Reports
 
-- **Weekly quota compare** — based on local quota snapshots (`~/.zbar/quota_history.jsonl`, append-only, 90-day rolling retention); compare quota usage across reset cycles, with cross-device merge.
+- **Weekly quota compare** — based on local quota snapshots (`~/.agenthud/quota_history.jsonl`, append-only, 90-day rolling retention); compare quota usage across reset cycles, with cross-device merge.
 - **Daily / weekly reports** — generate a Markdown report in one click (daily = today, weekly = last 7 days) and save it as a `.md` file.
 
 ### Multi-device Sync
@@ -443,7 +438,7 @@ After registering:
 - **Sync mode** — manual ("Sync now") or automatic (upload on an interval).
 - **Data management** — cleanup by device / by time / all, plus configurable server-side auto cleanup.
 
-The config is stored at `~/.zbar/sync.json` (the Master Token is not persisted — discarded right after registration):
+The config is stored at `~/.agenthud/sync.json` (the Master Token is not persisted — discarded right after registration):
 
 ```json
 {
@@ -458,7 +453,7 @@ The config is stored at `~/.zbar/sync.json` (the Master Token is not persisted �
 }
 ```
 
-**How it works**: ZCode usage records are append-only. Clients upload incrementally by `rowid`; the server dedups by `(device_id, local_rowid)`. Local data is queried locally, other devices' data remotely, then merged for display — no double counting.
+**How it works**: local usage records of every agent are append-only. Clients upload incrementally by `rowid`; the server dedups by `(device_id, local_rowid)`. Local data is queried locally, other devices' data remotely, then merged for display — no double counting.
 
 ---
 
@@ -481,10 +476,10 @@ The panel and the menu-bar title share the same Rust calculation logic, so the n
 
 ## 🔒 Data Safety
 
-- The DB connection uses `SQLITE_OPEN_READ_ONLY` — **strictly read-only**, never touching ZCode data.
-- Pricing config is stored only in the user-local `~/.zbar/` directory; nothing is uploaded.
-- **Account switching** saves ZCode login snapshots under `~/.zbar/accounts/` (directory mode 700, file mode 600) for one-click switching. Snapshots **stay on this machine only** and are never synced. This app is an unofficial community tool, not affiliated with Zhipu AI.
-- Service **credentials** are stored under `~/.zbar/credentials/` (directory mode 700, file mode 600); they stay on this machine and are never synced.
+- The DB connection uses `SQLITE_OPEN_READ_ONLY` — **strictly read-only**, never touching any agent's local data.
+- Pricing config is stored only in the user-local `~/.agenthud/` directory; nothing is uploaded.
+- **Account switching** saves ZCode login snapshots under `~/.agenthud/accounts/` (directory mode 700, file mode 600) for one-click switching. Snapshots **stay on this machine only** and are never synced. This app is an unofficial community tool, not affiliated with Zhipu AI.
+- Service **credentials** are stored under `~/.agenthud/credentials/` (directory mode 700, file mode 600); they stay on this machine and are never synced.
 - **Multi-device sync** is optional and off by default. When enabled, only model names, token counts and timestamps are synced — **never code or conversation content**. The server is self-hosted; the data stays on your own server.
 - The panel hides on blur; the window stays alive (not destroyed) and can be re-summoned by clicking the tray.
 

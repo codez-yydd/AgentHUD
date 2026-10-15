@@ -1,8 +1,8 @@
-# AgentHUD · ZCode Token 监控
+# AgentHUD · 多 Agent 用量监控
 
 ![Tauri](https://img.shields.io/badge/Tauri-2.0-orange) ![React](https://img.shields.io/badge/React-19-blue) ![TypeScript](https://img.shields.io/badge/TypeScript-5.8-3178c6) ![TailwindCSS](https://img.shields.io/badge/Tailwind-v4-38bdf8) ![Rust](https://img.shields.io/badge/Rust-edition%202021-dea584) ![License](https://img.shields.io/badge/License-MIT-yellow) ![Platform](https://img.shields.io/badge/Platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey) [![GitHub Repo](https://img.shields.io/badge/GitHub-codez--yydd%2FAgentHUD-181717?logo=github)](https://github.com/codez-yydd/AgentHUD) [![Gitee Repo](https://img.shields.io/badge/Gitee-codezwx%2FAgentHUD-C71D23?logo=gitee)](https://gitee.com/codezwx/AgentHUD)
 
-一个常驻菜单栏的轻量浮动面板，实时统计 [ZCode](https://z.ai) CLI 的 Token 用量与花费。点击菜单栏图标即可唤出毛玻璃面板查看今日 / 7 天 / 30 天的明细，并按模型分组展示。
+一个常驻系统托盘的轻量监控伴侣，实时统计 [Z.ai（ZCode）](https://z.ai)、Codex、Claude、Cursor、Kimi Code 等多个 CLI Agent 的 Token 用量、订阅额度与花费。托盘唤出毛玻璃悬浮面板查看今日 / 7 天 / 30 天明细并按模型分组；另有主窗口大屏（用量总览 / 请求日志 / 周额度对比 / 价格设置）、会话 Token 悬浮窗、桌面宠物与跨设备同步。
 
 > macOS 上的形态：菜单栏标题实时显示「今日花费 + 总 Token」，点击图标弹出贴近菜单栏的 popover 面板；Dock 不显示图标，失焦自动收起。
 
@@ -176,7 +176,7 @@
 | 桌面框架 | [Tauri 2](https://tauri.app/)（Rust 后端 + WebView 前端） |
 | 前端 | React 19 + TypeScript + Vite 7 |
 | 样式 | Tailwind CSS v4（`@tailwindcss/vite`） |
-| 数据库 | SQLite（`rusqlite`，只读访问 ZCode 数据库） |
+| 数据库 | SQLite（`rusqlite`，只读访问 ZCode / OpenCode 等本地数据库） |
 | macOS 原生 | `objc2` / `objc2-app-kit`（毛玻璃透明度调优、Accessory 模式隐藏 Dock） |
 
 ---
@@ -250,7 +250,7 @@ AgentHUD/
    - **Windows**：Microsoft Edge WebView2 + MSVC 构建工具
    - **Linux**：`webkit2gtk`、`libayatana-appindicator` 等（详见 [Tauri 文档](https://v2.tauri.app/start/prerequisites/)）
 
-4. **ZCode CLI** 已安装并已产生使用记录（数据库位于 `~/.zcode/cli/db/db.sqlite`）
+4. 至少一个受支持的 CLI Agent 已安装并已产生使用记录（如 **ZCode CLI**，数据库位于 `~/.zcode/cli/db/db.sqlite`；Codex / Claude / Cursor / Kimi Code 等来源可选）
 
 ---
 
@@ -468,7 +468,7 @@ python3 app.py                      # 启动后日志会打印 Master Token
 }
 ```
 
-**同步原理**：ZCode 的用量记录是只增不删的，客户端按 `rowid` 增量上传，服务端用 `(device_id, local_rowid)` 去重。查询时本机数据查本地、其他设备数据查远端，合并展示，避免重复计算。
+**同步原理**：各 Agent 的本地用量记录是只增不删的，客户端按 `rowid` 增量上传，服务端用 `(device_id, local_rowid)` 去重。查询时本机数据查本地、其他设备数据查远端，合并展示，避免重复计算。
 
 ---
 
@@ -491,7 +491,7 @@ python3 app.py                      # 启动后日志会打印 Master Token
 
 ## 🔒 数据安全
 
-- 数据库连接使用 `SQLITE_OPEN_READ_ONLY`，**只读不写**，绝不影响 ZCode 数据。
+- 数据库连接使用 `SQLITE_OPEN_READ_ONLY`，**只读不写**，绝不影响各 Agent 本地数据。
 - 价格配置仅保存在用户本地 `~/.agenthud/` 目录，不上传任何数据。
 - **账号切换**会把 ZCode 登录态快照保存在 `~/.agenthud/accounts/`（目录权限 700、文件 600）用于一键切换，**仅存本机、不参与多设备同步**；本应用为非官方社区工具，与智谱 AI 官方无关。
 - **服务凭证**保存在 `~/.agenthud/credentials/`（目录权限 700、文件 600），仅存本机、不参与多设备同步。
