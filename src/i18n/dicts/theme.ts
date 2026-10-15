@@ -83,6 +83,14 @@ export const theme = {
   "theme.paramsTitle": "效果参数",
   "theme.paramsHint":
     "拖动滑块即时保存并热生效（约 1 秒），无需重启 ZCode。对话区、侧栏与右栏滑块各自独立生效，界面上其余区域保持固定的氛围透明度。",
+  // 壁纸背景层总开关（effects.js V6：关闭卸载视频/图片壁纸层，同时主题
+  // 视觉改造整体空转——ZCode 恢复原始外观；用量统计条等注入信息不受影响）
+  "theme.wallpaperEnabled": "壁纸背景",
+  "theme.wallpaperEnabledHint":
+    "关闭后 ZCode 恢复原始外观（壁纸层卸载，半透明底、文字描边等主题视觉改造一并停用），仅保留用量统计等注入信息；参数值原样保留，重新开启即按原值恢复",
+  // 壁纸背景关闭态的视觉滑块禁用提示（效果参数卡片内，仅关闭态展示）
+  "theme.wallpaperOffVisualDisabled":
+    "已关闭壁纸背景，主题视觉效果停用中，开启后可调整",
   "theme.paramWpBrightness": "壁纸亮度",
   "theme.paramWpSaturate": "饱和度",
   "theme.paramWpBlur": "背景模糊",

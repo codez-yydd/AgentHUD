@@ -991,6 +991,12 @@ export interface ThemeParams {
    *  会话累计条关闭时照常显示；经 variables.css
    *  --zbar-usage-model-rows（1/0）热重载生效 */
   usageModelRows: boolean;
+  /** 壁纸背景层总开关（默认 true）：关闭后注入侧不再挂载视频/图片壁纸
+   *  层（含黑底占位与压暗遮罩），ZCode 背景回到主题纯色氛围底；面板
+   *  不透明度等参数与用量统计条等注入功能不受影响，壁纸指向与滤镜参数
+   *  照常保留，重新开启即恢复；经 variables.css
+   *  --zbar-wallpaper-enabled（1/0）热重载生效（约 1 秒） */
+  wallpaperEnabled: boolean;
   /** 当前壁纸指向（未设置为 null）。相对文件名 = wallpapers/ 目录内
    *  文件（如 "default.mp4"）；绝对路径 = 直接引用 */
   wallpaperFile: string | null;

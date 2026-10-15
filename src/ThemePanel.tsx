@@ -84,6 +84,7 @@ interface SliderDef {
     | "usageTurnBar"
     | "usageQuotaBar"
     | "usageModelRows"
+    | "wallpaperEnabled"
   >;
   labelKey: MessageKey;
   /** 可选滑块说明（渲染在滑块下方的小字；仅部分参数提供） */
@@ -605,6 +606,23 @@ export function ThemePanel({ onBack }: Props) {
   };
 
   /**
+   * 壁纸背景层总开关变更（布尔参数，不走滑块刻度换算）：本地即时反馈，
+   * 防抖保存管道与滑块共用；Rust 侧落盘后经 variables.css 的
+   * --zbar-wallpaper-enabled 热重载透传给注入侧 effects.js（约 1 秒生效）。
+   * 关闭后 ZCode 恢复原始外观：注入侧卸载视频/图片壁纸层，variables.css
+   * 同时把视觉类变量渲染为空转组合（参数真值原样留在 params.json，仅
+   * 渲染处覆写），下方视觉滑块随之禁用；用量统计条等注入信息不受影响，
+   * 重新开启即按原参数恢复。
+   */
+  const handleWallpaperEnabled = (checked: boolean) => {
+    const cur = paramsRef.current;
+    if (!cur) return;
+    const next = { ...cur, wallpaperEnabled: checked };
+    setParams(next);
+    scheduleParamsSave(next);
+  };
+
+  /**
    * 处理拖放（需注入子页版）：原生文件对话框在无 Dock 图标的 Accessory
    * （ZBar）应用上不可见，且其模态等待会阻塞主线程导致所有 IPC 瘫痪，故
    * 改为接收 Tauri 拖放事件给出的文件路径。多文件时只取第一个，仅承载
@@ -1087,20 +1105,66 @@ export function ThemePanel({ onBack }: Props) {
               }
             >
               <div className="flex flex-col gap-2.5">
-                {SLIDERS.map((s) => (
-                  <ParamSlider
-                    key={s.key}
-                    label={t(s.labelKey)}
-                    hint={s.hintKey ? t(s.hintKey) : undefined}
-                    value={toScale(params[s.key], s.scale)}
-                    min={s.min}
-                    max={s.max}
-                    step={s.step}
-                    format={s.format}
+                {/* 壁纸背景层总开关（effects.js V6）：关闭后注入侧卸载
+                    视频/图片壁纸层，且 variables.css 对视觉类变量做空转
+                    覆写，ZCode 恢复原始外观（下方视觉滑块随之禁用、参数
+                    值照常保留；用量统计条等注入信息不受影响），重新开启
+                    即按原值恢复；开关经 variables.css 热重载生效
+                    （约 1 秒），样式同设置页既有 checkbox 模式 */}
+                <label className="flex items-center justify-between gap-2 cursor-pointer pb-2 border-b border-slate-900/6">
+                  <span className="min-w-0">
+                    <span className="block text-[10px] text-slate-600">
+                      {t("theme.wallpaperEnabled")}
+                    </span>
+                    <span className="block text-[9px] text-slate-500 leading-relaxed">
+                      {t("theme.wallpaperEnabledHint")}
+                    </span>
+                  </span>
+                  <input
+                    type="checkbox"
+                    checked={params.wallpaperEnabled}
                     disabled={actionsDisabled}
-                    onChange={(v) => handleSlider(s.key, v, s.scale)}
+                    onChange={(e) => handleWallpaperEnabled(e.target.checked)}
+                    className="accent-sky-500 h-3 w-3 shrink-0 disabled:opacity-40"
                   />
-                ))}
+                </label>
+
+                {/* 视觉类滑块组：壁纸背景关闭时全部禁用——Rust 侧渲染
+                    variables.css 时已对视觉五变量做空转覆写（base_alpha
+                    归 1、三区域不透明度归 0、描边归 0），theme.css 对
+                    ZCode 自身的视觉改造整体失效，此处调了也不生效，故
+                    禁用防误调：每个滑块 input 落 disabled（随 ParamSlider
+                    既有 disabled:opacity-40 弱化），容器再整体降不透明
+                    度，与拖拽投放区 busy 态的弱化惯例一致。仅 SLIDERS
+                    （滤镜/遮罩/氛围底/描边/三区域不透明度/速率）属视觉
+                    类；用量统计条区独立渲染，不受开关影响 */}
+                <div
+                  className={`flex flex-col gap-2.5 ${
+                    params.wallpaperEnabled ? "" : "opacity-40 pointer-events-none"
+                  }`}
+                >
+                  {SLIDERS.map((s) => (
+                    <ParamSlider
+                      key={s.key}
+                      label={t(s.labelKey)}
+                      hint={s.hintKey ? t(s.hintKey) : undefined}
+                      value={toScale(params[s.key], s.scale)}
+                      min={s.min}
+                      max={s.max}
+                      step={s.step}
+                      format={s.format}
+                      disabled={actionsDisabled || !params.wallpaperEnabled}
+                      onChange={(v) => handleSlider(s.key, v, s.scale)}
+                    />
+                  ))}
+                </div>
+                {/* 禁用态提示：解释视觉滑块为何不可调（仅在关闭态展示，
+                    放弱化容器外保持可读） */}
+                {!params.wallpaperEnabled && (
+                  <p className="text-[9px] text-amber-600 leading-relaxed">
+                    {t("theme.wallpaperOffVisualDisabled")}
+                  </p>
+                )}
 
                 {/* 当前壁纸（换壁纸走上方壁纸库与拖拽投放区）；wallpaperFile
                     可能是绝对路径，展示取末段文件名、悬浮看全路径 */}
@@ -1122,7 +1186,11 @@ export function ThemePanel({ onBack }: Props) {
 
                 {/* 一键预设与恢复默认等宽两列：亮色壁纸适配只覆盖四项推荐
                     值，恢复默认重置全部滑块（均保留壁纸指向与壁纸目录）；
-                    重启 ZCode 入口已移至顶部 Agent 应用卡片按钮区 */}
+                    重启 ZCode 入口已移至顶部 Agent 应用卡片按钮区。
+                    两按钮在壁纸关闭态刻意保持可用（不随视觉滑块禁用）：
+                    它们只改 ThemeParams 参数值不直接产生视觉效果，写入后
+                    参数真值留在 params.json，重新开启壁纸即按新值生效，
+                    禁用反而堵死"关着先把参数调好再开"的路径 */}
                 <div className="grid grid-cols-2 gap-1.5">
                   <BtnSecondary
                     onClick={handleLightWallpaperPreset}

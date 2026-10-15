@@ -29,9 +29,23 @@ pub const INJECT_END: &str = "<!--ZBAR-THEME-END-->";
 /// 旧版本文件由 ensure_theme_assets 自动覆盖升级；已是当前版本的文件
 /// （可能被实机调优过）不会被覆盖。
 pub const THEME_CSS: &str = r#"/* ============================================================
- * ZBAR-THEME-V11
+ * ZBAR-THEME-V12
  * ZBar Agent 动态壁纸主题样式（由 ZBar 落盘并随版本升级覆盖）
  * ============================================================
+ * V12 变更（壳透明规则变量驱动，壁纸关闭恢复原始整窗底）：V11 的
+ * 壳规则原为硬编码 background: transparent !important——壁纸开关的
+ * 卸载路径（effects.js）与 variables.css 的空转变量都覆盖不到它，
+ * 关闭壁纸后壳底仍被挖空、透出窗口原生底色，用户看到的是"透明"而
+ * 非原始外观。V12 把该规则改为消费新变量 --zbar-shell-uncover
+ * （variables.css 渲染 1/0：开启壁纸=0 壳全透明，与 V11 行为完全
+ * 一致；关闭=1 壳底恢复 --color-background——空转下该 token 已被
+ * --zbar-base-alpha=1 还原为原色实色，深浅色自动跟随 .dark 的
+ * token 重定义，无需两套规则）。变量缺失兜底 0（透明）：兼容尚未
+ * 重渲的旧 variables.css，已装用户升级 theme.css 后保持 V11 观感，
+ * 不会被提前挖穿；改规则必须升版（THEME_CSS_VERSION 同步 11→12），
+ * 已装用户经 ensure_versioned_template 自动覆盖升级，重启 ZCode 后
+ * 生效。
+ *
  * V11 变更（透出 Windows 端全视口应用壳容器）：Windows 实机
  * （ZCode 3.10.1.6272 / Electron 41）确认应用壳的全视口 flex 容器
  * （div.flex.h-dvh.flex-col.overflow-hidden）自带不透明底色
@@ -312,12 +326,17 @@ html.dark .side-pane-open-tab-shell {
     rgba(0, 0, 0, var(--zbar-text-shadow, 0));
 }
 
-/* ---- V11：透出全视口应用壳容器 ----
- * 见文件头部 V11 变更说明。该容器铺满整窗且自带不透明底色，
- * 置透明后负 z-index 的壁纸视频/压暗遮罩层按原设计垫底透出；
- * 氛围底与面板半透明质感仍由上方既有 token/元素规则负责。 */
+/* ---- V12：全视口应用壳容器（壳底透明/恢复由变量驱动） ----
+ * 见文件头部 V12 变更说明。该容器铺满整窗且自带不透明底色，V11 起
+ * 必须由本规则决定壳底去向；V12 改为消费 --zbar-shell-uncover 的
+ * color-mix 形式：开启壁纸（变量=0，缺失兜底 0 兼容旧 variables.css）
+ * 时透明全量为 100%，壳整体透明、负 z-index 的壁纸视频/压暗遮罩层
+ * 按原设计垫底透出（与 V11 硬编码 transparent 行为完全一致）；关闭
+ * 壁纸（=1）时壳底恢复 --color-background 不透明底——空转组合下该
+ * token 已被 --zbar-base-alpha=1 还原为原色实色，整体回到原始整窗
+ * 观感。氛围底与面板半透明质感仍由上方既有 token/元素规则负责。 */
 div.flex.h-dvh.flex-col.overflow-hidden {
-  background: transparent !important;
+  background: color-mix(in oklab, var(--color-background, #fff) calc(var(--zbar-shell-uncover, 0) * 100%), transparent) !important;
 }
 "#;
 
@@ -326,9 +345,13 @@ div.flex.h-dvh.flex-col.overflow-hidden {
 /// 热重载 variables.css——ZBar 面板改参数/换壁纸无需重启 ZCode 即时生效。
 /// theme.css 为静态 link 不做周期热重载（模板升级场景由面板"重启 ZCode"
 /// 按钮冷启动完全重载，见模板内 V5 说明）。
+/// V6 起新增壁纸层总开关（消费 --zbar-wallpaper-enabled，默认开启）：
+/// 关闭时移除注入三层、背景回到主题纯色底，重新开启按最新指向恢复；
+/// off 只拦壁纸相关应用，variables.css 的每秒热重载照常（见模板内
+/// V6 说明）。
 /// 版本化落盘（头部 ZBAR-THEME-V 标记，见 store::ensure_versioned_template）。
 pub const EFFECTS_JS: &str = r#"// ============================================================
-// ZBAR-THEME-V5
+// ZBAR-THEME-V6
 // ZBar Agent 动态壁纸运行时（由 ZBar 落盘并随版本升级覆盖）
 // ============================================================
 // 读取 variables.css 注入的 --zbar-* CSS 变量，在 body 上创建：
@@ -341,6 +364,23 @@ pub const EFFECTS_JS: &str = r#"// =============================================
 //     元素，退回原生观感
 //   - 压暗遮罩层（z-index:-1）：rgba(0,0,0,强度)，保证前景可读
 // 滤镜（亮度/饱和/模糊）与遮罩对视频和图片同样生效；播放速率仅视频。
+// V6 变更（壁纸层总开关）：消费新增变量 --zbar-wallpaper-enabled
+// （variables.css 渲染 1/0，用户参数 wallpaper_enabled，默认 1）——显式
+// "0" 时移除占位/媒体/遮罩三层并记住 off 态，背景回到 theme.css 的
+// base_alpha 纯色氛围底（面板不透明度等参数照常生效，用量统计条等其余
+// 注入功能完全不受影响）；重新置 1 后按快照里的最新指向恢复挂载（显式
+// 开启视为一次显式重试：坏源也重建重载，自动自愈路径仍受 dead 约束），
+// 壁纸指向与滤镜参数原样保留。off 是用户意图，与"加载失败 dead"态严格
+// 区分：dead 需换源才复位、期间不自愈重挂；off 期间同样不自愈重挂（用户
+// 意图优先，自愈分支以 wallpaperOn && !wallpaperOff 双前提判定——只看
+// wallpaperOn 会被每秒 reloadVarsLink 的失效窗口读到空串误判为开启而抢先
+// 重挂），但重新开启即恢复。开关判定
+// 置于快照与 reloadVarsLink 之后（off 只拦壁纸相关应用，不拦 variables.css
+// 每秒 cache-bust——那是 usage.js 等消费方热重载的唯一通道，其余参数的
+// 热重载在关闭壁纸期间照常）。变量缺失/空串（旧 variables.css）一律视为
+// 开启，且该变量被排除出 poll 的"任一变量空串即视为失效窗口"防御——
+// 旧文件无此变量恒为空串，若参与判定会让整轮轮询永久跳过，面板其余
+// 参数的热重载会一并停摆。
 // 热重载：每 1000ms 强制重读 variables.css（link href 追加时间戳，
 // Chromium 对 file:// 的常用强制重读手段），比对 --zbar-* 变量快照，
 // 壁纸 URL / 滤镜三参 / 播放速率 / 遮罩强度变化即时应用。
@@ -364,8 +404,14 @@ pub const EFFECTS_JS: &str = r#"// =============================================
     "--zbar-wp-saturate",
     "--zbar-wp-blur",
     "--zbar-mask-strength",
-    "--zbar-playback-rate"
+    "--zbar-playback-rate",
+    "--zbar-wallpaper-enabled"
   ];
+
+  /* 壁纸层总开关变量名（V6 新增）：取值语义与 usage_* 开关同惯例——
+   * 仅显式 "0" 视为关闭，空串/缺失（旧 variables.css）一律按开启处理；
+   * 单独持有常量，供 poll 的空值防御排除判定与专项读取使用 */
+  var VAR_WALLPAPER_ENABLED = "--zbar-wallpaper-enabled";
 
   function cssVar(name, fallback) {
     var v = getComputedStyle(document.documentElement).getPropertyValue(name);
@@ -420,6 +466,9 @@ pub const EFFECTS_JS: &str = r#"// =============================================
   var mediaKind = ""; /* "video" | "image" */
   var currentUrl = "";
   var dead = false; /* 当前壁纸加载失败标记：不自动重试同源，换源后复位 */
+  var wallpaperOff = false; /* 壁纸层总开关关闭态（V6 用户意图）：与 dead
+    （加载失败）独立——off 期间不自愈重挂，重新开启即按已知指向恢复
+    （显式开启视为显式重试，坏源也重建重载；自动自愈仍受 dead 约束） */
   var placeholderTimer = 0;
 
   /* 就绪（video canplay / img load）：应用速率（仅视频）、淡入并撤黑底 */
@@ -579,8 +628,19 @@ pub const EFFECTS_JS: &str = r#"// =============================================
 
   function poll() {
     try {
-      /* 注入层被页面意外清掉时自愈（加载失败 dead 态除外） */
-      if (!dead && currentUrl && !mounted()) {
+      /* 壁纸层总开关（V6）：仅显式 "0" 视为关闭；空串/缺失（旧
+       * variables.css）按开启处理——升级后默认行为与旧版一致 */
+      var wallpaperOn = cssVar(VAR_WALLPAPER_ENABLED, "1") !== "0";
+
+      /* 注入层被页面意外清掉时自愈（加载失败 dead 态与总开关关闭态
+       * 除外——off 是用户意图，不得重新挂载）。!wallpaperOff 必须显式
+       * 判定，不能只看 wallpaperOn：poll 每秒 reloadVarsLink() 会开
+       * "样式表卸载 → 异步解析 → 恢复"窗口，off 稳态下若某轮起点恰在
+       * 窗口内，enabled 读到空串回退 "1" 会误判为开启——本分支位于空
+       * 值防御之前（防御拦不住），抢先挂载后稳态快照不再变化、卸载分支
+       * 不可达，开关已关但壁纸持续显示；同时它也会与下方"由关切开"的
+       * 恢复分支重复挂载（off→on 时二次 setWallpaper 重置淡入与占位层）。 */
+      if (wallpaperOn && !wallpaperOff && !dead && currentUrl && !mounted()) {
         setWallpaper(currentUrl);
         return;
       }
@@ -595,13 +655,43 @@ pub const EFFECTS_JS: &str = r#"// =============================================
        * 初载样式表尚未首次解析完成——本轮快照不可信，视为失效窗口直接
        * 返回：不 diff、不应用滤镜/遮罩、不切壁纸，避免把全部变量误判为
        * "被重置为默认值"而清掉用户参数。正常落盘的 variables.css 恒定
-       * 渲染全部变量，空串只会出现在失效窗口，判定无歧义。 */
+       * 渲染全部变量，空串只会出现在失效窗口，判定无歧义。
+       * 唯一例外 --zbar-wallpaper-enabled（V6）：旧 variables.css 无此
+       * 变量恒为空串，若参与本判定会让旧主题用户升级后每轮都提前返回、
+       * 其余参数的热重载一并停摆；该变量缺失本就等价于"开启"（上面已按
+       * fallback "1" 读取），无需防御 */
       for (var i = 0; i < VAR_NAMES.length; i++) {
+        if (VAR_NAMES[i] === VAR_WALLPAPER_ENABLED) continue;
         if (now[VAR_NAMES[i]] === "") return;
       }
       reloadVarsLink();
       if (sameSnapshot(snapshot, now)) return;
       snapshot = now;
+      /* 总开关关闭：移除注入三层并记住 off（unmount 幂等，重复轮次零
+       * 成本），背景回到 theme.css 的 base_alpha 纯色氛围底；不置 dead、
+       * 不动 currentUrl——重新开启后按原壁纸指向与滤镜参数恢复。本分支
+       * 位于快照与 reloadVarsLink 之后：关闭壁纸不影响其余参数的热重载
+       * （本脚本每秒 cache-bust 是 variables.css 唯一的强制重读通道，
+       * usage.js 的开关/字号读数同样依赖它） */
+      if (!wallpaperOn) {
+        if (!wallpaperOff) {
+          unmount();
+          wallpaperOff = true;
+        }
+        return;
+      }
+      /* 由关切开：按当前快照的指向恢复挂载——用户显式开启等价于一次显式
+       * 重试，即使该源此前加载失败（dead）也照常重建重载（再失败会重新
+       * 置 dead，不形成自动循环：自动自愈路径仍受 dead 约束，只有换源才
+       * 复位）。取快照里的最新指向，关闭期间换过壁纸不会停留在旧源 */
+      if (wallpaperOff) {
+        wallpaperOff = false;
+        var resumeUrl = urlOf(now["--zbar-wallpaper-url"]) || currentUrl;
+        if (resumeUrl) {
+          setWallpaper(resumeUrl);
+        }
+        return;
+      }
       var url = urlOf(now["--zbar-wallpaper-url"]);
       if (url && url !== currentUrl) {
         setWallpaper(url); /* 内部已应用滤镜与遮罩 */
@@ -714,9 +804,33 @@ pub const EFFECTS_JS: &str = r#"// =============================================
 /// 与 effects.js 同款：自愈、静默失败、空值防御；DOM 选择器集中在头部
 /// 常量，便于实机比对调整。
 pub const USAGE_JS: &str = r#"// ============================================================
-// ZBAR-THEME-V35
+// ZBAR-THEME-V36
 // ZBar Agent 对话页用量统计条（由 ZBar 落盘并随版本升级覆盖）
 // ============================================================
+// V36 变更（浅色主题文字可读性——用户实测反馈：ZCode 浅色主题白底
+//   下注入统计条文字太淡看不清。仅渲染端样式改动，数据契约与 V35 完
+//   全一致；深色主题渲染零变化——新增规则全部带 html:not(.dark) 前缀
+//   （:not(.dark) 计入特异性，均高于对应原规则），浅色主题命中覆盖、
+//   深色主题不命中）：
+//   a) 透明度下限提升：行透明消费的 --zbar-usage-opacity（用户参数，
+//      默认 .55）按"深色壁纸背景下弱化小字"设计，白底下 55% 透明灰字
+//      对比度最多约 3.6:1（即使基色全黑），数学上必然不可读——只能提
+//      高浅色下的实际透明度，加深颜色无效。三处行透明消费点（每轮条
+//      容器/会话条行 .zbar-usage-sb-line/底部条行 .zbar-usage-qb-line）
+//      以 opacity:max(var(--zbar-usage-opacity,.55),.82) 兜下限（用户
+//      调高 >.82 仍取用户值）；标签弱色 dim .66→.82、底部条倒计时弱
+//      色 qfaint .72→.85（弱色与主文字仍乘法叠加，层级次序不变）；
+//   b) 语义色浅色加深变体：三档速度色（fast #34d399 / mid #fbbf24 /
+//      slow #f87171）与额度阈值色（quota-mid #fbbf24 / quota-low
+//      #f87171）是深色底专用亮色，白底上（尤其黄 #fbbf24）不可读。
+//      为四组容器（模型底板/每轮条/会话条/底部条）tps 三档 + 会话条/
+//      底部条 quota 两档追加 html:not(.dark) 前缀的加深版
+//      （#059669/#d97706/#dc2626，白底对比度达标；模型底板 V33 起底
+//      色消费 --color-card 随主题翻转，浅色下恰为浅底）；深色规则原
+//      样保留；
+//   c) 明确不动：模型底板容器自供卡底+前景色（V26 起不吃低透明）、
+//      qdim（无自身透明，父级底部条行提升已覆盖）、qdot 小蓝点、等
+//      待态 0.636 系数（防御性规则，无渲染路径）。
 // V35 变更（注入条与输入框卡片左右缘对齐 + 每轮条/会话条缓存命中率回
 //   归 + ✚ 缓存写 0 值隐藏——实机用户反馈。全部为渲染端改动，数据契约
 //   与 V34 完全一致）：
@@ -1946,7 +2060,37 @@ pub const USAGE_JS: &str = r#"// ===============================================
       /* V29 起额度三档配色（充足继承行色灰白、<30 黄、<10 红）；V33 起
        * 类挂在分段 span 上（倒计时子 span 经 qfaint 显式回灰，见上） */
       "[" + ATTR_QUOTA_BAR + "] .zbar-usage-quota-mid{color:#fbbf24;}" +
-      "[" + ATTR_QUOTA_BAR + "] .zbar-usage-quota-low{color:#f87171;}";
+      "[" + ATTR_QUOTA_BAR + "] .zbar-usage-quota-low{color:#f87171;}" +
+      /* V36 浅色主题覆盖（白底下注入条文字可读性）：规则全部带
+       * html:not(.dark) 前缀（:not(.dark) 计入特异性，均高于对应原规
+       * 则），浅色主题命中覆盖、深色主题不命中（深色渲染零变化，上方
+       * 原规则原样保留）。a) 透明度下限：三处行透明消费点（每轮条容
+       * 器/会话条行/底部条行）以 max() 兜 .82 底（用户调高 >.82 仍取
+       * 用户值），dim/qfaint 弱色同步提亮；b) 语义色浅色加深变体：四
+       * 组容器 tps 三档 + 会话条/底部条 quota 两档改用白底可读的加深
+       * 版（#059669/#d97706/#dc2626；模型底板 V33 起底色消费
+       * --color-card 随主题翻转，浅色下恰为浅底） */
+      "html:not(.dark) [" + ATTR_ROW + "]{opacity:max(var(--zbar-usage-opacity,.55),.82);}" +
+      "html:not(.dark) [" + ATTR_SESSION_BAR + "] .zbar-usage-sb-line{opacity:max(var(--zbar-usage-opacity,.55),.82);}" +
+      "html:not(.dark) [" + ATTR_QUOTA_BAR + "] .zbar-usage-qb-line{opacity:max(var(--zbar-usage-opacity,.55),.82);}" +
+      "html:not(.dark) .zbar-usage-dim{opacity:.82;}" +
+      "html:not(.dark) [" + ATTR_QUOTA_BAR + "] .zbar-usage-qfaint{opacity:.85;}" +
+      "html:not(.dark) [" + ATTR_MODELS + "] .zbar-usage-tps-fast{color:#059669;}" +
+      "html:not(.dark) [" + ATTR_MODELS + "] .zbar-usage-tps-mid{color:#d97706;}" +
+      "html:not(.dark) [" + ATTR_MODELS + "] .zbar-usage-tps-slow{color:#dc2626;}" +
+      "html:not(.dark) [" + ATTR_ROW + "] .zbar-usage-tps-fast{color:#059669;}" +
+      "html:not(.dark) [" + ATTR_ROW + "] .zbar-usage-tps-mid{color:#d97706;}" +
+      "html:not(.dark) [" + ATTR_ROW + "] .zbar-usage-tps-slow{color:#dc2626;}" +
+      "html:not(.dark) [" + ATTR_SESSION_BAR + "] .zbar-usage-tps-fast{color:#059669;}" +
+      "html:not(.dark) [" + ATTR_SESSION_BAR + "] .zbar-usage-tps-mid{color:#d97706;}" +
+      "html:not(.dark) [" + ATTR_SESSION_BAR + "] .zbar-usage-tps-slow{color:#dc2626;}" +
+      "html:not(.dark) [" + ATTR_QUOTA_BAR + "] .zbar-usage-tps-fast{color:#059669;}" +
+      "html:not(.dark) [" + ATTR_QUOTA_BAR + "] .zbar-usage-tps-mid{color:#d97706;}" +
+      "html:not(.dark) [" + ATTR_QUOTA_BAR + "] .zbar-usage-tps-slow{color:#dc2626;}" +
+      "html:not(.dark) [" + ATTR_SESSION_BAR + "] .zbar-usage-quota-mid{color:#d97706;}" +
+      "html:not(.dark) [" + ATTR_SESSION_BAR + "] .zbar-usage-quota-low{color:#dc2626;}" +
+      "html:not(.dark) [" + ATTR_QUOTA_BAR + "] .zbar-usage-quota-mid{color:#d97706;}" +
+      "html:not(.dark) [" + ATTR_QUOTA_BAR + "] .zbar-usage-quota-low{color:#dc2626;}";
       /* V21 的 CTX 三档变色样式（黄/红两个 class 规则）已随 V22 CTX 段
        * 删除（无渲染路径再产出这两个 class） */
     (document.head || document.documentElement).appendChild(st);
@@ -4748,12 +4892,40 @@ pub fn file_url(path: &Path) -> String {
 
 /// 由主题参数渲染 variables.css 内容。
 /// 壁纸 URL 为 file:// 绝对地址（已 percent-encoding）。
+/// --zbar-wallpaper-enabled 为壁纸层总开关（由用户参数 wallpaper_enabled
+/// 渲染 1/0，默认 1）：effects.js 读它决定是否挂载壁纸媒体层——显式 "0"
+/// 时移除注入三层；变量缺失/空串视为开启，与默认值 true 一致，改开关约
+/// 1 秒随热重载生效。
+/// 关闭态同时进入"主题视觉空转"：theme.css 对 ZCode 自身的视觉改造不只
+/// 壁纸层一处（全局底色 token 半透明化、三区域主容器半透明背景、文字
+/// 描边），只卸载壁纸层会留下"透明模糊"的中间态（背景 25% 半透明直接
+/// 透出窗口底，与用户预期"关闭 = ZCode 原本的样子"不符）。故关闭时把
+/// 视觉类变量渲染为空转组合（theme.css 规则本身无开关分支，靠变量取值
+/// 整体失效，等效 ZCode 原始外观）：
+/// - --zbar-base-alpha = 1：8 条全局底色 token 的 color-mix 取 100% 原色
+///   = ZCode 原始实色底（顶栏/卡片等全部消费方一并恢复）；
+/// - --zbar-sidebar-opacity / --zbar-panel-opacity /
+///   --zbar-sidebar-right-opacity = 0：三区域主容器强加的 !important 背景
+///   全透明，回到 ZCode 原始"面板自身无背景、透全局底"结构（必须用 0
+///   而非 1：1 会把 #sidebar 等刷成 neutral-50/900 实色，与原始全局
+///   --color-sidebar 的 neutral-100/950 差一档色）；
+/// - --zbar-text-shadow = 0：描边 alpha 归零自然不可见；
+/// 滤镜/遮罩/速率照常输出参数真值（壁纸层已卸载无消费方，保持渲染简单，
+/// 重新开启即按原值恢复）；usage 类变量（字号/不透明度/四开关）完全不受
+/// 影响——"关闭壁纸只关视觉皮肤，注入的用量统计等信息照常显示"。
+/// --zbar-shell-uncover 为 theme.css V12 壳规则的开关（V12 新增，与
+/// --zbar-wallpaper-enabled 同源自 wallpaper_enabled 渲染反相值 1/0——
+/// 开启壁纸=0、关闭=1）：theme.css 的全视口应用壳容器规则消费它决定
+/// 壳底去向——0 时 color-mix 全量透明（V11 行为，壁纸垫底透出）、1 时
+/// 壳底恢复 --color-background 不透明底（叠加空转组合即原始整窗观感）；
+/// 变量缺失在 theme.css 侧兜底 0（透明），兼容尚未重渲的旧 variables.css。
 /// --zbar-base-alpha 为全局氛围底透明度（V10 起由用户参数 base_alpha
 /// 渲染真值，默认 0.25）：theme.css V5 起全部全局底色 token 由它驱动，
-/// 与滑块解绑。
+/// 与滑块解绑；壁纸背景关闭时按上文渲染空转值 1。
 /// --zbar-text-shadow 为文字描边强度（V10 新增，由用户参数
 /// text_shadow 渲染真值，0=关闭）：theme.css V10 起三区域主容器的
-/// 前景文字描边由它驱动。两者均随 variables.css 每秒热重载即时生效。
+/// 前景文字描边由它驱动；壁纸背景关闭时按上文渲染空转值 0。两者均随
+/// variables.css 每秒热重载即时生效。
 /// --zbar-usage-font-size / --zbar-usage-opacity 为对话内用量统计条的
 /// 字号与文字不透明度（V4 新增，由用户参数 usage_font_size /
 /// usage_opacity 渲染真值）：usage.js V4 起统计条样式消费这两个变量
@@ -4804,11 +4976,32 @@ pub fn render_variables_css(
     pet_style: &str,
     pet_size_px: u32,
 ) -> String {
+    // 壁纸背景关闭时取"主题视觉空转"组合（语义见函数文档）：全局底
+    // base_alpha 归 1（原色实色）、三区域主容器不透明度归 0（回透明
+    // 结构）、文字描边归 0（不可见），theme.css 对 ZCode 自身的视觉
+    // 改造整体失效，等效原始外观；开启则一律输出参数真值。取值在
+    // 渲染处覆写而不动 ThemeParams——参数真值原样留在 params.json，
+    // 重新开启即按原参数恢复。滤镜/遮罩/速率不在空转之列：壁纸层已
+    // 卸载时无消费方，照常输出真值保持渲染简单；usage 类变量与四个
+    // 开关也不受影响——关闭壁纸只关视觉皮肤，统计条等信息照常显示。
+    let (panel, sidebar, sidebar_right, base_alpha, text_shadow) = if params.wallpaper_enabled {
+        (
+            params.panel_opacity,
+            params.sidebar_opacity,
+            params.sidebar_right_opacity,
+            params.base_alpha,
+            params.text_shadow,
+        )
+    } else {
+        (0.0, 0.0, 0.0, 1.0, 0.0)
+    };
     format!(
         "/* ZBar 自动生成的主题变量，请勿手工编辑 */\n\
          /* 修改参数请在 ZBar 面板的动态壁纸设置中进行 */\n\
          :root {{\n\
          \x20 --zbar-wallpaper-url: url(\"{url}\");\n\
+         \x20 --zbar-wallpaper-enabled: {wallpaper_enabled};\n\
+         \x20 --zbar-shell-uncover: {shell_uncover};\n\
          \x20 --zbar-wp-brightness: {brightness};\n\
          \x20 --zbar-wp-saturate: {saturate};\n\
          \x20 --zbar-wp-blur: {blur}px;\n\
@@ -4831,15 +5024,27 @@ pub fn render_variables_css(
          \x20 --zbar-playback-rate: {rate};\n\
          }}\n",
         url = wallpaper_url,
+        wallpaper_enabled = if params.wallpaper_enabled { 1 } else { 0 },
+        // V12 壳规则开关：与 wallpaper_enabled 同源取反相值（开启壁纸=0，
+        // theme.css 壳容器 color-mix 全量透明、壁纸垫底透出即 V11 行为；
+        // 关闭=1，壳底恢复 --color-background 不透明底，与空转组合叠加
+        // 还原原始整窗观感）。不受视觉空转覆写影响——它本身就是空转的
+        // 一部分，随开关同源翻转
+        shell_uncover = if params.wallpaper_enabled { 0 } else { 1 },
         brightness = params.wp_brightness,
         saturate = params.wp_saturate,
         blur = params.wp_blur,
         mask = params.mask_strength,
-        panel = params.panel_opacity,
-        sidebar = params.sidebar_opacity,
-        sidebar_right = params.sidebar_right_opacity,
-        base_alpha = params.base_alpha,
-        text_shadow = params.text_shadow,
+        // 视觉五变量取上方解构出的局部值（开启 = 参数真值，关闭 = 空转
+        // 组合），不得直写 params.* 真值——否则关闭态空转失效、ZCode 停
+        // 留在半透明中间态；滤镜/遮罩/速率与 usage 类仍按参数真值渲染
+        // （同名的 `x = x` 显式形式：宏内裸标识符会被当作位置参数，与
+        // 命名参数混用直接编译报错，不能写成简写）
+        panel = panel,
+        sidebar = sidebar,
+        sidebar_right = sidebar_right,
+        base_alpha = base_alpha,
+        text_shadow = text_shadow,
         usage_font_size = params.usage_font_size,
         usage_opacity = params.usage_opacity,
         usage_session_bar = if params.usage_session_bar { 1 } else { 0 },
@@ -5099,6 +5304,7 @@ mod tests {
         let css = render_variables_css(&params, url, "", 1, crate::pet::DEFAULT_PET_STYLE, 108);
         for var in [
             "--zbar-wallpaper-url",
+            "--zbar-wallpaper-enabled",
             "--zbar-wp-brightness",
             "--zbar-wp-saturate",
             "--zbar-wp-blur",
@@ -5149,6 +5355,7 @@ mod tests {
         assert!(css.contains("--zbar-usage-turn-bar: 1;"), "{css}");
         assert!(css.contains("--zbar-usage-quota-bar: 1;"), "{css}");
         assert!(css.contains("--zbar-usage-model-rows: 1;"), "{css}");
+        assert!(css.contains("--zbar-wallpaper-enabled: 1;"), "{css}");
         assert!(css.contains("--zbar-playback-rate: 1;"));
         // 非 ASCII 壁纸名在 url 里必须已编码（不出现裸中文）
         assert!(!css.contains("我的壁纸"));
@@ -5211,6 +5418,16 @@ mod tests {
         let css = render_variables_css(&p, url, "", 1, crate::pet::DEFAULT_PET_STYLE, 108);
         assert!(css.contains("--zbar-usage-model-rows: 1;"), "{css}");
 
+        // 壁纸层总开关按参数渲染 1/0（effects.js V6 读到 0 即移除注入
+        // 三层、背景回纯色底；缺失视为开启，随热重载约 1 秒生效）
+        let mut p = ThemeParams::default();
+        p.wallpaper_enabled = false;
+        let css = render_variables_css(&p, url, "", 1, crate::pet::DEFAULT_PET_STYLE, 108);
+        assert!(css.contains("--zbar-wallpaper-enabled: 0;"), "{css}");
+        p.wallpaper_enabled = true;
+        let css = render_variables_css(&p, url, "", 1, crate::pet::DEFAULT_PET_STYLE, 108);
+        assert!(css.contains("--zbar-wallpaper-enabled: 1;"), "{css}");
+
         // 桌面宠物三变量按显式入参渲染真值（PetConfig 统一后 store.rs
         // 传入 pet_enabled/style/size_px）：默认关闭渲染 0（pet.js 读值
         // 非 "1" 一律视为关闭，含变量缺失的旧 variables.css），开启后
@@ -5239,6 +5456,68 @@ mod tests {
         // 合法值字符，注入壳按前缀识别）
         let css = render_variables_css(&params, url, "", 1, "custom:boba", 108);
         assert!(css.contains("--zbar-pet-style: custom:boba;"), "{css}");
+    }
+
+    #[test]
+    fn variables_css_壁纸关闭态渲染空转组合且usage保持真值() {
+        // 关闭态"主题视觉空转"回归：视觉五变量必须渲染空转组合而非参数
+        // 真值（base_alpha 归 1 恢复实色底、三区域不透明度归 0 回透明结
+        // 构、描边归 0 不可见），否则关壁纸后 ZCode 停留在半透明中间态；
+        // usage 类变量与滤镜/速率不受开关影响，照常渲染参数真值。
+        // 参数全部取非默认值——默认 panel/sidebar/right 本就是 0、与空转
+        // 值恰好重合，会掩盖"渲染了真值还是空转值"的区分（format! 命名
+        // 参数误写 params.* 时默认参数下测试照样绿）；开启态用同参数断言
+        // 真值，与关闭态逐项互为对照。
+        let url = "file:///x/y.mp4";
+        let mut p = ThemeParams::default();
+        p.panel_opacity = 0.6;
+        p.sidebar_opacity = 0.5;
+        p.sidebar_right_opacity = 0.4;
+        p.base_alpha = 0.3;
+        p.text_shadow = 0.7;
+        p.usage_font_size = 13.0;
+        p.usage_opacity = 0.8;
+        p.usage_session_bar = false;
+
+        p.wallpaper_enabled = false;
+        let css = render_variables_css(&p, url, "", 1, crate::pet::DEFAULT_PET_STYLE, 108);
+        assert!(css.contains("--zbar-wallpaper-enabled: 0;"), "{css}");
+        // V12 壳规则开关随壁纸开关反相（关闭=1）：theme.css 壳容器据此
+        // 恢复 --color-background 不透明底，与空转组合叠加还原原始整窗观感
+        assert!(css.contains("--zbar-shell-uncover: 1;"), "{css}");
+        // 空转组合五项逐项断言（缺一即残留半透明中间态）
+        assert!(css.contains("--zbar-panel-opacity: 0;"), "{css}");
+        assert!(css.contains("--zbar-sidebar-opacity: 0;"), "{css}");
+        assert!(css.contains("--zbar-sidebar-right-opacity: 0;"), "{css}");
+        assert!(css.contains("--zbar-base-alpha: 1;"), "{css}");
+        assert!(css.contains("--zbar-text-shadow: 0;"), "{css}");
+        // usage 类变量不受开关影响，仍渲染参数真值（关壁纸只关视觉皮肤，
+        // 统计条照常显示，字号/不透明度/开关也照常可调）
+        assert!(css.contains("--zbar-usage-font-size: 13px;"), "{css}");
+        assert!(css.contains("--zbar-usage-opacity: 0.8;"), "{css}");
+        assert!(css.contains("--zbar-usage-session-bar: 0;"), "{css}");
+        // 滤镜/速率照常真值（壁纸层已卸载无消费方，重新开启按原值恢复）
+        assert!(css.contains("--zbar-wp-brightness: 1.1;"), "{css}");
+        assert!(css.contains("--zbar-playback-rate: 1;"), "{css}");
+
+        // 开启态：同参数原样输出真值
+        p.wallpaper_enabled = true;
+        let css = render_variables_css(&p, url, "", 1, crate::pet::DEFAULT_PET_STYLE, 108);
+        assert!(css.contains("--zbar-wallpaper-enabled: 1;"), "{css}");
+        // V12 壳规则开关反相（开启=0）：壳容器保持全透明、壁纸垫底透出，
+        // 与 V11 硬编码 transparent 行为一致
+        assert!(css.contains("--zbar-shell-uncover: 0;"), "{css}");
+        assert!(css.contains("--zbar-panel-opacity: 0.6;"), "{css}");
+        assert!(css.contains("--zbar-sidebar-opacity: 0.5;"), "{css}");
+        assert!(css.contains("--zbar-sidebar-right-opacity: 0.4;"), "{css}");
+        assert!(css.contains("--zbar-base-alpha: 0.3;"), "{css}");
+        assert!(css.contains("--zbar-text-shadow: 0.7;"), "{css}");
+
+        // 空转覆写只发生在渲染处：ThemeParams 本体未被改写，参数真值
+        // 原样留在 params.json，重新开启即按原值恢复
+        assert_eq!(p.panel_opacity, 0.6);
+        assert_eq!(p.base_alpha, 0.3);
+        assert_eq!(p.text_shadow, 0.7);
     }
 
     #[test]
@@ -5609,8 +5888,8 @@ mod tests {
     #[test]
     fn usage_js_v34_分段状态条与设计语言() {
         // ---- 版本标记（V35 起头部升级，V34 特征全部保留）----
-        assert!(USAGE_JS.contains("ZBAR-THEME-V35"));
-        assert!(!USAGE_JS.contains("ZBAR-THEME-V34"), "版本头应已升到 V35");
+        assert!(USAGE_JS.contains("ZBAR-THEME-V36"));
+        assert!(!USAGE_JS.contains("ZBAR-THEME-V35"), "版本头应已升到 V36");
         // ---- 字体跟随客户端（任务红线：--font-mono 引用）：四个注入层
         // （每轮条/会话条/模型底板/底部条）各一条 font-family 声明，缺失
         // 回退既有等宽栈
@@ -5868,8 +6147,8 @@ mod tests {
     #[test]
     fn usage_js_v35_卡片对齐与缓存率() {
         // ---- 版本标记 ----
-        assert!(USAGE_JS.contains("ZBAR-THEME-V35"));
-        assert!(!USAGE_JS.contains("ZBAR-THEME-V34"), "版本头应已升到 V35");
+        assert!(USAGE_JS.contains("ZBAR-THEME-V36"));
+        assert!(!USAGE_JS.contains("ZBAR-THEME-V35"), "版本头应已升到 V36");
         // ---- 任务 A：输入框卡片定位（零选择器假设）----
         assert!(
             USAGE_JS.contains("function locateComposerCard(region)")
@@ -5978,6 +6257,77 @@ mod tests {
     }
 
     #[test]
+    fn usage_js_v36_浅色主题可读性() {
+        // ---- 版本标记 ----
+        assert!(USAGE_JS.contains("ZBAR-THEME-V36"));
+        assert!(!USAGE_JS.contains("ZBAR-THEME-V35"), "版本头应已升到 V36");
+        // ---- a) 透明度下限：三处行透明消费点（每轮条容器/会话条行/
+        // 底部条行）以 max() 兜 .82 底（用户调高 >.82 仍取用户值），
+        // dim/qfaint 弱色同步提亮；规则全部带 html:not(.dark) 前缀 ----
+        assert!(
+            USAGE_JS.contains(
+                "\"html:not(.dark) [\" + ATTR_ROW + \"]{opacity:max(var(--zbar-usage-opacity,.55),.82);}\""
+            ) && USAGE_JS.contains(
+                "\"html:not(.dark) [\" + ATTR_SESSION_BAR + \"] .zbar-usage-sb-line{opacity:max(var(--zbar-usage-opacity,.55),.82);}\""
+            ) && USAGE_JS.contains(
+                "\"html:not(.dark) [\" + ATTR_QUOTA_BAR + \"] .zbar-usage-qb-line{opacity:max(var(--zbar-usage-opacity,.55),.82);}\""
+            ),
+            "三处行透明消费点应有 html:not(.dark) 的 opacity:max(…,.82) 下限规则"
+        );
+        assert!(
+            USAGE_JS.contains("\"html:not(.dark) .zbar-usage-dim{opacity:.82;}\"")
+                && USAGE_JS.contains(
+                    "\"html:not(.dark) [\" + ATTR_QUOTA_BAR + \"] .zbar-usage-qfaint{opacity:.85;}\""
+                ),
+            "浅色弱色应提亮（dim .82 / qfaint .85）"
+        );
+        // 深色原规则保留（红线：深色主题渲染零变化）
+        assert!(USAGE_JS.contains(".zbar-usage-dim{opacity:.66;}"));
+        // ---- b) 语义色浅色加深变体：四组容器（模型底板/每轮条/会话
+        // 条/底部条）tps 三档 + 会话条/底部条 quota 两档，白底可读加
+        // 深版 #059669/#d97706/#dc2626；深色亮色原规则原样保留 ----
+        for attr in ["ATTR_MODELS", "ATTR_ROW", "ATTR_SESSION_BAR", "ATTR_QUOTA_BAR"] {
+            for (cls, light, dark) in [
+                ("zbar-usage-tps-fast", "#059669", "#34d399"),
+                ("zbar-usage-tps-mid", "#d97706", "#fbbf24"),
+                ("zbar-usage-tps-slow", "#dc2626", "#f87171"),
+            ] {
+                assert!(
+                    USAGE_JS.contains(&format!(
+                        "\"html:not(.dark) [\" + {attr} + \"] .{cls}{{color:{light};}}\""
+                    )),
+                    "浅色加深变体应覆盖 {attr} 的 {cls}"
+                );
+                assert!(
+                    USAGE_JS.contains(&format!(
+                        "\"[\" + {attr} + \"] .{cls}{{color:{dark};}}\""
+                    )),
+                    "深色亮色原规则应保留：{attr} 的 {cls}"
+                );
+            }
+        }
+        for attr in ["ATTR_SESSION_BAR", "ATTR_QUOTA_BAR"] {
+            for (cls, light, dark) in [
+                ("zbar-usage-quota-mid", "#d97706", "#fbbf24"),
+                ("zbar-usage-quota-low", "#dc2626", "#f87171"),
+            ] {
+                assert!(
+                    USAGE_JS.contains(&format!(
+                        "\"html:not(.dark) [\" + {attr} + \"] .{cls}{{color:{light};}}\""
+                    )),
+                    "浅色加深变体应覆盖 {attr} 的 {cls}"
+                );
+                assert!(
+                    USAGE_JS.contains(&format!(
+                        "\"[\" + {attr} + \"] .{cls}{{color:{dark};}}\""
+                    )),
+                    "深色亮色原规则应保留：{attr} 的 {cls}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn has_inject_判定() {
         assert!(!has_inject(SAMPLE_HTML));
         assert!(has_inject(&format!("x{INJECT_BEGIN}y{INJECT_END}z")));
@@ -5986,12 +6336,28 @@ mod tests {
     #[test]
     fn 模板_版本头与token覆盖与图片支持() {
         // 头部版本标记（store::ensure_versioned_template 的升级判据）：
-        // theme.css 升 V10（文字可读性增强 + 氛围底可调），
-        // effects.js V5（撤销 theme.css 每秒热重载 + poll 快照空值防御）
-        assert!(THEME_CSS.contains("ZBAR-THEME-V11"));
-        assert!(!THEME_CSS.contains("ZBAR-THEME-V9"), "版本头应已升到 V10");
-        assert!(EFFECTS_JS.contains("ZBAR-THEME-V5"));
-        assert!(!EFFECTS_JS.contains("ZBAR-THEME-V4"), "版本头应已升到 V5");
+        // theme.css 升 V12（壳透明规则变量驱动，壁纸关闭恢复原始整窗底），
+        // effects.js V6（壁纸层总开关）
+        assert!(THEME_CSS.contains("ZBAR-THEME-V12"));
+        assert!(!THEME_CSS.contains("ZBAR-THEME-V11"), "版本头应已升到 V12");
+        assert!(EFFECTS_JS.contains("ZBAR-THEME-V6"));
+        assert!(
+            !EFFECTS_JS.contains("ZBAR-THEME-V5"),
+            "版本头应已升到 V6"
+        );
+        // V12 壳规则契约：全视口应用壳容器选择器必须消费
+        // --zbar-shell-uncover（color-mix 形式，变量缺失兜底 0 保持 V11
+        // 透明观感）——不得回退为紧跟选择器的硬编码
+        // background: transparent !important（旧形态让壁纸开关的卸载路径
+        // 与空转变量都覆盖不到壳底，关闭壁纸后壳仍被挖空、回不到原始
+        // 整窗底色）。contains 断言 color-mix 形式存在即可锁定新契约
+        assert!(
+            THEME_CSS.contains("div.flex.h-dvh.flex-col.overflow-hidden")
+                && THEME_CSS.contains(
+                    "color-mix(in oklab, var(--color-background, #fff) calc(var(--zbar-shell-uncover, 0) * 100%), transparent) !important;"
+                ),
+            "V12 壳规则应为消费 --zbar-shell-uncover（缺失兜底 0）的 color-mix 形式，不得硬编码透明"
+        );
         // usage.js V24（速度快照拆出 usage-speed.js 小文件；历史用量大文件
         // 仍按 2 秒节拍更新，注入版独立轮询速度小文件）+ V23（删除会话条
         // CTX 上下文占用段：用户改主意，CTX 百分
@@ -6087,8 +6453,8 @@ mod tests {
         // 存」段并存）；d) ✚ 缓存写段 cw 0 整段隐藏（含启动窗口占位
         // 态）、>0 带 title（词表新增 cwTitle 双语条目，
         // renderRowParts/renderBarLine 补 title 通道））
-        assert!(USAGE_JS.contains("ZBAR-THEME-V35"));
-        assert!(!USAGE_JS.contains("ZBAR-THEME-V34"), "版本头应已升到 V35");
+        assert!(USAGE_JS.contains("ZBAR-THEME-V36"));
+        assert!(!USAGE_JS.contains("ZBAR-THEME-V35"), "版本头应已升到 V36");
         assert!(!USAGE_JS.contains("ZBAR-THEME-V33"), "版本头不应回退");
         assert!(!USAGE_JS.contains("ZBAR-THEME-V31"), "版本头不应回退");
         assert!(!USAGE_JS.contains("ZBAR-THEME-V30"), "版本头不应回退");
@@ -6657,8 +7023,10 @@ mod tests {
         );
         assert!(
             USAGE_JS.contains("color:#34d399;")
-                && !USAGE_JS.contains("color:#059669;"),
-            "三档变色应恒用亮色系（底板恒深色，暗色系对比度不足）"
+                && USAGE_JS.contains(
+                    "\"html:not(.dark) [\" + ATTR_MODELS + \"] .zbar-usage-tps-fast{color:#059669;}\""
+                ),
+            "深色三档变色恒用亮色系；V36 起浅色经 html:not(.dark) 覆盖为加深版（底板消费 --color-card 随主题翻转，浅色下恰为浅底）"
         );
         // V26/V29 留白精确计算与统一施加特征：按实际字号与底板几何求和
         // （修复 V25 固定 14px/行在字号调大或底板增高后压到输入面板），
@@ -7445,6 +7813,60 @@ mod tests {
         assert!(EFFECTS_JS.contains("mediaKind !== \"video\""));
         // img 的 onload 淡入语义
         assert!(EFFECTS_JS.contains("i.addEventListener(\"load\", onReady)"));
+
+        // V6 壁纸层总开关：开关变量在 VAR_NAMES 快照内（开关变化才能被
+        // sameSnapshot 感知）；空串/缺失按开启（仅显式 "0" 关闭）；关闭走
+        // unmount + 记住 off 态；重开按已知指向恢复；off 分支必须在自愈
+        // 分支之前提前返回（off 期间不得重新挂载）
+        assert!(
+            EFFECTS_JS.contains("VAR_WALLPAPER_ENABLED = \"--zbar-wallpaper-enabled\""),
+            "壁纸层总开关应读 --zbar-wallpaper-enabled（variables.css 渲染 1/0）"
+        );
+        let names_block = &EFFECTS_JS[EFFECTS_JS
+            .find("var VAR_NAMES = [")
+            .expect("VAR_NAMES 数组应存在")
+            ..EFFECTS_JS
+                .find("var VAR_WALLPAPER_ENABLED")
+                .expect("开关常量声明应存在")];
+        assert!(
+            names_block.contains("\"--zbar-wallpaper-enabled\""),
+            "开关变量应进入 VAR_NAMES 快照，否则开关变化不会触发重新应用"
+        );
+        assert!(
+            EFFECTS_JS.contains("if (VAR_NAMES[i] === VAR_WALLPAPER_ENABLED) continue;"),
+            "开关变量应排除出空值防御（旧 variables.css 无此变量恒为空串）"
+        );
+        assert!(
+            EFFECTS_JS.contains("var wallpaperOn = cssVar(VAR_WALLPAPER_ENABLED, \"1\") !== \"0\";"),
+            "开关应按 usage_* 惯例读取：仅显式 0 视为关闭"
+        );
+        assert!(
+            EFFECTS_JS.contains("          unmount();\n          wallpaperOff = true;"),
+            "关闭态应移除注入三层并记住 off"
+        );
+        assert!(
+            EFFECTS_JS.contains(
+                "var resumeUrl = urlOf(now[\"--zbar-wallpaper-url\"]) || currentUrl;"
+            ),
+            "由关切开应按快照里的最新指向恢复（关闭期间换源不停留旧源）"
+        );
+        assert!(
+            EFFECTS_JS.contains("if (wallpaperOn && !wallpaperOff && !dead && currentUrl && !mounted()) {"),
+            "自愈分支应以 wallpaperOn 与 !wallpaperOff 双前提判定：off 期间不得重新挂载，\
+             且不能只看 wallpaperOn（reloadVarsLink 失效窗口下 enabled 空串回退会误判为开启）"
+        );
+        // 防回归：自愈分支不得回退为只判 wallpaperOn（P1：off 稳态卡死 +
+        // 重开双重挂载）
+        assert!(
+            !EFFECTS_JS.contains("if (wallpaperOn && !dead"),
+            "自愈分支不得缺少 !wallpaperOff 前提"
+        );
+        // 关闭分支必须位于 reloadVarsLink 之后：off 只拦壁纸相关应用，
+        // variables.css 的每秒 cache-bust 照常执行（usage.js 等热重载依赖）
+        assert!(
+            EFFECTS_JS.find("reloadVarsLink();") < EFFECTS_JS.find("if (!wallpaperOn) {"),
+            "关闭分支应在 reloadVarsLink 之后，关闭壁纸不得停掉其余参数热重载"
+        );
     }
 
     #[test]

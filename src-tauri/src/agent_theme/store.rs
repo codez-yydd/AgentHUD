@@ -154,6 +154,15 @@ pub const DEFAULT_USAGE_QUOTA_BAR: bool = true;
 /// variables.css 的 --zbar-usage-model-rows（1/0）随热重载即时生效
 /// （usage.js 侧变量缺失视为开启，兼容旧 variables.css）
 pub const DEFAULT_USAGE_MODEL_ROWS: bool = true;
+/// 壁纸层总开关（用户可调参数 wallpaper_enabled）：控制注入侧 effects.js
+/// 是否在 ZCode 页面挂载壁纸媒体层（黑底占位 / 壁纸媒体 / 压暗遮罩三层），
+/// 默认开启——"注入生效即壁纸背景直接可见"的既有行为保持不变（老用户
+/// 升级后观感一致）。关闭后背景回到 theme.css 的 base_alpha 纯色氛围底
+/// （面板不透明度等参数照常生效，壁纸指向与滤镜参数照常落盘，重新开启
+/// 即按原参数恢复），注入侧 token 统计条等其余功能完全不受影响；开关经
+/// variables.css 的 --zbar-wallpaper-enabled（1/0）随热重载即时生效
+/// （effects.js 侧变量缺失视为开启，兼容旧 variables.css）
+pub const DEFAULT_WALLPAPER_ENABLED: bool = true;
 /* 宠物参数（开关/形象/尺寸）自本版起从 ThemeParams 移除：宠物配置统一
 收敛到 pet::PetConfig（~/.zbar/pet.json，含总开关与形态二选一，默认注入
 版），注入版渲染由 refresh_variables_css_in 按 PetConfig 计算
@@ -252,6 +261,14 @@ pub struct ThemeParams {
     /// （1/0）热重载即时生效（usage.js 侧变量缺失视为开启，兼容旧
     /// variables.css）
     pub usage_model_rows: bool,
+    /// 壁纸层总开关（默认 true）：控制注入侧 effects.js 是否在 ZCode 页面
+    /// 挂载壁纸媒体层（黑底占位 / 壁纸媒体 / 压暗遮罩三层）。关闭后背景
+    /// 回到 theme.css 的 base_alpha 纯色氛围底——只去掉视频/图片背景层，
+    /// 面板不透明度等参数仍有效，token 统计条等其余注入功能不受影响；
+    /// 壁纸指向与滤镜参数照常保存，重新开启即按原参数恢复。开关经
+    /// variables.css 的 --zbar-wallpaper-enabled（1/0）热重载即时生效
+    /// （effects.js 侧变量缺失视为开启，兼容旧 variables.css）
+    pub wallpaper_enabled: bool,
     /// 当前壁纸指向。语义（V3 起扩展）：
     /// - 绝对路径（以 / 或 Windows 盘符开头）→ 直接引用该文件
     /// - 相对文件名 → wallpapers/ 目录下的文件（如 "default.mp4"）
@@ -280,6 +297,7 @@ impl Default for ThemeParams {
             usage_turn_bar: DEFAULT_USAGE_TURN_BAR,
             usage_quota_bar: DEFAULT_USAGE_QUOTA_BAR,
             usage_model_rows: DEFAULT_USAGE_MODEL_ROWS,
+            wallpaper_enabled: DEFAULT_WALLPAPER_ENABLED,
             wallpaper_file: Some(DEFAULT_WALLPAPER_FILE.to_string()),
             wallpaper_dir: None,
         }
@@ -292,6 +310,7 @@ fn clamp(v: f64, (min, max): (f64, f64)) -> f64 {
 
 impl ThemeParams {
     /// 把越界参数收敛到合法范围（保存前的防御，脏数据不落盘）。
+    /// 布尔开关（usage_* / wallpaper_enabled）无合法域约束，原样保留。
     pub fn clamped(mut self) -> Self {
         self.wp_brightness = clamp(self.wp_brightness, WP_BRIGHTNESS_RANGE);
         self.wp_saturate = clamp(self.wp_saturate, WP_SATURATE_RANGE);
@@ -950,9 +969,27 @@ pub fn set_wallpaper_dir(app_id: &str, dir: Option<String>) -> Result<(), String
 /// 取快照、后 reloadVarsLink 重读"，避免快照撞上本轮 variables.css
 /// 重载窗口；并加空值防御——快照中任一 --zbar-* 变量读到空串视为
 /// 失效窗口，本轮直接返回，防止误判参数变化把滤镜/遮罩/壁纸重置
-/// 为默认值）
-pub const THEME_CSS_VERSION: u32 = 11;
-pub const EFFECTS_JS_VERSION: u32 = 5;
+/// 为默认值）；
+/// effects.js V6（壁纸层总开关：新增 --zbar-wallpaper-enabled 消费——
+/// 用户参数 wallpaper_enabled 渲染 1/0，显式 "0" 时移除注入三层并记住
+/// off 态，背景回到 theme.css 的 base_alpha 纯色氛围底，重新开启按快照
+/// 里的最新指向恢复挂载；off 是用户意图，与"加载失败 dead"态区分，off
+/// 期间不自愈重挂。开关判定在快照与 reloadVarsLink 之后，off 只拦壁纸
+/// 相关应用、不停掉 variables.css 每秒 cache-bust，其余参数热重载照常。
+/// 变量缺失/空串一律视为开启（老用户升级后行为不变），且该变量从 poll
+/// 的"任一变量空串即视为失效窗口"防御中排除——旧 variables.css 无此
+/// 变量恒为空串，若参与判定会让旧主题用户的整轮轮询永久跳过、面板
+/// 其余参数热重载一并停摆）；
+/// theme.css V12（壳透明规则变量驱动，壁纸关闭恢复原始整窗底：V11 的
+/// 壳规则硬编码 transparent，壁纸开关的卸载路径与空转变量都覆盖不到
+/// 它，关闭壁纸后壳底仍被挖空、透出窗口原生底色；V12 改为消费新变量
+/// --zbar-shell-uncover（variables.css 随 --zbar-wallpaper-enabled 反相
+/// 渲染 1/0：开启壁纸=0 壳透明保持 V11 行为，关闭=1 壳底恢复
+/// --color-background 不透明底，叠加空转组合即原始整窗观感），变量缺失
+/// 兜底 0 兼容旧 variables.css，已装用户经 ensure_versioned_template
+/// 覆盖升级、重启 ZCode 后生效）
+pub const THEME_CSS_VERSION: u32 = 12;
+pub const EFFECTS_JS_VERSION: u32 = 6;
 /// usage.js V1（对话页用量统计条首版：每轮对话下方渲染 ↑ 输入 ↓ 输出
 /// ⟲ 缓存读 · 请求数 · 输出速度 · 首字延迟，数据源为 usage_feed 导出的
 /// 同目录 usage-data.js；选择器常量集中在文件头部便于实机调整）；
@@ -1221,7 +1258,12 @@ pub const EFFECTS_JS_VERSION: u32 = 5;
 /// 存）；c) ✚ 缓存写段 cw 为 0 整段隐藏（含启动窗口占位态），>0 带
 /// title（词表新增 cwTitle 双语条目），renderRowParts/renderBarLine
 /// 补 title 通道（title 不进比对串）。
-pub const USAGE_JS_VERSION: u32 = 35;
+/// V36：浅色主题文字可读性（仅渲染端样式，数据契约与 V35 完全一致）
+/// ——新增规则全部带 html:not(.dark) 前缀（浅色命中覆盖、深色渲染零
+/// 变化）：三处行透明消费点以 max(var(--zbar-usage-opacity,.55),.82)
+/// 兜下限、dim/qfaint 弱色提亮，四组容器 tps 三档 + 会话条/底部条
+/// quota 两档追加浅色加深变体（#059669/#d97706/#dc2626）。
+pub const USAGE_JS_VERSION: u32 = 36;
 
 /// 桌面像素宠物脚本 pet.js 的版本化落盘标记。
 /// 版本头写在模板首行注释（ZBAR-THEME-V 标记，提取器与
@@ -1487,6 +1529,7 @@ mod tests {
         assert_eq!(default.usage_turn_bar, DEFAULT_USAGE_TURN_BAR);
         assert_eq!(default.usage_quota_bar, DEFAULT_USAGE_QUOTA_BAR);
         assert_eq!(default.usage_model_rows, DEFAULT_USAGE_MODEL_ROWS);
+        assert_eq!(default.wallpaper_enabled, DEFAULT_WALLPAPER_ENABLED);
         assert_eq!(default.wallpaper_file.as_deref(), Some(DEFAULT_WALLPAPER_FILE));
         assert_eq!(default.wallpaper_dir, None);
 
@@ -1501,7 +1544,7 @@ mod tests {
             "panelOpacity", "sidebarOpacity", "sidebarRightOpacity",
             "playbackRate", "baseAlpha", "textShadow",
             "usageFontSize", "usageOpacity", "usageSessionBar", "usageTurnBar",
-            "usageQuotaBar", "usageModelRows",
+            "usageQuotaBar", "usageModelRows", "wallpaperEnabled",
             "wallpaperFile", "wallpaperDir",
         ] {
             assert!(text.contains(key), "params.json 缺少字段 {key}");
@@ -1547,6 +1590,9 @@ mod tests {
         assert_eq!(p.usage_quota_bar, DEFAULT_USAGE_QUOTA_BAR);
         // V29 模型速度行开关：旧版 params.json 缺字段按默认开启补齐
         assert_eq!(p.usage_model_rows, DEFAULT_USAGE_MODEL_ROWS);
+        // 壁纸层总开关：旧版 params.json 缺字段按默认开启补齐（老用户
+        // 升级后壁纸背景行为不变）
+        assert_eq!(p.wallpaper_enabled, DEFAULT_WALLPAPER_ENABLED);
 
         let _ = fs::remove_dir_all(&dir);
     }
@@ -1764,6 +1810,41 @@ mod tests {
     }
 
     #[test]
+    fn wallpaper_enabled_开关序列化与兼容() {
+        let dir = test_dir("wallpaper-enabled");
+        let path = dir.join(PARAMS_FILE);
+
+        // 显式关闭 → 落盘读回保持 false（不被默认值 true 覆盖），
+        // camelCase 键名落盘
+        let mut p = ThemeParams::default();
+        p.wallpaper_enabled = false;
+        write_params_file(&path, &p).unwrap();
+        let back = read_params_file(&path).unwrap();
+        assert!(!back.wallpaper_enabled, "显式关闭的开关读回应保持 false");
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(
+            text.contains("\"wallpaperEnabled\": false"),
+            "params.json 应含 camelCase 键 wallpaperEnabled 且值为 false：{text}"
+        );
+        // clamp 收敛只针对数值/文本参数，开关布尔值原样保留
+        assert!(
+            !back.clamped().wallpaper_enabled,
+            "clamped 不应改动开关值"
+        );
+
+        // 旧版 params.json 缺该字段 → serde default 补默认值 true
+        // （老用户升级后壁纸背景行为不变）
+        fs::write(&path, r#"{"wpBrightness":0.9,"wallpaperFile":"a.mp4"}"#).unwrap();
+        let legacy = read_params_file(&path).unwrap();
+        assert!(
+            legacy.wallpaper_enabled,
+            "旧版文件缺 wallpaperEnabled 应按默认开启补齐"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn params_越界值被收敛() {
         let mut p = ThemeParams {
             wp_brightness: 9.0,
@@ -1782,6 +1863,7 @@ mod tests {
             usage_turn_bar: false,
             usage_quota_bar: false,
             usage_model_rows: false,
+            wallpaper_enabled: false,
             wallpaper_file: Some("  ".into()),
             wallpaper_dir: None,
         }
@@ -1954,7 +2036,7 @@ mod tests {
         fs::create_dir_all(&wp_dir).unwrap();
         fs::write(wp_dir.join("mine.mp4"), b"mine-video").unwrap();
 
-        // 场景一：旧版模板（无版本头）→ theme.css 升 V10、effects.js 升 V5
+        // 场景一：旧版模板（无版本头）→ theme.css 升 V12、effects.js 升 V6
         fs::write(dir.join(THEME_CSS), "/* 旧版 theme，无版本头 */").unwrap();
         fs::write(dir.join(EFFECTS_JS), "// 旧版 effects，无版本头").unwrap();
         // usage.js / pet.js 为功能模板：老用户目录里不存在 → 首次 ensure 落盘
@@ -1962,14 +2044,14 @@ mod tests {
         assert!(
             fs::read_to_string(dir.join(THEME_CSS))
                 .unwrap()
-                .contains("ZBAR-THEME-V11"),
-            "旧版 theme.css 应被升级覆盖到 V11"
+                .contains("ZBAR-THEME-V12"),
+            "旧版 theme.css 应被升级覆盖到 V12"
         );
         assert!(
             fs::read_to_string(dir.join(EFFECTS_JS))
                 .unwrap()
-                .contains("ZBAR-THEME-V5"),
-            "旧版 effects.js 应被升级覆盖到 V5"
+                .contains("ZBAR-THEME-V6"),
+            "旧版 effects.js 应被升级覆盖到 V6"
         );
         assert!(
             fs::read_to_string(dir.join(USAGE_JS))
@@ -2001,8 +2083,8 @@ mod tests {
             "旧版 pet.js 应被升级覆盖"
         );
 
-        // 场景二：effects.js 为 V3（已装用户的真实升级路径，V3/V4 旧版
-        // 均应升到当前版本）→ 仅它升 V5
+        // 场景二：effects.js 为 V3（已装用户的真实升级路径，V3~V5 旧版
+        // 均应升到当前版本）→ 仅它升 V6
         fs::write(dir.join(THEME_CSS), inject::THEME_CSS).unwrap();
         fs::write(
             dir.join(EFFECTS_JS),
@@ -2013,8 +2095,8 @@ mod tests {
         assert!(
             fs::read_to_string(dir.join(EFFECTS_JS))
                 .unwrap()
-                .contains("ZBAR-THEME-V5"),
-            "V3 effects.js 应被升级到 V5"
+                .contains("ZBAR-THEME-V6"),
+            "V3 effects.js 应被升级到 V6"
         );
 
         // 场景三：已是当前版本（用户实机调优过，头部追加了自定义内容）→ 不覆盖

@@ -757,6 +757,16 @@ export const en: typeof zh = {
     "theme.paramsTitle": "Effects",
     "theme.paramsHint":
       "Saved as you drag and applied live within ~1s — no restart needed. Chat, sidebar and right-panel sliders work independently; all other areas keep a fixed ambient opacity.",
+    // Wallpaper background toggle (effects.js V6: unmounts the video/image
+    // wallpaper layer and idles the theme's visual restyling — ZCode returns
+    // to its original look; injected usage bars keep working)
+    "theme.wallpaperEnabled": "Wallpaper background",
+    "theme.wallpaperEnabledHint":
+      "Turn off to restore ZCode's original look: the wallpaper layer is unmounted and theme visual changes (translucent backgrounds, text outlines, etc.) are suspended, keeping only injected info such as usage bars; parameter values are kept and come back when you turn it on",
+    // Disabled-state notice for the visual effect sliders (effects card,
+    // shown only while the wallpaper background is off)
+    "theme.wallpaperOffVisualDisabled":
+      "Wallpaper background is off — theme visual effects are suspended and can be adjusted once you turn it back on",
     "theme.paramWpBrightness": "Wallpaper brightness",
     "theme.paramWpSaturate": "Saturation",
     "theme.paramWpBlur": "Background blur",

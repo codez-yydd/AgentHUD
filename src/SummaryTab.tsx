@@ -314,6 +314,11 @@ function mergedNoteOf(m: ModelStat): string | undefined {
     : undefined;
 }
 
+/** 汇总页模型排行（ZCode / Cursor 等来源混排）。
+ *
+ * 全量口径：模型榜不接收「统计展示来源」开关（agentVisibility）——榜单
+ * 合计必须与顶部总量卡片、合并趋势一致（见 SummaryTab 主体 totalCost
+ * 处的口径说明），开关只控制来源卡片等明细位的显隐。 */
 function buildModelRows(
   stats: Stats | null,
   cost: CostResult | null,
@@ -326,8 +331,7 @@ function buildModelRows(
   minimaxcode: MinimaxcodeSnapshot | null,
   pricing: PricingConfig,
   currency: Currency,
-  fxRate: number,
-  agentVisibility: AgentVisibility
+  fxRate: number
 ): ModelRankRow[] {
   const rows: ModelRankRow[] = [];
 
@@ -341,7 +345,7 @@ function buildModelRows(
     costById.set(k, (costById.get(k) ?? 0) + x.cost);
   });
 
-  for (const m of agentVisibility.zai ? stats?.by_model ?? [] : []) {
+  for (const m of stats?.by_model ?? []) {
     const hasPrice = hasPositivePrice(m.model_id, pricing);
     rows.push({
       key: `zcode:${m.provider_id}:${m.model_id}`,
@@ -358,7 +362,7 @@ function buildModelRows(
   }
 
   // Codex：后端无按模型花费命令，前端按价格表自算（与 zcode 行同款口径）
-  for (const m of agentVisibility.codex ? codex?.stats.by_model ?? [] : []) {
+  for (const m of codex?.stats.by_model ?? []) {
     const hasPrice = hasPositivePrice(m.model_id, pricing);
     rows.push({
       key: `codex:${m.provider_id}:${m.model_id}`,
@@ -383,7 +387,7 @@ function buildModelRows(
   }
 
   // Claude：与 Codex 行同款（Anthropic 品牌橙）
-  for (const m of agentVisibility.claude ? claude?.stats.by_model ?? [] : []) {
+  for (const m of claude?.stats.by_model ?? []) {
     const hasPrice = hasPositivePrice(m.model_id, pricing);
     rows.push({
       key: `claude:${m.provider_id}:${m.model_id}`,
@@ -407,7 +411,7 @@ function buildModelRows(
     });
   }
 
-  for (const m of agentVisibility.cursor ? cursor?.by_model ?? [] : []) {
+  for (const m of cursor?.by_model ?? []) {
     rows.push({
       key: `cursor:${m.model}`,
       name: m.model,
@@ -422,7 +426,7 @@ function buildModelRows(
   }
 
   // Kimi：与 Codex/Claude 行同款（indigo 品牌色）
-  for (const m of agentVisibility.kimi ? kimi?.stats.by_model ?? [] : []) {
+  for (const m of kimi?.stats.by_model ?? []) {
     const hasPrice = hasPositivePrice(m.model_id, pricing);
     rows.push({
       key: `kimi:${m.provider_id}:${m.model_id}`,
@@ -449,7 +453,7 @@ function buildModelRows(
   // DSH（DeepSeek Harness）：与 Codex/Claude/Kimi 行同款（DeepSeek 蓝）。
   // 其 provider 是自由字符串（deepseek-account / 第三方路由），故 key 带
   // provider_id 避免同名模型跨 provider 撞行。
-  for (const m of agentVisibility.dsh ? dsh?.stats.by_model ?? [] : []) {
+  for (const m of dsh?.stats.by_model ?? []) {
     const hasPrice = hasPositivePrice(m.model_id, pricing);
     rows.push({
       key: `dsh:${m.provider_id}:${m.model_id}`,
@@ -477,9 +481,7 @@ function buildModelRows(
   // key 用 UI 侧 agent id `opencodego`（与其余行一致，按 agent 命名空间隔离），
   // provider_id 也带进 key——opencode.db 里 provider 可以是任意路由，不能只按
   // model_id 归并。
-  for (const m of agentVisibility.opencodego
-    ? opencode?.stats.by_model ?? []
-    : []) {
+  for (const m of opencode?.stats.by_model ?? []) {
     const hasPrice = hasPositivePrice(m.model_id, pricing);
     rows.push({
       key: `opencodego:${m.provider_id}:${m.model_id}`,
@@ -506,9 +508,7 @@ function buildModelRows(
   // MiniMax Code：与 OpenCode 行同款（MiniMax 绿，同面板主题色）。key 用 UI 侧
   // agent id `minimax`（后端来源名是 minimaxcode，两个域不同字面），provider_id
   // 同样带进 key——本地库里 provider 可以是任意路由，不能只按 model_id 归并。
-  for (const m of agentVisibility.minimax
-    ? minimaxcode?.stats.by_model ?? []
-    : []) {
+  for (const m of minimaxcode?.stats.by_model ?? []) {
     const hasPrice = hasPositivePrice(m.model_id, pricing);
     rows.push({
       key: `minimax:${m.provider_id}:${m.model_id}`,
@@ -1312,17 +1312,27 @@ export function SummaryTab({
     },
   ];
 
+  /* 口径分界（本页统一）：总量类数字恒按「全量来源」汇总，与设置页的
+     「统计展示来源」开关解耦——总花费/总 Token/合并趋势/模型 TOP 榜都
+     计入全部 Agent（含被关闭展示的来源），开关只决定来源卡片等明细位的
+     显隐；否则关掉任一来源后顶部总量与趋势/模型榜自相矛盾。此口径与
+     主窗口总览页、菜单栏标题一致（均不按 loadAgentVisibility 过滤，见
+     dashboard/overview/useOverviewData.ts 头注释），三处对齐后同一份
+     数据在任意入口读到相同总量。 */
   const agents = allAgents.filter((agent) => agentVisibility[agent.id]);
   // 花费卡片只展示"加载中或有实际消耗"的 agent：已加载完成且 cost/tokens 双零的没有参考价值。
   // tokens>0 但 cost=0（缺价格）的必须保留。
+  // 注：activeAgents 是展示明细（来源卡片列表），保持按展示开关过滤；
+  // 「已加载完成且双零不展示」逻辑仍基于过滤后的 agents，语义不变。
   const activeAgents = agents.filter(
     (a) => !a.loaded || a.cost > 0 || a.tokens > 0
   );
-  const totalCost = agents.reduce((s, a) => s + a.cost, 0);
-  const totalTokens = agents.reduce((s, a) => s + a.tokens, 0);
+  // 总量按全量来源求和（口径见上：不受展示开关影响）
+  const totalCost = allAgents.reduce((s, a) => s + a.cost, 0);
+  const totalTokens = allAgents.reduce((s, a) => s + a.tokens, 0);
 
-  // 合并趋势：只加入开启的 Agent，并按多个来源的 label 建立并集。
-  // 这样即使关闭 Z.ai，只剩 Codex/Claude/Cursor 时汇总趋势仍然可用。
+  // 合并趋势：纳入全部来源并按各来源的 label 建立并集（全量口径，与
+  // 顶部总量卡片一致；展示开关不参与，见上方口径说明）。
   const cursorDailyMap = new Map<
     string,
     { costCny: number; costUsd: number; tokens: number }
@@ -1363,21 +1373,16 @@ export function SummaryTab({
       trendLabels.push(label);
     }
   };
-  if (agentVisibility.zai) trend.forEach((p) => addTrendLabel(p.label));
-  if (agentVisibility.codex)
-    codexTrendMap.forEach((_point, label) => addTrendLabel(label));
-  if (agentVisibility.claude)
-    claudeTrendMap.forEach((_point, label) => addTrendLabel(label));
-  if (agentVisibility.cursor)
-    cursorDailyMap.forEach((_point, label) => addTrendLabel(label));
-  if (agentVisibility.kimi)
-    kimiTrendMap.forEach((_point, label) => addTrendLabel(label));
-  if (agentVisibility.dsh)
-    dshTrendMap.forEach((_point, label) => addTrendLabel(label));
-  if (agentVisibility.opencodego)
-    opencodeTrendMap.forEach((_point, label) => addTrendLabel(label));
-  if (agentVisibility.minimax)
-    minimaxcodeTrendMap.forEach((_point, label) => addTrendLabel(label));
+  // 趋势 label 并集与逐 label 合并均按全量来源（口径见上方 totalCost 处的
+  // 说明）：展示开关只影响来源卡片等明细位，趋势与顶部总量必须同口径
+  trend.forEach((p) => addTrendLabel(p.label));
+  codexTrendMap.forEach((_point, label) => addTrendLabel(label));
+  claudeTrendMap.forEach((_point, label) => addTrendLabel(label));
+  cursorDailyMap.forEach((_point, label) => addTrendLabel(label));
+  kimiTrendMap.forEach((_point, label) => addTrendLabel(label));
+  dshTrendMap.forEach((_point, label) => addTrendLabel(label));
+  opencodeTrendMap.forEach((_point, label) => addTrendLabel(label));
+  minimaxcodeTrendMap.forEach((_point, label) => addTrendLabel(label));
 
   const mergedTrend: TrendPoint[] = trendLabels.map((label) => {
     const p =
@@ -1389,21 +1394,17 @@ export function SummaryTab({
         cost_cny: 0,
         cost_usd: 0,
       } satisfies TrendPoint);
-    const c = agentVisibility.cursor ? cursorDailyMap.get(label) : undefined;
-    const x = agentVisibility.codex ? codexTrendMap.get(label) : undefined;
-    const a = agentVisibility.claude ? claudeTrendMap.get(label) : undefined;
-    const k = agentVisibility.kimi ? kimiTrendMap.get(label) : undefined;
-    const d = agentVisibility.dsh ? dshTrendMap.get(label) : undefined;
-    const o = agentVisibility.opencodego
-      ? opencodeTrendMap.get(label)
-      : undefined;
-    const m = agentVisibility.minimax
-      ? minimaxcodeTrendMap.get(label)
-      : undefined;
+    const c = cursorDailyMap.get(label);
+    const x = codexTrendMap.get(label);
+    const a = claudeTrendMap.get(label);
+    const k = kimiTrendMap.get(label);
+    const d = dshTrendMap.get(label);
+    const o = opencodeTrendMap.get(label);
+    const m = minimaxcodeTrendMap.get(label);
     return {
       label: p.label,
       total_tokens:
-        (agentVisibility.zai ? p.total_tokens : 0) +
+        p.total_tokens +
         (x?.total_tokens ?? 0) +
         (a?.total_tokens ?? 0) +
         (k?.total_tokens ?? 0) +
@@ -1412,7 +1413,7 @@ export function SummaryTab({
         (m?.total_tokens ?? 0) +
         (c?.tokens ?? 0),
       requests:
-        (agentVisibility.zai ? p.requests : 0) +
+        p.requests +
         (x?.requests ?? 0) +
         (a?.requests ?? 0) +
         (k?.requests ?? 0) +
@@ -1420,7 +1421,7 @@ export function SummaryTab({
         (o?.requests ?? 0) +
         (m?.requests ?? 0),
       cost_cny:
-        (agentVisibility.zai ? p.cost_cny : 0) +
+        p.cost_cny +
         (x?.cost_cny ?? 0) +
         (a?.cost_cny ?? 0) +
         (k?.cost_cny ?? 0) +
@@ -1429,7 +1430,7 @@ export function SummaryTab({
         (m?.cost_cny ?? 0) +
         (c?.costCny ?? 0),
       cost_usd:
-        (agentVisibility.zai ? p.cost_usd : 0) +
+        p.cost_usd +
         (x?.cost_usd ?? 0) +
         (a?.cost_usd ?? 0) +
         (k?.cost_usd ?? 0) +
@@ -1440,6 +1441,8 @@ export function SummaryTab({
     };
   });
 
+  // 模型 TOP 榜同样按全量来源（口径见上方 totalCost 处说明）：展示开关
+  // 只控制来源卡片等明细位，模型榜合计需与顶部总量/趋势一致
   const modelRows = buildModelRows(
     stats,
     cost,
@@ -1452,8 +1455,7 @@ export function SummaryTab({
     minimaxcode,
     pricing,
     currency,
-    fxRate,
-    agentVisibility
+    fxRate
   );
   const sortedModels = [...modelRows].sort((a, b) => {
     const av =
@@ -1484,7 +1486,9 @@ export function SummaryTab({
         footer={
           <MetricPair
             left={{ label: t("summary.totalTokens"), value: formatTokens(totalTokens) }}
-            right={{ label: t("summary.costDist"), value: <CompositionBar agents={agents} /> }}
+            /* 花费分布条与总花费/costPct 同口径：传全量来源（不按展示
+               开关过滤），否则隐藏高花费来源后同屏两处"占比"语义分叉 */
+            right={{ label: t("summary.costDist"), value: <CompositionBar agents={allAgents} /> }}
           />
         }
       />
