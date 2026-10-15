@@ -29,7 +29,7 @@
 #
 # 正式版 release 永不删除，累积保留版本历史；latest 为滚动更新源，删旧
 # 重建不触碰版本 tag。背景：脚本原逻辑只维护一个滚动复用的 latest release
-# （应用内更新源，URL releases/download/latest/latest.json 被已发布的应用
+# （URL releases/download/latest/latest.json 被已发布的应用
 # 写死依赖，必须保持），删旧建新——导致 Gitee 上从无正式版 release、无
 # 版本 tag 历史，老版本无法回溯；自 v0.8.1 起改造为每次发布同时创建正式版
 # release（tag=v版本），任何 release 均不删除。
@@ -207,7 +207,7 @@ echo '[4/5] 创建新 latest release 并上传附件'
 # body 同样经 jq -Rs 转义（多行说明的换行必须转成 \n，见上方正式版处的踩坑说明）
 BODY_JSON=$(printf '%s' "$RELEASE_BODY" | jq -Rs .)
 cat > "$WORK/release.json" <<EOF
-{"tag_name":"latest","target_commitish":"master","name":"AgentHUD v${VERSION}（应用内更新源）","body":${BODY_JSON}}
+{"tag_name":"latest","target_commitish":"master","name":"AgentHUD v${VERSION}","body":${BODY_JSON}}
 EOF
 jq -e . "$WORK/release.json" >/dev/null
 RESP=$(curl -sS --connect-timeout 20 --max-time 120 -w '\n%{http_code}' -X POST "$API?$TOKEN_PARAM" \
