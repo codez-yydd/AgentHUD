@@ -26,6 +26,7 @@ dist-ssr
 # ZCode 本地工具目录（plans 等，不应入库）
 .zcode/
 .zcodeignore
+.claude/
 
 # Rust 构建产物（server/）
 server/target/
