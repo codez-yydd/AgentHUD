@@ -154,6 +154,34 @@ export const dashboard = {
   "dashboard.overview.costFootnote":
     "与菜单栏同源：本机 + 其他设备（同步开启时）按本机价格表估算（美元价 × 当前汇率），不代表账单金额。Cursor 明细不上传，仅本机口径。",
 
+  // ===== 用量总览页：模型用量表 =====
+  "dashboard.overview.modelTitle": "模型用量",
+  "dashboard.overview.modelSub": "按范围内 Token 降序",
+  "dashboard.overview.colModel": "模型",
+  "dashboard.overview.colRequests": "请求数",
+  "dashboard.overview.colModelInput": "输入 Token",
+  // 输入列表头悬停：口径与指标卡「输入侧」一致（总量 − 输出，缓存读写都算输入侧）
+  "dashboard.overview.colModelInputHint":
+    "输入侧口径：总量 − 输出，含缓存读与缓存写",
+  "dashboard.overview.colModelOutput": "输出 Token",
+  "dashboard.overview.colModelTotal": "总 Token",
+  "dashboard.overview.colShare": "占比",
+  "dashboard.overview.modelEmpty": "该范围内暂无模型用量",
+  // 折叠：默认前 10 行，超出给「展开全部 N 个模型」文本按钮
+  "dashboard.overview.modelExpandAll": "展开全部 {count} 个模型",
+  "dashboard.overview.modelCollapse": "收起",
+  // by_model 缺失的旧数据 / 无逐模型拆分的来源汇总行（不伪装成某个模型）
+  "dashboard.overview.modelUnsplit": "（未拆分）",
+  "dashboard.overview.modelUnsplitHint":
+    "旧数据或无逐模型拆分的来源：用量计入输入侧，不参与模型成本折算",
+  // 同一模型的多种写法折叠为一行时，模型名 tooltip 追加的说明：列出各原始写法
+  // 与请求数（分隔符 " · "，见 ModelTable）。写法含带 provider 前缀的完整 id
+  // （如 zhipuai-coding-plan/glm-5.3-flash）与裸名——它们在本表按展示名折叠
+  "dashboard.overview.modelVariantsHint": "已合并的写法：{list}",
+  "dashboard.overview.modelVariantItem": "{model}（{count} 次请求）",
+  "dashboard.overview.modelFootnote":
+    "模型花费按本机价格表估算（美元价 × 当前汇率），未覆盖的模型显示「未定价」。Cursor 明细无逐日模型拆分，其行取该来源固定 90 天窗口的全量。「未拆分」为旧数据或无逐模型拆分的来源，用量计入输入侧且不计花费。",
+
   // ===== 周额度对比页（大窗）=====
   "dashboard.compare.device": "设备",
   "dashboard.compare.deviceAll": "全部（汇总）",

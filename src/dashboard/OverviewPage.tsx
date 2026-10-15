@@ -2,9 +2,9 @@
  * 用量总览页（主窗口首页）：跨 Agent 的用量 / 花费 / 趋势汇总。
  *
  * 结构：页头（数据范围 + 时间范围触发按钮 + 刷新）→ 指标卡行 → 趋势图 →
- * 热力图 → Agent 统计表。范围与数据范围切换只重新聚合（本地来源一次取满
- * 365 天，指标卡 / 趋势 / 表格按 90 天切片、热力图铺 52 周），刷新按钮才
- * 重新取数；切换页面重进命中模块级缓存即刻渲染；不做自动轮询（一期）。
+ * 热力图 → Agent 统计表 → 模型用量表。范围与数据范围切换只重新聚合（本地来源
+ * 一次取满 365 天，指标卡 / 趋势 / 两张表按 90 天切片、热力图铺 52 周），
+ * 刷新按钮才重新取数；切换页面重进命中模块级缓存即刻渲染；不做自动轮询（一期）。
  * 时间范围预设档与自定义区间都收进页头单个触发按钮的弹出面板（预设档在面板
  * 顶部快捷行，点一下即生效；见 CustomRangeMenu）：自定义区间在 365 天取数
  * 窗口内按 [fromMs, toMs) 切片（derive.rangeKeys），同样不重新取数；
@@ -22,10 +22,12 @@ import {
 import { AgentTable } from "./overview/AgentTable";
 import { HeatmapCard } from "./overview/HeatmapCard";
 import { MetricCards } from "./overview/MetricCards";
+import { ModelTable } from "./overview/ModelTable";
 import { OverviewSkeleton } from "./overview/primitives";
 import { TrendCard } from "./overview/TrendCard";
 import {
   buildAgentRows,
+  buildModelRows,
   currencyOf,
   heatSeries,
   scopeView,
@@ -93,6 +95,7 @@ export function OverviewPage() {
       trend: trendSeries(scoped, range, customRange),
       heat: heatSeries(scoped),
       rows: buildAgentRows(scoped, range, customRange),
+      modelRows: buildModelRows(scoped, range, customRange),
     };
   }, [data, range, customRange, effectiveScope]);
 
@@ -271,6 +274,13 @@ export function OverviewPage() {
           <HeatmapCard series={view.heat} />
           <AgentTable
             rows={view.rows}
+            currency={currency}
+            rangeLabel={customRange ? rangeLabel : undefined}
+          />
+          {/* 模型用量表：与 Agent 表同一份范围口径（范围内切片），成本按本机
+              价格表折算（Cursor 用其后端成本），默认折叠前 10 行 */}
+          <ModelTable
+            rows={view.modelRows}
             currency={currency}
             rangeLabel={customRange ? rangeLabel : undefined}
           />

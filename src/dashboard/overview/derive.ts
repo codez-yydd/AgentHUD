@@ -7,11 +7,18 @@
  * 数据范围语义（与菜单栏标题对齐）：local = 仅本机；all = 本机 + 其他设备
  * （同步开启时；未启用 / 远端失败时退化为仅本机，远端贡献为 0）。
  */
-import type { Currency } from "../../types";
+import type { Currency, PricingConfig } from "../../types";
 import { AGENT_COLOR } from "../../agentVisibility";
+import { modelCost } from "../../merge";
+import {
+  canonicalModelId,
+  displayModelName,
+  type MergedModelVariant,
+} from "../../modelName";
 import type { CustomRangeValue } from "../CustomRangeMenu";
 import {
   RANGE_DAYS,
+  REMOTE_WINDOW_DAYS,
   USAGE_AGENT_IDS,
   agentLabel,
   dayOf,
@@ -26,12 +33,17 @@ import {
   buildHeatColumns,
   buildMonthSpans,
   type DayAgg,
+  type DayModelAgg,
   type HeatMonthSpan,
   type OverviewRange,
   type OverviewScope,
   type UsageAgentId,
 } from "./model";
-import type { OverviewRaw, QuotaInfo } from "./useOverviewData";
+import type {
+  CursorModelAgg,
+  OverviewRaw,
+  QuotaInfo,
+} from "./useOverviewData";
 
 /** 展示币种：与面板一致，币种从属语言（中文=人民币、英文=美元） */
 export function currencyOf(locale: string): Currency {
@@ -62,8 +74,12 @@ export interface OverviewView {
   merged: Map<string, DayAgg>;
   /** 各 Agent 的合并日聚合（顺序同 USAGE_AGENT_IDS） */
   perAgent: ViewAgent[];
+  /** Cursor 范围内按模型聚合（仅本机口径：Cursor 明细不上传，不随数据范围变化） */
+  cursorByModel: Map<string, CursorModelAgg>;
   quotas: Map<UsageAgentId, QuotaInfo>;
   fxRate: number;
+  /** 本机价格表（模型成本折算用；null = 读不到，成本按 0） */
+  pricing: PricingConfig | null;
   /** 当前是否含远端（Agent 表的「含远端」标记只在此为 true 时可能展示） */
   includeRemote: boolean;
 }
@@ -89,8 +105,10 @@ export function scopeView(raw: OverviewRaw, scope: OverviewScope): OverviewView 
         days: entry.days,
         remoteDays: null,
       })),
+      cursorByModel: raw.cursorByModel,
       quotas: raw.quotas,
       fxRate: raw.fxRate,
+      pricing: raw.pricing,
       includeRemote: false,
     };
   }
@@ -116,8 +134,10 @@ export function scopeView(raw: OverviewRaw, scope: OverviewScope): OverviewView 
     windowStartMs: raw.windowStartMs,
     merged: mergeDayMaps(perAgent.map((entry) => entry.days)),
     perAgent,
+    cursorByModel: raw.cursorByModel,
     quotas: raw.quotas,
     fxRate: raw.fxRate,
+    pricing: raw.pricing,
     includeRemote: true,
   };
 }
@@ -397,5 +417,282 @@ export function buildAgentRows(
       b.rangeTokens - a.rangeTokens ||
       USAGE_AGENT_IDS.indexOf(a.id) - USAGE_AGENT_IDS.indexOf(b.id)
   );
+  return rows;
+}
+
+/**
+ * 模型用量表的折叠键（**仅本页模型表使用**）：
+ * canonicalModelId(displayModelName(model_id)) —— 在通用身份归一之上再按
+ * 「展示名」折叠，把带 provider 前缀的完整 id 与裸模型名视为同一个模型
+ * （如 zhipuai-coding-plan/glm-5.3-flash 与 glm-5.3-flash）。
+ *
+ * 为什么本表做 display 级折叠：本表是**跨来源合并视图**——把各 Agent 的用量
+ * 按用户认知的模型名汇总成一行，两行显示名完全相同时分成两行只会让用户困惑
+ * （用户反馈的正是这种情形）。报告页的 foldModelStatRows 刻意不做这一层：
+ * 它按来源分行展示，同名模型在不同来源本应各占一行，口径不同不冲突。
+ *
+ * 属于**展示层折叠**：不改写、不写回任何数据，也不影响计费（modelCost 仍按各
+ * 写法的原始 id 分别折算，见 buildModelRows）、价格配置页、同步与模型徽标的
+ * 身份判定（那些场景仍用完整 id + canonicalModelId / lookupPrice 的既有口径，
+ * 见 modelName.ts）。点号同样不参与身份判定（glm-5.3 ≠ glm-5-3——点号归一
+ * 只用于价格查找域）。
+ */
+function modelRowKey(modelId: string): string {
+  return canonicalModelId(displayModelName(modelId));
+}
+
+/** 模型用量表行（按范围内总 token 降序） */
+export interface ModelRow {
+  /** 模型折叠键（modelRowKey：展示名级身份，见其注释）：React key 用——
+   *  rep 会随数据变化，折叠键更稳定；「未拆分」占位行为空串 */
+  key: string;
+  /** 展示用原始写法（组内累计 total 最大的写法，与 foldModelStatRows 的 rep
+   *  策略一致，保留用户熟悉的形态；渲染标签再经 displayModelName 去前缀）。
+   *  「未拆分」占位行为空串。 */
+  modelId: string;
+  /** 组内被折叠的原始写法与请求数（仅多于一个写法时给出，模型名 tooltip 用；
+   *  同一写法多次出现已按写法累加请求数；带 provider 前缀的写法同样列出，
+   *  用户可据此看出该行是折叠结果） */
+  variants?: MergedModelVariant[];
+  /** 是否「未拆分」占位行：by_model 缺失的旧数据 / 无逐模型拆分的来源汇总 */
+  unsplit: boolean;
+  requests: number;
+  /** 输入侧 token（= 总 token − 输出，含缓存读与缓存写，与指标卡「输入侧」
+   *  同口径；未拆分行整份计入输入侧） */
+  input: number;
+  output: number;
+  total: number;
+  costUsd: number;
+  costCny: number;
+  /** 占比（0-1，分母 = 范围内全部行 total 之和，含未拆分行） */
+  share: number;
+}
+
+/** 单个原始写法的累计（组内 rep 与 variants 都从这里派生，成本也按写法折算） */
+interface SpellingAgg {
+  /** 累计 total token（rep 选它最大者） */
+  total: number;
+  requests: number;
+  input: number;
+  output: number;
+  cacheRead: number;
+  /** 该写法来自 Cursor 的贡献（三段 token 与后端成本）：折算价格表时要扣除，
+   *  否则会连同后端成本一起被价格表再折算一次（双计）；无贡献为 null */
+  cursor: {
+    input: number;
+    output: number;
+    cacheRead: number;
+    costUsd: number;
+  } | null;
+}
+
+/**
+ * 模型用量表行：按当前时间范围切片各 Agent 日聚合的 byModel，跨 Agent 按
+ * **模型折叠键**（modelRowKey：展示名级身份）合并，按总 token 降序。
+ *
+ * 身份折叠：
+ *  - 聚合键 = modelRowKey(model_id) = canonicalModelId(displayModelName(model_id))：
+ *    既折叠「GLM-5.3 / glm-5.3」这类只在字节层面有差异的写法（canonical 域，
+ *    与 foldModelStatRows / 价格查找同域），也折叠显示名相同的带前缀写法与
+ *    裸名（如 zhipuai-coding-plan/glm-5.3-flash 与 glm-5.3-flash）——本表是
+ *    跨来源合并视图，理由见 modelRowKey 注释；
+ *  - 展示名 rep = 组内累计 total 最大的原始写法（并列取先出现），与
+ *    foldModelStatRows 的 rep 策略一致；界面渲染再由 displayModelName 去前缀
+ *    （组内各写法的 display 名相同，显示 rep 的 display 名即整组的名字）；
+ *  - 点号不参与身份判定（glm-5.3 ≠ glm-5-3，点号归一只用于价格查找域）；
+ *  - 组内多于一个写法时输出 variants（原始写法 + 请求数）供模型名 tooltip
+ *    说明「这一行是折叠结果」（含带前缀的写法）。
+ *
+ * 口径与数据来源：
+ *  - 本机与远端（「全部设备」时已在 scopeView 合并进同一份 DayAgg）逐模型相加；
+ *  - Cursor 的 events 是「按请求范围整段」聚合（无按日拆分），因此整份并入，
+ *    且仅当其窗口（固定 REMOTE_WINDOW_DAYS 天）与所选范围有交叠——自定义
+ *    365 天区间早于该窗口时 Cursor 无贡献。注意：更短的时间范围下 Cursor 行
+ *    仍是整个 90 天窗口的量（卡片脚注说明），这是既有取数窗口的取舍；
+ *  - 成本**按写法分别折算**（而非按组一次折算）：组成本 = Σ(非 Cursor 写法)
+ *    modelCost(该写法的原始 id, 该写法三段 token) + Σ(Cursor 写法) 该写法的
+ *    后端 cost_usd。按写法折算既让每个写法都能命中自己的价格条目
+ *    （lookupPrice 对带前缀 id 有去前缀候选兜底），也天然消除「Cursor 贡献要
+ *    从组总量里扣除」的需求（Cursor 的 token 根本不进 modelCost 基数），
+ *    与「Cursor 用后端成本、不重复按价格表折算」的口径一致；
+ *    价格表读不到时非 Cursor 写法成本按 0（显示「未定价」）；
+ *  - 「未拆分」行：by_model 整日缺失的用量（旧数据 / 无拆分来源）汇总成一行，
+ *    token 全部计入输入侧（与趋势图 splitNote 同口径），不参与成本折算。
+ *    Cursor 的 daily 同样整日计入 unsplit，但其模型数据走 cursorByModel 旁路，
+ *    这里按 Agent 排除，避免同一份用量计两次。
+ *  - 占比分母 = 全部行（含未拆分行）的 total 之和：与指标卡的「范围内 Token」
+ *    对齐（Cursor 的 90 天窗口偏差除外，见上）。
+ */
+export function buildModelRows(
+  raw: OverviewView,
+  range: OverviewRange,
+  custom: CustomRangeValue | null = null
+): ModelRow[] {
+  const keys = rangeKeys(raw, range, custom);
+  /** 一个模型折叠键（modelRowKey）的聚合组 */
+  interface ModelGroup {
+    agg: DayModelAgg;
+    /** 原始写法 → 该写法的累计（rep / variants / 成本都从这里派生） */
+    spellings: Map<string, SpellingAgg>;
+    /** 组内累计 total 最大的原始写法（并列取先出现） */
+    rep: string;
+  }
+  const groups = new Map<string, ModelGroup>();
+  /** 未拆分行（requests 只在整日未拆分时可归属，见下） */
+  let unsplitTotal = 0;
+  let unsplitRequests = 0;
+
+  /** 把一条模型聚合并入其折叠组（cursorCostUsd 非空时同时登记该写法的
+   *  Cursor 贡献，供成本段扣除） */
+  const absorb = (
+    modelId: string,
+    src: DayModelAgg,
+    cursorCostUsd: number | null = null
+  ): ModelGroup => {
+    const key = modelRowKey(modelId);
+    let group = groups.get(key);
+    if (!group) {
+      group = { agg: { ...src }, spellings: new Map(), rep: modelId };
+      groups.set(key, group);
+    } else {
+      group.agg.requests += src.requests;
+      group.agg.input += src.input;
+      group.agg.output += src.output;
+      group.agg.cacheRead += src.cacheRead;
+      group.agg.total += src.total;
+    }
+    const spelling = group.spellings.get(modelId) ?? {
+      total: 0,
+      requests: 0,
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      cursor: null,
+    };
+    spelling.total += src.total;
+    spelling.requests += src.requests;
+    spelling.input += src.input;
+    spelling.output += src.output;
+    spelling.cacheRead += src.cacheRead;
+    if (cursorCostUsd != null) {
+      const cursor =
+        spelling.cursor ??
+        (spelling.cursor = { input: 0, output: 0, cacheRead: 0, costUsd: 0 });
+      cursor.input += src.input;
+      cursor.output += src.output;
+      cursor.cacheRead += src.cacheRead;
+      cursor.costUsd += cursorCostUsd;
+    }
+    group.spellings.set(modelId, spelling);
+    // rep 取组内累计 total 最大的原始写法（并列取先出现：只有严格大于才换）
+    if (spelling.total > (group.spellings.get(group.rep)?.total ?? 0)) {
+      group.rep = modelId;
+    }
+    return group;
+  };
+
+  for (const { id, days } of raw.perAgent) {
+    const isCursor = id === "cursor";
+    for (const key of keys) {
+      const day = days.get(key);
+      if (!day) continue;
+      for (const [modelId, model] of day.byModel) absorb(modelId, model);
+      // Cursor 的未拆分用量由 cursorByModel 顶替（见函数注释），不在此累计
+      if (isCursor || day.unsplit <= 0) continue;
+      unsplitTotal += day.unsplit;
+      // 整日都无 by_model 时（旧数据 / 无拆分来源）整日的请求数都属于未拆分行；
+      // 部分缺失（本机 + 远端同日合并、远端缺 by_model）无法归属请求数，只计 token
+      if (day.byModel.size === 0) unsplitRequests += day.requests;
+    }
+  }
+
+  // Cursor：范围与其固定取数窗口有交叠时整份并入。三段 token 进组（展示），
+  // 后端 cost_usd 记在该写法的 cursor 贡献上（成本按写法折算，不重复计价）。
+  // Cursor 的模型名同样经 modelRowKey 折叠——带 provider 前缀的写法与裸名合并。
+  const cursorWindow = new Set(raw.dayKeys.slice(-REMOTE_WINDOW_DAYS));
+  const cursorInRange =
+    raw.cursorByModel.size > 0 && keys.some((key) => cursorWindow.has(key));
+  if (cursorInRange) {
+    for (const [modelId, model] of raw.cursorByModel) {
+      absorb(
+        modelId,
+        {
+          requests: model.requests,
+          input: model.input,
+          output: model.output,
+          cacheRead: model.cacheRead,
+          total: model.total,
+        },
+        model.costUsd
+      );
+    }
+  }
+
+  const rows: ModelRow[] = [];
+  for (const [key, group] of groups) {
+    const model = group.agg;
+    // 0 token 且 0 请求的模型不出行（异常 / 空模型名占位不进表）
+    if (model.total <= 0 && model.requests <= 0) continue;
+    // 组成本按写法分别折算：非 Cursor 写法用本机价格表（modelCost，与菜单栏
+    // 标题 / 面板汇总页同款口径；用该写法自己的原始 id 调用，带前缀的写法由
+    // lookupPrice 的去前缀候选兜底），扣掉该写法里的 Cursor 贡献后折算，
+    // 再叠加 Cursor 写法的后端 cost_usd——两来源互不重复计价（见函数注释）。
+    let costUsd = 0;
+    for (const [spellingId, spelling] of group.spellings) {
+      if (raw.pricing) {
+        costUsd += modelCost(
+          spellingId,
+          Math.max(0, spelling.input - (spelling.cursor?.input ?? 0)),
+          Math.max(0, spelling.output - (spelling.cursor?.output ?? 0)),
+          Math.max(0, spelling.cacheRead - (spelling.cursor?.cacheRead ?? 0)),
+          raw.pricing,
+          "usd",
+          raw.fxRate
+        );
+      }
+      costUsd += spelling.cursor?.costUsd ?? 0;
+    }
+    // 折叠明细：同一写法多次出现已按写法累加（tooltip 读作「各写法的请求数」）；
+    // 只有一个写法时与 foldModelStatRows 一致不携带（行没被折叠过）
+    const variants = [...group.spellings].map(([model_id, spelling]) => ({
+      model_id,
+      requests: spelling.requests,
+    }));
+    rows.push({
+      key,
+      modelId: group.rep,
+      variants: variants.length > 1 ? variants : undefined,
+      unsplit: false,
+      requests: model.requests,
+      input: Math.max(0, model.total - model.output),
+      output: model.output,
+      total: model.total,
+      costUsd,
+      costCny: costUsd * raw.fxRate,
+      share: 0,
+    });
+  }
+  if (unsplitTotal > 0) {
+    rows.push({
+      key: "",
+      modelId: "",
+      unsplit: true,
+      requests: unsplitRequests,
+      // 无输入/输出拆分：整份计入输入侧（与趋势图 / 指标卡同口径）
+      input: unsplitTotal,
+      output: 0,
+      total: unsplitTotal,
+      costUsd: 0,
+      costCny: 0,
+      share: 0,
+    });
+  }
+
+  const totalAll = rows.reduce((sum, row) => sum + row.total, 0);
+  for (const row of rows) {
+    row.share = totalAll > 0 ? row.total / totalAll : 0;
+  }
+  // 并列时按身份键定序（与 rep 写法无关，排序结果不随数据写法漂移）
+  rows.sort((a, b) => b.total - a.total || a.key.localeCompare(b.key));
   return rows;
 }

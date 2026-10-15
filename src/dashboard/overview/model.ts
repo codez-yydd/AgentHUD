@@ -9,6 +9,10 @@
  * 远端（其他设备）用量单独走 hour 桶再归到本地自然日（见 addRemoteTrendDays）：
  * 服务端 day 桶按 UTC 零点对齐，非 UTC 时区会与本地自然日错位，用小时桶
  * 才能与菜单栏标题的「本地自然日」口径对齐。
+ *
+ * 除总量与输入/输出外，各来源的 by_model 也逐日并入 DayAgg.byModel（模型
+ * 用量表的数据源，成本在派生层用本机价格表统一折算）；Cursor 的按模型聚合
+ * 是「请求范围整段」、无按日拆分，走 useOverviewData 的 cursorByModel 旁路。
  */
 import type {
   CursorDailyEntry,
@@ -83,6 +87,20 @@ export const HEAT_MONTH_LABEL_MAX = 12;
  *  避免随页面范围把 90 天历史全量读进来（get_quota_history 是文件全量读）。 */
 export const QUOTA_LOOKBACK_DAYS = 8;
 
+/** 单模型日聚合（DayAgg.byModel 的值，模型用量表用）。
+ *  input/output/cacheRead 与后端 by_model 契约一致（input 不含缓存读），
+ *  旧数据 / 远端旧服务缺省时按 0 处理；成本刻意不放这一层——本机与远端
+ *  来源的模型成本统一在派生层用同一份价格表折算（单一口径，见
+ *  derive.buildModelRows），避免「按日成本」与「按模型成本」两个口径并存。 */
+export interface DayModelAgg {
+  requests: number;
+  /** 输入 token（不含缓存读；缓存读单列，供 modelCost 扣减） */
+  input: number;
+  output: number;
+  cacheRead: number;
+  total: number;
+}
+
 /** 单日聚合（跨 Agent 合并或单 Agent 各自一份） */
 export interface DayAgg {
   /** 总 token（后端 computed_total_tokens 口径） */
@@ -94,6 +112,37 @@ export interface DayAgg {
   costCny: number;
   /** 缺少输入/输出拆分的 token：渲染时并入「输入侧」并在 tooltip 标注 ≈ */
   unsplit: number;
+  /** 按模型拆分（key = model_id）：模型用量表用。by_model 缺失的来源
+   *  （Cursor daily / 旧数据）为空表，其用量只体现在 total / unsplit 上 */
+  byModel: Map<string, DayModelAgg>;
+}
+
+export function emptyModelAgg(): DayModelAgg {
+  return { requests: 0, input: 0, output: 0, cacheRead: 0, total: 0 };
+}
+
+/** 把 src 模型聚合累加进 target（原地修改） */
+export function addModelInto(target: DayModelAgg, src: DayModelAgg): void {
+  target.requests += src.requests;
+  target.input += src.input;
+  target.output += src.output;
+  target.cacheRead += src.cacheRead;
+  target.total += src.total;
+}
+
+/** 深拷贝一张「模型 → 聚合」表（合并结果与来源解耦：合并后的表可能继续被
+ *  addDayInto 原地累加，浅拷贝会让来源表跟着变） */
+function cloneModelMap(
+  map: Map<string, DayModelAgg>
+): Map<string, DayModelAgg> {
+  const out = new Map<string, DayModelAgg>();
+  for (const [modelId, agg] of map) out.set(modelId, { ...agg });
+  return out;
+}
+
+/** 深拷贝单日聚合（含 byModel 表） */
+export function cloneDay(day: DayAgg): DayAgg {
+  return { ...day, byModel: cloneModelMap(day.byModel) };
 }
 
 /** 输入侧 token = 总量 - 输出（含缓存读，与项目「输入侧」口径一致） */
@@ -102,7 +151,15 @@ export function inputSideOf(day: DayAgg): number {
 }
 
 export function emptyDay(): DayAgg {
-  return { total: 0, output: 0, requests: 0, costUsd: 0, costCny: 0, unsplit: 0 };
+  return {
+    total: 0,
+    output: 0,
+    requests: 0,
+    costUsd: 0,
+    costCny: 0,
+    unsplit: 0,
+    byModel: new Map(),
+  };
 }
 
 /** 把 src 累加进 target（跨 Agent 合并用，原地修改） */
@@ -113,9 +170,14 @@ export function addDayInto(target: DayAgg, src: DayAgg): void {
   target.costUsd += src.costUsd;
   target.costCny += src.costCny;
   target.unsplit += src.unsplit;
+  for (const [modelId, agg] of src.byModel) {
+    const hit = target.byModel.get(modelId);
+    if (hit) addModelInto(hit, agg);
+    else target.byModel.set(modelId, { ...agg });
+  }
 }
 
-/** 多个「日期 → 日聚合」表合并成一张（同键逐字段求和） */
+/** 多个「日期 → 日聚合」表合并成一张（同键逐字段求和，byModel 逐模型求和） */
 export function mergeDayMaps(
   maps: Iterable<Map<string, DayAgg>>
 ): Map<string, DayAgg> {
@@ -124,7 +186,7 @@ export function mergeDayMaps(
     for (const [key, day] of map) {
       const target = out.get(key);
       if (target) addDayInto(target, day);
-      else out.set(key, { ...day });
+      else out.set(key, cloneDay(day));
     }
   }
   return out;
@@ -151,6 +213,8 @@ const DAY_LABEL_RE = /^\d{2}-\d{2}$/;
 /**
  * TrendPoint[]（day 桶）→ 按日聚合，写入 into。
  * by_model 缺失（旧数据）时整桶计入 unsplit，避免把未知拆分伪装成「全是输入」。
+ * by_model 存在时逐模型并入 byModel（模型用量表的数据源；缺 token 字段的
+ * 旧服务按 0 处理）。
  */
 export function addTrendDays(
   trend: TrendPoint[],
@@ -166,6 +230,15 @@ export function addTrendDays(
     day.requests += point.requests;
     day.costUsd += point.cost_usd;
     day.costCny += point.cost_cny;
+    for (const m of models) {
+      const agg = day.byModel.get(m.model_id) ?? emptyModelAgg();
+      agg.requests += m.requests;
+      agg.input += m.input_tokens ?? 0;
+      agg.output += m.output_tokens ?? 0;
+      agg.cacheRead += m.cache_read_tokens ?? 0;
+      agg.total += m.total_tokens;
+      day.byModel.set(m.model_id, agg);
+    }
     if (models.length === 0 && point.total_tokens > 0) {
       day.unsplit += point.total_tokens;
     }
@@ -176,6 +249,8 @@ export function addTrendDays(
 /**
  * Cursor 每日明细 → 按日聚合。daily 无输入/输出拆分（只有总量），
  * 整日 token 计入 unsplit；人民币成本按本机汇率折算（与面板 Cursor 页同款）。
+ * daily 也没有模型拆分：byModel 留空，模型用量表走 cursorByModel 旁路
+ * （Cursor events 的按模型聚合是「请求范围整段」，无按日拆分）。
  */
 export function addCursorDays(
   daily: CursorDailyEntry[],
@@ -255,6 +330,9 @@ function remoteBucketStart(label: string): number | null {
  * 标题 / 面板汇总页同款口径）；价格表读不到时远端成本按 0，token 照常统计。
  * 落在窗口日键之外的桶（非整点时区窗口起点之前的一桶）直接跳过，避免窗口
  * 外的用量把 Agent 误标成「有用量」。
+ *
+ * by_model 存在时逐模型并入 byModel（模型用量表的数据源，成本同样在派生层
+ * 用本机价格表折算，与这里的按日成本同源），缺失时整桶计入 unsplit。
  */
 export function addRemoteTrendDays(
   remote: RemoteUsage,
@@ -284,6 +362,13 @@ export function addRemoteTrendDays(
           fxRate
         );
       }
+      const agg = day.byModel.get(m.model_id) ?? emptyModelAgg();
+      agg.requests += m.requests;
+      agg.input += m.input_tokens ?? 0;
+      agg.output += m.output_tokens ?? 0;
+      agg.cacheRead += m.cache_read_tokens ?? 0;
+      agg.total += m.total_tokens;
+      day.byModel.set(m.model_id, agg);
     }
     day.total += bucket.total_tokens;
     day.output += output;

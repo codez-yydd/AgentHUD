@@ -25,6 +25,10 @@
  *  - 模块级缓存：最近一次完整结果存在模块顶层变量里，再次进入页面（侧栏切页
  *    = 条件渲染 = 卸载重挂）立即用缓存渲染、不出现加载态；缓存超过 60 秒才在
  *    后台静默刷新（不阻塞界面，完成后替换数据），手动刷新按钮永远强制重取；
+ *  - 模型用量表的数据来源：各 Agent 日聚合的 by_model（本机 + 远端逐日已合并
+ *    进 DayAgg.byModel）、Cursor 的范围内模型聚合旁路（cursorByModel，其 events
+ *    无按日拆分）与本机价格表（pricing，统一折算模型成本，与远端合并共用）；
+ *    时间范围切换同样是纯切片，不重新取数；
  *  - 渐进渲染：本机数据（SQLite 日桶 + 额度快照文件）就绪即发布首屏（指标卡 /
  *    趋势 / 表格立即可见），远端合并与 provider 额度随后各自就绪即二次更新
  *    （期间页头弱标记「远端合并中」）；请求序号守卫保证旧请求的结果不覆盖新
@@ -136,6 +140,25 @@ export interface AgentDays {
   days: Map<string, DayAgg>;
 }
 
+/** Cursor 范围内按模型的聚合（events 是「按请求范围整段」聚合，无按日拆分，
+ *  故不并入 DayAgg.byModel，单独一条旁路给模型用量表）；成本用 Cursor 后端
+ *  算好的 cost_usd（美元），人民币由展示层乘汇率折算，不重新按价格表折算。 */
+export interface CursorModelAgg {
+  requests: number;
+  input: number;
+  output: number;
+  cacheRead: number;
+  total: number;
+  costUsd: number;
+}
+
+/** 单 Agent 本地取数结果：按日聚合 + Cursor 专有的范围内模型聚合旁路 */
+interface AgentLocalLoad {
+  days: Map<string, DayAgg>;
+  /** 仅 Cursor 非空（其余 Agent 的 by_model 已逐日并入 days 的 DayAgg.byModel） */
+  cursorModels: Map<string, CursorModelAgg>;
+}
+
 /** 页面一次性取数结果（范围/数据范围切换时只读它做切片聚合） */
 export interface OverviewRaw {
   /** 取数窗口日键（365 天，升序，"MM-DD"，末位为今天）；指标卡/趋势/表格
@@ -147,12 +170,18 @@ export interface OverviewRaw {
   merged: Map<string, DayAgg>;
   /** 本机各 Agent 的按日聚合（Agent 表与透视用） */
   perAgent: AgentDays[];
+  /** Cursor 范围内按模型聚合（Cursor events 口径，固定 90 天取数窗口；未登录 /
+   *  取数失败为空表）——模型用量表把 Cursor 的模型数据从这里整份并入 */
+  cursorByModel: Map<string, CursorModelAgg>;
   /** 远端（其他设备）各 Agent 的按日聚合；未启用同步 / 全部失败为空数组 */
   remotePerAgent: AgentDays[];
   /** 各 Agent 的当前额度剩余（取不到则无键；额度不合并远端） */
   quotas: Map<UsageAgentId, QuotaInfo>;
   /** USD→CNY 汇率（本机配置，用于 Cursor 与远端成本的按日人民币折算） */
   fxRate: number;
+  /** 本机价格表（模型用量表折算模型成本用；读取失败为 null，成本按 0）。
+   *  与远端合并共用同一份，不重复请求。 */
+  pricing: PricingConfig | null;
   /** 取数失败的 Agent 展示名（部分失败提示用，不阻断其余数据） */
   failures: string[];
   /** 「全部设备」下远端单源取数失败（弱提示条用，已降级为本机口径） */
@@ -223,13 +252,17 @@ async function settle<T>(task: () => Promise<T>): Promise<{ value: T | null; err
  * 窗口：SQLite 型来源取满 365 天（热力图 52 周需要一年，单查询成本低）；
  * Cursor 维持 90 天（events 全年分页拉取太慢，90 天之前的热力格子 = 纯本机
  * 口径中不含 Cursor 的部分）。
+ *
+ * 除按日聚合外，Cursor 额外带出范围内按模型聚合（其 events 无按日拆分），
+ * 供模型用量表使用，见 AgentLocalLoad。
  */
 async function loadAgentDays(
   id: UsageAgentId,
   nowMs: number,
   fxPromise: Promise<number>
-): Promise<Map<string, DayAgg>> {
+): Promise<AgentLocalLoad> {
   const days = new Map<string, DayAgg>();
+  const cursorModels = new Map<string, CursorModelAgg>();
   const toMs = nowMs;
   const windowDays = id === "cursor" ? USAGE_WINDOW_DAYS : WINDOW_DAYS;
   const fromMs = startOfLocalDay(addLocalDays(nowMs, -(windowDays - 1)));
@@ -267,13 +300,24 @@ async function loadAgentDays(
     }
     case "cursor": {
       // Cursor 走独立快照：daily 为按日明细，事件按请求范围后端已切片；
-      // 人民币折算需要汇率，等同一份已发起的汇率读取（不额外串行）
+      // 人民币折算需要汇率，等同一份已发起的汇率读取（不额外串行）。
+      // by_model 是「整段范围」聚合（无按日拆分），单独带出给模型用量表。
       const snapshot = await fetchCursorUsage(fromMs, toMs);
       addCursorDays(snapshot.daily, await fxPromise, days);
+      for (const model of snapshot.by_model) {
+        cursorModels.set(model.model, {
+          requests: model.requests,
+          input: model.input_tokens,
+          output: model.output_tokens,
+          cacheRead: model.cache_read_tokens,
+          total: model.total_tokens,
+          costUsd: model.cost_usd,
+        });
+      }
       break;
     }
   }
-  return days;
+  return { days, cursorModels };
 }
 
 /**
@@ -282,13 +326,14 @@ async function loadAgentDays(
  * minimax→minimaxcode，其余同名）；未登记远端来源的 Agent（Cursor 明细不上传）
  * 返回 null，调用方直接跳过。
  * 窗口固定 90 天（远端 hour 桶 × 全年体积太大）：更早的格子为纯本机口径。
+ * 价格表由调用方统一读取后传入（与模型用量表共用同一份，不重复请求）。
  */
 async function loadRemoteAgentDays(
   id: UsageAgentId,
   fromMs: number,
   toMs: number,
   excludeDevice: string,
-  pricingPromise: Promise<PricingConfig | null>,
+  pricing: PricingConfig | null,
   fxRate: number,
   windowKeys: Set<string>
 ): Promise<Map<string, DayAgg> | null> {
@@ -299,7 +344,7 @@ async function loadRemoteAgentDays(
     source,
   });
   const days = new Map<string, DayAgg>();
-  addRemoteTrendDays(remote, await pricingPromise, fxRate, windowKeys, days);
+  addRemoteTrendDays(remote, pricing, fxRate, windowKeys, days);
   return days;
 }
 
@@ -498,6 +543,11 @@ async function loadOverview(
     .then((config) => (config.usd_cny_rate > 0 ? config.usd_cny_rate : 7.2))
     .catch(() => 7.2);
 
+  // 价格表：模型用量表要按模型折算本机 + 远端成本（与菜单栏标题 / 面板汇总页
+  // 同款口径），远端合并也复用同一份，因此提到主流程统一读取（失败按 null，
+  // 成本列回落 0，token 照常统计）。读取是本地文件命令，与前述请求并行发起。
+  const pricingPromise = fetchPricing().catch(() => null as PricingConfig | null);
+
   // 额度快照（Z.ai 与 Codex/Claude/Kimi/Cursor）与用量取数互相独立，同时发起
   const quotaFromMs = startOfLocalDay(addLocalDays(now, -QUOTA_LOOKBACK_DAYS));
   const zaiQuotaPromise = settle(() => getQuotaHistory(false, quotaFromMs));
@@ -518,9 +568,15 @@ async function loadOverview(
   const perAgent: AgentDays[] = [];
   const failures: string[] = [];
   let firstError: string | null = null;
+  // Cursor 的模型聚合旁路：只有 Cursor 会填充（其 events 无按日拆分）
+  const cursorByModel = new Map<string, CursorModelAgg>();
   for (const { id, value, error } of results) {
-    if (value) perAgent.push({ id, days: value });
-    else if (!isMissingInstall(error)) {
+    if (value) {
+      perAgent.push({ id, days: value.days });
+      for (const [modelId, agg] of value.cursorModels) {
+        cursorByModel.set(modelId, agg);
+      }
+    } else if (!isMissingInstall(error)) {
       failures.push(agentLabel(id));
       firstError ??= error;
     }
@@ -547,6 +603,7 @@ async function loadOverview(
   perAgent.sort((a, b) => orderOf(a.id) - orderOf(b.id));
 
   const fxRate = await fxPromise;
+  const pricing = await pricingPromise;
   const fatalError =
     USAGE_AGENT_IDS.length > 0 && perAgent.length === 0 && failures.length > 0
       ? firstError ?? "数据加载失败"
@@ -558,9 +615,11 @@ async function loadOverview(
     windowStartMs,
     merged: mergeDayMaps(perAgent.map((entry) => entry.days)),
     perAgent,
+    cursorByModel,
     remotePerAgent: [],
     quotas,
     fxRate,
+    pricing,
     failures,
     remoteDegraded: false,
   };
@@ -591,9 +650,6 @@ async function loadOverview(
     const syncEnabled = !!config?.enabled && !!config.device_token;
     if (!syncEnabled) return;
     const excludeDevice = config?.device_id ?? "";
-    // 价格表：远端不下发成本，用本机价格表按模型折算（与菜单栏标题同款）；
-    // 读不到时远端成本按 0（token 照常统计）。与远端请求并行发起。
-    const pricingPromise = fetchPricing().catch(() => null as PricingConfig | null);
     const remoteResults = await Promise.all(
       USAGE_AGENT_IDS.map(async (id) => ({
         id,
@@ -603,7 +659,7 @@ async function loadOverview(
             remoteStartMs,
             toMs,
             excludeDevice,
-            pricingPromise,
+            pricing,
             fxRate,
             usageKeySet
           )

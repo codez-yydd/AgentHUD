@@ -1336,6 +1336,36 @@ export const en: typeof zh = {
     "dashboard.overview.costFootnote":
       "Same source as the menu bar: this machine + other devices (when sync is on), estimated with this machine's price table (USD price × current FX rate); not a billable amount. Cursor details are not uploaded, so Cursor counts are local-only.",
 
+    // ===== Overview page: model usage table =====
+    "dashboard.overview.modelTitle": "Model usage",
+    "dashboard.overview.modelSub": "Sorted by tokens in range",
+    "dashboard.overview.colModel": "Model",
+    "dashboard.overview.colRequests": "Requests",
+    "dashboard.overview.colModelInput": "Input tokens",
+    // Input column header tooltip: same measure as the "input side" metric card
+    // (total − output; cache read and cache write both count as input side)
+    "dashboard.overview.colModelInputHint":
+      "Input side: total − output, including cache read and cache write",
+    "dashboard.overview.colModelOutput": "Output tokens",
+    "dashboard.overview.colModelTotal": "Total tokens",
+    "dashboard.overview.colShare": "Share",
+    "dashboard.overview.modelEmpty": "No model usage in this range",
+    // Collapsed to the first 10 rows by default; the link button shows the rest
+    "dashboard.overview.modelExpandAll": "Show all {count} models",
+    "dashboard.overview.modelCollapse": "Collapse",
+    // Aggregated row for legacy data / sources without a per-model split
+    "dashboard.overview.modelUnsplit": "(not split)",
+    "dashboard.overview.modelUnsplitHint":
+      "Legacy data or sources without a per-model split: tokens count as input side and carry no model cost",
+    // Appended to the model name tooltip when several spellings of the same model
+    // fold into one row; lists each raw spelling with its request count
+    // (joined by " · "). Spellings include provider-prefixed full ids
+    // (e.g. zhipuai-coding-plan/glm-5.3-flash) folded with the bare name
+    "dashboard.overview.modelVariantsHint": "Merged spellings: {list}",
+    "dashboard.overview.modelVariantItem": "{model} ({count} requests)",
+    "dashboard.overview.modelFootnote":
+      "Model cost is estimated with this machine's price table (USD price × current FX rate); models without a price show \"Unpriced\". Cursor has no per-day model split, so its rows cover that source's fixed 90-day window. \"(not split)\" aggregates legacy data or sources without a per-model split: those tokens count as input side and carry no cost.",
+
     // ===== Compare page (wide window) =====
     "dashboard.compare.device": "Device",
     "dashboard.compare.deviceAll": "All (merged)",

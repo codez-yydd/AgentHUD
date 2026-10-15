@@ -1779,6 +1779,72 @@ body {
   color: var(--db-text-dim);
 }
 
+/* ---- 模型用量表（Agent 表下方） ---- */
+/* 模型名：单行截断（模型 id 可长），完整值由 title 兜底；列宽给足优先吸收
+   剩余宽度，数值列各自右对齐不参与拉伸 */
+.db-model__name {
+  display: block;
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+}
+
+/* 「未拆分」占位行：弱化色的说明文字（不是真实模型名） */
+.db-model__unsplit {
+  color: var(--db-text-dim);
+  font-style: italic;
+}
+
+/* 占比列：数字（右对齐）+ 细进度条（与额度条同款 4px 高、右对齐不参差） */
+.db-table th.db-table__share {
+  width: 120px;
+  text-align: right;
+}
+
+.db-share {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 5px;
+}
+
+.db-share__pct {
+  font-size: 12px;
+}
+
+.db-share__track {
+  width: 100px;
+  height: 4px;
+  border-radius: 999px;
+  background: var(--db-track);
+  overflow: hidden;
+}
+
+.db-share__fill {
+  height: 100%;
+  border-radius: 999px;
+  background: var(--db-accent-sky);
+  transition: width 0.4s ease;
+}
+
+/* 折叠按钮行（「展开全部 N 个模型 / 收起」）：右对齐的文本按钮，
+   与表格留一点间距，不抢表格主体 */
+.db-modeltable__more {
+  margin-top: 10px;
+  text-align: right;
+}
+
+/* 卡片脚注：模型成本口径 / Cursor 90 天窗口 / 未拆分行说明（比页面脚注小一号，
+   与热力图脚注同款） */
+.db-modeltable__foot {
+  margin: 10px 0 0;
+  font-size: 10px;
+  line-height: 1.6;
+  color: var(--db-text-dim);
+}
+
 /* ============================================================
  * 周额度对比页（大窗）：设备下拉 / 额度矩阵 / 折线图 / Token 对比
  * ============================================================ */
