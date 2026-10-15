@@ -1194,6 +1194,12 @@ export const en: typeof zh = {
   ...({
     "dashboard.subtitle": "Usage & quota console",
 
+    // Self-drawn title bar window controls (tooltips + aria-labels)
+    "dashboard.titlebar.minimize": "Minimize",
+    "dashboard.titlebar.maximize": "Maximize",
+    "dashboard.titlebar.restore": "Restore",
+    "dashboard.titlebar.close": "Close",
+
     "dashboard.overview": "Overview",
     "dashboard.logs": "Request logs",
     "dashboard.compare": "Weekly compare",

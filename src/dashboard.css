@@ -4,9 +4,10 @@
  * 为什么不直接复用 index.css：那份是悬浮面板专用入口样式——html/body/#root
  * 被设为透明底 + 16px 圆角（透出原生 popover 毛玻璃）、#root 还带
  * transform: scale(--ui-scale) 整体缩放，另有 .panel-shell / 拖拽热区 /
- * 报告页等面板专属规则。主窗口是 decorations:true 的不透明普通系统窗，
- * 引入会直接穿帮（透底、圆角、缩放错位）。因此本文件只搬运与窗口形态
- * 无关的公共令牌，并按大窗场景重排布局变量。
+ * 报告页等面板专属规则。主窗口是无边框（decorations: false，标题栏前端
+ * 自绘，见 TitleBar.tsx）的不透明普通窗，引入会直接穿帮（透底、圆角、
+ * 缩放错位）。因此本文件只搬运与窗口形态无关的公共令牌，并按大窗场景
+ * 重排布局变量。
  *
  * 与 index.css 保持同源的部分（若上游调整需同步，见每段注释）：
  *  - 字体栈 / 字号 / 抗锯齿 / 等宽数字（.num）；
@@ -43,6 +44,16 @@
   --db-hover: rgba(15, 23, 42, 0.05);
   --db-active-bg: rgba(14, 165, 233, 0.12);
   --db-active-text: #0284c7;
+  /* 自绘标题栏（TitleBar.tsx）：底与侧栏同源（直接复用 --db-sidebar-bg），
+     按钮 hover 比通用 --db-hover 略重——46px 宽的整高命中区需要更明确的
+     反馈，press 再重一档给出按下反馈；关闭按钮 hover 的 Windows 惯例红
+     #e81123 亮暗一致，只在 :root 定义一次（暗色段不重复）。
+     栏高抽成变量：抽屉遮罩 / 抽屉面板（fixed 定位）顶部让位引用同一值，
+     以后调栏高只动这一处 */
+  --db-titlebar-h: 40px;
+  --db-titlebar-hover: rgba(15, 23, 42, 0.09);
+  --db-titlebar-press: rgba(15, 23, 42, 0.14);
+  --db-titlebar-close-hover: #e81123;
   --scrollbar-thumb: rgba(15, 23, 42, 0.18);
   --scrollbar-thumb-hover: rgba(15, 23, 42, 0.28);
 
@@ -134,11 +145,131 @@ body {
 }
 
 /* ============================================================
- * 应用壳：左侧固定侧栏 + 右侧主区（主区 flex-1 自适应并独立滚动）
+ * 应用壳：顶部自绘标题栏 + （左侧固定侧栏 + 右侧主区）
+ * 标题栏自绘是因为窗口 decorations: false（见 src-tauri/src/main_window.rs
+ * 与 src/dashboard/TitleBar.tsx）。
  * ============================================================ */
 .db-shell {
   display: flex;
+  flex-direction: column;
   height: 100%;
+}
+
+/* 标题栏之下的主体行：高度由本行分配（主区 flex-1 自适应并独立滚动） */
+.db-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+/* ---- 自绘标题栏（高 40px，见 --db-titlebar-h；替代系统标题栏） ---- */
+.db-titlebar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex: none;
+  height: var(--db-titlebar-h);
+  padding-left: 12px;
+  /* 底与侧栏同源：标题栏 + 侧栏读作同一块"应用壳"面（L 形），主区页面底
+     与之分层；壳面分隔线不画在标题栏下缘，改由 .db-main 的 border-top 只
+     落在主区一侧（避免横线切断 L 形壳面） */
+  background: var(--db-sidebar-bg);
+  /* 整栏不可选中：拖拽 / 双击最大化时不会误选到品牌文本 */
+  user-select: none;
+  cursor: default;
+}
+
+.db-titlebar__brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  /* min-width: 0 + tagline 省略号：窗口窄到极限时先收副标题，名称与图标不挤 */
+  min-width: 0;
+}
+
+/* 软件 logo（原侧栏 db-brand__logo-img 28px 上移到标题栏：缩到 18px 适配
+   40px 栏高；128px 透明底 PNG 由 Vite 打包） */
+.db-titlebar__logo {
+  width: 18px;
+  height: 18px;
+  flex: none;
+  border-radius: 5px;
+  object-fit: contain;
+  user-select: none;
+}
+
+.db-titlebar__name {
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--db-text);
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+}
+
+/* 产品副标题（原侧栏 tagline 随品牌上移）：小号弱色，与名称同行 */
+.db-titlebar__tagline {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--db-text-dim);
+}
+
+/* 窗口控制按钮组：align-self: stretch 让三枚按钮占满 40px 栏高 */
+.db-titlebar__controls {
+  display: flex;
+  align-self: stretch;
+  flex: none;
+}
+
+.db-titlebar__btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 46px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--db-text-dim);
+  cursor: default;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.db-titlebar__btn:hover:not(:disabled) {
+  background: var(--db-titlebar-hover);
+  color: var(--db-text);
+}
+
+/* 关闭按钮 hover：Windows 惯例红底 + 白图标（与系统标题栏一致的心智） */
+.db-titlebar__btn--close:hover:not(:disabled) {
+  background: var(--db-titlebar-close-hover);
+  color: #ffffff;
+}
+
+/* 按下反馈：比 hover 再重一档（--db-titlebar-press 与 hover 成对，暗色值
+   见 .dark 段）；声明在 hover 之后，同特异性下覆盖悬停底色 */
+.db-titlebar__btn:active:not(:disabled) {
+  background: var(--db-titlebar-press);
+}
+
+/* 关闭按钮按下：保持红底只压暗一档（brightness），不用灰色 press 底破坏
+   Windows 红键"按下仍是红"的一致感 */
+.db-titlebar__btn--close:active:not(:disabled) {
+  background: var(--db-titlebar-close-hover);
+  color: #ffffff;
+  filter: brightness(0.92);
+}
+
+/* 键盘焦点圈（:focus-visible 只对键盘生效，鼠标点击不出现） */
+.db-titlebar__btn:focus-visible {
+  outline: 2px solid var(--db-active-text);
+  outline-offset: -2px;
+}
+
+/* 非 Tauri 宿主（浏览器直接开 dev server）下窗口句柄为空：按钮只降透明度 */
+.db-titlebar__btn:disabled {
+  opacity: 0.5;
 }
 
 .db-sidebar {
@@ -147,42 +278,11 @@ body {
   /* 固定宽侧栏：窗口拉伸时只有主区变化（对齐 1100×720 大窗的信息层级） */
   width: 200px;
   flex: none;
+  /* 品牌块已上移到自绘标题栏：导航顶部留 10px 呼吸位（此前由 db-brand
+     的 16px 上留白承担，删除后导航会直接贴住标题栏） */
+  padding-top: 10px;
   background: var(--db-sidebar-bg);
   border-right: 1px solid var(--db-border);
-}
-
-/* ---- 产品标识 ---- */
-.db-brand {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 16px 14px 14px;
-}
-
-/* 软件 logo 图标：原 "Z" 文字方块已替换为真实图标（src/assets/logo.png，
-   128px 透明底 PNG，由 Vite 打包）。尺寸与圆角沿用原文字方块的 28px / 9px，
-   保证侧栏排版不变；图标自带透明底，原先的渐变背景与文字排版样式移除。 */
-.db-brand__logo-img {
-  width: 28px;
-  height: 28px;
-  flex: none;
-  border-radius: 9px;
-  object-fit: contain;
-  user-select: none;
-}
-
-.db-brand__name {
-  font-size: 14px;
-  font-weight: 700;
-  color: var(--db-text);
-  letter-spacing: 0.01em;
-  line-height: 1.2;
-}
-
-.db-brand__tagline {
-  margin-top: 1px;
-  font-size: 10px;
-  color: var(--db-text-dim);
 }
 
 /* ---- 导航 ---- */
@@ -274,6 +374,10 @@ body {
   display: flex;
   flex-direction: column;
   overflow-y: auto;
+  /* 壳面分隔线只出现在主区一侧：标题栏与侧栏同底色连成 L 形壳面，这条
+     border-top 同时隔开标题栏与滚过的主区内容（.db-titlebar 不再画
+     border-bottom） */
+  border-top: 1px solid var(--db-border);
 }
 
 .db-page {
@@ -2797,14 +2901,17 @@ body {
 
 .db-drawer-mask {
   position: fixed;
-  inset: 0;
+  /* 顶部让出自绘标题栏高度：抽屉打开期间标题栏三键 / 拖拽热区仍然可用，
+     遮罩只盖住标题栏之下的内容区 */
+  inset: var(--db-titlebar-h) 0 0 0;
   z-index: 40;
   background: var(--db-mask);
 }
 
 .db-drawer {
   position: fixed;
-  top: 0;
+  /* 顶部与遮罩一致让出标题栏；bottom: 0 保留（高度自适应，仍贴窗底） */
+  top: var(--db-titlebar-h);
   right: 0;
   bottom: 0;
   z-index: 41;
@@ -3054,6 +3161,11 @@ body {
   --db-hover: rgba(226, 232, 240, 0.08);
   --db-active-bg: rgba(56, 189, 248, 0.16);
   --db-active-text: #7dd3fc;
+  /* 自绘标题栏（暗色）：hover 提为亮色低透明（略重于 --db-hover），press
+     再重一档；--db-titlebar-close-hover（Windows 惯例红）亮暗一致，只在
+     :root 定义 */
+  --db-titlebar-hover: rgba(226, 232, 240, 0.12);
+  --db-titlebar-press: rgba(226, 232, 240, 0.16);
   --scrollbar-thumb: rgba(226, 232, 240, 0.18);
   --scrollbar-thumb-hover: rgba(226, 232, 240, 0.28);
 

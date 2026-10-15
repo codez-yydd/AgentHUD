@@ -1,5 +1,6 @@
 /**
- * 主窗口（Dashboard）应用壳：左侧固定侧栏（产品标识 + 四项导航 + 底部
+ * 主窗口（Dashboard）应用壳：顶部自绘标题栏（品牌标识 + 窗口控制，替代
+ * decorations: false 后的系统标题栏）+ 左侧固定侧栏（四项导航 + 底部
  * 语言/主题快捷切换）+ 右侧主区。
  *
  * 视图切换用组件内 state（对齐面板 App.tsx 的 view 模式，不引路由库）：
@@ -8,15 +9,13 @@
 import { useEffect, useRef, useState } from "react";
 import type { ComponentType } from "react";
 import { listen } from "@tauri-apps/api/event";
-// 软件 logo：源图取自 src-tauri/icons/128x128.png（128px 透明 PNG），
-// 由 Vite 打包为带哈希的资源 URL（dev 走 dev server，构建走 dist/assets）
-import logo from "../assets/logo.png";
 import { LanguageToggle, ThemeToggle } from "../layout";
 import { APPEARANCE_CHANGED_EVENT, loadTheme, type Theme } from "../appearance";
 import { loadLocale } from "../i18n/locale";
 import { useI18n, type MessageKey } from "../i18n";
 import type { IconProps } from "./icons";
 import { CompareIcon, LogsIcon, OverviewIcon, PricingIcon } from "./icons";
+import { TitleBar } from "./TitleBar";
 import { OverviewPage } from "./OverviewPage";
 import { LogsPage } from "./logs/LogsPage";
 import { ComparePage } from "./ComparePage";
@@ -95,61 +94,51 @@ export function DashboardApp() {
 
   return (
     <div className="db-shell">
-      <aside className="db-sidebar">
-        {/* 产品标识：软件 logo 图标 + 名称（图标为透明底 PNG，样式见
-            dashboard.css .db-brand__logo-img） */}
-        <div className="db-brand">
-          <img
-            src={logo}
-            alt="ZBar"
-            className="db-brand__logo-img"
-            draggable={false}
-          />
-          <div>
-            <div className="db-brand__name">ZBar</div>
-            <div className="db-brand__tagline">{t("dashboard.subtitle")}</div>
+      <TitleBar />
+
+      {/* 标题栏之下的主体行：左侧固定侧栏 + 右侧主区 */}
+      <div className="db-body">
+        <aside className="db-sidebar">
+          <nav className="db-nav">
+            {NAV_ITEMS.map(({ view: itemView, labelKey, Icon }) => (
+              <button
+                key={itemView}
+                type="button"
+                onClick={() => setView(itemView)}
+                className={`db-nav__item ${
+                  view === itemView ? "db-nav__item--active" : ""
+                }`}
+                aria-current={view === itemView ? "page" : undefined}
+              >
+                <span className="db-nav__icon">
+                  <Icon className="h-4 w-4" />
+                </span>
+                {t(labelKey)}
+              </button>
+            ))}
+          </nav>
+
+          {/* 底部：复用面板的语言/主题快捷切换（只换按钮样式类，读写同一套
+              localStorage 偏好与同一广播，行为与面板一致）；ThemeToggle 换
+              key 以跟随外窗切换（见上方同步流注释） */}
+          <div className="db-sidebar__footer">
+            <ThemeToggle key={theme} className="db-icon-btn" />
+            <LanguageToggle className="db-icon-btn" />
           </div>
-        </div>
+        </aside>
 
-        <nav className="db-nav">
-          {NAV_ITEMS.map(({ view: itemView, labelKey, Icon }) => (
-            <button
-              key={itemView}
-              type="button"
-              onClick={() => setView(itemView)}
-              className={`db-nav__item ${
-                view === itemView ? "db-nav__item--active" : ""
-              }`}
-              aria-current={view === itemView ? "page" : undefined}
-            >
-              <span className="db-nav__icon">
-                <Icon className="h-4 w-4" />
-              </span>
-              {t(labelKey)}
-            </button>
-          ))}
-        </nav>
-
-        {/* 底部：复用面板的语言/主题快捷切换（只换按钮样式类，读写同一套
-            localStorage 偏好与同一广播，行为与面板一致）；ThemeToggle 换 key
-            以跟随外窗切换（见上方同步流注释） */}
-        <div className="db-sidebar__footer">
-          <ThemeToggle key={theme} className="db-icon-btn" />
-          <LanguageToggle className="db-icon-btn" />
-        </div>
-      </aside>
-
-      <main className="db-main">
-        {view === "overview" ? (
-          <OverviewPage />
-        ) : view === "logs" ? (
-          <LogsPage />
-        ) : view === "compare" ? (
-          <ComparePage />
-        ) : (
-          <PricingPage />
-        )}
-      </main>
+        <main className="db-main">
+          {view === "overview" ? (
+            <OverviewPage />
+          ) : view === "logs" ? (
+            <LogsPage />
+          ) : view === "compare" ? (
+            <ComparePage />
+          ) : (
+            <PricingPage />
+          )}
+        </main>
+      </div>
     </div>
   );
 }

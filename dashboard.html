@@ -7,17 +7,18 @@
     <link rel="icon" type="image/png" href="/src/assets/logo.png" />
     <title>ZBar</title>
     <!--
-      主窗口（Dashboard）入口：1100×720 常规系统窗，承载用量统计 / 周额度
-      对比 / 价格设置等管理分析功能，与悬浮面板（index.html）共用同一套
-      i18n 词典与外观偏好（localStorage 键 zbar-theme / zbar-locale）。
+      主窗口（Dashboard）入口：1100×720 无边框常规大窗（标题栏由前端自绘，
+      见 /src/dashboard/TitleBar.tsx），承载用量统计 / 周额度对比 / 价格设置
+      等管理分析功能，与悬浮面板（index.html）共用同一套 i18n 词典与外观
+      偏好（localStorage 键 zbar-theme / zbar-locale）。
       页面是完整 React 应用（区别于 session-hud.html / pet.html 的零
       React 薄壳）：
       - /src/dashboard-main.tsx：入口（首帧前对齐主题/语言 + 挂载 Provider）；
-      - /src/dashboard/DashboardApp.tsx：应用壳（左侧栏 + 主区按 state 切换）；
+      - /src/dashboard/DashboardApp.tsx：应用壳（标题栏 + 侧栏 + 主区按 state 切换）；
       - /src/dashboard.css：Tailwind 4 + 公共设计令牌子集（不复用 index.css
         —— 那份含面板专属的透明底/圆角/#root 缩放规则，普通窗引入会穿帮）。
-      本窗可被用户点"×"关闭：Rust 侧做 prevent_close + hide（隐藏不销毁），
-      再次打开秒开，因此页面不需要处理关闭/退出逻辑。
+      本窗可被用户点标题栏"×"关闭：Rust 侧做 prevent_close + hide（隐藏不
+      销毁），再次打开秒开，因此页面不需要处理关闭/退出逻辑。
     -->
     <script>
       // 首帧前兜底：先按面板写入的主题键切 .dark，避免暗色用户看到白闪。

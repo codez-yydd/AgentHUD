@@ -7,8 +7,15 @@
  */
 
 export const dashboard = {
-  // 侧栏产品标识副标题
+  // 产品副标题（自绘标题栏品牌区：logo + ZBar + 本副标题）
   "dashboard.subtitle": "用量与额度管理",
+
+  // 自绘标题栏的窗口控制按钮（图标按钮的 title 提示与 aria-label，
+  // 措辞沿用 Windows 中文版：最小化 / 最大化 / 还原 / 关闭）
+  "dashboard.titlebar.minimize": "最小化",
+  "dashboard.titlebar.maximize": "最大化",
+  "dashboard.titlebar.restore": "还原",
+  "dashboard.titlebar.close": "关闭",
 
   // 侧栏导航项（同时用作页面标题）：用量总览 / 请求日志 / 周额度对比 / 价格设置
   "dashboard.overview": "用量总览",

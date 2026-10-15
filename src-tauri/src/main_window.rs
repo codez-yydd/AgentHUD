@@ -1,16 +1,18 @@
-//! 主窗口（Dashboard / label "main-window"）：常规系统大窗（1100×720、
-//! 系统边框、可自由缩放、任务栏可见），承载用量总览 / 周额度对比 /
+//! 主窗口（Dashboard / label "main-window"）：无边框常规大窗（1100×720、
+//! 前端自绘标题栏、可自由缩放、任务栏可见），承载用量总览 / 周额度对比 /
 //! 价格设置等管理与分析功能（第一阶段为应用壳 + 三个占位页）。
 //!
 //! 与其余三个窗口的形态差异：
 //! - panel（300×500 悬浮面板）：无边框透明置顶 + 失焦自动隐藏，托盘左键
 //!   切换显示；
 //! - pet / session-hud：透明无边框置顶、不抢焦点的小窗；
-//! - main-window：普通装饰窗（decorations(true)、不置顶、不 skip_taskbar、
-//!   阴影默认），用户点标题栏"×"时**隐藏而不销毁**（挂点见 lib.rs 的
-//!   WindowEvent::CloseRequested 分支）——webview 与页面状态保留，再次
-//!   打开（托盘右键"打开主窗口" / 悬浮窗统计页按钮）走 show + focus 秒开，
-//!   应用退出仍由托盘"退出 ZBar"完成。
+//! - main-window：无边框窗（decorations(false)、不置顶、不 skip_taskbar、
+//!   阴影默认），标题栏由 dashboard 前端自绘（拖拽 / 最大化 / 关闭见
+//!   src/dashboard/TitleBar.tsx），边缘缩放走 tao 在不透明窗上的
+//!   WM_NCHITTEST 系统热区（前端不挂 resize 热区）；用户点标题栏"×"时
+//!   **隐藏而不销毁**（挂点见 lib.rs 的 WindowEvent::CloseRequested 分支）
+//!   ——webview 与页面状态保留，再次打开（托盘右键"打开主窗口" / 悬浮窗
+//!   统计页按钮）走 show + focus 秒开，应用退出仍由托盘"退出 ZBar"完成。
 //! - 启动预热：应用 setup 阶段（托盘初始化后）即预建隐藏的主窗口
 //!   （visible(false)，见 prebuild_main_window），dashboard.html 的 WebView
 //!   提前加载，首次打开只剩 show + focus，不再等冷启动。
@@ -100,10 +102,12 @@ pub fn prebuild_main_window(app: &AppHandle) -> Result<(), String> {
 }
 
 /// 创建 "main-window" 主窗口（必须在主线程事件循环上下文调用，见模块
-/// doc）。形态刻意与悬浮窗相反：系统边框 + 标题栏（用户可拖拽/关闭）、
-/// 可自由缩放、居中出生、任务栏可见（默认，不调 skip_taskbar）、不置顶
-/// （默认）、阴影默认（不调 shadow，交给系统），保证是标准桌面大窗而非
-/// 悬浮工具窗。已存在时提前返回 Ok（幂等，避免同名重复建窗报错）。
+/// doc）。形态刻意与悬浮窗相反：无边框 + 前端自绘标题栏（用户可拖拽 /
+/// 最大化 / 关闭，见 src/dashboard/TitleBar.tsx）、可自由缩放（边缘缩放
+/// 走 tao 的 WM_NCHITTEST 系统热区，前端不挂 resize 热区）、居中出生、
+/// 任务栏可见（默认，不调 skip_taskbar）、不置顶（默认）、阴影默认（不调
+/// shadow，交给系统），保证是标准桌面大窗而非悬浮工具窗。已存在时提前
+/// 返回 Ok（幂等，避免同名重复建窗报错）。
 ///
 /// `visible` 区分两种创建路径：启动预热用 false（隐藏建窗，首次打开时
 /// show + focus，见 prebuild_main_window）；打开命令在窗口缺失时用 true
@@ -121,7 +125,13 @@ fn ensure_main_window(app: &AppHandle, visible: bool) -> Result<(), String> {
     .title("ZBar")
     .inner_size(MAIN_WINDOW_WIDTH, MAIN_WINDOW_HEIGHT)
     .min_inner_size(MAIN_WINDOW_MIN_WIDTH, MAIN_WINDOW_MIN_HEIGHT)
-    .decorations(true)
+    // 无系统标题栏：拖拽 / 最大化 / 关闭由 dashboard 前端自绘标题栏承担
+    // （decorations(false) 的不透明窗在 Windows 上仍保留 tao 的系统边缘
+    // 缩放热区，前端无需挂 resize 热区，见 ResizeHandles.tsx 头注释）。
+    // 已知取舍：无边框后 Win11 悬停最大化按钮的"贴靠布局"浮出与
+    // Alt+Space 系统菜单不再可用——如需恢复需自定义 WM_NCHITTEST 返回
+    // HTMINBUTTON/HTMAXBUTTON/HTCLOSE，暂不实现
+    .decorations(false)
     .resizable(true)
     .center()
     .visible(visible)

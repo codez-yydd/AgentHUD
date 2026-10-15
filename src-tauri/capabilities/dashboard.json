@@ -1,7 +1,13 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "dashboard",
-  "description": "Minimal capability for the main dashboard window (core APIs only for now; custom commands like open_main_window are not ACL-gated). Extend permissions as later phases need them.",
+  "description": "Minimal capability for the main dashboard window (core APIs only for now; custom commands like open_main_window are not ACL-gated). Extend permissions as later phases need them. Window permissions below back the self-drawn title bar (minimize / maximize-restore / drag / close).",
   "windows": ["main-window"],
-  "permissions": ["core:default"]
+  "permissions": [
+    "core:default",
+    "core:window:allow-minimize",
+    "core:window:allow-toggle-maximize",
+    "core:window:allow-start-dragging",
+    "core:window:allow-close"
+  ]
 }

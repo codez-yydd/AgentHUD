@@ -2376,7 +2376,9 @@ pub fn run() {
                         session_hud::handle_session_hud_window_destroyed(window.app_handle());
                     }
                 }
-                // 主窗口（Dashboard）：点系统"×"= 隐藏不销毁（常驻秒开）。
+                // 主窗口（Dashboard）：点标题栏"×"= 隐藏不销毁（常驻秒开）。
+                // 标题栏是前端自绘的（decorations(false)，见 main_window.rs
+                // 模块 doc），前端关闭按钮同样走 close() 触发本挂点。
                 // webview 与页面状态原样保留，再次打开走 show + focus；应用
                 // 退出仍由托盘"退出 ZBar"完成。只拦 main-window 一个 label，
                 // panel/pet/session-hud 的关闭路径（各自 Destroyed 挂点）不受影响

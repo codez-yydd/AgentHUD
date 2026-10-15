@@ -111,3 +111,86 @@ export function RefreshIcon({ className }: IconProps) {
     </svg>
   );
 }
+
+/* ---- 自绘标题栏的窗口控制图标（最小化 / 最大化 / 还原 / 关闭） ----
+   沿用上方 IconProps 模式，几何铺满 24 视口（描边外沿留约 1.5 安全边，
+   strokeWidth 2 不裁切），12px 渲染尺寸下（TitleBar 用 h-3 w-3）字形约
+   9.5px、有效线宽 1px，三键图标清晰可辨；"最大化"方框与"还原"后层共用
+   同一光学上沿（y=2.5）与右沿（x=21.5），还原的前层方框缩小一号错位到
+   左下，保持 Windows 标题栏的字形惯例。 */
+
+/** 最小化：单根横线（横向占满，与最大化方框同宽） */
+export function MinimizeIcon({ className }: IconProps) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden
+    >
+      <path d="M2.5 12h19" />
+    </svg>
+  );
+}
+
+/** 最大化：单个方框 */
+export function MaximizeIcon({ className }: IconProps) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden
+    >
+      <rect x="2.5" y="2.5" width="19" height="19" rx="1.5" />
+    </svg>
+  );
+}
+
+/** 还原（两层错位方框）：前层方框 + 后层方框露出的上缘。后层折线两端都
+    搭在前层边框上（起点落在前层顶边、经右沿下折后横线收在前层右边），
+    不悬空；后层顶边 / 右沿与最大化字形对齐同一光学线 */
+export function RestoreIcon({ className }: IconProps) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden
+    >
+      <path d="M9 8.5V2.5h12.5v9H16" />
+      <rect x="2.5" y="8.5" width="13.5" height="13.5" rx="1.5" />
+    </svg>
+  );
+}
+
+/** 关闭：×（对角线略短于最大化方框对角，Windows 惯例比例） */
+export function CloseIcon({ className }: IconProps) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden
+    >
+      <path d="M3 3l18 18" />
+      <path d="M21 3L3 21" />
+    </svg>
+  );
+}
