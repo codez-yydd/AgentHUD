@@ -150,13 +150,29 @@ export function exactCount(n: number, locale: "zh" | "en"): string {
 }
 
 /**
- * 请求输出速度（tok/s）：生成窗口 = 耗时 − 首字（与后端速度口径同思路）；
- * 无首字数据或首字异常（>= 耗时）时退回总耗时，标近似（界面带 ≈）。
- * 无耗时（或耗时 <= 0）返回 null。
+ * 请求输出速度（tok/s），两层结构：
+ *  1. **后端 speed_tps 非 null 时直接采用**——口径唯一真源 = Rust token_speed
+ *     （行级判定天然含思考感知窗口：思考型请求 output 已含思考 token、生成
+ *     窗口用 completed − started 全程，避免思考时长漏出分母导致速率虚高；
+ *     以及 [200ms, 1h] 样本窗口边界与时序校验）。approximate =
+ *     speed_quality === "request_average"（沿用 ≈ 前缀语义，标请求平均近似）；
+ *  2. **后端为 null 时回退本地公式**（平滑兼容：其他来源行 / 旧版本后端未
+ *     下发速度字段）：生成窗口 = 耗时 − 首字；无首字或首字异常（>= 耗时）
+ *     退回总耗时，标近似（≈）。此时本地公式不做 token_speed 的窗口边界
+ *     拒收——它只是旧口径的兼容回退，正常链路不该走到。
+ * 两层都算不出（无耗时 / 无速度原料）返回 null。
  */
 export function speedOf(
   row: RequestLogRow
 ): { tps: number; approximate: boolean } | null {
+  // 第一层：后端真源（token_speed 判定结果原样透传，不二次加工）
+  if (row.speed_tps != null) {
+    return {
+      tps: row.speed_tps,
+      approximate: row.speed_quality === "request_average",
+    };
+  }
+  // 第二层：本地公式回退（旧版后端 / 无速度字段的来源）
   const duration = row.duration_ms;
   if (duration == null || duration <= 0) return null;
   const ttft = row.ttft_ms;

@@ -11,6 +11,11 @@
 //!   pu: <待处理用户消息时刻ms>|null（V5 附加字段，见下方 pu 信号说明）,
 //!   ta: <活跃工具时刻ms>|null（V6 附加字段，见下方 ta/fe 信号说明）,
 //!   fe: <失败轮事件时刻ms>|null（V6 附加字段，同上）,
+//!   today: { tt, rq }     今日（本地自然日 0 点起）全库全量合计（V33 附加
+//!                         字段：tt = Σ(up+down+cr) 与 sess 行 tt 同口径、
+//!                         rq = model_usage 行数；查询失败/表缺失时整个
+//!                         键省略，旧渲染脚本忽略未知字段；只随 2 秒大
+//!                         文件发布，绝不进 1 秒速度旁路与 60s 额度线程），
 //!   turns: [{
 //!   umid: "msg_xxx",   用户消息 id（turn_usage.user_message_id，实测与
 //!                      ZCode DOM 的 data-turn-id 同值，即渲染端匹配键；
@@ -72,6 +77,11 @@
 //!   cw: 缓存写             ✚ 缓存写合计（V27 附加字段，不参与 tt 口径；
 //!                         列缺失时数据端按 num_col 降级为 0）
 //!   rq: 请求笔数          model_usage 行数（每行一笔请求）
+//!   tl: 工具调用数        会话树（与行口径一致：自身 + 全部子代理）的
+//!                         turn_usage.tool_call_count 合计（V33 附加字段：
+//!                         子代理轮按自身会话归属、随树成员并集并入，
+//!                         每个成员恰好贡献一次；turn_usage 表/列缺失或
+//!                         查询失败时省略本键，旧渲染脚本忽略未知字段）
 //!   speed / speedState: V24.1 起大文件承载**稳定**速度——turns 行携带该
 //!          完成轮最新请求的速度快照（轮完成后不再变化），sess 行携带
 //!          空闲会话的速度/状态；runs 行不携带速度（秒级跳动值由
@@ -1064,6 +1074,11 @@ fn export_once(
         // 模型分组速度区（V25）：窗口级、随 2 秒大文件发布。None = 老库
         // 缺 model_id 列（省略 models 键，渲染端不渲染模型行）
         let model_speeds = speed_catalog.model_speeds();
+        // 今日合计（V33 顶层 today 键）：附加通道，查询失败省略本键
+        //（.ok() → None），不阻塞 turns/runs/sess 导出；只随本 2 秒大
+        // 文件发布，绝不进 1 秒速度旁路与 60 秒额度线程
+        let today =
+            collect_today_usage(&conn, crate::session_hud::today_start_ms(now_ms)).ok();
         let next_speed_view = SpeedView::from_rows(&runs, &sess, pending_session);
         flush_export(
             &dir,
@@ -1076,6 +1091,7 @@ fn export_once(
             pending_user.as_ref().map(|pending| pending.time_created),
             active_tool,
             failure_event,
+            today,
             now_ms,
         )?;
         *speed_view = next_speed_view;
@@ -1124,11 +1140,13 @@ fn export_speed_once(speed_view: &mut SpeedView, speed_cache: &mut Option<String
 /// - 大文件 usage-data.js 按变化写（内容不变跳写，ts 保持最后数据
 ///   变化语义；la/pu/ta/fe 随内容透出——pu/ta/fe 参与内容对比，用户
 ///   发消息、工具开始/结束、失败轮落库本身就是数据变化；sess 为会话
-///   级统计附加数组、models 为模型分组速度数组（V25），同样参与内容
+///   级统计附加数组、models 为模型分组速度数组（V25）、today 为今日
+///   全库合计（V33，None = 查询失败/表缺失省略键），同样参与内容
 ///   对比）；
 /// - 心跳小文件 usage-data-hb.js 仅注入版宠物开启时每周期无条件重写
 ///   （大文件跳写周期里心跳仍独立推进）；宠物关闭时停写并清理残留
 ///   （remove 不存在的文件是常态失败，忽略）。
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn flush_export(
     dir: &Path,
     cache: &mut Option<String>,
@@ -1140,6 +1158,7 @@ pub(crate) fn flush_export(
     pending_user: Option<i64>,
     active_tool: Option<i64>,
     failure_event: Option<i64>,
+    today: Option<(i64, i64)>,
     now_ms: i64,
 ) -> Result<(), String> {
     let la = last_activity_ms(turns, runs, pending_user, active_tool);
@@ -1177,6 +1196,7 @@ pub(crate) fn flush_export(
         &runs_json,
         &sess_json,
         models_json.as_deref(),
+        today,
         now_ms,
     )?;
     if pet_enabled {
@@ -1411,12 +1431,16 @@ impl SpeedCatalog {
         // 记下探测结果（导出端据此省略 models 键，静默关闭新功能）
         let has_model_id = crate::db::has_column(conn, "model_usage", "model_id");
         let model = opt_col(conn, "model_usage", "model_id");
+        // 思考感知窗口（见 token_speed::thinking_generation_span）：列缺失
+        // 的老库按 None 传（模型名识别不受影响）
+        let has_reasoning = crate::db::has_column(conn, "model_usage", "reasoning_tokens");
+        let reasoning = num_col(conn, "model_usage", "reasoning_tokens");
         let placeholders = vec!["?"; session_ids.len()].join(", ");
         // Do not add ORDER BY: the composite session/turn index can deliver
         // the session-qualified rows directly; latest selection is stable in
         // Rust and does not need a temporary sort.
         let sql = format!(
-            "SELECT session_id, {turn}, {out}, started_at, {first}, {completed}, {duration}, {status}, {model} \
+            "SELECT session_id, {turn}, {out}, started_at, {first}, {completed}, {duration}, {status}, {model}, {reasoning} \
              FROM model_usage WHERE session_id IN ({placeholders})"
         );
         let mut stmt = conn
@@ -1434,6 +1458,7 @@ impl SpeedCatalog {
                     row.get::<_, Option<i64>>(6)?,
                     row.get::<_, Option<String>>(7)?,
                     row.get::<_, Option<String>>(8)?,
+                    row.get::<_, i64>(9)?,
                 ))
             })
             .map_err(|error| format!("读取请求速度失败: {error}"))?;
@@ -1453,6 +1478,7 @@ impl SpeedCatalog {
                 duration_ms,
                 status,
                 model_id,
+                reasoning_tokens,
             ) = row.map_err(|error| format!("读取请求速度失败: {error}"))?
             else {
                 continue;
@@ -1471,6 +1497,11 @@ impl SpeedCatalog {
                 completed_at,
                 duration_ms,
                 request_id: None,
+                // 思考感知窗口信号：列缺失（老库）或零值按 None；模型名
+                // 原样透传（claude 系按名识别，大小写不敏感）
+                reasoning_tokens: (has_reasoning && reasoning_tokens > 0)
+                    .then_some(reasoning_tokens),
+                model_id: model_id.clone(),
             };
             let order = request_order(&timing);
             // V25 精确样本聚合：只有通过 generation_sample 判定的行进池
@@ -2504,6 +2535,14 @@ pub(crate) struct UsageSessionStat {
     /// 全量合计 × 请求笔数（model_usage 行数）
     #[serde(rename = "rq")]
     requests: i64,
+    /// 会话树（与行口径一致：自身 + 全部子代理）的工具调用合计（V33 附加
+    /// 字段，旧渲染脚本忽略未知字段平滑兼容）：数据源 turn_usage 的
+    /// tool_call_count 按会话树成员求和——子代理轮按自身会话归属、随成员
+    /// 并集并入父会话行，每个成员恰好贡献一次（与 tt/rq 的树口径同款防
+    /// 双计）。turn_usage 表/tool_call_count 列缺失（老版本库）或查询
+    /// 失败时省略本键（None 不序列化）
+    #[serde(rename = "tl", skip_serializing_if = "Option::is_none")]
+    tool_calls: Option<i64>,
     /// 会话树内最新模型请求的速度。
     #[serde(skip_serializing_if = "Option::is_none")]
     speed: Option<SpeedSnapshot>,
@@ -2667,6 +2706,38 @@ fn collect_session_stats_with_catalog(
             )
         })
         .collect();
+    // tl（V33 附加字段）数据源：turn_usage 的工具调用按会话求和（成员并集
+    // 复用上方 member_list 的占位符）。表/列缺失（老版本库）→ None（省略
+    // tl 键）；查询失败同样降级为 None——tl 是附加键，绝不拖垮 sess 全量
+    // 合计通道（与 tt/rq 的 Err 上抛语义不同）
+    let has_turn_tools = has_table(conn, "turn_usage")
+        && crate::db::has_column(conn, "turn_usage", "session_id")
+        && crate::db::has_column(conn, "turn_usage", "tool_call_count");
+    let tools_by_session: Option<BTreeMap<String, i64>> = if has_turn_tools {
+        let tool_sql = format!(
+            "SELECT session_id, SUM(COALESCE(tool_call_count, 0)) FROM turn_usage \
+             WHERE session_id IN ({placeholders}) GROUP BY session_id"
+        );
+        let load = || -> Result<BTreeMap<String, i64>, String> {
+            let mut stmt = conn
+                .prepare(&tool_sql)
+                .map_err(|e| format!("准备工具调用查询失败: {e}"))?;
+            let rows = stmt
+                .query_map(rusqlite::params_from_iter(member_list.iter()), |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+                })
+                .map_err(|e| format!("读取工具调用失败: {e}"))?;
+            let mut map = BTreeMap::new();
+            for row in rows {
+                let (sid, tools) = row.map_err(|e| format!("读取工具调用失败: {e}"))?;
+                map.insert(sid, tools.max(0));
+            }
+            Ok(map)
+        };
+        load().ok()
+    } else {
+        None
+    };
     let now_ms = chrono::Utc::now().timestamp_millis();
 
     // 6) 按目标组装（树内逐成员累加全量合计）。CTX 查询（每成员最近一笔
@@ -2712,6 +2783,12 @@ fn collect_session_stats_with_catalog(
         let speed_agg = catalog
             .agg_for_members(members)
             .and_then(|agg| agg.to_row());
+        // V33：会话树工具调用合计（树成员求和，成员缺行按 0——无工具调用
+        // 的会话透出 0；tools_by_session 为 None = 表/列缺失或查询失败，
+        // 整键省略）
+        let tool_calls = tools_by_session
+            .as_ref()
+            .map(|map| members.iter().map(|m| map.get(m).copied().unwrap_or(0)).sum());
         out.push(UsageSessionStat {
             session_id: target.clone(),
             total: agg.total(),
@@ -2720,6 +2797,7 @@ fn collect_session_stats_with_catalog(
             cache_read: agg.cache_read,
             cache_write: agg.cache_write,
             requests: agg.requests,
+            tool_calls,
             speed,
             speed_state,
             speed_agg,
@@ -2729,6 +2807,38 @@ fn collect_session_stats_with_catalog(
         });
     }
     Ok(out)
+}
+
+/// 今日合计（V33 顶层 today 键）：本地自然日零点起的全库 model_usage
+/// 全量合计——tt = Σ(↑+↓+⟲)（↑ 逐笔 clamp，与 sess 行 tt 完全同口径）、
+/// rq = model_usage 行数。零点边界复用 session_hud::today_start_ms（本地
+/// 时区自然日零点，与主面板 today / 菜单栏同口径，不能用 UTC）。一次
+/// 聚合范围查（started_at >= 零点，started_at 前缀索引）完成，只随 2 秒
+/// 大文件发布——绝不进 1 秒速度旁路与 60 秒额度线程（大小文件分工铁律，
+/// 见模块头）。查询失败由调用方按"省略本键"降级（Err 上抛），不阻塞
+/// turns/runs/sess 导出。
+fn collect_today_usage(conn: &Connection, today_start_ms: i64) -> Result<(i64, i64), String> {
+    if !has_table(conn, "model_usage") {
+        return Err("model_usage 表缺失".into());
+    }
+    // 逐列探测降级（老版本库缺统计列按 0 计，rq 行数恒可用）
+    let (inp, out, cr) = (
+        num_col(conn, "model_usage", "input_tokens"),
+        num_col(conn, "model_usage", "output_tokens"),
+        num_col(conn, "model_usage", "cache_read_input_tokens"),
+    );
+    let sql = format!(
+        "SELECT SUM(MAX({inp} - {cr}, 0)) + SUM({out}) + SUM({cr}), COUNT(*) \
+         FROM model_usage WHERE started_at >= ?1"
+    );
+    conn.query_row(&sql, [today_start_ms], |row| {
+        Ok((
+            // 空表 SUM 为 NULL → 0；负值防御与 sess 行同款
+            row.get::<_, Option<i64>>(0)?.unwrap_or(0).max(0),
+            row.get::<_, i64>(1)?.max(0),
+        ))
+    })
+    .map_err(|e| format!("读取今日合计失败: {e}"))
 }
 
 // ============================================================
@@ -2780,7 +2890,10 @@ pub(crate) fn last_activity_ms(
 /// 轮事件时刻（V6 附加字段，null = 无信号，宠物新状态通道的消费键，
 /// 见模块头 ta/fe 信号说明；旧渲染脚本按未知字段忽略）；models_json
 /// 为模型分组速度数组（V25 附加字段，None = 老库缺 model_id 列 → 整个
-/// 键不写，渲染端据此不渲染模型行）。
+/// 键不写，渲染端据此不渲染模型行）；today 为今日全库合计 {tt,rq}
+///（V33 附加字段，None = 查询失败/表缺失 → 整个键不写），追加在文件
+/// 末尾（附加字段向尾部追加的既有惯例，旧渲染脚本按未知字段忽略）。
+#[allow(clippy::too_many_arguments)]
 fn render_usage_js(
     ts_ms: i64,
     la_ms: i64,
@@ -2791,6 +2904,7 @@ fn render_usage_js(
     runs_json: &str,
     sess_json: &str,
     models_json: Option<&str>,
+    today: Option<(i64, i64)>,
 ) -> String {
     let opt = |v: Option<i64>| match v {
         Some(t) => t.to_string(),
@@ -2800,8 +2914,12 @@ fn render_usage_js(
         Some(json) => format!(",\"models\":{json}"),
         None => String::new(),
     };
+    let today = match today {
+        Some((tt, rq)) => format!(",\"today\":{{\"tt\":{tt},\"rq\":{rq}}}"),
+        None => String::new(),
+    };
     format!(
-        "window.__ZBAR_USAGE__ = {{\"v\":2,\"ts\":{ts_ms},\"la\":{la_ms},\"pu\":{},\"ta\":{},\"fe\":{},\"turns\":{turns_json},\"runs\":{runs_json},\"sess\":{sess_json}{models}}};\n",
+        "window.__ZBAR_USAGE__ = {{\"v\":2,\"ts\":{ts_ms},\"la\":{la_ms},\"pu\":{},\"ta\":{},\"fe\":{},\"turns\":{turns_json},\"runs\":{runs_json},\"sess\":{sess_json}{models}{today}}};\n",
         opt(pending_user),
         opt(active_tool),
         opt(failure_event)
@@ -2882,9 +3000,11 @@ fn write_heartbeat_file(dir: &Path, now_ms: i64) -> Result<(), String> {
 /// 随内容参与变化语义——活动时刻变化本身就是数据变化；ts 字段不参与
 /// 比较——若参与则每轮 ts 都不同，跳写失效，ZCode 渲染层每 2 秒白重载
 /// 一次文件）；需要写出时先写 .tmp 再 rename，Electron 侧不会读到半截
-/// 文件。返回是否实际写盘。models_json（V25 模型分组速度）同样参与对比：
-/// 模型速度推进而 turns/runs/sess 未变时也要刷新文件，None（老库缺列）
-/// 用 '-' 占位与任何数组字节互不相同。
+/// 文件。返回是否实际写盘。models_json（V25 模型分组速度）与 today
+///（V33 今日合计）同样参与对比：模型速度/今日合计推进而 turns/runs/
+/// sess 未变时也要刷新文件，None（老库缺列/查询失败）用 '-' 占位与任何
+/// 数组字节互不相同。
+#[allow(clippy::too_many_arguments)]
 fn write_if_changed(
     dir: &Path,
     cache: &mut Option<String>,
@@ -2896,6 +3016,7 @@ fn write_if_changed(
     runs_json: &str,
     sess_json: &str,
     models_json: Option<&str>,
+    today: Option<(i64, i64)>,
     ts_ms: i64,
 ) -> Result<bool, String> {
     let mut payload = String::with_capacity(
@@ -2909,6 +3030,11 @@ fn write_if_changed(
     payload.push('\u{1}');
     match models_json {
         Some(json) => payload.push_str(json),
+        None => payload.push('-'),
+    }
+    payload.push('\u{1}');
+    match today {
+        Some((tt, rq)) => payload.push_str(&format!("tt:{tt}:rq:{rq}")),
         None => payload.push('-'),
     }
     payload.push('\u{1}');
@@ -2937,6 +3063,7 @@ fn write_if_changed(
             runs_json,
             sess_json,
             models_json,
+            today,
         ),
     )
     .map_err(|e| format!("写入 {} 失败: {e}", tmp.display()))?;
@@ -3073,7 +3200,7 @@ mod tests {
         // 字段（model_usage 全量合计）；旧消费端按未知字段忽略；
         // runs/sess 为空时也输出；心跳已拆独立小文件 usage-data-hb.js，
         // 大文件不再含 hb 字段）
-        let file = render_usage_js(12345, 12000, Some(11000), Some(10500), None, &json, "[]", "[]", None, );
+        let file = render_usage_js(12345, 12000, Some(11000), Some(10500), None, &json, "[]", "[]", None, None);
         assert!(
             file.starts_with(
                 "window.__ZBAR_USAGE__ = {\"v\":2,\"ts\":12345,\"la\":12000,\"pu\":11000,\"ta\":10500,\"fe\":null,\"turns\":"
@@ -3081,7 +3208,7 @@ mod tests {
             "{file}"
         );
         // pu/ta/fe 缺失两态之一：None → null（旧消费端与宠物核心按缺失兼容）
-        let file_null = render_usage_js(12345, 12000, None, None, Some(9000), &json, "[]", "[]", None);
+        let file_null = render_usage_js(12345, 12000, None, None, Some(9000), &json, "[]", "[]", None, None);
         assert!(file_null.contains(",\"pu\":null,"), "{file_null}");
         assert!(file_null.contains(",\"ta\":null,"), "{file_null}");
         assert!(file_null.contains(",\"fe\":9000,"), "{file_null}");
@@ -3107,8 +3234,12 @@ mod tests {
         );
         // V25 顶层 models 键（None = 老库缺列 → 整个键不写；Some 时在 sess
         // 之后作末尾字段）
-        let file_no_models = render_usage_js(1, 1, None, None, None, "[]", "[]", "[]", None);
+        let file_no_models = render_usage_js(1, 1, None, None, None, "[]", "[]", "[]", None, None);
         assert!(!file_no_models.contains("\"models\":["), "{file_no_models}");
+        assert!(
+            !file_no_models.contains("\"today\":"),
+            "today 未提供应整键省略：{file_no_models}"
+        );
         let file_models = render_usage_js(
             1,
             1,
@@ -3119,9 +3250,22 @@ mod tests {
             "[]",
             "[]",
             Some("[{\"model\":\"M1\",\"tps\":100.0,\"avg\":90.0,\"max\":120.0,\"min\":80.0,\"n\":3}]"),
+            None,
         );
         assert!(file_models.contains("\"sess\":[],\"models\":["), "{file_models}");
         assert!(file_models.ends_with("]};\n"), "{file_models}");
+        // V33 顶层 today 键（None = 查询失败/表缺失 → 整个键不写；Some 时
+        // 在 models 之后作末尾字段，{tt,rq} 紧凑形态，旧渲染脚本按未知
+        // 字段忽略）
+        let file_today = render_usage_js(1, 1, None, None, None, "[]", "[]", "[]", None, Some((123, 4)));
+        assert!(
+            file_today.contains("\"today\":{\"tt\":123,\"rq\":4}"),
+            "{file_today}"
+        );
+        assert!(
+            file_today.ends_with("\"today\":{\"tt\":123,\"rq\":4}};\n"),
+            "{file_today}"
+        );
     }
 
     #[test]
@@ -3184,6 +3328,7 @@ mod tests {
             cache_read: 100,
             cache_write: 0,
             requests: 1,
+            tool_calls: None,
             speed: Some(snapshot),
             speed_state: SpeedState::Recent,
             speed_agg: None,
@@ -3244,7 +3389,21 @@ mod tests {
                 request_id: None,
             }),
         };
-        flush_export(&dir, &mut history_cache, false, &turns, &[run_row.clone()], &sessions, None, None, None, None, 12_000, )
+        flush_export(
+            &dir,
+            &mut history_cache,
+            false,
+            &turns,
+            &[run_row.clone()],
+            &sessions,
+            None,
+            None,
+            None,
+            None,
+            // V33 today（Some）：随大文件发布在末尾字段
+            Some((4_321, 7)),
+            12_000,
+        )
         .unwrap();
         let history = fs::read_to_string(dir.join(store::USAGE_DATA_FILE)).unwrap();
         assert!(
@@ -3254,6 +3413,10 @@ mod tests {
         assert!(
             history.contains("\"speedState\":\"recent\""),
             "空闲会话的速度状态应随大文件发布: {history}"
+        );
+        assert!(
+            history.contains("\"today\":{\"tt\":4321,\"rq\":7}"),
+            "今日合计应以 tt/rq 紧凑形态随大文件发布: {history}"
         );
         let runs_start = history.find("\"runs\":").unwrap();
         let runs_end = history[runs_start..].find(",\"sess\":").unwrap() + runs_start;
@@ -3341,7 +3504,8 @@ mod tests {
                 output_tokens: 100,
                 started_at: Some(1_000),
                 first_token_at: Some(1_100),
-                completed_at: Some(1_200),
+                // 窗口 200ms（恰在 MIN_GEN_MS 下限边界上，有效样本）
+                completed_at: Some(1_300),
                 ..RequestTiming::default()
             },
         };
@@ -3435,6 +3599,7 @@ mod tests {
                 cache_read: 100,
                 cache_write: 0,
                 requests: 9,
+                tool_calls: None,
                 speed: Some(SpeedSnapshot {
                     value: 120.0,
                     quality: SpeedQuality::Generation,
@@ -3456,6 +3621,7 @@ mod tests {
             cache_read: 200,
             cache_write: 0,
             requests: 4,
+            tool_calls: None,
             speed: None,
             speed_state: SpeedState::Measuring,
             speed_agg: None,
@@ -3672,7 +3838,7 @@ mod tests {
         let mut cache: Option<String> = None;
         // 首次：写盘（la 为最后活动时刻，随内容透出）
         assert!(
-            write_if_changed(&dir, &mut cache, 900, None, None, None, "[{\"turn\":\"a\"}]", "[]", "[]", None, 1000)
+            write_if_changed(&dir, &mut cache, 900, None, None, None, "[{\"turn\":\"a\"}]", "[]", "[]", None, None, 1000)
                 .unwrap()
         );
         let first = fs::read_to_string(&target).unwrap();
@@ -3686,7 +3852,7 @@ mod tests {
         // 内容无变化（仅 ts/la 参数不同）→ 跳写，文件保持旧值（写放大
         // 修复：大文件恢复跳写策略，心跳由独立小文件承担）
         assert!(
-            !write_if_changed(&dir, &mut cache, 900, None, None, None, "[{\"turn\":\"a\"}]", "[]", "[]", None, 2000)
+            !write_if_changed(&dir, &mut cache, 900, None, None, None, "[{\"turn\":\"a\"}]", "[]", "[]", None, None, 2000)
                 .unwrap()
         );
         assert_eq!(
@@ -3696,7 +3862,7 @@ mod tests {
         );
         // turns 内容变化 → 重写为新 ts
         assert!(
-            write_if_changed(&dir, &mut cache, 900, None, None, None, "[{\"turn\":\"b\"}]", "[]", "[]", None, 3000)
+            write_if_changed(&dir, &mut cache, 900, None, None, None, "[{\"turn\":\"b\"}]", "[]", "[]", None, None, 3000)
                 .unwrap()
         );
         let third = fs::read_to_string(&target).unwrap();
@@ -3705,7 +3871,7 @@ mod tests {
         // runs 内容变化（turns 不变）同样触发重写——进行中轮实时聚合
         // 每 2 秒跳动天然走到这里
         assert!(
-            write_if_changed(&dir, &mut cache, 900, None, None, None, "[{\"turn\":\"b\"}]", "[{\"sess\":\"s1\"}]", "[]", None, 4000)
+            write_if_changed(&dir, &mut cache, 900, None, None, None, "[{\"turn\":\"b\"}]", "[{\"sess\":\"s1\"}]", "[]", None, None, 4000)
             .unwrap()
         );
         let fourth = fs::read_to_string(&target).unwrap();
@@ -3714,7 +3880,7 @@ mod tests {
         // sess 内容变化（turns/runs 均不变）同样触发重写——会话级统计
         //（全量合计随请求落库推进）本身就是数据变化
         assert!(
-            write_if_changed(&dir, &mut cache, 900, None, None, None, "[{\"turn\":\"b\"}]", "[{\"sess\":\"s1\"}]", "[{\"s\":\"s1\",\"tt\":123}]", None, 4500)
+            write_if_changed(&dir, &mut cache, 900, None, None, None, "[{\"turn\":\"b\"}]", "[{\"sess\":\"s1\"}]", "[{\"s\":\"s1\",\"tt\":123}]", None, None, 4500)
             .unwrap()
         );
         let fourth_half = fs::read_to_string(&target).unwrap();
@@ -3726,7 +3892,7 @@ mod tests {
         // pu 变化（turns/runs/sess 均不变）同样触发重写——用户发消息本身就是
         // 数据变化（V5）：ts 刷新、pu 透出、la 取大（900 → 5000）
         assert!(
-            write_if_changed(&dir, &mut cache, 5000, Some(5000), None, None, "[{\"turn\":\"b\"}]", "[{\"sess\":\"s1\"}]", "[{\"s\":\"s1\",\"tt\":123}]", None, 5000)
+            write_if_changed(&dir, &mut cache, 5000, Some(5000), None, None, "[{\"turn\":\"b\"}]", "[{\"sess\":\"s1\"}]", "[{\"s\":\"s1\",\"tt\":123}]", None, None, 5000)
             .unwrap()
         );
         let fifth = fs::read_to_string(&target).unwrap();
@@ -3736,7 +3902,7 @@ mod tests {
         // ta/fe 变化（turns/runs/pu 均不变）同样触发重写——工具开始
         // （V6）本身就是数据变化：ts 刷新、ta/fe 透出、ta 参与 la 取大
         assert!(
-            write_if_changed(&dir, &mut cache, 6000, Some(5000), Some(6000), None, "[{\"turn\":\"b\"}]", "[{\"sess\":\"s1\"}]", "[{\"s\":\"s1\",\"tt\":123}]", None, 6000)
+            write_if_changed(&dir, &mut cache, 6000, Some(5000), Some(6000), None, "[{\"turn\":\"b\"}]", "[{\"sess\":\"s1\"}]", "[{\"s\":\"s1\",\"tt\":123}]", None, None, 6000)
             .unwrap()
         );
         let sixth = fs::read_to_string(&target).unwrap();
@@ -3744,7 +3910,7 @@ mod tests {
         assert!(sixth.contains("\"ta\":6000"), "{sixth}");
         assert!(sixth.contains("\"la\":6000"), "ta 应参与 la 取大：{sixth}");
         assert!(
-            write_if_changed(&dir, &mut cache, 6000, Some(5000), Some(6000), Some(5500), "[{\"turn\":\"b\"}]", "[{\"sess\":\"s1\"}]", "[{\"s\":\"s1\",\"tt\":123}]", None, 7000)
+            write_if_changed(&dir, &mut cache, 6000, Some(5000), Some(6000), Some(5500), "[{\"turn\":\"b\"}]", "[{\"sess\":\"s1\"}]", "[{\"s\":\"s1\",\"tt\":123}]", None, None, 7000)
             .unwrap()
         );
         let seventh = fs::read_to_string(&target).unwrap();
@@ -3753,7 +3919,7 @@ mod tests {
         //——模型分组速度推进本身就是数据变化（ts 刷新、models 透出）；
         // 缺列（None）与存在（数组字节）之间切换同样参与对比
         assert!(
-            write_if_changed(&dir, &mut cache, 6000, Some(5000), Some(6000), Some(5500), "[{\"turn\":\"b\"}]", "[{\"sess\":\"s1\"}]", "[{\"s\":\"s1\",\"tt\":123}]", Some("[{\"model\":\"M1\",\"tps\":100.0,\"avg\":90.0,\"max\":120.0,\"min\":80.0,\"n\":3}]"), 8000)
+            write_if_changed(&dir, &mut cache, 6000, Some(5000), Some(6000), Some(5500), "[{\"turn\":\"b\"}]", "[{\"sess\":\"s1\"}]", "[{\"s\":\"s1\",\"tt\":123}]", Some("[{\"model\":\"M1\",\"tps\":100.0,\"avg\":90.0,\"max\":120.0,\"min\":80.0,\"n\":3}]"), None, 8000)
             .unwrap()
         );
         let eighth = fs::read_to_string(&target).unwrap();
@@ -3761,6 +3927,32 @@ mod tests {
         assert!(
             eighth.contains("\"sess\":[{\"s\":\"s1\",\"tt\":123}],\"models\":[{\"model\":\"M1\""),
             "models 应作为末尾字段随大文件发布：{eighth}"
+        );
+        // V33 today 变化（turns/runs/sess/pu/ta/fe/models 均不变）同样触发
+        // 重写——今日合计推进本身就是数据变化（ts 刷新、today 透出）；
+        // None（查询失败/表缺失）与存在（{tt,rq}）之间切换同样参与对比
+        assert!(
+            write_if_changed(&dir, &mut cache, 6000, Some(5000), Some(6000), Some(5500), "[{\"turn\":\"b\"}]", "[{\"sess\":\"s1\"}]", "[{\"s\":\"s1\",\"tt\":123}]", Some("[{\"model\":\"M1\",\"tps\":100.0,\"avg\":90.0,\"max\":120.0,\"min\":80.0,\"n\":3}]"), Some((500, 12)), 9000)
+            .unwrap()
+        );
+        let ninth = fs::read_to_string(&target).unwrap();
+        assert!(ninth.contains("\"ts\":9000"), "{ninth}");
+        assert!(
+            ninth.contains("\"today\":{\"tt\":500,\"rq\":12}"),
+            "today 应作为末尾字段随大文件发布：{ninth}"
+        );
+        // 今日合计数值推进（Some → Some）同样触发重写
+        assert!(
+            write_if_changed(&dir, &mut cache, 6000, Some(5000), Some(6000), Some(5500), "[{\"turn\":\"b\"}]", "[{\"sess\":\"s1\"}]", "[{\"s\":\"s1\",\"tt\":123}]", Some("[{\"model\":\"M1\",\"tps\":100.0,\"avg\":90.0,\"max\":120.0,\"min\":80.0,\"n\":3}]"), Some((600, 13)), 10000)
+            .unwrap()
+        );
+        let tenth = fs::read_to_string(&target).unwrap();
+        assert!(tenth.contains("\"today\":{\"tt\":600,\"rq\":13}"), "{tenth}");
+        // 今日合计不变 → 跳写
+        assert!(
+            !write_if_changed(&dir, &mut cache, 6000, Some(5000), Some(6000), Some(5500), "[{\"turn\":\"b\"}]", "[{\"sess\":\"s1\"}]", "[{\"s\":\"s1\",\"tt\":123}]", Some("[{\"model\":\"M1\",\"tps\":100.0,\"avg\":90.0,\"max\":120.0,\"min\":80.0,\"n\":3}]"), Some((600, 13)), 11000)
+                .unwrap(),
+            "today 未变不应重写大文件"
         );
         // 原子写不留 .tmp 残留
         assert!(!dir.join(format!("{}.tmp", store::USAGE_DATA_FILE)).exists());
@@ -3821,6 +4013,7 @@ mod tests {
             cache_read: 50,
             cache_write: 30,
             requests: 2,
+            tool_calls: None,
             speed: None,
             speed_state: SpeedState::Unavailable,
             speed_agg: None,
@@ -3828,20 +4021,24 @@ mod tests {
             round_started_at: None,
             generating: false,
         }];
-        flush_export(&dir, &mut cache, false, &turns, &[], &sess, None, None, None, None, 1000).unwrap();
+        flush_export(&dir, &mut cache, false, &turns, &[], &sess, None, None, None, None, None, 1000).unwrap();
         assert!(big.exists(), "首次导出应写大文件");
         let first = fs::read_to_string(&big).unwrap();
         assert!(first.contains("\"ts\":1000"), "{first}");
         assert!(first.contains("\"pu\":null"), "{first}");
+        assert!(
+            !first.contains("\"today\":"),
+            "today 未提供应整键省略：{first}"
+        );
         assert!(!hb.exists(), "宠物关闭应清理心跳残留");
         // 内容不变 → 大文件跳写（mtime 不变以内容一致性表达），心跳仍不写
-        flush_export(&dir, &mut cache, false, &turns, &[], &sess, None, None, None, None, 2000).unwrap();
+        flush_export(&dir, &mut cache, false, &turns, &[], &sess, None, None, None, None, None, 2000).unwrap();
         assert_eq!(fs::read_to_string(&big).unwrap(), first, "内容未变不应重写大文件");
         assert!(!hb.exists(), "宠物关闭周期不应写心跳文件");
 
         // ---- 宠物开：心跳每周期无条件刷新、大文件仍按变化写 ----
         let mut cache_on: Option<String> = None;
-        flush_export(&dir, &mut cache_on, true, &turns, &[], &sess, None, Some(4500), None, None, 3000).unwrap();
+        flush_export(&dir, &mut cache_on, true, &turns, &[], &sess, None, Some(4500), None, None, None, 3000).unwrap();
         let big_on = fs::read_to_string(&big).unwrap();
         assert!(big_on.contains("\"ts\":3000"), "首次写盘 ts 应为当前周期");
         assert!(big_on.contains("\"la\":5000"), "la 应随内容透出：{big_on}");
@@ -3854,7 +4051,7 @@ mod tests {
             "window.__ZBAR_USAGE_HB__ = 3000;\n"
         );
         // 下一周期内容不变：大文件跳写（保持旧 ts），心跳刷新为当前周期
-        flush_export(&dir, &mut cache_on, true, &turns, &[], &sess, None, Some(4500), None, None, 5000).unwrap();
+        flush_export(&dir, &mut cache_on, true, &turns, &[], &sess, None, Some(4500), None, None, None, 5000).unwrap();
         assert_eq!(
             fs::read_to_string(&big).unwrap(),
             big_on,
@@ -4474,12 +4671,14 @@ mod tests {
              INSERT INTO turn_usage VALUES ('sess_1', 'turn_1', 'completed', 1000, 9000, 'msg_1', 100, 500, 0, 9);",
         )
         .unwrap();
-        // M1 两笔且最旧（校验最近值与聚合分开 + 被截断），M4 最新
-        insert_sample(&conn, "sess_1", "turn_1", (1_000, 1_100, 1_200), 100, "M1");
-        insert_sample(&conn, "sess_1", "turn_1", (1_300, 1_400, 1_500), 500, "M1");
+        // M1 两笔且最旧（校验最近值与聚合分开 + 被截断），M4 最新。
+        // 窗口均 ≥ MIN_GEN_MS（200ms 样本时长边界，<200ms 抖动样本整行
+        // 拒收，见 token_speed::MIN_GEN_MS）
+        insert_sample(&conn, "sess_1", "turn_1", (1_000, 1_100, 1_300), 100, "M1");
+        insert_sample(&conn, "sess_1", "turn_1", (1_300, 1_400, 1_900), 500, "M1");
         insert_sample(&conn, "sess_1", "turn_1", (2_000, 2_100, 2_300), 30, "M2");
-        insert_sample(&conn, "sess_1", "turn_1", (3_000, 3_100, 3_200), 200, "M3");
-        insert_sample(&conn, "sess_1", "turn_1", (4_000, 4_100, 4_200), 50, "M4");
+        insert_sample(&conn, "sess_1", "turn_1", (3_000, 3_100, 3_300), 200, "M3");
+        insert_sample(&conn, "sess_1", "turn_1", (4_000, 4_100, 4_400), 50, "M4");
 
         let ids = session_ids_for_rows(
             &collect_turns(&conn, 0).unwrap().unwrap().0,
@@ -4490,20 +4689,20 @@ mod tests {
         let models = catalog.model_speeds().expect("model_id 列存在应有输出");
         let names: Vec<&str> = models.iter().map(|m| m.model.as_str()).collect();
         assert_eq!(names, vec!["M4", "M3", "M2"], "应最近使用降序且截断到 3 组：{models:?}");
-        // M4：单笔样本（50 ÷ 100ms = 500 t/s），最近值 = 聚合值
+        // M4：单笔样本（50 ÷ 300ms ≈ 166.7 t/s），最近值 = 聚合值
         let m4 = models.iter().find(|m| m.model == "M4").unwrap();
-        assert!((m4.tps - 500.0).abs() < 1e-9, "tps 应为最近一笔：{m4:?}");
+        assert!((m4.tps - 500.0 / 3.0).abs() < 1e-9, "tps 应为最近一笔：{m4:?}");
         assert_eq!(m4.n, 1);
-        // 被截断的 M1（两笔：1000 t/s 与 5000 t/s）仍留在目录内，只是不出
-        // 现在渲染出口；最近值取排序时刻最大者（completed 1500 那笔）
+        // 被截断的 M1（两笔：500 t/s 与 1000 t/s）仍留在目录内，只是不出
+        // 现在渲染出口；最近值取排序时刻最大者（completed 1900 那笔）
         let m1 = catalog
             .by_model
             .get("M1")
             .expect("M1 应仍在目录内（仅出口截断）");
-        assert!((m1.last_tps - 5000.0).abs() < 1e-9, "最近值应取排序时刻最大者");
+        assert!((m1.last_tps - 1000.0).abs() < 1e-9, "最近值应取排序时刻最大者");
         assert_eq!(m1.agg.samples, 2);
-        assert!((m1.agg.max_tps - 5000.0).abs() < 1e-9);
-        assert!((m1.agg.min_tps - 1000.0).abs() < 1e-9);
+        assert!((m1.agg.max_tps - 1000.0).abs() < 1e-9);
+        assert!((m1.agg.min_tps - 500.0).abs() < 1e-9);
 
         drop(conn);
         let _ = fs::remove_file(&path);
@@ -4548,17 +4747,22 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let mut cache = None;
-        flush_export(&dir, &mut cache, false, &turns, &[], &[], None, None, None, None, 1_000)
+        flush_export(&dir, &mut cache, false, &turns, &[], &[], None, None, None, None, None, 1_000)
             .unwrap();
         let file = fs::read_to_string(dir.join(store::USAGE_DATA_FILE)).unwrap();
         assert!(
             !file.contains("\"models\":["),
             "老库缺列不应写出顶层 models 数组键（轮行的 models 字符串字段不算）：{file}"
         );
+        assert!(
+            !file.contains("\"today\":"),
+            "today 未提供应整键省略：{file}"
+        );
         assert!(file.ends_with("\"sess\":[]};\n"), "缺列时 sest 仍为末尾字段：{file}");
         assert!(file.contains("\"sa\":{\"avg\":"), "速度聚合应照常导出：{file}");
 
-        // 正例：有 model_id 列时 models 键在文件尾部（sess 之后）
+        // 正例：有 model_id 列时 models 键在文件尾部（sess 之后）。
+        // 样本窗口 ≥ MIN_GEN_MS（200ms）：100 tok ÷ 200ms = 500 t/s
         let (conn2, path2) = agg_db("model-present");
         conn2
             .execute_batch(
@@ -4566,7 +4770,7 @@ mod tests {
                  INSERT INTO turn_usage VALUES ('sess_1', 'turn_1', 'completed', 1000, 3000, 'msg_1', 100, 100, 0, 1);",
             )
             .unwrap();
-        insert_sample(&conn2, "sess_1", "turn_1", (1_000, 1_100, 1_200), 100, "GLM-5.3");
+        insert_sample(&conn2, "sess_1", "turn_1", (1_000, 1_100, 1_300), 100, "GLM-5.3");
         let (turns2, _) = collect_turns_with_speed(&conn2, 0).unwrap().expect("应有输出");
         let catalog2 = SpeedCatalog::load(
             &conn2,
@@ -4587,13 +4791,14 @@ mod tests {
             None,
             None,
             None,
+            None,
             2_000,
         )
         .unwrap();
         let file2 = fs::read_to_string(dir.join(store::USAGE_DATA_FILE)).unwrap();
         assert!(
             file2.contains(
-                "\"models\":[{\"model\":\"GLM-5.3\",\"tps\":1000.0,\"avg\":1000.0,\"max\":1000.0,\"min\":1000.0,\"n\":1}]"
+                "\"models\":[{\"model\":\"GLM-5.3\",\"tps\":500.0,\"avg\":500.0,\"max\":500.0,\"min\":500.0,\"n\":1}]"
             ),
             "models 键形态不符：{file2}"
         );
@@ -4684,6 +4889,7 @@ mod tests {
             cache_read: 50,
             cache_write: 30,
             requests: 2,
+            tool_calls: None,
             speed: None,
             speed_state: SpeedState::Unavailable,
             speed_agg: None,
@@ -4706,6 +4912,7 @@ mod tests {
             cache_read: 0,
             cache_write: 0,
             requests: 0,
+            tool_calls: None,
             speed: None,
             speed_state: SpeedState::Unavailable,
             speed_agg: None,
@@ -4718,6 +4925,30 @@ mod tests {
             json,
             "[{\"s\":\"sess_2\",\"tt\":0,\"up\":0,\"down\":0,\"cr\":0,\"cw\":0,\"rq\":0,\"speedState\":\"unavailable\"}]",
             "{json}"
+        );
+        // V33 tl：Some 时以短键 tl 序列化（rq 之后、speedState 之前）；
+        // 上方两行 tool_calls = None → 整键省略（旧渲染脚本按未知字段忽略）
+        let tool_row = UsageSessionStat {
+            session_id: "sess_3".to_string(),
+            total: 300,
+            plain_in: 100,
+            out_tokens: 200,
+            cache_read: 0,
+            cache_write: 0,
+            requests: 1,
+            tool_calls: Some(7),
+            speed: None,
+            speed_state: SpeedState::Unavailable,
+            speed_agg: None,
+            member_session_ids: vec!["sess_3".to_string()],
+            round_started_at: None,
+            generating: false,
+        };
+        let json = serde_json::to_string(&vec![tool_row]).unwrap();
+        assert_eq!(
+            json,
+            "[{\"s\":\"sess_3\",\"tt\":300,\"up\":100,\"down\":200,\"cr\":0,\"cw\":0,\"rq\":1,\"tl\":7,\"speedState\":\"unavailable\"}]",
+            "tl 短键形态不符：{json}"
         );
         // CTX 短键零残留（V22 删除 cp/cu；cw 已由 V27 以缓存写语义重新引入）
         assert!(!json.contains("\"cp\"") && !json.contains("\"cu\""));
@@ -4854,7 +5085,7 @@ mod tests {
                 completed_at INTEGER);
              INSERT INTO session VALUES ('sess_old_active', NULL);
              INSERT INTO model_usage VALUES
-                ('sess_old_active', 'old_turn', 1000, 'completed', 1000, 2000, 300, 1100, 1200);
+                ('sess_old_active', 'old_turn', 1000, 'completed', 1000, 2000, 300, 1100, 1300);
              INSERT INTO message VALUES
                 ('msg_new_active', 'sess_old_active', 9999999900, '{\"role\":\"user\"}');",
         )
@@ -4939,8 +5170,8 @@ mod tests {
                ('sess_sub1', 'sess_main'),
                ('sess_sub2_child', 'sess_sub1');
              INSERT INTO model_usage VALUES
-               ('sess_main', 't_old', 1000, 'completed', 100, 200, 30, 1100, 1200, 1200),
-               ('sess_sub2_child', 't_live', 9900000, 'completed', 40, 80, 0, 9900100, 9900200, 200);
+               ('sess_main', 't_old', 1000, 'completed', 100, 200, 30, 1100, 1300, 1200),
+               ('sess_sub2_child', 't_live', 9900000, 'completed', 40, 80, 0, 9900100, 9900300, 200);
              INSERT INTO message VALUES
                ('msg_stale_main', 'sess_main', 9_000, '{\"role\":\"user\"}');",
         )

@@ -6,10 +6,16 @@
 //! (completed_at − first_token_at)，按请求时间戳而非 duration_ms 列）：
 //! - 行级有效性共用 token_speed::generation_sample（B1）：完成状态（空/
 //!   success/缺列按完成降级）、output > 0、completed > first > 0、
-//!   first ≥ started、观测时刻拒绝未来；平均速度 = Σoutput ÷ Σ生成毫秒；
+//!   first ≥ started、观测时刻拒绝未来、样本时长边界 [200ms, 1h]；
+//!   平均速度 = Σoutput ÷ Σ生成毫秒；
+//! - 思考感知窗口（2026-10 参考项目真库裁决）：思考型请求（reasoning
+//!   tokens > 0，或模型名含 claude——Claude 系列不单独上报思考 token 但
+//!   output 已含思考）的生成窗口前移为 completed_at − started_at，思考
+//!   时长不再漏出分母（见 token_speed::thinking_generation_span）；
 //! - 慢/均/快速度 = 每请求速度（output × 1000 ÷ 生成毫秒）的
 //!   P10/P50/P90 分位（行拉到 Rust 内存排序计算；近 7 天量级 < 1 万行）；
-//! - 首 token 延迟 = first_token_at − started_at 的 min/avg/P90；
+//! - 首 token 延迟：优先 time_to_first_token_ms 列（正整数才可信），
+//!   缺列/非正回退 first_token_at − started_at 的 min/avg/P90；
 //! - 请求耗时 = completed_at − started_at 的 avg/P90；
 //! - 输入/输出 token = 全部行 input_tokens（原值，已含缓存读）/
 //!   output_tokens 的 avg/max；
@@ -198,9 +204,13 @@ pub(crate) fn collect_model_speed(
         num("input_tokens"),
         num("output_tokens"),
     );
+    // TTFT 列（优先口径）与思考感知信号列：缺列（老版本库）按 NULL/0 降级
+    let ttft = opt("time_to_first_token_ms");
+    let has_reasoning = crate::db::has_column(conn, "model_usage", "reasoning_tokens");
+    let reasoning = num("reasoning_tokens");
     let sql = format!(
         "SELECT COALESCE(model_id, ''), COALESCE({provider}, ''), {status}, \
-                started_at, {first}, {completed}, {inp}, {out} \
+                started_at, {first}, {completed}, {inp}, {out}, {ttft}, {reasoning} \
          FROM model_usage \
          WHERE started_at >= ?1 AND model_id IS NOT NULL AND model_id != ''"
     );
@@ -218,6 +228,8 @@ pub(crate) fn collect_model_speed(
                 row.get::<_, Option<i64>>(5)?,
                 row.get::<_, i64>(6)?,
                 row.get::<_, i64>(7)?,
+                row.get::<_, Option<i64>>(8)?,
+                row.get::<_, i64>(9)?,
             ))
         })
         .map_err(|e| format!("读取模型速度行失败: {e}"))?
@@ -226,10 +238,13 @@ pub(crate) fn collect_model_speed(
 
     let mut groups: BTreeMap<String, ModelAgg> = BTreeMap::new();
     let has_status_col = status != "NULL";
-    for (model, provider, status, started, first, completed, input, output) in rows {
+    for (model, provider, status, started, first, completed, input, output, ttft, reasoning) in rows
+    {
         if model.is_empty() {
             continue;
         }
+        // claude 系按名识别需要模型名，先于 entry 所有权转移捕获
+        let model_id = Some(model.clone());
         let g = groups.entry(model).or_default();
         g.requests += 1;
         if g.provider_raw.is_none() && !provider.is_empty() {
@@ -251,11 +266,16 @@ pub(crate) fn collect_model_speed(
         g.in_max = g.in_max.max(input);
         g.out_sum += output.max(0);
         g.out_max = g.out_max.max(output);
-        // 首 token 延迟：first ≥ started 且两时刻有效（时序倒置/NULL 跳过）
-        if let (Some(f), true) = (first, started > 0) {
-            if f >= started {
-                g.ttfts.push(f - started);
-            }
+        // 首 token 延迟：优先 time_to_first_token_ms 列（正整数才可信——
+        // 零/负值是未上报或异常计时）；缺列/非正回退 first_token_at −
+        // started_at（时序倒置/NULL 跳过）
+        let ttft_value = ttft.filter(|value| *value > 0).or_else(|| {
+            first
+                .filter(|value| started > 0 && *value >= started)
+                .map(|value| value - started)
+        });
+        if let Some(value) = ttft_value {
+            g.ttfts.push(value);
         }
         // 请求耗时：completed > started 且两时刻有效
         if let (Some(c), true) = (completed, started > 0) {
@@ -265,7 +285,9 @@ pub(crate) fn collect_model_speed(
         }
         // 速度样本：共享行级判定（B1）——完成状态行经 token_speed::
         // generation_sample 校验（completed > first > 0、first ≥ started、
-        // 拒绝未来时刻；状态列缺失的老库按全完成降级参与）
+        // 拒绝未来时刻、样本时长边界 [200ms, 1h]；状态列缺失的老库按全
+        // 完成降级参与）。思考型请求（reasoning > 0 或模型名含 claude）
+        // 的生成窗口前移为 completed − started，见共享判定。
         let is_completed = !has_status_col
             || crate::token_speed::is_completed_status(status.as_deref());
         if is_completed {
@@ -276,6 +298,9 @@ pub(crate) fn collect_model_speed(
                 completed_at: completed,
                 duration_ms: None,
                 request_id: None,
+                // 思考感知窗口信号：缺列（老库）或零值按 None
+                reasoning_tokens: (has_reasoning && reasoning > 0).then_some(reasoning),
+                model_id,
             };
             if let Some(sample) = crate::token_speed::generation_sample(&timing, observed_at_ms) {
                 g.speed_pairs

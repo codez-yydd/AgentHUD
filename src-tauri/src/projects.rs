@@ -430,10 +430,18 @@ fn fill_zcode_generation_speed(
         "first_token_at",
         "completed_at",
     );
+    // 思考感知窗口信号（见 token_speed::thinking_generation_span）：老库
+    // 缺 reasoning_tokens 列按 0 读出，构造点再按"列存在且 > 0"降级为 None
+    let has_reasoning = has("reasoning_tokens");
+    let reasoning_expr = if has_reasoning {
+        "COALESCE(reasoning_tokens, 0)"
+    } else {
+        "0"
+    };
     let placeholders = vec!["?"; session_list.len()].join(", ");
     let sql = format!(
         "SELECT session_id, COALESCE(model_id, ''), {status}, started_at, \
-                {first}, {completed}, COALESCE(output_tokens, 0) \
+                {first}, {completed}, COALESCE(output_tokens, 0), {reasoning_expr} \
          FROM model_usage \
          WHERE started_at >= ?1 AND started_at < ?2 AND session_id IN ({placeholders})"
     );
@@ -453,6 +461,7 @@ fn fill_zcode_generation_speed(
             row.get::<_, Option<i64>>(4)?,
             row.get::<_, Option<i64>>(5)?,
             row.get::<_, i64>(6)?,
+            row.get::<_, i64>(7)?,
         ))
     });
     let Ok(queried) = queried else {
@@ -467,7 +476,7 @@ fn fill_zcode_generation_speed(
     let observed_at_ms = chrono::Utc::now().timestamp_millis();
     let mut aggs: BTreeMap<(String, String), GenAgg> = BTreeMap::new();
     for row in queried.flatten() {
-        let (session, model, status, started, first, completed, output) = row;
+        let (session, model, status, started, first, completed, output, reasoning) = row;
         if !crate::token_speed::is_completed_status(status.as_deref()) {
             continue;
         }
@@ -478,6 +487,10 @@ fn fill_zcode_generation_speed(
             completed_at: completed,
             duration_ms: None,
             request_id: None,
+            // 思考感知窗口信号：缺列（老库）或零值按 None；模型名原样
+            // 透传（claude 系按名识别，大小写不敏感）
+            reasoning_tokens: (has_reasoning && reasoning > 0).then_some(reasoning),
+            model_id: (!model.is_empty()).then(|| model.clone()),
         };
         if let Some(sample) = crate::token_speed::generation_sample(&timing, observed_at_ms) {
             let agg = aggs.entry((session, model)).or_default();

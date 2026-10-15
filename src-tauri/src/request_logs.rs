@@ -24,9 +24,21 @@
 //!   （>0 才给，缺失与 0 都按 None）；
 //! - `time_to_first_token_ms`：zcode 与 dsh 是真实数据（opencode / minimaxcode
 //!   该列恒 NULL），其余来源无该列，统一按 None；
+//! - `first_token_at` / `completed_at`（行级速度原料）：zcode 主库的事件时刻，
+//!   导入库无该列按 NULL；
 //! - `project`：codex / kimi 从各自 `session_meta` 表按会话取（无表 / 无该会话
 //!   → None），claude / dsh / opencode / minimaxcode 取行内 cwd / project_key；
 //!   zcode 主库没有项目列（归属在 zcode_sessions 派生库），本页不做跨库解析。
+//!
+//! ## 行级速度口径
+//!
+//! 单笔速度（`speed_tps` / `speed_quality`）的**唯一真源 = `token_speed`**：
+//! `row_to_log` 逐行调 `token_speed::request_speed_at`，思考感知窗口（思考型
+//! 请求 output 已含思考 token，生成窗口前移为 completed − started 全程，
+//! 防止思考时长漏出分母导致速率虚高）、[200ms, 1h] 样本窗口边界与时序校验
+//! 全在该行级判定内，前端 `speedOf` 不再自行判定生成窗口。`observed_at_ms`
+//! 传 0：这些是已落库的历史行，不做未来时刻拒绝（与既有日志页语义一致）。
+//! 判定失败（零输出 / 时序倒置 / 窗口越界 / 无时间戳）两字段为 None，前端回退。
 //!
 //! ## 分页与归并
 //!
@@ -109,6 +121,13 @@ pub struct RequestLogRow {
     pub duration_ms: Option<f64>,
     /// 首字延迟（毫秒；无该列或 <= 0 → None）
     pub ttft_ms: Option<f64>,
+    /// 单笔输出速度（tok/s；唯一真源 = token_speed 行级判定，缺列 / 时序
+    /// 无效 / 样本窗口越界 → None，前端自行回退）
+    pub speed_tps: Option<f64>,
+    /// 速度口径质量标记（serde 序列化为 "generation" | "request_average"，
+    /// 与前端 SpeedQuality 契约一致）：request_average = 请求平均近似，
+    /// 界面带 ≈ 前缀；无速度为 None
+    pub speed_quality: Option<crate::token_speed::SpeedQuality>,
 }
 
 impl crate::Billable for RequestLogRow {
@@ -347,35 +366,78 @@ fn select_list(conn: &Connection, source: &str) -> String {
     } else {
         "NULL"
     };
+    // 行级速度原料（绝对事件时刻；缺失列按 NULL，正负 / 时序校验交给
+    // token_speed 行级判定，SQL 侧不做过滤）
+    let first_token = if crate::db::has_column(conn, "model_usage", "first_token_at") {
+        "first_token_at"
+    } else {
+        "NULL"
+    };
+    let completed = if crate::db::has_column(conn, "model_usage", "completed_at") {
+        "completed_at"
+    } else {
+        "NULL"
+    };
     let project = project_expr(conn, source).unwrap_or_else(|| "NULL".into());
     format!(
         "started_at, COALESCE(model_id,''), COALESCE(provider_id,''), \
          COALESCE(input_tokens,0), COALESCE(output_tokens,0), \
          COALESCE(cache_read_input_tokens,0), COALESCE(cache_creation_input_tokens,0), \
          COALESCE(reasoning_tokens,0), COALESCE(computed_total_tokens,0), \
-         {session}, {project}, {duration}, {ttft}"
+         {session}, {project}, {duration}, {ttft}, {first_token}, {completed}"
     )
 }
 
-/// 行读取（列序与 `select_list` 一致；花费由调用方按本机价格表统一折算）
+/// 行读取（列序与 `select_list` 一致；花费由调用方按本机价格表统一折算）。
+/// 行级速度的**唯一真源 = `token_speed`**：思考感知窗口（思考型请求用
+/// completed − started 全程窗口）、[200ms, 1h] 样本窗口边界与时序校验都在
+/// `request_speed_at` 的行级判定里，前端 speedOf 不再自行判定生成窗口。
+/// `observed_at_ms` 传 0：已落库的历史行不做未来时刻拒绝（与既有日志页
+/// 语义一致）；判定失败两字段为 None，前端按 null 回退。
 fn row_to_log(row: &rusqlite::Row<'_>, source: &str) -> rusqlite::Result<RequestLogRow> {
+    let started_at: i64 = row.get(0)?;
+    let model_id: String = row.get(1)?;
+    let output_tokens: i64 = row.get(4)?;
+    let reasoning_tokens: i64 = row.get(7)?;
+    let duration_ms: Option<f64> = row.get(11)?;
+    let speed = crate::token_speed::request_speed_at(
+        &crate::token_speed::RequestTiming {
+            output_tokens,
+            started_at: Some(started_at),
+            first_token_at: row.get(13)?,
+            completed_at: row.get(14)?,
+            // 真实耗时只作 request_average 近似窗口的兜底（无事件时刻的
+            // 来源，如 claude / kimi 导入库），绝不参与生成口径分母
+            duration_ms: duration_ms
+                .filter(|value| *value > 0.0)
+                .map(|value| value as i64),
+            request_id: None,
+            // 思考感知窗口信号：零值按 None（缺列已 COALESCE 0，同款降级）；
+            // 模型名原样透传（claude 系按名识别，大小写不敏感）
+            reasoning_tokens: (reasoning_tokens > 0).then_some(reasoning_tokens),
+            model_id: (!model_id.is_empty()).then(|| model_id.clone()),
+        },
+        0,
+    );
     Ok(RequestLogRow {
         source: source.to_string(),
-        started_at: row.get(0)?,
-        model_id: row.get(1)?,
+        started_at,
+        model_id,
         provider_id: row.get(2)?,
         input_tokens: row.get(3)?,
-        output_tokens: row.get(4)?,
+        output_tokens,
         cache_read_tokens: row.get(5)?,
         cache_write_tokens: row.get(6)?,
-        reasoning_tokens: row.get(7)?,
+        reasoning_tokens,
         total_tokens: row.get(8)?,
         cost_usd: 0.0,
         cost_cny: 0.0,
         session_id: row.get(9)?,
         project: row.get(10)?,
-        duration_ms: row.get(11)?,
+        duration_ms,
         ttft_ms: row.get(12)?,
+        speed_tps: speed.as_ref().map(|snapshot| snapshot.value),
+        speed_quality: speed.map(|snapshot| snapshot.quality),
     })
 }
 
@@ -752,6 +814,13 @@ mod tests {
         assert_eq!(row.project.as_deref(), Some("a"));
         assert_eq!(row.duration_ms, Some(1200.0));
         assert_eq!(row.ttft_ms, Some(300.0));
+        // 速度列缺 first_token_at / completed_at 原料：退化为 request_average
+        // 近似（duration_ms 兜底窗口），不是 None
+        assert_eq!(
+            row.speed_quality,
+            Some(crate::token_speed::SpeedQuality::RequestAverage)
+        );
+        assert!(row.speed_tps.is_some());
 
         // 旧库：无 session_id / duration_ms / ttft / 项目列 → 全 None、不报错
         let legacy = Connection::open_in_memory().unwrap();
@@ -774,6 +843,130 @@ mod tests {
         assert!(row.project.is_none());
         assert!(row.duration_ms.is_none());
         assert!(row.ttft_ms.is_none());
+        // 无任何时间原料（无事件时刻也无耗时）：速度两字段回退 None
+        assert!(row.speed_tps.is_none());
+        assert!(row.speed_quality.is_none());
+    }
+
+    /// 行级速度走 token_speed 唯一真源：非思考行用首字窗口（completed −
+    /// first），思考型行（reasoning > 0）用全程窗口（completed − started，
+    /// 思考 token 在首字之前流出、按首字窗口会把思考时长漏出分母导致虚高），
+    /// claude 系按模型名识别（reasoning 恒 0 也前移窗口）；仅有 duration_ms
+    /// 的导入库形态退化为 request_average 近似（序列化值 "request_average"，
+    /// 前端 ≈ 前缀依赖该契约）。
+    #[test]
+    fn row_speed_follows_token_speed_truth() {
+        // zcode 形态（齐全列：含 first_token_at / completed_at）
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE model_usage (
+                started_at INTEGER NOT NULL,
+                model_id TEXT, provider_id TEXT,
+                input_tokens INTEGER, output_tokens INTEGER,
+                cache_read_input_tokens INTEGER, cache_creation_input_tokens INTEGER,
+                reasoning_tokens INTEGER, computed_total_tokens INTEGER,
+                session_id TEXT, duration_ms REAL, time_to_first_token_ms INTEGER,
+                cwd TEXT, project_key TEXT,
+                first_token_at INTEGER, completed_at INTEGER);
+             INSERT INTO model_usage VALUES
+                -- 非思考行：首字窗口 8s → 1000 tok = 125 t/s（真实耗时 101s
+                -- 只进 duration 列，不参与生成分母）
+                (1000, 'glm-5', 'p', 10, 1000, 0, 0, 0, 1010,
+                 's', 101000.0, 92000, NULL, NULL, 93000, 101000),
+                -- 思考行：同量级时间戳 + reasoning > 0 → 全程窗口 100s
+                -- = 10 t/s（首字窗口会把 92s 思考时长漏出分母、虚高 12.5 倍）
+                (2000, 'glm-5', 'p', 10, 1000, 0, 0, 80000, 81010,
+                 's', 101000.0, 92000, NULL, NULL, 94000, 102000),
+                -- claude 系：reasoning 恒 0，按模型名识别 → 全程窗口 10 t/s
+                (3000, 'Claude-Opus-5', 'p', 10, 1000, 0, 0, 0, 1010,
+                 's', 101000.0, 92000, NULL, NULL, 95000, 103000);",
+        )
+        .unwrap();
+        let sql = format!(
+            "SELECT {} FROM model_usage ORDER BY started_at",
+            select_list(&conn, "zcode")
+        );
+        let mut stmt = conn.prepare(&sql).unwrap();
+        let rows = stmt
+            .query_map([], |row| row_to_log(row, "zcode"))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(rows.len(), 3);
+        // 非思考行：首字窗口（generation，无 ≈）
+        assert_eq!(
+            rows[0].speed_quality,
+            Some(crate::token_speed::SpeedQuality::Generation)
+        );
+        let tps = rows[0].speed_tps.expect("非思考行应有生成速度");
+        assert!((tps - 125.0).abs() < 1e-9, "{tps}");
+        // 思考行：全程窗口（思考感知，速度不被虚高）
+        let tps = rows[1].speed_tps.expect("思考行应有生成速度");
+        assert!((tps - 10.0).abs() < 1e-9, "{tps}");
+        assert_eq!(
+            rows[1].speed_quality,
+            Some(crate::token_speed::SpeedQuality::Generation)
+        );
+        // claude 系按名识别：同思考行口径
+        let tps = rows[2].speed_tps.expect("claude 行应有生成速度");
+        assert!((tps - 10.0).abs() < 1e-9, "{tps}");
+
+        // claude / kimi 导入库形态：只有 duration_ms（无事件时刻列）→
+        // request_average 近似，serde 序列化为 "request_average"（snake_case
+        // 值 + snake_case 字段名，前端 SpeedQuality 契约）
+        let imported = Connection::open_in_memory().unwrap();
+        imported
+            .execute_batch(
+                "CREATE TABLE model_usage (
+                    started_at INTEGER NOT NULL, model_id TEXT, provider_id TEXT,
+                    input_tokens INTEGER, output_tokens INTEGER,
+                    cache_read_input_tokens INTEGER, cache_creation_input_tokens INTEGER,
+                    reasoning_tokens INTEGER, computed_total_tokens INTEGER,
+                    duration_ms REAL);
+                 INSERT INTO model_usage VALUES
+                    (1000, 'kimi-k2', 'p', 10, 1200, 0, 0, 0, 1210, 1000.0);",
+            )
+            .unwrap();
+        let sql = format!(
+            "SELECT {} FROM model_usage",
+            select_list(&imported, "kimi")
+        );
+        let row = imported
+            .query_row(&sql, [], |row| row_to_log(row, "kimi"))
+            .unwrap();
+        assert_eq!(
+            row.speed_quality,
+            Some(crate::token_speed::SpeedQuality::RequestAverage)
+        );
+        let tps = row.speed_tps.expect("有耗时的行应有近似速度");
+        assert!((tps - 1200.0).abs() < 1e-9, "{tps}");
+        let json = serde_json::to_value(&row).unwrap();
+        assert_eq!(json["speed_quality"], "request_average");
+        assert!(json["speed_tps"].is_number());
+
+        // 无 first_token_at / completed_at 也无 duration_ms（codex 形态）：
+        // 无速度原料 → 两字段 None，前端回退（旧公式同样算不出）
+        let codex_like = Connection::open_in_memory().unwrap();
+        codex_like
+            .execute_batch(
+                "CREATE TABLE model_usage (
+                    started_at INTEGER NOT NULL, model_id TEXT, provider_id TEXT,
+                    input_tokens INTEGER, output_tokens INTEGER,
+                    cache_read_input_tokens INTEGER, cache_creation_input_tokens INTEGER,
+                    reasoning_tokens INTEGER, computed_total_tokens INTEGER);
+                 INSERT INTO model_usage VALUES
+                    (1000, 'gpt-5', 'p', 10, 1200, 0, 0, 0, 1210);",
+            )
+            .unwrap();
+        let sql = format!(
+            "SELECT {} FROM model_usage",
+            select_list(&codex_like, "codex")
+        );
+        let row = codex_like
+            .query_row(&sql, [], |row| row_to_log(row, "codex"))
+            .unwrap();
+        assert!(row.speed_tps.is_none());
+        assert!(row.speed_quality.is_none());
     }
 
     /// 耗时只认真实 duration_ms：列存在时 > 0 才给；NULL / 0 → None；
@@ -989,6 +1182,8 @@ mod tests {
             project: None,
             duration_ms: None,
             ttft_ms: None,
+            speed_tps: None,
+            speed_quality: None,
         };
         let (totals, rows, failed) =
             collect_sources(&["codex", "kimi", "dsh"], |source| match source {

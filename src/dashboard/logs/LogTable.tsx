@@ -16,8 +16,9 @@
  *    同一套口径，避免把"没配价"伪装成"不花钱"）；无 token → 「—」；
  *  - 耗时 / 首字：秒一位 / 两位小数；耗时只认来源库的真实值（Codex 会话文件无
  *    耗时、旧版 Claude Code 不落盘耗时 → 灰化「—」）；速度口径与详情抽屉完全
- *    一致（model.speedOf + formatTps：生成窗口 = 耗时 − 首字，无首字时退回总
- *    耗时并标 ≈，title 说明原因）；
+ *    一致（model.speedOf + formatTps 两层结构：后端 token_speed 真源优先——
+ *    含思考感知窗口与样本窗口边界；后端缺速度时回退本地「耗时 − 首字」公式，
+ *    近似值标 ≈，title 说明原因）；
  *  - 缺失值一律灰化「—」并带 title 说明原因（无数据 / 未定价 / 来源不落盘耗时或
  *    首字——属数据源限制，不是加载失败；无耗时时速度列与耗时列同为「—」）。
  * 行可点击打开详情抽屉（键盘 Enter / Space 同效）；`busy` 期间旧行整体压暗
@@ -184,9 +185,10 @@ export function LogTable({
                 <td className="db-table__num db-logs__col-ttft num">
                   {ttft ?? <Dash title={t("dashboard.logs.noTtftTitle")} />}
                 </td>
-                {/* 速度列：口径与详情抽屉一致；无耗时算不出速度，与耗时列
-                    同为灰化「—」；≈ 只在「无首字退回总耗时」时出现，
-                    title 说明该口径 */}
+                {/* 速度列：口径与详情抽屉一致（speedOf 两层结构：后端
+                    token_speed 真源优先、本地公式回退）；无耗时算不出速度，
+                    与耗时列同为灰化「—」；≈ 在后端 request_average（缺事件
+                    时刻按总耗时近似）或本地回退无首字时出现，title 说明该口径 */}
                 <td className="db-table__num db-logs__col-speed num">
                   {speed ? (
                     <span title={speedHintKey ? t(speedHintKey) : undefined}>

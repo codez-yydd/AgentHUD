@@ -714,9 +714,145 @@ pub const EFFECTS_JS: &str = r#"// =============================================
 /// 与 effects.js 同款：自愈、静默失败、空值防御；DOM 选择器集中在头部
 /// 常量，便于实机比对调整。
 pub const USAGE_JS: &str = r#"// ============================================================
-// ZBAR-THEME-V32
+// ZBAR-THEME-V35
 // ZBar Agent 对话页用量统计条（由 ZBar 落盘并随版本升级覆盖）
 // ============================================================
+// V35 变更（注入条与输入框卡片左右缘对齐 + 每轮条/会话条缓存命中率回
+//   归 + ✚ 缓存写 0 值隐藏——实机用户反馈。全部为渲染端改动，数据契约
+//   与 V34 完全一致）：
+//   a) 输入框卡片定位 locateComposerCard(region)：遍历 region 直接子元
+//      素，跳过带 data-zbar-usage-* 属性（自家注入元素）或绝对定位的
+//      元素，取第一个可见且 offsetWidth>100 的元素为"输入框卡片"——
+//      零选择器假设（不依赖 ZCode 内部类名，仅按几何特征与自家标记排
+//      除），找不到返回 null；
+//   b) 底部胶囊条（renderQuotaBar）：卡片命中时 left=card.offsetLeft、
+//      width=card.offsetWidth（两缘精确对齐卡片——右对齐自然宽的遗留
+//      左缘悬空约 145px 问题），行内 right:auto 让位样式表右对齐；未
+//      命中回退现状（右对齐自然宽）。每渲染拍重算、值变才写 style；
+//      溢出优先级隐藏照常（fitQuotaSegments 按新宽度自然生效）；
+//   c) 会话条（renderSessionBar）：居中（样式表 left:50%+translateX）
+//      改为左缘对齐卡片（行内 left + transform:none，自然宽），未命
+//      中回退居中；顶部 padding 定位机制（V13 红线）不动；
+//   d) 模型行底板（renderModelRows）：左缘/宽度对齐卡片（V26 的"与会
+//      话行同左缘"锚定升级为与输入框卡片对齐），未命中回退居中；
+//   e) 对齐经 applyCardAlign（值变才写；命中前提 card.offsetParent ===
+//      region——V13 注入的 relative 规则生效时 offsetLeft 与 region 内
+//      absolute left 同一坐标系）/clearCardAlign（回退清理，fixed 兜
+//      底路径亦清残留行内对齐）两个 helper；region 缺失的 fixed 兜底
+//      路径原样；窗口缩放不触发渲染拍，由下一渲染拍/15s 兜底拍自愈修
+//      正（沿用文件既有哲学，不做 resize 监听）；
+//   f) 每轮条/会话条 ⟲ 段后追加弱色缓存命中率段 "(NN%)"（cacheHitText
+//      共用：cr ÷ (cr + 非缓存输入)；每轮条非缓存输入 = max(0, in − cr)，
+//      in 含缓存读，live 态 runs 同口径；会话条 sess 口径 cr/(cr+up)，
+//      与底部条「缓存」段同源同拍；分母 0 整段不入行）——V30 曾把命中
+//      率自会话条挪至底部条，本次按实机反馈回归两条，底部条段落保留
+//      （三处并存）；
+//   g) ✚ 缓存写段 cw 为 0 时整段隐藏（含启动窗口占位态的 "✚ 0"——
+//      "缓存读后面的+0 看不懂"），cw>0 显示并带 title（zh"缓存写
+//      token"/en"Cache write tokens"）；新段进全串比对串（隐藏段不进
+//      ——条件段不 push 即不入比对）；renderRowParts/renderBarLine 补
+//      part/seg 级 title 通道（title 不进比对串）；词表补 cwTitle 双
+//      语条目。
+// V34 变更（底部状态条实机反馈修复——挂具页 vision 审查三 P1 + 两
+//   P2，全部为渲染端改动，数据契约与 V33 完全一致）：
+//   a) 分段优先级隐藏（P1：条宽不足时右缘 mask 渐隐曾把额度/每周/缓
+//      存三段视觉吃掉，相比 V32 纯额度行永远可见是体验倒退）：每段带
+//      data-prio——速度/额度两段 prio 0 永不隐藏；溢出时按优先级从低
+//      到高整段隐藏（缓存 1 → 今日 2 → 工具 3 → 本轮 4 → 子代理 5 →
+//      会话 6），每步复测 scrollWidth>clientWidth，不再溢出即停；全部
+//      可见时不做任何隐藏，mask 渐隐仅保留为最终兜底。隐藏经
+//      .zbar-usage-qseg-off class（DOM 常驻、恢复零重建），隐藏态计
+//      入渲染签名（seg.h）：fitQuotaSegments 每拍在渲染后执行——常规
+//      拍（内容/宽度均不变）只做两次布局读取零 DOM 写；修正发生时同
+//      步 quotaFitHidden 与签名，下一拍构建态与 DOM 一致、签名命中依
+//      旧零 DOM。窗口宽度变化不触发渲染拍，由下一个数据拍/15s 兜底拍
+//      自愈修正。同时段内水平 padding 9px → 6px、图标-文字与段内
+//      parts 间距统一 3px flex gap，降低触发频率。
+//   b) 模型速度行浅色主题对比度修复（P1：浅色卡片上恒浅灰文字几乎
+//      不可见）：底板文字改消费会翻转的客户端语义变量——容器
+//      var(--color-foreground, #5b6577)、单位/聚合小字
+//      var(--color-foreground-subtle, #5b6577)；兜底取中灰（深浅两底
+//      均可读），不再用 rgba(241,245,249,*) 深色主题专用浅灰。三档速
+//      度色保留硬编码（数据语义色，与主题无关）。
+//   c) 会话条速度值三档色（P1：白/灰色与每轮条/底部条不一致）：速度
+//      值 span 补 tpsClassOf 三档 class（新增 ATTR_SESSION_BAR scoped
+//      规则），无效快照/等待占位不着色；可见文本拼接串不变，全串比
+//      对零 DOM 机制保持。
+//   d) 额度/缓存段口径说明并入原生 title（P2）：额度 5h/每周/缓存三
+//      段各自独立分段 + 发丝分隔（V33 已成立），本次补 title 词表
+//      条目（quota5hTitle/quotaWkTitle/cacheTitle），段内无任何 "·"
+//      分隔符。
+//   e) 段内 parts 间距改 flex gap 承担（P2：数值与 "N req" 次级信息
+//      近乎粘连）：.zbar-usage-qseg gap 3px，parts 文本不再携带语义
+//      间距空格（标签尾空格删除、底部条数值走 fmtTokens(...).trim()
+//      去等宽补位空格——底部条各段独立无跨段对齐需求；词间空格如
+//      "额度 5h 65%"、"N req" 内部保留）。每轮条/会话条不受影响。
+// V33 变更（底部额度行演进为分段胶囊状态条 + 全组件设计语言统一——
+//   对 ByteRax/zcode-token-usage-statusbar 参考样式的自研实现，不搬代
+//   码。数据端零改动：usage-data.js 仍为 v:2，V33 起消费其两个既有可
+//   选附加字段 sess[].tl（会话树工具调用数，缺失省略键）与顶层 today
+//   {tt,rq}（今日全库合计，查询失败整键省略）——缺键分段整段隐藏，
+//   与逐段隐藏机制同构）：
+//   a) 设计 tokens（全组件统一）：
+//      · 字体跟随客户端：font-family 改
+//        var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Consolas,
+//        monospace)——ZCode 客户端在 :root 暴露 --font-mono，缺失时回
+//        退既有等宽栈；
+//      · 颜色跟随客户端语义变量 + 兜底：弱文字
+//        var(--color-foreground-subtle, rgba(120,130,145,.95))、边框
+//        var(--color-border, rgba(127,127,127,.22))、卡片底
+//        var(--color-card, rgba(28,30,36,.72))（客户端变量随 .dark 翻
+//        转）；速度/额度三档语义色保留硬编码（数据语义与主题无关）：
+//        fast #34d399 / mid #fbbf24 / slow #f87171（阈值 70/40 不变）；
+//      · 文字三级层级靠亮度+字重不靠字号：主数值 font-weight:600 + 前
+//        景色、标签/单位弱色、次要信息更弱（.zbar-usage-dim 相对透明
+//        / .zbar-usage-strong 加粗 / 底部条 .zbar-usage-qdim/qfaint 弱
+//        色两级）；
+//      · 每轮条/会话条/模型行底板全部换用上述 tokens（信息集与机制零
+//        改动）。
+//   b) 底部状态条（renderQuotaBar 演进为完整状态条，容器即玻璃拟态胶
+//      囊：backdrop-filter blur(14px) saturate(1.3) 带前缀、卡片底/边
+//      框走客户端变量、圆角 10px、内高光+双层投影、右缘 mask 线性渐隐
+//      截断兜底）。分段从左到右，缺数据的分段整段省略（相邻兄弟选择
+//      器产发丝分隔线，无空分隔残留）：
+//      ① ⚡ 速度：最近生成速度——活动轮 runs 行速度（1s 旁路
+//        applySpeedData 每秒覆盖）优先，空闲回退该会话 turns 最新完成
+//        轮稳定速度（latestSpeedOf，沿用既有取值链路）；数值三档色 +
+//        " t/s" 弱色单位，title 注明口径与三档规则；
+//      ② 本轮：↑非缓存输入+↓输出合计（fmtTokens）+ " N req"——当前
+//        会话活动轮 runs 行（含并入 sub）优先，无则该会话最新完成
+//        turn 行（activeRunOf/latestTurnOf）；title 带输入/输出/缓存
+//        读/缓存写明细；
+//      ③ 会话 Σ：当前会话 tt（sessionTotals 双口径同款合计，即会话条
+//        Σ 口径）+ " N req"；title 注明会话树口径；
+//      ④ 🔧 工具：sess[].tl（V33 新消费字段；缺失隐藏本段）；title
+//        "会话树全部工具调用"；
+//      ⑤ 📅 今日：顶层 today.tt + " N req"（today.rq；整键缺失隐藏本
+//        段）；title "今日全部会话合计（本地自然日）"；
+//      ⑥ 🌿 子代理：Σ 当前会话 turns[].sub.n；任一 runs 行
+//        psess=当前会话时图标旁 2px 呼吸蓝点（opacity 脉动，
+//        prefers-reduced-motion 关闭）；无子代理隐藏本段；
+//      ⑦ 额度：V32 的 5h/每周两段原样迁入（三档变色 + 倒计时逻辑不
+//        动，倒计时由 qfaint 显式回灰——阈变色仍只属于剩余百分比）；
+//      ⑧ 缓存：V32 的「缓存 NN%」段迁入（分母 0 不入段），加仪表图
+//        标。
+//      分段行内 SVG 图标经 createElementNS 构建（stroke=currentColor、
+//      stroke-width 1.7、14px 随字号缩放、fill none、round cap/join），
+//      随文字颜色不单独上色；分段悬停极轻高亮 + 原生 title 提示（容
+//      器 pointer-events:none、分段 auto——只有分段捕获指针，不挡输入
+//      区；不引入自绘 tooltip）。开关 usage_quota_bar 语义升级为整条
+//      开关（--zbar-usage-quota-bar 控制整个底部状态条显隐）。
+//   c) 比对机制分级说明：每轮条/会话条保持「全串比对零 DOM 机制」——
+//      标签/单位/主数值拆为逐段 span 后，比对串仍为全部字段文本的拼
+//      接串（与渲染后 textContent 逐字一致），V10「任何状态只更新数
+//      值不改变结构」原则不变；底部条分段携带行内 SVG（无法进
+//      textContent 比对），改用 renderModelRows 同款签名比对
+//      （data-zbar-usage-qsig，全部分段数据的拼接签名），无变化零
+//      DOM 操作语义不变，倒计时分钟级变化之间仍零开销。
+//   d) 定位机制零改动（V12/V13 红线）：bottom 负偏移
+//     （QUOTA_BAR_BOTTOM_PX = -20）、region 挂载/缺失 fixed 兜底、
+//      currentSessionHasData 空会话闸 + renderAll 空轮分支双闸、30s
+//      额度重载节奏全部原样；条宽右对齐自然宽 + max-width 100%。
 // V32 变更（底部额度行扁平化去括号，纯渲染端微调——数据契约与 V31
 //   完全一致，usage-quota.js v:2 不变）：
 //   a) 词表精简：zh 额度段「5h 余」→「5h 」、周段「周余」→「每周 」
@@ -1197,24 +1333,35 @@ pub const USAGE_JS: &str = r#"// ===============================================
 //     in / out / cr / cw / rt / req  该轮已完成请求的聚合
 //     start              首个请求开始毫秒
 //   }],
-//     sess: [{ s, tt, up, down, cr, cw, rq, speed, speedState, sa }]  会话级
+//     sess: [{ s, tt, up, down, cr, cw, rq, tl, speed, speedState, sa }] 会话级
 //     统计（V21 附加数组，model_usage 全量合计；V25 起带会话树口径的
-//     sa 聚合；V27 起带 ✚ 缓存写 cw——不参与 tt 口径）
+//     sa 聚合；V27 起带 ✚ 缓存写 cw——不参与 tt 口径；V33 起带 tl 会话
+//     树工具调用数——列/表缺失或查询失败省略本键，本脚本缺字段隐藏
+//     「工具」分段）
 //     models: [{ model, tps, avg, max, min, n }]  V25 窗口级模型分组速度
 //     （按最近使用降序至多 3 组；model_id 列缺失的老版本库整个键省略 →
 //     本脚本不渲染模型行）
+//     today: { tt, rq }  V33 顶层今日合计（本地自然日 0 点起全库
+//     model_usage 全量：tt = Σ(up+down+cr) 与 sess 行 tt 同口径、
+//     rq = model_usage 行数；查询失败/表缺失整个键省略 → 「今日」分段
+//     隐藏；只随 2 秒大文件发布）
 //   } }
 // 额度源（V27）：同目录 usage-quota.js——数据端独立额度线程 60s 查询
 //   写盘（window.__ZBAR_QUOTA__ = { v:1, ts, h5, wk }，h5/wk = 5 小时/周
 //   窗口剩余百分比；查询失败保留上次文件），本脚本 30s 低频重载，V28
 //   起渲染为输入框底部外侧的独立额度行（"额度 5h 余78% · 周余93%"，
 //   见 renderQuotaBar；V29 删除时间戳尾段，且空会话——turns/runs/sess
-//   全空或页面无轮节点——整行隐藏），数据缺失/查询未成功时隐藏对应段。
+//   全空或页面无轮节点——整行隐藏），数据缺失/查询未成功时隐藏对应段；
+//   V33 起该行升级为分段胶囊状态条，额度/缓存为其中尾部两段（见 V33
+//   变更 b，开关 usage_quota_bar 语义随之升级为整条开关）。
 // 导出窗口：turns 最近 7 天、至多 3000 轮；runs 近 10 分钟内有请求的
 //   进行中轮（turn_usage 已有行的完成轮不进 runs）。
-// 展示口径：↑ = in − cr（非缓存输入），↓ = out，⟲ = cr（V27–V29 曾带
-//   缓存命中率后缀 cr/(cr+非缓存输入)，V30 起命中率移至底部额度行
-//   「缓存」段），✚ = cw（V27 起新增），× = req；
+// 展示口径：↑ = in − cr（非缓存输入），↓ = out，⟲ = cr，✚ = cw（V27
+//   起新增；V35 起 cw 为 0 整段隐藏——启动窗口占位不再出现 "✚ 0"），
+//   × = req；V35 起每轮条/会话条 ⟲ 段后补弱色缓存命中率段 (NN%)
+//   （cr/(cr+非缓存输入)，cacheHitText 共用，分母 0 不入段；V27–V29 曾
+//   挂会话条 ⟲ 后缀、V30 曾移至底部条「缓存」段，V35 起三处并存——
+//   每轮条/会话条为 (NN%) 后缀、底部条为「缓存 NN%」段）；
 //   速度来自最近一笔完成 model_usage 请求的 speed 快照。generation 为
 //   首字到完成的精确速度，request_average 为仅有总耗时的近似速度并带 ≈；
 //   缺失/无效快照显示 "–"，TTFT 缺失同样显示 "–"。
@@ -1222,12 +1369,16 @@ pub const USAGE_JS: &str = r#"// ===============================================
 //   V25 变更 a），与上方的"最近速度"是两条独立通道（后者可能是近似
 //   样本）；聚合段在样本 n < 2 时隐藏，模型行则始终显示"最近值 + 聚合"
 //   （对齐免注入悬浮窗模型速度区）。
-// 行格式（V10 起三态统一固定结构；V27 ⟲ 后补 ✚ 缓存写段）：每轮条任何
-//   状态都渲染
-//   "↑ <in> ↓ <out> ⟲ <cr> ✚ <cw> · × <req> · <speed> t/s · TTFT <ttft>"，
+// 行格式（V10 起三态统一固定结构；V27 ⟲ 后补 ✚ 缓存写段；V35 起 ⟲ 后
+//   补条件命中率段 (NN%)、✚ 段改条件段——分母 0 / cw 0 整段不入行）：
+//   每轮条任何状态都渲染
+//   "↑ <in> ↓ <out> ⟲ <cr> [(NN%)] [✚ <cw>] · × <req> · <speed> t/s ·
+//   TTFT <ttft>"（方括号段按数据条件出现），
 //   各字段等宽补位（token 5 字符 / req 3 字符 / 速度与 TTFT 各 4 字
 //   符），等宽字体 + tabular-nums 下整行宽度恒定，只更新字段数值不改变
 //   结构；request_average 的 ≈ 前缀由速度字段自身表达近似质量。
+//   V33 起行内标签/单位拆为弱色 span、速度数值带三档色 class——可见
+//   文本拼接串与字段补位规则不变（全串比对串逐字一致）。
 // V25 起完成态在速度位后追加 "· 均38 快71 慢12"（整数，不重复标单位；
 //   样本 n < 2 整体不出现），live 行与启动窗口占位不追加（见 V25 变更 b）。
 // 行为：usage-data.js 每 2 秒以 script 标签重载（只承载历史计数，先删旧
@@ -1294,9 +1445,11 @@ pub const USAGE_JS: &str = r#"// ===============================================
   var SESSION_BAR_Z = 30; /* 会话条 z-index：适度抬高，不遮挡弹层 */
   var VAR_SESSION_BAR = "--zbar-usage-session-bar"; /* 开关变量（variables.css 渲染 1/0） */
   var VAR_TURN_BAR = "--zbar-usage-turn-bar"; /* 每轮统计条开关变量（variables.css 渲染 1/0） */
-  /* ---- V28：独立额度行常量（输入框卡片底部外侧的右对齐单行小字）---- */
-  var VAR_QUOTA_BAR = "--zbar-usage-quota-bar"; /* 额度行开关变量（variables.css
-    渲染 1/0；缺失视为开启，与 session/turn 开关同惯例） */
+  /* ---- V28：独立额度行常量（V33 起演进为分段胶囊状态条：开关语义
+   *      升级为整条开关，定位/兜底机制不变）---- */
+  var VAR_QUOTA_BAR = "--zbar-usage-quota-bar"; /* 底部状态条开关变量
+    （variables.css 渲染 1/0；缺失视为开启，与 session/turn 开关同惯
+    例）；V28 为额度行专用开关，V33 起控制整条分段状态条显隐 */
   var ATTR_QUOTA_BAR = "data-zbar-usage-quota"; /* 额度行标记（防重复挂载） */
   var ATTR_QUOTA_BAR_FIXED = "data-zbar-usage-quota-fixed"; /* 额度行兜底
     定位标记：region 缺失退回 fixed 时打上，样式表据此把 absolute 切换
@@ -1359,7 +1512,8 @@ pub const USAGE_JS: &str = r#"// ===============================================
   var MODELS_PAD_V_PX = 5; /* 底板纵向内边距（padding:5px 9px 纵向值同步） */
   var MODELS_MARGIN_TOP_PX = 5; /* 底板与会话行的间距（V25~V28 为容器
     margin-top；V29 起消费方为独立容器的 top calc 与留白计算，数值
-    语义不变） */
+    语义不变；V35 起容器水平几何在卡片命中时改由行内 left/width 对齐
+    输入框卡片接管，样式表居中退为未命中回退） */
   var MODELS_CLEARANCE_PX = 6; /* 底板下沿与输入卡片的安全间隙 */
   /* 模型行三档变色阈值（与免注入悬浮窗模型速度区、主面板速度卡同阈值） */
   var TPS_FAST_MIN = 70; /* ≥ 绿 */
@@ -1370,6 +1524,12 @@ pub const USAGE_JS: &str = r#"// ===============================================
    * 紧张（<10）红——与模型行三档同色系（#fbbf24/#f87171），醒目不刺眼 */
   var QUOTA_MID_REMAIN = 30;
   var QUOTA_LOW_REMAIN = 10;
+  /* ---- V33 亮度层级 class（全组件共用，文字三级层级靠亮度+字重不靠
+   *      字号）---- */
+  var CLS_DIM = "zbar-usage-dim"; /* 标签/单位弱色：相对透明度 .66（随行
+    透明 --zbar-usage-opacity 比例衰减，每轮条/会话条继承行色可用） */
+  var CLS_STRONG = "zbar-usage-strong"; /* 主数值加粗一档（font-weight
+    600 + 前景色，会话条 Σ 数值） */
   /* ---- V26：语言判定（三信号优先级，任一命中即定，缓存一次） ----
    * V25 只按 navigator.language 判定，在 ZCode 的 WebView 里返回英文，
    * 中文界面全部显示英文标签（用户实测反馈）。V26 改：
@@ -1427,7 +1587,27 @@ pub const USAGE_JS: &str = r#"// ===============================================
       quotaLead: "额度",
       quota5h: "5h ",
       quotaWk: "每周 ",
-      cachePct: "缓存"
+      cachePct: "缓存",
+      /* V33 底部状态条分段词条与 title 文案 */
+      turn: "本轮",
+      sess: "会话",
+      tools: "工具",
+      today: "今日",
+      subs: "子代理",
+      req: "req",
+      tIn: "输入",
+      tOut: "输出",
+      tCr: "缓存读",
+      tCw: "缓存写",
+      cwTitle: "缓存写 token",
+      speedTitle: "最近一笔请求的生成速度；≥70 绿 / ≥40 黄 / <40 红（t/s）",
+      sessTitle: "当前会话累计 Σ=非缓存输入+输出+缓存读（会话树口径，含子代理与失败轮）",
+      toolsTitle: "会话树全部工具调用",
+      todayTitle: "今日全部会话合计（本地自然日）",
+      subsTitle: "并入主轮的子代理轮数；蓝点=子代理运行中",
+      quota5hTitle: "5 小时窗口剩余；<30% 黄 / <10% 红",
+      quotaWkTitle: "每周窗口剩余；<30% 黄 / <10% 红",
+      cacheTitle: "当前会话缓存命中率 = 缓存读 ÷（缓存读 + 非缓存输入）"
     },
     en: {
       avg: "avg",
@@ -1439,7 +1619,27 @@ pub const USAGE_JS: &str = r#"// ===============================================
       quotaLead: "Quota",
       quota5h: "5h ",
       quotaWk: "wk ",
-      cachePct: "cache"
+      cachePct: "cache",
+      /* V33 底部状态条分段词条与 title 文案 */
+      turn: "turn",
+      sess: "session",
+      tools: "tools",
+      today: "today",
+      subs: "subs",
+      req: "req",
+      tIn: "in",
+      tOut: "out",
+      tCr: "cache rd",
+      tCw: "cache wr",
+      cwTitle: "Cache write tokens",
+      speedTitle: "Latest generation speed; >=70 green / >=40 yellow / <40 red (t/s)",
+      sessTitle: "Current session totals = plain input + output + cache read (session tree incl. subagents)",
+      toolsTitle: "All tool calls in the session tree",
+      todayTitle: "All sessions today (local calendar day)",
+      subsTitle: "Subagent turns merged into main turns; dot = subagent running",
+      quota5hTitle: "5-hour window remaining; <30% yellow / <10% red",
+      quotaWkTitle: "Weekly window remaining; <30% yellow / <10% red",
+      cacheTitle: "Session cache-hit rate = cache read / (cache read + plain input)"
     }
   };
   var W = WORDS[LANG_ZH ? "zh" : "en"];
@@ -1484,7 +1684,7 @@ pub const USAGE_JS: &str = r#"// ===============================================
     st.textContent =
       "[" + ATTR_ROW + "]{" +
       "display:block;margin:2px 0 0 1px;" +
-      "font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;" +
+      "font-family:var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);" +
       "font-size:var(--zbar-usage-font-size,10px);" +
       "font-weight:400;line-height:1.5;" +
       "letter-spacing:.02em;color:inherit;opacity:var(--zbar-usage-opacity,.55);" +
@@ -1506,6 +1706,8 @@ pub const USAGE_JS: &str = r#"// ===============================================
       VAR_PAD_TOP + "," + COMPOSER_PAD_TOP_PX + "px) !important;}" +
       /* 会话累计条（V5）：不占消息布局。V13 定位改 absolute：住进输入
        * 区容器顶部留白（left + translateX 水平居中），不再 fixed/bottom。
+       * V35：卡片命中时行内 left + transform:none 覆盖为左缘对齐输入框
+       * 卡片（applyCardAlign），本居中规则退为未命中回退。
        * V25：容器改为纵向 flex（逐段 span 行在上、模型行容器在下）。
        * V26：align-items:center → stretch——模型底板与会话行同一左边
        * 界、同一宽度锚定（条宽由最宽子元素撑起，两段都拉满，左缘天然
@@ -1520,7 +1722,7 @@ pub const USAGE_JS: &str = r#"// ===============================================
       "position:absolute;top:4px;left:50%;transform:translateX(-50%);" +
       "z-index:" + SESSION_BAR_Z + ";" +
       "display:flex;flex-direction:column;align-items:stretch;" +
-      "font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;" +
+      "font-family:var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);" +
       "font-size:var(--zbar-usage-font-size,10px);" +
       "font-weight:400;line-height:1.5;" +
       "letter-spacing:.02em;color:inherit;" +
@@ -1555,23 +1757,30 @@ pub const USAGE_JS: &str = r#"// ===============================================
       "z-index:" + SESSION_BAR_Z + ";" +
       "display:flex;flex-direction:column;align-items:stretch;" +
       "gap:" + MODEL_ROW_GAP_PX + "px;" +
-      "font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;" +
+      "font-family:var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);" +
       "font-size:var(--zbar-usage-font-size,10px);" +
       "line-height:1;" +
       "padding:" + MODELS_PAD_V_PX + "px 9px;box-sizing:border-box;" +
-      "border-radius:8px;border:1px solid rgba(148,163,184,.28);" +
-      "background:rgba(2,6,23,.72);" +
+      /* V33：底板背景/边框改消费客户端语义变量（随 .dark 翻转），缺失
+       * 回退 V26 恒深底；亮暗 prefers-color-scheme 两档媒体查询随之下
+       * 线（变量存在时由客户端接管，回退值保持原深底观感） */
+      "border-radius:8px;border:1px solid var(--color-border, rgba(148,163,184,.28));" +
+      "background:var(--color-card, rgba(2,6,23,.72));" +
       "-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px);" +
-      "color:rgba(241,245,249,.92);opacity:1;" +
+      /* V34：文字改消费会翻转的客户端语义变量（P1 实机反馈：恒浅灰
+       * rgba(241,245,249,*) 在浅色卡片上几乎不可见）；兜底取中灰
+       * #5b6577——变量缺失时恒深底（回退值）上可读、极端浅底上也可读，
+       * 不再用任何深色主题专用浅灰。三档速度色保留硬编码（数据语义色） */
+      "color:var(--color-foreground, #5b6577);opacity:1;" +
       "pointer-events:none;white-space:nowrap;}" +
       /* V29 兜底：region 缺失时挂 body 并打上标记，退回 fixed 贴底
        * （bottom 见 MODELS_FALLBACK_BOTTOM_PX，位于会话条兜底之上；
        * left/translateX 居中沿用基础规则） */
       "[" + ATTR_MODELS + "][" + ATTR_MODELS_FIXED + "]{" +
       "position:fixed;top:auto;bottom:" + MODELS_FALLBACK_BOTTOM_PX + "px;}" +
-      "@media (prefers-color-scheme: light){" +
-      "[" + ATTR_MODELS + "]{" +
-      "background:rgba(15,23,42,.6);border-color:rgba(248,250,252,.38);}}" +
+      /* V33：V26 的亮色媒体查询已删（底板背景/边框改消费客户端
+       * --color-card/--color-border 语义变量，浅色主题由客户端变量自
+       * 动翻转，缺失回退值保持原深底观感） */
       "[" + ATTR_MODELS + "]:empty{display:none;}" +
       /* V25 模型分组速度行（对齐免注入悬浮窗模型速度区：小号、等宽、
        * 最近值三档变色 + 单位 + 跟随灰字）。V26：行内改弹性——模型名
@@ -1588,9 +1797,10 @@ pub const USAGE_JS: &str = r#"// ===============================================
       "height:calc(var(--zbar-usage-font-size,10px) * " + MODEL_ROW_H_FACTOR + ");" +
       "font-size:calc(var(--zbar-usage-font-size,10px) * .9);" +
       "line-height:1;pointer-events:auto;cursor:default;}" +
-      /* 行间细分割线（底板上同样式的中性半透明；行距由容器 gap 承担） */
+      /* 行间细分割线（V33 改消费客户端 --color-border 语义变量；行距由
+       * 容器 gap 承担） */
       "[" + ATTR_MODELS + "] .zbar-usage-mrow + .zbar-usage-mrow{" +
-      "border-top:1px solid rgba(148,163,184,.22);}" +
+      "border-top:1px solid var(--color-border, rgba(148,163,184,.22));}" +
       /* 模型名：唯一可收缩截断的段（flex:1 1 auto 吃掉余量，数值区恒
        * 右缘对齐；名字过长时 ellipsis，行 title 兜底全名） */
       "[" + ATTR_MODELS + "] .zbar-usage-mname{" +
@@ -1598,14 +1808,19 @@ pub const USAGE_JS: &str = r#"// ===============================================
       /* 数值区（最近值三档变色）：永不收缩、永不截断 */
       "[" + ATTR_MODELS + "] .zbar-usage-mval{" +
       "flex:none;white-space:nowrap;font-variant-numeric:tabular-nums;}" +
-      /* 单位后缀：独立静态节点，不参与三档变色（同免注入模型速度区） */
+      /* 单位后缀：独立静态节点，不参与三档变色（同免注入模型速度区）。
+       * V34：弱色改消费客户端 --color-foreground-subtle（随主题翻转，
+       * 中灰兜底），替代相对透明度衰减（浅底上不可见的根因之一） */
       "[" + ATTR_MODELS + "] .zbar-usage-munit{" +
-      "flex:none;white-space:nowrap;font-size:calc(var(--zbar-usage-font-size,10px) * .8);opacity:.75;}" +
-      /* 均 / 快 / 慢跟随小字：更暗一档表达层级；flex:none 保证数值永不
-       * 截断（V26 修复，原 flex:0 1 auto 会被行尾裁切） */
+      "flex:none;white-space:nowrap;font-size:calc(var(--zbar-usage-font-size,10px) * .8);" +
+      "color:var(--color-foreground-subtle, #5b6577);}" +
+      /* 均 / 快 / 慢跟随小字：弱色一档表达层级；flex:none 保证数值永不
+       * 截断（V26 修复，原 flex:0 1 auto 会被行尾裁切）。V34 同单位后
+       * 缀改客户端弱色变量 */
       "[" + ATTR_MODELS + "] .zbar-usage-mextra{" +
       "flex:none;white-space:nowrap;" +
-      "font-size:calc(var(--zbar-usage-font-size,10px) * .8);opacity:.72;}" +
+      "font-size:calc(var(--zbar-usage-font-size,10px) * .8);" +
+      "color:var(--color-foreground-subtle, #5b6577);}" +
       /* 三档变色：V26 起恒用亮色系——底板恒为深色（见 ATTR_MODELS 容
        * 器背景），原亮色主题的暗色系（#059669/#d97706/#dc2626）在深底
        * 上对比度不足，删除原亮暗两套媒体查询 */
@@ -1619,33 +1834,117 @@ pub const USAGE_JS: &str = r#"// ===============================================
        * 供旧落盘脚本过渡期渲染，随版本覆盖自然消失） */
       "[" + ATTR_SESSION_BAR + "] .zbar-usage-quota-mid{color:#fbbf24;}" +
       "[" + ATTR_SESSION_BAR + "] .zbar-usage-quota-low{color:#f87171;}" +
-      /* V28 独立额度行：输入框卡片底部外侧的右对齐单行小字——absolute
-       * + bottom 负偏移（QUOTA_BAR_BOTTOM_PX）贴卡片下边缘、不占布局
-       * 空间（与输入区顶部留白几何无联动），pointer-events:none 不挡
-       * 输入区交互。V29：字号升回 --zbar-usage-font-size 基准（取消
-       * ×0.9 缩小——此前是全页最小字且灰字对比度低），行高压缩 1.4
-       * （bottom 加深后行盒不超窗口底边），整行继承灰白行色（「额度」
-       * 前缀与时间戳的专用着色删除），透明度沿用 --zbar-usage-opacity
-       * （随热重载即时生效，模板内仅保留兜底值） */
+      /* V33 全组件亮度层级 class（文字三级层级靠亮度+字重不靠字号）：
+       * dim = 标签/单位弱色（相对透明度，随行透明比例衰减），
+       * strong = 主数值加粗一档 */
+      ".zbar-usage-dim{opacity:.66;}" +
+      ".zbar-usage-strong{font-weight:600;}" +
+      /* V33 每轮条速度三档色（与模型行同阈值同色系，class 由 tpsClassOf
+       * 产出；模型行 scoped 规则保留，两条渲染路径互不影响）。V34：会
+       * 话条速度值同款三档色（P1 实机反馈：白/灰与每轮条/底部条不一致） */
+      "[" + ATTR_ROW + "] .zbar-usage-tps-fast{color:#34d399;}" +
+      "[" + ATTR_ROW + "] .zbar-usage-tps-mid{color:#fbbf24;}" +
+      "[" + ATTR_ROW + "] .zbar-usage-tps-slow{color:#f87171;}" +
+      "[" + ATTR_SESSION_BAR + "] .zbar-usage-tps-fast{color:#34d399;}" +
+      "[" + ATTR_SESSION_BAR + "] .zbar-usage-tps-mid{color:#fbbf24;}" +
+      "[" + ATTR_SESSION_BAR + "] .zbar-usage-tps-slow{color:#f87171;}" +
+      /* V28 独立额度行 → V33 分段胶囊状态条：定位机制 V28 原样——
+       * absolute 挂 .chat-composer-region、bottom 负偏移
+       * （QUOTA_BAR_BOTTOM_PX）贴输入卡片下边缘外侧、right 右对齐、
+       * 不占布局空间（与输入区顶部留白几何无联动），pointer-events:
+       * none 不挡输入区交互。V29：字号基准 --zbar-usage-font-size、
+       * 行高 1.4（bottom 加深后行盒不超窗口底边）保留。V33 视觉升级：
+       * 容器只承载定位与字体，胶囊观感由 .zbar-usage-qb-line 承担
+       * （见下）。V35：卡片命中时行内 left/width/right:auto 覆盖为两
+       * 缘精确对齐输入框卡片，右对齐退为未命中回退。开关
+       * usage_quota_bar 语义升级为整条开关 */
       "[" + ATTR_QUOTA_BAR + "]{" +
       "position:absolute;bottom:" + QUOTA_BAR_BOTTOM_PX + "px;right:0;" +
       "z-index:" + SESSION_BAR_Z + ";" +
-      "font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;" +
+      "max-width:100%;" +
+      "font-family:var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);" +
       "font-size:var(--zbar-usage-font-size,10px);" +
       "font-weight:400;line-height:1.4;" +
       "letter-spacing:.02em;color:inherit;" +
       "font-variant-numeric:tabular-nums;" +
       "user-select:none;-webkit-user-select:none;" +
-      "pointer-events:none;white-space:nowrap;}" +
+      "pointer-events:none;}" +
+      /* V33 胶囊本体：玻璃拟态——背景/边框消费客户端语义变量（随 .dark
+       * 翻转，缺失回退半透明深底）、backdrop blur(14px)+saturate(1.3)
+       * 带前缀、内高光+双层投影、圆角 10px；flex nowrap + overflow
+       * hidden + 右缘 mask 线性渐隐兜底（内容超 region 宽被截断时右缘
+       * 溶解示意；渐隐尾值 0.45 非全透明，未截断时仅轻微压暗末段右缘
+       * 空白，不产生可感知的破相）。行透明沿用 --zbar-usage-opacity
+       * （随热重载即时生效，模板内仅保留兜底值） */
       "[" + ATTR_QUOTA_BAR + "] .zbar-usage-qb-line{" +
-      "white-space:nowrap;opacity:var(--zbar-usage-opacity,.55);}" +
+      "display:flex;align-items:stretch;white-space:nowrap;overflow:hidden;" +
+      "padding:1px 2px;" +
+      "background:var(--color-card, rgba(28,30,36,.72));" +
+      "border:1px solid var(--color-border, rgba(127,127,127,.22));" +
+      "border-radius:10px;" +
+      "box-shadow:inset 0 1px 0 rgba(255,255,255,.05), 0 4px 14px rgba(0,0,0,.28), 0 1px 3px rgba(0,0,0,.2);" +
+      "-webkit-backdrop-filter:blur(14px) saturate(1.3);backdrop-filter:blur(14px) saturate(1.3);" +
+      "-webkit-mask-image:linear-gradient(90deg,#000 calc(100% - 16px),rgba(0,0,0,.45));" +
+      "mask-image:linear-gradient(90deg,#000 calc(100% - 16px),rgba(0,0,0,.45));" +
+      "opacity:var(--zbar-usage-opacity,.55);}" +
+      /* V33 分段：弹性盒项；容器 pointer-events:none、分段 auto——只有
+       * 分段本身捕获指针出 title/悬停，不挡输入区交互（同模型行语义）。
+       * V34：段内水平 padding 9px → 6px、段内 parts 间距改 flex gap 3px
+       * 承担（图标-文字与数值-次级信息统一，文本不再携带语义间距空
+       * 格），收窄降宽降低溢出触发频率；发丝分隔线 = 相邻兄弟
+       * ::before（1px 客户端边框变量、高度约条高 55%、两侧 6px 呼吸由
+       * 分段内边距提供），分段整段省略时相邻选择器自动无残留；悬停极
+       * 轻高亮（currentColor 6% 混色，不支持 color-mix 的内核回退中性
+       * 灰，双层声明兜底） */
+      "[" + ATTR_QUOTA_BAR + "] .zbar-usage-qseg{" +
+      "position:relative;display:flex;align-items:center;gap:3px;white-space:nowrap;" +
+      "padding:2px 6px;pointer-events:auto;cursor:default;border-radius:7px;}" +
+      /* V34 溢出适配隐藏态（fitQuotaSegments 按 data-prio 升序整段隐
+       * 藏/贪心恢复；DOM 常驻，恢复零重建） */
+      "[" + ATTR_QUOTA_BAR + "] .zbar-usage-qseg-off{display:none;}" +
+      "[" + ATTR_QUOTA_BAR + "] .zbar-usage-qseg + .zbar-usage-qseg::before{" +
+      "content:\"\";position:absolute;left:0;top:22%;bottom:22%;width:1px;" +
+      "background:var(--color-border, rgba(127,127,127,.22));}" +
+      "[" + ATTR_QUOTA_BAR + "] .zbar-usage-qseg:hover{" +
+      "background:rgba(127,127,127,.07);" +
+      "background:color-mix(in srgb, currentColor 6%, transparent);}" +
+      /* V33 文字三级层级（底部条侧）：主数值 600 + 前景色（qval）、标
+       * 签/单位弱色（qdim = 客户端 --color-foreground-subtle 兜底灰）、
+       * 次要信息更弱一档（qfaint = 同弱色 + 0.72 透明，重置倒计时）。
+       * 额度段三档变色挂在分段 span 上——主数值部分继承变色，倒计时
+       * 子 span 由 qfaint 显式回灰，阈变色仍只属于剩余百分比（V31 界
+       * 线不变） */
+      "[" + ATTR_QUOTA_BAR + "] .zbar-usage-qval{font-weight:600;}" +
+      "[" + ATTR_QUOTA_BAR + "] .zbar-usage-qdim{color:var(--color-foreground-subtle, rgba(120,130,145,.95));}" +
+      "[" + ATTR_QUOTA_BAR + "] .zbar-usage-qfaint{color:var(--color-foreground-subtle, rgba(120,130,145,.95));opacity:.72;}" +
+      /* V33 分段行内 SVG 图标（createElementNS 构建，stroke 随
+       * currentColor 不单独上色；尺寸 = 字号 × 1.4，默认 14px 随字号缩
+       * 放；fill none + round cap/join + 线宽 1.7）。V34：与文字间距由
+       * 段容器 flex gap 统一承担，删除 margin-right */
+      "[" + ATTR_QUOTA_BAR + "] .zbar-usage-qico{" +
+      "width:calc(var(--zbar-usage-font-size,10px) * 1.4);" +
+      "height:calc(var(--zbar-usage-font-size,10px) * 1.4);" +
+      "flex:none;fill:none;stroke:currentColor;stroke-width:1.7;" +
+      "stroke-linecap:round;stroke-linejoin:round;opacity:.9;}" +
+      /* V33 子代理呼吸蓝点（2px，轻量 opacity 脉动；动画禁用偏好下静
+       * 态常亮，不做位移动画） */
+      "[" + ATTR_QUOTA_BAR + "] .zbar-usage-qdot{" +
+      "width:2px;height:2px;border-radius:50%;background:#60a5fa;margin-left:4px;" +
+      "flex:none;animation:zbarUsagePulse 2s ease-in-out infinite;}" +
+      "@keyframes zbarUsagePulse{0%,100%{opacity:.25;}50%{opacity:1;}}" +
+      "@media (prefers-reduced-motion: reduce){" +
+      "[" + ATTR_QUOTA_BAR + "] .zbar-usage-qdot{animation:none;opacity:.85;}}" +
+      /* V33 速度段三档色（与模型行/每轮条同阈值同色系） */
+      "[" + ATTR_QUOTA_BAR + "] .zbar-usage-tps-fast{color:#34d399;}" +
+      "[" + ATTR_QUOTA_BAR + "] .zbar-usage-tps-mid{color:#fbbf24;}" +
+      "[" + ATTR_QUOTA_BAR + "] .zbar-usage-tps-slow{color:#f87171;}" +
       /* V28 兜底：region 缺失时挂 body 并打上标记，退回 fixed 贴底右
        * 侧（边距见 QUOTA_BAR_FALLBACK_* 常量，迁回 region 自动还原） */
       "[" + ATTR_QUOTA_BAR + "][" + ATTR_QUOTA_BAR_FIXED + "]{" +
       "position:fixed;top:auto;right:" + QUOTA_BAR_FALLBACK_RIGHT_PX +
       "px;bottom:" + QUOTA_BAR_FALLBACK_BOTTOM_PX + "px;}" +
-      /* V29 额度行三档配色（充足继承行色灰白、<30 黄、<10 红）；V28 的
-       * 时间戳尾段更暗样式已随尾段删除（无渲染路径再产出该 class） */
+      /* V29 起额度三档配色（充足继承行色灰白、<30 黄、<10 红）；V33 起
+       * 类挂在分段 span 上（倒计时子 span 经 qfaint 显式回灰，见上） */
       "[" + ATTR_QUOTA_BAR + "] .zbar-usage-quota-mid{color:#fbbf24;}" +
       "[" + ATTR_QUOTA_BAR + "] .zbar-usage-quota-low{color:#f87171;}";
       /* V21 的 CTX 三档变色样式（黄/红两个 class 规则）已随 V22 CTX 段
@@ -1673,6 +1972,10 @@ pub const USAGE_JS: &str = r#"// ===============================================
    * 组）：旧数据文件无该键 → 空数组，模型行区不渲染（行为与 V24 一致）；
    * 老库缺 model_id 列时数据端整个键省略，同样落在这里 */
   var lastModels = [];
+  /* V33 顶层今日合计（本地自然日 0 点起全库 model_usage 全量
+   * {tt, rq}）：查询失败/表缺失时数据端整键省略 → null，底部状态条
+   * 「今日」分段随之隐藏；只随 2 秒大文件发布，applySpeedData 不触碰 */
+  var lastToday = null;
   var lastSpeedTs = null;
   var lastSpeedData = null;
 
@@ -1762,6 +2065,9 @@ pub const USAGE_JS: &str = r#"// ===============================================
       data && data.models && data.models.length
         ? data.models.slice(0, MODEL_ROWS_MAX)
         : [];
+    /* V33 今日合计：旧数据文件无 today 键 → null（「今日」分段隐藏）；
+     * 字段形态由消费端再校验（tt 非有限数同样隐藏） */
+    lastToday = (data && data.today) || null;
     applySpeedData(lastSpeedData);
   }
 
@@ -1911,6 +2217,14 @@ pub const USAGE_JS: &str = r#"// ===============================================
     return (sign + s).padStart(5, " ");
   }
 
+  /* V34 底部条数值格式：K/M 缩写与一位小数同 fmtTokens，去前导等宽
+   * 补位空格——底部条各段独立、无跨段对齐需求，段内间距由 flex gap
+   * 承担，补位空格会叠加 gap 造成过宽间距（P2 实机反馈近乎粘连）；每
+   * 轮条/会话条仍用 fmtTokens 等宽补位不变 */
+  function fmtTokensShort(n) {
+    return fmtTokens(n).replace(/^ +/, "");
+  }
+
   function fmtSeconds(ms) {
     return (Math.round(ms / 100) / 10).toFixed(1) + "s";
   }
@@ -2022,9 +2336,11 @@ pub const USAGE_JS: &str = r#"// ===============================================
   }
 
   /* V27 缓存命中率：cr / (cr + 非缓存输入)，保留一位小数；分母为 0
-   * （该会话无任何输入）显示 —。V27–V29 曾作会话条 ⟲ 段后缀，V30 起
+   * （该会话无任何输入）显示 —。V27–V29 曾作会话条 ⟲ 段后缀，V30–V34
    * 消费方为底部额度行「缓存」段（renderQuotaBar 调用方判 "—" 不入
-   * 段），Σ 与 ⟲ 的 token 数值口径不受影响 */
+   * 段）；V35 起三处共用——底部条「缓存」段 + 每轮条/会话条 ⟲ 段后的
+   * 弱色 (NN%) 段（调用方判 "—" 不入段），Σ 与 ⟲ 的 token 数值口径
+   * 不受影响 */
   function cacheHitText(cr, plainIn) {
     var denom = (cr || 0) + (plainIn || 0);
     if (denom <= 0) return "—";
@@ -2032,7 +2348,8 @@ pub const USAGE_JS: &str = r#"// ===============================================
   }
 
   /* ---- 统一行格式（V10）：三态共用同一固定结构，只更新字段数值 ----
-   * "↑ <in> ↓ <out> ⟲ <cr> ✚ <cw> · × <req> · <speed> t/s · TTFT <ttft>"
+   * "↑ <in> ↓ <out> ⟲ <cr> [(NN%)] [✚ <cw>] · × <req> · <speed> t/s ·
+   * TTFT <ttft>"（方括号段按数据条件出现，见下）
    * 各字段等宽补位（等宽字体 + tabular-nums 下整行宽度恒定）：
    * - token 字段经 fmtTokens 恒定 5 字符；
    * - req padStart(3)；
@@ -2041,25 +2358,86 @@ pub const USAGE_JS: &str = r#"// ===============================================
    *   失）显示 "–" 占位；
    * - 速度快照的 request_average 质量由 padSpeed 添加 ≈ 前缀；没有快照
    *   时使用等待占位，计数位始终只来自确认数据。
-   * V27：⟲ 缓存读段后补 ✚ 缓存写段（数据端 turns/runs 既有 cw 字段；
-   * live 行与启动窗口占位同样渲染该位，占位恒 0，整行结构不变）。
+   * V27：⟲ 缓存读段后补 ✚ 缓存写段（数据端 turns/runs 既有 cw 字段）。
    * V25：v.agg（数据端 sa）存在且样本 ≥ 2 时，速度位之后追加紧凑聚合段
    * "· 均38 快71 慢12"；三处调用点差异——完成态传聚合、live 行与启动
    * 窗口占位不传（进行中轮数据端不产出 sa，见文件头 V25 变更 b）。
    * 启动窗口只显示确认计数的等待占位；live/完成态均只显示数据库
-   * 已确认的请求聚合与速度。 */
+   * 已确认的请求聚合与速度。
+   * V33：返回值由拼接串改为字段段数组（{t: 文本, c: 可选 class}）——
+   * 标签/单位弱色（CLS_DIM）、速度数值三档色（tpsClassOf，仅确认数值
+   * 有效时）；各段文本按序拼接的结果与行串逐字一致（全串比对
+   * 机制不变，见 renderRowParts），等宽补位规则原样保留。
+   * V35：⟲ 段后追加弱色缓存命中率段 " (NN%)"（cacheHitText 共用：
+   * cr / (cr + 非缓存输入)，v.inp 即逐轮 clamp 后的非缓存输入；分母 0
+   * ——该轮无任何输入——整段不入行）；✚ 缓存写段改条件段：cw 为 0
+   * （启动窗口占位/无缓存写）整段不入行，cw > 0 显示并带词表 title
+   * （"缓存读后面的+0 看不懂"实机反馈）。条件段不 push 即不进比对串，
+   * 全串比对零 DOM 机制保持；title 不进比对串（见 renderRowParts）。 */
   function barLineOf(v) {
     var agg = v.agg ? aggTextOf(v.agg) : "";
-    return (
-      "↑ " + fmtTokens(v.inp) +
-      " ↓ " + fmtTokens(v.out) +
-      " ⟲ " + fmtTokens(v.cr) +
-      " ✚ " + fmtTokens(v.cw) +
-      " · × " + String(v.req).padStart(3, " ") +
-      " · " + padSpeed(v.speed) + " t/s" +
-      (agg ? " · " + agg : "") +
-      " · TTFT " + (v.ttft == null ? "–" : v.ttft).padStart(4, " ")
+    var spd = v.speed;
+    var spdCls =
+      spd && typeof spd.value === "number" && isFinite(spd.value) && spd.value > 0
+        ? tpsClassOf(spd.value)
+        : "";
+    var hit = cacheHitText(v.cr, v.inp);
+    var parts = [
+      { t: "↑ ", c: CLS_DIM },
+      { t: fmtTokens(v.inp) },
+      { t: " ↓ ", c: CLS_DIM },
+      { t: fmtTokens(v.out) },
+      { t: " ⟲ ", c: CLS_DIM },
+      { t: fmtTokens(v.cr) }
+    ];
+    if (hit !== "—") {
+      parts.push({ t: " (" + hit + ")", c: CLS_DIM });
+    }
+    if (v.cw > 0) {
+      parts.push({ t: " ✚ ", c: CLS_DIM, title: W.cwTitle });
+      parts.push({ t: fmtTokens(v.cw), title: W.cwTitle });
+    }
+    parts.push(
+      { t: " · × ", c: CLS_DIM },
+      { t: String(v.req).padStart(3, " ") },
+      { t: " · ", c: CLS_DIM },
+      { t: padSpeed(v.speed), c: spdCls },
+      { t: " t/s", c: CLS_DIM }
     );
+    if (agg) {
+      parts.push({ t: " · " + agg, c: CLS_DIM });
+    }
+    parts.push({ t: " · TTFT ", c: CLS_DIM });
+    parts.push({ t: (v.ttft == null ? "–" : v.ttft).padStart(4, " ") });
+    return parts;
+  }
+
+  /* V33 字段段数组的比对串：各段文本按序拼接（与渲染后元素的
+   * textContent 逐字一致）——每轮条/会话条的「全串比对零 DOM 机制」
+   * 以此串为基准，V10 语义不变 */
+  function partsTextOf(parts) {
+    var s = "";
+    for (var i = 0; i < parts.length; i++) s += parts[i].t;
+    return s;
+  }
+
+  /* V33 每轮条渲染入口：全串比对（partsTextOf 结果 vs 现有
+   * textContent）不命中才重建——逐段 span（弱色标签/单位、三档色速度
+   * 值）；行元素被重建时 textContent 为空，比对自然不命中 → 自动重渲
+   * （「元素即状态」自愈语义不变）。V35：part 支持 title 通道（✚ 缓存
+   * 写段口径说明）——title 是属性不是文本，不进比对串，比对零 DOM
+   * 机制保持 */
+  function renderRowParts(row, parts) {
+    var text = partsTextOf(parts);
+    if (row.textContent === text) return;
+    while (row.firstChild) row.removeChild(row.firstChild);
+    for (var i = 0; i < parts.length; i++) {
+      var sp = document.createElement("span");
+      if (parts[i].c) sp.className = parts[i].c;
+      if (parts[i].title) sp.title = parts[i].title;
+      sp.textContent = parts[i].t;
+      row.appendChild(sp);
+    }
   }
 
   function lineOf(t) {
@@ -2133,8 +2511,9 @@ pub const USAGE_JS: &str = r#"// ===============================================
           return;
         }
         var live = ensureRow(node, turnId);
-        var text = liveLineOf(r);
-        if (live.textContent !== text) live.textContent = text;
+        /* V33：liveLineOf 返回字段段数组，经 renderRowParts 全串比对后
+         * 逐段 span 渲染（弱色标签/三档色速度值），比对机制不变 */
+        renderRowParts(live, liveLineOf(r));
         live.setAttribute("data-zbar-usage-row-state", "live");
         return;
       }
@@ -2142,7 +2521,7 @@ pub const USAGE_JS: &str = r#"// ===============================================
        * 渲染等待占位；首笔 model_usage 请求出现后自动切换 live 态。 */
       if (activeMap.get(sessOf(node)) === node) {
         var startRow = ensureRow(node, turnId);
-        var startText = barLineOf({
+        renderRowParts(startRow, barLineOf({
           inp: 0,
           out: 0,
           cr: 0,
@@ -2150,8 +2529,7 @@ pub const USAGE_JS: &str = r#"// ===============================================
           req: 0,
           speed: null,
           ttft: null,
-        });
-        if (startRow.textContent !== startText) startRow.textContent = startText;
+        }));
         startRow.setAttribute("data-zbar-usage-row-state", "live");
         return;
       }
@@ -2166,8 +2544,9 @@ pub const USAGE_JS: &str = r#"// ===============================================
       return;
     }
     var row = ensureRow(node, turnId);
-    var text = lineOf(t);
-    if (row.textContent !== text) row.textContent = text;
+    /* V33：lineOf 返回字段段数组，经 renderRowParts 全串比对后逐段
+     * span 渲染（弱色标签/三档色速度值），比对机制不变 */
+    renderRowParts(row, lineOf(t));
     row.setAttribute("data-zbar-usage-row-state", "data");
   }
 
@@ -2589,6 +2968,91 @@ pub const USAGE_JS: &str = r#"// ===============================================
     }
   }
 
+  /* ---- V35 输入框卡片定位（注入条与输入框卡片左右缘对齐的唯一测量
+   *      入口）---- 零选择器假设：不依赖 ZCode 内部类名（选择器仍只有
+   *      既有 SEL_* 常量），只按"region 直接子元素 + 几何特征 + 自家
+   *      标记排除"推断——遍历 region 直接子元素，跳过带 data-zbar-
+   *      usage-* 属性（自家注入元素：每轮条不会出现在这里，会话条/模
+   *      型行/底部条会）或绝对定位（装饰层与自家条，positioned 子元素
+   *      也不是文档流里的卡片）的元素，取第一个可见且 offsetWidth >
+   *      100 的元素视为"输入框卡片"；找不到（选择器失效/结构变更/空
+   *      region）返回 null，调用方回退各自现状（会话条居中、底部条右
+   *      对齐自然宽、模型行居中） */
+  function locateComposerCard(region) {
+    if (!region) return null;
+    try {
+      var kids = region.children;
+      for (var i = 0; i < kids.length; i++) {
+        var el = kids[i];
+        var skip = false;
+        try {
+          var attrs = el.attributes;
+          for (var a = 0; a < attrs.length; a++) {
+            if (attrs[a].name.indexOf("data-zbar-usage-") === 0) {
+              skip = true;
+              break;
+            }
+          }
+        } catch (e0) {}
+        if (skip) continue;
+        try {
+          var pos = getComputedStyle(el).position;
+          if (pos === "absolute" || pos === "fixed") continue;
+        } catch (e1) {}
+        if (!visibleEl(el)) continue;
+        if (el.offsetWidth > 100) return el;
+      }
+    } catch (e) {
+      return null;
+    }
+    return null;
+  }
+
+  /* V35 对齐写入口：卡片命中且其 offsetParent 即 region（V13 注入的
+   * relative 规则生效）时，把条的水平几何改为与卡片对齐——offsetLeft
+   * 与 region 内 absolute 的 left 同一坐标系（同为 region 的 padding
+   * edge 基准），left = card.offsetLeft 使左缘精确对齐；withWidth 时
+   * 再令 width = card.offsetWidth，右缘同步对齐（底部条行内 right:
+   * auto 显式让位样式表 right:0；模型底板 box-sizing:border-box，宽
+   * 度即底板总宽；会话条自然宽不传 width）。每渲染拍重算、值变才写
+   * style（沿用文件既有低写入纪律）。未命中（含 offsetParent 不一致
+   * 的坐标系防御）返回 false，调用方 clearCardAlign 回退现状。窗口缩
+   * 放不触发渲染拍：由下一渲染拍/15s 兜底拍自愈修正（同
+   * fitQuotaSegments 的溢出适配节奏，不做 resize 监听——V13 起既有哲
+   * 学） */
+  function applyCardAlign(bar, region, withWidth) {
+    var card = locateComposerCard(region);
+    if (!card || card.offsetParent !== region) return false;
+    try {
+      var l = card.offsetLeft + "px";
+      if (bar.style.left !== l) bar.style.left = l;
+      /* 会话条/模型行样式表的 left:50%+translateX(-50%) 居中须一并失
+       * 效（底部条无 transform，写 none 为无害幂等） */
+      if (bar.style.transform !== "none") bar.style.transform = "none";
+      if (withWidth) {
+        var w = card.offsetWidth + "px";
+        if (bar.style.width !== w) bar.style.width = w;
+        if (bar.style.right !== "auto") bar.style.right = "auto";
+      }
+    } catch (e) {
+      return false;
+    }
+    return true;
+  }
+
+  /* V35 回退清理：清掉行内对齐，样式表规则自动接管——会话条/模型行
+   * 回居中、底部条回右对齐自然宽；region 缺失的 fixed 兜底路径亦清理
+   * （fixed 贴底定位不受行内 left/width/transform 残留干扰）。逐属性
+   * 判空再清，常态（无残留）零 DOM 写 */
+  function clearCardAlign(bar) {
+    try {
+      if (bar.style.left) bar.style.left = "";
+      if (bar.style.width) bar.style.width = "";
+      if (bar.style.transform) bar.style.transform = "";
+      if (bar.style.right) bar.style.right = "";
+    } catch (e) {}
+  }
+
   /* V29（P1 修复）：当前会话数据判定——renderSessionBar「无数据即
    * removeBar」条件的同口径提炼（勿另造口径）：当前渲染目标会话
    * （currentSessionId：焦点容器优先，退第一个可见容器）满足以下任一
@@ -2669,23 +3133,34 @@ pub const USAGE_JS: &str = r#"// ===============================================
      * （tsum = 输入+输出+缓存读之和，真实数据不含估算），明细段依次
      * 为 ↑ 输入 / ↓ 输出 / ⟲ 缓存读 / × 请求数。
      * V21：parts 改段对象 {t: 文本, c: 可选配色 class}——会话条由单
-     * textContent 改为逐段 span 渲染（当时为 CTX 段级变色引入）。V22
-     * 删除 CTX 段后已无带配色的段，结构保留（未来段级配色零成本复
-     * 用，全部段无 class 时行为与单串等价）。
-     * V27：⟲ 段曾升级为 token + 缓存命中率后缀（cr / (cr + 非缓存输
-     * 入)，cacheHitText 分母 0 显示 —）并新增 ✚ 缓存写段——Σ =
-     * ↑+↓+⟲ 口径不变（tsum 不含 tcw）。V30：命中率后缀挪至底部额度
-     * 行「缓存 NN%」段（cacheHitText 由 renderQuotaBar 复用），⟲ 段
-     * 回归纯 token——对齐参考图底部行口径，会话条行宽不再被后缀挤占。 */
+     * textContent 改为逐段 span 渲染（当时为 CTX 段级变色引入）。
+     * V27 曾新增 ✚ 缓存写段——Σ = ↑+↓+⟲ 口径不变（tsum 不含 tcw）。
+     * V30：命中率后缀曾挪至底部额度行「缓存 NN%」段（cacheHitText 由
+     * renderQuotaBar 复用），⟲ 段一度回归纯 token。
+     * V35：⟲ 段升级为 parts 复合段——token 后补弱色缓存命中率段
+     * " (NN%)"（cacheHitText(tcr, tin) 同口径：sess 行 tin 即 up 非缓
+     * 存输入，与底部条「缓存」段同源同拍；分母 0 该段不入行），实机
+     * 反馈回归；✚ 缓存写段改条件段——tcw 为 0 整段不入行，>0 显示并
+     * 带词表 title（seg 级 title 通道，见 renderBarLine）。条件段不
+     * push 即不进 segsTextOf 比对串，全串比对零 DOM 机制保持。 */
     var tsum = tin + tout + tcr;
+    var sessHit = cacheHitText(tcr, tin);
+    var crSeg = { parts: [{ t: "⟲ " + fmtTokens(tcr) }] };
+    if (sessHit !== "—") {
+      crSeg.parts.push({ t: " (" + sessHit + ")", c: CLS_DIM });
+    }
+    /* V33：Σ 段拆为 parts——Σ 标签继承行色、数值加粗一档
+     * （CLS_STRONG，亮度+字重层级不靠字号）；其余明细段结构不变 */
     var segs = [
-      { t: "Σ " + fmtTokens(tsum) },
+      { parts: [{ t: "Σ " }, { t: fmtTokens(tsum), c: CLS_STRONG }] },
       { t: "↑ " + fmtTokens(tin) },
       { t: "↓ " + fmtTokens(tout) },
-      { t: "⟲ " + fmtTokens(tcr) },
-      { t: "✚ " + fmtTokens(tcw) },
-      { t: "× " + String(treq).padStart(3, " ") }
+      crSeg
     ];
+    if (tcw > 0) {
+      segs.push({ t: "✚ " + fmtTokens(tcw), title: W.cwTitle });
+    }
+    segs.push({ t: "× " + String(treq).padStart(3, " ") });
     /* 速度字段来自会话级 model_usage 请求快照；新一轮尚未出现确认请求
      * 时清掉上一轮的展示值。activeMap 只负责识别当前 DOM 轮，runIndex
      * 告诉我们是否已经有本轮确认请求；它不读取回复文字。request_average
@@ -2700,22 +3175,36 @@ pub const USAGE_JS: &str = r#"// ===============================================
         sessionSpeed = null;
       }
     }
-    segs.push({ t: padSpeed(sessionSpeed) + " t/s" });
+    /* V34：速度值补三档色 class（P1 实机反馈：白/灰与每轮条/底部条的
+     * 速度三档色不一致）；无效快照/等待占位不着色。可见文本拼接串不
+     * 变（padSpeed 等宽补位与 " t/s" 原样），全串比对零 DOM 机制保持 */
+    var sessionSpdCls =
+      sessionSpeed && typeof sessionSpeed.value === "number" &&
+      isFinite(sessionSpeed.value) && sessionSpeed.value > 0
+        ? tpsClassOf(sessionSpeed.value)
+        : "";
+    segs.push({
+      parts: [
+        { t: padSpeed(sessionSpeed), c: sessionSpdCls },
+        { t: " t/s" }
+      ]
+    });
     /* V25：会话条速度段后追加会话树口径的聚合段（"均38 快71 慢12"，
      * 样本 < 2 隐藏——aggTextOf 返回空串时不入段）。sa 只随 2 秒大文件
      * 发布，1 秒旁路不携带，故它随大文件拍自然刷新。 */
     var aggText = aggTextOf(sv && sv.sa);
-    if (aggText) segs.push({ t: aggText });
+    /* V33：聚合段（均/快/慢）弱色（CLS_DIM 次要信息层级） */
+    if (aggText) segs.push({ t: aggText, c: CLS_DIM });
     /* V27 曾在此追加额度段（会话条尾部 "5h余/周余"），V28 随额度展示
      * 改版移出——额度行独立渲染（renderQuotaBar，输入框卡片底部外侧），
      * 不再随会话条渲染节奏/开关联动；V21 曾在此追加 "CTX NN%" 上下文
      * 占用段（三档变色，消费 sess 行的 cp 字段），V22 随展示下线删除
      * （数据端 cp/cu/cw 字段一并移除，旧数据文件残留值被忽略；V27 的
      * cw 是缓存写合计，与旧 CTX cw 无关） */
-    var text = "";
-    for (var si = 0; si < segs.length; si++) {
-      text += (si ? " · " : "") + segs[si].t;
-    }
+    /* V33：比对串经 segsTextOf 求值——各段（含 Σ 段 parts）文本按序
+     * 拼接，与渲染后行 textContent 逐字一致（全串比对零 DOM 机制不
+     * 变）；分隔符仍为 " · " */
+    var text = segsTextOf(segs);
     var bar = ensureBar();
     /* V13：挂载进输入区容器（幂等迁移）——条 absolute 住进 CSS 注入的
      * 顶部留白，零坐标测量、随文档流自适应。V17：挂载点经
@@ -2733,11 +3222,17 @@ pub const USAGE_JS: &str = r#"// ===============================================
         if (bar.hasAttribute(ATTR_SESSION_BAR_FIXED)) {
           bar.removeAttribute(ATTR_SESSION_BAR_FIXED);
         }
+        /* V35：水平对齐输入框卡片（左缘 = 卡片左缘、自然宽），未命中
+         * 清掉行内对齐回退样式表居中。顶部 padding 定位机制不动 */
+        if (!applyCardAlign(bar, region, false)) clearCardAlign(bar);
       } else {
         if (bar.parentElement !== document.body) {
           document.body.appendChild(bar);
         }
         bar.setAttribute(ATTR_SESSION_BAR_FIXED, "");
+        /* V35：兜底 fixed 路径清掉行内对齐——left/transform 残留会干
+         * 扰 fixed + bottom 兜底定位 */
+        clearCardAlign(bar);
       }
     } catch (e) {
       /* 挂载异常：一次性告警（V14 前此处静默吞掉了 ReferenceError，
@@ -2756,9 +3251,24 @@ pub const USAGE_JS: &str = r#"// ===============================================
     renderBarLine(bar, text, segs);
   }
 
+  /* V33 段数组比对串：各段文本按序拼接、" · " 分隔——段可为 {t} 单串
+   * 或 {parts:[{t,c}]} 复合段（Σ 段数值加粗），结果与渲染后行
+   * textContent 逐字一致（全串比对零 DOM 机制的基准串） */
+  function segsTextOf(segs) {
+    var text = "";
+    for (var si = 0; si < segs.length; si++) {
+      if (si) text += " · ";
+      text += segs[si].parts ? partsTextOf(segs[si].parts) : segs[si].t;
+    }
+    return text;
+  }
+
   /* V25 会话条行重建：与旧实现同款"逐段 span + 全串比对"（textContent
    * 读值含全部段文本）；行元素被重建时其 textContent 为空，比对自然不
-   * 命中 → 自动重渲（元素即状态的自愈语义不变） */
+   * 命中 → 自动重渲（元素即状态的自愈语义不变）。V33：段支持可选
+   * parts（复合段内部再拆 span，供 Σ 数值加粗等亮度层级），段级 class
+   * 与 parts 级 class 互不干扰。V35：段支持可选 title（✚ 缓存写段口
+   * 径说明）——title 是属性不是文本，不进比对串，零 DOM 机制保持 */
   function renderBarLine(bar, text, segs) {
     var line = ensureBarLine(bar);
     if (line.textContent === text) return;
@@ -2767,7 +3277,17 @@ pub const USAGE_JS: &str = r#"// ===============================================
       if (sj) line.appendChild(document.createTextNode(" · "));
       var sp = document.createElement("span");
       if (segs[sj].c) sp.className = segs[sj].c;
-      sp.textContent = segs[sj].t;
+      if (segs[sj].title) sp.title = segs[sj].title;
+      if (segs[sj].parts) {
+        for (var pj = 0; pj < segs[sj].parts.length; pj++) {
+          var pp = document.createElement("span");
+          if (segs[sj].parts[pj].c) pp.className = segs[sj].parts[pj].c;
+          pp.textContent = segs[sj].parts[pj].t;
+          sp.appendChild(pp);
+        }
+      } else {
+        sp.textContent = segs[sj].t;
+      }
       line.appendChild(sp);
     }
   }
@@ -2856,11 +3376,16 @@ pub const USAGE_JS: &str = r#"// ===============================================
         if (box.hasAttribute(ATTR_MODELS_FIXED)) {
           box.removeAttribute(ATTR_MODELS_FIXED);
         }
+        /* V35：底板左缘/宽度对齐输入框卡片（V26 的"与会话行同左缘"
+         * 锚定升级为与卡片两缘对齐），未命中清掉行内对齐回退居中 */
+        if (!applyCardAlign(box, region, true)) clearCardAlign(box);
       } else {
         if (box.parentElement !== document.body) {
           document.body.appendChild(box);
         }
         box.setAttribute(ATTR_MODELS_FIXED, "");
+        /* V35：兜底 fixed 路径清掉行内对齐（同会话条兜底分支） */
+        clearCardAlign(box);
       }
     } catch (e) {
       /* 挂载异常：一次性告警（同会话条 V14 模式），之后每周期静默重试 */
@@ -2921,15 +3446,15 @@ pub const USAGE_JS: &str = r#"// ===============================================
    * 话条承载视觉上下文，孤立额度行压着输入框下边框（实机反馈），与
    * 「会话条/每轮条无数据不显示」的自然逻辑对齐，第一条消息发出后恢
    * 复。挂载照会话条 V13
-   * 模式——absolute 挂进 .chat-composer-region（复用
-   * pickComposerRegion，额度无会话归属、传空 id 即取第一个可见容
-   * 器），bottom 负偏移（QUOTA_BAR_BOTTOM_PX）贴输入卡片下边缘外侧，
-   * 不占布局空间、不与顶部留白几何联动；region 缺失回退挂 body +
-   * fixed 贴底右侧（标记属性切换定位，迁回自动还原，同会话条兜底模
-   * 式）。渲染节拍：renderAll 主路径每拍调用——额度数据 onload 与开
-   * 关热重载都直接生效，不依赖会话条渲染节奏。开关经
-   * --zbar-usage-quota-bar（variables.css 渲染 1/0，缺失视为开启，与
-   * session/turn/model 开关同惯例）。页面隐藏降频 60s 的额度重载节拍
+ * 模式——absolute 挂进 .chat-composer-region（复用
+ * pickComposerRegion，额度无会话归属、传空 id 即取第一个可见容
+ * 器），bottom 负偏移（QUOTA_BAR_BOTTOM_PX）贴输入卡片下边缘外侧，
+ * 不占布局空间、不与顶部留白几何联动；region 缺失回退挂 body +
+ * fixed 贴底右侧（标记属性切换定位，迁回自动还原，同会话条兜底模
+ * 式）。渲染节拍：renderAll 主路径每拍调用——额度数据 onload 与开
+ * 关热重载都直接生效，不依赖会话条渲染节奏。开关经
+ * --zbar-usage-quota-bar（variables.css 渲染 1/0，缺失视为开启，与
+ * session/turn/model 开关同惯例）。页面隐藏降频 60s 的额度重载节拍
  * （QUOTA_POLL_HIDDEN_MS）不变。V30：新增 anchor 入参（renderAll 主
  * 路径把锚点一并传入）——周段之后追加当前会话缓存命中率「缓存
  * NN%」段（renderSessionBar 同款双口径自算，不依赖会话条；分母 0
@@ -2937,10 +3462,23 @@ pub const USAGE_JS: &str = r#"// ===============================================
  * 时段（seg.sub → quotaCountdownOf，无 class 独立 span 灰白继承
  * 行色；rs 缺失/已过期不加段），版本闸放行 v:1/v:2。V32：扁平化去
  * 括号，行形 "额度 5h 65% 3h02m · 每周 93% 6d21h · 缓存 88.7%"
- * （en "Quota 5h 65% 3h02m · wk 93% 6d21h · cache 88.7%"）---- */
+ * （en "Quota 5h 65% 3h02m · wk 93% 6d21h · cache 88.7%"）。
+ * V33：演进为分段胶囊状态条（完整分段清单/取值链路/签名比对机制见
+ * 文件头 V33 变更 b/c）——新增 activeMap 入参（renderAll 主路径与
+ * sessHasData/anchor 同源传入，供「速度」「本轮」分段取活动轮
+ * runs 行）；额度/缓存为其中尾部两段（V32 文本与阈变色逻辑原样），
+ * 开关 usage_quota_bar 语义升级为整条开关。V35：水平几何改为与输入
+ * 框卡片对齐（locateComposerCard/applyCardAlign：left = card.offsetLeft、
+ * width = card.offsetWidth，两缘精确对齐——右对齐自然宽的遗留左缘悬
+ * 空问题），未命中回退右对齐自然宽；每渲染拍重算、值变才写 style，
+ * 窗口缩放由下一渲染拍/兜底拍自愈（不做 resize 监听）---- */
   var quotaBar = null; /* 已挂载的额度行元素（跨渲染复用，幂等更新） */
   var quotaMountWarned = false; /* 挂载异常一次性告警标志（同会话条
     mountWarned 的 V14 模式：此前类问题曾被 catch 静默吞掉无从发现） */
+  /* V34 溢出适配状态：当前被隐藏分段的 prio 列表（fitQuotaSegments 修
+   * 正时同步）——renderQuotaBar 构建分段时据此带 h 位，使"构建态/签名/
+   * DOM"三角一致，适配完成后下一拍签名命中零 DOM */
+  var quotaFitHidden = [];
 
   function quotaBarEnabled() {
     try {
@@ -2982,12 +3520,107 @@ pub const USAGE_JS: &str = r#"// ===============================================
     quotaBar = null;
   }
 
-  function renderQuotaBar(sessHasData, anchor) {
+  /* ---- V33 底部状态条取值链路（数据全部来自既有全局状态，沿用既有
+   *      通道，不新增轮询/不读 DOM 文本）---- */
+
+  /* 活动轮 runs 行（当前会话）：activeMap 命中的活动轮 umid → runIndex
+   * 行（主会话行含并入的 sub，V9 口径）。无活动轮/未进 runs 返回 null */
+  function activeRunOf(sessId, activeMap) {
+    if (!sessId || !activeMap) return null;
+    var node = activeMap.get(sessId);
+    var umid = node && node.getAttribute ? node.getAttribute(ATTR_TURN_ID) : "";
+    return umid ? runIndex[umid] || null : null;
+  }
+
+  /* 该会话最新完成轮（按 end/start 取最大；turns 含子代理自身视图行，
+   * 按 sess 精确匹配天然隔离——V20 口径）。无完成轮返回 null */
+  function latestTurnOf(sessId) {
+    var best = null;
+    var bestEnd = -1;
+    for (var i = 0; i < lastTurns.length; i++) {
+      var t = lastTurns[i];
+      if (!t || t.sess !== sessId) continue;
+      var end = typeof t.end === "number" ? t.end : t.start || 0;
+      if (end >= bestEnd) {
+        bestEnd = end;
+        best = t;
+      }
+    }
+    return best;
+  }
+
+  /* 最近生成速度（「速度」分段取值链路）：① 当前会话活动轮 runs 行速
+   * 度优先（1s 旁路 applySpeedData 每秒覆盖 lastRuns，生成期实时值）；
+   * ② 空闲回退该会话 turns 最新完成轮稳定速度（turns 行速度 = 该轮最
+   * 新请求快照，轮完成后不再变化，大文件与 1s 旁路双通道覆盖）。仅返
+   * 回数值有效的快照——无效/缺失返回 null，「速度」分段整段省略 */
+  function latestSpeedOf(sessId, activeMap) {
+    function valid(s) {
+      return (
+        !!s && typeof s.value === "number" && isFinite(s.value) && s.value > 0
+      );
+    }
+    var r = activeRunOf(sessId, activeMap);
+    if (r && valid(r.speed)) return r.speed;
+    var t = sessId ? latestTurnOf(sessId) : null;
+    if (t && valid(t.speed)) return t.speed;
+    return null;
+  }
+
+  /* ---- V33 分段行内 SVG 图标（feather 风格 24 viewBox 线性图标，全
+   *      部以 path 表达；stroke=currentColor 随文字颜色、不单独上色，
+   *      线宽/圆帽由 .zbar-usage-qico 统一）。经 createElementNS 构建
+   *      ——不拼接 HTML 字符串建节点，与全文件 DOM 写入纪律一致 ---- */
+  var ICON_PATHS = {
+    bolt: ["M13 2 3 14h9l-1 8 10-12h-9l1-8z"],
+    hourglass: [
+      "M5 22h14",
+      "M5 2h14",
+      "M7 2v4.2a2 2 0 0 0 .6 1.4L12 12l4.4-4.4a2 2 0 0 0 .6-1.4V2",
+      "M7 22v-4.2a2 2 0 0 1 .6-1.4L12 12l4.4 4.4a2 2 0 0 1 .6 1.4V22"
+    ],
+    bubble: [
+      "M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"
+    ],
+    wrench: [
+      "M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"
+    ],
+    calendar: [
+      "M8 2v4",
+      "M16 2v4",
+      "M3 10h18",
+      "M5 4h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z"
+    ],
+    branch: [
+      "M6 3v12",
+      "M18 9a3 3 0 1 0 0-6 3 3 0 0 0 0 6z",
+      "M6 21a3 3 0 1 0 0-6 3 3 0 0 0 0 6z",
+      "M18 9a9 9 0 0 1-9 9"
+    ],
+    gauge: ["M4.9 19a9 9 0 1 1 14.2 0", "M12 13l3.5-3.5"]
+  };
+
+  function makeIcon(name) {
+    var ds = ICON_PATHS[name];
+    if (!ds || !document.createElementNS) return null;
+    var svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("viewBox", "0 0 24 24");
+    svg.setAttribute("class", "zbar-usage-qico");
+    svg.setAttribute("aria-hidden", "true");
+    for (var i = 0; i < ds.length; i++) {
+      var p = document.createElementNS("http://www.w3.org/2000/svg", "path");
+      p.setAttribute("d", ds[i]);
+      svg.appendChild(p);
+    }
+    return svg;
+  }
+
+  function renderQuotaBar(sessHasData, anchor, activeMap) {
     if (!sessHasData || !quotaBarEnabled()) {
       /* 当前会话无数据（会话级判定闸，见 currentSessionHasData——多
        * 会话保活下的新建任务/draft 页同样命中，V29 P1 修复），或开关
-       * 关闭（变量缺失视为开启，与 session/turn 开关同惯例）：移除额
-       * 度行 */
+       * 关闭（变量缺失视为开启，与 session/turn 开关同惯例）：移除整
+       * 条状态条 */
       removeQuotaBar();
       return;
     }
@@ -2995,40 +3628,9 @@ pub const USAGE_JS: &str = r#"// ===============================================
      * 照常显示、无倒计时段，额度线程 60s 内写出 v:2 自然生效 */
     var qd =
       quotaData && (quotaData.v === 1 || quotaData.v === 2) ? quotaData : null;
-    /* 段对象 {t, c, sub} 机制与会话条 segs 同款（V31 sub 为可选倒计时段，
-     * V32 起为去括号的裸时长）：h5/wk 任一缺失（接口未返回该窗口）只隐
-     * 藏对应段，无空白分隔符残留；剩余 <30 黄、<10 红，充足继承行色
-     * （quotaClassOf 返回空）；倒计时段由 quotaCountdownOf 生成（rs 缺失
-     * /非法/已过期返回空串 → 该窗口无倒计时段），以无 class 独立 span
-     * 渲染恒继承灰白行色。查询
-     * 未成功（quotaData 为 null，数据端从未写出文件）或两窗口全缺失 →
-     * 无内容可显示，整行隐藏（不渲染空行/占位）。额度绝不进 2s 大文件
-     * 与 1s 速度旁路，随 30s 额度拍自然刷新；倒计时基于 Date.now() 每拍
-     * 重算（本函数由 renderAll 主路径每拍调用），分钟级变化之间由全串比
-     * 对保证零 DOM 操作 */
-    var segs = [];
-    var nowMs = Date.now();
-    if (qd && typeof qd.h5 === "number" && isFinite(qd.h5)) {
-      segs.push({
-        t: W.quotaLead + " " + W.quota5h + Math.round(qd.h5) + "%",
-        sub: quotaCountdownOf(qd.h5rs, nowMs),
-        c: quotaClassOf(qd.h5)
-      });
-    }
-    if (qd && typeof qd.wk === "number" && isFinite(qd.wk)) {
-      segs.push({
-        t: W.quotaWk + Math.round(qd.wk) + "%",
-        sub: quotaCountdownOf(qd.wkrs, nowMs),
-        c: quotaClassOf(qd.wk)
-      });
-    }
-    /* V30：每周段之后追加当前会话缓存命中率「缓存 NN%」段（灰白继承
-     * 行色，c 为空串不高亮）——参考图底部行口径，命中率自会话条 ⟲ 段
-     * 挪入本行。双口径计算照抄 renderSessionBar（V21：sess 全量合计行
-     * 命中即消费 sess 行，否则 totals + runTotals 回退叠加），anchor 由
-     * renderAll 主路径传入（与 sessHasData 同源同拍）。分母为 0
-     * （cacheHitText 返回 "—"，新会话无任何输入数据）不入段，不留残
-     * 留；quota 查询未成功时该段可独立成行，随逐段隐藏机制自然展示 */
+    /* 双口径（renderSessionBar 同款）：sess 全量合计行命中即消费 sess
+     * 行，否则 totals + runTotals 回退叠加——会话 Σ 段与缓存命中率段
+     * 共用同一组口径值，与 sessHasData 同源同拍。 */
     var sessId = currentSessionId(anchor);
     var sv = sessId ? sessIndex[sessId] : null;
     var useSess = !!(sv && sv.tt != null);
@@ -3038,40 +3640,218 @@ pub const USAGE_JS: &str = r#"// ===============================================
       ? sv.cr || 0
       : (totals ? totals.tcr : 0) + (runTotals ? runTotals.tcr : 0);
     var tin = useSess ? (sv.up || 0) : (totals ? totals.tin : 0) + (runTotals ? runTotals.tin : 0);
+    /* V33/V34 分段容器：{prio: 溢出适配优先级（0=永不隐藏，数值越小
+     * 越先被隐藏）, ico: 图标, title: 原生提示, c: 段级配色 class,
+     * dot: 呼吸蓝点, h: 隐藏态（计入签名）, parts: [{t: 文本, c: 段内
+     * 层级 class}]}——缺数据的分段整段省略（push 侧过滤），发丝分隔线
+     * 由 CSS 相邻兄弟选择器承担、无空分隔残留；段内间距由 flex gap 承
+     * 担，文本不带语义间距空格（P2-5） */
+    var segs = [];
+    var nowMs = Date.now();
+    /* ① ⚡ 速度：最近生成速度（latestSpeedOf：活动轮 runs 行 1s 旁路
+     * 实时值优先，空闲回退该会话最新完成轮稳定速度）；数值三档色 +
+     * "t/s" 弱色单位，request_average 的 ≈ 前缀保留（近似质量不丢）。
+     * prio 0：永不隐藏（V34） */
+    var spd = latestSpeedOf(sessId, activeMap);
+    if (spd) {
+      segs.push({
+        prio: 0,
+        ico: "bolt",
+        title: W.speedTitle,
+        parts: [
+          {
+            t: (spd.quality === "request_average" ? "≈" : "") + spd.value.toFixed(1),
+            c: tpsClassOf(spd.value)
+          },
+          { t: "t/s", c: "zbar-usage-qdim" }
+        ]
+      });
+    }
+    /* ② 本轮：↑非缓存输入+↓输出合计（fmtTokensShort，去等宽补位）+
+     * "N req"——活动轮 runs 行（含并入 sub，liveLineOf 同口径）优先，
+     * 无则该会话最新完成 turn 行（turns 行数值已并入子代理聚合）；
+     * title 带输入/输出/缓存读/缓存写明细（原始数值非缩写）。
+     * prio 4：溢出时第五顺位隐藏（V34） */
+    var tr = activeRunOf(sessId, activeMap);
+    var tt = tr ? null : (sessId ? latestTurnOf(sessId) : null);
+    if (tr || tt) {
+      var tIn2, tOut2, tCr2, tCw2, tReq2;
+      if (tr) {
+        var sb = tr.sub;
+        var trIn = (tr["in"] || 0) + (sb ? sb["in"] || 0 : 0);
+        var trCr = (tr.cr || 0) + (sb ? sb.cr || 0 : 0);
+        tIn2 = Math.max(0, trIn - trCr);
+        tOut2 = (tr.out || 0) + (sb ? sb.out || 0 : 0);
+        tCr2 = trCr;
+        tCw2 = (tr.cw || 0) + (sb ? sb.cw || 0 : 0);
+        tReq2 = (tr.req || 0) + (sb ? sb.req || 0 : 0);
+      } else {
+        tIn2 = Math.max(0, (tt["in"] || 0) - (tt.cr || 0));
+        tOut2 = tt.out || 0;
+        tCr2 = tt.cr || 0;
+        tCw2 = tt.cw || 0;
+        tReq2 = tt.req || 0;
+      }
+      segs.push({
+        prio: 4,
+        ico: "hourglass",
+        title:
+          W.turn + " · " + W.tIn + " " + tIn2 + " · " + W.tOut + " " + tOut2 +
+          " · " + W.tCr + " " + tCr2 + " · " + W.tCw + " " + tCw2 +
+          " · " + tReq2 + " " + W.n,
+        parts: [
+          { t: W.turn, c: "zbar-usage-qdim" },
+          { t: fmtTokensShort(tIn2 + tOut2), c: "zbar-usage-qval" },
+          { t: tReq2 + " " + W.req, c: "zbar-usage-qdim" }
+        ]
+      });
+    }
+    /* ③ 会话 Σ：当前会话 tt（sess 行 tt 或 totals+runTotals 同口径合
+     * 计 = ↑+↓+⟲，即会话条 Σ 口径）+ "N req"（rq/rreq 同口径）。
+     * prio 6：溢出时最后顺位隐藏（信息密度最高，V34） */
+    if (sessId) {
+      var sTt = useSess
+        ? sv.tt || 0
+        : (totals ? totals.tin + totals.tout + totals.tcr : 0) +
+          (runTotals ? runTotals.tin + runTotals.tout + runTotals.tcr : 0);
+      var sRq = useSess
+        ? sv.rq || 0
+        : (totals ? totals.treq : 0) + (runTotals ? runTotals.treq : 0);
+      segs.push({
+        prio: 6,
+        ico: "bubble",
+        title: W.sessTitle,
+        parts: [
+          { t: W.sess, c: "zbar-usage-qdim" },
+          { t: fmtTokensShort(sTt), c: "zbar-usage-qval" },
+          { t: sRq + " " + W.req, c: "zbar-usage-qdim" }
+        ]
+      });
+    }
+    /* ④ 工具：sess[].tl（V33 新消费字段，会话树工具调用数；字段缺失
+     * ——旧数据文件/查询降级——整段隐藏）。prio 3（V34） */
+    if (sv && typeof sv.tl === "number" && isFinite(sv.tl)) {
+      segs.push({
+        prio: 3,
+        ico: "wrench",
+        title: W.toolsTitle,
+        parts: [
+          { t: W.tools, c: "zbar-usage-qdim" },
+          { t: String(sv.tl), c: "zbar-usage-qval" }
+        ]
+      });
+    }
+    /* ⑤ 今日：顶层 today.tt + "N req"（today.rq；V33 新消费字段，本
+     * 地自然日全库合计——整键缺失/非法隐藏本段）。prio 2（V34） */
+    if (lastToday && typeof lastToday.tt === "number" && isFinite(lastToday.tt)) {
+      segs.push({
+        prio: 2,
+        ico: "calendar",
+        title: W.todayTitle,
+        parts: [
+          { t: W.today, c: "zbar-usage-qdim" },
+          { t: fmtTokensShort(lastToday.tt), c: "zbar-usage-qval" },
+          { t: (lastToday.rq || 0) + " " + W.req, c: "zbar-usage-qdim" }
+        ]
+      });
+    }
+    /* ⑥ 子代理：Σ 当前会话 turns[].sub.n（并入主轮的子代理轮数）；
+     * 任一 runs 行 psess 命中当前会话 → 图标旁呼吸蓝点（子代理运行中
+     * 信号，轻量 opacity 脉动）；无子代理隐藏本段。prio 5（V34） */
+    if (sessId) {
+      var subN = 0;
+      for (var si = 0; si < lastTurns.length; si++) {
+        var st = lastTurns[si];
+        if (st && st.sess === sessId && st.sub && st.sub.n) subN += st.sub.n;
+      }
+      if (subN > 0) {
+        var subRunning = false;
+        for (var ri = 0; ri < lastRuns.length; ri++) {
+          var rr = lastRuns[ri];
+          if (rr && rr.psess === sessId) {
+            subRunning = true;
+            break;
+          }
+        }
+        segs.push({
+          prio: 5,
+          ico: "branch",
+          title: W.subsTitle,
+          dot: subRunning,
+          parts: [
+            { t: W.subs, c: "zbar-usage-qdim" },
+            { t: String(subN), c: "zbar-usage-qval" }
+          ]
+        });
+      }
+    }
+    /* ⑦ 额度（V32 原样迁入 + V34 补 title）：h5/wk 缺失只隐对应段；三
+     * 档变色挂段级 class（主数值部分继承变色）；倒计时段由
+     * quotaCountdownOf 生成（rs 缺失/非法/已过期 → 无倒计时段），qfaint
+     * 显式回灰——阈变色仍只属于剩余百分比（V31 界线不变）。prio 0：两
+     * 段均永不隐藏（V34——相比 V32 纯额度行永远可见，额度是底线信息） */
+    if (qd && typeof qd.h5 === "number" && isFinite(qd.h5)) {
+      var h5cd = quotaCountdownOf(qd.h5rs, nowMs);
+      var h5Parts = [
+        { t: W.quotaLead + " " + W.quota5h + Math.round(qd.h5) + "%", c: quotaClassOf(qd.h5) }
+      ];
+      if (h5cd) h5Parts.push({ t: h5cd, c: "zbar-usage-qfaint" });
+      segs.push({ prio: 0, title: W.quota5hTitle, parts: h5Parts });
+    }
+    if (qd && typeof qd.wk === "number" && isFinite(qd.wk)) {
+      var wkcd = quotaCountdownOf(qd.wkrs, nowMs);
+      var wkParts = [
+        { t: W.quotaWk + Math.round(qd.wk) + "%", c: quotaClassOf(qd.wk) }
+      ];
+      if (wkcd) wkParts.push({ t: wkcd, c: "zbar-usage-qfaint" });
+      segs.push({ prio: 0, title: W.quotaWkTitle, parts: wkParts });
+    }
+    /* ⑧ 缓存（V30 逻辑原样迁入 + V33 仪表图标 + V34 title）：当前会话
+     * 命中率 cr / (cr + 非缓存输入)，分母 0（cacheHitText 返回 "—"）
+     * 不入段不留残留。prio 1：溢出时最先隐藏（V34） */
     var hit = cacheHitText(tcr, tin);
     if (hit !== "—") {
-      segs.push({ t: W.cachePct + " " + hit, c: "" });
+      segs.push({
+        prio: 1,
+        ico: "gauge",
+        title: W.cacheTitle,
+        parts: [{ t: W.cachePct + " " + hit, c: "" }]
+      });
     }
     if (!segs.length) {
       removeQuotaBar();
       return;
     }
-    /* V29：更新时间戳尾段删除（fmtClock + 词表 updated + 专用样式一并
-     * 移除——实机上增加行宽与视觉噪音，参考图里价值有限）；V31 起 5h/
-     * 周段带 sub 倒计时段，全串比对纳入 sub（倒计时每拍重算、分钟级变
-     * 化之间零 DOM）；V32 起 sub 前置半角空格（扁平化去括号，与 DOM 侧
-     * 空格 text node 逐字一致） */
-    var text = "";
-    for (var qi = 0; qi < segs.length; qi++) {
-      text += (qi ? " · " : "") + segs[qi].t + (segs[qi].sub ? " " + segs[qi].sub : "");
+    /* V34：隐藏态计入构建与签名——quotaFitHidden 为上次适配结果，构建
+     * 时直接带 h 位（速度/额度 prio 0 永不隐藏，indexOf 恒 -1）；溢出
+     * 适配由渲染后 fitQuotaSegments 兜底执行并同步本数组与签名 */
+    for (var hqi = 0; hqi < segs.length; hqi++) {
+      segs[hqi].h = quotaFitHidden.indexOf(segs[hqi].prio) >= 0;
     }
     var bar = ensureQuotaBar();
     try {
-      /* 额度无会话归属：pickComposerRegion 传空 id 即取第一个可见容器
-       * （多会话保活下同样成立——所有会话共享同一账号额度，任一可见
-       * 输入区都是正确挂载点）。region 缺失（选择器失效/结构变更）退
-       * 回旧路径：挂 body、打兜底标记切 fixed 贴底右侧 */
+      /* 挂载（V28 原样）：额度/今日无会话归属——pickComposerRegion 传
+       * 空 id 即取第一个可见容器（多会话保活下同样成立）。region 缺失
+       * （选择器失效/结构变更）退回旧路径：挂 body、打兜底标记切
+       * fixed 贴底右侧 */
       var region = pickComposerRegion("");
       if (region) {
         if (bar.parentElement !== region) region.appendChild(bar);
         if (bar.hasAttribute(ATTR_QUOTA_BAR_FIXED)) {
           bar.removeAttribute(ATTR_QUOTA_BAR_FIXED);
         }
+        /* V35：胶囊条左缘/宽度精确对齐输入框卡片（右对齐自然宽的遗留
+         * 左缘悬空——实机反馈），未命中清掉行内对齐回退右对齐自然宽；
+         * 溢出优先级隐藏照常（fitQuotaSegments 按卡片宽度自然生效） */
+        if (!applyCardAlign(bar, region, true)) clearCardAlign(bar);
       } else {
         if (bar.parentElement !== document.body) {
           document.body.appendChild(bar);
         }
         bar.setAttribute(ATTR_QUOTA_BAR_FIXED, "");
+        /* V35：兜底 fixed 路径清掉行内对齐——fixed 贴底右侧不再受残
+         * 留 left/width 干扰 */
+        clearCardAlign(bar);
       }
     } catch (e) {
       /* 挂载异常：一次性告警（同会话条 V14 模式），之后每周期静默重试 */
@@ -3080,37 +3860,156 @@ pub const USAGE_JS: &str = r#"// ===============================================
         try { console.warn("[ZBar] usage quota bar mount error:", e); } catch (e2) {}
       }
     }
-    /* 逐段 span + 全串比对（同 renderBarLine 的自愈语义：行元素被重
-     * 建时 textContent 为空，比对自然不命中 → 自动重渲；无变化零 DOM
-     * 操作） */
-    renderQuotaLine(bar, text, segs);
+    /* V33 签名比对（renderModelRows 同款「元素即状态」策略）：分段携
+     * 带行内 SVG 图标无法进 textContent 比对，改以全部分段数据（段级
+     * class/图标/标题/蓝点/隐藏态/各段文本）拼接签名存于容器
+     * data-zbar-usage-qsig——无变化零 DOM 操作，倒计时分钟级变化之间
+     * 仍零开销；行/容器被重建时属性缺失 → 自动全量重渲（自愈语义不
+     * 变）。V34：签名经 quotaSigOf 统一构建（含 seg.h 隐藏位），渲染
+     * 后由 fitQuotaSegments 做溢出适配（必要时修正 DOM 并同步签名） */
+    renderQuotaLine(bar, quotaSigOf(segs), segs);
+    fitQuotaSegments(bar, segs);
   }
 
-  function renderQuotaLine(bar, text, segs) {
+  /* V33 底部状态条渲染：签名比对（renderModelRows 同款「元素即状态」
+   * 策略）——分段携带行内 SVG 图标无法进 textContent 比对，改以全部
+   * 分段数据（class/图标/标题/蓝点/各段文本）拼接的签名字符串存于容
+   * 器 data-zbar-usage-qsig 属性，无变化零 DOM 操作；行/容器被重建时
+   * 属性缺失 → 自动全量重渲（自愈语义不变）。段结构：
+   * span.zbar-usage-qseg（可选 seg.c 段级配色 class + 原生 title 提示
+   * + 前置 SVG 图标 + 内部 parts 层级 span + 可选呼吸蓝点），发丝分
+   * 隔线由 CSS 相邻兄弟 ::before 承担（分段整段省略无残留）；各节点
+   * 一律 createElement/createElementNS + textContent 写入（与全文件
+   * 纪律一致：不拼接 HTML 字符串建节点）。V31 的「倒计时独立无 class
+   * span」语义由 parts 内 qfaint class 显式回灰等价承载（阈变色仍只
+   * 属于剩余百分比） */
+  function renderQuotaLine(bar, sig, segs) {
     var line = bar.querySelector(":scope > .zbar-usage-qb-line");
+    if (line && bar.getAttribute("data-zbar-usage-qsig") === sig) return;
     if (!line) {
       line = document.createElement("div");
       line.className = "zbar-usage-qb-line";
       bar.appendChild(line);
     }
-    if (line.textContent === text) return;
     while (line.firstChild) line.removeChild(line.firstChild);
     for (var qj = 0; qj < segs.length; qj++) {
-      if (qj) line.appendChild(document.createTextNode(" · "));
+      var seg = segs[qj];
       var sp = document.createElement("span");
-      if (segs[qj].c) sp.className = segs[qj].c;
-      sp.textContent = segs[qj].t;
-      line.appendChild(sp);
-      /* V31 倒计时段（seg.sub；V32 起扁平化去括号）：先补半角空格
-       * text node 再挂无 class 独立 span（与百分比 span 平级、不嵌套）
-       * 恒继承灰白行色——阈值变色只属于剩余百分比，空格不入百分比
-       * span；sub 缺失时零额外节点 */
-      if (segs[qj].sub) {
-        line.appendChild(document.createTextNode(" "));
-        var sq = document.createElement("span");
-        sq.textContent = segs[qj].sub;
-        line.appendChild(sq);
+      /* V34：隐藏态经 .zbar-usage-qseg-off class（display:none，DOM 常
+       * 驻，fit 恢复零重建）+ data-prio 自描述（实机 DevTools 可查，
+       * 优先级语义见 fitQuotaSegments） */
+      sp.className =
+        "zbar-usage-qseg" + (seg.c ? " " + seg.c : "") +
+        (seg.h ? " zbar-usage-qseg-off" : "");
+      sp.setAttribute("data-prio", String(seg.prio || 0));
+      if (seg.title) sp.title = seg.title;
+      var ico = seg.ico ? makeIcon(seg.ico) : null;
+      if (ico) sp.appendChild(ico);
+      for (var pj = 0; pj < seg.parts.length; pj++) {
+        var pp = document.createElement("span");
+        if (seg.parts[pj].c) pp.className = seg.parts[pj].c;
+        pp.textContent = seg.parts[pj].t;
+        sp.appendChild(pp);
       }
+      if (seg.dot) {
+        var dot = document.createElement("span");
+        dot.className = "zbar-usage-qdot";
+        sp.appendChild(dot);
+      }
+      line.appendChild(sp);
+    }
+    bar.setAttribute("data-zbar-usage-qsig", sig);
+  }
+
+  /* V34 签名构建（renderQuotaBar 与 fitQuotaSegments 共用）：隐藏态
+   * （seg.h）计入签名——内容不变而隐藏集合变化时签名随之变化；fit 修
+   * 正后重写签名，保证"构建态/签名/DOM"三角一致与零 DOM */
+  function quotaSigOf(segs) {
+    var sig = "";
+    for (var qi = 0; qi < segs.length; qi++) {
+      sig +=
+        (segs[qi].c || "") + "\u0000" + (segs[qi].ico || "") + "\u0000" +
+        (segs[qi].title || "") + "\u0000" + (segs[qi].dot ? "1" : "0") +
+        "\u0000" + (segs[qi].h ? "H" : "V");
+      for (var qpi = 0; qpi < segs[qi].parts.length; qpi++) {
+        sig += "<" + (segs[qi].parts[qpi].c || "") + "\u0001" + segs[qi].parts[qpi].t;
+      }
+    }
+    return sig;
+  }
+
+  /* ---- V34 溢出适配（P1：条宽不足时右缘 mask 渐隐曾把额度/每周/缓存
+   *      三段视觉吃掉——改为分段优先级隐藏，mask 仅保留为最终兜底）----
+   * 规则：溢出（scrollWidth > clientWidth）时按优先级从低到高整段隐藏
+   * ——缓存(1) → 今日(2) → 工具(3) → 本轮(4) → 子代理(5) → 会话(6)，
+   * 每步复测、不再溢出即停；⚡速度与额度两段 prio 0 永不隐藏；全部可
+   * 见时不做任何隐藏。无溢出但存在隐藏段时按优先级降序贪心恢复（优先
+   * 恢复重要段），恢复某段即溢出则回退该段并停。每次修正同步
+   * quotaFitHidden 并重写签名（隐藏态计入）——下一拍构建态与 DOM 一
+   * 致，签名命中零 DOM；常规拍（内容/宽度均不变、无溢出）只做两次布
+   * 局读取、零 DOM 写。隐藏经 .zbar-usage-qseg-off class（DOM 常驻，
+   * 恢复零重建）。窗口宽度变化不触发渲染拍，由下一个数据拍/15s 兜底
+   * 拍自愈修正（与注入层其它状态自愈同节奏） */
+  function fitQuotaSegments(bar, segs) {
+    var line = bar.querySelector(":scope > .zbar-usage-qb-line");
+    if (!line || line.children.length !== segs.length) return;
+    var changed = false;
+    function isOff(i) {
+      var el = line.children[i];
+      if (!el) return false;
+      return (" " + el.className + " ").indexOf(" zbar-usage-qseg-off ") >= 0;
+    }
+    function setOff(i, off) {
+      var el = line.children[i];
+      if (!el) return;
+      if (off) {
+        if (!isOff(i)) {
+          el.className = el.className + " zbar-usage-qseg-off";
+          changed = true;
+        }
+      } else if (isOff(i)) {
+        el.className = el.className
+          .replace(" zbar-usage-qseg-off", "")
+          .replace("zbar-usage-qseg-off", "")
+          .replace(/\s+/g, " ");
+        changed = true;
+      }
+    }
+    if (line.scrollWidth > line.clientWidth) {
+      /* 溢出：优先级升序隐藏（prio 0 永不隐藏），每步复测 */
+      var hideOrder = [];
+      for (var oi = 0; oi < segs.length; oi++) {
+        if (segs[oi].prio > 0) hideOrder.push({ p: segs[oi].prio, i: oi });
+      }
+      hideOrder.sort(function (a, b) { return a.p - b.p; });
+      for (var hi = 0; hi < hideOrder.length; hi++) {
+        setOff(hideOrder[hi].i, true);
+        if (line.scrollWidth <= line.clientWidth) break;
+      }
+    } else {
+      /* 无溢出：优先级降序贪心恢复（优先恢复重要段），恢复即溢出则
+       * 回退该段并停 */
+      var showOrder = [];
+      for (var ri = 0; ri < segs.length; ri++) {
+        if (segs[ri].prio > 0) showOrder.push({ p: segs[ri].prio, i: ri });
+      }
+      showOrder.sort(function (a, b) { return b.p - a.p; });
+      for (var sj = 0; sj < showOrder.length; sj++) {
+        if (!isOff(showOrder[sj].i)) continue;
+        setOff(showOrder[sj].i, false);
+        if (line.scrollWidth > line.clientWidth) {
+          setOff(showOrder[sj].i, true);
+          break;
+        }
+      }
+    }
+    if (changed) {
+      quotaFitHidden = [];
+      for (var fi = 0; fi < segs.length; fi++) {
+        segs[fi].h = isOff(fi);
+        if (segs[fi].h) quotaFitHidden.push(segs[fi].prio);
+      }
+      bar.setAttribute("data-zbar-usage-qsig", quotaSigOf(segs));
     }
   }
 
@@ -3198,9 +4097,11 @@ pub const USAGE_JS: &str = r#"// ===============================================
      * sessHasData 闸隐藏，取代初版全局级 sessionDataEmpty 判定）；额
      * 度数据 onload 与开关热重载随本渲染节拍直接生效，不依赖会话条渲
      * 染节奏。V30：调用再传 anchor，额度行自算当前会话缓存命中率
-     * （「缓存 NN%」段，与会话条同拍同口径）。 */
+     * （「缓存 NN%」段，与会话条同拍同口径）。V33：再传 activeMap，
+     * 「速度」「本轮」分段取当前会话活动轮 runs 行（1s 旁路实时值优
+     * 先），与 sessHasData/anchor 同源同拍。 */
     try {
-      renderQuotaBar(sessHasData, anchor);
+      renderQuotaBar(sessHasData, anchor, activeMap);
     } catch (e) {
       /* 额度行失败静默，下个变更/兜底周期重试 */
     }
@@ -4706,6 +5607,377 @@ mod tests {
     }
 
     #[test]
+    fn usage_js_v34_分段状态条与设计语言() {
+        // ---- 版本标记（V35 起头部升级，V34 特征全部保留）----
+        assert!(USAGE_JS.contains("ZBAR-THEME-V35"));
+        assert!(!USAGE_JS.contains("ZBAR-THEME-V34"), "版本头应已升到 V35");
+        // ---- 字体跟随客户端（任务红线：--font-mono 引用）：四个注入层
+        // （每轮条/会话条/模型底板/底部条）各一条 font-family 声明，缺失
+        // 回退既有等宽栈
+        assert_eq!(
+            USAGE_JS
+                .matches("font-family:var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);")
+                .count(),
+            4,
+            "每轮条/会话条/模型底板/底部条应各消费一次 --font-mono"
+        );
+        // ---- 颜色跟随客户端语义变量 + 兜底（速度/额度三档语义色保留硬编码）----
+        assert!(USAGE_JS.contains("var(--color-foreground-subtle, rgba(120,130,145,.95))"));
+        assert!(USAGE_JS.contains("var(--color-border, rgba(127,127,127,.22))"));
+        assert!(USAGE_JS.contains("var(--color-card, rgba(28,30,36,.72))"));
+        assert!(
+            USAGE_JS.contains("background:var(--color-card, rgba(2,6,23,.72))")
+                && USAGE_JS
+                    .contains("border:1px solid var(--color-border, rgba(148,163,184,.28))"),
+            "模型底板背景/边框应对齐客户端 tokens（回退原深底/原边框）"
+        );
+        assert!(
+            !USAGE_JS.contains("prefers-color-scheme: light"),
+            "底板配色改由客户端语义变量接管，V26 亮色媒体查询应删除"
+        );
+        // ---- 胶囊容器（任务红线：backdrop-filter 存在）：blur+saturate
+        // 带前缀、内高光+双层投影、圆角、右缘 mask 渐隐截断兜底 ----
+        assert!(
+            USAGE_JS
+                .contains("-webkit-backdrop-filter:blur(14px) saturate(1.3);backdrop-filter:blur(14px) saturate(1.3);"),
+            "胶囊应带前缀的 blur(14px) saturate(1.3) 毛玻璃"
+        );
+        assert!(
+            USAGE_JS.contains(
+                "box-shadow:inset 0 1px 0 rgba(255,255,255,.05), 0 4px 14px rgba(0,0,0,.28), 0 1px 3px rgba(0,0,0,.2);"
+            ),
+            "胶囊应有内高光 + 双层投影"
+        );
+        assert!(
+            USAGE_JS
+                .contains("mask-image:linear-gradient(90deg,#000 calc(100% - 16px),rgba(0,0,0,.45));"),
+            "胶囊应有右缘 mask 线性渐隐截断兜底（尾值非全透明）"
+        );
+        assert!(USAGE_JS.contains("border-radius:10px;"), "胶囊圆角 10px");
+        assert!(
+            USAGE_JS.contains("max-width:100%;"),
+            "底部条宽不强行撑满 region：右对齐自然宽 + max-width 100%"
+        );
+        // ---- 文字三级层级（亮度+字重，不靠字号）----
+        assert!(USAGE_JS.contains(".zbar-usage-dim{opacity:.66;}"));
+        assert!(USAGE_JS.contains(".zbar-usage-strong{font-weight:600;}"));
+        assert!(USAGE_JS.contains(".zbar-usage-qval{font-weight:600;}"));
+        assert!(
+            USAGE_JS.contains(".zbar-usage-qdim{color:var(--color-foreground-subtle")
+                && USAGE_JS.contains(".zbar-usage-qfaint{color:var(--color-foreground-subtle"),
+            "底部条标签/单位弱色两级（qdim/qfaint）应消费 --color-foreground-subtle"
+        );
+        // 每轮条速度三档色 scoped 规则（模型行 scoped 规则保留并存）
+        assert!(
+            USAGE_JS.contains("\"[\" + ATTR_ROW + \"] .zbar-usage-tps-fast{color:#34d399;}\"")
+                && USAGE_JS.contains("\"[\" + ATTR_ROW + \"] .zbar-usage-tps-mid{color:#fbbf24;}\"")
+                && USAGE_JS.contains("\"[\" + ATTR_ROW + \"] .zbar-usage-tps-slow{color:#f87171;}\"")
+                && USAGE_JS
+                    .contains("\"[\" + ATTR_QUOTA_BAR + \"] .zbar-usage-tps-fast{color:#34d399;}\""),
+            "每轮条/底部条速度三档色应与模型行同阈值同色系"
+        );
+        // ---- 分段清单与行内 SVG 图标（createElementNS，无 innerHTML）----
+        for ico in [
+            "bolt", "hourglass", "bubble", "wrench", "calendar", "branch", "gauge",
+        ] {
+            assert!(
+                USAGE_JS.contains(&format!("ico: \"{ico}\"")),
+                "分段图标 {ico} 应在 renderQuotaBar 分段清单中"
+            );
+            assert!(
+                USAGE_JS.contains(&format!("{}: [", ico)),
+                "分段图标 {ico} 应在 ICON_PATHS 定义"
+            );
+        }
+        assert!(
+            USAGE_JS.contains("var ICON_PATHS = {")
+                && USAGE_JS.contains("function makeIcon(name)")
+                && USAGE_JS.contains("document.createElementNS(\"http://www.w3.org/2000/svg\", \"svg\")")
+                && USAGE_JS.contains("svg.setAttribute(\"class\", \"zbar-usage-qico\");")
+                && USAGE_JS.contains("stroke-width:1.7;")
+                && USAGE_JS.contains("stroke:currentColor;"),
+            "图标应经 createElementNS 构建（stroke=currentColor、线宽 1.7、fill none）"
+        );
+        // ---- 取值链路 helper（数据全部来自既有全局状态）----
+        assert!(
+            USAGE_JS.contains("function activeRunOf(sessId, activeMap)")
+                && USAGE_JS.contains("function latestTurnOf(sessId)")
+                && USAGE_JS.contains("function latestSpeedOf(sessId, activeMap)"),
+            "速度/本轮分段取值应集中 helper（活动轮 runs 行优先，空闲回退最新完成轮）"
+        );
+        assert!(
+            USAGE_JS.contains("var spd = latestSpeedOf(sessId, activeMap);")
+                && USAGE_JS.contains("var tr = activeRunOf(sessId, activeMap);")
+                && USAGE_JS.contains("var tt = tr ? null : (sessId ? latestTurnOf(sessId) : null);"),
+            "速度/本轮分段应按 activeRunOf → latestTurnOf 优先级取数"
+        );
+        // ---- 任务红线：today / tl 消费 ----
+        assert!(
+            USAGE_JS.contains("lastToday = (data && data.today) || null;"),
+            "rebuildIndex 应捕获顶层 today 键（V33 新消费字段，缺失整段隐藏）"
+        );
+        assert!(
+            USAGE_JS.contains("typeof sv.tl === \"number\" && isFinite(sv.tl)"),
+            "工具分段应消费 sess[].tl（V33 新消费字段，缺失整段隐藏）"
+        );
+        assert!(
+            USAGE_JS.contains("lastToday && typeof lastToday.tt === \"number\" && isFinite(lastToday.tt)")
+                && USAGE_JS.contains("(lastToday.rq || 0) + \" \" + W.req")
+                && !USAGE_JS.contains("\" \" + (lastToday.rq || 0)"),
+            "今日分段应消费 today.tt / today.rq（V34 起数值与 req 间距由 gap 承担、文本无前导空格）"
+        );
+        // ---- 子代理分段：Σ turns[].sub.n + psess 呼吸蓝点 ----
+        assert!(
+            USAGE_JS.contains("if (st && st.sess === sessId && st.sub && st.sub.n) subN += st.sub.n;"),
+            "子代理分段应累计当前会话 turns[].sub.n"
+        );
+        assert!(
+            USAGE_JS.contains("if (rr && rr.psess === sessId) {"),
+            "呼吸蓝点应按任一 runs 行 psess 命中当前会话判定"
+        );
+        assert!(
+            USAGE_JS.contains("dot: subRunning,")
+                && USAGE_JS.contains("dot.className = \"zbar-usage-qdot\";")
+                && USAGE_JS.contains("@keyframes zbarUsagePulse{0%,100%{opacity:.25;}50%{opacity:1;}}")
+                && USAGE_JS.contains("@media (prefers-reduced-motion: reduce){"),
+            "呼吸蓝点应为 2px opacity 脉动且在 prefers-reduced-motion 下关闭"
+        );
+        // ---- 签名比对（底部条；每轮条/会话条保持全串比对）----
+        assert!(
+            USAGE_JS.contains("data-zbar-usage-qsig"),
+            "底部条应以 data-zbar-usage-qsig 签名比对（分段携带 SVG 无法进 textContent 比对）"
+        );
+        assert!(
+            USAGE_JS.contains("function renderRowParts(row, parts)")
+                && USAGE_JS.contains("if (row.textContent === text) return;")
+                && USAGE_JS.contains("function partsTextOf(parts)")
+                && USAGE_JS.contains("function segsTextOf(segs)"),
+            "每轮条/会话条应保持全串比对零 DOM 机制（比对串=字段段文本拼接）"
+        );
+        // ---- 词表新词条（zh/en 双语）----
+        assert!(
+            USAGE_JS.contains("turn: \"本轮\"")
+                && USAGE_JS.contains("sess: \"会话\"")
+                && USAGE_JS.contains("tools: \"工具\"")
+                && USAGE_JS.contains("today: \"今日\"")
+                && USAGE_JS.contains("subs: \"子代理\"")
+                && USAGE_JS.contains("req: \"req\"")
+                && USAGE_JS.contains("speedTitle: \"最近一笔请求的生成速度；≥70 绿 / ≥40 黄 / <40 红（t/s）\"")
+                && USAGE_JS.contains("turn: \"turn\"")
+                && USAGE_JS.contains("todayTitle: \"All sessions today (local calendar day)\""),
+            "WORDS 应补底部条分段与 title 词条（zh/en 双语）"
+        );
+        // ---- 红线复核：定位/挂载/闸门/轮询机制零改动 ----
+        assert!(
+            USAGE_JS.contains("var QUOTA_BAR_BOTTOM_PX = -20")
+                && USAGE_JS
+                    .contains("position:absolute;bottom:\" + QUOTA_BAR_BOTTOM_PX + \"px;right:0;"),
+            "底部条定位机制零改动（bottom 负偏移 + 右对齐 absolute）"
+        );
+        assert!(
+            USAGE_JS.contains("var QUOTA_POLL_MS = 30000") && USAGE_JS.contains("function loadQuota"),
+            "额度 30s 低频重载节拍零改动"
+        );
+        assert!(
+            USAGE_JS.contains("var sessHasData = currentSessionHasData(anchor, activeMap);")
+                && USAGE_JS.contains("if (!sessHasData || !quotaBarEnabled()) {"),
+            "空会话会话级闸 + 开关闸（整条开关语义）零改动"
+        );
+        // ---- V34 P1-1：分段优先级隐藏（溢出治理）----
+        assert!(
+            USAGE_JS.contains("var quotaFitHidden = [];")
+                && USAGE_JS.contains("function quotaSigOf(segs)")
+                && USAGE_JS.contains("function fitQuotaSegments(bar, segs)")
+                && USAGE_JS.contains("if (line.scrollWidth > line.clientWidth) {")
+                && USAGE_JS.contains(".zbar-usage-qseg-off{display:none;}"),
+            "V34 应有溢出适配机制（fitQuotaSegments 逐级隐藏/贪心恢复 + qseg-off class + 隐藏态计入签名）"
+        );
+        assert!(
+            USAGE_JS.contains("segs[hqi].h = quotaFitHidden.indexOf(segs[hqi].prio) >= 0;")
+                && USAGE_JS.contains("bar.setAttribute(\"data-zbar-usage-qsig\", quotaSigOf(segs));"),
+            "fit 修正后应同步 quotaFitHidden 并重写签名（下一拍构建态与 DOM 一致，签名命中零 DOM）"
+        );
+        assert!(
+            USAGE_JS.contains("renderQuotaLine(bar, quotaSigOf(segs), segs);\n    fitQuotaSegments(bar, segs);"),
+            "renderQuotaBar 渲染后应执行溢出适配（每拍复测，常规拍零 DOM 写）"
+        );
+        // prio 编号：速度/额度 0 永不隐藏；缓存 1 → 今日 2 → 工具 3 →
+        // 本轮 4 → 子代理 5 → 会话 6（低到高逐级隐藏）
+        assert!(
+            USAGE_JS.contains("prio: 0,\n        ico: \"bolt\"")
+                && USAGE_JS.contains("prio: 0, title: W.quota5hTitle, parts: h5Parts")
+                && USAGE_JS.contains("prio: 0, title: W.quotaWkTitle, parts: wkParts")
+                && USAGE_JS.contains("prio: 1,\n        ico: \"gauge\"")
+                && USAGE_JS.contains("prio: 2,\n        ico: \"calendar\"")
+                && USAGE_JS.contains("prio: 3,\n        ico: \"wrench\"")
+                && USAGE_JS.contains("prio: 4,\n        ico: \"hourglass\"")
+                && USAGE_JS.contains("prio: 5,\n          ico: \"branch\"")
+                && USAGE_JS.contains("prio: 6,\n        ico: \"bubble\""),
+            "分段 prio 编号应为 速度/额度0（永不隐藏）、缓存1、今日2、工具3、本轮4、子代理5、会话6"
+        );
+        // ---- V34 P1-2：模型行浅色对比度（客户端前景变量 + 中灰兜底）----
+        assert!(
+            USAGE_JS.contains("color:var(--color-foreground, #5b6577);")
+                && USAGE_JS.matches("color:var(--color-foreground-subtle, #5b6577);").count() >= 2,
+            "模型行文字应消费 --color-foreground/-subtle（容器 + munit/mextra），兜底中灰不再用深色主题专用浅灰"
+        );
+        assert!(
+            !USAGE_JS.contains("rgba(241,245,249,.92)"),
+            "模型行恒浅灰文字应删除（浅色卡片上不可见）"
+        );
+        // ---- V34 P1-3：会话条速度三档色 scoped 规则 ----
+        assert!(
+            USAGE_JS
+                .contains("\"[\" + ATTR_SESSION_BAR + \"] .zbar-usage-tps-fast{color:#34d399;}\"")
+                && USAGE_JS
+                    .contains("\"[\" + ATTR_SESSION_BAR + \"] .zbar-usage-tps-mid{color:#fbbf24;}\"")
+                && USAGE_JS
+                    .contains("\"[\" + ATTR_SESSION_BAR + \"] .zbar-usage-tps-slow{color:#f87171;}\""),
+            "会话条速度值应有三档色 scoped 规则（与每轮条/底部条/模型行一致）"
+        );
+        // ---- V34 P2-4/P2-5：额度/缓存 title + 段内间距 ----
+        assert!(
+            USAGE_JS.contains("quota5hTitle: \"5 小时窗口剩余；<30% 黄 / <10% 红\"")
+                && USAGE_JS.contains("quotaWkTitle: \"每周窗口剩余；<30% 黄 / <10% 红\"")
+                && USAGE_JS
+                    .contains("cacheTitle: \"当前会话缓存命中率 = 缓存读 ÷（缓存读 + 非缓存输入）\""),
+            "额度/缓存段口径说明应入词表并挂到分段 title"
+        );
+        assert!(
+            USAGE_JS.contains("\"position:relative;display:flex;align-items:center;gap:3px;white-space:nowrap;\"")
+                && USAGE_JS.contains("\"padding:2px 6px;pointer-events:auto;cursor:default;border-radius:7px;}\""),
+            "分段应 gap 3px 承担段内间距、padding 收窄至 6px（降低溢出触发频率）"
+        );
+        assert!(
+            USAGE_JS.contains("function fmtTokensShort(n)")
+                && USAGE_JS.contains("fmtTokensShort(tIn2 + tOut2)")
+                && USAGE_JS.contains("fmtTokensShort(sTt)")
+                && USAGE_JS.contains("fmtTokensShort(lastToday.tt)"),
+            "底部条数值应走 fmtTokensShort（去等宽补位空格，段内间距由 gap 承担）"
+        );
+        assert!(
+            !USAGE_JS.contains("{ t: W.turn + \" \"")
+                && !USAGE_JS.contains("{ t: W.sess + \" \"")
+                && !USAGE_JS.contains("{ t: W.tools + \" \"")
+                && !USAGE_JS.contains("{ t: W.today + \" \"")
+                && !USAGE_JS.contains("{ t: W.subs + \" \""),
+            "底部条标签/数值文本不应携带语义间距空格（由 flex gap 承担）"
+        );
+    }
+
+    #[test]
+    fn usage_js_v35_卡片对齐与缓存率() {
+        // ---- 版本标记 ----
+        assert!(USAGE_JS.contains("ZBAR-THEME-V35"));
+        assert!(!USAGE_JS.contains("ZBAR-THEME-V34"), "版本头应已升到 V35");
+        // ---- 任务 A：输入框卡片定位（零选择器假设）----
+        assert!(
+            USAGE_JS.contains("function locateComposerCard(region)")
+                && USAGE_JS.contains("indexOf(\"data-zbar-usage-\") === 0")
+                && USAGE_JS.contains("el.offsetWidth > 100"),
+            "V35 应有 locateComposerCard：遍历 region 直接子元素，跳过带 data-zbar-usage-* 属性（自家注入元素）或绝对定位的元素，取第一个可见且 offsetWidth>100 的元素"
+        );
+        // 对齐写入口 + 回退清理 helper
+        assert!(
+            USAGE_JS.contains("function applyCardAlign(bar, region, withWidth)")
+                && USAGE_JS.contains("function clearCardAlign(bar)"),
+            "V35 应有对齐写入口（值变才写）与回退清理 helper"
+        );
+        // 命中前提：offsetParent 即 region（V13 relative 规则生效，
+        // offsetLeft 与 region 内 absolute left 同一坐标系）
+        assert!(
+            USAGE_JS.contains("if (!card || card.offsetParent !== region) return false;"),
+            "对齐应以 offsetParent === region 为前提（坐标系一致性防御）"
+        );
+        // 三个注入层挂载块接线：会话条自然宽（不带宽度），底部条与模
+        // 型行底板带宽度；各命中/兜底分支都有对齐或清理
+        assert_eq!(
+            USAGE_JS
+                .matches("if (!applyCardAlign(bar, region, false)) clearCardAlign(bar);")
+                .count(),
+            1,
+            "会话条应对齐卡片左缘（自然宽，不带宽度）"
+        );
+        assert_eq!(
+            USAGE_JS
+                .matches("if (!applyCardAlign(bar, region, true)) clearCardAlign(bar);")
+                .count()
+                + USAGE_JS
+                    .matches("if (!applyCardAlign(box, region, true)) clearCardAlign(box);")
+                    .count(),
+            2,
+            "底部胶囊条与模型行底板应对齐卡片左缘/宽度（withWidth）"
+        );
+        assert_eq!(
+            USAGE_JS.matches("clearCardAlign(bar);").count()
+                + USAGE_JS.matches("clearCardAlign(box);").count(),
+            6,
+            "三个注入层的命中回退与兜底 fixed 分支都应接线（2×3 处清理）"
+        );
+        // 红线：不引入 resize 监听（窗口缩放由下一渲染拍/兜底拍自愈）
+        assert!(
+            !USAGE_JS.contains("addEventListener(\"resize\""),
+            "V35 不做 resize 监听（沿用文件既有哲学）"
+        );
+        // ---- 任务 B：每轮条/会话条缓存命中率段 + ✚0 隐藏 ----
+        // 每轮条：barLineOf 条件段——命中率分母 0 与 cw 0 整段不入行
+        //（不 push 即不进全串比对串），✚ 段带词表 title
+        let blo = USAGE_JS.find("function barLineOf").expect("barLineOf 应存在");
+        let bhi = USAGE_JS.find("function lineOf").expect("lineOf 应存在");
+        let bar_body = &USAGE_JS[blo..bhi];
+        assert!(
+            bar_body.contains("var hit = cacheHitText(v.cr, v.inp);")
+                && bar_body.contains("if (hit !== \"—\") {")
+                && bar_body.contains("parts.push({ t: \" (\" + hit + \")\", c: CLS_DIM });"),
+            "每轮条应在 ⟲ 段后追加弱色命中率段 (NN%)（cacheHitText 同口径，分母 0 隐藏）: {bar_body}"
+        );
+        assert!(
+            bar_body.contains("if (v.cw > 0) {"),
+            "每轮条 ✚ 缓存写段应在 cw 为 0 时整段隐藏（含启动窗口占位态）: {bar_body}"
+        );
+        // 会话条：⟲ 段 parts 化补 (NN%)（sess 口径与底部条「缓存」段同
+        // 源）、✚ 段条件化带 title
+        let slo = USAGE_JS
+            .find("function renderSessionBar")
+            .expect("renderSessionBar 应存在");
+        let shi = USAGE_JS
+            .find("function renderBarLine")
+            .expect("renderBarLine 应存在");
+        let sess_body = &USAGE_JS[slo..shi];
+        assert!(
+            sess_body.contains("var sessHit = cacheHitText(tcr, tin);")
+                && sess_body
+                    .contains("crSeg.parts.push({ t: \" (\" + sessHit + \")\", c: CLS_DIM });"),
+            "会话条应在 ⟲ 段后追加弱色命中率段 (NN%)（sess 口径 cr/(cr+up)，与底部条「缓存」段同源）: {sess_body}"
+        );
+        assert!(
+            sess_body.contains("if (tcw > 0) {")
+                && sess_body
+                    .contains("segs.push({ t: \"✚ \" + fmtTokens(tcw), title: W.cwTitle });"),
+            "会话条 ✚ 段应 cw 0 隐藏、>0 带词表 title: {sess_body}"
+        );
+        // title 通道：renderRowParts（part 级）与 renderBarLine（seg 级）
+        // ——title 是属性不是文本，不进比对串
+        assert!(
+            USAGE_JS.contains("if (parts[i].title) sp.title = parts[i].title;")
+                && USAGE_JS.contains("if (segs[sj].title) sp.title = segs[sj].title;"),
+            "全串比对渲染应补 part/seg 级 title 通道（title 不进比对串）"
+        );
+        // 词表双语条目
+        assert!(
+            USAGE_JS.contains("cwTitle: \"缓存写 token\"")
+                && USAGE_JS.contains("cwTitle: \"Cache write tokens\""),
+            "WORDS 应补 ✚ 缓存写段 title 词条（zh/en 双语）"
+        );
+        // 底部条「缓存 NN%」段保留（V35 起三处并存，口径同源）
+        assert!(
+            USAGE_JS.contains("var hit = cacheHitText(tcr, tin);")
+                && USAGE_JS.contains("if (hit !== \"—\") {"),
+            "底部条「缓存 NN%」段应保留（与每轮条/会话条命中率段并存）"
+        );
+    }
+
+    #[test]
     fn has_inject_判定() {
         assert!(!has_inject(SAMPLE_HTML));
         assert!(has_inject(&format!("x{INJECT_BEGIN}y{INJECT_END}z")));
@@ -4785,8 +6057,40 @@ mod tests {
         // 去括号返回裸时长，renderQuotaLine 在 sub span 前插半角空格
         // text node、全串比对同步 t + " " + sub；seg.sub 通道与阈值变
         // 色边界不变）
-        assert!(USAGE_JS.contains("ZBAR-THEME-V32"));
-        assert!(!USAGE_JS.contains("ZBAR-THEME-V31"), "版本头应已升到 V32");
+        // V33（底部额度行演进为分段胶囊状态条 + 全组件设计语言统一：
+        // 字体 var(--font-mono)、颜色 var(--color-*) 兜底、亮度+字重
+        // 三级层级、发丝分隔、悬停高亮、行内 SVG 图标、呼吸蓝点；新消
+        // 费 sess[].tl 与顶层 today{tt,rq}（数据端 V33 附加字段，缺键
+        // 整段隐藏）；每轮条/会话条保持全串比对零 DOM 机制、底部条改
+        // renderModelRows 同款签名比对；定位/测量/留白与三个 poll 节拍
+        // 零改动）
+        // V34（底部状态条实机反馈修复：a) 分段优先级隐藏——data-prio
+        // 标级、溢出时按 缓存→今日→工具→本轮→子代理→会话 逐级隐藏再
+        // 复测，速度/额度 prio 0 永不隐藏，fitQuotaSegments 渲染后适
+        // 配、隐藏态计入签名（quotaSigOf/quotaFitHidden），mask 仅兜
+        // 底，段 padding 9→6px、段内间距改 flex gap 3px；b) 模型行文
+        // 字改 --color-foreground/--color-foreground-subtle + 中灰兜底
+        // （浅色卡片对比度修复）；c) 会话条速度值补三档色；d) 额度/每
+        // 周/缓存段补 title、段内无 "·"；e) 底部条数值走 fmtTokensShort
+        // 去等宽补位，文本不带语义间距空格）
+        // V35（注入条与输入框卡片左右缘对齐 + 每轮条/会话条缓存命中率
+        // 回归 + ✚ 缓存写 0 值隐藏，数据契约零改动：a) 新增
+        // locateComposerCard（遍历 region 直接子元素，跳过带
+        // data-zbar-usage-* 属性或绝对定位的自家注入元素，取第一个可
+        // 见且 offsetWidth>100 的元素为输入框卡片，零选择器假设）；
+        // b) 底部胶囊条卡片命中时 left/width 两缘精确对齐（未命中回退
+        // 右对齐自然宽）、会话条左缘对齐（未命中回退居中）、模型行底
+        // 板左缘/宽度对齐（未命中回退居中）——applyCardAlign 值变才
+        // 写 / clearCardAlign 回退清理，窗口缩放由下一渲染拍/兜底拍自
+        // 愈（不做 resize 监听）；c) 每轮条/会话条 ⟲ 段后补弱色命中率
+        // 段 (NN%)（cacheHitText 共用口径，分母 0 不入段；底部条「缓
+        // 存」段并存）；d) ✚ 缓存写段 cw 0 整段隐藏（含启动窗口占位
+        // 态）、>0 带 title（词表新增 cwTitle 双语条目，
+        // renderRowParts/renderBarLine 补 title 通道））
+        assert!(USAGE_JS.contains("ZBAR-THEME-V35"));
+        assert!(!USAGE_JS.contains("ZBAR-THEME-V34"), "版本头应已升到 V35");
+        assert!(!USAGE_JS.contains("ZBAR-THEME-V33"), "版本头不应回退");
+        assert!(!USAGE_JS.contains("ZBAR-THEME-V31"), "版本头不应回退");
         assert!(!USAGE_JS.contains("ZBAR-THEME-V30"), "版本头不应回退");
         assert!(!USAGE_JS.contains("ZBAR-THEME-V29"), "版本头不应回退");
         assert!(!USAGE_JS.contains("ZBAR-THEME-V27"), "版本头不应回退");
@@ -4843,12 +6147,12 @@ mod tests {
         // 底部外侧负偏移挂载；region 缺失兜底 fixed 标记；词表双语标签
         // （V29 删除更新时间词）；三档配色阈值与 class 保留
         assert!(
-            USAGE_JS.contains("function renderQuotaBar")
+            USAGE_JS.contains("function renderQuotaBar(sessHasData, anchor, activeMap)")
                 && USAGE_JS.contains("function renderQuotaLine")
                 && USAGE_JS.contains("function quotaBarEnabled")
                 && USAGE_JS.contains("function ensureQuotaBar")
                 && USAGE_JS.contains("function removeQuotaBar"),
-            "V28 应新增独立额度行的渲染/挂载/移除与开关读取函数"
+            "V28 应新增独立额度行的渲染/挂载/移除与开关读取函数（V33 起 renderQuotaBar 增 activeMap 入参）"
         );
         assert!(
             USAGE_JS.contains("ATTR_QUOTA_BAR = \"data-zbar-usage-quota\"")
@@ -4925,7 +6229,7 @@ mod tests {
         // 额度行）+ 额度数据分段（缺失不入段）+ 全缺失整行隐藏 + 复用
         // pickComposerRegion 挂载 + 无 HTML 注入面
         let qb_lo = USAGE_JS
-            .find("function renderQuotaBar(sessHasData, anchor)")
+            .find("function renderQuotaBar(sessHasData, anchor, activeMap)")
             .expect("renderQuotaBar 应存在");
         let qb_hi = USAGE_JS
             .find("function renderQuotaLine")
@@ -4973,20 +6277,22 @@ mod tests {
         // 同源传入），函数体内按 renderSessionBar 同款双口径算当前会话
         // tcr/tin（sess 全量合计命中即消费 sess 行，否则 totals +
         // runTotals 回退叠加），每周段之后追加「缓存 NN%」段（灰白不高
-        // 亮）；分母为 0（cacheHitText 返回 "—"）不入段，不留残留
+        // 亮）；分母为 0（cacheHitText 返回 "—"）不入段，不留残留。
+        // V33 签名再增 activeMap（速度/本轮分段取活动轮 runs 行）
         assert!(
-            USAGE_JS.contains("function renderQuotaBar(sessHasData, anchor)")
+            USAGE_JS.contains("function renderQuotaBar(sessHasData, anchor, activeMap)")
                 && quota_body.contains("var sessId = currentSessionId(anchor);")
                 && quota_body.contains("var useSess = !!(sv && sv.tt != null);")
                 && quota_body.contains("(totals ? totals.tcr : 0) + (runTotals ? runTotals.tcr : 0)")
                 && quota_body.contains("(totals ? totals.tin : 0) + (runTotals ? runTotals.tin : 0)"),
-            "renderQuotaBar 应接收 anchor 并按 renderSessionBar 同款双口径算当前会话命中率: {quota_body}"
+            "renderQuotaBar 应接收 anchor/activeMap 并按 renderSessionBar 同款双口径算当前会话命中率: {quota_body}"
         );
         assert!(
             quota_body.contains("var hit = cacheHitText(tcr, tin);")
                 && quota_body.contains("if (hit !== \"—\") {")
-                && quota_body.contains("segs.push({ t: W.cachePct + \" \" + hit, c: \"\" });"),
-            "额度行应在每周段后追加「缓存」段（灰白继承行色），分母为 0 时不入段: {quota_body}"
+                && quota_body
+                    .contains("segs.push({\n        prio: 1,\n        ico: \"gauge\",\n        title: W.cacheTitle,\n        parts: [{ t: W.cachePct + \" \" + hit, c: \"\" }]\n      });"),
+            "额度行应在每周段后追加「缓存」段（仪表图标 + 口径 title，prio 1 溢出时最先隐藏），分母为 0 时不入段: {quota_body}"
         );
         // V31/V32 窗口重置倒计时：a) 新增格式化与倒计时段函数（rs 缺失/
         // 非法/已过期 <= now 返回空串 → 该窗口不加段；时长阶梯 <1h "35m"
@@ -5019,12 +6325,11 @@ mod tests {
         );
         assert!(
             quota_body.contains("var nowMs = Date.now();")
-                && quota_body.contains("sub: quotaCountdownOf(qd.h5rs, nowMs)")
-                && quota_body.contains("sub: quotaCountdownOf(qd.wkrs, nowMs)")
-                && quota_body.contains(
-                    "text += (qi ? \" · \" : \"\") + segs[qi].t + (segs[qi].sub ? \" \" + segs[qi].sub : \"\");"
-                ),
-            "5h/周段应携带重置倒计时段（V32 去括号裸时长前置空格；Date.now() 每拍重算，全串比对纳入 sub 保持零 DOM 机制）: {quota_body}"
+                && quota_body.contains("var h5cd = quotaCountdownOf(qd.h5rs, nowMs);")
+                && quota_body.contains("var wkcd = quotaCountdownOf(qd.wkrs, nowMs);")
+                && quota_body.contains("if (h5cd) h5Parts.push({ t: h5cd, c: \"zbar-usage-qfaint\" });")
+                && quota_body.contains("if (wkcd) wkParts.push({ t: wkcd, c: \"zbar-usage-qfaint\" });"),
+            "5h/周段应携带重置倒计时段（qfaint 弱色 span 显式回灰——阈变色仍只属于剩余百分比；Date.now() 每拍重算，签名比对纳入倒计时保持零 DOM 机制；V34 起段内间距由 flex gap 承担、文本不带前导空格）: {quota_body}"
         );
         let ql_lo = USAGE_JS
             .find("function renderQuotaLine")
@@ -5033,13 +6338,25 @@ mod tests {
             .find("function renderAll")
             .expect("renderAll 应存在");
         let ql_body = &USAGE_JS[ql_lo..ql_hi];
+        // V33 签名比对 + 分段渲染：qsig 属性无变化零 DOM；分段经
+        // createElementNS 构建 SVG 图标 + parts 层级 span + 可选呼吸蓝
+        // 点；无 innerHTML 注入面
         assert!(
-            ql_body.contains("if (segs[qj].sub) {")
-                && ql_body.contains("line.appendChild(document.createTextNode(\" \"));")
-                && ql_body.contains("var sq = document.createElement(\"span\");")
-                && ql_body.contains("sq.textContent = segs[qj].sub;")
-                && !ql_body.contains("sq.className"),
-            "倒计时段应以半角空格 text node + 无 class 独立 span 渲染（V32 扁平化去括号；恒继承灰白行色，不随百分比三档变色；sub 缺失零额外节点）: {ql_body}"
+            ql_body.contains("data-zbar-usage-qsig")
+                && ql_body.contains("if (line && bar.getAttribute(\"data-zbar-usage-qsig\") === sig) return;")
+                && ql_body.contains("bar.setAttribute(\"data-zbar-usage-qsig\", sig);"),
+            "底部状态条应以签名比对渲染分段（V33：无变化零 DOM，行/容器重建时属性缺失自动重渲）: {ql_body}"
+        );
+        assert!(
+            ql_body.contains("var ico = seg.ico ? makeIcon(seg.ico) : null;")
+                && ql_body.contains(
+                    "sp.className =\n        \"zbar-usage-qseg\" + (seg.c ? \" \" + seg.c : \"\") +\n        (seg.h ? \" zbar-usage-qseg-off\" : \"\");"
+                )
+                && ql_body.contains("sp.setAttribute(\"data-prio\", String(seg.prio || 0));")
+                && ql_body.contains("if (seg.title) sp.title = seg.title;")
+                && ql_body.contains("dot.className = \"zbar-usage-qdot\";")
+                && !ql_body.contains("innerHTML"),
+            "分段应由 qseg span（段级配色 + 隐藏态 class + data-prio + 原生 title + makeIcon SVG 图标 + parts 层级 span + 可选蓝点）构成: {ql_body}"
         );
         assert!(
             quota_body.contains("if (!segs.length) {"),
@@ -5062,9 +6379,9 @@ mod tests {
             .expect("renderAll 应存在");
         let ra_all = &USAGE_JS[ra_lo..];
         assert_eq!(
-            ra_all.matches("renderQuotaBar(sessHasData, anchor);").count(),
+            ra_all.matches("renderQuotaBar(sessHasData, anchor, activeMap);").count(),
             1,
-            "renderAll 应只在主路径调用 renderQuotaBar（携带会话级判定闸与锚点；空轮分支改为 removeQuotaBar 隐藏）"
+            "renderAll 应只在主路径调用 renderQuotaBar（携带会话级判定闸/锚点/活动轮 Map，V33 起供速度与本轮分段取活动轮 runs 行；空轮分支改为 removeQuotaBar 隐藏）"
         );
         // 会话条不再承载额度段（V28 移出）：renderSessionBar 体内不得再
         // 出现额度数据消费与额度标签；CTX 负向断言保留。V29：模型行渲
@@ -5114,8 +6431,11 @@ mod tests {
         let cw_hi = USAGE_JS.find("function lineOf").expect("lineOf 应存在");
         let bar_body = &USAGE_JS[cw_lo..cw_hi];
         assert!(
-            bar_body.contains("\" ⟲ \" + fmtTokens(v.cr) +\n      \" ✚ \" + fmtTokens(v.cw)"),
-            "每轮条统一格式应在 ⟲ 缓存读段后渲染 ✚ 缓存写段：{bar_body}"
+            bar_body.contains("{ t: \" ⟲ \", c: CLS_DIM },")
+                && bar_body.contains("{ t: fmtTokens(v.cr) }\n    ];")
+                && bar_body.contains("parts.push({ t: \" ✚ \", c: CLS_DIM, title: W.cwTitle });")
+                && bar_body.contains("parts.push({ t: fmtTokens(v.cw), title: W.cwTitle });"),
+            "每轮条 ⟲ 缓存读段后条件渲染 ✚ 缓存写段（V35 起 cw 0 整段隐藏、>0 带词表 title，标签弱色）: {bar_body}"
         );
         assert!(
             USAGE_JS.contains("function cacheHitText")
@@ -5124,9 +6444,13 @@ mod tests {
         );
         assert!(
             sess_bar_body.contains("{ t: \"⟲ \" + fmtTokens(tcr) }")
-                && !sess_bar_body.contains("cacheHitText(tcr, tin)")
-                && sess_bar_body.contains("{ t: \"✚ \" + fmtTokens(tcw) }"),
-            "V30 起会话条 ⟲ 段应回归纯 token（命中率后缀挪至额度行「缓存」段），✚ 缓存写段保留: {sess_bar_body}"
+                && sess_bar_body.contains("var sessHit = cacheHitText(tcr, tin);")
+                && sess_bar_body
+                    .contains("crSeg.parts.push({ t: \" (\" + sessHit + \")\", c: CLS_DIM });")
+                && sess_bar_body.contains("if (tcw > 0) {")
+                && sess_bar_body
+                    .contains("segs.push({ t: \"✚ \" + fmtTokens(tcw), title: W.cwTitle });"),
+            "V35 起会话条 ⟲ 段补弱色命中率 (NN%)（sess 口径 cr/(cr+up)，与底部条「缓存」段同源；分母 0 不入段），✚ 段 cw 0 隐藏、>0 带 title: {sess_bar_body}"
         );
         assert!(
             sess_bar_body.contains("var tcw = useSess\n      ? sv.cw || 0"),
@@ -5220,8 +6544,9 @@ mod tests {
             "完成态每轮条应传入数据端 sa 聚合"
         );
         assert!(
-            USAGE_JS.contains("(agg ? \" · \" + agg : \"\")"),
-            "聚合段应追加在速度位之后、TTFT 之前"
+            USAGE_JS.contains("if (agg) {")
+                && USAGE_JS.contains("parts.push({ t: \" · \" + agg, c: CLS_DIM });"),
+            "聚合段应追加在速度位之后、TTFT 之前（V33 弱色层级）"
         );
         let live_lo = USAGE_JS
             .find("function liveLineOf")
@@ -5298,13 +6623,14 @@ mod tests {
         assert!(
             USAGE_JS.contains("backdrop-filter:blur(6px)")
                 && USAGE_JS.contains("border-radius:8px")
-                && USAGE_JS.contains("background:rgba(2,6,23,.72)"),
-            "模型区应有深色半透明底板（毛玻璃 + 圆角，任何壁纸上可读）"
+                && USAGE_JS.contains("background:var(--color-card, rgba(2,6,23,.72))"),
+            "模型区应有半透明底板（毛玻璃 + 圆角；V33 起背景消费客户端 --color-card 语义变量，回退原深底）"
         );
         assert!(
-            USAGE_JS.contains("prefers-color-scheme: light")
-                && USAGE_JS.contains("background:rgba(15,23,42,.6)"),
-            "底板背景应随 prefers-color-scheme 亮暗两档适配"
+            !USAGE_JS.contains("prefers-color-scheme: light")
+                && USAGE_JS
+                    .contains("border:1px solid var(--color-border, rgba(148,163,184,.28))"),
+            "V33 起底板背景/边框由客户端语义变量接管（随 .dark 翻转），亮色媒体查询应删除"
         );
         assert!(
             USAGE_JS.contains("ATTR_MODELS + \"]:empty{display:none;}\""),
@@ -5483,13 +6809,15 @@ mod tests {
             "req 应 padStart(3) 等宽补位：{bar_body}"
         );
         assert!(
-            bar_body.contains("padSpeed(v.speed) + \" t/s\""),
-            "输出速度应为 t/s 且经 padSpeed 补位：{bar_body}"
+            bar_body.contains("{ t: padSpeed(v.speed), c: spdCls },")
+                && bar_body.contains("{ t: \" t/s\", c: CLS_DIM }"),
+            "输出速度应为 t/s 且经 padSpeed 补位（V33 数值三档色、单位弱色）: {bar_body}"
         );
         assert!(
-            bar_body
-                .contains("\" · TTFT \" + (v.ttft == null ? \"–\" : v.ttft).padStart(4, \" \")"),
-            "首字延迟应显示为 TTFT 且 padStart(4)，进行中/缺失显示 – 占位：{bar_body}"
+            bar_body.contains("parts.push({ t: \" · TTFT \", c: CLS_DIM });")
+                && bar_body
+                    .contains("parts.push({ t: (v.ttft == null ? \"–\" : v.ttft).padStart(4, \" \") });"),
+            "首字延迟应显示为 TTFT 且 padStart(4)，进行中/缺失显示 – 占位: {bar_body}"
         );
         assert!(
             !bar_body.contains("v.est") && !bar_body.contains("~"),
@@ -5721,13 +7049,16 @@ mod tests {
             "会话条放弃渲染条件应含无活动轮判定（启动窗口即时显示）"
         );
         // 会话条速度段固定消费 sess 行的请求级快照；没有快照时显示 –。
+        // V34：速度值 span 补三档色 class（无效快照/等待占位不着色），
+        // 可见文本拼接串不变（全串比对零 DOM 机制保持）。
         assert!(
             USAGE_JS.contains("var tsum = tin + tout + tcr;")
                 && USAGE_JS.contains("var sessionSpeed = sv && sv.speed ? sv.speed : null;")
                 && USAGE_JS.contains("if (!activeId || !runIndex[activeId]")
-                && USAGE_JS.contains("segs.push({ t: padSpeed(sessionSpeed) + \" t/s\" });")
+                && USAGE_JS.contains("{ t: padSpeed(sessionSpeed), c: sessionSpdCls },")
+                && USAGE_JS.contains("var sessionSpdCls =")
                 && !USAGE_JS.contains("fmtTokens(est."),
-            "会话条应只显示确认累计与请求级速度"
+            "会话条应只显示确认累计与请求级速度（V34 起速度值带三档色 class）"
         );
         assert!(
             USAGE_JS.contains("String(treq).padStart(3, \" \")"),

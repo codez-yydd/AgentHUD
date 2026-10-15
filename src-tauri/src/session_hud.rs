@@ -64,8 +64,8 @@ use tauri::{
 
 use crate::local_agents;
 use crate::token_speed::{
-    is_completed_status, request_speed_at, PENDING_FRESH_MS, RequestTiming, SessionTree,
-    SpeedQuality, SpeedSnapshot, SpeedState,
+    generation_sample, is_completed_status, request_speed_at, PENDING_FRESH_MS, RequestTiming,
+    SessionTree, SpeedQuality, SpeedSnapshot, SpeedState,
 };
 
 // ============================================================
@@ -2433,8 +2433,9 @@ fn normalize_snapshot(snapshot: &mut HudSnapshot) {
 /// 本地时区自然日零点（毫秒，纯函数供测试）：与主面板 today /
 /// lib.rs today_tray_title 的零点口径一致（不能用 UTC——东八区午前 UTC
 /// 零点会把昨天 8 小时计入"今日"）。零点解析异常（DST 切换窄边缘）回
-/// 退 now − 24h。
-fn today_start_ms(now_ms: i64) -> i64 {
+/// 退 now − 24h。pub(crate)：usage_feed 的顶层 today 合计（V33）复用同
+/// 一零点口径，避免各处私有实现漂移。
+pub(crate) fn today_start_ms(now_ms: i64) -> i64 {
     let Some(dt) = chrono::DateTime::from_timestamp_millis(now_ms) else {
         return now_ms - 86_400_000;
     };
@@ -2518,8 +2519,12 @@ fn collect_model_speeds(conn: &Connection, window_start: i64) -> Vec<HudModelSpe
     }
     let has_status = has("status");
     let status_expr = if has_status { "status" } else { "NULL" };
+    // 思考感知窗口信号（见 token_speed::thinking_generation_span）：缺列
+    // 按常量 0 读出，构造点按"列存在且 > 0"降级为 None
+    let has_reasoning = has("reasoning_tokens");
+    let reasoning_expr = num_expr(has_reasoning, "reasoning_tokens");
     let sql = format!(
-        "SELECT COALESCE(model_id, ''), {status_expr}, started_at, {}, {}, {} \
+        "SELECT COALESCE(model_id, ''), {status_expr}, started_at, {}, {}, {}, {reasoning_expr} \
          FROM model_usage \
          WHERE started_at >= ?1 AND model_id IS NOT NULL AND model_id != '' \
          ORDER BY started_at DESC LIMIT ?2",
@@ -2540,6 +2545,7 @@ fn collect_model_speeds(conn: &Connection, window_start: i64) -> Vec<HudModelSpe
                 row.get::<_, Option<i64>>(3)?,
                 row.get::<_, Option<i64>>(4)?,
                 row.get::<_, i64>(5)?,
+                row.get::<_, i64>(6)?,
             ))
         },
     );
@@ -2562,7 +2568,7 @@ fn collect_model_speeds(conn: &Connection, window_start: i64) -> Vec<HudModelSpe
     }
     let mut aggs: BTreeMap<String, ModelSpeedAgg> = BTreeMap::new();
     for row in rows.flatten() {
-        let (model, status, started_at, first, completed, output) = row;
+        let (model, status, started_at, first, completed, output, reasoning) = row;
         if model.is_empty() || started_at <= 0 {
             continue;
         }
@@ -2571,25 +2577,23 @@ fn collect_model_speeds(conn: &Connection, window_start: i64) -> Vec<HudModelSpe
         if has_status && !is_completed_status(status.as_deref()) {
             continue;
         }
-        let Some(snapshot) = request_speed_at(
-            &RequestTiming {
-                output_tokens: output,
-                started_at: Some(started_at),
-                first_token_at: first,
-                completed_at: completed,
-                ..RequestTiming::default()
-            },
-            observed_at_ms,
-        ) else {
+        // 速度样本：行级唯一真源 token_speed::generation_sample（首字到
+        // 完成的精确生成样本，含思考感知窗口与样本时长边界；首字缺失/
+        // 时序倒置/窗口越界的行在此无样本，不产出 tps 也不进 Σ 分母）。
+        // claude 系按名识别需要模型名（reasoning 恒 0 也前移窗口）
+        let mut timing = RequestTiming {
+            output_tokens: output,
+            started_at: Some(started_at),
+            first_token_at: first,
+            completed_at: completed,
+            ..RequestTiming::default()
+        };
+        timing.reasoning_tokens = (has_reasoning && reasoning > 0).then_some(reasoning);
+        timing.model_id = Some(model.clone());
+        let Some(sample) = generation_sample(&timing, observed_at_ms) else {
             continue;
         };
-        let Some((first, completed)) = first.zip(completed) else {
-            continue;
-        };
-        let Some(gen_ms) = completed.checked_sub(first).filter(|value| *value > 0) else {
-            continue;
-        };
-        let tps = snapshot.value;
+        let tps = sample.tps;
         let entry = aggs.entry(model).or_insert(ModelSpeedAgg {
             last_at: started_at,
             last_tps: tps,
@@ -2612,7 +2616,7 @@ fn collect_model_speeds(conn: &Connection, window_start: i64) -> Vec<HudModelSpe
             entry.min_tps = tps;
         }
         entry.sum_out += output;
-        entry.sum_ms += gen_ms;
+        entry.sum_ms += sample.generation_ms;
         entry.samples += 1;
     }
 
@@ -2625,8 +2629,9 @@ fn collect_model_speeds(conn: &Connection, window_start: i64) -> Vec<HudModelSpe
                 HudModelSpeed {
                     agent: AGENT_ZCODE.to_string(),
                     model,
-                    // 本函数只跑 ZCode 主库：生成窗口 = first_token_at →
-                    // completed_at（status='completed' 已在上方判定）
+                    // 本函数只跑 ZCode 主库（status='completed' 已在上方
+                    // 判定）；生成窗口思考感知，见
+                    // token_speed::thinking_generation_span
                     quality: SpeedQuality::Generation,
                     last_at: a.last_at,
                     tps: a.last_tps,
@@ -2832,6 +2837,10 @@ fn collect_session_brief(
     let ttft_expr = opt_expr(has("time_to_first_token_ms"), "time_to_first_token_ms");
     let first_expr = opt_expr(has("first_token_at"), "first_token_at");
     let completed_expr = opt_expr(has("completed_at"), "completed_at");
+    // 思考感知窗口信号（见 token_speed::thinking_generation_span）：缺列
+    // 按常量 0 读出，构造点按"列存在且 > 0"降级为 None
+    let has_reasoning = has("reasoning_tokens");
+    let reasoning_expr = num_expr(has_reasoning, "reasoning_tokens");
 
     // 树成员 IN 等值查：占位数与成员数一致（成员 ≤ 1 + 子代理数，
     // 个位数量级）
@@ -2839,7 +2848,7 @@ fn collect_session_brief(
     let sql = format!(
         "SELECT session_id, {in_expr}, {out_expr}, {cr_expr}, \
                 COALESCE(model_id, ''), {turn_expr}, {status_expr}, started_at, \
-                {dur_expr}, {ttft_expr}, {first_expr}, {completed_expr} \
+                {dur_expr}, {ttft_expr}, {first_expr}, {completed_expr}, {reasoning_expr} \
          FROM model_usage WHERE session_id IN ({placeholders})"
     );
     let mut stmt = conn
@@ -2881,6 +2890,7 @@ fn collect_session_brief(
         let ttft: Option<i64> = opt_cell(9)?;
         let first_token_at: Option<i64> = opt_cell(10)?;
         let completed_at: Option<i64> = opt_cell(11)?;
+        let reasoning: i64 = cell(12)?;
 
         // 合计（子代理并入主会话行；防双计靠"子代理永不单独成行"）
         agg.plain_in += (input - cache_read).max(0);
@@ -2959,6 +2969,10 @@ fn collect_session_brief(
                     completed_at,
                     duration_ms: dur,
                     request_id: None,
+                    // 思考感知窗口信号：缺列（老库）或零值按 None；模型名
+                    // 原样透传（claude 系按名识别，大小写不敏感）
+                    reasoning_tokens: (has_reasoning && reasoning > 0).then_some(reasoning),
+                    model_id: (!model.is_empty()).then(|| model.clone()),
                 },
                 ttft: derived_ttft.flatten(),
             },
@@ -3591,6 +3605,19 @@ fn parse_rollout_line(line: &[u8]) -> Option<RolloutRequest> {
                 .filter(|duration| *duration > 0)
         })
         .or(duration_ms);
+    // 思考感知窗口信号（见 token_speed::thinking_generation_span）：rollout
+    // 行 2026-09 实测未包含 model/reasoning 字段，这里做防御性可选读取
+    // ——键缺失即 None，回退首字窗口（与旧行为一致）；文件若增长这些
+    // 字段则自动获得思考感知与前移窗口，无需再改本解析器
+    let reasoning_tokens = usage
+        .get("reasoningTokens")
+        .or_else(|| usage.get("reasoning_tokens"))
+        .and_then(value_i64);
+    let model_id = object
+        .get("model")
+        .or_else(|| object.get("modelId"))
+        .and_then(|value| value.as_str())
+        .map(str::to_string);
     Some(RolloutRequest {
         timing: RequestTiming {
             output_tokens,
@@ -3599,6 +3626,8 @@ fn parse_rollout_line(line: &[u8]) -> Option<RolloutRequest> {
             completed_at,
             duration_ms,
             request_id,
+            reasoning_tokens,
+            model_id,
         },
     })
 }
@@ -5475,18 +5504,20 @@ mod tests {
         assert_eq!(trusted.quality, SpeedQuality::Generation);
         assert!((trusted.value - 25.0).abs() < 1e-9, "{trusted:?}");
 
-        // 短请求不套 1 秒下限：100 tokens / 10ms = 10,000 t/s。
+        // 短请求不套 1 秒下限：100 tokens / 250ms = 400 t/s（<200ms 的
+        // 抖动样本由 token_speed::MIN_GEN_MS 整体拒收——是拒绝坏样本，
+        // 不是把窗口放大到一秒伪造速率）
         let short = request_speed_at(
             &RequestTiming {
                 output_tokens: 100,
                 first_token_at: Some(10_000),
-                completed_at: Some(10_010),
+                completed_at: Some(10_250),
                 ..RequestTiming::default()
             },
             11_000,
         )
         .unwrap();
-        assert!((short.value - 10_000.0).abs() < 1e-9, "{short:?}");
+        assert!((short.value - 400.0).abs() < 1e-9, "{short:?}");
 
         let approximate = request_speed_at(
             &RequestTiming {
@@ -5824,19 +5855,22 @@ mod tests {
     #[test]
     fn rollout解析_无效短请求与多种行形态() {
         let now = 10_000_000_000_i64;
-        let ts = chrono::DateTime::from_timestamp_millis(now - 10)
+        // 短请求经 duration 近似口径计速且不套 1 秒下限：100 tok /
+        // 250ms = 400 t/s（<200ms 的抖动样本由 token_speed::MIN_GEN_MS
+        // 整体拒收；startedAt 后移保证 completed 不晚于观测时刻）
+        let ts = chrono::DateTime::from_timestamp_millis(now - 500)
             .unwrap()
             .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
         let parsed = parse_rollout_line(
             format!(
-                "{{\"sessionId\":\"sess_x\",\"startedAt\":\"{ts}\",\"durationMs\":10,\"response\":{{\"usage\":{{\"outputTokens\":100}}}}}}\n"
+                "{{\"sessionId\":\"sess_x\",\"startedAt\":\"{ts}\",\"durationMs\":250,\"response\":{{\"usage\":{{\"outputTokens\":100}}}}}}\n"
             )
             .as_bytes(),
         )
         .unwrap();
         let speed = request_speed_at(&parsed.timing, now).unwrap();
         assert_eq!(speed.quality, SpeedQuality::RequestAverage);
-        assert!((speed.value - 10_000.0).abs() < 1e-9, "{speed:?}");
+        assert!((speed.value - 400.0).abs() < 1e-9, "{speed:?}");
         assert!(parse_rollout_line(b"{not-json").is_none());
         assert!(parse_rollout_line(b"{\"startedAt\":\"bad\"}").is_none());
         assert!(parse_rollout_line(

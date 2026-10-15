@@ -1503,7 +1503,7 @@ export const en: typeof zh = {
     "dashboard.logs.noTtftTitle":
       "This source's session records contain no TTFT data",
     "dashboard.logs.noSpeedTitle":
-      "This source records no duration, so speed cannot be computed",
+      "No duration data, or the row was rejected as an invalid speed sample (out-of-range window / inconsistent timestamps)",
     "dashboard.logs.unpriced": "Unpriced",
     "dashboard.logs.unpricedHint":
       "This model has no price configured; cost counted as 0",
@@ -1547,7 +1547,7 @@ export const en: typeof zh = {
     "dashboard.logs.detailTtft": "TTFT",
     "dashboard.logs.detailSpeed": "Speed",
     "dashboard.logs.speedApproxHint":
-      "No TTFT data; speed approximated from total duration",
+      "First-to-completion event timestamps missing; speed approximated from total request duration (thinking requests use the full thinking-inclusive window on the backend and carry no marker)",
 
     // ===== Custom time range (shared range control of the three pages) =====
     // Trigger shows the active preset name, or the "MM-DD ~ MM-DD" summary when

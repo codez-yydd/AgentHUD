@@ -319,7 +319,8 @@ export const dashboard = {
   "dashboard.logs.noDurationTitle":
     "该来源的会话记录不含耗时数据（如 Codex 会话文件无耗时、旧版 Claude Code 不落盘耗时）",
   "dashboard.logs.noTtftTitle": "该来源的会话记录不含首字数据",
-  "dashboard.logs.noSpeedTitle": "该来源未记录耗时，无法计算速度",
+  "dashboard.logs.noSpeedTitle":
+    "无耗时数据，或该行样本无效（时长越界 / 时序异常被拒收），无法计算速度",
   "dashboard.logs.unpriced": "未定价",
   "dashboard.logs.unpricedHint": "该模型未配置价格，花费按 0 计",
   "dashboard.logs.emptyTitle": "该时间范围内没有请求记录",
@@ -363,7 +364,8 @@ export const dashboard = {
   "dashboard.logs.detailDuration": "耗时",
   "dashboard.logs.detailTtft": "首字",
   "dashboard.logs.detailSpeed": "速度",
-  "dashboard.logs.speedApproxHint": "无首字数据，按总耗时估算的近似速度",
+  "dashboard.logs.speedApproxHint":
+    "缺首字到完成的事件时刻，按请求总耗时估算的近似速度（思考型请求由后端按含思考的全程窗口计算，不带此标记）",
 
   // ===== 自定义时间范围（总览 / 日志 / 对比三页共用的页头时间范围控件）=====
   // 触发按钮显示当前范围标签：生效的预设名，或自定义区间的「MM-DD ~ MM-DD」

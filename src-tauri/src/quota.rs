@@ -501,16 +501,32 @@ mod tests {
     /// 空串、缺失、坏 JSON、非字符串均回退 None（对应回退默认目录）
     #[test]
     fn data_base_dir_from_setting_parses() {
-        let got = data_base_dir_from_setting(r#"{"dataBaseDir":"D:\\app\\ZCode-cache"}"#);
-        assert_eq!(
-            got,
-            Some(std::path::PathBuf::from("D:\\app\\ZCode-cache"))
+        // 绝对性按当前平台语义判定（Path::is_absolute 平台相关）：Windows
+        // 盘符路径（D:\...）只在 Windows 是绝对路径，Unix 根前缀（/...）
+        // 只在 Unix 是绝对路径，正例按平台各取其形，语义均为"绝对 → Some"
+        #[cfg(windows)]
+        let (abs_raw, abs_value) = (
+            r#"{"dataBaseDir":"D:\\app\\ZCode-cache"}"#,
+            std::path::PathBuf::from("D:\\app\\ZCode-cache"),
         );
+        #[cfg(not(windows))]
+        let (abs_raw, abs_value) = (
+            r#"{"dataBaseDir":"/app/ZCode-cache"}"#,
+            std::path::PathBuf::from("/app/ZCode-cache"),
+        );
+        assert_eq!(data_base_dir_from_setting(abs_raw), Some(abs_value));
         // 前后空白保留语义（trim 后仍非空即可用）
-        assert_eq!(
-            data_base_dir_from_setting(r#"{ "dataBaseDir": "  D:\\data  " }"#),
-            Some(std::path::PathBuf::from("D:\\data"))
+        #[cfg(windows)]
+        let (ws_raw, ws_value) = (
+            r#"{ "dataBaseDir": "  D:\\data  " }"#,
+            std::path::PathBuf::from("D:\\data"),
         );
+        #[cfg(not(windows))]
+        let (ws_raw, ws_value) = (
+            r#"{ "dataBaseDir": "  /app/data  " }"#,
+            std::path::PathBuf::from("/app/data"),
+        );
+        assert_eq!(data_base_dir_from_setting(ws_raw), Some(ws_value));
         // 空串 / 缺失 / 坏 JSON / 非字符串 / 相对路径 → None
         assert_eq!(data_base_dir_from_setting(r#"{"dataBaseDir":"   "}"#), None);
         assert_eq!(data_base_dir_from_setting(r#"{"other":1}"#), None);

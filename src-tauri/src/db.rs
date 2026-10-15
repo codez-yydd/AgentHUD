@@ -362,12 +362,15 @@ impl GenerationSpeedAgg {
 /// ZCode 主库专属的行级生成速度聚合（B2）：读 `model_usage` 的
 /// status/started_at/first_token_at/completed_at/output_tokens，用共享的
 /// token_speed::generation_sample 行级判定验证（真实生成样本要求
-/// output>0 且 completed>first>0，外加 started 校验与未来时间拒绝；
-/// 合法 <100ms、>500 t/s 的行不因阈值丢弃），在 Rust 侧累加 overall 与
-/// 各 (provider_id, model_id) 的可加总分子/分母/样本数/max。TTFT 沿用
-/// time_to_first_token_ms 列的独立口径（0 ≤ ttft ≤ duration 的行）。
-/// 老库缺列（无 status/first_token_at/completed_at）安全降级：按已完成
-/// 表处理 / 无生成样本返回空聚合（速度字段 None）。
+/// output>0 且 completed>first>0，外加 started 校验、未来时间拒绝与
+/// 样本时长边界 [200ms, 1h]；>500 t/s 的高速样本不设上限阈值），在
+/// Rust 侧累加 overall 与各 (provider_id, model_id) 的可加总分子/分母/
+/// 样本数/max。思考型请求（reasoning_tokens > 0 或模型名含 claude）的
+/// 生成窗口前移为 completed − started（见 token_speed 模块头"思考感知
+/// 窗口"），思考时长不再漏出分母。TTFT 沿用 time_to_first_token_ms 列
+/// 的独立口径（0 ≤ ttft ≤ duration 的行）。老库缺列（无 status/
+/// first_token_at/completed_at/reasoning_tokens）安全降级：按已完成表
+/// 处理 / 无思考信号 / 无生成样本返回空聚合（速度字段 None）。
 pub(crate) fn collect_generation_speed(
     conn: &Connection,
     from_ms: i64,
@@ -398,9 +401,13 @@ pub(crate) fn collect_generation_speed(
         opt("duration_ms"),
         num("output_tokens"),
     );
+    // 思考感知窗口（见 token_speed::thinking_generation_span）：老库缺
+    // reasoning_tokens 列按 0 读出，构造点再按"列存在且 > 0"降级为 None
+    let has_reasoning = has_column(conn, "model_usage", "reasoning_tokens");
+    let reasoning = num("reasoning_tokens");
     let sql = format!(
         "SELECT COALESCE(provider_id, ''), COALESCE(model_id, ''), {status}, \
-                started_at, {first}, {completed}, {output}, {ttft}, {duration} \
+                started_at, {first}, {completed}, {output}, {ttft}, {duration}, {reasoning} \
          FROM model_usage \
          WHERE started_at >= ?1 AND started_at < ?2"
     );
@@ -419,13 +426,15 @@ pub(crate) fn collect_generation_speed(
                 row.get::<_, i64>(6)?,
                 row.get::<_, Option<i64>>(7)?,
                 row.get::<_, Option<i64>>(8)?,
+                row.get::<_, i64>(9)?,
             ))
         })
         .map_err(|e| format!("读取生成速度行失败: {e}"))?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| format!("读取生成速度行失败: {e}"))?;
 
-    for (provider, model, status, started, first, completed, output, ttft, duration) in rows {
+    for (provider, model, status, started, first, completed, output, ttft, duration, reasoning) in rows
+    {
         // 完成判定：status 列缺失（老库完成即落行）或空值按完成降级
         if !crate::token_speed::is_completed_status(status.as_deref()) {
             continue;
@@ -437,6 +446,10 @@ pub(crate) fn collect_generation_speed(
             completed_at: completed,
             duration_ms: None,
             request_id: None,
+            // 思考感知窗口信号：缺列（老库）或零值按 None；模型名原样
+            // 透传（claude 系按名识别，大小写不敏感）
+            reasoning_tokens: (has_reasoning && reasoning > 0).then_some(reasoning),
+            model_id: (!model.is_empty()).then(|| model.clone()),
         };
         if let Some(sample) = crate::token_speed::generation_sample(&timing, observed_at_ms) {
             overall.absorb(&sample);
@@ -1102,8 +1115,10 @@ mod tests {
     }
 
     /// 生成口径核心断言：1000 Token / 首 Token 到完成 8s = 125 t/s（TTFT
-    /// 92s 不改用旧公式）；合法 <100ms、>500 t/s 不因阈值丢弃；逆序/未来/
-    /// 未完成/零输出无速度；首 Token 缺失不算生成样本；TTFT 独立样本集。
+    /// 92s 不改用旧公式）；合法 250ms 短样本与 >500 t/s 不因"速度阈值"
+    /// 丢弃（<200ms 抖动样本由 token_speed::MIN_GEN_MS 整体拒收）；
+    /// 逆序/未来/未完成/零输出无速度；首 Token 缺失不算生成样本；TTFT
+    /// 独立样本集。
     #[test]
     fn generation_speed_semantics() {
         let conn = generation_db();
@@ -1111,9 +1126,10 @@ mod tests {
         insert_timed(
             &conn, 0, "A", 1000, Some(92_000), Some(100_000), Some("completed"), Some(92_000), Some(100_000),
         );
-        // 模型 A：合法 10ms 短样本（>500 t/s，不封顶）：50 tok → 5000 t/s
+        // 模型 A：合法 250ms 短样本：50 tok → 200 t/s（无 1 秒地板，
+        // 窗口不放大；10ms 抖动样本会被 MIN_GEN_MS 拒收）
         insert_timed(
-            &conn, 1_000, "A", 50, Some(101_000), Some(101_010), Some("completed"), None, None,
+            &conn, 1_000, "A", 50, Some(101_000), Some(101_250), Some("completed"), None, None,
         );
         // 模型 B：逆序（completed < first）→ 无样本
         insert_timed(
@@ -1143,13 +1159,13 @@ mod tests {
         );
 
         let (overall, by_model) = collect_generation_speed(&conn, 0, 200_000, 110_000).unwrap();
-        // overall：样本 = A 两笔（8s+10ms）+ B 的 109000→109400（400ms）→
-        // 加权 (1000+50+200)×1000/(8000+10+400) ≈ 148.30
+        // overall：样本 = A 两笔（8s+250ms）+ B 的 109000→109400（400ms）→
+        // 加权 (1000+50+200)×1000/(8000+250+400) ≈ 144.64
         assert_eq!(overall.speed_sample_count, Some(3));
         assert_eq!(overall.speed_output_tokens, Some(1_250));
-        assert_eq!(overall.speed_generation_ms, Some(8_410));
-        assert!(approx(overall.avg_tps.unwrap(), 1_250_000.0 / 8_410.0), "{overall:?}");
-        assert!(approx(overall.max_tps.unwrap(), 5_000.0), "max 应取单请求最快且不封顶");
+        assert_eq!(overall.speed_generation_ms, Some(8_650));
+        assert!(approx(overall.avg_tps.unwrap(), 1_250_000.0 / 8_650.0), "{overall:?}");
+        assert!(approx(overall.max_tps.unwrap(), 500.0), "max 应取单请求最快且不封顶");
         assert_eq!(overall.speed_quality, Some(crate::token_speed::SpeedQuality::Generation));
         // TTFT 独立样本集：A 的 92000（≤ duration）与 B 的 5000（> duration
         // 剔除）、B 首字缺失行 TTFT 无值 → 仅 1 个样本
@@ -1157,7 +1173,7 @@ mod tests {
         assert!(approx(overall.avg_ttft_ms.unwrap(), 92_000.0));
 
         let a = by_model.get(&("p".to_string(), "A".to_string())).unwrap();
-        assert!(approx(a.avg_tps.unwrap(), 1_050_000.0 / 8_010.0));
+        assert!(approx(a.avg_tps.unwrap(), 1_050_000.0 / 8_250.0));
         let b = by_model.get(&("p".to_string(), "B".to_string())).unwrap();
         // B 仅 109000→109400 一笔有效：200 tok / 0.4s = 500 t/s
         assert_eq!(b.speed_sample_count, Some(1));
@@ -1207,13 +1223,13 @@ mod tests {
         );
         // 窗口外（started_at >= 100_000 才计入）
         insert_timed(
-            &conn, 100_000, "A", 999, Some(100_100), Some(100_200), Some("completed"), None, None,
+            &conn, 100_000, "A", 999, Some(100_100), Some(100_300), Some("completed"), None, None,
         );
         let (overall, _) = collect_generation_speed(&conn, 90_000, 200_000, 300_000).unwrap();
         assert_eq!(overall.speed_sample_count, Some(1));
-        // 窗口内仅 started 100_000 的行：999 tok / 100ms → 9990 t/s（>500
-        // 不封顶）
-        assert!(approx(overall.avg_tps.unwrap(), 9_990.0));
+        // 窗口内仅 started 100_000 的行：999 tok / 200ms（恰在 MIN_GEN_MS
+        // 下限边界上，有效样本）→ 4995 t/s（>500 不封顶）
+        assert!(approx(overall.avg_tps.unwrap(), 4_995.0));
         // 空窗口：全部 None（不是 0）
         let (empty, by_model) = collect_generation_speed(&conn, 500_000, 600_000, 700_000).unwrap();
         assert_eq!(empty.avg_tps, None);
@@ -1255,19 +1271,20 @@ mod tests {
     }
 
     /// 折叠基线（验收示例）：两个同名模型变体各 100 Token，生成时长分别
-    /// 1s 与 0.1s（单行 100 / 1000 t/s）——真实合并均速 = 200×1000÷1100 ≈
-    /// 181.8 t/s；按输出 Token 加权的错误算法会得到 550。Rust 侧保证字段
-    /// 可加总（总体分子/分母 = Σ变体），TS 折叠（批次 2）按同公式求和后
-    /// 相除即可得到与总体一致的均速。
+    /// 0.9s 与 0.2s（单行 ≈111.1 / 500 t/s，均落在 MIN_GEN_MS 样本时长
+    /// 边界内的可信窗口）——真实合并均速 = 200×1000÷1100 ≈ 181.8 t/s；
+    /// 按输出 Token 加权的错误算法会得到 ≈305.6。Rust 侧保证字段可加总
+    ///（总体分子/分母 = Σ变体），TS 折叠（批次 2）按同公式求和后相除即
+    /// 可得到与总体一致的均速。
     #[test]
     fn generation_speed_fold_baseline_181() {
         let conn = generation_db();
-        // 变体一：100 tok / 1s → 100 t/s；变体二：100 tok / 0.1s → 1000 t/s
+        // 变体一：100 tok / 0.9s → ≈111.1 t/s；变体二：100 tok / 0.2s → 500 t/s
         insert_timed(
-            &conn, 1_000, "GLM-5.3", 100, Some(1_100), Some(2_100), Some("completed"), None, None,
+            &conn, 1_000, "GLM-5.3", 100, Some(1_100), Some(2_000), Some("completed"), None, None,
         );
         insert_timed(
-            &conn, 3_000, "GLM-5.3", 100, Some(3_100), Some(3_200), Some("completed"), None, None,
+            &conn, 3_000, "GLM-5.3", 100, Some(3_100), Some(3_300), Some("completed"), None, None,
         );
         // 两个 (provider, model) 分组、model 同名（模拟 foldModelStatRows 折叠）
         conn.execute_batch(
@@ -1291,6 +1308,6 @@ mod tests {
         assert_eq!(overall.speed_output_tokens, Some(sum_out));
         assert_eq!(overall.speed_generation_ms, Some(sum_ms));
         assert_eq!(overall.speed_sample_count, Some(2));
-        assert!(approx(overall.max_tps.unwrap(), 1_000.0));
+        assert!(approx(overall.max_tps.unwrap(), 500.0));
     }
 }

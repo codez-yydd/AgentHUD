@@ -1207,7 +1207,21 @@ pub const EFFECTS_JS_VERSION: u32 = 5;
 /// 底部额度行扁平化去括号：zh 词表额度段「5h 余」→「5h 」、周段
 /// 「周余」→「每周 」，倒计时段去括号返回裸时长并由渲染端前置半角
 /// 空格，行形 "额度 5h 65% 3h02m · 每周 93% 6d21h · 缓存 88.7%"。
-pub const USAGE_JS_VERSION: u32 = 32;
+/// V35：注入条与输入框卡片左右缘对齐 + 每轮条/会话条缓存命中率回归 +
+/// ✚ 缓存写 0 值隐藏（仅渲染端，usage-data.js / usage-speed.js /
+/// usage-quota.js 三契约零改动）——a) 新增 locateComposerCard：遍历
+/// region 直接子元素（跳过带 data-zbar-usage-* 属性或绝对定位的自家
+/// 注入元素），取第一个可见且 offsetWidth>100 的元素为输入框卡片，
+/// 零选择器假设、找不到回退；底部胶囊条命中时 left/width 两缘精确对
+/// 齐卡片（未命中回退右对齐自然宽），会话条左缘对齐（未命中回退居
+/// 中）、模型行底板左缘/宽度对齐（未命中回退居中）；每渲染拍重算、
+/// 值变才写 style，窗口缩放由下一渲染拍/15s 兜底拍自愈（不做 resize
+/// 监听）；b) 每轮条/会话条 ⟲ 段后补弱色命中率段 (NN%)（cacheHitText
+/// 共用口径 cr/(cr+非缓存输入)，分母 0 不入段；底部条「缓存」段并
+/// 存）；c) ✚ 缓存写段 cw 为 0 整段隐藏（含启动窗口占位态），>0 带
+/// title（词表新增 cwTitle 双语条目），renderRowParts/renderBarLine
+/// 补 title 通道（title 不进比对串）。
+pub const USAGE_JS_VERSION: u32 = 35;
 
 /// 桌面像素宠物脚本 pet.js 的版本化落盘标记。
 /// 版本头写在模板首行注释（ZBAR-THEME-V 标记，提取器与
