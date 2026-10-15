@@ -14,7 +14,7 @@ import {
   type UpdatePhase,
 } from "./updater";
 
-const DOWNLOAD_PAGE = "https://gitee.com/codezwx/zai-floating-monitor/releases";
+const DOWNLOAD_PAGE = "https://gitee.com/codezwx/AgentHUD/releases";
 
 export function UpdaterCard() {
   const { t } = useI18n();

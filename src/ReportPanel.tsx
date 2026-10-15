@@ -2740,7 +2740,7 @@ function buildMarkdown(
   const title = t("report.md.custom");
   if (!report || report.agents.length === 0) {
     return (
-      "📊 ZBar " + title + " · " + localDateStr(now) + "\n\n" + t("report.md.noData")
+      "📊 AgentHUD " + title + " · " + localDateStr(now) + "\n\n" + t("report.md.noData")
     );
   }
 
@@ -2777,7 +2777,7 @@ function buildMarkdown(
     5
   ).filter((m) => m.tokens > 0);
   const lines: string[] = [];
-  lines.push("📊 ZBar " + title + " · " + range);
+  lines.push("📊 AgentHUD " + title + " · " + range);
   lines.push("");
   lines.push(
     t("report.md.summaryLine", {

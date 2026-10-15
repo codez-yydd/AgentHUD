@@ -559,7 +559,7 @@ fn ensure_pet_window(app: &AppHandle, cfg: &PetConfig) -> Result<(), String> {
         PET_WINDOW_LABEL,
         WebviewUrl::App("pet.html".into()),
     )
-    .title("ZBar Pet")
+    .title("AgentHUD Pet")
     .inner_size(size as f64, win_h)
     .decorations(false)
     .transparent(true)

@@ -1158,21 +1158,25 @@ fn detect_injected(app: &dyn AgentApp, state: &mut store::StoredState, node_ok: 
 /// 重装引导原因（state_impl 的 needs_reinstall 判定，纯函数供单测）：
 /// 已安装前提下任一命中即需重装——
 /// - 版本变化：应用升级覆盖了 asar，注入块丢失（既有判定）；
+/// - 基目录变化：数据目录迁移（ZBar → AgentHUD）后注入块里的 file://
+///   外链指向不存在的旧目录，重装改写引用到新位置（迁移配套）；
 /// - 缺 pet 行：宠物功能之前安装的旧注入块没有 pet.js 引用行，
 ///   落盘模板升级补不出 asar 里的引用行，重装后 apply_inject 重新
 ///   注入完整块（含 pet.js）。pet_marker 为 None（旧版 state.json
 ///   尚未实检过）不触发——detect_injected 会在缓存命中后的下一次
 ///   实检中补齐结论。
-/// 两者同时命中时优先报版本变化（文案更完整，重装一并解决）。
+/// 多因同现时版本变化优先（文案最完整，重装一并解决其余）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ReinstallReason {
     VersionChanged,
+    BaseDirChanged,
     PetLineMissing,
 }
 
 fn reinstall_reason(
     installed: bool,
     version_changed: bool,
+    base_changed: bool,
     pet_marker: Option<bool>,
 ) -> Option<ReinstallReason> {
     if !installed {
@@ -1181,10 +1185,111 @@ fn reinstall_reason(
     if version_changed {
         return Some(ReinstallReason::VersionChanged);
     }
+    if base_changed {
+        return Some(ReinstallReason::BaseDirChanged);
+    }
     if pet_marker == Some(false) {
         return Some(ReinstallReason::PetLineMissing);
     }
     None
+}
+
+/// state 记录的注入基目录与当前是否一致（数据目录迁移配套的强制重注入
+/// 判定核心，路径参数显式传入便于单测）：recorded 为 state.theme_base
+/// 的记录值，None（旧版 state.json）按迁移前旧目录 ~/.zbar 参与比对——
+/// 迁移成功后必不相等正好触发一次重注入；迁移失败回退时当前基目录
+/// 就是旧目录，恰好相等不会误触发。
+fn theme_base_matches_with(recorded: Option<&str>, current: &Path, legacy: &Path) -> bool {
+    let recorded = recorded
+        .map(PathBuf::from)
+        .unwrap_or_else(|| legacy.to_path_buf());
+    recorded == current
+}
+
+/// theme_base_matches_with 的生产入口（基目录取 pricing 的单一出处）。
+fn theme_base_matches(state: &store::StoredState) -> bool {
+    let current = match crate::pricing::config_dir() {
+        Ok(dir) => dir,
+        // 无法定位基目录时无从比对，不触发（与状态查询的容错口径一致）
+        Err(_) => return true,
+    };
+    let legacy = crate::pricing::legacy_config_dir().unwrap_or_else(|_| current.clone());
+    theme_base_matches_with(state.theme_base.as_deref(), &current, &legacy)
+}
+
+/// 启动期强制重注入检查（数据目录迁移配套，lib.rs 的 setup 挂点调用）：
+/// 注入版主题的外链是写进 asar 的 file:// URL（usage.js / theme.css /
+/// 壁纸等都指向数据目录），ZBar → AgentHUD 目录改名后旧引用全部失效，
+/// 必须重注入一次改写 asar 引用到新位置。
+/// 后台线程执行既有完整安装流程（需重启 ZCode 才能加载新 asar）；
+/// 检测到 ZCode 正在运行时不悄悄退出用户应用，跳过本次自动重注入
+/// （重试条件保留在 state，下次启动再试）；失败不阻断启动仅记中文
+/// 日志，并把"已注入但基目录过期"写回 state 让下次启动继续重试；
+/// 重注入成功后 done_state 记录新基目录，此后不再触发。
+pub fn reinject_if_theme_base_changed(handle: AppHandle) {
+    let spawned = std::thread::Builder::new()
+        .name("zbar-theme-reinject".into())
+        .spawn(move || {
+            for app in registry().iter() {
+                let state = store::load_state(app.id());
+                if !state.is_installed() || theme_base_matches(&state) {
+                    continue;
+                }
+                // 自动重注入会替换 asar 并拉起 ZCode；检测到 ZCode 正在
+                // 运行时不悄悄退出用户正在使用的应用，跳过本次——state
+                // 的"已安装 + 基目录过期"重试条件原样保留，下次启动
+                // （ZCode 未运行时）再试。手动安装路径有确认文案，不受影响
+                if app.running() {
+                    eprintln!(
+                        "[zbar-agent-theme] 检测到 ZCode 正在运行，已跳过自动重注入，将在下次启动重试：{}",
+                        app.display_name()
+                    );
+                    continue;
+                }
+                eprintln!(
+                    "[zbar-agent-theme] 检测到数据目录变化（asar 注入引用指向旧目录），开始强制重注入：{}",
+                    app.display_name()
+                );
+                match install_impl(&handle, app.id(), None) {
+                    Ok(()) => eprintln!(
+                        "[zbar-agent-theme] 数据目录变化后的强制重注入完成：{}",
+                        app.display_name()
+                    ),
+                    Err(e) => {
+                        eprintln!(
+                            "[zbar-agent-theme] 数据目录变化后的强制重注入失败（下次启动自动重试）：{e}"
+                        );
+                        // 失败路径 install_impl 会把 state 复位为未安装，
+                        // 重注入的重试条件随之消失；而失败路径上 asar 要么
+                        // 未被触碰（仍含指向旧目录的注入块，installed 是
+                        // 事实）、要么已被自动还原为原版（重装即修复），
+                        // 把重试条件写回 state 让下次启动继续。写回与安装/
+                        // 卸载流互斥且先做状态指纹比对（state 文件无原子
+                        // CAS）：仅当磁盘 state 仍处于本线程复位后的"未安
+                        // 装待重装"默认态、且备份文件仍在（手动卸载完成会
+                        // 连同备份一并清理）才写回；期间若用户已手动卸载，
+                        // 或另一条安装流已写入其他状态（installing / 成功
+                        // done_state），一律保持磁盘现状不覆盖，防止把已
+                        // 卸载的状态误写回 installed 造成主题"复活"。锁被
+                        // 占用说明另一条流正在进行、状态归它管，同样放弃
+                        if let Ok(_guard) = acquire_task_lock() {
+                            let mut st = store::load_state(app.id());
+                            if st.status.is_none()
+                                && store::latest_backup(app.id()).is_some()
+                            {
+                                st.status = Some(store::STATUS_INSTALLED.to_string());
+                                // None 按迁移前旧目录比对 → 持续触发重注入
+                                st.theme_base = None;
+                                let _ = store::save_state(app.id(), &st);
+                            }
+                        }
+                    }
+                }
+            }
+        });
+    if let Err(e) = spawned {
+        eprintln!("[zbar-agent-theme] 强制重注入线程启动失败（下次启动重试）: {e}");
+    }
 }
 
 /// get_agent_theme_state 的业务实现
@@ -1218,10 +1323,15 @@ fn state_impl(app_id: &str) -> Result<AgentThemeStateDto, String> {
     let version_changed = app_version.is_some()
         && state.zcode_version.is_some()
         && app_version != state.zcode_version;
-    // 重装引导：版本变化（既有判定）或注入块缺 pet.js 引用行（宠物
-    // 功能之前的旧安装，模板升级补不出 asar 引用行），任一命中即引导
-    // 重装；与版本变化判定合并不互相覆盖（两者同现时文案优先报版本）
-    let reason = reinstall_reason(installed, version_changed, state.pet_marker);
+    // 注入基目录指纹：数据目录迁移（ZBar → AgentHUD）后旧引用失效，
+    // 与版本变化同口径引导重装（启动期已先自动重注入一次，这里是自动
+    // 重注入失败时的手动兜底入口）
+    let base_changed = installed && !theme_base_matches(&state);
+    // 重装引导：版本变化（既有判定）、注入基目录变化（数据目录迁移
+    // 配套）或注入块缺 pet.js 引用行（宠物功能之前的旧安装，模板升级
+    // 补不出 asar 引用行），任一命中即引导重装；多因同现时文案优先报
+    // 版本变化（最完整，重装一并解决）
+    let reason = reinstall_reason(installed, version_changed, base_changed, state.pet_marker);
     let needs_reinstall = reason.is_some();
     let backup_missing = installed && !backup_exists;
 
@@ -1240,6 +1350,11 @@ fn state_impl(app_id: &str) -> Result<AgentThemeStateDto, String> {
             state.zcode_version.as_deref().unwrap_or("?"),
             app_version.as_deref().unwrap_or("?")
         ))
+    } else if reason == Some(ReinstallReason::BaseDirChanged) {
+        Some(
+            "数据目录已从 ~/.zbar 迁移到 ~/.agenthud，注入的主题引用仍指向旧目录，重新安装一次即可恢复（如重装失败，请重启 AgentHUD 与 ZCode 后再试）"
+                .to_string(),
+        )
     } else if reason == Some(ReinstallReason::PetLineMissing) {
         Some(format!(
             "当前皮肤为宠物功能上线前的旧版安装（注入块缺少宠物引用），重新安装一次即可启用桌面宠物"
@@ -1510,7 +1625,7 @@ fn install_steps(
         75.0,
         Some("正在替换应用文件（首次可能弹出系统确认框，请点允许）"),
     );
-    let replace_prompt = format!("ZBar：向{}注入动态壁纸主题", app.display_name());
+    let replace_prompt = format!("AgentHUD：向{}注入动态壁纸主题", app.display_name());
     let replace_spec = ReplaceSpec::Install {
         src: packed,
         asar: &asar_path,
@@ -1542,6 +1657,14 @@ fn install_steps(
         // 安装完成即写入，后续状态查询无须再实检 pet 行
         pet_marker: Some(true),
         installing_since: None,
+        // 注入基目录指纹（数据目录迁移配套）：注入版外链写死了数据目录
+        // 路径，启动校验据此判定是否需要强制重注入，见
+        // reinject_if_theme_base_changed
+        theme_base: Some(
+            crate::pricing::config_dir()?
+                .to_string_lossy()
+                .into_owned(),
+        ),
     };
     store::save_state(app.id(), &done_state).map_err(|e| format!("写入安装状态失败: {e}"))?;
 
@@ -1657,7 +1780,7 @@ fn restore_backup(app: &dyn AgentApp, prog: &Progress) -> Result<(), String> {
         asar: &asar_path,
         bundle: &bundle,
     };
-    match execute_replace_script(app, &restore_spec, "ZBar：还原应用原始文件") {
+    match execute_replace_script(app, &restore_spec, "AgentHUD：还原应用原始文件") {
         Ok(_) => {}
         // 用户取消管理员授权（兜底路径）：原样上抛，不重试（避免连环弹授权窗）
         Err(e) if privilege::is_admin_cancelled(&e) => return Err(e),
@@ -1742,7 +1865,7 @@ fn uninstall_impl(handle: &AppHandle, app_id: &str) -> Result<(), String> {
             asar: &asar_path,
             bundle: &bundle,
         };
-        match execute_replace_script(app, &restore_spec, "ZBar：还原应用原始文件") {
+        match execute_replace_script(app, &restore_spec, "AgentHUD：还原应用原始文件") {
             Ok(_) => {}
             // 用户取消管理员授权（兜底路径）：直接中止，不重试（避免连环弹授权窗）
             Err(e) if privilege::is_admin_cancelled(&e) => return Err(e),
@@ -2146,29 +2269,75 @@ mod tests {
         // 实检确认缺 pet 行 → 引导重装（重装后 apply_inject 重新注入
         // 含 pet.js 的完整块）
         assert_eq!(
-            reinstall_reason(true, false, Some(false)),
+            reinstall_reason(true, false, false, Some(false)),
             Some(ReinstallReason::PetLineMissing),
             "缺 pet 行的已装状态应触发重装引导"
         );
         // 本版安装（pet 行存在）且版本未变 → 不触发
-        assert_eq!(reinstall_reason(true, false, Some(true)), None);
+        assert_eq!(reinstall_reason(true, false, false, Some(true)), None);
         // 旧版 state.json 尚未实检过（pet_marker=None）→ 不触发，等待
         // detect_injected 补齐结论后再判
-        assert_eq!(reinstall_reason(true, false, None), None);
+        assert_eq!(reinstall_reason(true, false, false, None), None);
         // 版本变化（既有判定）保持：pet 行已知存在时仍触发
         assert_eq!(
-            reinstall_reason(true, true, Some(true)),
+            reinstall_reason(true, true, false, Some(true)),
             Some(ReinstallReason::VersionChanged)
         );
         // 两者同时命中 → 版本变化优先（文案更完整，重装一并解决）
         assert_eq!(
-            reinstall_reason(true, true, Some(false)),
+            reinstall_reason(true, true, false, Some(false)),
             Some(ReinstallReason::VersionChanged),
             "版本变化与缺 pet 行同现时优先报版本变化，不互相覆盖"
         );
         // 未安装（首次/已还原）一律不触发
-        assert_eq!(reinstall_reason(false, true, Some(false)), None);
-        assert_eq!(reinstall_reason(false, false, None), None);
+        assert_eq!(reinstall_reason(false, true, false, Some(false)), None);
+        assert_eq!(reinstall_reason(false, false, false, None), None);
+    }
+
+    /// 数据目录迁移配套：注入基目录指纹比对（强制重注入的触发判定）
+    #[test]
+    fn 注入基目录比对_旧记录与新基目录不符才触发() {
+        let legacy = Path::new(r"C:\Users\u\.zbar");
+        let cur = Path::new(r"C:\Users\u\.agenthud");
+
+        // 旧版 state（theme_base=None）按旧目录比对：迁移成功（当前为新
+        // 目录）→ 不匹配 → 触发重注入
+        assert!(!theme_base_matches_with(None, cur, legacy));
+        // 迁移失败回退（当前就是旧目录）→ 匹配 → 不误触发
+        assert!(theme_base_matches_with(None, legacy, legacy));
+        // 本版安装记录 = 当前基目录 → 匹配
+        assert!(theme_base_matches_with(
+            Some(r"C:\Users\u\.agenthud"),
+            cur,
+            legacy
+        ));
+        // 记录为旧目录、当前为新目录（复制兜底成功后的旧 state）→ 不匹配
+        assert!(!theme_base_matches_with(
+            Some(r"C:\Users\u\.zbar"),
+            cur,
+            legacy
+        ));
+    }
+
+    #[test]
+    fn 重装引导_基目录变化触发且优先级介于版本与pet行之间() {
+        // 已装、无版本变化、基目录变化 → 引导重装（自动重注入失败的兜底入口）
+        assert_eq!(
+            reinstall_reason(true, false, true, Some(true)),
+            Some(ReinstallReason::BaseDirChanged)
+        );
+        // 版本变化与基目录变化同现 → 版本变化优先（重装一并解决）
+        assert_eq!(
+            reinstall_reason(true, true, true, Some(true)),
+            Some(ReinstallReason::VersionChanged)
+        );
+        // 基目录变化与缺 pet 行同现 → 基目录变化优先（文案给出迁移语境）
+        assert_eq!(
+            reinstall_reason(true, false, true, Some(false)),
+            Some(ReinstallReason::BaseDirChanged)
+        );
+        // 未安装不触发
+        assert_eq!(reinstall_reason(false, false, true, Some(true)), None);
     }
 
     #[test]

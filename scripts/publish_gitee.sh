@@ -40,10 +40,10 @@ VERSION="${1:-}"
 [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "用法: $0 <版本号> [发行说明]，例: $0 0.5.0"; exit 1; }
 # Gitee release 的发行说明：第二个参数可选，缺省沿用默认文案；
 # 与 GitHub Release 说明保持一致时传入相同文本
-RELEASE_BODY="${2:-ZBar v${VERSION} 自动更新通道，保持最新版即可。}"
+RELEASE_BODY="${2:-AgentHUD v${VERSION} 自动更新通道，保持最新版即可。}"
 
-GH_REPO="codez-yydd/zai-floating-monitor"
-GITEE_REPO="codezwx/zai-floating-monitor"
+GH_REPO="codez-yydd/AgentHUD"
+GITEE_REPO="codezwx/AgentHUD"
 GH_PROXY="${GH_PROXY-http://127.0.0.1:33210}"   # 置 GH_PROXY="" 可禁用代理
 API="https://gitee.com/api/v5/repos/$GITEE_REPO/releases"
 command -v jq >/dev/null 2>&1 || { echo '错误：缺少 jq（brew install jq）'; exit 1; }
@@ -157,7 +157,7 @@ if [[ -z "$OFFICIAL_ID" ]]; then
   # 走 stdin 字节流也顺带规避 Windows 命令行中文的 GBK 转码问题
   BODY_JSON=$(printf '%s' "$RELEASE_BODY" | jq -Rs .)
   cat > "$WORK/official.json" <<EOF
-{"tag_name":"v${VERSION}","target_commitish":"master","name":"ZBar v${VERSION}","body":${BODY_JSON}}
+{"tag_name":"v${VERSION}","target_commitish":"master","name":"AgentHUD v${VERSION}","body":${BODY_JSON}}
 EOF
   jq -e . "$WORK/official.json" >/dev/null
   OFF_CREATE=$(curl -sS --connect-timeout 20 --max-time 120 -w '\n%{http_code}' -X POST "$API?$TOKEN_PARAM" \
@@ -207,7 +207,7 @@ echo '[4/5] 创建新 latest release 并上传附件'
 # body 同样经 jq -Rs 转义（多行说明的换行必须转成 \n，见上方正式版处的踩坑说明）
 BODY_JSON=$(printf '%s' "$RELEASE_BODY" | jq -Rs .)
 cat > "$WORK/release.json" <<EOF
-{"tag_name":"latest","target_commitish":"master","name":"ZBar v${VERSION}（应用内更新源）","body":${BODY_JSON}}
+{"tag_name":"latest","target_commitish":"master","name":"AgentHUD v${VERSION}（应用内更新源）","body":${BODY_JSON}}
 EOF
 jq -e . "$WORK/release.json" >/dev/null
 RESP=$(curl -sS --connect-timeout 20 --max-time 120 -w '\n%{http_code}' -X POST "$API?$TOKEN_PARAM" \
@@ -253,4 +253,4 @@ echo "发布成功：v$VERSION"
 echo "  正式版 release：id=$OFFICIAL_ID / https://gitee.com/$GITEE_REPO/releases/tag/v$VERSION"
 echo "  latest 更新源：id=$LATEST_ID / 附件 $(attach_list "$LATEST_ID" | jq 'length') 个"
 attach_list "$LATEST_ID" | jq -r '.[].name' | sed 's/^/    /'
-echo '更新源：https://gitee.com/codezwx/zai-floating-monitor/releases/download/latest/latest.json'
+echo '更新源：https://gitee.com/codezwx/AgentHUD/releases/download/latest/latest.json'

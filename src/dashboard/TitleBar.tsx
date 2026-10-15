@@ -135,7 +135,7 @@ export function TitleBar() {
           className="db-titlebar__logo"
           draggable={false}
         />
-        <span className="db-titlebar__name">ZBar</span>
+        <span className="db-titlebar__name">AgentHUD</span>
         <span className="db-titlebar__tagline">{t("dashboard.subtitle")}</span>
       </div>
 

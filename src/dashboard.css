@@ -188,7 +188,7 @@ body {
 }
 
 /* 软件 logo（原侧栏 db-brand__logo-img 28px 上移到标题栏：缩到 18px 适配
-   40px 栏高；128px 透明底 PNG 由 Vite 打包） */
+   40px 栏高；128px 满底不透明 PNG 由 Vite 打包，5px 圆角避免直角色块） */
 .db-titlebar__logo {
   width: 18px;
   height: 18px;
@@ -1783,67 +1783,47 @@ body {
  * 周额度对比页（大窗）：设备下拉 / 额度矩阵 / 折线图 / Token 对比
  * ============================================================ */
 
-/* ---- 额度矩阵：行 = Agent，行内每系列一块 ---- */
+/* ---- 额度矩阵：全系列平铺网格。默认模板只是首帧兜底（no-JS / 测宽前），
+       正常运行由组件按「订阅数整除优选」算出的列数以内联模板接管
+       （见 QuotaMatrixCard 的 pickColumnCount：auto-fill 的列数与订阅数
+       不整除时末行会留出大片空位，如 6 块落进 5 列 = 5+1） ---- */
 .db-matrix {
-  display: flex;
-  flex-direction: column;
-}
-
-.db-matrix__row {
-  display: flex;
-  align-items: flex-start;
-  gap: 16px;
-  padding: 14px 0;
-  border-bottom: 1px solid var(--db-row-border);
-}
-
-.db-matrix__row:last-child {
-  border-bottom: none;
-  padding-bottom: 0;
-}
-
-.db-matrix__row:first-child {
-  padding-top: 0;
-}
-
-.db-matrix__agent {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 150px;
-  flex: none;
-  padding-top: 4px;
-}
-
-.db-matrix__cells {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 260px));
   gap: 12px;
-  flex: 1;
-  min-width: 0;
 }
 
-/* 单个额度系列块 */
+/* 仅一个订阅：块封顶 340px 且网格左对齐，进度条不拉满整行（组件加挂 --solo） */
+.db-matrix--solo {
+  justify-content: start;
+}
+
+.db-matrix--solo .db-qcell {
+  max-width: 340px;
+}
+
+/* 单个额度系列块：三行紧凑结构（块头 / 进度条 / 重置与 5 小时） */
 .db-qcell {
-  width: 208px;
+  min-width: 0;
   padding: 11px 12px 10px;
   border: 1px solid var(--db-border);
   border-radius: 12px;
   background: var(--db-hover);
 }
 
+/* 额度块加载骨架：与真实额度块同轮廓（约 78px 高、12px 圆角），
+   底色与脉冲沿用 .db-skeleton；容器复用 .db-matrix 同一网格模板 */
+.db-qcell--skeleton {
+  height: 78px;
+  border-radius: 12px;
+}
+
+/* 块头一行放下：品牌图标 + 系列名（左）与窗口措辞 + 剩余大数（右） */
 .db-qcell__head {
   display: flex;
   align-items: center;
   gap: 6px;
   min-width: 0;
-}
-
-.db-qcell__dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 2px;
-  flex: none;
 }
 
 .db-qcell__label {
@@ -1867,11 +1847,11 @@ body {
   display: flex;
   align-items: baseline;
   gap: 4px;
-  margin-top: 8px;
+  flex: none;
 }
 
 .db-qcell__pct {
-  font-size: 22px;
+  font-size: 20px;
   font-weight: 700;
   line-height: 1;
   letter-spacing: -0.02em;
@@ -1879,7 +1859,7 @@ body {
 
 .db-qcell__track {
   height: 4px;
-  margin-top: 9px;
+  margin-top: 8px;
   border-radius: 999px;
   background: var(--db-track);
   overflow: hidden;

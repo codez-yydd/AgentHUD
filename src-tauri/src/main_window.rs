@@ -122,7 +122,7 @@ fn ensure_main_window(app: &AppHandle, visible: bool) -> Result<(), String> {
         MAIN_WINDOW_LABEL,
         WebviewUrl::App("dashboard.html".into()),
     )
-    .title("ZBar")
+    .title("AgentHUD")
     .inner_size(MAIN_WINDOW_WIDTH, MAIN_WINDOW_HEIGHT)
     .min_inner_size(MAIN_WINDOW_MIN_WIDTH, MAIN_WINDOW_MIN_HEIGHT)
     // 无系统标题栏：拖拽 / 最大化 / 关闭由 dashboard 前端自绘标题栏承担

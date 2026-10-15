@@ -1,6 +1,6 @@
-# ZBar · ZCode Token Monitor
+# AgentHUD · ZCode Token Monitor
 
-![Tauri](https://img.shields.io/badge/Tauri-2.0-orange) ![React](https://img.shields.io/badge/React-19-blue) ![TypeScript](https://img.shields.io/badge/TypeScript-5.8-3178c6) ![TailwindCSS](https://img.shields.io/badge/Tailwind-v4-38bdf8) ![Rust](https://img.shields.io/badge/Rust-edition%202021-dea584) ![License](https://img.shields.io/badge/License-MIT-yellow) ![Platform](https://img.shields.io/badge/Platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey) [![GitHub Repo](https://img.shields.io/badge/GitHub-codez--yydd%2Fzai--floating--monitor-181717?logo=github)](https://github.com/codez-yydd/zai-floating-monitor) [![Gitee Repo](https://img.shields.io/badge/Gitee-codezwx%2Fzai--floating--monitor-C71D23?logo=gitee)](https://gitee.com/codezwx/zai-floating-monitor)
+![Tauri](https://img.shields.io/badge/Tauri-2.0-orange) ![React](https://img.shields.io/badge/React-19-blue) ![TypeScript](https://img.shields.io/badge/TypeScript-5.8-3178c6) ![TailwindCSS](https://img.shields.io/badge/Tailwind-v4-38bdf8) ![Rust](https://img.shields.io/badge/Rust-edition%202021-dea584) ![License](https://img.shields.io/badge/License-MIT-yellow) ![Platform](https://img.shields.io/badge/Platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey) [![GitHub Repo](https://img.shields.io/badge/GitHub-codez--yydd%2FAgentHUD-181717?logo=github)](https://github.com/codez-yydd/AgentHUD) [![Gitee Repo](https://img.shields.io/badge/Gitee-codezwx%2FAgentHUD-C71D23?logo=gitee)](https://gitee.com/codezwx/AgentHUD)
 
 A lightweight menu-bar floating panel that tracks the Token usage and cost of the [ZCode](https://z.ai) CLI in real time. Click the menu-bar icon to summon a vibrancy panel showing today's / 7-day / 30-day breakdowns, grouped by model.
 
@@ -10,8 +10,8 @@ A lightweight menu-bar floating panel that tracks the Token usage and cost of th
 
 ## 📍 Repositories
 
-- **GitHub**: [codez-yydd/zai-floating-monitor](https://github.com/codez-yydd/zai-floating-monitor)
-- **Gitee**: [codezwx/zai-floating-monitor](https://gitee.com/codezwx/zai-floating-monitor)
+- **GitHub**: [codez-yydd/AgentHUD](https://github.com/codez-yydd/AgentHUD)
+- **Gitee**: [codezwx/AgentHUD](https://gitee.com/codezwx/AgentHUD)
 
 Both repositories have exactly the same content — the latest version can be obtained from either one; the GitHub / Gitee dual-repo auto-fallback update source is also based on these addresses.
 
@@ -74,8 +74,8 @@ Both repositories have exactly the same content — the latest version can be ob
       <b>Trend & model ranking</b> — Hourly usage trend and model ranking
     </td>
     <td width="50%" align="center">
-      <img src="doc/img/cursor.png" width="320" alt="Cursor view"/><br/>
-      <b>Cursor view</b> — Pro / Auto / API quotas & usage stats
+      <img src="doc/img/dashboard-overview.png" width="320" alt="Dashboard · usage overview"/><br/>
+      <b>Dashboard · Usage Overview</b> — Cross-service usage, cost & trend summary
     </td>
   </tr>
   <tr>
@@ -98,6 +98,16 @@ Both repositories have exactly the same content — the latest version can be ob
       <b>Session token HUD</b> — injection-free live tokens, streaming speed & per-model rows
     </td>
   </tr>
+  <tr>
+    <td width="50%" align="center">
+      <img src="doc/img/dashboard-logs.png" width="320" alt="Dashboard · request logs"/><br/>
+      <b>Dashboard · Request Logs</b> — per-agent request details: duration, cache & cost
+    </td>
+    <td width="50%" align="center">
+      <img src="doc/img/usage-report.png" width="320" alt="Usage report"/><br/>
+      <b>Usage report</b> — activity / token heatmap & daily / weekly report export
+    </td>
+  </tr>
 </table>
 
 ---
@@ -108,6 +118,8 @@ Both repositories have exactly the same content — the latest version can be ob
 
 - **Live menu-bar title** — lives in the macOS menu bar, refreshing every 30s, showing today's total cost (`¥xx.xx`, or `$xx.xx` in USD mode) and total tokens (e.g. `3.7M`).
 - **Floating stats panel** — summoned by clicking the tray icon; supports **today / 24h / 7d / 30d / custom** time ranges.
+- **🖥 Dashboard main window** — a standalone large window with sidebar tabs: usage overview (cross-service tokens / cost / trends / activity heatmap), request logs, weekly quota compare and pricing settings.
+- **📜 Request logs** — per-request details (time, source, model, token breakdown, cost, duration & speed) with source / model filters and auto refresh.
 - **Native feel** — macOS uses the `popover` vibrancy material + transparent window; Windows/Linux panels unfold near the taskbar.
 - **Auto refresh** — panel data is re-fetched every 30 seconds.
 - **⌨️ Global hotkey** — summon / hide the panel with `alt+shift+z` by default; customizable or disable-able in settings.
@@ -172,7 +184,7 @@ Both repositories have exactly the same content — the latest version can be ob
 ## 📁 Project Structure
 
 ```
-zai-floating-monitor/
+AgentHUD/
 ├── src/                      # Frontend (React)
 │   ├── App.tsx               # View router: stats / pricing / sync / weekly compare / reports
 │   ├── StatsPanel.tsx        # Stats panel (device filter + local/remote merge)
@@ -264,7 +276,7 @@ The dev server runs at `http://localhost:1420`; Tauri loads it and opens the nat
 npm run tauri build
 ```
 
-- **macOS**: `ZBar.app`, `.dmg`
+- **macOS**: `AgentHUD.app`, `.dmg`
 - **Windows**: `.msi`, NSIS `.exe`
 - **Linux**: `.deb`, `.AppImage`, `.rpm`
 
@@ -309,7 +321,7 @@ The pipeline (`.github/workflows/release.yml`) automatically: builds and signs t
 
 ### Database Path
 
-ZBar opens ZCode's SQLite database in **read-only** mode and never interferes with ZCode's writes.
+AgentHUD opens ZCode's SQLite database in **read-only** mode and never interferes with ZCode's writes.
 
 Lookup priority:
 

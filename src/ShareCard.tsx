@@ -403,12 +403,12 @@ function drawShareCard(
   setFont(ctx, 32, 800);
   ctx.fillStyle = "#ffffff";
   ctx.textAlign = "center";
-  ctx.fillText("Z", CARD_PAD + markSize / 2, headY + markSize / 2 + 11);
+  ctx.fillText("A", CARD_PAD + markSize / 2, headY + markSize / 2 + 11);
   ctx.textAlign = "left";
 
   setFont(ctx, 30, 700);
   ctx.fillStyle = TEXT_PRIMARY;
-  ctx.fillText("ZBar", CARD_PAD + markSize + 18, headY + 35);
+  ctx.fillText("AgentHUD", CARD_PAD + markSize + 18, headY + 35);
 
   setFont(ctx, 54, 700);
   ctx.fillStyle = TEXT_PRIMARY;

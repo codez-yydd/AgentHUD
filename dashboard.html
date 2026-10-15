@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <!-- 窗口图标：与侧栏品牌标识同源（Vite 会打包该资源；dev 走 dev server） -->
     <link rel="icon" type="image/png" href="/src/assets/logo.png" />
-    <title>ZBar</title>
+    <title>AgentHUD</title>
     <!--
       主窗口（Dashboard）入口：1100×720 无边框常规大窗（标题栏由前端自绘，
       见 /src/dashboard/TitleBar.tsx），承载用量统计 / 周额度对比 / 价格设置
@@ -110,7 +110,7 @@
     <div id="root">
       <!-- React 挂载前的首帧占位：避免 WebView 冷启动期间显示空白 -->
       <div class="zbar-boot">
-        <div class="zbar-boot__name">ZBar</div>
+        <div class="zbar-boot__name">AgentHUD</div>
         <div class="zbar-boot__dots"><span></span><span></span><span></span></div>
       </div>
     </div>

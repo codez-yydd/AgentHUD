@@ -159,7 +159,7 @@ pub fn is_admin_cancelled(err: &str) -> bool {
 /// 系统标准对话框，允许后永久生效；曾拒绝过的应用会出现在「应用管理」
 /// 设置列表里，开关打开即可恢复授权（可发现、可管理）。
 /// 链接为 Apple 官方帮助文档《在 Mac 上控制对 App 的访问》。
-const OPERATION_NOT_PERMITTED_HINT: &str = "macOS「应用管理」权限拦截：首次替换会弹出「ZBar 想要修改 ZCode」的系统对话框，请点「允许」；若此前点过「不允许」，请打开 系统设置 → 隐私与安全性 → 应用管理，开启列表中 ZBar 的开关后重试（开发模式运行时请添加并允许“终端”）。参考：https://support.apple.com/guide/mac-help/mchl7b2b1e0c/mac";
+const OPERATION_NOT_PERMITTED_HINT: &str = "macOS「应用管理」权限拦截：首次替换会弹出「AgentHUD 想要修改 ZCode」的系统对话框，请点「允许」；若此前点过「不允许」，请打开 系统设置 → 隐私与安全性 → 应用管理，开启列表中 AgentHUD 的开关后重试（开发模式运行时请添加并允许“终端”）。参考：https://support.apple.com/guide/mac-help/mchl7b2b1e0c/mac";
 
 /// 判断错误是否为 macOS「应用管理」(App Management) 权限拦截特征。
 /// macOS 对 /Applications 下其它应用 bundle 的写入可能被 App Management
@@ -252,7 +252,7 @@ mod tests {
         assert!(out.contains("应用管理"), "应含拦截原因说明：{out}");
         assert!(out.contains("隐私与安全性"), "应含系统设置路径：{out}");
         assert!(out.contains("终端"), "应含开发模式运行时的指引：{out}");
-        assert!(out.contains("ZBar 想要修改 ZCode"), "应说明首次弹窗的允许方式：{out}");
+        assert!(out.contains("AgentHUD 想要修改 ZCode"), "应说明首次弹窗的允许方式：{out}");
         assert!(out.contains("Operation not permitted"), "应保留原始错误：{out}");
 
         // 独立构造的指引文案与 clarify 命中拦截时使用的底文案一致

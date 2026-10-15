@@ -19,8 +19,8 @@
 //!   模式无凭据，额度块整体不展示）。凭据只读，绝不刷新/写回——refresh_token
 //!   是一次性轮换的，外部写回会搞坏 Claude Code 登录。
 //!
-//! 实现方式与 codex.rs 同构：原始 jsonl 只读 + 派生自有库 ~/.zbar/claude.sqlite，
-//! file_progress 偏移增量续读。
+//! 实现方式与 codex.rs 同构：原始 jsonl 只读 + 派生自有库 ~/.agenthud/claude.sqlite
+//! （更名前 ~/.zbar，启动自动迁移），file_progress 偏移增量续读。
 
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
@@ -65,7 +65,7 @@ pub fn projects_dir() -> Result<PathBuf, String> {
     }
 }
 
-/// 自有导入库路径：~/.zbar/claude.sqlite
+/// 自有导入库路径：~/.agenthud/claude.sqlite（更名前 ~/.zbar，启动自动迁移）
 pub(crate) fn claude_db_path() -> Result<PathBuf, String> {
     Ok(config_dir()?.join("claude.sqlite"))
 }

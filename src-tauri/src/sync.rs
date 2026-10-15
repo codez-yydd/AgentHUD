@@ -4,7 +4,7 @@
 //! - model_usage 的普通明细用 (device_id, source, local_rowid) 去重；模型名回填通过
 //!   独立修订游标补传，不影响普通 rowid 游标。
 //! - 客户端维护游标 last_uploaded_rowid，只上传 rowid > 游标 的新记录。
-//! - 复用项目现有 ureq HTTP 客户端 + pricing::config_dir() 的 ~/.zbar/ 目录。
+//! - 复用项目现有 ureq HTTP 客户端 + pricing::config_dir() 的 ~/.agenthud/ 目录（更名前 ~/.zbar，启动自动迁移）。
 //! - 本地采集型来源（codex / claude / dsh / opencode / kimi / minimaxcode）各自一套
 //!   「rowid 游标 + 修订游标」，见 upload_derived_source_incremental。
 

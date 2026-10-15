@@ -120,8 +120,8 @@ jobs:
 
       - name: 生成双源 latest.json
         env:
-          GH_REPO_NAME: codez-yydd/zai-floating-monitor
-          GITEE_REPO_NAME: codezwx/zai-floating-monitor
+          GH_REPO_NAME: codez-yydd/AgentHUD
+          GITEE_REPO_NAME: codezwx/AgentHUD
         run: |
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
             VERSION="${GITHUB_REF_NAME#v}"
@@ -139,7 +139,7 @@ jobs:
       - name: 发布 GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
-          GH_REPO: codez-yydd/zai-floating-monitor
+          GH_REPO: codez-yydd/AgentHUD
         run: |
           # 重跑幂等：上次失败可能留下残缺 release，先清理（tag 保留）
           gh release view "v$VERSION" >/dev/null 2>&1 && gh release delete "v$VERSION" --yes || true
@@ -159,7 +159,7 @@ jobs:
           - **跨设备合并时「今日增量」可能显示成数万百分比、或取自异常设备的错误数值** — 「↑今日 N%」按「额度回落视为重置、分段累计消耗」计算；当其它设备上传的采样来源异常（如旧版本凭证错配把别的账号数值按本账号指纹上传，脏值与正常值按时间交错）时，序列会反复「回落又上涨」，每一对振荡都被当成一次「重置消耗」累计，几百条采样能累计出几万百分比（如显示 79963%）；若只在异常序列里改算「今日峰值 − 今日首条」，峰值本身仍取自脏值（例如本机实际已用 43% 却显示 87%）。现已加数据源异常防护：某账号今日回落次数超过 5 次即判定多设备合并数据打架，**自动改用本机数据源重算**（本机是当前设备、凭证链路已收紧，可信度更高）；只有本机今天没采到该账号时才回退「峰值 − 首条」安全口径（结果恒在 0-100% 内，宁可少算也不显示爆炸数字）。正常日期的多设备分段累计照旧（一天内自然重置 + 重置券远达不到 5 次上限）
           - **Kimi / Gemini OAuth 凭据失效后不再无限自动重试** — Kimi 与 Gemini 的 refresh_token 一旦被服务端判定失效（invalid_grant），只有重新登录才能救活，但程序此前每轮额度轮询都会重试一次续期：Kimi 白打一次刷新请求、回退旧 token、再被 401 拒绝，日志无限刷屏；Gemini 则每 120s 反复刷新失败，同一条错误反复出现在额度面板。现在 Kimi 两条续期链路（CLI 凭据与凭证体系）与 Gemini CLI 登录态都加了熔断：**连续 10 次「需重登」类失败后自动停止重试**，Kimi 只留一条汇总日志、Gemini 只留面板错误提示，均明确提示重新登录；网络类失败不计数（短暂抖动不会误停续期），凭据变化（重新登录 CLI 或在应用内重新添加凭证）自动清零并恢复自动续期"
           gh release create "v$VERSION" out/* \
-            --title "ZBar v$VERSION" \
+            --title "AgentHUD v$VERSION" \
             --notes "$NOTES" \
             --latest
 

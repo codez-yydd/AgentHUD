@@ -35,7 +35,7 @@ const EVENTS_CACHE_TTL: Duration = Duration::from_secs(120);
 // 配置
 // ============================================================
 
-/// Cursor 配置（~/.zbar/cursor.json）
+/// Cursor 配置（~/.agenthud/cursor.json，更名前 ~/.zbar，启动自动迁移）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CursorConfig {
     /// cookie 来源："auto"（读 Cursor 应用本地 DB）| "manual"（手动粘贴）
@@ -137,10 +137,11 @@ fn migration_needed(cookie_source: &str, old_cookie_header: &str, credential_cou
     cookie_source == "manual" && !old_cookie_header.trim().is_empty() && credential_count == 0
 }
 
-/// 把旧手动 cookie（~/.zbar/cursor.json 的 cookie_header）一次性迁移到
-/// 凭证体系（~/.zbar/credentials/cursor.json）：创建一条 label="手动迁移"、
+/// 把旧手动 cookie（~/.agenthud/cursor.json 的 cookie_header）一次性迁移到
+/// 凭证体系（~/.agenthud/credentials/cursor.json）：创建一条 label="手动迁移"、
 /// kind="cookie" 的凭证（secret=旧值）。旧 cursor.json 原样保留（不删不改，
 /// 不丢任何用户数据），仅主链路此后不再读取它的 cookie 字段。
+/// （两处路径均更名前为 ~/.zbar，启动自动迁移）
 ///
 /// 幂等：凭证体系已有条目（add_entry_if_empty 锁内原子判断）或旧值为空时
 /// 无操作；写入走凭证体系模块锁，并发触发也只会创建一条。失败仅记日志
@@ -168,8 +169,18 @@ pub fn migrate_legacy_cookie() {
         cfg.cookie_header.trim(),
     ) {
         Ok(true) => {
+            // 凭证文件路径随数据目录迁移结果而定（~/.agenthud 或回退态的
+            // ~/.zbar），动态取当前真实位置，与实际落盘一致
+            let cred_path = crate::pricing::config_dir()
+                .map(|d| {
+                    d.join("credentials")
+                        .join("cursor.json")
+                        .to_string_lossy()
+                        .into_owned()
+                })
+                .unwrap_or_else(|_| "credentials/cursor.json".to_string());
             eprintln!(
-                "[zbar-cursor] 已把旧手动 cookie 迁移到凭证体系（~/.zbar/credentials/cursor.json，原文件保留）"
+                "[zbar-cursor] 已把旧手动 cookie 迁移到凭证体系（{cred_path}，原文件保留）"
             )
         }
         Ok(false) => {} // 并发下已被其他调用创建：视为已迁移

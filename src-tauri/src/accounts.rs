@@ -6,13 +6,14 @@
 //! （switch_account）内部。额度查询（quota.rs）对该目录严格只读，两者互不干扰。
 //!
 //! 设计要点：
-//! - 快照保存在 `~/.zbar/accounts/<id>.account.json`（目录 0700、文件 0600），
+//! - 快照保存在 `~/.agenthud/accounts/<id>.account.json`（更名前 ~/.zbar，启动自动迁移；
+//!   目录 0700、文件 0600），
 //!   其中 credentials 按原文整串保存——键集由 ZCode 客户端自行演进，原文回写
 //!   天然兼容未来的键增删；config 只保存 key 含 `coding-plan` 的 provider。
 //! - 切换事务顺序 = 先退出桌面应用后写入：ZCode 运行中写凭证文件会被其
 //!   内部状态覆盖或破坏登录态，必须先退出（CLI 进程不动，新调用自然读新配置）。
-//! - 切换前先把两文件原文备份到 `~/.zbar/accounts/.last/`（点开头不被快照
-//!   扫描命中），任何一步失败走回滚，保证零损坏。
+//! - 切换前先把两文件原文备份到 `~/.agenthud/accounts/.last/`（更名前 ~/.zbar，
+//!   启动自动迁移；点开头不被快照扫描命中），任何一步失败走回滚，保证零损坏。
 //! - 切换写 credentials.json 时以快照原文为基础，**合并现场新增/更新的
 //!   `account-provider:` 前缀键**（ZCode 3.12+ 的账号级套餐凭证键，ZCode 判定
 //!   套餐资格依赖它们，且跨账号累积存在）；其余键一律以快照为准。合并不可用
@@ -128,12 +129,12 @@ fn now_ms() -> i64 {
     chrono::Utc::now().timestamp_millis()
 }
 
-/// 快照目录（生产路径 ~/.zbar/accounts/）。
+/// 快照目录（生产路径 ~/.agenthud/accounts/，更名前 ~/.zbar，启动自动迁移）。
 fn accounts_dir() -> Result<PathBuf, String> {
     Ok(config_dir()?.join("accounts"))
 }
 
-/// 切换前备份目录（~/.zbar/accounts/.last/，点开头不被快照扫描命中）。
+/// 切换前备份目录（~/.agenthud/accounts/.last/，更名前 ~/.zbar，启动自动迁移；点开头不被快照扫描命中）。
 fn backup_dir() -> Result<PathBuf, String> {
     Ok(accounts_dir()?.join(".last"))
 }
@@ -683,7 +684,7 @@ fn merge_credentials_with_live(snapshot_raw: &str, live_raw: Option<&str>) -> St
     serde_json::to_string_pretty(&Value::Object(snap)).unwrap_or_else(|_| snapshot_raw.to_string())
 }
 
-/// 切换前备份两文件原文到 ~/.zbar/accounts/.last/（tmp+rename+0600）。
+/// 切换前备份两文件原文到 ~/.agenthud/accounts/.last/（更名前 ~/.zbar，启动自动迁移；tmp+rename+0600）。
 /// 切换前不存在的文件会清掉 .last/ 中的旧备份，保证 .last/ 始终精确反映切换前现场。
 fn backup_live(live: &LiveFiles) -> Result<(), String> {
     let dir = backup_dir()?;
@@ -711,9 +712,16 @@ fn rollback(live: &LiveFiles, step: String) -> Result<SwitchOutcome, String> {
     let _ = launch_zcode();
     match restore {
         Ok(()) => Err(format!("切换失败（{step}），已回滚到切换前的登录状态")),
-        Err(e) => Err(format!(
-            "切换失败（{step}），且回滚失败（{e}）：请手动将 ~/.zbar/accounts/.last/ 下的备份文件复制到 ZCode 数据目录（ZCode 设置中可见，默认 ~/.zcode/v2/），或重启 ZCode 重新登录"
-        )),
+        Err(e) => {
+            // 备份目录随数据目录迁移结果而定（~/.agenthud 或回退态的
+            // ~/.zbar），动态取当前真实位置写进指引，与实际落盘一致
+            let backup = backup_dir()
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_else(|_| "数据目录下的 accounts/.last".to_string());
+            Err(format!(
+                "切换失败（{step}），且回滚失败（{e}）：请手动将 {backup} 下的备份文件复制到 ZCode 数据目录（ZCode 设置中可见，默认 ~/.zcode/v2/），或重启 ZCode 重新登录"
+            ))
+        }
     }
 }
 

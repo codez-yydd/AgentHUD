@@ -382,15 +382,51 @@ pub(crate) fn load_params_at(path: &Path) -> ThemeParams {
 /// 读取时归一化 wallpaperFile 的 Windows verbatim 前缀：历史版本曾把
 /// canonicalize 产生的 `\\?\C:\…` 原样落盘，渲染成 Chromium 无法加载的
 /// 坏 URL；内存中剥前缀自愈，下一次落盘自然写回干净路径。
+/// 同时自愈数据目录迁移残留：绝对指向旧目录 ~/.zbar 的壁纸引用改写到
+/// 当前基目录（文件随目录一起迁移，换前缀即恢复有效）。
 pub(crate) fn read_params_file(path: &Path) -> Option<ThemeParams> {
     let text = fs::read_to_string(path).ok()?;
     let mut params: ThemeParams = serde_json::from_str(&text).ok()?;
     if let Some(wp) = &mut params.wallpaper_file {
-        *wp = inject::strip_verbatim_prefix(PathBuf::from(wp.as_str()))
-            .to_string_lossy()
-            .to_string();
+        *wp = rewrite_legacy_base_prefix(
+            &inject::strip_verbatim_prefix(PathBuf::from(wp.as_str()))
+                .to_string_lossy()
+                .to_string(),
+        );
+    }
+    if let Some(wd) = &mut params.wallpaper_dir {
+        *wd = rewrite_legacy_base_prefix(wd);
     }
     Some(params)
+}
+
+/// 把绝对路径里的旧数据目录前缀（~/.zbar/…）改写为当前基目录前缀：
+/// 仅当前缀命中（且紧跟目录分隔符，防 `.zbar-xxx` 之类误命中）时改写，
+/// 其余原样返回；基目录解析失败时无从改写，同样原样返回。
+/// 供 params 读取自愈（壁纸绝对引用）与注入基目录比对共用。
+pub(crate) fn rewrite_legacy_base_prefix(path: &str) -> String {
+    let (Ok(old), Ok(cur)) = (
+        crate::pricing::legacy_config_dir(),
+        crate::pricing::config_dir(),
+    ) else {
+        return path.to_string();
+    };
+    rewrite_base_prefix_with(path, &old, &cur)
+}
+
+/// 前缀改写核心（新旧基目录显式传入，单元测试复用）
+fn rewrite_base_prefix_with(path: &str, old: &Path, cur: &Path) -> String {
+    if old == cur {
+        return path.to_string();
+    }
+    let old_s = old.to_string_lossy();
+    let Some(rest) = path.strip_prefix(old_s.as_ref()) else {
+        return path.to_string();
+    };
+    if !rest.is_empty() && !rest.starts_with('/') && !rest.starts_with('\\') {
+        return path.to_string();
+    }
+    format!("{}{}", cur.to_string_lossy(), rest)
 }
 
 /// 保存参数：clamp 后原子性写入（先写临时文件再改名，避免半截 JSON）。
@@ -449,6 +485,13 @@ pub struct StoredState {
     pub pet_marker: Option<bool>,
     /// 进入 installing 状态的 Unix 时间戳（秒）
     pub installing_since: Option<i64>,
+    /// 安装完成时记录的主题基目录（数据目录迁移配套）：注入版主题的
+    /// file:// 外链写死了数据目录路径，启动校验发现记录值与当前基目录
+    /// 不一致 → asar 里的引用已指向不存在的旧目录，需要强制重注入一次。
+    /// None（旧版 state.json）按迁移前的 ~/.zbar 旧目录参与比对——迁移
+    /// 成功后必不相等正好触发；迁移失败回退时当前基目录就是旧目录，
+    /// 恰好相等不会误触发
+    pub theme_base: Option<String>,
 }
 
 impl StoredState {
@@ -1814,6 +1857,7 @@ mod tests {
             injected_marker: true,
             pet_marker: Some(true),
             installing_since: None,
+            theme_base: Some(r"C:\Users\u\.agenthud".into()),
         };
         let json = serde_json::to_string(&s).unwrap();
         fs::write(&path, &json).unwrap();
@@ -1823,16 +1867,23 @@ mod tests {
         assert_eq!(back.asar_mtime, Some(1_770_000_000));
         assert!(back.injected_marker);
         assert!(back.is_installed());
+        assert_eq!(
+            back.theme_base.as_deref(),
+            Some(r"C:\Users\u\.agenthud"),
+            "themeBase 序列化往返应保持"
+        );
         // camelCase 字段名
         assert!(json.contains("\"zcodeVersion\""));
         assert!(json.contains("\"asarSize\""));
         assert!(json.contains("\"asarMtime\""));
         assert!(json.contains("\"injectedMarker\""));
         assert!(json.contains("\"petMarker\""));
+        assert!(json.contains("\"themeBase\""));
 
         // 旧版 state.json 缺 asarMtime → 按容器级 default 反序列化为 None
         //（V2 起同样适用于 petMarker：旧文件缺字段读回 None = 尚未实检
-        // pet 行，不触发重装引导，见 detect_injected 缓存规则）
+        // pet 行，不触发重装引导，见 detect_injected 缓存规则；themeBase
+        // 同理，缺字段读回 None = 按迁移前旧基目录参与比对）
         let legacy_json = serde_json::json!({
             "status": STATUS_INSTALLED,
             "zcodeVersion": "1.0.0",
@@ -1843,6 +1894,10 @@ mod tests {
         let legacy = read_state_file(&path).unwrap();
         assert_eq!(legacy.asar_mtime, None);
         assert_eq!(legacy.pet_marker, None, "旧版 state.json 缺 petMarker 应读回 None");
+        assert_eq!(
+            legacy.theme_base, None,
+            "旧版 state.json 缺 themeBase 应读回 None"
+        );
         fs::write(
             &path,
             r#"{"status":"installed","asarSize":284000000,"injectedMarker":true}"#,
@@ -2276,5 +2331,41 @@ mod tests {
         );
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// 数据目录迁移后的壁纸绝对路径前缀自愈（ZBar → AgentHUD 更名配套）
+    #[test]
+    fn 旧目录前缀改写_命中与边界() {
+        let old = Path::new(r"C:\Users\u\.zbar");
+        let cur = Path::new(r"C:\Users\u\.agenthud");
+
+        // 前缀命中（两种分隔符形态都改写）
+        assert_eq!(
+            rewrite_base_prefix_with(r"C:\Users\u\.zbar\agent-themes\zcode\wallpapers\a.mp4", old, cur),
+            r"C:\Users\u\.agenthud\agent-themes\zcode\wallpapers\a.mp4"
+        );
+        assert_eq!(
+            rewrite_base_prefix_with("/home/u/.zbar/agent-themes/zcode/wallpapers/a.webm", Path::new("/home/u/.zbar"), Path::new("/home/u/.agenthud")),
+            "/home/u/.agenthud/agent-themes/zcode/wallpapers/a.webm"
+        );
+
+        // 非前缀路径原样返回
+        assert_eq!(
+            rewrite_base_prefix_with(r"D:\Pictures\my.mp4", old, cur),
+            r"D:\Pictures\my.mp4"
+        );
+        assert_eq!(rewrite_base_prefix_with("default.mp4", old, cur), "default.mp4");
+
+        // 前缀相同字符串但非目录边界（.zbar-xxx / .zbackup）不得误命中
+        assert_eq!(
+            rewrite_base_prefix_with(r"C:\Users\u\.zbar-x\wp.mp4", old, cur),
+            r"C:\Users\u\.zbar-x\wp.mp4"
+        );
+
+        // 新旧相同（迁移回退态）：任何路径都原样返回
+        assert_eq!(
+            rewrite_base_prefix_with(r"C:\Users\u\.zbar\agent-themes\a.mp4", old, old),
+            r"C:\Users\u\.zbar\agent-themes\a.mp4"
+        );
     }
 }

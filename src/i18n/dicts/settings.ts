@@ -35,7 +35,7 @@ export const settings = {
   "settings.enable": "启用",
   "settings.applying": "应用中…",
   "settings.autostartHint":
-    "登录 Windows 或 macOS 后自动启动 ZBar，面板默认保持隐藏，可从托盘打开。",
+    "登录 Windows 或 macOS 后自动启动 AgentHUD，面板默认保持隐藏，可从托盘打开。",
   "settings.readingState": "正在读取状态…",
   "settings.autostartReadFail": "读取开机自启状态失败：{msg}",
   "settings.autostartFailOn": "开启开机自启失败：{msg}",

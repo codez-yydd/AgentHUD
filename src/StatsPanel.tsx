@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { UPDATE_READY_KEY, UPDATE_READY_EVENT } from "./updater";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import type { CredentialKind, Currency, PricingConfig, StatsTab } from "./types";
 import { fetchPin, openMainWindow, setPin } from "./api";
 import { useDataCache } from "./DataCache";
@@ -44,6 +45,10 @@ import {
 import { LanguageToggle, ThemeToggle } from "./layout";
 import { useI18n, type TFn } from "./i18n";
 import { dateLocale } from "./i18n/locale";
+
+/** GitHub 仓库地址：托盘工具栏 GitHub 按钮用系统浏览器打开（openUrl
+ *  失败时退化为 window.open，参照 UpdaterCard 的 DOWNLOAD_PAGE） */
+const GITHUB_REPO = "https://github.com/codez-yydd/AgentHUD";
 
 /** 区分国内/国际站的 provider：录入凭证时提供 region 下拉（与后端
  *  host_for_region 的站点路由一致，Cookie/Key 归属站点必须匹配）。
@@ -457,13 +462,13 @@ export function StatsPanel({
         >
           <div className="flex items-center gap-1.5 select-none min-w-0">
             <h1 className="text-[13px] font-bold text-slate-900/90 tracking-tight truncate">
-              ZCode Token
+              AgentHUD
             </h1>
           </div>
           {/* shrink-0：窗口压到 300px 时标题先让位（truncate），按钮组不压缩。
-              含主窗口入口共 9 个 button（Windows 下；非 Windows 无置顶按钮为 8 个）：
-              9×22px + 8×2px 间距 = 214px ≤ 300 − 24(px-3) = 276px 可用宽度，
-              按钮不换行也不裁切；标题挤到约 62px 由 truncate 收尾 */}
+              含主窗口入口共 10 个 button（Windows 下；非 Windows 无置顶按钮为 9 个）：
+              10×22px + 9×2px 间距 = 238px ≤ 300 − 24(px-3) = 276px 可用宽度，
+              按钮不换行也不裁切；标题挤到约 38px 由 truncate 收尾 */}
           <div className="flex items-center gap-0.5 shrink-0">
             <button
               onClick={onGoReports}
@@ -573,6 +578,27 @@ export function StatsPanel({
               title={t("common.refresh")}
             >
               ↻
+            </button>
+            {/* GitHub 仓库入口：系统浏览器打开项目主页，与相邻工具按钮同款
+                尺寸/悬停样式（openUrl 失败退化为 window.open，参照 UpdaterCard） */}
+            <button
+              onClick={() =>
+                openUrl(GITHUB_REPO).catch(() =>
+                  window.open(GITHUB_REPO, "_blank")
+                )
+              }
+              className="toolbar-btn"
+              title={t("stats.github")}
+              aria-label={t("stats.github")}
+            >
+              <svg
+                viewBox="0 0 24 24"
+                fill="currentColor"
+                className="h-3.5 w-3.5"
+                aria-hidden
+              >
+                <path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12" />
+              </svg>
             </button>
           </div>
         </div>

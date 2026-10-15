@@ -39,8 +39,8 @@
 //!   （invalid_grant），自动续期永远不可能成功，故两条链路都有失效熔断
 //!   （见「OAuth 自动续期熔断」段）：连续多次「需重登」失败后停止重试。
 //!
-//! 实现方式与 claude.rs 同构：原始 jsonl 只读 + 派生自有库 ~/.zbar/kimi.sqlite，
-//! file_progress 偏移增量续读。
+//! 实现方式与 claude.rs 同构：原始 jsonl 只读 + 派生自有库 ~/.agenthud/kimi.sqlite
+//! （更名前 ~/.zbar，启动自动迁移），file_progress 偏移增量续读。
 
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
@@ -82,7 +82,7 @@ pub fn sessions_dir() -> Result<PathBuf, String> {
     }
 }
 
-/// 自有导入库路径：~/.zbar/kimi.sqlite
+/// 自有导入库路径：~/.agenthud/kimi.sqlite（更名前 ~/.zbar，启动自动迁移）
 pub(crate) fn kimi_db_path() -> Result<PathBuf, String> {
     Ok(config_dir()?.join("kimi.sqlite"))
 }

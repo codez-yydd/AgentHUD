@@ -981,7 +981,7 @@ fn ensure_session_hud_window(app: &AppHandle, cfg: &SessionHudConfig) -> Result<
         SESSION_HUD_WINDOW_LABEL,
         WebviewUrl::App("session-hud.html".into()),
     )
-    .title("ZBar Session HUD")
+    .title("AgentHUD Session HUD")
     .inner_size(w, h)
     .decorations(false)
     .transparent(true)

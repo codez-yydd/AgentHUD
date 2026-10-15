@@ -85,5 +85,5 @@ export const report = {
   "report.md.modelLine": "{agent} / {model}：{cost}｜{tokens} Token",
   "report.md.tokenPeak": "Token 峰值：{label}，{tokens} Token",
   "report.md.notes": "说明",
-  "report.md.footer": "由 ZBar 自动生成 · {date}",
+  "report.md.footer": "由 AgentHUD 自动生成 · {date}",
 };

@@ -86,7 +86,7 @@ fn projcache_dir() -> PathBuf {
         .join("sessions")
 }
 
-/// 自有导入库路径：~/.zbar/dsh.sqlite
+/// 自有导入库路径：~/.agenthud/dsh.sqlite（更名前 ~/.zbar，启动自动迁移）
 pub(crate) fn dsh_db_path() -> Result<PathBuf, String> {
     Ok(config_dir()?.join("dsh.sqlite"))
 }

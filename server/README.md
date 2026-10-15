@@ -1,6 +1,6 @@
-# zbar-sync · ZBar 多设备额度同步服务
+# zbar-sync · AgentHUD 多设备额度同步服务
 
-ZBar 客户端把本地 ZCode 的用量数据增量上传到此服务，实现多台电脑（公司/家里）汇总查看。
+AgentHUD 客户端把本地 ZCode 的用量数据增量上传到此服务，实现多台电脑（公司/家里）汇总查看。
 
 **自托管、单用户**：你自己部署，数据存在你自己的服务器上。支持 HTTP / HTTPS / 裸 IP。
 
@@ -70,7 +70,7 @@ python3 app.py
 
 ### 5. 客户端连接
 
-ZBar 面板 → 点 **⇅** → 填写：
+AgentHUD 面板 → 点 **⇅** → 填写：
 - 服务器地址：`http://你的服务器IP:3838`
 - 准入凭证：粘贴 Master Token
 - 设备名称：如 `work` / `home`

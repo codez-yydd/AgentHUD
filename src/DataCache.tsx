@@ -1802,7 +1802,7 @@ export function DataProvider({ pricing, credentialPresence, children }: Provider
         if (Date.now() - lastNoTargetNotifyTsRef.current >= 2 * 3_600_000) {
           lastNoTargetNotifyTsRef.current = Date.now();
           void showNotification(
-            "ZBar",
+            "AgentHUD",
             tRef.current("settings.accountsAutoNotifyFail")
           ).catch(() => {});
         }
@@ -1834,7 +1834,7 @@ export function DataProvider({ pricing, credentialPresence, children }: Provider
           });
           window.dispatchEvent(new Event(AUTO_SWITCH_DONE_EVENT));
           void showNotification(
-            "ZBar",
+            "AgentHUD",
             tRef.current("settings.accountsAutoNotifyOk", {
               name: pick.entry.display_name,
             })
@@ -1859,7 +1859,7 @@ export function DataProvider({ pricing, credentialPresence, children }: Provider
           });
           window.dispatchEvent(new Event(AUTO_SWITCH_DONE_EVENT));
           // 通知直接透传后端错误（多为中文事务错误），比固定文案更可诊断
-          void showNotification("ZBar", msg).catch(() => {});
+          void showNotification("AgentHUD", msg).catch(() => {});
         } finally {
           autoSwitchingRef.current = false;
         }

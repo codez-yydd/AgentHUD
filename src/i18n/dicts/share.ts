@@ -11,7 +11,7 @@ export const share = {
   "share.totalRequests": "总请求",
   "share.topModels": "模型 TOP5",
   "share.heatTitle": "Token 活动",
-  "share.footer": "由 ZBar 生成",
+  "share.footer": "由 AgentHUD 生成",
   "share.save": "保存图片",
   "share.saving": "保存中…",
   "share.saved": "已保存 ✓ {path}",

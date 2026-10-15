@@ -6,8 +6,9 @@
 //! 逐条求和 == 会话最后一条的 total_token_usage）。
 //!
 //! 实现方式（原始文件只读 + 派生自有库）：
-//! - 原始 jsonl 不做任何修改；把解析结果导入自有库 ~/.zbar/codex.sqlite，
-//!   file_progress 表记录每个文件"已处理到的字节偏移"，之后只增量续读。
+//! - 原始 jsonl 不做任何修改；把解析结果导入自有库 ~/.agenthud/codex.sqlite
+//!   （更名前 ~/.zbar，启动自动迁移），file_progress 表记录每个文件"已处理到的
+//!   字节偏移"，之后只增量续读。
 //! - (session_id, event_seq) 唯一键 + 冲突 upsert：文件被重写或重复解析时幂等
 //!   去重；历史空模型在重新归因后允许只更新模型名。
 //! - token_count 事件本身不带模型名，用同文件内最近的 turn_context 事件
@@ -56,7 +57,7 @@ pub fn sessions_dir() -> Result<PathBuf, String> {
     }
 }
 
-/// 自有导入库路径：~/.zbar/codex.sqlite
+/// 自有导入库路径：~/.agenthud/codex.sqlite（更名前 ~/.zbar，启动自动迁移）
 pub(crate) fn codex_db_path() -> Result<PathBuf, String> {
     Ok(config_dir()?.join("codex.sqlite"))
 }

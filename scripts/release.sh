@@ -44,8 +44,8 @@ done
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
-GITHUB_REPO="codez-yydd/zai-floating-monitor"
-GITEE_REPO="codezwx/zai-floating-monitor"
+GITHUB_REPO="codez-yydd/AgentHUD"
+GITEE_REPO="codezwx/AgentHUD"
 KEY_PATH="${TAURI_SIGNING_PRIVATE_KEY_PATH:-$HOME/.tauri/zbar-updater.key}"
 BUNDLE_DIR="$ROOT/src-tauri/target/release/bundle"
 
@@ -101,7 +101,7 @@ build_latest() { # $1 = 下载 base url
   cat <<EOF
 {
   "version": "$VERSION",
-  "notes": $(json_escape "${NOTES:-ZBar $VERSION}"),
+  "notes": $(json_escape "${NOTES:-AgentHUD $VERSION}"),
   "pub_date": "$PUB_DATE",
   "platforms": { $win_part }
 }
@@ -129,7 +129,7 @@ GH_FILES=("$BUNDLE_DIR/latest.json")
 [[ -n "$MSI" ]] && GH_FILES+=("$MSI")
 [[ -n "$MAC_TAR" ]] && GH_FILES+=("$MAC_TAR" "$MAC_TAR.sig")
 gh release create "v$VERSION" "${GH_FILES[@]}" \
-  --repo "$GITHUB_REPO" --title "ZBar v$VERSION" --notes "${NOTES:-ZBar v$VERSION}" \
+  --repo "$GITHUB_REPO" --title "AgentHUD v$VERSION" --notes "${NOTES:-AgentHUD v$VERSION}" \
   --latest
 
 # ---------- Gitee（固定 tag latest，endpoint 用静态 URL）----------
@@ -163,8 +163,8 @@ FILES="${FILES%,}"
 curl -sf -X POST "$GITEE_API" \
   -d "access_token=$GITEE_TOKEN" \
   -d "tag_name=latest" \
-  -d "name=ZBar v$VERSION（应用内更新源）" \
-  -d "body=${NOTES:-ZBar $VERSION 自动更新通道，保持最新版即可。}" \
+  -d "name=AgentHUD v$VERSION（应用内更新源）" \
+  -d "body=${NOTES:-AgentHUD $VERSION 自动更新通道，保持最新版即可。}" \
   -d "files=$FILES" >/dev/null && echo "    Gitee release 已创建"
 
 echo ""

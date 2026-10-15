@@ -1,7 +1,8 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 /// 单个模型的三项单价（USD/百万 token）。
 /// 注：input_tokens 已包含 cache_read_tokens，计费时缓存读部分单独按缓存价计算，
@@ -45,10 +46,186 @@ impl Default for PricingConfig {
     }
 }
 
-/// ~/.zbar/ 目录
+/// 数据目录基名（ZBar → AgentHUD 更名：~/.zbar → ~/.agenthud）
+const DATA_DIR_NAME: &str = ".agenthud";
+/// 更名前的旧数据目录基名（迁移源，仅供迁移与旧路径自愈比对使用）
+const LEGACY_DATA_DIR_NAME: &str = ".zbar";
+
+/// 启动时一次性固定的数据基目录（migrate_data_dir 写入）：迁移成功或
+/// 全新安装指向 ~/.agenthud；迁移失败回退 ~/.zbar（本次运行继续读旧
+/// 数据，下次启动重试，应用绝不"失忆"）。未初始化（单测等未走 run()
+/// 的场景）时按同样优先级即时解析，保证任何消费方拿到的都是"有数据的
+/// 那一份"。
+static BASE_DIR: OnceLock<PathBuf> = OnceLock::new();
+
+/// ~/.agenthud/ 目录（更名前为 ~/.zbar，启动时自动迁移，见 migrate_data_dir）
 pub fn config_dir() -> Result<PathBuf, String> {
+    if let Some(dir) = BASE_DIR.get() {
+        return Ok(dir.clone());
+    }
     let home = dirs::home_dir().ok_or("无法定位用户主目录")?;
-    Ok(home.join(".zbar"))
+    Ok(resolve_base_dir(&home))
+}
+
+/// 旧数据目录 ~/.zbar（迁移源；仅供迁移与注入基目录/壁纸路径的旧值比对）
+pub fn legacy_config_dir() -> Result<PathBuf, String> {
+    let home = dirs::home_dir().ok_or("无法定位用户主目录")?;
+    Ok(home.join(LEGACY_DATA_DIR_NAME))
+}
+
+/// 基目录即时解析（BASE_DIR 未初始化时的回退）：新目录存在优先；仅旧
+/// 目录存在时用旧目录（与迁移失败的回退语义一致，避免读到空目录）；
+/// 都不存在用新目录（全新安装）。
+fn resolve_base_dir(home: &Path) -> PathBuf {
+    let new_dir = home.join(DATA_DIR_NAME);
+    if new_dir.is_dir() || !home.join(LEGACY_DATA_DIR_NAME).is_dir() {
+        new_dir
+    } else {
+        home.join(LEGACY_DATA_DIR_NAME)
+    }
+}
+
+// ============================================================
+// 数据目录迁移（ZBar → AgentHUD 更名配套）
+// ============================================================
+
+/// 迁移结果（日志与单测断言用）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DataDirOutcome {
+    /// 旧目录不存在（全新安装或此前已完成迁移）：无操作，基目录 = 新目录
+    Fresh,
+    /// 同盘 rename 一步完成（原子、瞬间，保留全部权限位与隐藏文件）
+    Renamed,
+    /// rename 失败后的复制兜底：完整复制到临时目录再原子发布；旧目录保留不删
+    Copied,
+    /// 新旧目录同时存在：以新为准，不合并不动旧目录
+    BothExist,
+    /// rename 与复制兜底都失败：本次运行回退用旧目录（下次启动自动重试）
+    FallbackOld,
+}
+
+/// 启动期数据目录迁移入口（run() 的 setup 最早期调用，必须早于任何
+/// sqlite 打开、凭证读取、主题落盘与后台采集线程）。无论走哪条路径，
+/// 都把最终基目录一次性固定进 BASE_DIR——失败时固定为旧目录，应用
+/// 本次运行继续读旧数据；下次启动自动重试迁移。
+pub fn migrate_data_dir() {
+    let Some(home) = dirs::home_dir() else {
+        // 无法定位主目录时 config_dir() 同样会失败，不固定 BASE_DIR
+        eprintln!("[zbar-migrate] 无法定位用户主目录，跳过数据目录迁移");
+        return;
+    };
+    let (outcome, base) = migrate_data_dir_in(&home);
+    let _ = BASE_DIR.set(base);
+    match outcome {
+        DataDirOutcome::Fresh => {
+            eprintln!("[zbar-migrate] 未发现旧数据目录 ~/.zbar，按全新安装使用 ~/.agenthud");
+        }
+        DataDirOutcome::Renamed => {
+            eprintln!("[zbar-migrate] 数据目录已原子迁移：~/.zbar → ~/.agenthud（rename）");
+        }
+        DataDirOutcome::Copied => {
+            eprintln!(
+                "[zbar-migrate] 数据目录已复制迁移：~/.zbar → ~/.agenthud（rename 失败走复制兜底，旧目录保留未删）"
+            );
+        }
+        DataDirOutcome::BothExist => {
+            eprintln!(
+                "[zbar-migrate] 新旧数据目录同时存在，以 ~/.agenthud 为准（不合并、不动 ~/.zbar）"
+            );
+        }
+        DataDirOutcome::FallbackOld => {
+            eprintln!(
+                "[zbar-migrate] 数据目录迁移失败，本次运行回退使用 ~/.zbar（下次启动自动重试）"
+            );
+        }
+    }
+}
+
+/// 迁移核心（显式 home 版，单测注入临时目录用；不触碰 BASE_DIR 与真实
+/// 用户目录）。返回 (迁移路径, 最终基目录)。
+pub(crate) fn migrate_data_dir_in(home: &Path) -> (DataDirOutcome, PathBuf) {
+    let old_dir = home.join(LEGACY_DATA_DIR_NAME);
+    let new_dir = home.join(DATA_DIR_NAME);
+    if !old_dir.is_dir() {
+        // 旧目录不存在（全新安装 / 此前已迁移完）：无操作
+        return (DataDirOutcome::Fresh, new_dir);
+    }
+    if new_dir.is_dir() {
+        // 新旧都在：以新为准，不合并不动旧（多见于上次复制兜底发布成功后
+        // 用户又手动装过旧版等场景，数据归属以新目录为准）
+        return (DataDirOutcome::BothExist, new_dir);
+    }
+    // 首选同盘原子 rename：瞬间完成，权限位与点开头隐藏文件一并保留
+    match fs::rename(&old_dir, &new_dir) {
+        Ok(()) => (DataDirOutcome::Renamed, new_dir),
+        Err(e) => {
+            eprintln!("[zbar-migrate] 原子改名失败（{e}），改走复制兜底路径");
+            match migrate_by_copy(&old_dir, &new_dir) {
+                Ok(()) => (DataDirOutcome::Copied, new_dir),
+                Err(e2) => {
+                    eprintln!("[zbar-migrate] 复制兜底也失败（{e2}），本次运行回退旧目录");
+                    (DataDirOutcome::FallbackOld, old_dir)
+                }
+            }
+        }
+    }
+}
+
+/// 复制兜底：完整复制 old → ~/.agenthud.migrating 临时目录（含点开头
+/// 的隐藏文件/目录），复制完成后 rename 原子发布为正式目录。任何失败
+/// 都清理临时目录并上抛；**永不删除 old**——rename 失败的常见原因是旧
+/// 目录内有文件被占用，此时数据仍在旧目录，删除即丢失。
+fn migrate_by_copy(old_dir: &Path, new_dir: &Path) -> Result<(), String> {
+    let tmp = new_dir.with_file_name(format!("{DATA_DIR_NAME}.migrating"));
+    // 上次异常中断可能残留同名临时目录：它是本函数私有的中转站，先清再建
+    if tmp.exists() {
+        fs::remove_dir_all(&tmp)
+            .map_err(|e| format!("清理上次残留的迁移临时目录失败: {e}"))?;
+    }
+    if let Err(e) = copy_dir_tree(old_dir, &tmp) {
+        let _ = fs::remove_dir_all(&tmp);
+        return Err(e);
+    }
+    // 发布前复查：并发场景下新目录可能已出现。此时放弃本次复制并以
+    // Err 上抛，本次运行继续回退旧目录（不失忆）；下次启动迁移时命中
+    // BothExist 分支，直接采用已存在的新目录完成切换
+    if new_dir.exists() {
+        let _ = fs::remove_dir_all(&tmp);
+        return Err("发布前检测到 ~/.agenthud 已存在，放弃本次复制".to_string());
+    }
+    match fs::rename(&tmp, new_dir) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            // 发布失败：清理临时目录（old 完好未动，下次启动重试）
+            let _ = fs::remove_dir_all(&tmp);
+            Err(format!("发布新数据目录失败: {e}"))
+        }
+    }
+}
+
+/// 递归复制目录树（含点开头的隐藏文件/目录——read_dir 天然返回它们，
+/// 无需额外处理）。fs::copy 在 Unix 保留权限位（accounts 的 0700/0600
+/// 加固随文件带走；Windows 无此语义，后续写入路径会重新加固）。符号
+/// 链接按目标内容展开复制：数据目录内不应有链接，目录链接会让 fs::copy
+/// 失败并使整体走回退路径，不做越界跟随。
+fn copy_dir_tree(src: &Path, dst: &Path) -> Result<(), String> {
+    fs::create_dir_all(dst).map_err(|e| format!("创建目录 {} 失败: {e}", dst.display()))?;
+    let entries = fs::read_dir(src).map_err(|e| format!("读取目录 {} 失败: {e}", src.display()))?;
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("枚举 {} 失败: {e}", src.display()))?;
+        let from = entry.path();
+        let to = dst.join(entry.file_name());
+        let ftype = entry
+            .file_type()
+            .map_err(|e| format!("读取类型 {} 失败: {e}", from.display()))?;
+        if ftype.is_dir() {
+            copy_dir_tree(&from, &to)?;
+        } else {
+            // 常规文件与符号链接统一按内容复制（fs::copy 跟随链接目标）
+            fs::copy(&from, &to).map_err(|e| format!("复制 {} 失败: {e}", from.display()))?;
+        }
+    }
+    Ok(())
 }
 
 pub fn config_path() -> Result<PathBuf, String> {
@@ -789,6 +966,194 @@ mod tests {
         let hidden = vec!["glm-5.3-flash".to_string(), "stealth/ox-alpha".to_string()];
         let left = filter_hidden_models(relevant, &hidden);
         assert!(left.is_empty(), "两条都应被隐藏，剩余: {left:?}");
+    }
+
+    // ===== 数据目录迁移（ZBar → AgentHUD 更名配套）=====
+    // 全部走显式 home 的迁移核心（migrate_data_dir_in / migrate_by_copy），
+    // 绝不触碰真实 ~/.zbar 与 ~/.agenthud。
+
+    /// 每个测试独立的临时 home 目录，结束时清理
+    fn migrate_home(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "zbar-migrate-test-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis()
+        ));
+        fs::create_dir_all(&dir).expect("创建临时 home 失败");
+        dir
+    }
+
+    /// 在 old 下铺一份含点开头文件/目录的样本数据（模拟真实 ~/.zbar 的
+    /// 派生库、credentials、accounts/.last、隐藏缓存文件）
+    fn seed_old_data(old: &Path) {
+        fs::write(old.join("kimi.sqlite"), "db").unwrap();
+        fs::create_dir_all(old.join("credentials")).unwrap();
+        fs::write(old.join("credentials").join("kimi.json"), "{}").unwrap();
+        fs::create_dir_all(old.join("accounts").join(".last")).unwrap();
+        fs::write(old.join("accounts").join(".last").join("config.json"), "{}").unwrap();
+        fs::write(old.join(".zcode-exe-path"), r"D:\app\ZCode\ZCode.exe").unwrap();
+        fs::write(old.join("pin.json"), "true").unwrap();
+    }
+
+    /// 断言 new 下的样本数据与 seed_old_data 铺的内容一致（含点开头文件）
+    fn assert_data_migrated(new: &Path) {
+        assert_eq!(fs::read_to_string(new.join("kimi.sqlite")).unwrap(), "db");
+        assert_eq!(
+            fs::read_to_string(new.join("credentials").join("kimi.json")).unwrap(),
+            "{}"
+        );
+        assert_eq!(
+            fs::read_to_string(new.join("accounts").join(".last").join("config.json")).unwrap(),
+            "{}"
+        );
+        assert_eq!(
+            fs::read_to_string(new.join(".zcode-exe-path")).unwrap(),
+            r"D:\app\ZCode\ZCode.exe"
+        );
+        assert_eq!(fs::read_to_string(new.join("pin.json")).unwrap(), "true");
+    }
+
+    #[test]
+    fn 迁移_旧目录单独存在_rename一步完成() {
+        let home = migrate_home("rename");
+        let old = home.join(".zbar");
+        let new = home.join(".agenthud");
+        fs::create_dir_all(&old).unwrap();
+        seed_old_data(&old);
+
+        let (outcome, base) = migrate_data_dir_in(&home);
+        assert_eq!(outcome, DataDirOutcome::Renamed);
+        assert_eq!(base, new, "迁移成功后基目录应指向新目录");
+        assert_data_migrated(&new);
+        assert!(!old.exists(), "rename 路径旧目录应消失（改名而非复制）");
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn 迁移_新旧同在_以新为准不动旧() {
+        let home = migrate_home("both");
+        let old = home.join(".zbar");
+        let new = home.join(".agenthud");
+        fs::create_dir_all(old.join("accounts")).unwrap();
+        fs::write(old.join("accounts").join("legacy.marker"), "old").unwrap();
+        fs::create_dir_all(&new).unwrap();
+        fs::write(new.join("fresh.marker"), "new").unwrap();
+
+        let (outcome, base) = migrate_data_dir_in(&home);
+        assert_eq!(outcome, DataDirOutcome::BothExist);
+        assert_eq!(base, new);
+        // 不合并：新目录内容原样、旧目录原样保留
+        assert_eq!(fs::read_to_string(new.join("fresh.marker")).unwrap(), "new");
+        assert!(!new.join("accounts").join("legacy.marker").exists());
+        assert!(old.join("accounts").join("legacy.marker").exists());
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn 迁移_都不存在_无操作() {
+        let home = migrate_home("fresh");
+        let (outcome, base) = migrate_data_dir_in(&home);
+        assert_eq!(outcome, DataDirOutcome::Fresh);
+        assert_eq!(base, home.join(".agenthud"));
+        assert!(!home.join(".agenthud").exists(), "无操作路径不应创建目录");
+        assert!(!home.join(".zbar").exists());
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn 迁移_复制兜底_含点开头文件且永不删旧目录() {
+        let home = migrate_home("copy");
+        let old = home.join(".zbar");
+        let new = home.join(".agenthud");
+        fs::create_dir_all(&old).unwrap();
+        seed_old_data(&old);
+
+        // 直接测复制兜底核心（rename 失败的兜底路径）
+        migrate_by_copy(&old, &new).expect("复制兜底应成功");
+        assert_data_migrated(&new);
+        assert!(old.join("kimi.sqlite").exists(), "复制路径永不删除旧目录");
+        assert!(
+            !home.join(".agenthud.migrating").exists(),
+            "发布后临时目录应已改名消失"
+        );
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn 迁移_复制兜底_发布前新目录已出现则放弃并清理() {
+        let home = migrate_home("conflict");
+        let old = home.join(".zbar");
+        let new = home.join(".agenthud");
+        fs::create_dir_all(&old).unwrap();
+        seed_old_data(&old);
+        // 预置新目录（模拟并发场景）：发布前复查命中 → 放弃复制
+        fs::create_dir_all(&new).unwrap();
+        fs::write(new.join("winner.marker"), "new").unwrap();
+
+        let err = migrate_by_copy(&old, &new).expect_err("发布前已有新目录应放弃");
+        assert!(err.contains("已存在"), "错误信息应说明放弃原因：{err}");
+        assert!(
+            !home.join(".agenthud.migrating").exists(),
+            "放弃路径应清理临时目录"
+        );
+        assert!(new.join("winner.marker").exists(), "已存在的新目录不应被动");
+        assert!(old.exists(), "旧目录不应被触碰");
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn 迁移_兜底失败_回退旧目录() {
+        let home = migrate_home("fallback");
+        let old = home.join(".zbar");
+        fs::create_dir_all(&old).unwrap();
+        seed_old_data(&old);
+        // 复制兜底的临时目录位置被普通文件占据：清理残留一步即失败。
+        // rename 侧的失败注入按平台选择（见下方 cfg 块），两步都失败后
+        // 整体应回退旧目录
+        fs::write(home.join(".agenthud.migrating"), "not a dir").unwrap();
+
+        #[cfg(windows)]
+        let lock = {
+            // Windows：以无共享标志的独占句柄占用旧目录内文件，目录改名
+            // 随即失败（share_mode(0) 是稳定 std API）
+            use std::os::windows::fs::OpenOptionsExt;
+            std::fs::OpenOptions::new()
+                .read(true)
+                .share_mode(0)
+                .open(old.join("kimi.sqlite"))
+                .expect("独占句柄打开失败")
+        };
+        #[cfg(unix)]
+        {
+            // Unix：新目录位置放一个普通文件，rename(目录 → 已有文件)
+            // 以 ENOTDIR 失败（Windows 上该调用会成功替换，不可用）
+            fs::write(home.join(".agenthud"), "not a dir").unwrap();
+        }
+
+        let (outcome, base) = migrate_data_dir_in(&home);
+        assert_eq!(outcome, DataDirOutcome::FallbackOld);
+        assert_eq!(base, old, "迁移失败应回退旧目录，保证本次运行不失忆");
+        assert!(old.join("credentials").join("kimi.json").exists(), "旧目录数据原样");
+        #[cfg(windows)]
+        drop(lock);
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn 基目录回退解析_有数据的优先() {
+        let home = migrate_home("resolve");
+        // 都不存在 → 新目录（全新安装）
+        assert_eq!(resolve_base_dir(&home), home.join(".agenthud"));
+        // 仅旧目录存在 → 旧目录（与迁移失败回退一致，避免读到空目录）
+        fs::create_dir_all(home.join(".zbar")).unwrap();
+        assert_eq!(resolve_base_dir(&home), home.join(".zbar"));
+        // 新目录出现 → 新目录优先
+        fs::create_dir_all(home.join(".agenthud")).unwrap();
+        assert_eq!(resolve_base_dir(&home), home.join(".agenthud"));
+        let _ = fs::remove_dir_all(&home);
     }
 }
 

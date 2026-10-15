@@ -1,6 +1,6 @@
-# ZBar · ZCode Token 监控
+# AgentHUD · ZCode Token 监控
 
-![Tauri](https://img.shields.io/badge/Tauri-2.0-orange) ![React](https://img.shields.io/badge/React-19-blue) ![TypeScript](https://img.shields.io/badge/TypeScript-5.8-3178c6) ![TailwindCSS](https://img.shields.io/badge/Tailwind-v4-38bdf8) ![Rust](https://img.shields.io/badge/Rust-edition%202021-dea584) ![License](https://img.shields.io/badge/License-MIT-yellow) ![Platform](https://img.shields.io/badge/Platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey) [![GitHub Repo](https://img.shields.io/badge/GitHub-codez--yydd%2Fzai--floating--monitor-181717?logo=github)](https://github.com/codez-yydd/zai-floating-monitor) [![Gitee Repo](https://img.shields.io/badge/Gitee-codezwx%2Fzai--floating--monitor-C71D23?logo=gitee)](https://gitee.com/codezwx/zai-floating-monitor)
+![Tauri](https://img.shields.io/badge/Tauri-2.0-orange) ![React](https://img.shields.io/badge/React-19-blue) ![TypeScript](https://img.shields.io/badge/TypeScript-5.8-3178c6) ![TailwindCSS](https://img.shields.io/badge/Tailwind-v4-38bdf8) ![Rust](https://img.shields.io/badge/Rust-edition%202021-dea584) ![License](https://img.shields.io/badge/License-MIT-yellow) ![Platform](https://img.shields.io/badge/Platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey) [![GitHub Repo](https://img.shields.io/badge/GitHub-codez--yydd%2FAgentHUD-181717?logo=github)](https://github.com/codez-yydd/AgentHUD) [![Gitee Repo](https://img.shields.io/badge/Gitee-codezwx%2FAgentHUD-C71D23?logo=gitee)](https://gitee.com/codezwx/AgentHUD)
 
 一个常驻菜单栏的轻量浮动面板，实时统计 [ZCode](https://z.ai) CLI 的 Token 用量与花费。点击菜单栏图标即可唤出毛玻璃面板查看今日 / 7 天 / 30 天的明细，并按模型分组展示。
 
@@ -10,8 +10,8 @@
 
 ## 📍 仓库地址
 
-- **GitHub**：[codez-yydd/zai-floating-monitor](https://github.com/codez-yydd/zai-floating-monitor)
-- **Gitee**：[codezwx/zai-floating-monitor](https://gitee.com/codezwx/zai-floating-monitor)
+- **GitHub**：[codez-yydd/AgentHUD](https://github.com/codez-yydd/AgentHUD)
+- **Gitee**：[codezwx/AgentHUD](https://gitee.com/codezwx/AgentHUD)
 
 两个仓库内容完全一致，任一仓库均可获取最新版本；GitHub / Gitee 双仓库自动降级的更新源也基于此配置。
 
@@ -74,8 +74,8 @@
       <b>趋势与模型排行</b> — 按时段用量趋势与模型排行
     </td>
     <td width="50%" align="center">
-      <img src="doc/img/cursor.png" width="320" alt="Cursor 视图"/><br/>
-      <b>Cursor 视图</b> — Pro / Auto / API 额度与用量统计
+      <img src="doc/img/dashboard-overview.png" width="320" alt="主窗口 · 用量总览"/><br/>
+      <b>主窗口 · 用量总览</b> — 跨服务用量、花费与趋势汇总
     </td>
   </tr>
   <tr>
@@ -98,6 +98,16 @@
       <b>会话 Token 悬浮窗</b> — 免注入实时 Token、流式速度与模型速度行
     </td>
   </tr>
+  <tr>
+    <td width="50%" align="center">
+      <img src="doc/img/dashboard-logs.png" width="320" alt="主窗口 · 请求日志"/><br/>
+      <b>主窗口 · 请求日志</b> — 各 Agent 请求明细、耗时、缓存与花费
+    </td>
+    <td width="50%" align="center">
+      <img src="doc/img/usage-report.png" width="320" alt="用量报告"/><br/>
+      <b>用量报告</b> — 活跃度 / Token 活动热力图与日报周报导出
+    </td>
+  </tr>
 </table>
 
 ---
@@ -108,6 +118,8 @@
 
 - **实时菜单栏标题** — 常驻 macOS 顶部菜单栏，每 30 秒刷新，显示今日自然日的总花费（`¥xx.xx`，美元模式下为 `$xx.xx`）与总 Token（如 `3.7M`）。
 - **浮动统计面板** — 点击托盘图标唤出，支持 **今日 / 24h / 7天 / 30天 / 自定义** 时间范围切换。
+- **🖥 主窗口 Dashboard** — 独立大窗形态，侧边栏分页管理：用量总览（跨服务 Token / 花费 / 趋势 / 活跃热力图）、请求日志、周额度对比与价格设置。
+- **📜 请求日志** — 逐请求明细（时间、来源、模型、Token 构成、花费、耗时与速度），支持按来源 / 模型筛选与自动刷新。
 - **原生体验** — macOS 使用 `popover` 毛玻璃材质 + 透明窗口；Windows/Linux 面板贴近任务栏展开。
 - **自动刷新** — 面板数据每 30 秒自动拉取一次。
 - **⌨️ 全局快捷键** — 默认 `alt+shift+z` 唤起 / 隐藏面板，可在设置中自定义或停用。
@@ -125,7 +137,7 @@
 - **🖥️ Kimi Code 用量统计** — 解析本机 `~/.kimi-code/sessions` 会话记录（`wire.jsonl`）统计 Token 用量、花费与 **Token 输出速度**；已登录 Kimi Code CLI 的机器上自动探测本地凭据（OAuth 过期时后台自动续期，无需配置），实时拉取订阅额度：**5 小时滚动窗口 / 周期额度**进度条与重置倒计时、加油包余额、官方会员档位名；面板底部「其他账号」区支持 **OAuth 网页登录**（设备码流程，无需安装 CLI）或手动粘贴 API Key / OAuth 令牌，多账号堆叠显示（区域分中国站 / 国际站）。
 - **🟢 MiniMax Code 用量统计** — 解析本机 MiniMax Code 的本地数据（`~/.minimax`）统计 Token 用量与花费；同一页面顶部展示 MiniMax Coding Plan 订阅额度（**5 小时 / 周**双窗口进度条与重置倒计时），额度由面板底部手动添加的 `sk-cp-` API Key 查询（没装 MiniMax Code、把订阅用在别的 agent 里也能查；未配置时只展示本地用量，不占位空标题）。
 - **🐋 DeepSeek Harness 用量统计** — 解析本机 `~/.dsh` 会话事件日志统计 Token 用量、花费与**真生成速度（含 TTFT）**；面板底部「DeepSeek 平台余额」区可手动添加 **DeepSeek 开放平台 API Key**，实时展示账户余额与赠送 / 充值拆分（DSH 自身按量计费，没有订阅额度窗口）。
-- **🔑 通用凭证管理** — 各 Agent 面板页内置凭证入口（设置页不提供凭证配置）：每个服务可添加**多个凭证**（多账号 / 多订阅堆叠显示），支持备注（区分订阅等级）、编辑与删除，部分服务支持选择 **region**（中国站 / 国际站）。凭证明文保存在本地 `~/.zbar/credentials/`（目录权限 700、文件 600，仅存本机）。详见[凭证管理](#凭证管理)。
+- **🔑 通用凭证管理** — 各 Agent 面板页内置凭证入口（设置页不提供凭证配置）：每个服务可添加**多个凭证**（多账号 / 多订阅堆叠显示），支持备注（区分订阅等级）、编辑与删除，部分服务支持选择 **region**（中国站 / 国际站）。凭证明文保存在本地 `~/.agenthud/credentials/`（目录权限 700、文件 600，仅存本机）。详见[凭证管理](#凭证管理)。
 - **🧩 新增 10 个订阅 / 额度服务** — 凭证驱动，默认隐藏，添加凭证或启用后显示，按凭证类型分组：
   - **API Key 型**（服务控制台创建 Key 后粘贴）：MiniMax（5h + 周双窗口）、通义灵码 Coding Plan（5h / 周 / 月三窗口）
   - **手动 Cookie 型**（浏览器 F12 复制 Cookie 粘贴）：Qoder（大模型积分）、LongCat 美团（Token 配额 + 加油包）、小米 MiMo（余额 + 积分）、百炼 Token 包（5h / 7 天窗口，Team / Personal 双形态）
@@ -139,7 +151,7 @@
 
 **💰 价格与计费**
 
-- **价格配置** — 为每个模型设置「输入 / 输出 / 缓存读」三项**美元**单价（每百万 Token），配置持久化到 `~/.zbar/pricing.json`，人民币花费按当前汇率自动折算；支持一键「检查价格更新」，与内置参考表离线对比（定价数据源自 [cc-switch](https://github.com/farion1231/cc-switch) 开源项目，不联网）。
+- **价格配置** — 为每个模型设置「输入 / 输出 / 缓存读」三项**美元**单价（每百万 Token），配置持久化到 `~/.agenthud/pricing.json`，人民币花费按当前汇率自动折算；支持一键「检查价格更新」，与内置参考表离线对比（定价数据源自 [cc-switch](https://github.com/farion1231/cc-switch) 开源项目，不联网）。
 - **缓存感知计费** — `input_tokens` 已包含缓存读部分，计费时缓存读按缓存价单独计算，非缓存输入按输入价计算，避免重复计费。
 - **💱 汇率自动更新** — USD→CNY 汇率默认每日自动联网更新（也可改为手动填写），用于各服务的美元花费折算与人民币参考价换算。
 
@@ -172,7 +184,7 @@
 ## 📁 项目结构
 
 ```
-zai-floating-monitor/
+AgentHUD/
 ├── src/                      # 前端（React）
 │   ├── App.tsx               # 视图路由：统计 / 价格设置 / 设备同步 / 周额度对比 / 报表
 │   ├── StatsPanel.tsx        # 统计面板（含设备筛选器 + 本地/远端数据合并）
@@ -275,7 +287,7 @@ npm run tauri dev
 npm run tauri build
 ```
 
-- **macOS**：`ZBar.app`、`.dmg`
+- **macOS**：`AgentHUD.app`、`.dmg`
 - **Windows**：`.msi`、`NSIS .exe`
 - **Linux**：`.deb`、`.AppImage`、`.rpm`
 
@@ -318,9 +330,13 @@ git push origin v0.2.0
 
 ## ⚙️ 配置说明
 
+### 数据目录
+
+AgentHUD 的全部本地数据（价格配置、凭证、账号快照、宠物库等）保存在 **`~/.agenthud/`**。更名前版本的数据目录为 `~/.zbar/`——新版本首次启动会自动把 `~/.zbar` 无感迁移到 `~/.agenthud`（失败时继续使用旧目录、下次启动自动重试），无需手动搬移。
+
 ### 数据库路径
 
-ZBar 以 **只读** 方式访问 ZCode 的 SQLite 数据库，不会干扰 ZCode 的写入。
+AgentHUD 以 **只读** 方式访问 ZCode 的 SQLite 数据库，不会干扰 ZCode 的写入。
 
 定位优先级：
 
@@ -331,7 +347,7 @@ ZBar 以 **只读** 方式访问 ZCode 的 SQLite 数据库，不会干扰 ZCode
 
 通过面板内的「价格设置」可视化编辑，或直接编辑文件：
 
-**路径：`~/.zbar/pricing.json`**（只存美元价；人民币花费按当前汇率自动折算，无需单独维护）
+**路径：`~/.agenthud/pricing.json`**（只存美元价；人民币花费按当前汇率自动折算，无需单独维护）
 
 ```json
 {
@@ -358,7 +374,7 @@ ZBar 以 **只读** 方式访问 ZCode 的 SQLite 数据库，不会干扰 ZCode
 
 ### 全局快捷键
 
-默认 `alt+shift+z` 唤起 / 隐藏面板，可在「设置 → 全局快捷键」中修改或停用，配置持久化到 `~/.zbar/shortcut.json`：
+默认 `alt+shift+z` 唤起 / 隐藏面板，可在「设置 → 全局快捷键」中修改或停用，配置持久化到 `~/.agenthud/shortcut.json`：
 
 ```json
 {
@@ -380,7 +396,7 @@ ZBar 以 **只读** 方式访问 ZCode 的 SQLite 数据库，不会干扰 ZCode
 
 自动读取本机 Cursor 应用的本地登录凭据（需已安装并登录 Cursor），无需配置。
 
-**汇率**（设置 → 汇率）：USD→CNY 默认每日自动联网更新，也可取消勾选后手动填写；各服务的美元花费按此汇率折算成人民币。配置保存在 `~/.zbar/cursor.json`（仅存于本机）。
+**汇率**（设置 → 汇率）：USD→CNY 默认每日自动联网更新，也可取消勾选后手动填写；各服务的美元花费按此汇率折算成人民币。配置保存在 `~/.agenthud/cursor.json`（仅存于本机）。
 
 ### Kimi Code 统计
 
@@ -396,7 +412,7 @@ ZBar 以 **只读** 方式访问 ZCode 的 SQLite 数据库，不会干扰 ZCode
 
 - **多凭证堆叠** — 每个服务可添加多个凭证（多账号 / 多订阅），面板中堆叠显示；支持备注（如区分订阅等级）、编辑与删除。
 - **region 选择** — 部分服务支持选择中国站 / 国际站。
-- **本地存储** — 每个服务一个 JSON 文件，明文保存在 `~/.zbar/credentials/`（目录权限 700、文件 600），仅存本机、不参与多设备同步。
+- **本地存储** — 每个服务一个 JSON 文件，明文保存在 `~/.agenthud/credentials/`（目录权限 700、文件 600），仅存本机、不参与多设备同步。
 
 按凭证类型：
 
@@ -412,7 +428,7 @@ ZBar 以 **只读** 方式访问 ZCode 的 SQLite 数据库，不会干扰 ZCode
 
 ### 周额度对比与报表
 
-- **周额度对比** — 以额度快照历史为数据源（`~/.zbar/quota_history.jsonl`，append-only，90 天滚动保留），按重置周期对比额度用量，支持跨设备合并。
+- **周额度对比** — 以额度快照历史为数据源（`~/.agenthud/quota_history.jsonl`，append-only，90 天滚动保留），按重置周期对比额度用量，支持跨设备合并。
 - **日报 / 周报** — 面板内一键生成 Markdown 报表（日报 = 今日，周报 = 近 7 天）并保存为 `.md` 文件。
 
 ### 多设备同步
@@ -437,7 +453,7 @@ python3 app.py                      # 启动后日志会打印 Master Token
 - **同步模式** — 手动（点「立即同步」）或自动（按间隔自动上传）。
 - **数据管理** — 按设备 / 按时间 / 全部清空，可配置服务端自动定时清理。
 
-配置保存在 **`~/.zbar/sync.json`**（Master Token 不持久化，注册后即丢弃）：
+配置保存在 **`~/.agenthud/sync.json`**（Master Token 不持久化，注册后即丢弃）：
 
 ```json
 {
@@ -476,9 +492,9 @@ python3 app.py                      # 启动后日志会打印 Master Token
 ## 🔒 数据安全
 
 - 数据库连接使用 `SQLITE_OPEN_READ_ONLY`，**只读不写**，绝不影响 ZCode 数据。
-- 价格配置仅保存在用户本地 `~/.zbar/` 目录，不上传任何数据。
-- **账号切换**会把 ZCode 登录态快照保存在 `~/.zbar/accounts/`（目录权限 700、文件 600）用于一键切换，**仅存本机、不参与多设备同步**；本应用为非官方社区工具，与智谱 AI 官方无关。
-- **服务凭证**保存在 `~/.zbar/credentials/`（目录权限 700、文件 600），仅存本机、不参与多设备同步。
+- 价格配置仅保存在用户本地 `~/.agenthud/` 目录，不上传任何数据。
+- **账号切换**会把 ZCode 登录态快照保存在 `~/.agenthud/accounts/`（目录权限 700、文件 600）用于一键切换，**仅存本机、不参与多设备同步**；本应用为非官方社区工具，与智谱 AI 官方无关。
+- **服务凭证**保存在 `~/.agenthud/credentials/`（目录权限 700、文件 600），仅存本机、不参与多设备同步。
 - **多设备同步**为可选功能，默认关闭。启用后仅同步模型名、Token 数量、时间戳，**不含代码和对话内容**。服务端自托管，数据存在你自己的服务器上。
 - 面板失焦自动隐藏，窗口常驻不销毁，点击托盘即可重新唤出。
 

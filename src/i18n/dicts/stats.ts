@@ -13,6 +13,7 @@ export const stats = {
   "stats.settings": "设置",
   "stats.pin": "常驻置顶",
   "stats.unpin": "取消常驻",
+  "stats.github": "GitHub 仓库",
   "stats.priceSettings": "价格设置",
   "stats.sourcesAria": "统计来源",
 

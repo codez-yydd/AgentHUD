@@ -1424,7 +1424,8 @@ async fn compute_cost(req: StatsRequest) -> Result<CostResult, String> {
     .map_err(|e| format!("花费计算任务失败: {e}"))?
 }
 
-/// 把报告内容写入 ~/.zbar/reports/<filename>，并在系统文件管理器中打开该目录。
+/// 把报告内容写入 ~/.agenthud/reports/<filename>（更名前 ~/.zbar，启动自动迁移），
+/// 并在系统文件管理器中打开该目录。
 /// content: Markdown 文本；filename: 如 "周报-2026-08-05.md"
 #[tauri::command]
 fn save_report(content: String, filename: String) -> Result<String, String> {
@@ -1476,7 +1477,7 @@ async fn save_share_image(
 
 // ===== 窗口置顶常驻（仅 Windows）=====
 
-/// 置顶状态配置文件路径：~/.zbar/pin.json
+/// 置顶状态配置文件路径：~/.agenthud/pin.json（更名前 ~/.zbar，启动自动迁移）
 fn pin_config_path() -> Result<std::path::PathBuf, String> {
     Ok(pricing::config_dir()?.join("pin.json"))
 }
@@ -2084,7 +2085,7 @@ fn today_tray_title(app: &AppHandle) -> String {
     if total > 0 {
         format!("{sym}{:.2}  {}", to_display(cost), fmt_tok(total))
     } else {
-        "ZBar".to_string()
+        "AgentHUD".to_string()
     }
 }
 
@@ -2100,11 +2101,58 @@ fn prevent_app_nap() {
     let activity =
         NSProcessInfo::processInfo().beginActivityWithOptions_reason(
             NSActivityOptions::UserInitiatedAllowingIdleSystemSleep,
-            &objc2_foundation::NSString::from_str("ZBar panel keep-alive"),
+            &objc2_foundation::NSString::from_str("AgentHUD panel keep-alive"),
         );
     // 断言必须存活整个进程生命周期：forget 防止 drop 触发 endActivity 让断言失效
     std::mem::forget(activity);
 }
+
+// ============================================================
+// 更名遗留清理：旧应用名（ZBar）的开机自启项一次性移除
+// ============================================================
+
+/// 更名遗留清理（ZBar → AgentHUD）：删除旧应用名注册的开机自启项，
+/// 防止更名后旧版自启仍随系统拉起造成新旧双开。启动期幂等执行一次：
+/// 目标不存在时静默跳过，失败只记中文日志不阻断启动。
+#[cfg(windows)]
+fn cleanup_legacy_autostart() {
+    use winreg::enums::{HKEY_CURRENT_USER, KEY_READ, KEY_WRITE};
+    use winreg::RegKey;
+    // 与 tauri-plugin-autostart 同款的 HKCU Run 键；只删旧值名 "ZBar"，
+    // 绝不触碰新名 "AgentHUD" 及其他任何值
+    let run_key = r"Software\Microsoft\Windows\CurrentVersion\Run";
+    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+    match hkcu.open_subkey_with_flags(run_key, KEY_READ | KEY_WRITE) {
+        Ok(key) => match key.delete_value("ZBar") {
+            Ok(()) => eprintln!("[zbar-startup] 已清理更名遗留的旧自启项（ZBar）"),
+            // 值不存在 = 无遗留可清，静默
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => eprintln!("[zbar-startup] 清理更名遗留旧自启项失败（不影响启动）: {e}"),
+        },
+        // Run 键不存在 = 从未配置过自启，静默
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => eprintln!("[zbar-startup] 打开注册表自启键失败（不影响启动）: {e}"),
+    }
+}
+
+/// macOS 同款清理：删除旧 identifier（com.chacca.zbar）派生的
+/// LaunchAgent，同样 best-effort。
+#[cfg(target_os = "macos")]
+fn cleanup_legacy_autostart() {
+    let Some(home) = dirs::home_dir() else { return };
+    let plist = home.join("Library/LaunchAgents/com.chacca.zbar.plist");
+    if !plist.exists() {
+        return; // 无旧 LaunchAgent，静默
+    }
+    match std::fs::remove_file(&plist) {
+        Ok(()) => eprintln!("[zbar-startup] 已清理更名遗留的旧 LaunchAgent（com.chacca.zbar）"),
+        Err(e) => eprintln!("[zbar-startup] 清理更名遗留旧 LaunchAgent 失败（不影响启动）: {e}"),
+    }
+}
+
+/// 其他平台无注册表 / LaunchAgent 机制，无遗留可清。
+#[cfg(not(any(windows, target_os = "macos")))]
+fn cleanup_legacy_autostart() {}
 
 /// 应用快捷键配置：先注销全部，再按配置注册。
 fn apply_shortcut(app: &AppHandle, cfg: &shortcut::ShortcutConfig) -> Result<(), String> {
@@ -2159,17 +2207,17 @@ fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
     //（show_menu_on_left_click(false) + 下方 Click 分支），主窗口入口
     // 只在右键菜单里，避免与左键"切换面板"的既有习惯冲突。
     let open_main_item = MenuItem::with_id(app, "open-main", "打开主窗口", true, None::<&str>)?;
-    let quit_item = MenuItem::with_id(app, "quit", "退出 ZBar", true, None::<&str>)?;
+    let quit_item = MenuItem::with_id(app, "quit", "退出 AgentHUD", true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&open_main_item, &quit_item])?;
 
     // 初始标题只用占位文字：真实标题（今日花费 + token）的生成依次做
     // SQLite 查询、开启同步后的远程 HTTP、Cursor events 冷缓存全量分页拉取，
     // 冷启动网络慢时会把主线程卡数十秒。spawn_title_updater 启动后会在
     // 后台线程立即执行一次刷新（先刷新再 sleep），占位很快被真实标题替换。
-    let title = "ZBar".to_string();
+    let title = "AgentHUD".to_string();
     let _tray = TrayIconBuilder::with_id("main")
         .icon(app.default_window_icon().unwrap().clone())
-        .tooltip("ZBar · ZCode Token 监控")
+        .tooltip("AgentHUD · 多 Agent 用量监控")
         .title(title)
         .menu(&menu)
         .show_menu_on_left_click(false)
@@ -2215,10 +2263,10 @@ fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
 
 /// GitHub 更新源（与 tauri.conf.json plugins.updater.endpoints 保持同步，勿单独修改）
 const UPDATER_GITHUB_LATEST: &str =
-    "https://github.com/codez-yydd/zai-floating-monitor/releases/latest/download/latest.json";
+    "https://github.com/codez-yydd/AgentHUD/releases/latest/download/latest.json";
 /// Gitee 更新源（与 tauri.conf.json plugins.updater.endpoints 保持同步，勿单独修改）
 const UPDATER_GITEE_LATEST: &str =
-    "https://gitee.com/codezwx/zai-floating-monitor/releases/download/latest/latest.json";
+    "https://gitee.com/codezwx/AgentHUD/releases/download/latest/latest.json";
 
 /// check_update 命令的返回：字段与官方插件命令的 Metadata 对齐（camelCase 序列化），
 /// 前端 new Update(metadata) 构造后 download/install/close 原样可用。
@@ -2407,6 +2455,17 @@ pub fn run() {
             }
         })
         .setup(|app| {
+            // ZBar → AgentHUD 数据目录迁移（~/.zbar → ~/.agenthud）：必须先于
+            // 任何数据消费执行（sqlite 打开、凭证读取、主题落盘、后台采集
+            // 线程都晚于这里），迁移内把最终基目录一次性固定进
+            // pricing::BASE_DIR；失败自动回退旧目录，本次运行不失忆，下次
+            // 启动自动重试
+            pricing::migrate_data_dir();
+
+            // 更名遗留清理：删除旧应用名（ZBar）的开机自启项，防止更名后
+            // 旧版随系统启动双开（幂等一次性动作，best-effort 不阻断启动）
+            cleanup_legacy_autostart();
+
             // 注册官方开机自启插件：Windows 使用注册表，macOS 使用 LaunchAgent。
             // 插件只在桌面目标启用，移动端不参与构建。
             #[cfg(desktop)]
@@ -2477,6 +2536,12 @@ pub fn run() {
             // 对话页用量统计条数据源：皮肤已安装时启动后台导出
             // （未安装不启动；安装成功/卸载的启停在 agent_theme 流程挂点）
             agent_theme::usage_feed::start_if_installed();
+            // 数据目录迁移配套的强制重注入：注入版主题外链写死了数据目录
+            // 路径，目录改名后 asar 里旧引用全部失效，后台线程走既有安装
+            // 流程改写引用到新位置（会退出并重启 ZCode——ZCode 需重启才能
+            // 加载新 asar）；基目录一致时零开销直接跳过，失败仅记日志下次
+            // 启动重试
+            agent_theme::reinject_if_theme_base_changed(app.handle().clone());
             // 内置形象（智谱娘）释放到宠物库（默认选中且不可删除）：缺失
             // 或损坏才落盘；已存在且体检通过时按需升级 pet.json（V9 起
             // 内置元数据属软件管理范畴，内容与内置不一致时覆盖）。必须在
