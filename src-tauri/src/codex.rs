@@ -16,7 +16,7 @@
 //! - rate_limits 仅 ChatGPT 订阅登录模式非空（custom provider 全为 null），
 //!   最新快照存 rate_limits_state 单行表，resets_at 由 Unix 秒转毫秒。
 
-use rusqlite::{Connection, OptionalExtension, TransactionBehavior};
+use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, Seek, SeekFrom};
@@ -68,7 +68,11 @@ pub(crate) fn codex_db_path() -> Result<PathBuf, String> {
 const WINDOW_SCAN_ROWS: i64 = 2000;
 
 /// 导入库建表 DDL（`open_codex_db` 与测试共用，避免测试手抄结构漂移）。
+/// synchronous=NORMAL 取舍：WAL 模式下仅在 checkpoint 时 fsync，掉电至多
+/// 丢最后一个提交的事务；file_progress 与数据行同事务、丢失后一起回退，
+/// 幂等重导即可补齐——统计型数据可接受，换来批量导入的写放大大幅下降。
 const SCHEMA_SQL: &str = "PRAGMA journal_mode=WAL;
+     PRAGMA synchronous=NORMAL;
      CREATE TABLE IF NOT EXISTS model_usage (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         session_id TEXT NOT NULL,
@@ -506,13 +510,55 @@ fn collect_session_files(dir: &Path, depth: u32, out: &mut Vec<PathBuf>) {
     }
 }
 
+/// 导入驱动：每个文件一个事务（保持旧原子性边界——文件中途失败
+/// （读取/写入/磁盘异常）时该文件已写行整体回滚，下次从旧偏移重导，
+/// 续读的序号恢复始终基于干净数据，绝不产生序号漂移的孤儿行）。
+/// - import 闭包返回 Err 时本函数记日志并丢弃事务（drop 即回滚），
+/// 不阻断其他文件（对齐原有「单文件失败跳过」语义）；
+/// - commit 失败同样记日志继续（该文件随事务回滚，下次重试）；
+/// - prepared statement 复用不受影响：语句在 import_one_file 内按文件
+/// prepare，提交由本函数在语句析构后进行。
+/// 注：WAL + synchronous=NORMAL 下 commit 不再逐次 fsync，单文件事务的
+/// 提交开销已足够低，无需为此上移事务边界引入孤儿行风险。
+fn run_import_files<F>(
+    conn: &mut Connection,
+    files: &[PathBuf],
+    fail_log_prefix: &str,
+    import: F,
+) -> Result<(), String>
+where
+    F: Fn(&mut Transaction<'_>, &Path) -> Result<(), String>,
+{
+    for path in files {
+        let mut tx = conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|e| format!("开启导入事务失败: {e}"))?;
+        if let Err(e) = import(&mut tx, path) {
+            // 丢弃事务（循环体末尾 drop）→ 本文件已写行整体回滚
+            eprintln!(
+                "[zbar-codex] {fail_log_prefix} {} 失败（已回滚，下次重试）: {e}",
+                path.display()
+            );
+            continue;
+        }
+        if let Err(e) = tx.commit() {
+            eprintln!(
+                "[zbar-codex] 提交导入事务失败（{}，下次重试）: {e}",
+                path.display()
+            );
+        }
+    }
+    Ok(())
+}
+
 /// 增量导入（不节流）：遍历 sessions 目录，把每个 rollout 文件新增部分解析入库。
 /// 查询入口应调用节流版 import_incremental；诊断等需要"一定执行"的场景用本函数。
 /// - file_progress 记录"已处理到的字节偏移"（对齐完整行末尾）；文件变短
 ///   （被重写）时从头重新解析，UNIQUE 键保证幂等。
 /// - 续读时 event_seq 从该会话已入库的最大序号继续，避免序号回退导致
 ///   冲突 upsert 静默吞掉新事件。
-/// - 每个文件一个事务：中途崩溃整体回滚，下次从旧偏移重来。
+/// - 每个文件一个事务：中途崩溃/失败整体回滚，下次从旧偏移重来
+///   （run_import_files）。
 /// - 单文件失败（被占用/磁盘异常）只记日志跳过，不阻断其他文件。
 pub fn import_incremental_force() -> Result<(), String> {
     let _guard = import_lock()
@@ -547,13 +593,11 @@ pub fn import_incremental_force() -> Result<(), String> {
     collect_session_files(&dir, 3, &mut files);
     files.sort();
 
-    for path in &files {
+    run_import_files(&mut conn, &files, "导入", |tx, path| {
         let key = path.to_string_lossy().to_string();
         let known = progress.get(&key).copied();
-        if let Err(e) = import_one_file(&mut conn, path, known) {
-            eprintln!("[zbar-codex] 导入 {} 失败（下次重试）: {e}", path.display());
-        }
-    }
+        import_one_file(tx, path, known)
+    })?;
 
     // 历史版本可能在模型上下文尚未写入时就落了空 model_id。对这些会话重扫
     // 原始文件，借助同一套事件序号和 upsert 逻辑把模型名补回；没有模型上下文
@@ -569,24 +613,19 @@ pub fn import_incremental_force() -> Result<(), String> {
             .map_err(|e| format!("查询待修复 Codex 会话失败: {e}"))?;
         sessions
     };
-    for path in &files {
+    run_import_files(&mut conn, &files, "回填模型名", |tx, path| {
         let session_id = session_id_from_filename(path);
         if !blank_sessions.contains(&session_id) {
-            continue;
+            return Ok(());
         }
         let has_model = latest_model_before_offset(path, u64::MAX)
             .map(|model| !model.is_empty())
             .unwrap_or(false);
         if !has_model {
-            continue;
+            return Ok(());
         }
-        if let Err(e) = import_one_file(&mut conn, path, None) {
-            eprintln!(
-                "[zbar-codex] 回填 {} 的模型名失败（下次重试）: {e}",
-                path.display()
-            );
-        }
-    }
+        import_one_file(tx, path, None)
+    })?;
 
     // 存量会话的项目维度回填（节流 + 每批限量，幂等说明见函数注释）
     if let Err(e) = backfill_session_meta_locked(&mut conn) {
@@ -787,8 +826,11 @@ pub fn backfill_today_rate_limit_history() -> Result<usize, String> {
 }
 
 /// 解析单个 rollout 文件的增量部分。known = 上次记录的 (offset, size)。
+/// 事务由调用方的 run_import_files 按文件提供（每文件一个，失败整体
+/// 回滚，见 import_incremental_force）；行级 INSERT 在循环前 prepare 一次
+/// 复用，避免每行重复解析 SQL。
 fn import_one_file(
-    conn: &mut Connection,
+    tx: &Transaction<'_>,
     path: &Path,
     known: Option<(u64, u64)>,
 ) -> Result<(), String> {
@@ -819,7 +861,7 @@ fn import_one_file(
     let mut seq: i64 = 0;
     let mut current_model = String::new();
     if !reparse {
-        let _ = conn.query_row(
+        let _ = tx.query_row(
             "SELECT COALESCE(MAX(event_seq), 0),
                     COALESCE((SELECT model_id FROM model_usage
                               WHERE session_id = ?1 AND model_id != ''
@@ -837,10 +879,6 @@ fn import_one_file(
         }
     }
 
-    let tx = conn
-        .transaction_with_behavior(TransactionBehavior::Immediate)
-        .map_err(|e| format!("开启导入事务失败: {e}"))?;
-
     // 项目维度：该会话尚无有效 project_key 时，单独读文件首行的 session_meta
     // 事件提取 cwd（每会话仅一次首行 IO；找到后 upsert 的冲突分支不再触发，
     // 找不到也落 NULL 哨兵行，重复导入不会重复读）。
@@ -854,7 +892,7 @@ fn import_one_file(
         .unwrap_or(false);
     if !has_project_key {
         let cwd = read_first_line_cwd(path);
-        upsert_session_meta(&tx, &session_id, cwd.as_deref())?;
+        upsert_session_meta(tx, &session_id, cwd.as_deref())?;
     }
 
     let mut pos = start_offset;
@@ -875,6 +913,23 @@ fn import_one_file(
         .timestamp_millis()
         .max(max_model_revision.saturating_add(1));
     let mut pending_model_seqs: Vec<i64> = Vec::new();
+
+    // 行级 INSERT 预编译一次，循环内仅绑定执行（prepare 保留不可变借用，
+    // 与循环内低频的 tx.execute 互不冲突，commit 由调用方在语句析构后进行）
+    let mut insert_usage = tx
+        .prepare(
+            "INSERT INTO model_usage
+                (session_id, event_seq, started_at, model_id, provider_id,
+                 input_tokens, output_tokens, cache_read_input_tokens,
+                 cache_creation_input_tokens, reasoning_tokens, computed_total_tokens,
+                 model_revision_at)
+             VALUES (?1, ?2, ?3, ?4, 'codex', ?5, ?6, ?7, 0, ?8, ?9, 0)
+             ON CONFLICT(session_id, event_seq) DO UPDATE SET
+                 model_id = excluded.model_id,
+                 model_revision_at = ?10
+             WHERE model_usage.model_id = '' AND excluded.model_id != ''",
+        )
+        .map_err(|e| format!("预编译用量写入语句失败: {e}"))?;
 
     let mut buf: Vec<u8> = Vec::with_capacity(4096);
     loop {
@@ -939,18 +994,8 @@ fn import_one_file(
                 };
 
                 seq += 1;
-                tx.execute(
-                    "INSERT INTO model_usage
-                        (session_id, event_seq, started_at, model_id, provider_id,
-                         input_tokens, output_tokens, cache_read_input_tokens,
-                         cache_creation_input_tokens, reasoning_tokens, computed_total_tokens,
-                         model_revision_at)
-                     VALUES (?1, ?2, ?3, ?4, 'codex', ?5, ?6, ?7, 0, ?8, ?9, 0)
-                     ON CONFLICT(session_id, event_seq) DO UPDATE SET
-                         model_id = excluded.model_id,
-                         model_revision_at = ?10
-                     WHERE model_usage.model_id = '' AND excluded.model_id != ''",
-                    rusqlite::params![
+                insert_usage
+                    .execute(rusqlite::params![
                         session_id,
                         seq,
                         started_at,
@@ -961,9 +1006,8 @@ fn import_one_file(
                         usage.reasoning_output_tokens,
                         usage.total_tokens,
                         model_revision_at,
-                    ],
-                )
-                .map_err(|e| format!("写入用量记录失败: {e}"))?;
+                    ])
+                    .map_err(|e| format!("写入用量记录失败: {e}"))?;
 
                 if current_model.is_empty() {
                     pending_model_seqs.push(seq);
@@ -979,8 +1023,10 @@ fn import_one_file(
             _ => {}
         }
     }
+    drop(insert_usage);
 
-    // 进度：对齐到最后一条完整行末尾（末尾半行下次重读，靠唯一键幂等）
+    // 进度：对齐到最后一条完整行末尾（末尾半行下次重读，靠唯一键幂等）。
+    // 与本文件数据行同事务提交，中途失败一起回滚（断点语义不变）。
     let key = path.to_string_lossy().to_string();
     tx.execute(
         "INSERT INTO file_progress (path, offset, size) VALUES (?1, ?2, ?3)
@@ -1021,7 +1067,6 @@ fn import_one_file(
         }
     }
 
-    tx.commit().map_err(|e| format!("提交导入事务失败: {e}"))?;
     Ok(())
 }
 
@@ -1980,10 +2025,24 @@ mod proxy_tests {
     }
 }
 
-/// 实时额度结果缓存（额度与查询范围无关；前端 30s 一轮 × 4 个预设范围
-/// 都会触发 get_codex_usage，不加缓存会把 wham/usage 打爆）。60s TTL。
-static LIVE_LIMITS_CACHE: OnceLock<Mutex<Option<(std::time::Instant, Option<CodexRateLimits>)>>> =
-    OnceLock::new();
+/// 实时额度结果缓存（成功 60s / 失败 15s 双 TTL，照 claude.rs / kimi.rs 模式）。
+/// 成功缓存：前端多命令高频触发（30s 一轮 × 4 个预设范围都进
+/// get_codex_usage），防止打爆 wham/usage 端点。
+/// 失败负缓存：网络不通/未登录时同样会被高频触发，若不缓存，一轮内每个
+/// 范围都要各付满 10s 超时；短暂缓存失败结果可避免重试风暴拖慢查询。
+static LIVE_LIMITS_CACHE: OnceLock<
+    Mutex<Option<(std::time::Instant, Result<Option<CodexRateLimits>, String>)>>,
+> = OnceLock::new();
+
+/// single-flight 在途标记：True = 有线程正在发真实 HTTP。
+/// 同一轮 4 个范围并发同时 cache miss 时，只有首个线程发请求，其余在
+/// Condvar 上等待共享同一份结果（否则 4 发重复 HTTP 各 10s 超时）。
+/// 等待有上限（HTTP 总超时 10s + 余量），leader 意外挂死时等待者超时后
+/// 退回各自请求，不会永久阻塞。
+static LIVE_LIMITS_INFLIGHT: OnceLock<(Mutex<bool>, std::sync::Condvar)> = OnceLock::new();
+
+/// single-flight 等待上限：略大于 HTTP 总超时 10s，leader 正常必然先完成。
+const LIVE_LIMITS_MAX_WAIT: std::time::Duration = std::time::Duration::from_secs(15);
 
 /// 拉取实时订阅额度：GET https://chatgpt.com/backend-api/wham/usage
 /// （Codex CLI 内部使用的同一端点，需 ChatGPT 订阅登录；API 中转模式
@@ -1996,18 +2055,67 @@ pub fn fetch_live_rate_limits() -> Result<Option<CodexRateLimits>, String> {
 
 /// 拉取实时额度并标记本次结果是否来自新的 HTTP 请求。
 /// 缓存命中仍可用于当前进度展示，但不应作为新的历史采样。
+/// single-flight 的等待者拿到的是 leader 新请求的结果，但标记为 false：
+/// 同一轮的采样由 leader 完成一次即可，避免并发范围各自重复写入历史。
 pub fn fetch_live_rate_limits_with_freshness(
 ) -> Result<(Option<CodexRateLimits>, bool), String> {
-    let cache = LIVE_LIMITS_CACHE.get_or_init(|| Mutex::new(None));
-    {
-        let guard = cache.lock().unwrap_or_else(|p| p.into_inner());
-        if let Some((at, val)) = guard.as_ref() {
-            if at.elapsed() < std::time::Duration::from_secs(60) {
-                return Ok((val.clone(), false));
+    loop {
+        // 1) 缓存命中（双 TTL）：Ok 60s / Err 15s（负缓存防重试风暴）
+        let cache = LIVE_LIMITS_CACHE.get_or_init(|| Mutex::new(None));
+        {
+            let guard = cache.lock().unwrap_or_else(|p| p.into_inner());
+            if let Some((at, val)) = guard.as_ref() {
+                let ttl = if val.is_ok() { 60 } else { 15 };
+                if at.elapsed() < std::time::Duration::from_secs(ttl) {
+                    return val.clone().map(|limits| (limits, false));
+                }
             }
         }
-    }
 
+        // 2) single-flight：有在途请求则等待（leader 完成后先写缓存再清标记，
+        //    醒来回到循环头必然命中缓存）；等待超时视为 leader 挂死，退回直接请求
+        let (lock, cond) = LIVE_LIMITS_INFLIGHT
+            .get_or_init(|| (Mutex::new(false), std::sync::Condvar::new()));
+        {
+            let mut inflight = lock.lock().unwrap_or_else(|p| p.into_inner());
+            if *inflight {
+                let deadline = std::time::Instant::now() + LIVE_LIMITS_MAX_WAIT;
+                while *inflight {
+                    let remain = deadline.saturating_duration_since(std::time::Instant::now());
+                    if remain.is_zero() {
+                        break;
+                    }
+                    let (guard, _) = cond
+                        .wait_timeout(inflight, remain)
+                        .unwrap_or_else(|p| p.into_inner());
+                    inflight = guard;
+                }
+                if !*inflight {
+                    continue; // leader 已完成并写入缓存，回循环头取结果
+                }
+                // 超时（leader 意外挂死）：放弃等待，本线程直接请求
+                //（退化为无 single-flight 的旧行为，多发一次无害）
+                eprintln!("[zbar-codex] 实时额度在途请求等待超时，本线程改为直接请求");
+            }
+            *inflight = true;
+        }
+
+        // 3) leader：执行真实 HTTP，写缓存后广播唤醒所有等待者
+        let result = fetch_live_rate_limits_uncached();
+        *cache.lock().unwrap_or_else(|p| p.into_inner()) =
+            Some((std::time::Instant::now(), result.clone()));
+        {
+            let mut inflight = lock.lock().unwrap_or_else(|p| p.into_inner());
+            *inflight = false;
+            cond.notify_all();
+        }
+        return result.map(|limits| (limits, true));
+    }
+}
+
+/// 真实发起 wham/usage HTTP 请求（无缓存、无并发去重，由
+/// fetch_live_rate_limits_with_freshness 统一调度）。
+fn fetch_live_rate_limits_uncached() -> Result<Option<CodexRateLimits>, String> {
     let auth = load_codex_auth()?;
     let mut builder = ureq::AgentBuilder::new()
         .timeout(std::time::Duration::from_secs(10));
@@ -2049,7 +2157,7 @@ pub fn fetch_live_rate_limits_with_freshness(
             hour5 = Some(slot);
         }
     }
-    let result = if hour5.is_some() || weekly.is_some() {
+    Ok(if hour5.is_some() || weekly.is_some() {
         Some(CodexRateLimits {
             plan_type: resp.plan_type,
             primary_pct: hour5.as_ref().and_then(|s| s.0),
@@ -2059,11 +2167,7 @@ pub fn fetch_live_rate_limits_with_freshness(
         })
     } else {
         None
-    };
-
-    *cache.lock().unwrap_or_else(|p| p.into_inner()) =
-        Some((std::time::Instant::now(), result.clone()));
-    Ok((result, true))
+    })
 }
 
 // ===== 诊断 =====
@@ -2289,7 +2393,12 @@ mod tests {
         ];
         std::fs::write(&file, lines.join("\n") + "\n").expect("写入测试会话文件失败");
 
-        import_one_file(&mut conn, &file, None).expect("导入失败");
+        // 事务由调用方提供（与生产 run_import_files 的每文件事务同构）
+        let tx = conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .expect("开启导入事务失败");
+        import_one_file(&tx, &file, None).expect("导入失败");
+        tx.commit().expect("提交导入事务失败");
         let rows = |conn: &Connection| -> Vec<(i64, String, i64)> {
             let mut stmt = conn
                 .prepare("SELECT event_seq, model_id, computed_total_tokens FROM model_usage ORDER BY event_seq")
@@ -2309,7 +2418,11 @@ mod tests {
         );
 
         // 重解析（known=None）幂等：行数与归属不变
-        import_one_file(&mut conn, &file, None).expect("重解析失败");
+        let tx = conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .expect("开启重解析事务失败");
+        import_one_file(&tx, &file, None).expect("重解析失败");
+        tx.commit().expect("提交重解析事务失败");
         assert_eq!(rows(&conn).len(), 3, "重解析不应改变行数");
 
         let _ = std::fs::remove_dir_all(&tmp);

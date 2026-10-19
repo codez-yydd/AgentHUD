@@ -7,6 +7,10 @@
 //! - 复用项目现有 ureq HTTP 客户端 + pricing::config_dir() 的 ~/.agenthud/ 目录（更名前 ~/.zbar，启动自动迁移）。
 //! - 本地采集型来源（codex / claude / dsh / opencode / kimi / minimaxcode）各自一套
 //!   「rowid 游标 + 修订游标」，见 upload_derived_source_incremental。
+//! - HTTP 超时分层（agent_with_timeouts）：连接期统一 timeout_connect 快速失败，
+//!   总超时按调用场景分三档——后台静默查询 connect 2s/总 5s、后台上传与
+//!   协议探测 connect 3s/总 15s、用户主动操作 connect 3s/总超时保持原值。
+//!   各路径调用方均有静默降级或下轮重试兜底，快速失败不损失正确性。
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -360,8 +364,8 @@ pub fn register_device(req: RegisterRequest) -> Result<SyncConfig, String> {
         master_token: &'a str,
         device_name: &'a str,
     }
-    let resp: RegisterResponse = ureq::post(&format!("{base}/register"))
-        .timeout(Duration::from_secs(10))
+    let resp: RegisterResponse = agent_with_timeouts(3, 10)
+        .post(&format!("{base}/register"))
         .send_json(Body {
             master_token: req.master_token.trim(),
             device_name: req.device_name.trim(),
@@ -642,9 +646,9 @@ fn zcode_projects_supported(base: &str, token: &str) -> bool {
     if !crate::zcode_sessions::has_project_mapping() {
         return false; // 派生库无映射：无可附带维度，跳过协议探测
     }
-    let probe: SyncResponse = match ureq::post(&format!("{base}/sync"))
+    let probe: SyncResponse = match agent_with_timeouts(3, 15)
+        .post(&format!("{base}/sync"))
         .set("Authorization", &format!("Bearer {token}"))
-        .timeout(Duration::from_secs(15))
         .send_json(&SyncPayload {
             records: Vec::new(),
             last_rowid: None,
@@ -754,9 +758,9 @@ fn post_sync_batch(
     token: &str,
     payload: &SyncPayload,
 ) -> Result<SyncResponse, String> {
-    ureq::post(&format!("{base}/sync"))
+    agent_with_timeouts(3, 15)
+        .post(&format!("{base}/sync"))
         .set("Authorization", &format!("Bearer {token}"))
-        .timeout(Duration::from_secs(15))
         .send_json(payload)
         .map_err(map_http_err("上传数据"))?
         .into_json()
@@ -1011,9 +1015,9 @@ fn upload_derived_source_incremental(
     }
 
     // 协议探测：空批次请求无任何写入副作用，仅读回服务端能力标记
-    let probe: SyncResponse = ureq::post(&format!("{base}/sync"))
+    let probe: SyncResponse = agent_with_timeouts(3, 15)
+        .post(&format!("{base}/sync"))
         .set("Authorization", &format!("Bearer {token}"))
-        .timeout(Duration::from_secs(15))
         .send_json(&SyncPayload {
             records: Vec::new(),
             last_rowid: None,
@@ -1203,9 +1207,9 @@ pub fn fetch_remote_usage(req: RemoteUsageRequest) -> Result<RemoteUsage, String
         url.push_str(&format!("&exclude_device={}", req.exclude_device));
     }
 
-    let resp: RemoteUsage = ureq::get(&url)
+    let resp: RemoteUsage = agent_with_timeouts(2, 5)
+        .get(&url)
         .set("Authorization", &format!("Bearer {token}"))
-        .timeout(Duration::from_secs(10))
         .call()
         .map_err(map_http_err("查询远端数据"))?
         .into_json()
@@ -1336,7 +1340,7 @@ pub fn fetch_remote_usage_records(
         "{base}/usage_records?from_ms={}&to_ms={}&limit={}&offset={}",
         req.from_ms, req.to_ms, req.limit, req.offset
     );
-    let mut request = ureq::get(&url);
+    let mut request = agent_with_timeouts(2, 5).get(&url);
     if !req.source.is_empty() {
         request = request.query("source", &req.source);
     }
@@ -1350,7 +1354,6 @@ pub fn fetch_remote_usage_records(
     }
     let resp: RemoteUsageRecords = request
         .set("Authorization", &format!("Bearer {token}"))
-        .timeout(Duration::from_secs(10))
         .call()
         .map_err(map_http_err("查询远端请求明细"))?
         .into_json()
@@ -1516,9 +1519,9 @@ pub fn fetch_remote_snapshots(req: RemoteSnapshotRequest) -> Result<Vec<RemoteSn
         url.push_str(&format!("&exclude_device={}", req.exclude_device));
     }
 
-    let resp: SnapshotsResponse = ureq::get(&url)
+    let resp: SnapshotsResponse = agent_with_timeouts(2, 5)
+        .get(&url)
         .set("Authorization", &format!("Bearer {token}"))
-        .timeout(Duration::from_secs(10))
         .call()
         .map_err(map_http_err("查询远端快照"))?
         .into_json()
@@ -1576,9 +1579,9 @@ pub fn fetch_remote_agent_quota_snapshots(
         url.push_str(&format!("&exclude_device={}", req.exclude_device));
     }
 
-    let resp: AgentQuotaSnapshotsResponse = ureq::get(&url)
+    let resp: AgentQuotaSnapshotsResponse = agent_with_timeouts(2, 5)
+        .get(&url)
         .set("Authorization", &format!("Bearer {token}"))
-        .timeout(Duration::from_secs(10))
         .call()
         .map_err(map_http_err("查询远端 Agent 额度快照"))?
         .into_json()
@@ -1594,9 +1597,9 @@ pub fn fetch_devices() -> Result<Vec<DeviceInfo>, String> {
     }
     let base = &cfg.server_url;
     let token = &cfg.device_token;
-    let raw: Vec<DeviceInfoRaw> = ureq::get(&format!("{base}/devices"))
+    let raw: Vec<DeviceInfoRaw> = agent_with_timeouts(2, 5)
+        .get(&format!("{base}/devices"))
         .set("Authorization", &format!("Bearer {token}"))
-        .timeout(Duration::from_secs(10))
         .call()
         .map_err(map_http_err("查询设备列表"))?
         .into_json()
@@ -1635,8 +1638,8 @@ pub fn cleanup_server(req: CleanupServerRequest) -> Result<CleanupResult, String
         device_id: &'a str,
         days: u32,
     }
-    let resp: CleanupResult = ureq::post(&format!("{base}/cleanup"))
-        .timeout(Duration::from_secs(10))
+    let resp: CleanupResult = agent_with_timeouts(3, 10)
+        .post(&format!("{base}/cleanup"))
         .send_json(Body {
             master_token: req.master_token.trim(),
             action: &req.action,
@@ -1674,8 +1677,8 @@ pub fn merge_devices(req: MergeDevicesRequest) -> Result<MergeResult, String> {
         source_device_id: &'a str,
         target_device_id: &'a str,
     }
-    let resp: MergeResult = ureq::post(&format!("{base}/device/merge"))
-        .timeout(Duration::from_secs(15))
+    let resp: MergeResult = agent_with_timeouts(3, 15)
+        .post(&format!("{base}/device/merge"))
         .send_json(Body {
             master_token: req.master_token.trim(),
             source_device_id: req.source_device_id.trim(),
@@ -1709,8 +1712,8 @@ pub fn rename_device(req: RenameDeviceRequest) -> Result<RenameResult, String> {
         device_id: &'a str,
         device_name: &'a str,
     }
-    let resp: RenameResult = ureq::post(&format!("{base}/device/rename"))
-        .timeout(Duration::from_secs(10))
+    let resp: RenameResult = agent_with_timeouts(3, 10)
+        .post(&format!("{base}/device/rename"))
         .send_json(Body {
             master_token: req.master_token.trim(),
             device_id: req.device_id.trim(),
@@ -1730,9 +1733,9 @@ pub fn fetch_cleanup_status() -> Result<CleanupStatus, String> {
     }
     let base = &cfg.server_url;
     let token = &cfg.device_token;
-    let resp: CleanupStatus = ureq::get(&format!("{base}/cleanup/status"))
+    let resp: CleanupStatus = agent_with_timeouts(3, 10)
+        .get(&format!("{base}/cleanup/status"))
         .set("Authorization", &format!("Bearer {token}"))
-        .timeout(Duration::from_secs(10))
         .call()
         .map_err(map_http_err("查询清理状态"))?
         .into_json()
@@ -1757,8 +1760,8 @@ pub fn set_auto_cleanup(req: AutoCleanupServerRequest) -> Result<AutoCleanupConf
         auto_enabled: bool,
         auto_days: u32,
     }
-    let resp: AutoCleanupConfig = ureq::post(&format!("{base}/cleanup/config"))
-        .timeout(Duration::from_secs(10))
+    let resp: AutoCleanupConfig = agent_with_timeouts(3, 10)
+        .post(&format!("{base}/cleanup/config"))
         .send_json(Body {
             master_token: req.master_token,
             auto_enabled: req.auto_enabled,
@@ -1847,6 +1850,23 @@ fn normalize_url(raw: &str) -> Result<String, String> {
     } else {
         Ok(format!("http://{trimmed}"))
     }
+}
+
+/// 构建分层超时的 HTTP Agent：连接期 connect_secs 快速失败（防火墙静默
+/// 丢包 / DNS 挂起时不再吃满总超时），总超时 total_secs 兜底整个请求生命
+/// 周期（ureq 2 的 timeout_connect 只在 AgentBuilder 上提供，故按 Agent
+/// 维度配置）。分档取值：
+/// - 后台静默查询（拉取远端聚合/明细/快照/设备列表）：connect 2s + 总 5s，
+///   调用方均有静默降级兜底（返回空/下轮重试），快速失败无损正确性；
+/// - 后台上传与协议探测（post_sync_batch / 两处 proto 探测）：connect 3s
+///   + 总 15s（上传体大、批量大，保留原总超时余量）；
+/// - 用户主动操作（注册/清理/合并/改名等）：connect 3s + 总超时保持原值
+///   （用户在等待结果，只收紧连接期，不缩短等待上限）。
+fn agent_with_timeouts(connect_secs: u64, total_secs: u64) -> ureq::Agent {
+    ureq::AgentBuilder::new()
+        .timeout_connect(Duration::from_secs(connect_secs))
+        .timeout(Duration::from_secs(total_secs))
+        .build()
 }
 
 /// 把 ureq::Error 转为可读中文错误。

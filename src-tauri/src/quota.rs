@@ -357,11 +357,18 @@ pub(crate) fn query_quota_with(token: &str, base_url: &str) -> Result<QuotaResul
     let base = base_from_provider_url(base_url);
     let url = format!("{base}/api/monitor/usage/quota/limit");
 
-    // 15s 请求总超时：ureq 默认无超时，网络异常时会无限等待卡死调用方；
-    // 对齐其他模块的做法（cursor.rs 用 agent 级 30s 总超时，此处请求级 15s 即可）
-    let resp: QuotaResponse = ureq::get(&url)
+    // 分层超时：连接期 3s 快速失败（防火墙静默丢包时不再吃满总超时），
+    // 总超时 8s——本查询服务后台 30s 轮询的 fetch_quota 额度刷新，失败时
+    // 前端静默降级（显示占位/上轮值），下一轮自动重试，快速失败无损正确性。
+    // （ureq 2 的 timeout_connect 只在 AgentBuilder 上提供，故按 Agent 维度
+    // 配置；此前为不分层的 15s 总超时，项目内超时先例另见 cursor.rs 的
+    // agent 级 30s 总超时。）
+    let resp: QuotaResponse = ureq::AgentBuilder::new()
+        .timeout_connect(Duration::from_secs(3))
+        .timeout(Duration::from_secs(8))
+        .build()
+        .get(&url)
         .set("Authorization", token.trim())
-        .timeout(Duration::from_secs(15))
         .call()
         .map_err(|e| format!("请求额度接口失败: {e}"))?
         .into_json()
@@ -469,8 +476,8 @@ pub(crate) fn snapshot_of(
 /// 该条不参与任何账号的增量计算）。
 pub fn fetch_quota() -> Result<QuotaResult, String> {
     // 指纹必须在查询前取：额度查询本身要读 config.json 选凭证并发起 HTTP
-    // （最长 15s），若等查询结束才取指纹，切换事务可能已把 credentials.json
-    // 换成新账号，出现"旧账号数值 + 新账号指纹"的错配采样。
+    // （连接期最长 3s、总超时最长 8s），若等查询结束才取指纹，切换事务可能已把
+    // credentials.json 换成新账号，出现"旧账号数值 + 新账号指纹"的错配采样。
     let account = crate::accounts::current_fingerprint().map(|fp| fp.user_id);
 
     let result = query_quota()?;

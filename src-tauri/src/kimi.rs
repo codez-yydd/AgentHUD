@@ -42,7 +42,7 @@
 //! 实现方式与 claude.rs 同构：原始 jsonl 只读 + 派生自有库 ~/.agenthud/kimi.sqlite
 //! （更名前 ~/.zbar，启动自动迁移），file_progress 偏移增量续读。
 
-use rusqlite::Connection;
+use rusqlite::{Connection, Transaction};
 use serde::{Deserialize, Serialize};
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
@@ -126,8 +126,12 @@ fn open_kimi_db_at(path: &Path) -> Result<Connection, String> {
     conn.busy_timeout(std::time::Duration::from_secs(3))
         .map_err(|e| format!("设置 busy_timeout 失败: {e}"))?;
 
+    // synchronous=NORMAL 取舍：WAL 模式下仅在 checkpoint 时 fsync，掉电至多
+    // 丢最后一个提交的事务；file_progress 与数据行同事务、丢失后一起回退，
+    // 幂等重导即可补齐——统计型数据可接受，换来批量导入的写放大大幅下降。
     conn.execute_batch(
         "PRAGMA journal_mode=WAL;
+         PRAGMA synchronous=NORMAL;
          CREATE TABLE IF NOT EXISTS model_usage (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             session_id TEXT NOT NULL,
@@ -393,6 +397,22 @@ fn upsert_session_meta(
     Ok(())
 }
 
+/// step_meta 的 upsert SQL（与 upsert_step_meta 分离定义：语句由
+/// import_one_file 在解析循环前 prepare 一次复用，避免每行重复解析 SQL）。
+const STEP_META_UPSERT_SQL: &str = "INSERT INTO step_meta
+            (session_id, file_path, turn_id, step_key, state, started_at, ended_at,
+             ttft_ms, stream_ms, output_tokens, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+         ON CONFLICT(file_path, turn_id, step_key) DO UPDATE SET
+            session_id = excluded.session_id,
+            state = excluded.state,
+            started_at = excluded.started_at,
+            ended_at = excluded.ended_at,
+            ttft_ms = excluded.ttft_ms,
+            stream_ms = excluded.stream_ms,
+            output_tokens = excluded.output_tokens,
+            updated_at = MAX(step_meta.updated_at, excluded.updated_at)";
+
 /// 写入/覆盖一条 step.upsert（upsert 幂等语义：同一 (file_path, turn_id,
 /// step_key) 的 step 会被 CLI 多次 upsert——state 从 running → completed，
 /// llmTiming 在完成后才填充——每次都是独立事件行追加，后到的全字段覆盖
@@ -401,9 +421,10 @@ fn upsert_session_meta(
 ///   存列不靠路径推导，查询侧免 JOIN；
 /// - turnId 优先取 step 内的，缺失回退事件层的；
 /// - startedAt/endedAt 为 ISO 字符串，RFC3339 解析失败置 NULL（不报错）；
-/// - stepId 缺失/空串/其他类型直接跳过（无法安全构成主键）。
+/// - stepId 缺失/空串/其他类型直接跳过（无法安全构成主键）；
+/// - SQL 语句由调用方 prepare 一次传入（STEP_META_UPSERT_SQL）。
 fn upsert_step_meta(
-    tx: &rusqlite::Transaction<'_>,
+    stmt: &mut rusqlite::Statement<'_>,
     session_id: &str,
     file_key: &str,
     op: &StepUpsertOp,
@@ -425,34 +446,19 @@ fn upsert_step_meta(
         .as_ref()
         .and_then(|t| t.stream_duration_ms);
     let output_tokens = step.usage.as_ref().map(|u| u.output).unwrap_or(0);
-    tx.execute(
-        "INSERT INTO step_meta
-            (session_id, file_path, turn_id, step_key, state, started_at, ended_at,
-             ttft_ms, stream_ms, output_tokens, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
-         ON CONFLICT(file_path, turn_id, step_key) DO UPDATE SET
-            session_id = excluded.session_id,
-            state = excluded.state,
-            started_at = excluded.started_at,
-            ended_at = excluded.ended_at,
-            ttft_ms = excluded.ttft_ms,
-            stream_ms = excluded.stream_ms,
-            output_tokens = excluded.output_tokens,
-            updated_at = MAX(step_meta.updated_at, excluded.updated_at)",
-        rusqlite::params![
-            session_id,
-            file_key,
-            turn_id,
-            step_key,
-            state,
-            started_at,
-            ended_at,
-            ttft_ms,
-            stream_ms,
-            output_tokens,
-            event_time_ms,
-        ],
-    )
+    stmt.execute(rusqlite::params![
+        session_id,
+        file_key,
+        turn_id,
+        step_key,
+        state,
+        started_at,
+        ended_at,
+        ttft_ms,
+        stream_ms,
+        output_tokens,
+        event_time_ms,
+    ])
     .map_err(|e| format!("写入 Kimi step 状态失败: {e}"))?;
     Ok(())
 }
@@ -514,12 +520,54 @@ fn collect_session_files(dir: &Path, depth: u32, out: &mut Vec<PathBuf>) {
 /// 增量导入（不节流）：遍历 sessions 目录，把每个 wire.jsonl 新增部分解析入库。
 /// - file_progress 记录"已处理到的字节偏移"（对齐完整行末尾）；文件变短
 ///   （被重写）时从头重新解析，UNIQUE 键保证幂等。
-/// - 每个文件一个事务：中途崩溃整体回滚，下次从旧偏移重来。
+/// - 每个文件一个事务：中途崩溃/失败整体回滚，下次从旧偏移重来
+///   （run_import_files）。
 /// - 单文件失败只记日志跳过，不阻断其他文件。
 pub fn import_incremental_force() -> Result<(), String> {
     let dir = sessions_dir()?;
     let db_path = kimi_db_path()?;
     import_incremental_into(&dir, &db_path)
+}
+
+/// 导入驱动：每个文件一个事务（保持旧原子性边界——文件中途失败
+/// （读取/写入/磁盘异常）时该文件已写行整体回滚，下次从旧偏移重导，
+/// 续读的序号恢复始终基于干净数据，绝不产生序号漂移的孤儿行）。
+/// - import 闭包返回 Err 时本函数记日志并丢弃事务（drop 即回滚），
+/// 不阻断其他文件（对齐原有「单文件失败跳过」语义）；
+/// - commit 失败同样记日志继续（该文件随事务回滚，下次重试）；
+/// - prepared statement 复用不受影响：语句在 import_one_file 内按文件
+/// prepare，提交由本函数在语句析构后进行。
+/// 注：WAL + synchronous=NORMAL 下 commit 不再逐次 fsync，单文件事务的
+/// 提交开销已足够低，无需为此上移事务边界引入孤儿行风险。
+fn run_import_files<F>(
+    conn: &mut Connection,
+    files: &[PathBuf],
+    fail_log_prefix: &str,
+    import: F,
+) -> Result<(), String>
+where
+    F: Fn(&mut Transaction<'_>, &Path) -> Result<(), String>,
+{
+    for path in files {
+        let mut tx = conn
+            .transaction()
+            .map_err(|e| format!("开启导入事务失败: {e}"))?;
+        if let Err(e) = import(&mut tx, path) {
+            // 丢弃事务（循环体末尾 drop）→ 本文件已写行整体回滚
+            eprintln!(
+                "[zbar-kimi] {fail_log_prefix} {} 失败（已回滚，下次重试）: {e}",
+                path.display()
+            );
+            continue;
+        }
+        if let Err(e) = tx.commit() {
+            eprintln!(
+                "[zbar-kimi] 提交导入事务失败（{}，下次重试）: {e}",
+                path.display()
+            );
+        }
+    }
+    Ok(())
 }
 
 /// 导入内核：指定 sessions 目录与库文件（生产入口的参数化版本，
@@ -555,7 +603,7 @@ fn import_incremental_into(dir: &Path, db_path: &Path) -> Result<(), String> {
     collect_session_files(&dir, 6, &mut files);
     files.sort();
 
-    for path in &files {
+    run_import_files(&mut conn, &files, "导入", |tx, path| {
         let key = path.to_string_lossy().to_string();
         let known = progress.get(&key).copied();
         // 文件维度标识：相对 sessions 根的规范化路径（strip 失败退回全路径）。
@@ -566,13 +614,8 @@ fn import_incremental_into(dir: &Path, db_path: &Path) -> Result<(), String> {
             .strip_prefix(dir)
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_else(|_| path.to_string_lossy().to_string());
-        if let Err(e) = import_one_file(&mut conn, dir, path, &file_key, known) {
-            eprintln!(
-                "[zbar-kimi] 导入 {} 失败（下次重试）: {e}",
-                path.display()
-            );
-        }
-    }
+        import_one_file(tx, dir, path, &file_key, known)
+    })?;
 
     // 存量会话项目维度回填（节流 + 每批限量，幂等说明见函数注释）。
     // 仅生产路径触发；测试注入的临时目录/临时库不走回填（不触碰真实
@@ -669,8 +712,11 @@ pub fn backfill_session_meta() -> Result<usize, String> {
 
 /// 解析单个 wire.jsonl 的增量部分。known = 上次记录的 (offset, size)；
 /// file_key = 相对 sessions 根的文件路径（去重键的文件维度，见调用方注释）。
+/// 事务由调用方的 run_import_files 按文件提供（每文件一个，失败整体
+/// 回滚，见 import_incremental_into）；行级 INSERT 与 step_meta upsert 在
+/// 循环前 prepare 一次复用，避免每行重复解析 SQL。
 fn import_one_file(
-    conn: &mut Connection,
+    tx: &Transaction<'_>,
     sessions_root: &Path,
     path: &Path,
     file_key: &str,
@@ -696,10 +742,6 @@ fn import_one_file(
     reader
         .seek(SeekFrom::Start(start_offset))
         .map_err(|e| format!("定位读取偏移失败: {e}"))?;
-
-    let tx = conn
-        .transaction()
-        .map_err(|e| format!("开启导入事务失败: {e}"))?;
 
     // 项目维度：该会话尚无有效 project_key 时，单独读文件前 50 行找
     // environmentDisclosure.cwd（找到后 upsert 冲突分支不再触发；同一 session
@@ -758,6 +800,33 @@ fn import_one_file(
     // 修订时间：同一键的新值覆盖旧值时打上修订标记（为将来同步补传预留）
     let now_ms = chrono::Local::now().timestamp_millis();
 
+    // 行级语句预编译一次，循环内仅绑定执行（prepare 保留不可变借用，
+    // commit 由调用方在语句析构后进行）
+    let mut upsert_usage = tx
+        .prepare(
+            "INSERT INTO model_usage
+                (session_id, dedupe_key, started_at, model_id, provider_id,
+                 input_tokens, output_tokens, cache_read_input_tokens,
+                 cache_creation_input_tokens, reasoning_tokens, computed_total_tokens,
+                 duration_ms, updated_at)
+             VALUES (?1, ?2, ?3, ?4, 'kimi', ?5, ?6, ?7, ?8, 0, ?9, ?10, ?11)
+             ON CONFLICT(dedupe_key) DO UPDATE SET
+                started_at = excluded.started_at,
+                model_id = excluded.model_id,
+                input_tokens = excluded.input_tokens,
+                output_tokens = excluded.output_tokens,
+                cache_read_input_tokens = excluded.cache_read_input_tokens,
+                cache_creation_input_tokens = excluded.cache_creation_input_tokens,
+                computed_total_tokens = excluded.computed_total_tokens,
+                duration_ms = excluded.duration_ms,
+                updated_at = ?11
+             WHERE excluded.computed_total_tokens > model_usage.computed_total_tokens",
+        )
+        .map_err(|e| format!("预编译用量写入语句失败: {e}"))?;
+    let mut upsert_step = tx
+        .prepare(STEP_META_UPSERT_SQL)
+        .map_err(|e| format!("预编译 step 状态语句失败: {e}"))?;
+
     // 耗时配对状态：同文件顺序处理时维护"最近一条 llm.request 的 time"，
     // usage.record 到来时取差值作 duration_ms。作用域是单次导入循环——
     // 续读窗口内若无 llm.request（请求在上次已读部分）配不上就 NULL，
@@ -803,7 +872,7 @@ fn import_one_file(
                     if op.op.as_deref() == Some("step.upsert") {
                         if let Some(step) = op.step.as_ref() {
                             upsert_step_meta(
-                                &tx,
+                                &mut upsert_step,
                                 &session_id,
                                 file_key,
                                 op,
@@ -859,25 +928,8 @@ fn import_one_file(
         // 但打上 updated_at 修订标记；duration_ms 直写新值（新行胜出：
         // 重算后配不上就直写 NULL 抹掉旧值，避免新 tokens 混旧 duration
         // 得出错误的 TPS 样本；良性重放时重算结果相同无影响）。
-        tx.execute(
-            "INSERT INTO model_usage
-                (session_id, dedupe_key, started_at, model_id, provider_id,
-                 input_tokens, output_tokens, cache_read_input_tokens,
-                 cache_creation_input_tokens, reasoning_tokens, computed_total_tokens,
-                 duration_ms, updated_at)
-             VALUES (?1, ?2, ?3, ?4, 'kimi', ?5, ?6, ?7, ?8, 0, ?9, ?10, ?11)
-             ON CONFLICT(dedupe_key) DO UPDATE SET
-                started_at = excluded.started_at,
-                model_id = excluded.model_id,
-                input_tokens = excluded.input_tokens,
-                output_tokens = excluded.output_tokens,
-                cache_read_input_tokens = excluded.cache_read_input_tokens,
-                cache_creation_input_tokens = excluded.cache_creation_input_tokens,
-                computed_total_tokens = excluded.computed_total_tokens,
-                duration_ms = excluded.duration_ms,
-                updated_at = ?11
-             WHERE excluded.computed_total_tokens > model_usage.computed_total_tokens",
-            rusqlite::params![
+        upsert_usage
+            .execute(rusqlite::params![
                 session_id,
                 dedupe_key,
                 started_at,
@@ -889,12 +941,14 @@ fn import_one_file(
                 total,
                 duration_ms,
                 now_ms,
-            ],
-        )
-        .map_err(|e| format!("写入用量记录失败: {e}"))?;
+            ])
+            .map_err(|e| format!("写入用量记录失败: {e}"))?;
     }
+    drop(upsert_usage);
+    drop(upsert_step);
 
-    // 进度：对齐到最后一条完整行末尾（末尾半行下次重读，靠唯一键幂等）
+    // 进度：对齐到最后一条完整行末尾（末尾半行下次重读，靠唯一键幂等）。
+    // 与本文件数据行同事务提交，中途失败一起回滚（断点语义不变）。
     let key = path.to_string_lossy().to_string();
     tx.execute(
         "INSERT INTO file_progress (path, offset, size) VALUES (?1, ?2, ?3)
@@ -903,7 +957,6 @@ fn import_one_file(
     )
     .map_err(|e| format!("记录导入进度失败: {e}"))?;
 
-    tx.commit().map_err(|e| format!("提交导入事务失败: {e}"))?;
     Ok(())
 }
 
@@ -2470,6 +2523,17 @@ static LIVE_LIMITS_CACHE: OnceLock<
     Mutex<Option<(std::time::Instant, Result<Option<KimiRateLimits>, String>)>>,
 > = OnceLock::new();
 
+/// single-flight 在途标记：True = 有线程正在发真实 HTTP（照 codex.rs 模式）。
+/// 同一轮多个命令并发同时 cache miss 时，只有首个线程发请求，其余在
+/// Condvar 上等待共享同一份结果；kimi 的未缓存路径含「CLI 失败后逐凭证
+/// 回退」的真实 HTTP（fallback_limits_from_credentials），并发重复执行
+/// 既浪费也可能触发服务端限流。等待有上限（大于 HTTP 总超时），leader
+/// 意外挂死时等待者超时后退回各自请求，不会永久阻塞。
+static LIVE_LIMITS_INFLIGHT: OnceLock<(Mutex<bool>, std::sync::Condvar)> = OnceLock::new();
+
+/// single-flight 等待上限：略大于 HTTP 总超时 10s，leader 正常必然先完成。
+const LIVE_LIMITS_MAX_WAIT: std::time::Duration = std::time::Duration::from_secs(15);
+
 /// 拉取 Kimi 订阅额度（带缓存版，供诊断/测试用）。
 #[allow(dead_code)]
 pub fn fetch_live_rate_limits() -> Result<Option<KimiRateLimits>, String> {
@@ -2478,33 +2542,72 @@ pub fn fetch_live_rate_limits() -> Result<Option<KimiRateLimits>, String> {
 
 /// 拉取实时额度并标记本次结果是否来自新的 HTTP 请求。
 /// 缓存命中仍可用于当前进度展示，但不应作为新的历史采样。
+/// single-flight 的等待者拿到的是 leader 新请求的结果，但标记为 false：
+/// 同一轮的采样由 leader 完成一次即可，避免并发命令各自重复写入历史。
 pub fn fetch_live_rate_limits_with_freshness(
 ) -> Result<(Option<KimiRateLimits>, bool), String> {
-    let cache = LIVE_LIMITS_CACHE.get_or_init(|| Mutex::new(None));
-    {
-        let guard = cache.lock().unwrap_or_else(|p| p.into_inner());
-        if let Some((at, val)) = guard.as_ref() {
-            let ttl = if val.is_ok() { 60 } else { 15 };
-            if at.elapsed() < std::time::Duration::from_secs(ttl) {
-                return val.clone().map(|limits| (limits, false));
+    loop {
+        // 1) 缓存命中（双 TTL）：Ok 60s / Err 15s（负缓存防重试风暴）
+        let cache = LIVE_LIMITS_CACHE.get_or_init(|| Mutex::new(None));
+        {
+            let guard = cache.lock().unwrap_or_else(|p| p.into_inner());
+            if let Some((at, val)) = guard.as_ref() {
+                let ttl = if val.is_ok() { 60 } else { 15 };
+                if at.elapsed() < std::time::Duration::from_secs(ttl) {
+                    return val.clone().map(|limits| (limits, false));
+                }
             }
         }
-    }
 
-    // CLI 链路失败（无 CLI 登录态/网络不通）时回退凭证体系：~/.agenthud/credentials/
-    // kimi.json 里的应用内网页登录凭证。回退本身是逐凭证的真实 HTTP 查询，
-    // 与 CLI 直连同样按 Ok 缓存 60s TTL（防止与凭证体系前端 120s 轮询叠加成
-    // 高频请求），freshness 由返回值标记为 true（可进历史采样）；回退失败
-    // 维持原 CLI 错误（文案已含 CLI 与网页登录双路径引导），负缓存 15s 不变。
-    let result = match fetch_live_rate_limits_uncached() {
-        Ok(limits) => Ok(limits),
-        Err(cli_err) => fallback_limits_from_credentials()
-            .map(Some)
-            .ok_or(cli_err),
-    };
-    *cache.lock().unwrap_or_else(|p| p.into_inner()) =
-        Some((std::time::Instant::now(), result.clone()));
-    result.map(|limits| (limits, true))
+        // 2) single-flight：有在途请求则等待（leader 完成后先写缓存再清标记，
+        //    醒来回到循环头必然命中缓存）；等待超时视为 leader 挂死，退回直接请求
+        let (lock, cond) = LIVE_LIMITS_INFLIGHT
+            .get_or_init(|| (Mutex::new(false), std::sync::Condvar::new()));
+        {
+            let mut inflight = lock.lock().unwrap_or_else(|p| p.into_inner());
+            if *inflight {
+                let deadline = std::time::Instant::now() + LIVE_LIMITS_MAX_WAIT;
+                while *inflight {
+                    let remain = deadline.saturating_duration_since(std::time::Instant::now());
+                    if remain.is_zero() {
+                        break;
+                    }
+                    let (guard, _) = cond
+                        .wait_timeout(inflight, remain)
+                        .unwrap_or_else(|p| p.into_inner());
+                    inflight = guard;
+                }
+                if !*inflight {
+                    continue; // leader 已完成并写入缓存，回循环头取结果
+                }
+                // 超时（leader 意外挂死）：放弃等待，本线程直接请求
+                //（退化为无 single-flight 的旧行为，多发一次无害）
+                eprintln!("[zbar-kimi] 实时额度在途请求等待超时，本线程改为直接请求");
+            }
+            *inflight = true;
+        }
+
+        // 3) leader：执行真实 HTTP（含逐凭证回退），写缓存后广播唤醒所有等待者
+        // CLI 链路失败（无 CLI 登录态/网络不通）时回退凭证体系：~/.agenthud/credentials/
+        // kimi.json 里的应用内网页登录凭证。回退本身是逐凭证的真实 HTTP 查询，
+        // 与 CLI 直连同样按 Ok 缓存 60s TTL（防止与凭证体系前端 120s 轮询叠加成
+        // 高频请求），freshness 由返回值标记为 true（可进历史采样）；回退失败
+        // 维持原 CLI 错误（文案已含 CLI 与网页登录双路径引导），负缓存 15s 不变。
+        let result = match fetch_live_rate_limits_uncached() {
+            Ok(limits) => Ok(limits),
+            Err(cli_err) => fallback_limits_from_credentials()
+                .map(Some)
+                .ok_or(cli_err),
+        };
+        *cache.lock().unwrap_or_else(|p| p.into_inner()) =
+            Some((std::time::Instant::now(), result.clone()));
+        {
+            let mut inflight = lock.lock().unwrap_or_else(|p| p.into_inner());
+            *inflight = false;
+            cond.notify_all();
+        }
+        return result.map(|limits| (limits, true));
+    }
 }
 
 // ===== 官方会员档位名（GET {api_base}/me，档位展示优化）=====

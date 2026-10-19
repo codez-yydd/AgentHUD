@@ -759,6 +759,11 @@ struct CodexSnapshot {
 #[tauri::command]
 async fn get_codex_usage(req: CodexUsageRequest) -> Result<CodexSnapshot, String> {
     tauri::async_runtime::spawn_blocking(move || {
+        // 额度拉取（60s 缓存 / 负缓存 / single-flight，见 codex.rs）与
+        // stats/trend/花费折算无数据依赖：先起线程发 HTTP，本线程继续
+        // 本地查询，最后 join 取结果——cache miss 时 HTTP（最坏 10s）不再
+        // 串行阻塞本地聚合。采样写入只看 freshness，语义不变。
+        let live_handle = std::thread::spawn(codex::fetch_live_rate_limits_with_freshness);
         let stats = codex::query_stats(req.from_ms, req.to_ms)?;
         if let Ok(added) = codex::backfill_today_rate_limit_history() {
             if added > 0 {
@@ -770,7 +775,9 @@ async fn get_codex_usage(req: CodexUsageRequest) -> Result<CodexSnapshot, String
 
         // 额度：优先实时接口（wham/usage，参照 CodexBar，60s 缓存），
         // 失败（未登录/网络不通/接口变更）静默降级到本地快照（已滤过期窗口）
-        let live_rate_limits = codex::fetch_live_rate_limits_with_freshness();
+        let live_rate_limits = live_handle
+            .join()
+            .unwrap_or_else(|_| Err("实时额度线程异常退出".to_string()));
         let rate_limits = match &live_rate_limits {
             Ok((live, _)) => live
                 .clone()
@@ -869,11 +876,16 @@ struct ClaudeSnapshot {
 #[tauri::command]
 async fn get_claude_usage(req: ClaudeUsageRequest) -> Result<ClaudeSnapshot, String> {
     tauri::async_runtime::spawn_blocking(move || {
+        // 额度拉取与 stats/trend/花费折算无数据依赖：先起线程发 HTTP，
+        // 本线程继续本地查询，最后 join 取结果（同 get_codex_usage 模式）。
+        let live_handle = std::thread::spawn(claude::fetch_live_rate_limits_with_freshness);
         let stats = claude::query_stats(req.from_ms, req.to_ms)?;
         let buckets = claude::query_trend(req.from_ms, req.to_ms, &req.bucket)?;
         let pricing = load_pricing().unwrap_or_default();
 
-        let live_rate_limits = claude::fetch_live_rate_limits_with_freshness();
+        let live_rate_limits = live_handle
+            .join()
+            .unwrap_or_else(|_| Err(claude::ClaudeUsageFailure::Other("实时额度线程异常退出".into())));
         let (rate_limits, rate_limits_error) = match &live_rate_limits {
             Ok((live, _)) => (live.clone(), None),
             Err(f) => (None, f.user_message()),
@@ -967,11 +979,16 @@ struct KimiSnapshot {
 #[tauri::command]
 async fn get_kimi_usage(req: KimiUsageRequest) -> Result<KimiSnapshot, String> {
     tauri::async_runtime::spawn_blocking(move || {
+        // 额度拉取与 stats/trend/花费折算无数据依赖：先起线程发 HTTP，
+        // 本线程继续本地查询，最后 join 取结果（同 get_codex_usage 模式）。
+        let live_handle = std::thread::spawn(kimi::fetch_live_rate_limits_with_freshness);
         let stats = kimi::query_stats(req.from_ms, req.to_ms)?;
         let buckets = kimi::query_trend(req.from_ms, req.to_ms, &req.bucket)?;
         let pricing = load_pricing().unwrap_or_default();
 
-        let live_rate_limits = kimi::fetch_live_rate_limits_with_freshness();
+        let live_rate_limits = live_handle
+            .join()
+            .unwrap_or_else(|_| Err("实时额度线程异常退出".to_string()));
         let (rate_limits, rate_limits_error) = match &live_rate_limits {
             Ok((live, _)) => (live.clone(), None),
             Err(e) => (None, Some(e.clone())),
