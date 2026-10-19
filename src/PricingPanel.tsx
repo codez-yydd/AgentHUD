@@ -99,6 +99,9 @@ export function PricingPanel({ currency, onCurrencyChange, onBack }: Props) {
   }, [pricing]);
   // 隐藏名单小面板的展开状态（列表底部「已隐藏 N 个模型」）
   const [hiddenOpen, setHiddenOpen] = useState(false);
+  // 待确认删除的模型 id：行内 × 只进确认弹层（复刻 AccountsCard ConfirmDialog
+  // 形态），确认后才执行 handleRemove 即时落盘；null = 未在确认中
+  const [removeTarget, setRemoveTarget] = useState<string | null>(null);
 
   // 草稿变更（稳定引用）：单个输入框的键入只重渲染对应的 memo 模型卡片，而非整个列表
   const handleDraftChange = useCallback(
@@ -649,7 +652,7 @@ export function PricingPanel({ currency, onCurrencyChange, onBack }: Props) {
             dCache={draft[`${id}|cache_read`]}
             onDraftChange={handleDraftChange}
             onCommit={commitDraft}
-            onRemove={handleRemove}
+            onRemove={setRemoveTarget}
           />
         ))}
         {modelIds.length === 0 && (
@@ -693,13 +696,30 @@ export function PricingPanel({ currency, onCurrencyChange, onBack }: Props) {
           </div>
         )}
       </PageBody>
+
+      {/* 删除确认弹层（本地复刻 AccountsCard ConfirmDialog 样式，红键）：
+          行内 × 只进确认，确认后才执行 handleRemove 即时落盘 */}
+      {removeTarget != null && (
+        <ConfirmDialog
+          title={`${t("common.delete")} · ${removeTarget}`}
+          desc={t("pricing.removeConfirmDesc")}
+          confirmText={t("common.delete")}
+          danger={true}
+          onCancel={() => setRemoveTarget(null)}
+          onConfirm={() => {
+            const id = removeTarget;
+            setRemoveTarget(null);
+            void handleRemove(id);
+          }}
+        />
+      )}
     </PageShell>
   );
 }
 
 /** 单个模型的价格卡片（memo：草稿用三个原始类型 props 传递，
  *  键入时只重渲染这一张卡片而非整个模型列表）。表单恒定为美元编辑。
- *  右上角删除按钮（hover 显示）：从列表移除该模型，即时落盘 */
+ *  右上角删除按钮（hover 显示）：点击只进确认弹层，确认后即时落盘 */
 const ModelPriceRow = memo(function ModelPriceRow({
   id,
   price,
@@ -776,3 +796,53 @@ const ModelPriceRow = memo(function ModelPriceRow({
     </div>
   );
 });
+
+/** 删除确认对话框（本地复刻 AccountsCard ConfirmDialog 样式：半透明遮罩 +
+ *  居中小卡片 + 取消/确认双键，danger 红键） */
+function ConfirmDialog({
+  title,
+  desc,
+  confirmText,
+  danger,
+  onCancel,
+  onConfirm,
+}: {
+  title: string;
+  desc: string;
+  confirmText: string;
+  danger: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  const { t } = useI18n();
+  return (
+    <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/30 rounded-2xl">
+      <div className="mx-4 w-full rounded-lg bg-elevated border border-slate-900/10 p-3 shadow-xl">
+        <div className="text-[12px] font-semibold text-slate-900 mb-1 break-all">
+          {title}
+        </div>
+        <p className="text-[10px] text-slate-700/65 leading-relaxed mb-2 whitespace-pre-line break-all">
+          {desc}
+        </p>
+        <div className="flex gap-1.5">
+          <button
+            onClick={onCancel}
+            className="flex-1 text-[11px] py-1 rounded-md bg-slate-900/5 text-slate-700/70 hover:bg-slate-900/10 transition-colors"
+          >
+            {t("common.cancel")}
+          </button>
+          <button
+            onClick={onConfirm}
+            className={`flex-1 text-[11px] py-1 rounded-md text-white transition-colors ${
+              danger
+                ? "bg-red-500 hover:bg-red-600"
+                : "bg-sky-500 hover:bg-sky-600"
+            }`}
+          >
+            {confirmText}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}

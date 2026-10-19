@@ -299,6 +299,8 @@ export const en: typeof zh = {
     "pricing.noModels": "No models yet. Make sure Z.ai has usage records.",
 
     "pricing.removeModel": "Remove from list",
+    "pricing.removeConfirmDesc":
+      "Removes the model from the list and records it as hidden — restore it anytime under \"Hidden models\" below.",
     "pricing.hiddenCount": "{count} model(s) hidden",
     "pricing.restore": "Restore",
   } satisfies typeof pricing),
@@ -1462,6 +1464,8 @@ export const en: typeof zh = {
     "dashboard.pricing.sourceUnpriced": "Unpriced",
     "dashboard.pricing.sourceManual": "Manual",
     "dashboard.pricing.removeModel": "Remove from list",
+    "dashboard.pricing.removeConfirmDesc":
+      "Removes the model from the list and records it as hidden — restore it anytime under \"Hidden models\" below.",
     "dashboard.pricing.addTitle": "Add model price",
     "dashboard.pricing.addIdLabel": "Model ID",
     "dashboard.pricing.addPlaceholder": "e.g. glm-5.4-flash",

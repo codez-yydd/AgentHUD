@@ -114,6 +114,9 @@ export function PricingPage() {
     cache_read: "",
   });
   const [hiddenOpen, setHiddenOpen] = useState(false);
+  // 待确认删除的模型 id：行内 × 只进确认浮层（窄窗面板 ConfirmDialog 的大窗
+  // 同构形态），确认后才执行 handleRemove 即时落盘；null = 未在确认中
+  const [removeTarget, setRemoveTarget] = useState<string | null>(null);
 
   // ===== 价格同步（内置参考表 diff 提示）=====
   // updateCount：待应用的差异总数（用于按钮红点）；diffPanel：是否展开差异面板
@@ -695,7 +698,7 @@ export function PricingPage() {
           draft={draft}
           onDraftChange={handleDraftChange}
           onCommit={commitDraft}
-          onRemove={handleRemove}
+          onRemove={setRemoveTarget}
         />
       </Card>
 
@@ -776,6 +779,46 @@ export function PricingPage() {
 
       {/* 口径脚注：落盘行为与费用估算的含义（与窄窗提示口径一致） */}
       <p className="db-page__footnote">{t("dashboard.pricing.footnote")}</p>
+
+      {/* 删除确认浮层（窄窗面板 ConfirmDialog 的大窗同构形态，红键）：
+          行内 × 只进确认，确认后才执行 handleRemove 即时落盘 */}
+      {removeTarget != null && (
+        <div className="db-confirm-mask">
+          <div
+            className="db-confirm"
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="db-confirm-title"
+          >
+            <div id="db-confirm-title" className="db-confirm__title">
+              {t("common.delete")} · {removeTarget}
+            </div>
+            <p className="db-confirm__desc">
+              {t("dashboard.pricing.removeConfirmDesc")}
+            </p>
+            <div className="db-confirm__actions">
+              <button
+                type="button"
+                className="db-btn"
+                onClick={() => setRemoveTarget(null)}
+              >
+                {t("common.cancel")}
+              </button>
+              <button
+                type="button"
+                className="db-btn db-btn--danger"
+                onClick={() => {
+                  const id = removeTarget;
+                  setRemoveTarget(null);
+                  void handleRemove(id);
+                }}
+              >
+                {t("common.delete")}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

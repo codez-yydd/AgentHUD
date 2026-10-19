@@ -42,6 +42,8 @@ export const pricing = {
 
   // 模型删除/隐藏
   "pricing.removeModel": "从列表移除",
+  "pricing.removeConfirmDesc":
+    "将从列表移除并记入隐藏名单，可在下方「已隐藏模型」中恢复。",
   "pricing.hiddenCount": "已隐藏 {count} 个模型",
   "pricing.restore": "恢复",
 };

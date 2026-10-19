@@ -2424,6 +2424,69 @@ body {
   color: #f43f5e;
 }
 
+/* ---- 删除确认浮层（窄窗面板 ConfirmDialog 的大窗同构形态：遮罩 + 居中
+   小卡片 + 取消/红色删除键）。底色用抽屉同款实底变量（暗色自动适配），
+   顶部让出自绘标题栏（与 .db-drawer-mask 同口径） ---- */
+.db-confirm-mask {
+  position: fixed;
+  inset: var(--db-titlebar-h) 0 0 0;
+  z-index: 45;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--db-mask);
+}
+
+.db-confirm {
+  width: 320px;
+  max-width: calc(100vw - 48px);
+  margin: 0 16px;
+  padding: 14px 16px;
+  background: var(--db-drawer-bg);
+  border: 1px solid var(--db-border);
+  border-radius: 12px;
+  box-shadow: 0 18px 48px rgba(15, 23, 42, 0.22);
+}
+
+.db-confirm__title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--db-text);
+  margin-bottom: 6px;
+  /* 长模型 id（无空格长串）不撑破卡片：与行卡片 / 隐藏名单同口径 break-all */
+  word-break: break-all;
+}
+
+.db-confirm__desc {
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--db-text-dim);
+  margin-bottom: 12px;
+  word-break: break-all;
+}
+
+.db-confirm__actions {
+  display: flex;
+  gap: 8px;
+}
+
+.db-confirm__actions .db-btn {
+  flex: 1;
+  justify-content: center;
+}
+
+/* 危险操作键（删除确认）：与 .db-btn--primary 同构的红底白字变体，
+   色相沿用行内删除按钮的 rose 系 */
+.db-btn--danger {
+  border-color: transparent;
+  background: #f43f5e;
+  color: #fff;
+}
+
+.db-btn--danger:hover:not(:disabled) {
+  background: #e11d48;
+}
+
 /* ---- 来源 / 差异 小标签 ---- */
 .db-tag {
   display: inline-flex;

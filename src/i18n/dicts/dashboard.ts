@@ -263,6 +263,8 @@ export const dashboard = {
   "dashboard.pricing.sourceUnpriced": "未配价",
   "dashboard.pricing.sourceManual": "手动",
   "dashboard.pricing.removeModel": "从列表移除",
+  "dashboard.pricing.removeConfirmDesc":
+    "将从列表移除并记入隐藏名单，可在下方「已隐藏模型」中恢复。",
   "dashboard.pricing.addTitle": "新增模型定价",
   "dashboard.pricing.addIdLabel": "模型 ID",
   "dashboard.pricing.addPlaceholder": "如 glm-5.4-flash",
