@@ -1374,12 +1374,49 @@ body {
   font-weight: 600;
 }
 
+/* ---- 热力图 + Agent 表并排容器 ----
+   默认单列（上下堆叠，与页面其余卡片同节奏）；仅大窗（≥1340px）切两列并排，
+   利用横向空间减少大窗下的纵向滚动。
+   断点依据（内容区宽 = 窗口宽 − 侧栏 200 − 页内边距 60；格子边长 ≈
+   （热力列宽 − 卡片内边距 36 − 星期标签列 26 − 6 间隙 − 51×2px 列间隙）/ 52）：
+   - <1340（含 1100 默认窗）：堆叠全宽时格子约 9–17px，读感良好；若强行并排
+     （热力列 1100 窗下约 419px）格子仅约 5.4px——hover 命中区过小、四档色阶
+     不可辨，且 Agent 表右列任何宽度都横向滚动、额度列默认屏外，得不偿失，
+     维持堆叠；
+   - ≥1340（内容区 ≥1080px）：热力列约 585px 起、格子约 8px 起（内容列上限
+     1280px 封顶后约 645px / 9.5px），接近官方流式热力图窄容器档，并排才划算。
+   两列比例 11fr : 9fr：热力图是 52 列网格，格子边长随列宽线性变化，是对
+   宽度最敏感的一方，分到略宽一列；Agent 表列宽由固定额度列（周额度 250px +
+   5h 140px，见 .db-table__quota）主导，内容列上限 1280px 内两列都难全列
+   展开，窄列下由 .db-table-wrap 横向滚动兜底（列语义完整、不收列），大窗下
+   滚动量收敛到可接受。
+   minmax(0, …) 把轨道最小宽压到 0，热力图网格与表格内容都不会把列撑破。
+   align-items: stretch（grid 默认，显式写出）：热力图卡较矮，拉伸至与
+   Agent 表卡同高——卡内内容保持自然高度、底部留白，两卡上下边对齐比各自
+   高低参差整齐。 */
+.db-overview-duo {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 18px;
+  align-items: stretch;
+}
+
+/* 大窗并排档：≥1340px 才展开两列（依据见上）；基础单列规则无需再写窄窗
+   回退——未命中本档时天然保持堆叠 */
+@media (min-width: 1340px) {
+  .db-overview-duo {
+    grid-template-columns: minmax(0, 11fr) minmax(0, 9fr);
+  }
+}
+
 /* ---- 活跃热力图（ZCode 风格：52 周流式网格铺满卡片宽度） ----
    .db-heat__grid 是 52 列的 CSS Grid（repeat(52, minmax(0,1fr))），每列 7 个
-   aspect-square 格子纵向 flex 排列：格子边长 = 列宽自适应（1100px 窗下约
-   19px、1280px 内容宽下约 22px，900px 最小窗宽下约 8px），minmax(0,1fr) 保证
-   任何宽度都不出横向滚动。底部月份标签行与网格同一套 52 列网格（标签按跨度
-   span 合并、最多 12 个），星期标签列与网格行高对齐。
+   aspect-square 格子纵向 flex 排列：格子边长随容器宽自适应，量级按窗宽档
+   （侧栏 200 + 页内边距 60 后的内容区推算）——<980 窄窗堆叠全宽约 9–10px；
+   980–1340 堆叠全宽约 11–17px（1100 默认窗约 13px）；≥1340 并排热力列约
+   8–9.5px（见 .db-overview-duo），minmax(0,1fr) 保证任何宽度都不出横向滚动。
+   底部月份标签行与网格同一套 52 列网格（标签按跨度 span 合并、最多 12 个），
+   星期标签列与网格行高对齐。
    统计卡占满网格下方整行（网格已铺满宽度，不再并排）；.db-heat 保留
    flex-wrap，窗口极窄时统计卡自然落到下一行。 */
 .db-heat {
@@ -1498,6 +1535,15 @@ body {
 .db-heat__cell--l3,
 .db-heat__cell--l4 {
   box-shadow: inset 0 0 0 1px var(--db-heat-edge);
+}
+
+/* 加载骨架里的热力图格子（OverviewSkeleton，52 列真实模板）：底色沿用
+   .db-skeleton 的半透明占位——上面 .db-heat__cell 的实底 --db-heat-0 定义
+   在后会盖掉它，这里按 QuotaMatrixCard 骨架先例（.db-qcell--skeleton，
+   「底色与脉冲沿用 .db-skeleton，容器复用真实网格模板」）改回占位底色，
+   轮廓（aspect-square + 圆角）仍由 .db-heat__cell 提供 */
+.db-skeleton.db-heat__cell {
+  background: var(--db-skeleton);
 }
 
 /* 逐日模式的格子容器：与格子同尺寸，悬停时放大并提亮边框 */

@@ -2,7 +2,8 @@
  * 用量总览页（主窗口首页）：跨 Agent 的用量 / 花费 / 趋势汇总。
  *
  * 结构：页头（数据范围 + 时间范围触发按钮 + 刷新）→ 指标卡行 → 趋势图 →
- * 热力图 → Agent 统计表 → 模型用量表。范围与数据范围切换只重新聚合（本地来源
+ * 「热力图 + Agent 统计表」行（默认上下堆叠，仅大窗 ≥1340px 并排两列利用
+ * 横向空间，见 .db-overview-duo）→ 模型用量表。范围与数据范围切换只重新聚合（本地来源
  * 一次取满 365 天，指标卡 / 趋势 / 两张表按 90 天切片、热力图铺 52 周），
  * 刷新按钮才重新取数；切换页面重进命中模块级缓存即刻渲染；不做自动轮询（一期）。
  * 时间范围预设档与自定义区间都收进页头单个触发按钮的弹出面板（预设档在面板
@@ -271,12 +272,25 @@ export function OverviewPage() {
             currency={currency}
             rangeLabel={rangeLabel}
           />
-          <HeatmapCard series={view.heat} />
-          <AgentTable
-            rows={view.rows}
-            currency={currency}
-            rangeLabel={customRange ? rangeLabel : undefined}
-          />
+          {/* 热力图 + Agent 表：默认上下堆叠（与页面其余卡片同节奏）；仅大窗
+              （≥1340px，内容区 ≥1080px）并排两列，减少大窗下的纵向滚动。
+              断点依据：52 列热力图的格子边长随列宽线性变化——默认 1100 窗若
+              强行并排，热力列仅约 419px，扣除 51×2px 列间隙与 26px 星期标签
+              列后格子约 5.4px，hover 命中区过小、四档色阶不可辨，且 Agent 表
+              右列任何宽度都横向滚动、额度列默认屏外；1340 起热力列约 585px、
+              格子约 8px（1280 内容列上限下约 9.5px），并排才划算。并排列宽
+              11fr : 9fr——热力图对宽度最敏感，分略宽一列；Agent 表列挤由
+              .db-table-wrap 横向滚动兜底。行内 align-items: stretch，矮的
+              热力图卡拉伸至与表卡同高（内容保持自然高度、底部留白），两卡
+              上下边对齐比高低参差整齐 */}
+          <div className="db-overview-duo">
+            <HeatmapCard series={view.heat} />
+            <AgentTable
+              rows={view.rows}
+              currency={currency}
+              rangeLabel={customRange ? rangeLabel : undefined}
+            />
+          </div>
           {/* 模型用量表：与 Agent 表同一份范围口径（范围内切片），成本按本机
               价格表折算（Cursor 用其后端成本），默认折叠前 10 行 */}
           <ModelTable
