@@ -1251,7 +1251,7 @@ const MODELSDEV_PROVIDERS: &[&str] = &[
     "opencode-go",
 ];
 
-/// models.dev 同步结果的本地缓存（~/.zbar/modelsdev-cache.json）。
+/// models.dev 同步结果的本地缓存（~/.agenthud/modelsdev-cache.json）。
 /// 只存白名单厂商提取后的参考表（数百条，远小于源 JSON）：
 /// 网络失败时降级用上次成功数据，保证离线也能出差异。
 #[derive(Debug, Clone, Serialize, Deserialize)]

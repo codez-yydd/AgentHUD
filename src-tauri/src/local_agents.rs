@@ -3,7 +3,7 @@
 //! ## 这是什么
 //!
 //! 「本地读取型 agent」= 各自读本机数据源（jsonl / sqlite）→ 增量导入自有派生库
-//! `~/.zbar/<agent>.sqlite` → 主面板 / 悬浮窗 / 项目页 / 对比页 / 价格页从这里取数。
+//! `~/.agenthud/<agent>.sqlite` → 主面板 / 悬浮窗 / 项目页 / 对比页 / 价格页从这里取数。
 //! 每条这样的链路过去要在这十来个集成面里各改一处：
 //!
 //! - `projects.rs`：来源白名单、默认来源列表、4 个项目维度查询的分发、回填；
@@ -30,7 +30,7 @@
 //!
 //! ## 为什么不收 codex / claude / cursor / zcode
 //!
-//! - `zcode`：主库 `~/.zbar/zbar.sqlite` 走 `db::*`，是「功能最全」的标杆（主面板、
+//! - `zcode`：主库 `~/.agenthud/zbar.sqlite` 走 `db::*`，是「功能最全」的标杆（主面板、
 //!   轮次/rollout 速度、生成口径与 TTFT 都只有它有），另有 `zcode_sessions` 派生库
 //!   `ATTACH` 的特殊读法，不适合塞进同族转发；
 //! - `codex` / `claude`：形态自成一派（有 `message` 级上下文回填、模型名修订补传、
@@ -57,7 +57,7 @@ use crate::token_speed::SpeedQuality;
 pub const KIMI: &str = "kimi";
 pub const DSH: &str = "dsh";
 pub const OPENCODE: &str = "opencode";
-/// MiniMax Code（`~/.minimax/v2/sqlite/runtime-state.sqlite` → `~/.zbar/minimaxcode.sqlite`）。
+/// MiniMax Code（`~/.minimax/v2/sqlite/runtime-state.sqlite` → `~/.agenthud/minimaxcode.sqlite`）。
 /// 注意这是**后端来源名**：前端页签仍是既有的 `minimax`（本地用量与 Coding Plan
 /// 额度卡同页），故本常量只用于来源过滤 / 项目页 / 同步与待上传口径。
 pub const MINIMAXCODE: &str = "minimaxcode";
@@ -261,7 +261,7 @@ pub trait LocalAgentSource: Sync {
 // 各来源实现（零成本单元结构体，方法直接转发）
 // ============================================================
 
-/// Kimi Code CLI（`~/.kimi-code/sessions/**/wire.jsonl` → `~/.zbar/kimi.sqlite`）。
+/// Kimi Code CLI（`~/.kimi-code/sessions/**/wire.jsonl` → `~/.agenthud/kimi.sqlite`）。
 struct KimiSource;
 
 impl LocalAgentSource for KimiSource {
@@ -392,7 +392,7 @@ impl LocalAgentSource for KimiSource {
     }
 }
 
-/// DeepSeek Harness（`~/.dsh/sessions/**/*.jsonl.zstd` → `~/.zbar/dsh.sqlite`）。
+/// DeepSeek Harness（`~/.dsh/sessions/**/*.jsonl.zstd` → `~/.agenthud/dsh.sqlite`）。
 struct DshSource;
 
 impl LocalAgentSource for DshSource {
@@ -513,7 +513,7 @@ impl LocalAgentSource for DshSource {
     }
 }
 
-/// OpenCode（`~/.local/share/opencode/opencode.db` → `~/.zbar/opencode.sqlite`）。
+/// OpenCode（`~/.local/share/opencode/opencode.db` → `~/.agenthud/opencode.sqlite`）。
 struct OpencodeSource;
 
 impl LocalAgentSource for OpencodeSource {
@@ -631,7 +631,7 @@ impl LocalAgentSource for OpencodeSource {
 }
 
 /// MiniMax Code（`~/.minimax/v2/sqlite/runtime-state.sqlite` →
-/// `~/.zbar/minimaxcode.sqlite`）。前端页签复用既有的 `minimax` 入口：本来源只
+/// `~/.agenthud/minimaxcode.sqlite`）。前端页签复用既有的 `minimax` 入口：本来源只
 /// 提供本地用量统计，Coding Plan 额度仍走 provider_quota 的 minimax 通道。
 struct MinimaxcodeSource;
 
@@ -778,7 +778,7 @@ pub fn find(source: &str) -> Option<&'static dyn LocalAgentSource> {
 /// 为什么要带「给定集合」参数：下面的遍历辅助函数全部以 `sources` 为入参，
 /// 生产调用方传 `all()`，单测传「注册表 + 假来源」的切片，从而直接验证
 /// 「注册表加一行 → 各集成面自动路由到它」这条承诺（不必让单测去碰真实
-/// `~/.zbar/*.sqlite`）。
+/// `~/.agenthud/*.sqlite`）。
 pub(crate) fn find_in(
     sources: &[&'static dyn LocalAgentSource],
     source: &str,
@@ -915,7 +915,7 @@ mod tests {
 
     /// 测试用「假来源」：所有查询返回可识别的哨兵值，用于证明
     /// 「注册表加一行 → 各集成面自动路由到它」。它不是注册表成员，只在单测里
-    /// 作为「新增 agent」的替身，故不会碰任何真实 `~/.zbar/*.sqlite`。
+    /// 作为「新增 agent」的替身，故不会碰任何真实 `~/.agenthud/*.sqlite`。
     struct FakeAgent;
 
     static FAKE: FakeAgent = FakeAgent;

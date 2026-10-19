@@ -1,4 +1,4 @@
-//! 全局快捷键配置：唤起面板的快捷键（可自定义，存 ~/.zbar/shortcut.json）。
+//! 全局快捷键配置：唤起面板的快捷键（可自定义，存 ~/.agenthud/shortcut.json）。
 
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -35,7 +35,7 @@ impl Default for ShortcutConfig {
     }
 }
 
-/// ~/.zbar/shortcut.json
+/// ~/.agenthud/shortcut.json
 fn shortcut_path() -> Result<PathBuf, String> {
     Ok(config_dir()?.join("shortcut.json"))
 }

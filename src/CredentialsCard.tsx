@@ -50,7 +50,7 @@ export interface CredentialOAuthFlow {
 }
 
 interface CredentialsCardProps {
-  /** provider 标识（Rust 侧校验小写字母数字，对应 ~/.zbar/credentials/<provider>.json） */
+  /** provider 标识（Rust 侧校验小写字母数字，对应 ~/.agenthud/credentials/<provider>.json） */
   provider: string;
   /** 该 provider 的凭证类型（决定 secret 输入引导文案） */
   kind: CredentialKind;

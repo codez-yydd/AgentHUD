@@ -29,7 +29,7 @@ export type AgentId =
 /**
  * 凭证驱动的新 provider 集合（tab 显示门槛 = 已启用或已有凭证）。
  * kimi 属首批 5 个（默认开启、tab 行为不变），但其凭证体系与其他新
- * provider 完全一致（~/.zbar/credentials/kimi.json，支持 OAuth 网页
+ * provider 完全一致（~/.agenthud/credentials/kimi.json，支持 OAuth 网页
  * 登录/手动粘贴），故同样纳入本集合参与「有凭证自动显示」联动。
  *
  * dsh（DeepSeek Harness）与 zai/codex/claude/cursor 同列：纯本地采集，
@@ -325,7 +325,7 @@ export const AGENT_COLOR_SCALE: Record<AgentId, readonly string[]> = {
  * 1. 原实现按 AGENT_VISIBILITY_OPTIONS 的 slice(0,5)/slice(5) 位置魔法数切分，
  *    新 agent 插到中间即静默归错组；
  * 2. 随后改按 isCredentialAgent 判定 —— 依然错：kimi 另有凭证体系
- *    （~/.zbar/credentials/kimi.json、网页 OAuth 登录、汇总页「其他账号」区）
+ *    （~/.agenthud/credentials/kimi.json、网页 OAuth 登录、汇总页「其他账号」区）
  *    故属于 CREDENTIAL_AGENTS，于是被当成凭证型挪出「本地采集」，而它的用量
  *    数据其实来自本地 ~/.kimi-code/sessions 会话日志。
  * 两个集合回答的是不同问题，不可互相替代：CREDENTIAL_AGENTS 管「凭证体系与

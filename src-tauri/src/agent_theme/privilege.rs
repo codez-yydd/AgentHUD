@@ -4,10 +4,10 @@
 //!
 //! 历史上这是替换 /Applications 下应用文件的主路径；真机实测发现它在
 //! macOS「应用管理」(App Management TCC) 下是死结：提权 shell 中 cp 等
-//! 写入操作的权限责任方无法归到 ZBar，会被静默拒绝（Operation not
+//! 写入操作的权限责任方无法归到 AgentHUD，会被静默拒绝（Operation not
 //! permitted）且系统设置里找不到可授权项。现仅作为「应用真的无写权限」
-//! （如 root 安装的应用）时的兜底路径；主路径是 ZBar 进程直接执行脚本
-//! （TCC 责任归 ZBar，首次弹系统标准允许框），见 mod.rs 的
+//! （如 root 安装的应用）时的兜底路径；主路径是 AgentHUD 进程直接执行脚本
+//! （TCC 责任归 AgentHUD，首次弹系统标准允许框），见 mod.rs 的
 //! execute_replace_script。脚本内路径一律用 sh_quote 做 POSIX 单引号转义。
 //!
 //! ## Windows：PowerShell UAC（Start-Process -Verb RunAs）
@@ -155,7 +155,7 @@ pub fn is_admin_cancelled(err: &str) -> bool {
 }
 
 /// 「应用管理」(App Management) 拦截时的用户指引文案（含系统设置路径）。
-/// 直写路径（ZBar 进程直接执行脚本）与提权兜底路径共用：首次替换会弹
+/// 直写路径（AgentHUD 进程直接执行脚本）与提权兜底路径共用：首次替换会弹
 /// 系统标准对话框，允许后永久生效；曾拒绝过的应用会出现在「应用管理」
 /// 设置列表里，开关打开即可恢复授权（可发现、可管理）。
 /// 链接为 Apple 官方帮助文档《在 Mac 上控制对 App 的访问》。

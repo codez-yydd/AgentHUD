@@ -1,7 +1,7 @@
 //! 通用 AI 服务凭证存储层（provider credentials）。
 //!
 //! 为后续接入的 AI 订阅服务（Gemini / Grok / DeepSeek 等）提供统一的凭证
-//! 存取基建：每个 provider 一个 JSON 文件（`~/.zbar/credentials/<provider>.json`），
+//! 存取基建：每个 provider 一个 JSON 文件（`~/.agenthud/credentials/<provider>.json`），
 //! 同一 provider 可保存多条凭证（主订阅 + 备用号并存）。本模块只负责本地
 //! 存取，不发起任何网络请求——`record_credential_check` 供后续各 provider 的
 //! 额度查询模块在查询完成后回写校验状态。
@@ -148,7 +148,7 @@ fn valid_region(region: Option<&str>) -> bool {
     }
 }
 
-/// 凭证目录（~/.zbar/credentials/）。
+/// 凭证目录（~/.agenthud/credentials/）。
 fn credentials_dir() -> Result<PathBuf, String> {
     Ok(config_dir()?.join("credentials"))
 }
@@ -642,7 +642,7 @@ mod tests {
 
     // 端到端文件链路（手写 moonshot.json → has/list/mask → 删除 → presence
     // 翻转 → UI 添加路径 → 清理）已在开发机用临时测试实测通过后移除，
-    // 避免长期测试反复写真实 ~/.zbar/credentials/ 用户目录。
+    // 避免长期测试反复写真实 ~/.agenthud/credentials/ 用户目录。
 
     #[test]
     fn provider_id_validation() {

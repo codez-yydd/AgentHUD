@@ -80,7 +80,7 @@ pub struct SwitchOutcome {
     pub zcode_relaunched: bool,
 }
 
-/// 磁盘上的快照完整内容（~/.zbar/accounts/<id>.account.json）。
+/// 磁盘上的快照完整内容（~/.agenthud/accounts/<id>.account.json）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct AccountSnapshot {
     version: i32,
@@ -114,7 +114,7 @@ struct LiveFiles {
 }
 
 // ============================================================
-// 第一节：快照存储（~/.zbar/accounts/）
+// 第一节：快照存储（~/.agenthud/accounts/）
 // ============================================================
 
 /// 全部写操作（捕获/切换/删除/重命名）共用的互斥锁，
@@ -362,7 +362,7 @@ fn default_display_name(fp: Option<&Fingerprint>, email: Option<&str>, id: &str)
 
 /// 现场两文件原文 → 快照 upsert 核心（capture_account 与"切换到其他账号前
 /// 刷新被切走账号快照"共用，编译期保证两处解析与 upsert 语义一致）。
-/// base 为快照基目录（生产为 ~/.zbar；单测注入临时目录）。
+/// base 为快照基目录（生产为 ~/.agenthud；单测注入临时目录）。
 ///
 /// update_only=true 只刷新指纹命中的**已存在**快照（切换路径专用：不在切换
 /// 路径产生新账号条目；指纹解密降级成 unknown-* 时自然落空，静默跳过）。
@@ -1080,7 +1080,7 @@ pub(crate) fn launch_zcode() -> bool {
 #[cfg(windows)]
 const ZCODE_EXE_NAME: &str = "ZCode";
 
-/// exe 路径缓存文件（~/.zbar/.zcode-exe-path）。ZCode 可装在任意盘符
+/// exe 路径缓存文件（~/.agenthud/.zcode-exe-path）。ZCode 可装在任意盘符
 /// （如 D:\app\ZCode），切换时趁进程存活捕获一次，之后 ZCode 未运行的
 /// 切换也能自动重启。
 /// pub(crate)：agent_theme 的 Windows 安装目录探测复用同一缓存，避免
@@ -1418,7 +1418,7 @@ fn launch_zcode() -> bool {
 }
 
 // ============================================================
-// 存储层单测（temp 目录，不触碰真实 ~/.zbar 与 ~/.zcode）
+// 存储层单测（temp 目录，不触碰真实 ~/.agenthud 与 ~/.zcode）
 // ============================================================
 
 #[cfg(test)]

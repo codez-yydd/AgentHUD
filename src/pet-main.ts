@@ -120,7 +120,7 @@ const main = async () => {
 
   // 数据流：独立轮询器推送的 usage-data.js 同构摘要（v/ts/la/turns/runs）。
   // 事件到达本身即"数据源存活"的信号——每收到一次就喂一次心跳
-  //（heartbeat），核心陈旧判定据此感知 ZBar/轮询器退出（事件停流 →
+  //（heartbeat），核心陈旧判定据此感知 AgentHUD/轮询器退出（事件停流 →
   // 心跳停滞 → 沉睡）；查询失败时轮询器静默跳过不推事件，天然降级。
   try {
     await listen("zbar://pet-usage", (e) => {

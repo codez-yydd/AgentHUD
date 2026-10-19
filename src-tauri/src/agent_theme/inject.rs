@@ -3,7 +3,7 @@
 //! 注入方式：在 ZCode 的 asar 内 out/renderer/index.html 中，
 //! `</head>` 前插入两个外链样式（variables.css + theme.css）、
 //! `</body>` 前插入 defer 脚本（effects.js + usage.js + pet.js），全部指向
-//! ~/.zbar/agent-themes/ 下的主题文件（file:// URL，不改动应用其它资源）。
+//! ~/.agenthud/agent-themes/ 下的主题文件（file:// URL，不改动应用其它资源）。
 //! 注入的外链带 data-zbar-variables / data-zbar-theme / data-zbar-effects /
 //! data-zbar-usage / data-zbar-pet 标记：effects.js 热重载靠 data-zbar-variables 定位
 //! variables.css（旧版注入行无 data 属性时回退按 href 匹配，同样可热重载）；
@@ -342,7 +342,7 @@ div.flex.h-dvh.flex-col.overflow-hidden {
 
 /// 壁纸运行时脚本模板：读取 --zbar-* CSS 变量，在 body 上挂黑底占位层、
 /// 壁纸媒体层（视频或图片，按壁纸扩展名二选一）与压暗遮罩层，并每秒
-/// 热重载 variables.css——ZBar 面板改参数/换壁纸无需重启 ZCode 即时生效。
+/// 热重载 variables.css——AgentHUD 面板改参数/换壁纸无需重启 ZCode 即时生效。
 /// theme.css 为静态 link 不做周期热重载（模板升级场景由面板"重启 ZCode"
 /// 按钮冷启动完全重载，见模板内 V5 说明）。
 /// V6 起新增壁纸层总开关（消费 --zbar-wallpaper-enabled，默认开启）：
@@ -4332,7 +4332,7 @@ pub const USAGE_JS: &str = r#"// ===============================================
 ///   不轮询，V8 起资产缺失不再回退内建形象——核心进入空态，宠物暂隐，
 ///   资产就位后下个 tick 自动热切换）；并注入对话页右下角的 fixed
 ///   定位样式（pointer-events:none 不捕获鼠标）。独立悬浮窗版宿主
-///   （ZBar 透明宠物窗口页面）同样加载 pet-core.js，参数直接调
+///   （AgentHUD 透明宠物窗口页面）同样加载 pet-core.js，参数直接调
 ///   setParams、数据监听 Tauri 事件喂 feed。
 /// 版本头（ZBAR-THEME-V 标记）写在 pet-core.js 首行，两段拼接后位于
 /// 落盘文件头部，ensure_versioned_template 的提取器无感知。

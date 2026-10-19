@@ -12,7 +12,7 @@ import { QuotaEntryCard } from "./QuotaEntryCard";
 import { useResetDisplay } from "./resetDisplay";
 
 export interface ProviderAccountsSectionProps {
-  /** 凭证 provider id（决定凭证文件 ~/.zbar/credentials/<provider>.json 与查询分发）。
+  /** 凭证 provider id（决定凭证文件 ~/.agenthud/credentials/<provider>.json 与查询分发）。
    *  可与面板 agent id 不同：DSH 面板承载 DeepSeek 平台余额，故传 "deepseek"。 */
   provider: string;
   /** 区块标题（词典键）。 */

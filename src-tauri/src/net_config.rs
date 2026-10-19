@@ -1,4 +1,4 @@
-//! 网络代理配置（~/.zbar/proxy.json）：
+//! 网络代理配置（~/.agenthud/proxy.json）：
 //! models.dev 官方价格同步与汇率更新共用的出站 HTTP 代理。
 //! 空串 = 直连（与未配置行为一致）。
 
@@ -24,7 +24,7 @@ impl Default for ProxyConfig {
     }
 }
 
-/// ~/.zbar/proxy.json 路径（配置目录复用 pricing.rs，全应用配置集中一处）
+/// ~/.agenthud/proxy.json 路径（配置目录复用 pricing.rs，全应用配置集中一处）
 fn proxy_config_path() -> Result<PathBuf, String> {
     Ok(crate::pricing::config_dir()?.join("proxy.json"))
 }

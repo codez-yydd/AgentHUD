@@ -2203,7 +2203,7 @@ fn spawn_fx_rate_refresher() {
 /// 初始化托盘图标
 fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
     // 右键菜单两项：「打开主窗口」（Dashboard 管理/分析大窗，见
-    // main_window.rs）与「退出 ZBar」。左键单击仍是切换悬浮面板
+    // main_window.rs）与「退出 AgentHUD」。左键单击仍是切换悬浮面板
     //（show_menu_on_left_click(false) + 下方 Click 分支），主窗口入口
     // 只在右键菜单里，避免与左键"切换面板"的既有习惯冲突。
     let open_main_item = MenuItem::with_id(app, "open-main", "打开主窗口", true, None::<&str>)?;
@@ -2428,7 +2428,7 @@ pub fn run() {
                 // 标题栏是前端自绘的（decorations(false)，见 main_window.rs
                 // 模块 doc），前端关闭按钮同样走 close() 触发本挂点。
                 // webview 与页面状态原样保留，再次打开走 show + focus；应用
-                // 退出仍由托盘"退出 ZBar"完成。只拦 main-window 一个 label，
+                // 退出仍由托盘"退出 AgentHUD"完成。只拦 main-window 一个 label，
                 // panel/pet/session-hud 的关闭路径（各自 Destroyed 挂点）不受影响
                 WindowEvent::CloseRequested { api, .. } => {
                     if window.label() == main_window::MAIN_WINDOW_LABEL {

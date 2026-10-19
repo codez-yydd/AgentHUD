@@ -415,7 +415,7 @@ function CursorPanelContent({
 }
 
 /**
- * Cursor「其他账号」区：凭证体系 ~/.zbar/credentials/cursor.json 的
+ * Cursor「其他账号」区：凭证体系 ~/.agenthud/credentials/cursor.json 的
  * kind=cookie 条目（浏览器复制的 WorkosCursorSessionToken Cookie 头，含
  * 旧手动 cookie 的一次性迁移条目），每条凭证调同一 usage-summary 端点
  * 展示套餐额度（后端 get_provider_quota("cursor")）。

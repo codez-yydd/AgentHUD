@@ -643,7 +643,7 @@ fn cleanup_staging_in(dir: &Path, prefixes: &[String]) -> Result<(), String> {
 
 /// app_id 白名单校验：所有以 app_id 拼路径落盘的命令入口必须先过本校验
 /// （与 get_agent_theme_state 同款注册表校验），防止 `app_id="../x"` 之类
-/// 输入把文件写到 ~/.zbar 之外（路径遍历）。
+/// 输入把文件写到 ~/.agenthud 之外（路径遍历）。
 fn validate_app_id(app_id: &str) -> Result<(), String> {
     if find_app(app_id).is_some() {
         Ok(())
@@ -857,7 +857,7 @@ fn classify_write_error(err: &std::io::Error) -> WriteProbe {
 
 /// 用「写入后立即删除」的探针文件检测目录可写性（比 access(W_OK) 可靠：
 /// access 只查 DAC 权限位，探针能真实触发「应用管理」TCC 判定——首次会弹
-/// 「ZBar 想要修改 ZCode」系统对话框，允许后探针成功且此后直写全放行；
+/// 「AgentHUD 想要修改 ZCode」系统对话框，允许后探针成功且此后直写全放行；
 /// Windows 下等价于真实写入测试，Program Files 等受保护目录归入
 /// NeedPrivilege 走 UAC 兜底）。
 fn probe_writable(dir: &Path) -> WriteProbe {
@@ -873,10 +873,10 @@ fn probe_writable(dir: &Path) -> WriteProbe {
 }
 
 /// 以当前进程身份直接执行单行脚本（不经 osascript 提权）。
-/// 关键收益：脚本内 cp/xattr/codesign 的 TCC 责任方是 ZBar 自身，
-/// 首次执行触发系统标准弹窗「ZBar 想要修改 ZCode」，允许后永久生效，
+/// 关键收益：脚本内 cp/xattr/codesign 的 TCC 责任方是 AgentHUD 自身，
+/// 首次执行触发系统标准弹窗「AgentHUD 想要修改 ZCode」，允许后永久生效，
 /// 且可在 系统设置 → 隐私与安全性 → 应用管理 中管理；而 osascript
-/// 提权 shell 中的写入责任方无法归到 ZBar，会被静默拒绝且无处授权
+/// 提权 shell 中的写入责任方无法归到 AgentHUD，会被静默拒绝且无处授权
 /// （真机实测，详见模块头与 privilege.rs 注释）。
 #[cfg(not(windows))]
 fn run_script_direct(script: &str) -> Result<(), String> {
@@ -1045,7 +1045,7 @@ fn build_windows_elevate_cmd(src: &Path, asar: &Path) -> String {
 /// 替换/还原的统一执行入口（三级策略，install/uninstall/restore 共用）：
 /// 1. 直写（首选）：Resources 探针可写（用户安装的应用 owner 即当前用户，
 ///    TCC 已放行；Windows 用户级安装目录同理）→ 当前进程直接执行
-///    （macOS 跑 shell 脚本，TCC 责任归 ZBar；Windows 跑原生文件操作）；
+///    （macOS 跑 shell 脚本，TCC 责任归 AgentHUD；Windows 跑原生文件操作）；
 /// 2. 「应用管理」拦截（仅 macOS）：探针即报 EPERM（首次弹窗被拒 /
 ///    曾拒绝过）→ 脚本必然同样被拦，直接上抛带系统设置指引的文案
 ///    （不执行脚本）；
@@ -1494,7 +1494,7 @@ fn install_steps(
     let themes = store::themes_dir()?;
     fs::create_dir_all(&themes).map_err(|e| format!("创建主题目录失败：{e}"))?;
     // 磁盘预检针对 staging/pack 临时目录所在卷（系统临时目录，解包 + 重打包
-    // 的大头开销在这里）；~/.zbar 只存主题资产与备份，体积小，无需按此预检
+    // 的大头开销在这里）；~/.agenthud 只存主题资产与备份，体积小，无需按此预检
     let free = available_disk_bytes(&std::env::temp_dir())?;
     if free < MIN_FREE_BYTES {
         return Err(format!(
@@ -1611,9 +1611,9 @@ fn install_steps(
     // 真机实测结论（macOS）：/Applications 下用户安装的应用 Resources 目录
     // 普通用户本就可写；此前的 osascript 管理员提权路径在 macOS「应用管理」
     // (App Management TCC) 下是死结——提权 shell 中 cp 的责任方无法归到
-    // ZBar，被静默拒绝且系统设置里无授权项。现由 ZBar 进程直接执行替换
-    // （execute_replace_script 三级策略），TCC 责任归 ZBar：首次触发系统
-    // 弹窗「ZBar 想要修改 ZCode」，允许后永久生效；仅真的无写权限
+    // AgentHUD，被静默拒绝且系统设置里无授权项。现由 AgentHUD 进程直接执行替换
+    // （execute_replace_script 三级策略），TCC 责任归 AgentHUD：首次触发系统
+    // 弹窗「AgentHUD 想要修改 ZCode」，允许后永久生效；仅真的无写权限
     // （root 安装）才回退提权。Windows 同策略：用户级安装目录直写，
     // Program Files 无写权限时走 PowerShell UAC 兜底。两平台的执行序列
     // 自身不变量一致：任何一步失败（含 TCC 拦截）时原 asar 均未被触碰，

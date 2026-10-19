@@ -1,6 +1,6 @@
 /**
  * 自绘标题栏：主窗口 decorations: false（见 src-tauri/src/main_window.rs）
- * 之后替代系统标题栏——左侧品牌区（logo + ZBar + 副标题，原侧栏 db-brand
+ * 之后替代系统标题栏——左侧品牌区（logo + AgentHUD + 副标题，原侧栏 db-brand
  * 上移），右侧窗口控制按钮（最小化 / 最大化↔还原 / 关闭）。
  *
  * 交互语义对齐 Windows 标题栏：

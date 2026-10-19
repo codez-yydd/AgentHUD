@@ -555,7 +555,7 @@ fn pick_first_cookie(
         .map(|s| s.secret.trim().to_string())
 }
 
-/// 手动 cookie 的现行来源：凭证体系 ~/.zbar/credentials/cursor.json 的
+/// 手动 cookie 的现行来源：凭证体系 ~/.agenthud/credentials/cursor.json 的
 /// 第一条 kind=cookie 条目（旧 cursor.json 的 cookie_header 已一次性迁移
 /// 过去，不再读取）。文件不存在/损坏/无有效条目返回 None。
 fn first_manual_cookie() -> Option<String> {
@@ -572,7 +572,7 @@ fn first_manual_cookie() -> Option<String> {
 /// 解析出有效的 cookie 头。优先级：手动配置（凭证体系最早一条 cookie 条目）
 /// > Cursor 应用本地 DB。手动模式在凭证体系无条目时视为未配置，回落自动模式。
 pub fn resolve_cookie(cfg: &CursorConfig) -> Result<String, String> {
-    // 手动模式：读凭证体系 ~/.zbar/credentials/cursor.json
+    // 手动模式：读凭证体系 ~/.agenthud/credentials/cursor.json
     if cfg.cookie_source == "manual" {
         if let Some(header) = first_manual_cookie() {
             return Ok(header);
@@ -1274,7 +1274,7 @@ pub fn fetch_cursor_period_buckets(
 // ============================================================
 // 多账号手动凭证（凭证体系 kind=cookie）的额度堆叠
 // ============================================================
-// 供 provider_quota 的 "cursor" 分支调用：对 ~/.zbar/credentials/cursor.json
+// 供 provider_quota 的 "cursor" 分支调用：对 ~/.agenthud/credentials/cursor.json
 // 的全部 kind=cookie 条目逐条查 usage-summary，产出 ProviderQuotaEntry。
 // 本地 auto 登录态不并入本链路（主面板 get_cursor_usage 已展示，避免双查询，
 // 与 claude 先例一致）；无凭证时 provider_quota 的空快照早返回已给出空 Vec。

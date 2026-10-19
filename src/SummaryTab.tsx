@@ -696,7 +696,7 @@ function AccountQuotaGroup({
   );
 }
 
-/** Kimi 凭证体系额度分组：~/.zbar/credentials/kimi.json 全部凭证
+/** Kimi 凭证体系额度分组：~/.agenthud/credentials/kimi.json 全部凭证
  *  （应用内网页登录 / 手动 API Key）逐条展示，含 error/expired 条目
  *  （失败原因由卡片内提示行表达）。与 zai 多账号分组的关键差异：Kimi 的
  *  CLI 登录态与凭证体系是两个独立来源，CLI 可用时上方指标行被 CLI 占用
@@ -844,7 +844,7 @@ export function SummaryTab({
   );
   const minimaxcodeTokens = minimaxcode?.stats.overall.total_tokens ?? 0;
 
-  // Kimi 凭证体系条目（~/.zbar/credentials/kimi.json，应用内网页登录）：
+  // Kimi 凭证体系条目（~/.agenthud/credentials/kimi.json，应用内网页登录）：
   // 全局 120s 轮询覆盖（与 Kimi 页「其他账号」区同源同频）；含 error/expired
   // 条目，失败原因在分组卡片内提示行表达
   const kimiCredentialEntries = providerQuota["kimi"]?.entries ?? [];

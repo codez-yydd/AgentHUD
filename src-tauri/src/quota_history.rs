@@ -4,7 +4,7 @@
 //! - 快照来源：quota.rs::fetch_quota（当前账号，30s 轮询）与
 //!   accounts.rs::account_quotas（全部账号快照，5 分钟一轮）成功后各追加一条，
 //!   均带账号指纹（account 字段）——读路径按指纹过滤，互不污染。
-//! - 存储：~/.zbar/quota_history.jsonl（每行一条 JSON），轻量、可 append、易调试。
+//! - 存储：~/.agenthud/quota_history.jsonl（每行一条 JSON），轻量、可 append、易调试。
 //! - 周期划分：用 weekly_reset (nextResetTime) 的变化点切分"智谱重置周期"。
 //! - 去重/限频：同账号同秒内只写一条（尾部窗口回读该账号最后一条防抖）。
 //! - 滚动保留：定期（每 24h 至多一次）删除超过保留期的行，防止文件无限增长。
@@ -160,7 +160,7 @@ pub struct QuotaSnapshot {
     pub mcp_total: Option<i64>,
 }
 
-/// ~/.zbar/quota_history.jsonl
+/// ~/.agenthud/quota_history.jsonl
 pub fn history_path() -> Result<PathBuf, String> {
     Ok(config_dir()?.join("quota_history.jsonl"))
 }
@@ -1176,7 +1176,7 @@ mod tests {
     /// 防抖联合判断：同秒不同账号的采样不得互相吞掉（多账号并行查询
     /// 几乎同时落盘的场景）；同秒同账号仍视为重复采样跳过。
     /// 注：必须用 append_to（指定临时路径）——try_append 固定写真实
-    /// ~/.zbar/quota_history.jsonl，测试不得触碰。
+    /// ~/.agenthud/quota_history.jsonl，测试不得触碰。
     #[test]
     fn try_append_same_second_different_account_not_dropped() {
         let path = temp_jsonl("dedup");

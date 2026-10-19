@@ -3,7 +3,7 @@
 //! 为通用凭证体系（provider="kimi"，kind="token"）提供不依赖 Kimi Code CLI
 //! 的网页登录入口：应用向后端发起设备授权 → 用户在浏览器打开验证地址确认
 //! → 前端按 interval 定时调用 poll 命令 → 成功后把 refresh_token 作为一条
-//! 凭证落入 ~/.zbar/credentials/kimi.json（region 为发起登录时所选）。
+//! 凭证落入 ~/.agenthud/credentials/kimi.json（region 为发起登录时所选）。
 //! 参考实现：KimiCodeBar-Windows 的 kimi_oauth.rs（同为 Kimi Code CLI 的
 //! OAuth 端点与 client_id）。
 //!

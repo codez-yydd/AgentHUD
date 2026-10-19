@@ -188,7 +188,7 @@ export interface QuotaResult {
 
 export type SyncMode = "manual" | "auto";
 
-/** 同步配置（~/.zbar/sync.json） */
+/** 同步配置（~/.agenthud/sync.json） */
 export interface SyncConfig {
   enabled: boolean;
   mode: SyncMode;
@@ -434,7 +434,7 @@ export interface ApplyPriceItem {
   price: ModelPrice;
 }
 
-// ===== 网络代理（~/.zbar/proxy.json，models.dev 同步与汇率更新共用）=====
+// ===== 网络代理（~/.agenthud/proxy.json，models.dev 同步与汇率更新共用）=====
 
 /** 网络代理配置 */
 export interface ProxyConfig {
@@ -454,7 +454,7 @@ export interface ModelsdevSyncResult {
   from_cache: boolean;
 }
 
-// ===== 全局快捷键（~/.zbar/shortcut.json）=====
+// ===== 全局快捷键（~/.agenthud/shortcut.json）=====
 
 /** 全局快捷键配置 */
 export interface ShortcutConfig {
@@ -465,7 +465,7 @@ export interface ShortcutConfig {
 
 // ===== Cursor 用量统计（与 Rust cursor.rs 结构一一对应）=====
 
-/** Cursor 配置（~/.zbar/cursor.json） */
+/** Cursor 配置（~/.agenthud/cursor.json） */
 export interface CursorConfig {
   /** cookie 来源："auto"（读 Cursor 应用本地 DB）| "manual"（手动粘贴） */
   cookie_source: "auto" | "manual";
@@ -863,7 +863,7 @@ export interface KimiSnapshot {
 
 // ===== 多智谱账号切换（与 Rust accounts 模块结构一一对应）=====
 
-/** 账号快照元信息（~/.zbar/accounts/<id>.account.json 的元数据部分） */
+/** 账号快照元信息（~/.agenthud/accounts/<id>.account.json 的元数据部分） */
 export interface AccountMeta {
   id: string;
   display_name: string;
@@ -1067,7 +1067,7 @@ export function petSizePx(level: number, screenH: number): number {
 }
 
 /**
- * 桌面宠物配置（get/set_pet_config 的契约，~/.zbar/pet.json）——宠物
+ * 桌面宠物配置（get/set_pet_config 的契约，~/.agenthud/pet.json）——宠物
  * 设置的唯一真相源（皮肤页宠物卡读写），注入版与悬浮窗两形态共用。
  */
 export interface PetConfig {
@@ -1096,7 +1096,7 @@ export type PetMode = "injected" | "floating";
 
 /**
  * 会话悬浮窗配置（get/set_session_hud_config 的契约，
- * ~/.zbar/session-hud.json）——Session HUD 设置的唯一真相源（皮肤页
+ * ~/.agenthud/session-hud.json）——Session HUD 设置的唯一真相源（皮肤页
  * 「会话悬浮窗」卡读写），窗口高度随会话条数自适应、不持久化。
  */
 export interface SessionHudConfig {
@@ -1127,7 +1127,7 @@ export interface SessionHudConfig {
 
 // ===== 自定义宠物（第三阶段：Petdex 格式导入）=====
 
-/** 自定义宠物的单状态行配置（Petdex 行 → ZBar 七状态映射的落盘形态） */
+/** 自定义宠物的单状态行配置（Petdex 行 → AgentHUD 七状态映射的落盘形态） */
 export interface CustomPetStateDef {
   /** 图集行号（0 起） */
   row: number;
@@ -1137,7 +1137,7 @@ export interface CustomPetStateDef {
   frameMs: number | number[];
 }
 
-/** 自定义宠物元信息（~/.zbar/pets/<id>/pet.json，Rust pets 模块契约） */
+/** 自定义宠物元信息（~/.agenthud/pets/<id>/pet.json，Rust pets 模块契约） */
 export interface CustomPetMeta {
   id: string;
   name: string;

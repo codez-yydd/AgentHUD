@@ -1,6 +1,6 @@
 //! 桌面宠物配置中心 + 独立悬浮窗形态宿主。
 //!
-//! 本模块是宠物配置的唯一真相源：PetConfig（~/.zbar/pet.json）承载
+//! 本模块是宠物配置的唯一真相源：PetConfig（~/.agenthud/pet.json）承载
 //! 总开关 enabled、形态 mode（注入版 / 悬浮窗二选一，默认注入版）、
 //! 形象 style 与尺寸档位 size——皮肤页的宠物卡经 set_pet_config 保存，
 //! 注入版渲染（agent_theme::store 的 variables.css）与悬浮窗窗口均
@@ -10,12 +10,12 @@
 //!   variables.css 的 --zbar-pet-* 变量热重载（约 1 秒生效，皮肤需已
 //!   安装）、数据经 window.__ZBAR_USAGE__（usage_feed 仅在注入版开启
 //!   时导出）；容器支持鼠标拖拽移位，位置经 localStorage 持久化；
-//! - 悬浮窗（mode = "floating"，本模块的窗口部分）：ZBar 自己的透明
+//! - 悬浮窗（mode = "floating"，本模块的窗口部分）：AgentHUD 自己的透明
 //!   无边框置顶窗口（加载 pet.html 多入口页面），参数经 set_pet_config
 //!   命令直接下发（Tauri 事件）、数据经本模块的独立轮询器推流。
 //!
 //! 组成：
-//! 1. PetConfig 配置持久化（~/.zbar/pet.json）：总开关/形态/形象/大小
+//! 1. PetConfig 配置持久化（~/.agenthud/pet.json）：总开关/形态/形象/大小
 //!    + 悬浮窗位置（逻辑坐标，拖动结束落盘，重启恢复；无记录时默认
 //!    主显示器右下角）；
 //! 2. 透明悬浮窗（label "pet"）：transparent + 无边框 + 置顶 + 创建不
@@ -60,7 +60,7 @@ pub const PET_PARAMS_EVENT: &str = "zbar://pet-params";
 /// 宠物形态：注入版（默认）——渲染在 ZCode 对话页内（皮肤注入的
 /// pet.js，参数经 variables.css 热重载），不建独立窗口
 pub const PET_MODE_INJECTED: &str = "injected";
-/// 宠物形态：悬浮窗——ZBar 自己的透明置顶独立窗口（本模块管理）
+/// 宠物形态：悬浮窗——AgentHUD 自己的透明置顶独立窗口（本模块管理）
 pub const PET_MODE_FLOATING: &str = "floating";
 
 /// 宠物尺寸档位（屏幕高度百分比，%）：size 字段语义自此版本起由逻辑
@@ -180,11 +180,11 @@ fn monitor_logical_height(mon: &tauri::Monitor) -> f64 {
     mon.size().height as f64 / mon.scale_factor()
 }
 
-/// ZBar 主显示器逻辑高缓存（f64 位模式，0 = 未初始化）：
+/// AgentHUD 主显示器逻辑高缓存（f64 位模式，0 = 未初始化）：
 /// 注入版 variables.css 渲染（agent_theme::store）在无 AppHandle 的
 /// 纯目录函数里需要屏高做档位换算，取启动/改配置时缓存的主显示器值
 /// （注入版宠物显示在 ZCode 页面，用主显示器近似即可）。换屏/改分辨
-/// 率后缓存过期，ZBar 重启或下次 start_if_enabled/set_pet_config 时
+/// 率后缓存过期，AgentHUD 重启或下次 start_if_enabled/set_pet_config 时
 /// 刷新——不要求实时监听屏幕变化，与独立版「下次读取配置或重建窗口
 /// 时生效」的时机口径一致。
 static SCREEN_H_BITS: AtomicU64 = AtomicU64::new(0);
@@ -227,7 +227,7 @@ fn pet_size_px_for(app: &AppHandle, win: Option<&tauri::WebviewWindow>, level: u
 }
 
 // ============================================================
-// 配置持久化（~/.zbar/pet.json，与项目其它配置同目录）
+// 配置持久化（~/.agenthud/pet.json，与项目其它配置同目录）
 // ============================================================
 
 /// 桌面宠物配置（唯一真相源，皮肤页宠物卡读写）。serde camelCase：
@@ -338,7 +338,7 @@ pub fn load_pet_config() -> PetConfig {
     load_pet_config_at(&path)
 }
 
-/// load_pet_config 的路径显式版（单元测试复用，不依赖真实 ~/.zbar）：
+/// load_pet_config 的路径显式版（单元测试复用，不依赖真实 ~/.agenthud）：
 /// 读 → size 归一（旧 px 迁移档位）+ style 归一（cat/bot 迁移智谱娘）
 /// → 任一变化则落盘。
 fn load_pet_config_at(path: &std::path::Path) -> PetConfig {
@@ -503,7 +503,7 @@ pub(crate) fn push_pet_params(app: &AppHandle, cfg: &PetConfig, size_px: u32) {
 
 /// 应用启动挂点：悬浮窗形态开启时恢复窗口与轮询（注入版/未开启零
 /// 开销——注入版渲染由皮肤目录的静态文件承担，无需启动期动作）。
-/// 入口顺带刷新屏高缓存（注入版 variables.css 渲染换算消费；ZBar
+/// 入口顺带刷新屏高缓存（注入版 variables.css 渲染换算消费；AgentHUD
 /// 重启后换屏/改分辨率即按新屏高重算——皮肤页状态轮询触发的
 /// ensure_theme_assets 重渲会静默写入新 px）。
 pub fn start_if_enabled(app: &AppHandle) {
@@ -652,7 +652,7 @@ fn aspect_in(root: &std::path::Path, style: &str) -> f64 {
         .unwrap_or(1.0)
 }
 
-/// 真实 ~/.zbar 路径版（窗口创建/尺寸同步用）
+/// 真实 ~/.agenthud 路径版（窗口创建/尺寸同步用）
 fn window_aspect(style: &str) -> f64 {
     crate::pets::pets_root()
         .map(|root| aspect_in(&root, style))

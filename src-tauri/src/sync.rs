@@ -18,7 +18,7 @@ use crate::agent_quota_history::{self, AgentQuotaSnapshot};
 use crate::db::{self, default_source, UsageRow};
 use crate::pricing::config_dir;
 
-// ===== 配置（~/.zbar/sync.json）=====
+// ===== 配置（~/.agenthud/sync.json）=====
 
 /// 同步模式。
 /// - manual：仅手动点「立即同步」时上传。
@@ -143,7 +143,7 @@ impl Default for SyncConfig {
     }
 }
 
-/// 配置文件路径：~/.zbar/sync.json
+/// 配置文件路径：~/.agenthud/sync.json
 pub fn config_path() -> Result<PathBuf, String> {
     Ok(config_dir()?.join("sync.json"))
 }
@@ -550,7 +550,7 @@ pub fn upload_incremental() -> Result<SyncOutcome, String> {
         }
     }
 
-    // ===== 阶段五：OpenCode 明细（本地采集型，派生库 ~/.zbar/opencode.sqlite）=====
+    // ===== 阶段五：OpenCode 明细（本地采集型，派生库 ~/.agenthud/opencode.sqlite）=====
     let mut opencode_uploaded = 0usize;
     match upload_derived_source_incremental(&mut cfg, &base, &token, "opencode") {
         Ok(n) => opencode_uploaded = n,
@@ -559,7 +559,7 @@ pub fn upload_incremental() -> Result<SyncOutcome, String> {
         }
     }
 
-    // ===== 阶段六：Kimi 明细（本地采集型，派生库 ~/.zbar/kimi.sqlite）=====
+    // ===== 阶段六：Kimi 明细（本地采集型，派生库 ~/.agenthud/kimi.sqlite）=====
     // 注意：这是**用量明细**通道；Kimi 的额度快照走 agent_quota_snapshots，
     // 两者游标与 payload 字段都不同，互不影响。
     let mut kimi_uploaded = 0usize;
@@ -570,7 +570,7 @@ pub fn upload_incremental() -> Result<SyncOutcome, String> {
         }
     }
 
-    // ===== 阶段七：MiniMax Code 明细（本地采集型，派生库 ~/.zbar/minimaxcode.sqlite）=====
+    // ===== 阶段七：MiniMax Code 明细（本地采集型，派生库 ~/.agenthud/minimaxcode.sqlite）=====
     let mut minimaxcode_uploaded = 0usize;
     match upload_derived_source_incremental(&mut cfg, &base, &token, "minimaxcode") {
         Ok(n) => minimaxcode_uploaded = n,
@@ -1725,7 +1725,7 @@ fn map_http_err(op: &str) -> impl Fn(ureq::Error) -> String + '_ {
 
 #[cfg(test)]
 mod tests {
-    //! 同步上传通道的单测：**一律不碰网络、不碰真实服务端、不碰真实 ~/.zbar**
+    //! 同步上传通道的单测：**一律不碰网络、不碰真实服务端、不碰真实 ~/.agenthud**
     //! （配置读写用 serde 在内存里来回，派生库相关行为由各模块自己的测试覆盖）。
     //! 覆盖四件事：
     //! 1. 游标推进（pump_source_batches，各来源共用同一实现）；

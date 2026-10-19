@@ -8,7 +8,7 @@
 //!   的声明式注册表——本文件对它们只做「遍历注册表 + 合并」，不再逐个枚举来源；
 //!   codex/claude/zcode/cursor 形态各自独立，仍在本文件显式接线（见注册表模块头）。
 //! - ZCode：db.sqlite 的 model_usage 无 cwd 列，但主库 session_id 可关联
-//!   zcode_sessions 派生库（~/.zbar/zcode_sessions.sqlite，解析主库 session
+//!   zcode_sessions 派生库（~/.agenthud/zcode_sessions.sqlite，解析主库 session
 //!   表 directory 列 + agents/**/metadata.json 得 session_id → cwd 映射）。
 //!   主路径：主库只读连接 ATTACH 派生库补项目归属，用量行仍读主库
 //!   model_usage 本体（总量与主面板严格一致，永不相加）；派生库无映射/

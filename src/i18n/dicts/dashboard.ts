@@ -7,7 +7,7 @@
  */
 
 export const dashboard = {
-  // 产品副标题（自绘标题栏品牌区：logo + ZBar + 本副标题）
+  // 产品副标题（自绘标题栏品牌区：logo + AgentHUD + 本副标题）
   "dashboard.subtitle": "用量与额度管理",
 
   // 自绘标题栏的窗口控制按钮（图标按钮的 title 提示与 aria-label，

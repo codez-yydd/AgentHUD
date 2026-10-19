@@ -1,7 +1,7 @@
 /**
  * 英文词典：typeof zh 约束保证与中文键集完全一致（缺键/多键编译报错）。
  * 译文追求自然简洁，窄面板处用短词（如 Custom 而非 Customize）；
- * 品牌名（ZBar、Claude、Codex、Gemini、Cursor 等）不翻译。
+ * 品牌名（AgentHUD、Claude、Codex、Gemini、Cursor 等）不翻译。
  */
 import { common } from "./dicts/common";
 import { layout } from "./dicts/layout";

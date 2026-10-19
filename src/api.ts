@@ -827,7 +827,7 @@ export async function deleteCustomPet(id: string): Promise<void> {
   await invoke("delete_custom_pet", { id });
 }
 
-// ===== 通用凭证体系（Rust provider_credentials 模块，~/.zbar/credentials/）=====
+// ===== 通用凭证体系（Rust provider_credentials 模块，~/.agenthud/credentials/）=====
 // invoke 参数名固定 camelCase，与 Tauri v2 对 Rust snake_case 命令参数的
 // 默认匹配约定一致；返回的 CredentialMeta 也是 camelCase（serde rename_all）。
 

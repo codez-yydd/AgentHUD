@@ -31,8 +31,8 @@
 //!   网格布局与渲染器共享常量隐含（"The desktop app currently hardcodes these
 //!   values rather than reading them from pet.json"）。
 //!
-//! ## ZBar 内部格式（导入时从 Petdex 转换）
-//! 导入目录 `~/.zbar/pets/<id>/`，内含 `pet.json`（内部格式）+ `sheet.<webp|png>`
+//! ## AgentHUD 内部格式（导入时从 Petdex 转换）
+//! 导入目录 `~/.agenthud/pets/<id>/`，内含 `pet.json`（内部格式）+ `sheet.<webp|png>`
 //! （图集字节原样保留）。内部 pet.json 形如：
 //! ```json
 //! { "id": "boba", "name": "Boba", "format": "petdex-v1",
@@ -75,13 +75,13 @@ use std::fs;
 use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
 
-/// 自定义宠物库根目录：~/.zbar/pets
+/// 自定义宠物库根目录：~/.agenthud/pets
 pub const PETS_DIR: &str = "pets";
 /// 每只宠物目录内的元信息文件名（内部格式）
 pub const PET_META_FILE: &str = "pet.json";
 /// 图集文件前缀（实际为 sheet.webp / sheet.png，扩展名随导入源保留）
 pub const SHEET_PREFIX: &str = "sheet";
-/// 注入版物化文件名（落在 ~/.zbar/agent-themes/zcode/ 下，与 pet.js 同目录）
+/// 注入版物化文件名（落在 ~/.agenthud/agent-themes/zcode/ 下，与 pet.js 同目录）
 pub const PET_CUSTOM_JS: &str = "pet-custom.js";
 /// pet_style / PetConfig.style 中的自定义形象前缀
 pub const CUSTOM_STYLE_PREFIX: &str = "custom:";
@@ -119,7 +119,7 @@ pub struct CustomPetStateDef {
     pub frame_ms: serde_json::Value,
 }
 
-/// 内部格式的宠物元信息（落盘 ~/.zbar/pets/<id>/pet.json，serde camelCase）。
+/// 内部格式的宠物元信息（落盘 ~/.agenthud/pets/<id>/pet.json，serde camelCase）。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct CustomPetMeta {
@@ -141,11 +141,11 @@ pub struct CustomPetMeta {
     pub states: BTreeMap<String, CustomPetStateDef>,
 }
 
-/// Petdex 行 → ZBar 七状态的默认映射（导入时写死进 states）。
+/// Petdex 行 → AgentHUD 七状态的默认映射（导入时写死进 states）。
 /// 行号/帧数来自 petdex src/lib/pet-states.ts 的逐行定义；frameMs 默认值
 /// 沿用内建形象节奏，理由见函数头注释。
 ///
-/// | ZBar 状态 | Petdex 行 | 帧 | 说明 |
+/// | AgentHUD 状态 | Petdex 行 | 帧 | 说明 |
 /// |-----------|-----------|----|------|
 /// | sleeping | 6 waiting | 6 | Petdex 无睡眠行，取"耐心等待的闲置变体"语义最接近 |
 /// | idle | 0 idle | 6 | 中性呼吸/眨眼循环 |
@@ -164,7 +164,7 @@ pub(crate) fn build_default_states(cols: u32) -> BTreeMap<String, CustomPetState
     };
     BTreeMap::from([
         // frameMs 默认沿用内建形象（cat/bot 同值）：Petdex 各行授权循环时长
-        // 700~1220ms（每帧约 120~175ms）适合其短促状态，但 ZBar 的语义不同
+        // 700~1220ms（每帧约 120~175ms）适合其短促状态，但 AgentHUD 的语义不同
         // ——sleeping 长时驻留须慢、typing 按 token 增速分三档，照搬 Petdex
         // 时值会让沉睡宠物狂闪，故节奏取内建口径，用户可手改 pet.json 调整。
         (
@@ -277,7 +277,7 @@ fn frame_ms_valid(v: &serde_json::Value) -> bool {
 // 目录与路径
 // ============================================================
 
-/// 自定义宠物库根目录（~/.zbar/pets）
+/// 自定义宠物库根目录（~/.agenthud/pets）
 pub fn pets_root() -> Result<PathBuf, String> {
     Ok(crate::pricing::config_dir()?.join(PETS_DIR))
 }
@@ -591,7 +591,7 @@ pub(crate) fn builtin_pet_meta() -> CustomPetMeta {
     meta
 }
 
-/// 确保内置形象（智谱娘）在宠物库就位（真实 ~/.zbar 路径版，应用启动
+/// 确保内置形象（智谱娘）在宠物库就位（真实 ~/.agenthud 路径版，应用启动
 /// setup 阶段调用，失败由调用方记日志不阻断启动）：
 /// - 库内已存在且体检通过（pet.json 可解析且 id 匹配 + 图集非空）→
 ///   比对 pet.json 字节与内置版本，不一致则覆盖升级（V9 语义，见
@@ -603,7 +603,7 @@ pub fn ensure_builtin_pet() -> Result<(), String> {
     ensure_builtin_pet_in(&root)
 }
 
-/// ensure_builtin_pet 的目录显式版（单元测试复用，不依赖真实 ~/.zbar）。
+/// ensure_builtin_pet 的目录显式版（单元测试复用，不依赖真实 ~/.agenthud）。
 /// 已存在且体检通过时的升级语义（V9 起）：
 /// - **pet.json 覆盖升级**：内置宠物的状态映射（states 键）属软件管理
 ///   范畴，随版本演进（V9 的 thinking/walking 细分键等）需要能升级到
@@ -784,7 +784,7 @@ pub(crate) fn materialize_js(meta: &CustomPetMeta, data_uri: &str) -> String {
     format!("window.__ZBAR_PET_CUSTOM__ = {{ v: 1, meta: {meta_json}, dataUri: {data_uri:?} }};\n")
 }
 
-/// 同步注入版物化文件（真实 ~/.zbar 路径版）：
+/// 同步注入版物化文件（真实 ~/.agenthud 路径版）：
 /// - 皮肤主题目录不存在（未安装/已卸载）→ 无注入版可消费，直接返回；
 /// - 当前 PetConfig.style 为 custom:<id> 且宠物可读 → 内容无变化跳写，
 ///   有变化 .tmp + rename 原子重写；

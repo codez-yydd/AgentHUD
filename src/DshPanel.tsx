@@ -33,7 +33,7 @@ function toUsageSnapshot(
  *  两条数据链路同页（与 MiniMax Code 合并口径同款思路）：
  *  - **本地用量**：解析 ~/.dsh 会话事件日志（纯本地采集，无凭证）；
  *  - **平台余额**：底部「DeepSeek 平台余额」区，手动录入 DeepSeek 开放平台
- *    API Key（凭证文件仍是 ~/.zbar/credentials/deepseek.json，provider id
+ *    API Key（凭证文件仍是 ~/.agenthud/credentials/deepseek.json，provider id
  *    "deepseek"），调 /user/balance 展示余额与赠送/充值拆分。
  *
  *  为什么 DSH 自己不产额度条目：DSH 的本地登录态（~/.dsh/.credentials.yaml 的

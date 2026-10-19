@@ -5,7 +5,7 @@
 //!
 //! - `zcode`：ZCode 主库（`db::db_path()`，**只读**打开，与 db.rs 同款 flags）；
 //! - `codex` / `claude` / `kimi` / `dsh` / `opencode` / `minimaxcode`：各自的
-//!   导入库 `~/.zbar/<name>.sqlite`（与前端的「来源」概念对齐，见
+//!   导入库 `~/.agenthud/<name>.sqlite`（与前端的「来源」概念对齐，见
 //!   src/dashboard/compare/model.ts 的 remoteSource 映射）。
 //!
 //! 本模块对导入库只做 SELECT：直接 `Connection::open` 打开，**刻意不调用各模块的

@@ -12,7 +12,7 @@
 //!   WM_NCHITTEST 系统热区（前端不挂 resize 热区）；用户点标题栏"×"时
 //!   **隐藏而不销毁**（挂点见 lib.rs 的 WindowEvent::CloseRequested 分支）
 //!   ——webview 与页面状态保留，再次打开（托盘右键"打开主窗口" / 悬浮窗
-//!   统计页按钮）走 show + focus 秒开，应用退出仍由托盘"退出 ZBar"完成。
+//!   统计页按钮）走 show + focus 秒开，应用退出仍由托盘"退出 AgentHUD"完成。
 //! - 启动预热：应用 setup 阶段（托盘初始化后）即预建隐藏的主窗口
 //!   （visible(false)，见 prebuild_main_window），dashboard.html 的 WebView
 //!   提前加载，首次打开只剩 show + focus，不再等冷启动。

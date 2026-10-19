@@ -55,7 +55,7 @@ export function ClaudePanel(props: Props) {
 }
 
 /**
- * Claude「其他账号」区：凭证体系 ~/.zbar/credentials/claude.json 的
+ * Claude「其他账号」区：凭证体系 ~/.agenthud/credentials/claude.json 的
  * kind=token 条目（sk-ant-oat OAuth access token），每条凭证调同一
  * OAuth usage 端点展示订阅额度（后端 get_provider_quota("claude")）。
  * - 本地登录态不在此展示（上方 AgentUsagePanel 额度卡），避免双查询；

@@ -120,7 +120,7 @@ fn open_kimi_db() -> Result<Connection, String> {
 static ENSURE_DURATION_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 /// 在指定路径打开（必要时创建）导入库。表结构与生产库完全一致，
-/// 供测试注入临时库文件（不触碰真实 ~/.zbar/kimi.sqlite）。
+/// 供测试注入临时库文件（不触碰真实 ~/.agenthud/kimi.sqlite）。
 fn open_kimi_db_at(path: &Path) -> Result<Connection, String> {
     let conn = Connection::open(path).map_err(|e| format!("打开 Kimi 导入库失败: {e}"))?;
     conn.busy_timeout(std::time::Duration::from_secs(3))
@@ -523,7 +523,7 @@ pub fn import_incremental_force() -> Result<(), String> {
 }
 
 /// 导入内核：指定 sessions 目录与库文件（生产入口的参数化版本，
-/// 供测试注入临时目录与临时 sqlite，不依赖真实 ~/.kimi-code 与 ~/.zbar）。
+/// 供测试注入临时目录与临时 sqlite，不依赖真实 ~/.kimi-code 与 ~/.agenthud）。
 fn import_incremental_into(dir: &Path, db_path: &Path) -> Result<(), String> {
     let _guard = import_lock()
         .lock()
@@ -2491,7 +2491,7 @@ pub fn fetch_live_rate_limits_with_freshness(
         }
     }
 
-    // CLI 链路失败（无 CLI 登录态/网络不通）时回退凭证体系：~/.zbar/credentials/
+    // CLI 链路失败（无 CLI 登录态/网络不通）时回退凭证体系：~/.agenthud/credentials/
     // kimi.json 里的应用内网页登录凭证。回退本身是逐凭证的真实 HTTP 查询，
     // 与 CLI 直连同样按 Ok 缓存 60s TTL（防止与凭证体系前端 120s 轮询叠加成
     // 高频请求），freshness 由返回值标记为 true（可进历史采样）；回退失败
@@ -2624,7 +2624,7 @@ fn fetch_live_rate_limits_uncached() -> Result<Option<KimiRateLimits>, String> {
     Ok(limits)
 }
 
-/// CLI 链路失败时的凭证体系回退：读 ~/.zbar/credentials/kimi.json 全部凭证
+/// CLI 链路失败时的凭证体系回退：读 ~/.agenthud/credentials/kimi.json 全部凭证
 /// （应用内网页登录保存的 refresh_token / 手动 API Key），复用凭证链路逐条
 /// 查询，取第一条查询成功（status=ok）且带窗口数据的条目映射为
 /// KimiRateLimits。无凭证 / 读取失败 / 全部凭证查询失败返回 None，调用方
@@ -2680,7 +2680,7 @@ fn limits_from_quota_entry(
     usable.then_some(limits)
 }
 
-// ===== 通用凭证体系链路（provider="kimi"，~/.zbar/credentials/kimi.json）=====
+// ===== 通用凭证体系链路（provider="kimi"，~/.agenthud/credentials/kimi.json）=====
 //
 // 与上方 CLI 链路的关系（对齐 claude/cursor 先例）：本地 CLI 登录态继续走
 // resolve_request_token / fetch_live_rate_limits*（主面板额度卡，带缓存与
@@ -3527,7 +3527,7 @@ mod tests {
     }
 
     /// wire.jsonl 导入幂等冒烟：临时目录造样例文件 + 临时 sqlite（不依赖真实
-    /// ~/.kimi-code 与网络，也不触碰 ~/.zbar/kimi.sqlite），干扰行全部跳过；
+    /// ~/.kimi-code 与网络，也不触碰 ~/.agenthud/kimi.sqlite），干扰行全部跳过；
     /// 重复导入记录数不变；追加行后序号续读不重复。
     #[test]
     fn wire_import_idempotent_smoke() {

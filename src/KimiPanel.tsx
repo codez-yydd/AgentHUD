@@ -27,7 +27,7 @@ interface Props {
 /**
  * Kimi 用量面板：通用 AgentUsagePanel 的 indigo 品牌皮肤，
  * 外层附加加油包余额小节（接口带 boosterWallet 时才有值）+ 底部
- * 「其他账号」区（凭证体系 ~/.zbar/credentials/kimi.json：OAuth 网页登录
+ * 「其他账号」区（凭证体系 ~/.agenthud/credentials/kimi.json：OAuth 网页登录
  * 保存的 refresh_token / 手动粘贴的 API Key，每条按其 region 调对应域名组的
  * usages 端点展示订阅额度）。该区由通用的 ProviderAccountsSection 渲染，
  * 与 OpenCode / MiniMax Code / DeepSeek Harness 三个面板共用同一形态——

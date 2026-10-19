@@ -1779,7 +1779,7 @@ fn fetch_live_rate_limits_uncached() -> Result<Option<ClaudeRateLimits>, ClaudeU
 }
 
 // ===== 手动凭证多账号查询（provider_quota 的 "claude" 分支调用）=====
-// 用户在凭证体系（~/.zbar/credentials/claude.json）手动添加 kind=token 条目
+// 用户在凭证体系（~/.agenthud/credentials/claude.json）手动添加 kind=token 条目
 // （sk-ant-oat 开头的 OAuth access token，可从本机/另一台机器的
 // .credentials.json 的 claudeAiOauth.accessToken 取得）。本地登录态不并入
 // 本链路——本地路径继续走 fetch_live_rate_limits（带 60s 缓存与历史采样），
@@ -2307,7 +2307,7 @@ mod tests {
         std::fs::create_dir_all(&tmp).expect("创建临时目录失败");
         let db_path = tmp.join("claude-hudwin.sqlite");
         let conn = Connection::open(&db_path).expect("打开临时库失败");
-        // 复用生产建表（open_claude_db 写死 ~/.zbar 路径，测试直接手建
+        // 复用生产建表（open_claude_db 写死 ~/.agenthud 路径，测试直接手建
         // 同构最小表；列集与 query_window_sessions_at 用到的列一致）
         conn.execute_batch(
             "CREATE TABLE model_usage (

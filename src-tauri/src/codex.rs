@@ -2189,7 +2189,7 @@ mod tests {
         std::fs::create_dir_all(&tmp).expect("创建临时目录失败");
         let db_path = tmp.join("codex-hudwin.sqlite");
         let conn = Connection::open(&db_path).expect("打开临时库失败");
-        // 复用生产建表（open_codex_db 写死 ~/.zbar 路径，测试直接手建
+        // 复用生产建表（open_codex_db 写死 ~/.agenthud 路径，测试直接手建
         // 同构最小表；列集与 query_window_sessions_at 用到的列一致）
         conn.execute_batch(
             "CREATE TABLE model_usage (

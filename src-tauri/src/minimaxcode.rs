@@ -12,7 +12,7 @@
 //! **为什么读库而不是文件**：MiniMax Code 不落 jsonl 用量日志，用量只在 sqlite 里。
 //! 源库由 MiniMax Code 自己写入且长期开着 WAL，本模块**只读**打开
 //! （`SQLITE_OPEN_READ_ONLY` + 3s busy_timeout），绝不写用户库；派生库落在
-//! `~/.zbar/minimaxcode.sqlite`（自有库，读写均可），与 opencode.sqlite / dsh.sqlite
+//! `~/.agenthud/minimaxcode.sqlite`（自有库，读写均可），与 opencode.sqlite / dsh.sqlite
 //! 同构。
 //!
 //! ## 源表（schema 与真实库逐列核对过）
@@ -254,7 +254,7 @@ pub(crate) fn source_db_path_at(root: &Path) -> PathBuf {
     v2
 }
 
-/// 自有导入库路径：~/.zbar/minimaxcode.sqlite（与 opencode.sqlite 同级）。
+/// 自有导入库路径：~/.agenthud/minimaxcode.sqlite（与 opencode.sqlite 同级）。
 pub(crate) fn minimaxcode_db_path() -> Result<PathBuf, String> {
     Ok(config_dir()?.join("minimaxcode.sqlite"))
 }
@@ -302,7 +302,7 @@ fn table_exists(conn: &Connection, name: &str) -> bool {
 }
 
 // ============================================================
-// 派生库（~/.zbar/minimaxcode.sqlite）
+// 派生库（~/.agenthud/minimaxcode.sqlite）
 // ============================================================
 
 /// 进程内串行化建表（claude/kimi/dsh/opencode 同款：多个查询命令并发 open 时
@@ -2343,7 +2343,7 @@ mod tests {
         .expect("插入源 assistant 行失败");
     }
 
-    /// 派生库（临时文件，不碰真实 ~/.zbar）。
+    /// 派生库（临时文件，不碰真实 ~/.agenthud）。
     fn open_derived(dir: &Path) -> Connection {
         open_minimaxcode_db_at(&dir.join("derived.sqlite")).expect("打开派生库失败")
     }
@@ -3359,7 +3359,7 @@ mod tests {
 
     /// 真机冒烟（对齐 opencode.rs / dsh.rs 的同名用例）：本机装了 MiniMax Code
     /// 且跑过对话时，对**真实源库**整链路跑一遍——只读源库 + 临时派生库，
-    /// **不碰** `~/.zbar/minimaxcode.sqlite`；没装或没数据的机器直接跳过，
+    /// **不碰** `~/.agenthud/minimaxcode.sqlite`；没装或没数据的机器直接跳过，
     /// 保证 CI 与他人机器必过。
     ///
     /// 断言的都不是「本机恰好有多少行」，而是口径不变量：指纹未变要跳过整轮、

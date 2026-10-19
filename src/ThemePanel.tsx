@@ -624,7 +624,7 @@ export function ThemePanel({ onBack }: Props) {
 
   /**
    * 处理拖放（需注入子页版）：原生文件对话框在无 Dock 图标的 Accessory
-   * （ZBar）应用上不可见，且其模态等待会阻塞主线程导致所有 IPC 瘫痪，故
+   * （AgentHUD）应用上不可见，且其模态等待会阻塞主线程导致所有 IPC 瘫痪，故
    * 改为接收 Tauri 拖放事件给出的文件路径。多文件时只取第一个，仅承载
    * 壁纸语义（宠物形象导入已迁至免注入子页 SkinStandalonePanel）：
    * - 壁纸白名单扩展名（大小写不敏感）→ 导入 wallpapers/ 并切换指向；

@@ -5,7 +5,7 @@
 //! 数据源：
 //! - ZCode：主库 ~/.zcode/cli/db/db.sqlite（只读连接，绝不写主库），不
 //!   依赖 agent_theme 的 asar 注入体系；
-//! - Claude / Codex / Kimi：各自派生库（~/.zbar/*.sqlite）经
+//! - Claude / Codex / Kimi：各自派生库（~/.agenthud/*.sqlite）经
 //!   query_window_sessions + query_stats 供给活跃会话与今日合计；
 //! - Cursor：fetch_cursor_usage_totals 供今日总量（纯汇总组，无会话行）。
 //!
@@ -179,7 +179,7 @@ const HUD_DEFAULT_MARGIN: f64 = 56.0;
 const HUD_DEFAULT_BOTTOM_EXTRA: f64 = 140.0;
 
 // ============================================================
-// 配置持久化（~/.zbar/session-hud.json，与项目其它配置同目录）
+// 配置持久化（~/.agenthud/session-hud.json，与项目其它配置同目录）
 // ============================================================
 
 /// 会话悬浮窗配置（皮肤页"会话悬浮窗"卡读写 + 窗口自由拖拽尺寸/字体

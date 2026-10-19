@@ -1,6 +1,6 @@
 //! 主题数据落盘：目录布局、params.json、state.json、variables.css 重渲。
 //!
-//! 目录布局（~/.zbar/agent-themes/）：
+//! 目录布局（~/.agenthud/agent-themes/）：
 //!   zcode/params.json     主题参数（ThemeParams，camelCase）
 //!   zcode/state.json      安装状态与版本指纹缓存
 //!   zcode/variables.css   由参数渲染出的 CSS 变量（注入物外链引用）
@@ -27,12 +27,12 @@ use std::path::{Path, PathBuf};
 // 目录与文件名
 // ============================================================
 
-/// 主题根目录：~/.zbar/agent-themes
+/// 主题根目录：~/.agenthud/agent-themes
 pub fn themes_dir() -> Result<PathBuf, String> {
     Ok(crate::pricing::config_dir()?.join("agent-themes"))
 }
 
-/// 单个应用的主题目录：~/.zbar/agent-themes/<app_id>
+/// 单个应用的主题目录：~/.agenthud/agent-themes/<app_id>
 pub fn app_dir(app_id: &str) -> Result<PathBuf, String> {
     Ok(themes_dir()?.join(app_id))
 }
@@ -164,7 +164,7 @@ pub const DEFAULT_USAGE_MODEL_ROWS: bool = true;
 /// （effects.js 侧变量缺失视为开启，兼容旧 variables.css）
 pub const DEFAULT_WALLPAPER_ENABLED: bool = true;
 /* 宠物参数（开关/形象/尺寸）自本版起从 ThemeParams 移除：宠物配置统一
-收敛到 pet::PetConfig（~/.zbar/pet.json，含总开关与形态二选一，默认注入
+收敛到 pet::PetConfig（~/.agenthud/pet.json，含总开关与形态二选一，默认注入
 版），注入版渲染由 refresh_variables_css_in 按 PetConfig 计算
 --zbar-pet-* 三变量，变量名与语义保持不变（旧 pet.js 壳读新 CSS 仍兼容，
 本次升级同批把壳升到 V7 可拖拽）；旧 params.json 残留的 petEnabled /
@@ -392,7 +392,7 @@ pub fn load_params(app_id: &str) -> ThemeParams {
     load_params_at(&path)
 }
 
-/// load_params 的路径显式版（单元测试复用，不依赖真实 ~/.zbar）。
+/// load_params 的路径显式版（单元测试复用，不依赖真实 ~/.agenthud）。
 pub(crate) fn load_params_at(path: &Path) -> ThemeParams {
     read_params_file(path).unwrap_or_default()
 }
@@ -586,7 +586,7 @@ pub struct BackupMeta {
     pub created_at: String,
 }
 
-/// 写备份元信息到显式目录（备份守卫步骤与单元测试复用，不依赖真实 ~/.zbar）。
+/// 写备份元信息到显式目录（备份守卫步骤与单元测试复用，不依赖真实 ~/.agenthud）。
 pub(crate) fn write_backup_meta_in(
     dir: &Path,
     asar_size: u64,
@@ -631,7 +631,7 @@ pub fn latest_backup(app_id: &str) -> Option<PathBuf> {
     latest_backup_in(&dir)
 }
 
-/// latest_backup 的目录显式版（单元测试复用，不依赖真实 ~/.zbar）。
+/// latest_backup 的目录显式版（单元测试复用，不依赖真实 ~/.agenthud）。
 pub(crate) fn latest_backup_in(dir: &Path) -> Option<PathBuf> {
     // 主路径：meta 驱动精确查找（最后成功备份的版本 + 体积 → 精确文件名）
     if let Some(meta) = load_backup_meta_in(dir) {
@@ -711,7 +711,7 @@ fn pet_asset_stamp(dir: &Path) -> String {
 }
 
 /// 指定目录内的 variables.css 重渲（ensure_theme_assets / apply_wallpaper
-/// / pets::sync_theme_custom_pet 内部调用与单元测试共用，不依赖真实 ~/.zbar
+/// / pets::sync_theme_custom_pet 内部调用与单元测试共用，不依赖真实 ~/.agenthud
 /// ——宠物配置经参数显式传入，测试目录不受真实 pet.json 影响）。
 /// wallpaperFile 语义（V3）：绝对路径直接 file_url 引用；相对文件名拼
 /// wallpapers/ 目录；缺失/为空时回落 default.mp4。文件不存在时由
@@ -719,7 +719,7 @@ fn pet_asset_stamp(dir: &Path) -> String {
 /// --zbar-pet-asset-ver 按当前 pet-custom.js 内容计算（见 pet_asset_stamp）。
 /// --zbar-pet-* 三变量按 pet（PetConfig，唯一真相源）渲染：注入版开关 =
 /// enabled && mode==injected（悬浮窗形态/总开关关 → 0，注入壳移除 DOM），
-/// 尺寸档位按缓存屏高换算成 px（ZBar 重启/改档位后缓存刷新，皮肤页状态
+/// 尺寸档位按缓存屏高换算成 px（AgentHUD 重启/改档位后缓存刷新，皮肤页状态
 /// 轮询触发的本函数重渲即静默按新屏高重写 px——换屏自适应时机为下次
 /// 重渲，不实时监听屏幕变化）；pos 不参与渲染（注入版位置存 ZCode 页面
 /// localStorage）。
@@ -1422,7 +1422,7 @@ pub fn ensure_theme_assets(app_id: &str, resource_wallpapers: Option<&Path>) -> 
 }
 
 /// ensure_theme_assets 的目录显式版（单元测试复用，宠物参数显式传入
-/// 不依赖真实 ~/.zbar）。
+/// 不依赖真实 ~/.agenthud）。
 pub(crate) fn ensure_theme_assets_in(
     dir: &Path,
     wp_dir: &Path,

@@ -3,7 +3,7 @@
 //! 背景：ZCode 主库 ~/.zcode/cli/db/db.sqlite 的 model_usage 表没有 cwd/
 //! project 类列，项目浏览器里 zcode 用量只能整体聚合进 __unknown__。
 //! 本模块解析 ZCode 本机会话文件，自建「带项目维度的镜像」派生库
-//! ~/.zbar/zcode_sessions.sqlite，补齐 session_id → 项目目录 的映射。
+//! ~/.agenthud/zcode_sessions.sqlite，补齐 session_id → 项目目录 的映射。
 //!
 //! 口径铁律（防双计）：主面板统计/菜单栏/同步的 zcode 用量数据源永远是
 //! db.sqlite 本体（db.rs，一行不改）；项目浏览器 zcode 部分以 db.sqlite 的
@@ -70,7 +70,7 @@ fn agents_dir() -> Option<PathBuf> {
     dir.is_dir().then_some(dir)
 }
 
-/// 派生库路径：~/.zbar/zcode_sessions.sqlite
+/// 派生库路径：~/.agenthud/zcode_sessions.sqlite
 pub(crate) fn derived_db_path() -> Result<PathBuf, String> {
     Ok(config_dir()?.join("zcode_sessions.sqlite"))
 }
@@ -960,7 +960,7 @@ mod tests {
     }
 
     /// 派生库 upsert 哨兵语义：首次落库（含 NULL 哨兵）、后到补值、
-    /// 已有值绝不覆盖。使用真实派生库（~/.zbar，与 codex 测试同款口径，
+    /// 已有值绝不覆盖。使用真实派生库（~/.agenthud，与 codex 测试同款口径，
     /// 测试会话 id 加 test_ 前缀避免污染真实数据）。
     #[test]
     fn upsert_session_meta_sentinel_semantics() {

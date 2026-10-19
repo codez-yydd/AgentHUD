@@ -6,7 +6,7 @@
 //!
 //! **为什么读库而不是文件**：OpenCode 不落 jsonl 会话日志，用量只在 sqlite 里。
 //! 源库由 OpenCode 自己写入，本模块**只读**打开（绝不写用户库）；派生库落在
-//! `~/.zbar/opencode.sqlite`（自有库，读写均可），与 dsh.sqlite / kimi.sqlite 同构。
+//! `~/.agenthud/opencode.sqlite`（自有库，读写均可），与 dsh.sqlite / kimi.sqlite 同构。
 //!
 //! **v1 / v2 双形态自适应**：v2 是把 v1 改名迁移来的（其迁移 SQL：
 //! `ALTER TABLE session RENAME TO session_v2`），用户可能装任一版本，故两套都认：
@@ -110,7 +110,7 @@ const MAX_TREND_BUCKETS: usize = 5_000;
 // 路径与 presence
 // ============================================================
 
-/// 自有导入库路径：~/.zbar/opencode.sqlite（与 dsh.sqlite / kimi.sqlite 同级）。
+/// 自有导入库路径：~/.agenthud/opencode.sqlite（与 dsh.sqlite / kimi.sqlite 同级）。
 pub(crate) fn opencode_db_path() -> Result<PathBuf, String> {
     Ok(config_dir()?.join("opencode.sqlite"))
 }
@@ -136,7 +136,7 @@ pub(crate) fn has_local_data_at(path: &Path) -> bool {
 }
 
 // ============================================================
-// 派生库（~/.zbar/opencode.sqlite）
+// 派生库（~/.agenthud/opencode.sqlite）
 // ============================================================
 
 /// 进程内串行化建表（claude/kimi/dsh 同款：多个查询命令并发 open 时不交错建表）。
@@ -2011,7 +2011,7 @@ mod tests {
         .expect("插入源消息失败");
     }
 
-    /// 派生库（临时文件，不碰真实 ~/.zbar）。
+    /// 派生库（临时文件，不碰真实 ~/.agenthud）。
     fn open_derived(dir: &Path) -> Connection {
         open_opencode_db_at(&dir.join("derived.sqlite")).expect("打开派生库失败")
     }
@@ -2881,7 +2881,7 @@ mod tests {
     }
 
     /// 冒烟：对本机**真实** `~/.local/share/opencode/opencode.db` 做一次增量导入与
-    /// 全范围查询。源库只读打开、派生库落在临时目录（**不碰真实 ~/.zbar**），
+    /// 全范围查询。源库只读打开、派生库落在临时目录（**不碰真实 ~/.agenthud**），
     /// 故可安全地在本机反复跑。本机未装 OpenCode 时早退（他人机器/CI 上不算失败）。
     /// 断言重点：真实数据上的幂等性、overall 与 by_model 自洽、归一化落地
     /// （input ≥ cache_read）、自算成本覆盖全部行。
