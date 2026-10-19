@@ -323,7 +323,22 @@ export const dashboard = {
   "dashboard.logs.metricsCostHint": "当前范围内没有可计价数据（请求未配置价格）",
   "dashboard.logs.metricsCacheHit": "缓存命中率",
   "dashboard.logs.metricsCacheHint":
-    "缓存读 token ÷ 输入 token（按来源口径合并；无输入数据时不显示）",
+    "缓存读 token ÷ 输入 token（按来源口径合并；无输入数据时显示为 —）",
+  // Token 三格（总量 / 输入 / 输出）：数值格紧凑格式；hint 词条是纯口径说明
+  // （不含数值），组件把精确值（exactCount）拼在前面组成 title
+  // （「精确值 · 口径说明」，「—」态只显示 hint），与表格缓存列
+  // cacheCellTitle「精确值在 title」同一先例。输入的跨源口径差异必须写进
+  // title（详见 src-tauri/src/request_logs.rs 文件头「汇总指标」注释：
+  // included 源 input 已含缓存读，separate 源不含）
+  "dashboard.logs.metricsTokensTotal": "Token 总量",
+  "dashboard.logs.metricsTokensTotalHint":
+    "输入 + 输出 + 缓存等全部口径的总量（按各来源的记录口径汇总）",
+  "dashboard.logs.metricsInputTokens": "输入",
+  "dashboard.logs.metricsInputTokensHint":
+    "输入 token（口径随来源不同：ZCode / Codex / DSH / OpenCode / MiniMax 已含缓存读，Claude / Kimi 不含缓存读写）",
+  "dashboard.logs.metricsOutputTokens": "输出",
+  "dashboard.logs.metricsOutputTokensHint":
+    "输出 token 合计（按各来源的记录口径）",
   "dashboard.logs.tableTitle": "请求明细",
   // 卡片副标题末项与页描述里的「仅本机」：本页没有「全部设备」口径
   "dashboard.logs.localOnly": "仅本机记录",

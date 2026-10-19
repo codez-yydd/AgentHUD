@@ -2,9 +2,9 @@
  * 请求日志页（主窗口第四页）：7 个本地来源的请求级明细，按时间倒序分页。
  *
  * 结构：页头（标题 + 时间范围触发按钮 + 自动刷新间隔 + 刷新）→ 筛选行
- * （来源 / 模型下拉，模型选项带请求条数）→ 汇总指标行（总请求数 / 总成本 /
- * 缓存命中率，当前筛选条件下的**全范围**聚合）→ 明细表（10 列）→ 分页条 →
- * 详情抽屉。
+ * （来源 / 模型下拉，模型选项带请求条数）→ 汇总指标行（总请求数 / Token 总量 /
+ * 输入 / 输出 / 总成本 / 缓存命中率，当前筛选条件下的**全范围**聚合）→
+ * 明细表（10 列）→ 分页条 → 详情抽屉。
  *
  * 版面：本页是唯一「不整页滚动」的页（.db-logs-page：flex 列 + 内部滚动），
  * 表格卡 flex:1、表体 .db-table-wrap 纵向滚动 + sticky 表头，分页条固定卡底
@@ -35,10 +35,15 @@
  *  - 部分来源取数失败时用一行 .db-hintbar 弱提示（有数据才提示，不打断）。
  */
 import { useEffect, useMemo, useState } from "react";
-import { useI18n } from "../../i18n";
+import { useI18n, type MessageKey } from "../../i18n";
 import { EmptyState } from "../../layout";
 import { DropdownMenu, type DropdownOption } from "../../DropdownMenu";
-import { formatCost, formatCountLocale, formatPct } from "../../format";
+import {
+  formatCost,
+  formatCountLocale,
+  formatPct,
+  formatTokensLocale,
+} from "../../format";
 import { RefreshIcon } from "../icons";
 import { Card, Skeleton } from "../primitives";
 import {
@@ -102,15 +107,24 @@ function saveRefreshMs(ms: number): void {
 }
 
 /**
- * 汇总指标行：总请求数 / 总成本 / 缓存命中率（当前筛选条件下的全范围聚合，
- * 后端一次返回，翻页不变）。
+ * 汇总指标行：总请求数 / Token 总量 / 输入 / 输出 / 总成本 / 缓存命中率
+ * （当前筛选条件下的全范围聚合，后端一次返回，翻页不变）。
  *
  * 状态降级：
- *  - 首载（无旧值）→ 三个骨架块（形状与真实值同宽，不跳版）；
+ *  - 首载（无旧值）→ 六个骨架块（形状与真实值同宽，不跳版）；
  *  - 刷新 / 翻页（有旧值）→ 数值压暗（db-logs-metrics--busy），不闪空；
  *  - 错误 / 无数据（summary 为 null）→ 全部显示灰化「—」；
+ *  - token 三格：有请求即有值，0 是有效值（与请求数格一致直接显示 0）；
  *  - 命中率 null（分母为 0）→ 「—」；总成本无任何价格数据（折算为 0）→ 「—」
  *    并给 title 说明（与表格「未定价」同一套口径）。
+ *
+ * token 口径：总量 = total_tokens（输入 + 输出 + 缓存等全部口径的总量）；
+ * 输入的跨源口径差异（zcode / codex / dsh / opencode / minimaxcode 的
+ * input 已含缓存读，claude / kimi 不含缓存读写）写进 title 提示，详见
+ * src-tauri/src/request_logs.rs 文件头「汇总指标」注释。数值格用
+ * formatTokensLocale（与表格逐行同一格式化函数）；title = 精确值
+ * （exactCount）· 口径说明（与表格缓存列 cacheCellTitle「精确值在 title」
+ * 同一先例），无值（「—」态）只留口径说明。
  */
 function LogsMetrics({
   summary,
@@ -127,12 +141,46 @@ function LogsMetrics({
   const cost = summary ? costOf(summary.cost_usd, summary.cost_cny, currency) : 0;
   const costText = summary != null && cost > 0 ? formatCost(cost, currency) : null;
   const hitRate = summary?.cache_hit_rate ?? null;
+  // token 三格 title：有值 = 精确值（exactCount）· 口径说明；「—」态退回
+  // 纯口径说明（hint 词条本身不含数值，与表格缓存列「精确值在 title」同一先例）
+  const tokenTitle = (hintKey: MessageKey, n: number | null | undefined): string =>
+    n == null ? t(hintKey) : `${exactCount(n, locale)} · ${t(hintKey)}`;
   // value = null → 灰化「—」；title 只在该格确实没有值（或有口径说明）时给
   const cells: { key: string; label: string; value: string | null; title?: string }[] = [
     {
       key: "requests",
       label: t("dashboard.logs.metricsRequests"),
       value: summary ? exactCount(summary.requests, locale) : null,
+    },
+    {
+      key: "tokensTotal",
+      label: t("dashboard.logs.metricsTokensTotal"),
+      value:
+        summary != null ? formatTokensLocale(summary.total_tokens, locale) : null,
+      title: tokenTitle(
+        "dashboard.logs.metricsTokensTotalHint",
+        summary?.total_tokens
+      ),
+    },
+    {
+      key: "inputTokens",
+      label: t("dashboard.logs.metricsInputTokens"),
+      value:
+        summary != null ? formatTokensLocale(summary.input_tokens, locale) : null,
+      title: tokenTitle(
+        "dashboard.logs.metricsInputTokensHint",
+        summary?.input_tokens
+      ),
+    },
+    {
+      key: "outputTokens",
+      label: t("dashboard.logs.metricsOutputTokens"),
+      value:
+        summary != null ? formatTokensLocale(summary.output_tokens, locale) : null,
+      title: tokenTitle(
+        "dashboard.logs.metricsOutputTokensHint",
+        summary?.output_tokens
+      ),
     },
     {
       key: "cost",

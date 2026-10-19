@@ -2858,14 +2858,17 @@ body {
   border-bottom: 1px solid var(--db-border);
 }
 
-/* ---- 汇总指标行：总请求数 / 总成本 / 缓存命中率 ----
-   紧凑单行（三格 inline 标签 + 数值），筛选项变化即刷新；加载中压暗旧值
-   （首载给骨架），错误 / 无数据态全「—」，不占额外高度影响表格可视行数。 */
+/* ---- 汇总指标行：总请求数 / Token 总量 / 输入 / 输出 / 总成本 / 缓存命中率 ----
+   紧凑单行（六格 inline 标签 + 数值），筛选项变化即刷新；加载中压暗旧值
+   （首载给骨架），错误 / 无数据态全「—」，不占额外高度影响表格可视行数。
+   六格默认单行（1100px 默认窗口放得下）；flex-wrap: wrap 兜底极窄窗口
+   （900×640 最小窗口）折两行——本页是 overflow: hidden 的 flex 列，横向
+   溢出会直接裁掉内容，折行只会让表格卡（flex:1）少一行高度，是安全方向。 */
 .db-logs-metrics {
   display: flex;
   align-items: center;
-  gap: 10px;
-  flex-wrap: nowrap;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
 .db-logs-metrics--busy {
@@ -2875,9 +2878,9 @@ body {
 .db-logs-metric {
   display: flex;
   align-items: baseline;
-  gap: 8px;
+  gap: 6px;
   min-width: 0;
-  padding: 7px 12px;
+  padding: 5px 10px;
   border: 1px solid var(--db-border);
   border-radius: 10px;
   background: var(--db-card-bg);

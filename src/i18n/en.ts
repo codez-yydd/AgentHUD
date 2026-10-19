@@ -1522,6 +1522,23 @@ export const en: typeof zh = {
     "dashboard.logs.metricsCacheHit": "Cache hit rate",
     "dashboard.logs.metricsCacheHint":
       "Cache-read tokens ÷ input tokens (merged per source convention; shown as — when there is no input)",
+    // Token triplet (total / input / output): compact values; the hint entries
+    // are pure caliber notes (no numbers) — the component prefixes the exact
+    // number (exactCount) to build the title ("exact · note"; the dash state
+    // shows the note alone), same "exact value in title" precedent as the
+    // table's cacheCellTitle. The per-source input scope difference must live
+    // in the title (see src-tauri/src/request_logs.rs "Summary metrics":
+    // included sources count cache reads inside input, separate sources keep
+    // them in own columns)
+    "dashboard.logs.metricsTokensTotal": "Total tokens",
+    "dashboard.logs.metricsTokensTotalHint":
+      "Input + output + cache combined (all-scope total; summed per source recording convention)",
+    "dashboard.logs.metricsInputTokens": "Input",
+    "dashboard.logs.metricsInputTokensHint":
+      "Input tokens (scope varies by source: ZCode / Codex / DSH / OpenCode / MiniMax already include cache reads, Claude / Kimi exclude cache read/write)",
+    "dashboard.logs.metricsOutputTokens": "Output",
+    "dashboard.logs.metricsOutputTokensHint":
+      "Output tokens (per source recording convention)",
     "dashboard.logs.tableTitle": "Request details",
     "dashboard.logs.localOnly": "This machine only",
     "dashboard.logs.colTime": "Time",
