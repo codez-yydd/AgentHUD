@@ -1221,7 +1221,7 @@ export const en: typeof zh = {
     "dashboard.overview.desc":
       "Aggregated usage, cost and trends across services.",
     "dashboard.logs.desc":
-      "Per-request details: time, model, token breakdown, cost and duration; this machine only, filterable by source.",
+      "Per-request details: time, model, token breakdown, cost and duration; filterable by source and data scope (this machine / all devices).",
     "dashboard.compare.desc":
       "Weekly quota left per subscription, used-% trends over the selected range, and local vs. other-device token comparison.",
     "dashboard.pricing.desc":
@@ -1559,10 +1559,17 @@ export const en: typeof zh = {
     "dashboard.logs.colSpeed": "Speed",
     "dashboard.logs.rowHint": "Click a row for details",
     "dashboard.logs.cellNoData": "No data",
+    // Remote-suffixed entries are for remote rows (all-devices scope): their
+    // synced records simply carry no such columns, so the wording must not
+    // point at "session records"
     "dashboard.logs.noDurationTitle":
       "This source's session records contain no duration data (e.g. Codex session files have no duration; older Claude Code versions do not persist it)",
+    "dashboard.logs.noDurationRemoteTitle":
+      "Remote devices' synced records contain no duration data",
     "dashboard.logs.noTtftTitle":
       "This source's session records contain no TTFT data",
+    "dashboard.logs.noTtftRemoteTitle":
+      "Remote devices' synced records contain no TTFT data",
     "dashboard.logs.noSpeedTitle":
       "No duration data, or the row was rejected as an invalid speed sample (out-of-range window / inconsistent timestamps)",
     "dashboard.logs.unpriced": "Unpriced",
@@ -1583,6 +1590,9 @@ export const en: typeof zh = {
     "dashboard.logs.retry": "Reload",
     "dashboard.logs.partialFailures":
       "Some sources could not be read this time, so data may be incomplete: {names}",
+    // failed_sources entry "remote" (remote lane failed / sync off / legacy
+    // server 404) is shown under this label
+    "dashboard.logs.remoteSourceName": "Remote devices",
     "dashboard.logs.pagePrev": "Prev",
     "dashboard.logs.pageNext": "Next",
     "dashboard.logs.pageInfo": "Page {page} / {total}",
@@ -1591,6 +1601,9 @@ export const en: typeof zh = {
     "dashboard.logs.close": "Close",
     "dashboard.logs.detailBasic": "Basic",
     "dashboard.logs.detailSource": "Source",
+    // Device ownership of remote rows (device_id brought back from the server
+    // under the all-devices scope); local rows don't show this line
+    "dashboard.logs.detailDevice": "Device",
     "dashboard.logs.detailModel": "Model",
     "dashboard.logs.detailProvider": "Provider",
     "dashboard.logs.detailSession": "Session ID",

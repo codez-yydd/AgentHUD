@@ -1009,6 +1009,121 @@ def query_period_detail(periods, device_ids, source=None):
         conn.close()
 
 
+# ===== 逐条明细查询（/usage_records 用）=====
+
+# /usage_records 的行数上限：与客户端本地单源深页保护（MAX_FETCH_ROWS）同量级，
+# 防止一次请求把大表读进内存。
+QUERY_RECORDS_MAX_LIMIT = 5000
+
+
+def query_usage_records(
+    from_ms, to_ms, device_ids, source=None, model_id=None, limit=500, offset=0
+):
+    """逐条明细查询：返回同 WHERE 下的 total + rows + by_model。
+
+    - rows 按 started_at DESC 返回（同毫秒 device_id / source / local_rowid
+      稳定序），带 device_id 逐条全字段；客户端「全部设备」口径恒带
+      exclude_device=<本机>，两集合不相交，合并即免去重；
+    - by_model 按 (source, provider_id, model_id) 分组（与 /usage 的 by_model
+      同款命名），供客户端把远端汇总按真实 source 归并进对应来源路折算成本
+      （缓存命中率分源口径依赖 source 维度，因此必须带 source 分组）；
+    - device_ids 为空 = 查全部；source / model_id 非空时精确过滤；
+    - limit 夹在 [0, QUERY_RECORDS_MAX_LIMIT]，offset >= 0。
+    """
+    dev_frag, dev_params = _build_device_filter(device_ids)
+    src_frag, src_params = _build_source_filter(source)
+    if model_id:
+        model_frag, model_params = "AND model_id = ?", [model_id]
+    else:
+        model_frag, model_params = "", []
+    where = f"started_at >= ? AND started_at < ? {dev_frag} {src_frag} {model_frag}"
+    where_params = [from_ms, to_ms] + dev_params + src_params + model_params
+
+    try:
+        limit = max(0, min(int(limit), QUERY_RECORDS_MAX_LIMIT))
+        offset = max(0, int(offset))
+    except (TypeError, ValueError):
+        limit, offset = 500, 0
+
+    conn = get_conn()
+    try:
+        total = conn.execute(
+            f"SELECT COUNT(*) FROM usage_records WHERE {where}", where_params
+        ).fetchone()[0]
+
+        rows = conn.execute(
+            f"""
+            SELECT device_id, source, local_rowid, started_at, model_id, provider_id,
+                   input_tokens, output_tokens, cache_read_input_tokens,
+                   cache_creation_input_tokens, reasoning_tokens,
+                   computed_total_tokens, session_id, project_key, project_display
+            FROM usage_records
+            WHERE {where}
+            ORDER BY started_at DESC, device_id ASC, source ASC, local_rowid ASC
+            LIMIT ? OFFSET ?
+            """,
+            where_params + [limit, offset],
+        ).fetchall()
+
+        by_model_rows = conn.execute(
+            f"""
+            SELECT source, model_id, provider_id, COUNT(*),
+                   COALESCE(SUM(input_tokens),0),
+                   COALESCE(SUM(output_tokens),0),
+                   COALESCE(SUM(cache_read_input_tokens),0),
+                   COALESCE(SUM(cache_creation_input_tokens),0),
+                   COALESCE(SUM(reasoning_tokens),0),
+                   COALESCE(SUM(computed_total_tokens),0) AS total_tokens
+            FROM usage_records
+            WHERE {where}
+            GROUP BY source, provider_id, model_id
+            ORDER BY total_tokens DESC
+            """,
+            where_params,
+        ).fetchall()
+    finally:
+        conn.close()
+
+    return {
+        "total": total,
+        "rows": [
+            {
+                "device_id": r["device_id"],
+                "source": r["source"] or "zcode",
+                "local_rowid": r["local_rowid"],
+                "started_at": r["started_at"],
+                "model_id": r["model_id"] or "",
+                "provider_id": r["provider_id"] or "",
+                "input_tokens": r["input_tokens"],
+                "output_tokens": r["output_tokens"],
+                "cache_read_input_tokens": r["cache_read_input_tokens"],
+                "cache_creation_input_tokens": r["cache_creation_input_tokens"],
+                "reasoning_tokens": r["reasoning_tokens"],
+                "computed_total_tokens": r["computed_total_tokens"],
+                "session_id": r["session_id"],
+                "project_key": r["project_key"],
+                "project_display": r["project_display"],
+            }
+            for r in rows
+        ],
+        "by_model": [
+            {
+                "source": r[0] or "zcode",
+                "model_id": r[1] or "",
+                "provider_id": r[2] or "",
+                "requests": r[3],
+                "input_tokens": r[4],
+                "output_tokens": r[5],
+                "cache_read_tokens": r[6],
+                "cache_write_tokens": r[7],
+                "reasoning_tokens": r[8],
+                "total_tokens": r[9],
+            }
+            for r in by_model_rows
+        ],
+    }
+
+
 # ===== 配置表（自动清理用）=====
 
 def get_config(key):

@@ -1,12 +1,18 @@
 //! 主窗口「请求日志」页的取数：把 7 个本地来源的请求级明细表（`model_usage`，
-//! 每行 = 一次模型请求）按时间倒序合并成一份可分页的列表。
+//! 每行 = 一次模型请求）按时间倒序合并成一份可分页的列表；`scope = "all"`
+//! 时再并入同步服务端上其他设备的逐条明细（远端作为第 8 路同语义接入）。
 //!
 //! ## 来源与打开方式
 //!
 //! - `zcode`：ZCode 主库（`db::db_path()`，**只读**打开，与 db.rs 同款 flags）；
 //! - `codex` / `claude` / `kimi` / `dsh` / `opencode` / `minimaxcode`：各自的
 //!   导入库 `~/.agenthud/<name>.sqlite`（与前端的「来源」概念对齐，见
-//!   src/dashboard/compare/model.ts 的 remoteSource 映射）。
+//!   src/dashboard/compare/model.ts 的 remoteSource 映射）；
+//! - 远端（仅 `scope = "all"` 且已启用同步）：GET /usage_records 一次拉取
+//!   其他设备（`exclude_device=<本机>`）的明细 + by_model 聚合，按行的真实
+//!   source 分桶归并进对应来源路（见「全部设备口径」）。本机记录会上传到
+//!   服务端本机 device_id 名下，因此远端查询必须排除本机，两集合不相交，
+//!   合并无需去重。
 //!
 //! 本模块对导入库只做 SELECT：直接 `Connection::open` 打开，**刻意不调用各模块的
 //! `open_*_db()`**——那些函数会建表 / 补列 / 触发迁移，而这里只是读一眼；
@@ -44,10 +50,24 @@
 //!
 //! 每个来源按 `started_at DESC` 取「前 (page+1)×page_size 行」（**单源不带
 //! OFFSET**：全局页码对应的 offset 落在归并之后，单源先 OFFSET 会把归并结果
-//! 切歪），各源结果做 k 路归并（同毫秒按来源名稳定序）后切片出当前页；
-//! total = 各源同条件 COUNT(*) 之和。单源失败（表不存在、库损坏等）只记
-//! eprintln! 并跳过该源，把来源名放进 `failed_sources` 交前端弱提示，
-//! 不让整页失败。
+//! 切歪），各源结果做 k 路归并（同毫秒按「本机在前、来源名稳定序」，本机行
+//! device 为 None 恒排在远端行之前）后切片出当前页；total = 各源同条件
+//! COUNT 之和。单源失败（表不存在、库损坏等）只记 eprintln! 并跳过该源，把
+//! 来源名放进 `failed_sources` 交前端弱提示，不让整页失败。
+//!
+//! ## 全部设备口径（scope = "all"）
+//!
+//! 远端作为一路接入 `collect_sources` 之后的归并：同步启用时 GET
+//! /usage_records 一次请求（带 `exclude_device=<本机>`，单来源筛选时再带
+//! `source`），返回行按真实 source 分桶归并进对应来源路——来源列展示、
+//! agent 筛选语义、merge_summaries 的分源缓存命中率（included / separate）
+//! 全部自动复用本地来源路的既有逻辑，无需为远端写特殊分支。行数上限：
+//! 单来源筛选与本地单源一致；全部来源时拉 limit×源数 行（服务端全局排序后
+//! 分桶，可证明每源仍能取足自身的前 limit 名，归并切页正确；上限同样夹到
+//! MAX_FETCH_ROWS）。远端行不带耗时 / 首字 / 速度（服务端明细无这些列，恒
+//! None，前端灰化「—」）；device 字段带回设备 id 供前端展示；远端拉取失败 /
+//! 同步未启用 / 旧服务端 404 一律计入 `failed_sources`（统一标识 "remote"），
+//! 本机数据照常展示，绝不清空表格。服务端无该接口的旧版本走同一降级路径。
 //!
 //! ## 汇总指标
 //!
@@ -128,6 +148,11 @@ pub struct RequestLogRow {
     /// 与前端 SpeedQuality 契约一致）：request_average = 请求平均近似，
     /// 界面带 ≈ 前缀；无速度为 None
     pub speed_quality: Option<crate::token_speed::SpeedQuality>,
+    /// 远端行的设备 id（scope = "all" 时从服务端明细带回，供前端展示「设备」
+    /// 归属）；本机行恒 None，序列化时省略该字段（与 DeviceInfo.record_count
+    /// 同款 skip 风格，旧前端契约不受影响）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub device: Option<String>,
 }
 
 impl crate::Billable for RequestLogRow {
@@ -153,8 +178,9 @@ pub struct RequestLogsPage {
     /// 当前筛选条件（来源 + 模型 + 时间范围）下的**全范围**汇总（非当前页）
     pub summary: RequestLogSummary,
     /// 本次查询**打开或查询失败**被跳过的来源名（库文件不存在不算——那是
-    /// 未安装 / 未用过，属于正常的 0 条）。前端在 total > 0 时据此弱提示
-    /// 「数据可能不完整」（对齐总览页 partialFailures 惯例）。
+    /// 未安装 / 未用过，属于正常的 0 条）。scope = "all" 时远端一路拉取失败 /
+    /// 同步未启用 / 旧服务端 404 也计入，统一标识 "remote"。前端在 total > 0
+    /// 时据此弱提示「数据可能不完整」（对齐总览页 partialFailures 惯例）。
     pub failed_sources: Vec<String>,
 }
 
@@ -201,6 +227,21 @@ struct ModelTokens {
     input_tokens: i64,
     output_tokens: i64,
     cache_read_tokens: i64,
+}
+
+impl SourceTotals {
+    /// 逐项累加另一份聚合（远端分桶并入对应来源路用）。by_model 直接追加、
+    /// 不合并同模型分组：成本折算是逐组乘价后求和（线性），命中率只看三项
+    /// token 总和，同模型出现两组不影响结果。
+    fn accumulate(&mut self, other: SourceTotals) {
+        self.requests += other.requests;
+        self.input_tokens += other.input_tokens;
+        self.output_tokens += other.output_tokens;
+        self.cache_read_tokens += other.cache_read_tokens;
+        self.cache_write_tokens += other.cache_write_tokens;
+        self.total_tokens += other.total_tokens;
+        self.by_model.extend(other.by_model);
+    }
 }
 
 impl crate::Billable for ModelTokens {
@@ -438,6 +479,7 @@ fn row_to_log(row: &rusqlite::Row<'_>, source: &str) -> rusqlite::Result<Request
         ttft_ms: row.get(12)?,
         speed_tps: speed.as_ref().map(|snapshot| snapshot.value),
         speed_quality: speed.map(|snapshot| snapshot.quality),
+        device: None,
     })
 }
 
@@ -609,6 +651,179 @@ fn query_source_models(
     Ok(rows)
 }
 
+// ===== 全部设备口径（scope = "all"）：远端一路的接入 =====
+
+/// 远端单条明细 → 请求日志行：按真实 source 归并进对应来源路，因此 source /
+/// model / token 各字段与本地行同语义直接透传；耗时 / 首字 / 速度恒 None
+/// （服务端明细无这些列，前端灰化「—」，不做估算回退）；project 取
+/// project_display、退回 project_key；花费由调用方对当前页统一折算，此置 0；
+/// device 带回设备 id 供前端展示归属。
+fn remote_row_to_log(record: &crate::sync::RemoteUsageRecord) -> RequestLogRow {
+    RequestLogRow {
+        source: record.source.clone(),
+        started_at: record.started_at,
+        model_id: record.model_id.clone(),
+        provider_id: record.provider_id.clone(),
+        input_tokens: record.input_tokens,
+        output_tokens: record.output_tokens,
+        cache_read_tokens: record.cache_read_input_tokens,
+        cache_write_tokens: record.cache_creation_input_tokens,
+        reasoning_tokens: record.reasoning_tokens,
+        total_tokens: record.computed_total_tokens,
+        cost_usd: 0.0,
+        cost_cny: 0.0,
+        session_id: record.session_id.clone(),
+        project: record
+            .project_display
+            .clone()
+            .filter(|p| !p.is_empty())
+            .or_else(|| record.project_key.clone()),
+        duration_ms: None,
+        ttft_ms: None,
+        speed_tps: None,
+        speed_quality: None,
+        device: Some(record.device_id.clone()),
+    }
+}
+
+/// 把远端 /usage_records 响应按行的真实 source 分桶进对应来源路：返回每个
+/// 来源的（全范围聚合, 按 started_at DESC 的明细行）。聚合来自服务端
+/// by_model（按 source + provider + model 分组，这里按 source 归并成
+/// SourceTotals，与本地逐源聚合同形态，merge_summaries 与分源缓存命中率
+/// 口径直接复用）；明细行保持服务端返回序（该 source 内 started_at DESC）。
+/// 不在本次来源集合里的 source（如 cursor——本页无该来源路）跳过，与
+/// 「本页不含 Cursor」的既有口径一致；空模型名的分组计入 token 总和但不进
+/// 成本折算输入（无价格模型本就贡献 0）。
+fn split_remote_records(
+    resp: crate::sync::RemoteUsageRecords,
+    sources: &[&'static str],
+) -> Vec<(&'static str, SourceTotals, Vec<RequestLogRow>)> {
+    let mut lanes: Vec<(&'static str, SourceTotals, Vec<RequestLogRow>)> = sources
+        .iter()
+        .map(|s| (*s, SourceTotals::default(), Vec::new()))
+        .collect();
+    for group in &resp.by_model {
+        let Some(index) = lanes.iter().position(|(s, _, _)| *s == group.source) else {
+            continue;
+        };
+        let (_, totals, _) = &mut lanes[index];
+        totals.requests += group.requests;
+        totals.input_tokens += group.input_tokens;
+        totals.output_tokens += group.output_tokens;
+        totals.cache_read_tokens += group.cache_read_tokens;
+        totals.cache_write_tokens += group.cache_write_tokens;
+        totals.total_tokens += group.total_tokens;
+        if !group.model_id.is_empty() {
+            totals.by_model.push(ModelTokens {
+                model_id: group.model_id.clone(),
+                input_tokens: group.input_tokens,
+                output_tokens: group.output_tokens,
+                cache_read_tokens: group.cache_read_tokens,
+            });
+        }
+    }
+    for record in &resp.rows {
+        if let Some(index) = lanes.iter().position(|(s, _, _)| *s == record.source) {
+            lanes[index].2.push(remote_row_to_log(record));
+        }
+    }
+    lanes
+}
+
+/// 远端分桶结果并入归并集合：聚合并入对应来源路的 SourceTotals（本地该源
+/// 失败没有条目时远端独立成条目，merge_summaries 的分源口径不受影响），
+/// 明细行并入全局归并前列表。
+fn merge_remote_lanes(
+    totals: &mut Vec<(&'static str, SourceTotals)>,
+    rows: &mut Vec<RequestLogRow>,
+    lanes: Vec<(&'static str, SourceTotals, Vec<RequestLogRow>)>,
+) {
+    for (source, source_totals, source_rows) in lanes {
+        if let Some((_, slot)) = totals.iter_mut().find(|(s, _)| *s == source) {
+            slot.accumulate(source_totals);
+        } else {
+            totals.push((source, source_totals));
+        }
+        rows.extend(source_rows);
+    }
+}
+
+/// 远端一路的取数（scope = "all" 时）：同步未启用 / 未注册设备直接 Err
+///（调用方把 "remote" 计入 failed_sources 弱提示，本机数据照常展示）。
+/// 行数上限：单来源筛选与本地单源一致（服务端按该 source 过滤）；全部来源
+/// 时一次请求拉 limit×源数 行——服务端全局排序后客户端按真实 source 分桶，
+/// 可证明每源仍能取足自身的前 limit 名，归并切页正确：任一行若属于归并后
+/// 前 limit 名，则新于它的行不足 limit；若它不在全局前 limit×N 名内，则新于
+/// 它的行 ≥ limit×N，其中同源至多 limit−1，其余 ≥ limit×(N−1)+1 来自其他源，
+/// 合计 ≥ limit，矛盾。上限同样夹到 MAX_FETCH_ROWS（与服务端 5000 夹紧一致，
+/// 深页行为对齐本地单源的既有折衷）。
+fn fetch_remote_lane(
+    sources: &[&'static str],
+    from_ms: i64,
+    to_ms: i64,
+    model: Option<&str>,
+    limit: i64,
+) -> Result<crate::sync::RemoteUsageRecords, String> {
+    let cfg = crate::sync::load_sync_config()?;
+    if !cfg.enabled || cfg.device_token.is_empty() || cfg.device_id.is_empty() {
+        return Err("同步未启用或未注册设备".into());
+    }
+    let single = sources.len() == 1;
+    let remote_limit = if single {
+        limit
+    } else {
+        limit
+            .saturating_mul(sources.len() as i64)
+            .min(MAX_FETCH_ROWS)
+    };
+    let req = crate::sync::RemoteUsageRecordsRequest {
+        from_ms,
+        to_ms,
+        source: if single {
+            sources[0].to_string()
+        } else {
+            String::new()
+        },
+        model_id: model.unwrap_or("").to_string(),
+        // 本机记录会上传到服务端本机 device_id 名下，必须排除，否则与本机
+        // 直读数据重复
+        exclude_device: cfg.device_id.clone(),
+        devices: String::new(),
+        limit: remote_limit,
+        offset: 0,
+    };
+    crate::sync::fetch_remote_usage_records(req)
+}
+
+/// 远端一路的模型分组（get_request_log_models 的 scope = "all" 分支用）：
+/// 只要 by_model 聚合，行数上限传 1（服务端仍会算 total，无碍）。
+fn fetch_remote_model_groups(
+    from_ms: i64,
+    to_ms: i64,
+) -> Result<crate::sync::RemoteUsageRecords, String> {
+    let cfg = crate::sync::load_sync_config()?;
+    if !cfg.enabled || cfg.device_token.is_empty() || cfg.device_id.is_empty() {
+        return Err("同步未启用或未注册设备".into());
+    }
+    let req = crate::sync::RemoteUsageRecordsRequest {
+        from_ms,
+        to_ms,
+        source: String::new(),
+        model_id: String::new(),
+        exclude_device: cfg.device_id.clone(),
+        devices: String::new(),
+        limit: 1,
+        offset: 0,
+    };
+    crate::sync::fetch_remote_usage_records(req)
+}
+
+/// scope 入参归一：`"all"`（启用同步的客户端由前端下发）= 全部设备；
+/// 其余（None / "local" / 未知值）一律按仅本机处理（缺省安全）。
+fn scope_all(scope: Option<&str>) -> bool {
+    scope == Some("all")
+}
+
 /// 取数窗口与分页入参的归一：page >= 0；page_size <= 0 按缺省 20，
 /// 否则夹在 [10, 100]。
 fn normalize_paging(page: i64, page_size: i64) -> (i64, i64) {
@@ -649,20 +864,23 @@ where
     (totals, rows, failed)
 }
 
-/// get_request_logs：请求日志分页查询（7 个本地来源合并后按时间倒序）。
+/// 请求日志分页的同步实现：7 个本地来源合并后按时间倒序；scope = "all" 时
+/// 并入同步服务端上其他设备的明细（见模块头「全部设备口径」）。lib.rs 注册的
+/// async 命令把它卸载到阻塞线程池（本地是多库 SQLite 查询、scope=all 时还有
+/// 同步 HTTP，不能跑在主线程）；单测直接构造调用。
 ///
 /// - `agent`：来源筛选（None / 空串 = 全部 7 源；只认 SOURCES 里的来源名）；
 /// - `model`：模型 id 精确筛选（None = 不筛）；
-/// - 同步命令：全部是本地 SQLite 只读查询，单源最多 (page+1)×page_size 行
-///   （上限 MAX_FETCH_ROWS），毫秒级，与 get_codex_usage 同款形态但不做并发。
-#[tauri::command]
-pub fn get_request_logs(
+/// - `scope`：数据口径（None / "local" = 仅本机；"all" = 本机 + 其他设备）；
+/// - 单源最多 (page+1)×page_size 行（上限 MAX_FETCH_ROWS）。
+pub fn collect_request_logs(
     agent: Option<String>,
     model: Option<String>,
     from_ms: i64,
     to_ms: i64,
     page: i64,
     page_size: i64,
+    scope: Option<String>,
 ) -> Result<RequestLogsPage, String> {
     let sources = select_sources(agent.as_deref())?;
     let (page, page_size) = normalize_paging(page, page_size);
@@ -670,21 +888,41 @@ pub fn get_request_logs(
         Some(m) if !m.is_empty() => Some(m),
         _ => None,
     };
+    let all_devices = scope_all(scope.as_deref());
     // 单源取足「到当前页为止」的行数，归并后再全局切片（见模块头）
     let limit = page
         .saturating_add(1)
         .saturating_mul(page_size)
         .min(MAX_FETCH_ROWS);
 
-    let (totals, mut merged, failed_sources) = collect_sources(&sources, |source| {
-        query_source(source, from_ms, to_ms, model, limit)
-    });
+    let (mut totals, mut merged, mut failed_sources) =
+        collect_sources(&sources, |source| {
+            query_source(source, from_ms, to_ms, model, limit)
+        });
+
+    // 远端第 8 路（仅「全部设备」口径）：失败 / 未启用同步 / 旧服务端 404
+    // 一律只弱提示（failed_sources 里统一标识 "remote"），本机数据照常返回
+    if all_devices {
+        let outcome = fetch_remote_lane(&sources, from_ms, to_ms, model, limit);
+        match outcome {
+            Ok(resp) => {
+                let lanes = split_remote_records(resp, &sources);
+                merge_remote_lanes(&mut totals, &mut merged, lanes);
+            }
+            Err(e) => {
+                eprintln!("[zbar-request-logs] 远端请求明细查询失败，已跳过: {e}");
+                failed_sources.push("remote".to_string());
+            }
+        }
+    }
     let total: i64 = totals.iter().map(|(_, item)| item.requests).sum();
 
-    // 时间倒序；同毫秒按来源名稳定序（sort_by 稳定，源内保持库内顺序）
+    // 时间倒序；同毫秒先按 device（None = 本机恒在前，远端行按设备 id 稳定序），
+    // 再按来源名稳定序（sort_by 稳定，源内保持库内 / 服务端返回顺序）
     merged.sort_by(|a, b| {
         b.started_at
             .cmp(&a.started_at)
+            .then_with(|| a.device.cmp(&b.device))
             .then_with(|| a.source.cmp(&b.source))
     });
 
@@ -696,7 +934,8 @@ pub fn get_request_logs(
         .collect();
 
     // 花费：当前页逐行、汇总按模型分组，都走 cost_for 口径（无价格模型按 0）；
-    // 人民币 = 美元 × 当前汇率
+    // 人民币 = 美元 × 当前汇率。远端行用同一份本机价格表折算（远端汇总的
+    // by_model 已在 merge_summaries 里逐组折算）
     let pricing = crate::load_pricing().unwrap_or_default();
     let fx = crate::load_fx_rate();
     for row in &mut rows {
@@ -713,13 +952,13 @@ pub fn get_request_logs(
     })
 }
 
-/// get_request_log_models：区间内出现过的模型 + 请求条数（模型筛选下拉用）。
-/// 逐源 GROUP BY 后跨源合并同名模型，按条数降序（同数按模型名升序）、上限 100。
-#[tauri::command]
-pub fn get_request_log_models(
+/// get_request_log_models 的同步实现：区间内出现过的模型 + 请求条数
+/// （模型筛选下拉用）。async 命令包装见下（可能含同步 HTTP）。
+pub fn collect_request_log_models(
     agent: Option<String>,
     from_ms: i64,
     to_ms: i64,
+    scope: Option<String>,
 ) -> Result<Vec<RequestLogModelCount>, String> {
     let sources = select_sources(agent.as_deref())?;
     let mut counts: BTreeMap<String, i64> = BTreeMap::new();
@@ -737,6 +976,23 @@ pub fn get_request_log_models(
             Err(e) => eprintln!("[zbar-request-logs] 来源 {source} 模型清单查询失败，已跳过: {e}"),
         }
     }
+    // 远端（仅「全部设备」口径）：按真实 source 归并，只认本次来源集合里的
+    // source（与明细同口径，不在集合里的来源——如 cursor——本页不展示）
+    if scope_all(scope.as_deref()) {
+        match fetch_remote_model_groups(from_ms, to_ms) {
+            Ok(resp) => {
+                for group in &resp.by_model {
+                    if group.model_id.is_empty() || !sources.contains(&group.source.as_str()) {
+                        continue;
+                    }
+                    *counts.entry(group.model_id.clone()).or_insert(0) += group.requests;
+                }
+            }
+            Err(e) => {
+                eprintln!("[zbar-request-logs] 远端模型清单查询失败，已跳过: {e}");
+            }
+        }
+    }
     let mut merged: Vec<RequestLogModelCount> = counts
         .into_iter()
         .map(|(model_id, count)| RequestLogModelCount { model_id, count })
@@ -744,6 +1000,46 @@ pub fn get_request_log_models(
     merged.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.model_id.cmp(&b.model_id)));
     merged.truncate(MAX_MODEL_OPTIONS);
     Ok(merged)
+}
+
+// ===== Tauri 命令（async 包装）=====
+// 本模块的取数 = 多库 SQLite 只读查询 + scope=all 时的同步 HTTP（ureq，10s
+// 超时）。Tauri v2 同步 command 跑主线程，网络慢会冻结托盘/窗口事件，统一
+// async + spawn_blocking 卸载到阻塞线程池（与 lib.rs 的 remote_usage 同款
+// 模式）；包装器保持命令名不变，前端 invoke 契约不受影响。同步实现是上面
+// 的 collect_request_logs / collect_request_log_models（单测直接构造）。
+
+/// 请求日志分页查询（scope = "all" 时并入远端其他设备明细）。
+#[tauri::command]
+pub async fn get_request_logs(
+    agent: Option<String>,
+    model: Option<String>,
+    from_ms: i64,
+    to_ms: i64,
+    page: i64,
+    page_size: i64,
+    scope: Option<String>,
+) -> Result<RequestLogsPage, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        collect_request_logs(agent, model, from_ms, to_ms, page, page_size, scope)
+    })
+    .await
+    .map_err(|e| format!("请求日志任务失败: {e}"))?
+}
+
+/// 请求日志的模型筛选清单（scope = "all" 时并入远端 by_model）。
+#[tauri::command]
+pub async fn get_request_log_models(
+    agent: Option<String>,
+    from_ms: i64,
+    to_ms: i64,
+    scope: Option<String>,
+) -> Result<Vec<RequestLogModelCount>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        collect_request_log_models(agent, from_ms, to_ms, scope)
+    })
+    .await
+    .map_err(|e| format!("请求日志清单任务失败: {e}"))?
 }
 
 #[cfg(test)]
@@ -1184,6 +1480,7 @@ mod tests {
             ttft_ms: None,
             speed_tps: None,
             speed_quality: None,
+            device: None,
         };
         let (totals, rows, failed) =
             collect_sources(&["codex", "kimi", "dsh"], |source| match source {
@@ -1220,5 +1517,262 @@ mod tests {
         let expr = session_meta_project_expr(&conn).unwrap();
         assert!(expr.contains("sm.session_id = model_usage.session_id"));
         assert!(expr.contains("sm.project_key"));
+    }
+
+    /// scope 入参归一："all" = 全部设备；None / "local" / 未知值一律仅本机
+    /// （缺省安全，旧前端不传该参数时行为不变）
+    #[test]
+    fn scope_all_parses() {
+        assert!(scope_all(Some("all")));
+        assert!(!scope_all(Some("local")));
+        assert!(!scope_all(Some("")));
+        assert!(!scope_all(Some("nope")));
+        assert!(!scope_all(None));
+    }
+
+    /// 远端响应按真实 source 分桶：聚合来自 by_model（含 token 各项）、明细
+    /// 行字段映射（耗时 / 首字 / 速度恒 None、project_display 优先、device
+    /// 带回）；不在来源集合里的 source（cursor）跳过；空模型分组只进总和。
+    #[test]
+    fn split_remote_records_buckets_by_source() {
+        let resp = crate::sync::RemoteUsageRecords {
+            total: 3,
+            rows: vec![
+                crate::sync::RemoteUsageRecord {
+                    device_id: "dev-a".into(),
+                    source: "claude".into(),
+                    local_rowid: 7,
+                    started_at: 2000,
+                    model_id: "claude-x".into(),
+                    provider_id: "p".into(),
+                    input_tokens: 100,
+                    output_tokens: 50,
+                    cache_read_input_tokens: 30,
+                    cache_creation_input_tokens: 20,
+                    reasoning_tokens: 0,
+                    computed_total_tokens: 170,
+                    session_id: Some("s9".into()),
+                    project_key: Some("/repo".into()),
+                    project_display: Some("repo".into()),
+                },
+                crate::sync::RemoteUsageRecord {
+                    device_id: "dev-b".into(),
+                    source: "cursor".into(), // 无本地来源路：应被跳过
+                    local_rowid: 1,
+                    started_at: 3000,
+                    model_id: "cursor-m".into(),
+                    provider_id: "p".into(),
+                    input_tokens: 1,
+                    output_tokens: 1,
+                    cache_read_input_tokens: 0,
+                    cache_creation_input_tokens: 0,
+                    reasoning_tokens: 0,
+                    computed_total_tokens: 2,
+                    session_id: None,
+                    project_key: None,
+                    project_display: None,
+                },
+            ],
+            by_model: vec![
+                crate::sync::RemoteUsageModelGroup {
+                    source: "claude".into(),
+                    model_id: "claude-x".into(),
+                    provider_id: "p".into(),
+                    requests: 1,
+                    input_tokens: 100,
+                    output_tokens: 50,
+                    cache_read_tokens: 30,
+                    cache_write_tokens: 20,
+                    reasoning_tokens: 0,
+                    total_tokens: 170,
+                },
+                // 空模型分组：计入总和、不进成本折算输入
+                crate::sync::RemoteUsageModelGroup {
+                    source: "codex".into(),
+                    model_id: String::new(),
+                    provider_id: String::new(),
+                    requests: 2,
+                    input_tokens: 10,
+                    output_tokens: 5,
+                    cache_read_tokens: 0,
+                    cache_write_tokens: 0,
+                    reasoning_tokens: 0,
+                    total_tokens: 15,
+                },
+            ],
+        };
+        let lanes = split_remote_records(resp, &["codex", "claude"]);
+        let codex = lanes.iter().find(|(s, _, _)| *s == "codex").unwrap();
+        assert_eq!(codex.1.requests, 2);
+        assert_eq!(codex.1.input_tokens, 10);
+        assert!(codex.1.by_model.is_empty(), "空模型分组不进折算输入");
+        assert!(codex.2.is_empty());
+
+        let claude = lanes.iter().find(|(s, _, _)| *s == "claude").unwrap();
+        assert_eq!(claude.1.requests, 1);
+        assert_eq!(claude.1.total_tokens, 170);
+        assert_eq!(claude.1.by_model.len(), 1);
+        assert_eq!(claude.2.len(), 1);
+        let row = &claude.2[0];
+        assert_eq!(row.source, "claude");
+        assert_eq!(row.device.as_deref(), Some("dev-a"));
+        assert_eq!(row.project.as_deref(), Some("repo"));
+        assert_eq!(row.total_tokens, 170);
+        assert!(row.duration_ms.is_none());
+        assert!(row.ttft_ms.is_none());
+        assert!(row.speed_tps.is_none());
+        assert!(row.speed_quality.is_none());
+        assert_eq!(row.session_id.as_deref(), Some("s9"));
+    }
+
+    /// 远端分桶并入归并集合：对应来源的聚合累加（by_model 追加）、本地缺失
+    /// 的来源独立成条目；明细行进入全局列表。
+    #[test]
+    fn merge_remote_lanes_accumulates_into_lanes() {
+        let lanes = split_remote_records(
+            crate::sync::RemoteUsageRecords {
+                total: 2,
+                rows: vec![crate::sync::RemoteUsageRecord {
+                    device_id: "dev-a".into(),
+                    source: "codex".into(),
+                    local_rowid: 1,
+                    started_at: 1000,
+                    model_id: "m".into(),
+                    provider_id: "p".into(),
+                    input_tokens: 1,
+                    output_tokens: 1,
+                    cache_read_input_tokens: 0,
+                    cache_creation_input_tokens: 0,
+                    reasoning_tokens: 0,
+                    computed_total_tokens: 2,
+                    session_id: None,
+                    project_key: None,
+                    project_display: None,
+                }],
+                by_model: vec![crate::sync::RemoteUsageModelGroup {
+                    source: "codex".into(),
+                    model_id: "m".into(),
+                    provider_id: "p".into(),
+                    requests: 1,
+                    input_tokens: 1,
+                    output_tokens: 1,
+                    cache_read_tokens: 0,
+                    cache_write_tokens: 0,
+                    reasoning_tokens: 0,
+                    total_tokens: 2,
+                }],
+            },
+            &["codex", "claude"],
+        );
+        let mut totals: Vec<(&'static str, SourceTotals)> = vec![(
+            "codex",
+            SourceTotals {
+                requests: 3,
+                input_tokens: 30,
+                output_tokens: 10,
+                cache_read_tokens: 0,
+                cache_write_tokens: 0,
+                total_tokens: 40,
+                by_model: vec![ModelTokens {
+                    model_id: "m".into(),
+                    input_tokens: 30,
+                    output_tokens: 10,
+                    cache_read_tokens: 0,
+                }],
+            },
+        )];
+        let mut rows: Vec<RequestLogRow> = Vec::new();
+        merge_remote_lanes(&mut totals, &mut rows, lanes);
+        let codex = totals.iter().find(|(s, _)| *s == "codex").unwrap();
+        assert_eq!(codex.1.requests, 4);
+        assert_eq!(codex.1.input_tokens, 31);
+        assert_eq!(codex.1.by_model.len(), 2, "by_model 追加、不合并同模型");
+        // 本地缺失的来源（claude 无本地条目）独立成条目（这里是 0 条聚合，
+        // split 对不存在的数据同样产出空桶，并入无害）
+        assert_eq!(totals.len(), 2);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].device.as_deref(), Some("dev-a"));
+    }
+
+    /// 归并排序加入 device 维度：同毫秒本机行（device None）恒排在远端行
+    /// 之前，远端行之间按设备 id 稳定序，再按来源名稳定序。
+    #[test]
+    fn merged_sort_puts_local_before_remote_at_same_ms() {
+        let make = |ts: i64, source: &str, device: Option<&str>| RequestLogRow {
+            source: source.to_string(),
+            started_at: ts,
+            model_id: "m".into(),
+            provider_id: "p".into(),
+            input_tokens: 1,
+            output_tokens: 1,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+            reasoning_tokens: 0,
+            total_tokens: 2,
+            cost_usd: 0.0,
+            cost_cny: 0.0,
+            session_id: None,
+            project: None,
+            duration_ms: None,
+            ttft_ms: None,
+            speed_tps: None,
+            speed_quality: None,
+            device: device.map(String::from),
+        };
+        let mut merged = vec![
+            make(1000, "codex", Some("dev-b")),
+            make(1000, "codex", None),
+            make(1000, "claude", Some("dev-a")),
+            make(2000, "codex", None),
+        ];
+        merged.sort_by(|a, b| {
+            b.started_at
+                .cmp(&a.started_at)
+                .then_with(|| a.device.cmp(&b.device))
+                .then_with(|| a.source.cmp(&b.source))
+        });
+        // 2000 本机 → 1000 本机 codex → 1000 远端 dev-a claude → 1000 远端 dev-b codex
+        assert_eq!(merged[0].started_at, 2000);
+        assert!(merged[0].device.is_none());
+        assert_eq!(merged[1].source, "codex");
+        assert!(merged[1].device.is_none());
+        assert_eq!(merged[2].device.as_deref(), Some("dev-a"));
+        assert_eq!(merged[2].source, "claude");
+        assert_eq!(merged[3].device.as_deref(), Some("dev-b"));
+        assert_eq!(merged[3].source, "codex");
+    }
+
+    /// 远端行序列化：device 字段带回设备 id；本机行省略该字段（旧前端契约
+    /// 不受影响）。
+    #[test]
+    fn remote_row_serialization_contract() {
+        let mut local = crate::sync::RemoteUsageRecord {
+            device_id: String::new(),
+            source: "codex".into(),
+            local_rowid: 1,
+            started_at: 1000,
+            model_id: "m".into(),
+            provider_id: "p".into(),
+            input_tokens: 1,
+            output_tokens: 1,
+            cache_read_input_tokens: 0,
+            cache_creation_input_tokens: 0,
+            reasoning_tokens: 0,
+            computed_total_tokens: 2,
+            session_id: None,
+            project_key: None,
+            project_display: None,
+        };
+        local.device_id = "dev-a".into();
+        let row = remote_row_to_log(&local);
+        let json = serde_json::to_value(&row).unwrap();
+        assert_eq!(json["device"], "dev-a");
+        assert!(json["duration_ms"].is_null());
+        assert!(json["speed_tps"].is_null());
+
+        let mut local_row = row.clone();
+        local_row.device = None;
+        let json = serde_json::to_value(&local_row).unwrap();
+        assert!(json.get("device").is_none(), "本机行不序列化 device 字段");
     }
 }

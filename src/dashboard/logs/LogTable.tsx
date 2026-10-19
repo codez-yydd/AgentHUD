@@ -15,8 +15,9 @@
  *  - 花费：按展示币种取一列；有 token 但折算为 0 → 「未定价」（与总览页 Agent 表
  *    同一套口径，避免把"没配价"伪装成"不花钱"）；无 token → 「—」；
  *  - 耗时 / 首字：秒一位 / 两位小数；耗时只认来源库的真实值（Codex 会话文件无
- *    耗时、旧版 Claude Code 不落盘耗时 → 灰化「—」）；速度口径与详情抽屉完全
- *    一致（model.speedOf + formatTps 两层结构：后端 token_speed 真源优先——
+ *    耗时、旧版 Claude Code 不落盘耗时 → 灰化「—」；远端行（带 device 字段）
+ *    的同步明细不含耗时 / 首字，同样灰化并给专属 title）；速度口径与详情抽屉
+ *    完全一致（model.speedOf + formatTps 两层结构：后端 token_speed 真源优先——
  *    含思考感知窗口与样本窗口边界；后端缺速度时回退本地「耗时 − 首字」公式，
  *    近似值标 ≈，title 说明原因）；
  *  - 缺失值一律灰化「—」并带 title 说明原因（无数据 / 未定价 / 来源不落盘耗时或
@@ -178,12 +179,29 @@ export function LogTable({
                     <Dash title={t("dashboard.logs.cellNoData")} />
                   )}
                 </td>
-                {/* 耗时：只显示来源库的真实耗时；缺失（来源不落盘）走灰化「—」 */}
+                {/* 耗时：只显示来源库的真实耗时；缺失（来源不落盘 / 远端行
+                    同步明细不含耗时）走灰化「—」，title 按行归属区分措辞 */}
                 <td className="db-table__num db-logs__col-duration num">
-                  {duration ?? <Dash title={t("dashboard.logs.noDurationTitle")} />}
+                  {duration ?? (
+                    <Dash
+                      title={t(
+                        row.device != null
+                          ? "dashboard.logs.noDurationRemoteTitle"
+                          : "dashboard.logs.noDurationTitle"
+                      )}
+                    />
+                  )}
                 </td>
                 <td className="db-table__num db-logs__col-ttft num">
-                  {ttft ?? <Dash title={t("dashboard.logs.noTtftTitle")} />}
+                  {ttft ?? (
+                    <Dash
+                      title={t(
+                        row.device != null
+                          ? "dashboard.logs.noTtftRemoteTitle"
+                          : "dashboard.logs.noTtftTitle"
+                      )}
+                    />
+                  )}
                 </td>
                 {/* 速度列：口径与详情抽屉一致（speedOf 两层结构：后端
                     token_speed 真源优先、本地公式回退）；无耗时算不出速度，

@@ -1,7 +1,9 @@
 /**
- * 请求日志页（主窗口第四页）：7 个本地来源的请求级明细，按时间倒序分页。
+ * 请求日志页（主窗口第四页）：7 个本地来源的请求级明细，按时间倒序分页；
+ * 数据范围「全部设备」时后端再并入同步服务端上其他设备的明细（远端行带
+ * device 字段，耗时 / 首字 / 速度恒为「—」）。
  *
- * 结构：页头（标题 + 时间范围触发按钮 + 自动刷新间隔 + 刷新）→ 筛选行
+ * 结构：页头（数据范围分段 + 时间范围触发按钮 + 自动刷新间隔 + 刷新）→ 筛选行
  * （来源 / 模型下拉，模型选项带请求条数）→ 汇总指标行（总请求数 / Token 总量 /
  * 输入 / 输出 / 总成本 / 缓存命中率，当前筛选条件下的**全范围**聚合）→
  * 明细表（10 列）→ 分页条 → 详情抽屉。
@@ -10,14 +12,18 @@
  * 表格卡 flex:1、表体 .db-table-wrap 纵向滚动 + sticky 表头，分页条固定卡底
  * ——长列表不会把分页条推出屏幕（900×640 最小窗口同样可用）。
  *
- * 数据事实：Cursor 没有本地逐条库（只有远端接口的日粒度汇总），本页不含它；
- * 本页只有**本机**记录（总览页的「全部设备」口径不适用于请求级明细，页面
- * 描述与卡片摘要都会写明）；未安装 / 未用过的来源由后端按 0 条返回，页面
- * 静默显示空态，不报错。
+ * 数据事实：Cursor 没有本地逐条库（只有远端接口的日粒度汇总），本页不含它
+ * （「全部设备」口径下远端 cursor 明细同样不进表格，与本地口径一致）；数据
+ * 范围分段与总览页共用同一份偏好（localStorage 键 zbar-dashboard-scope），
+ * 未启用多设备同步时控件禁用、固定本机口径；未安装 / 未用过的来源由后端按
+ * 0 条返回，页面静默显示空态，不报错。
  *
  * 交互约定：
- *  - 筛选（来源 / 模型 / 范围）变化即回到第 1 页——否则会停在「第 3 页但只有
- *    1 页数据」的空结果上；
+ *  - 筛选（数据范围 / 来源 / 模型 / 范围）变化即回到第 1 页——否则会停在
+ *    「第 3 页但只有 1 页数据」的空结果上；
+ *  - 首发射数与同步配置读取并行：配置读毕（成功或失败）才发首个请求，避免
+ *    「先按本机查、配置到达后又按全部设备全量重取」的双取（与总览页同款
+ *    规避，等待期骨架本就在展示）；
  *  - 时间范围收进页头单个触发按钮（预设档在弹出面板顶部快捷行，点一下即生效
  *    并收起；见 CustomRangeMenu）：自定义与预设互斥，选预设即清自定义；
  *    自定义区间（起止自然日）直接作为后端查询窗口，不按「此刻」推算；
@@ -32,12 +38,15 @@
  *    useLogsData 的**静默**刷新（不置 loading——刷新按钮不转圈、表格与指标
  *    不压暗、不闪骨架），保持当前筛选与页码；document.hidden（主窗口被关闭
  *    隐藏）时跳过本次，避免后台空转查询；
- *  - 部分来源取数失败时用一行 .db-hintbar 弱提示（有数据才提示，不打断）。
+ *  - 远端不可达 / 未启用同步 / 旧服务端 404（scope=all 时）：后端自动降级为
+ *    纯本机口径（failed_sources 里给 "remote"），有数据才用一行 .db-hintbar
+ *    弱提示，不清空表格、不打断。
  */
 import { useEffect, useMemo, useState } from "react";
 import { useI18n, type MessageKey } from "../../i18n";
 import { EmptyState } from "../../layout";
 import { DropdownMenu, type DropdownOption } from "../../DropdownMenu";
+import type { SyncConfig } from "../../types";
 import {
   formatCost,
   formatCountLocale,
@@ -52,6 +61,15 @@ import {
   type CustomRangeValue,
 } from "../CustomRangeMenu";
 import { currencyOf, costOf } from "../overview/derive";
+import {
+  loadOverviewScope,
+  saveOverviewScope,
+  type OverviewScope,
+} from "../overview/model";
+import {
+  peekSyncConfigCached,
+  readSyncConfigCached,
+} from "../syncConfig";
 import { LogTable, LogTableSkeleton } from "./LogTable";
 import { RequestDetailDrawer } from "./RequestDetailDrawer";
 import { useLogsData } from "./useLogsData";
@@ -71,6 +89,17 @@ function timeText(ms: number): string {
   const p = (n: number) => String(n).padStart(2, "0");
   return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
 }
+
+/**
+ * 页头数据范围分段（顺序即展示顺序）：本机 / 全部设备。与总览页共用同一份
+ * 偏好（loadOverviewScope / saveOverviewScope，localStorage 键
+ * zbar-dashboard-scope）：任一页切换，另一页下次进入即生效；词条复用
+ * dashboard.overview.scope.*（同款分段控件文案必须一致）。
+ */
+const SCOPES: { scope: OverviewScope; labelKey: MessageKey }[] = [
+  { scope: "local", labelKey: "dashboard.overview.scope.local" },
+  { scope: "all", labelKey: "dashboard.overview.scope.all" },
+];
 
 /**
  * 自动刷新间隔档位（页头下拉）：关闭 / 5 / 10 / 30 / 60 秒。取值即毫秒数
@@ -230,12 +259,48 @@ export function LogsPage() {
   const [source, setSource] = useState("");
   /** 模型 id；空串 = 不筛（换来源 / 范围不自动清空，失效时由空态提示处理） */
   const [model, setModel] = useState("");
+  /** 数据范围偏好（与总览页共用 zbar-dashboard-scope）；懒初始化只读一次，
+   *  变更即时写入（与总览页 loadOverviewScope / saveOverviewScope 同一套） */
+  const [scope, setScope] = useState<OverviewScope>(() => loadOverviewScope());
+  /** 同步配置（null = 尚未读到；读到前范围控件短暂禁用，与总览页同款）。
+   *  初值取两页共享的模块级缓存：总览页已读过时本页首帧即为就绪态，
+   *  不再多等一次 IPC */
+  const [syncConfig, setSyncConfig] = useState<SyncConfig | null>(
+    () => peekSyncConfigCached()
+  );
+  /** 同步配置是否已读毕（成功或失败）：首发射数挂起在它之后——scope 偏好
+   *  可能是「全部设备」（缺省即 all），配置到位前按本机先查一遍再全量重取
+   *  会双取 + 闪数据（总览页 useOverviewData 的反 pattern 注记，同样采用
+   *  「配置与取数并行」规避）。共享缓存命中时初值即为 true（不发 IPC） */
+  const [syncReady, setSyncReady] = useState(
+    () => peekSyncConfigCached() != null
+  );
   /** 请求页码（1 基，页面语义） */
   const [page, setPage] = useState(1);
   /** 详情抽屉当前行（null = 关闭） */
   const [active, setActive] = useState<RequestLogRow | null>(null);
   /** 自动刷新间隔（毫秒，0 = 关闭）；偏好懒初始化，只在挂载时读一次 */
   const [refreshMs, setRefreshMs] = useState<number>(() => loadRefreshMs());
+
+  // 同步配置读一次（走两页共享缓存：总览页已读过则立即 resolve、不发 IPC；
+  // 未命中发 IPC，失败 / 超时按未启用处理并置 ready——口径固定本机，不卡
+  // 骨架）。本页不订阅同步面板的实时变化：开关同步后重进本页，命中缓存时
+  // 按上次配置渲染，下一次总览页取数（refresh 读取）会刷新共享缓存
+  useEffect(() => {
+    let cancelled = false;
+    readSyncConfigCached().then((config) => {
+      if (!cancelled) {
+        setSyncConfig(config);
+        setSyncReady(true);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  const syncEnabled = !!syncConfig?.enabled && !!syncConfig.device_token;
+  // 同步未启用时只能看本机口径（远端无从取数）：偏好仍保留，控件禁用并提示
+  const effectiveScope: OverviewScope = syncEnabled ? scope : "local";
 
   const {
     rows,
@@ -248,7 +313,15 @@ export function LogsPage() {
     lastUpdatedAt,
     models,
     reload,
-  } = useLogsData({ range, custom: customRange, source, model, page });
+  } = useLogsData({
+    range,
+    custom: customRange,
+    source,
+    model,
+    scope: effectiveScope,
+    ready: syncReady,
+    page,
+  });
 
   const currency = currencyOf(locale);
   const pages = Math.max(1, Math.ceil(total / LOG_PAGE_SIZE));
@@ -276,6 +349,12 @@ export function LogsPage() {
   }
   function changeModel(next: string) {
     setModel(next);
+    setPage(1);
+  }
+  /** 切换数据范围：与总览页共用同一份偏好（即时持久化），并回第 1 页 */
+  function changeScope(next: OverviewScope) {
+    setScope(next);
+    saveOverviewScope(next);
     setPage(1);
   }
   function clearModel() {
@@ -361,12 +440,15 @@ export function LogsPage() {
     ? formatRangeSummary(customRange.fromMs, customRange.toMs, locale)
     : t(LOGS_RANGES.find((item) => item.range === range)!.labelKey);
 
-  // 卡片副标题：当前条件摘要（含「仅本机记录」与点击行的说明，行内不再逐行提示）
+  // 卡片副标题：当前条件摘要（数据范围文案随口径变化 + 点击行的说明，
+  // 行内不再逐行提示）
   const cardSub = [
     rangeLabel,
     source ? sourceLabel(source) : t("dashboard.logs.sourceAll"),
     model || t("dashboard.logs.modelAll"),
-    t("dashboard.logs.localOnly"),
+    effectiveScope === "all"
+      ? t("dashboard.overview.scope.all")
+      : t("dashboard.logs.localOnly"),
     t("dashboard.logs.rowHint"),
   ].join(" · ");
 
@@ -414,6 +496,33 @@ export function LogsPage() {
           <p className="db-page__desc">{t("dashboard.logs.desc")}</p>
         </div>
         <div className="db-page__actions">
+          {/* 数据范围：本机 / 全部设备（与总览页同一套分段控件与偏好键；
+              未启用多设备同步时禁用并提示原因） */}
+          <div
+            className="db-seg"
+            role="group"
+            aria-label={t("dashboard.overview.scopeLabel")}
+          >
+            {SCOPES.map(({ scope: value, labelKey }) => (
+              <button
+                key={value}
+                type="button"
+                onClick={() => changeScope(value)}
+                disabled={!syncEnabled}
+                title={
+                  syncEnabled
+                    ? undefined
+                    : t("dashboard.overview.syncDisabledHint")
+                }
+                className={`db-seg__btn ${
+                  effectiveScope === value ? "db-seg__btn--active" : ""
+                }`}
+                aria-pressed={effectiveScope === value}
+              >
+                {t(labelKey)}
+              </button>
+            ))}
+          </div>
           {/* 时间范围：单个触发按钮 + 弹出面板（五档预设收进面板顶部快捷行；
               本页不限制最早日期——后端存有全部历史请求记录） */}
           <CustomRangeMenu
@@ -475,11 +584,19 @@ export function LogsPage() {
       {/* 汇总指标行：当前筛选条件下的全范围聚合（与表格同一次请求返回） */}
       <LogsMetrics summary={summary} loading={loading} currency={currency} />
 
-      {/* 单源失败弱提示（对齐总览页 partialFailures 惯例：有数据才提示，不打断） */}
+      {/* 单源 / 远端取数失败弱提示（对齐总览页 partialFailures 惯例：有数据才
+          提示，不打断；"remote" = 「全部设备」口径下远端一路未取到，已降级为
+          纯本机口径展示） */}
       {showFailedHint && (
         <div className="db-hintbar">
           {t("dashboard.logs.partialFailures", {
-            names: failedSources.map((item) => sourceLabel(item)).join(" · "),
+            names: failedSources
+              .map((item) =>
+                item === "remote"
+                  ? t("dashboard.logs.remoteSourceName")
+                  : sourceLabel(item)
+              )
+              .join(" · "),
           })}
         </div>
       )}

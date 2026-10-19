@@ -26,7 +26,7 @@ export const dashboard = {
   // 页面说明
   "dashboard.overview.desc": "跨服务用量、花费与趋势的汇总视图。",
   "dashboard.logs.desc":
-    "逐个请求的明细：时间、模型、Token 构成、花费与耗时；仅本机记录，可按来源筛选。",
+    "逐个请求的明细：时间、模型、Token 构成、花费与耗时；可按来源与数据范围（本机 / 全部设备）筛选。",
   "dashboard.compare.desc":
     "各订阅当前额度剩余、近 N 天已用比例趋势，以及本机与其他设备的 Token 对比。",
   "dashboard.pricing.desc": "模型单价维护与价格表更新。",
@@ -342,7 +342,8 @@ export const dashboard = {
   "dashboard.logs.metricsOutputTokensHint":
     "输出 token 合计（按各来源的记录口径）",
   "dashboard.logs.tableTitle": "请求明细",
-  // 卡片副标题末项与页描述里的「仅本机」：本页没有「全部设备」口径
+  // 卡片副标题的本机口径文案：「全部设备」时改用 dashboard.overview.scope.all
+  //（数据范围分段与总览页共用同一套词条）
   "dashboard.logs.localOnly": "仅本机记录",
   "dashboard.logs.colTime": "时间",
   "dashboard.logs.colSource": "来源",
@@ -360,10 +361,13 @@ export const dashboard = {
   "dashboard.logs.rowHint": "点击行查看详情",
   "dashboard.logs.cellNoData": "无数据",
   // 耗时 / 首字 / 速度缺失说明：讲清是数据源不落盘（而不是加载失败），
-  // 避免被当成页面故障
+  // 避免被当成页面故障；Remote 后缀词条给远端行（同步明细不含这些列），
+  // 措辞不指向「会话记录」避免误导
   "dashboard.logs.noDurationTitle":
     "该来源的会话记录不含耗时数据（如 Codex 会话文件无耗时、旧版 Claude Code 不落盘耗时）",
+  "dashboard.logs.noDurationRemoteTitle": "远端设备的同步明细不含耗时数据",
   "dashboard.logs.noTtftTitle": "该来源的会话记录不含首字数据",
+  "dashboard.logs.noTtftRemoteTitle": "远端设备的同步明细不含首字数据",
   "dashboard.logs.noSpeedTitle":
     "无耗时数据，或该行样本无效（时长越界 / 时序异常被拒收），无法计算速度",
   "dashboard.logs.unpriced": "未定价",
@@ -382,9 +386,11 @@ export const dashboard = {
   "dashboard.logs.errorTitle": "加载失败",
   "dashboard.logs.errorReason": "原因：{error}",
   "dashboard.logs.retry": "重新加载",
-  // 单源取数失败（有数据时的弱提示，对齐总览页 partialFailures 惯例）
+  // 单源取数失败（有数据时的弱提示，对齐总览页 partialFailures 惯例）；
+  // "remote"（远端一路失败 / 未启用同步 / 旧服务端 404）显示为「远端设备」
   "dashboard.logs.partialFailures":
     "部分来源本次未取到，数据可能不完整：{names}",
+  "dashboard.logs.remoteSourceName": "远端设备",
   "dashboard.logs.pagePrev": "上一页",
   "dashboard.logs.pageNext": "下一页",
   "dashboard.logs.pageInfo": "第 {page} / {total} 页",
@@ -393,6 +399,8 @@ export const dashboard = {
   "dashboard.logs.close": "关闭",
   "dashboard.logs.detailBasic": "基本信息",
   "dashboard.logs.detailSource": "来源",
+  // 远端行的设备归属（「全部设备」口径从服务端明细带回的 device_id）
+  "dashboard.logs.detailDevice": "设备",
   "dashboard.logs.detailModel": "模型",
   "dashboard.logs.detailProvider": "Provider",
   "dashboard.logs.detailSession": "会话 ID",

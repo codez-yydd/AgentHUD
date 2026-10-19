@@ -40,6 +40,7 @@ import type {
   RemoteAgentQuotaSnapshot,
   RemoteUsage,
   RequestLogModelCount,
+  RequestLogScope,
   RequestLogSource,
   RequestLogsPage,
   SessionsPage,
@@ -541,14 +542,21 @@ export async function fetchKimiUsage(
 
 /** 拉取请求日志分页（7 个本地来源合并后按时间倒序；page 从 0 开始）。
  *  options.agent 传**后端来源名**（RequestLogSource，不传 = 全部 7 源）；
- *  options.model 传模型 id 精确筛选（不传 = 不筛）。
+ *  options.model 传模型 id 精确筛选（不传 = 不筛）；
+ *  options.scope 传数据范围（缺省 local；"all" 时后端并入远端其他设备明细，
+ *  远端不可达 / 未启用同步 / 旧服务端 404 时降级为纯本机并在 failed_sources
+ *  里给 "remote" 弱提示，不报错）。
  *  导入库不存在（未安装 / 未用过）按 0 条返回，不报错。 */
 export async function getRequestLogs(
   fromMs: number,
   toMs: number,
   page: number,
   pageSize: number,
-  options: { agent?: RequestLogSource; model?: string } = {}
+  options: {
+    agent?: RequestLogSource;
+    model?: string;
+    scope?: RequestLogScope;
+  } = {}
 ): Promise<RequestLogsPage> {
   return invoke<RequestLogsPage>("get_request_logs", {
     agent: options.agent ?? null,
@@ -557,20 +565,23 @@ export async function getRequestLogs(
     toMs,
     page,
     pageSize,
+    scope: options.scope ?? null,
   });
 }
 
 /** 拉取请求日志的模型筛选清单（区间内出现过的模型 + 请求条数，上限 100，
- *  按条数降序）。options.agent 同 getRequestLogs。 */
+ *  按条数降序）。options.agent 同 getRequestLogs；options.scope 同上（"all"
+ *  时并入远端模型分组，远端失败静默跳过，清单只影响下拉选项）。 */
 export async function getRequestLogModels(
   fromMs: number,
   toMs: number,
-  options: { agent?: RequestLogSource } = {}
+  options: { agent?: RequestLogSource; scope?: RequestLogScope } = {}
 ): Promise<RequestLogModelCount[]> {
   return invoke<RequestLogModelCount[]>("get_request_log_models", {
     agent: options.agent ?? null,
     fromMs,
     toMs,
+    scope: options.scope ?? null,
   });
 }
 

@@ -1213,6 +1213,151 @@ pub fn fetch_remote_usage(req: RemoteUsageRequest) -> Result<RemoteUsage, String
     Ok(resp)
 }
 
+// ===== 远端逐条请求明细（请求日志页「全部设备」口径）=====
+
+/// GET /usage_records 返回的单条明细（字段与服务端 db.query_usage_records
+/// 的行一致）。服务端明细不含耗时 / 首字 / 速度列，客户端这三项恒为空。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RemoteUsageRecord {
+    #[serde(default)]
+    pub device_id: String,
+    #[serde(default)]
+    pub source: String,
+    #[serde(default)]
+    pub local_rowid: i64,
+    #[serde(default)]
+    pub started_at: i64,
+    #[serde(default)]
+    pub model_id: String,
+    #[serde(default)]
+    pub provider_id: String,
+    #[serde(default)]
+    pub input_tokens: i64,
+    #[serde(default)]
+    pub output_tokens: i64,
+    #[serde(default)]
+    pub cache_read_input_tokens: i64,
+    #[serde(default)]
+    pub cache_creation_input_tokens: i64,
+    #[serde(default)]
+    pub reasoning_tokens: i64,
+    #[serde(default)]
+    pub computed_total_tokens: i64,
+    #[serde(default)]
+    pub session_id: Option<String>,
+    #[serde(default)]
+    pub project_key: Option<String>,
+    #[serde(default)]
+    pub project_display: Option<String>,
+}
+
+/// GET /usage_records 的 by_model 分组：按 (source, provider_id, model_id)
+/// 聚合，字段命名与 /usage 的 by_model 一致。带 source 维度是必须的——客户端
+/// 要把远端汇总按真实 source 归并进对应来源路（缓存命中率分源口径依赖它）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RemoteUsageModelGroup {
+    #[serde(default)]
+    pub source: String,
+    #[serde(default)]
+    pub model_id: String,
+    #[serde(default)]
+    pub provider_id: String,
+    #[serde(default)]
+    pub requests: i64,
+    #[serde(default)]
+    pub input_tokens: i64,
+    #[serde(default)]
+    pub output_tokens: i64,
+    #[serde(default)]
+    pub cache_read_tokens: i64,
+    #[serde(default)]
+    pub cache_write_tokens: i64,
+    #[serde(default)]
+    pub reasoning_tokens: i64,
+    #[serde(default)]
+    pub total_tokens: i64,
+}
+
+/// GET /usage_records 响应：同 WHERE 下的总条数 + 逐条明细 + 模型分组。
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct RemoteUsageRecords {
+    #[serde(default)]
+    pub total: i64,
+    #[serde(default)]
+    pub rows: Vec<RemoteUsageRecord>,
+    #[serde(default)]
+    pub by_model: Vec<RemoteUsageModelGroup>,
+}
+
+/// GET /usage_records 查询参数。
+#[derive(Debug, Deserialize, Clone)]
+pub struct RemoteUsageRecordsRequest {
+    pub from_ms: i64,
+    pub to_ms: i64,
+    /// 来源过滤（客户端单来源筛选时传该来源名），空 = 全部来源。
+    #[serde(default)]
+    pub source: String,
+    /// 模型 id 精确过滤，空 = 不筛。
+    #[serde(default)]
+    pub model_id: String,
+    /// 排除本机设备（本机记录本地直读，不重复返回），逗号分隔。
+    #[serde(default)]
+    pub exclude_device: String,
+    /// 仅查询这些设备（逗号分隔），优先级高于 exclude_device。
+    #[serde(default)]
+    pub devices: String,
+    /// 行数上限（服务端夹紧 ≤5000；只需要 by_model 时传 1）。
+    #[serde(default)]
+    pub limit: i64,
+    #[serde(default)]
+    pub offset: i64,
+}
+
+/// 拉取远端逐条请求明细（GET /usage_records）。
+/// - devices 非空：只查指定设备；
+/// - 否则 exclude_device 非空：排除本机（请求日志页「全部设备」口径恒走此参，
+///   与本机直读数据不相交，拼接即免去重）；
+/// - 都空：查全部。
+pub fn fetch_remote_usage_records(
+    req: RemoteUsageRecordsRequest,
+) -> Result<RemoteUsageRecords, String> {
+    let cfg = load_sync_config()?;
+    if !cfg.enabled || cfg.device_token.is_empty() {
+        return Err("同步未启用或未注册设备".into());
+    }
+    let base = &cfg.server_url;
+    let token = &cfg.device_token;
+
+    // 数字参数拼进基础 URL；任意字符串参数（source / model_id / 设备 id 列表）
+    // 一律走 query 对的百分号编码（ureq 内部 form_urlencoded，已有查询串时
+    // 自动以 & 追加）：手工拼接时 Werkzeug 会把字面 `+` 解成空格、`&` / `#`
+    // 直接截断参数，远端按错误条件过滤返回空、静默失真。
+    let url = format!(
+        "{base}/usage_records?from_ms={}&to_ms={}&limit={}&offset={}",
+        req.from_ms, req.to_ms, req.limit, req.offset
+    );
+    let mut request = ureq::get(&url);
+    if !req.source.is_empty() {
+        request = request.query("source", &req.source);
+    }
+    if !req.model_id.is_empty() {
+        request = request.query("model_id", &req.model_id);
+    }
+    if !req.devices.is_empty() {
+        request = request.query("devices", &req.devices);
+    } else if !req.exclude_device.is_empty() {
+        request = request.query("exclude_device", &req.exclude_device);
+    }
+    let resp: RemoteUsageRecords = request
+        .set("Authorization", &format!("Bearer {token}"))
+        .timeout(Duration::from_secs(10))
+        .call()
+        .map_err(map_http_err("查询远端请求明细"))?
+        .into_json()
+        .map_err(|e| format!("解析远端请求明细失败: {e}"))?;
+    Ok(resp)
+}
+
 // ===== 远端模型清单（价格设置页 / 价格检查用）=====
 
 /// 远端一条模型记录（全部设备 × 全部来源的去重并集）

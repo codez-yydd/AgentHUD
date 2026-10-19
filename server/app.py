@@ -68,6 +68,15 @@ def _session_project_available():
     return callable(getattr(db, "_migrate_usage_records_columns", None))
 
 
+def _usage_records_query_available():
+    """判断当前加载的 db.py 是否支持逐条明细查询（GET /usage_records，proto 6）。
+
+    请求日志页「全部设备」口径依赖该接口；与旧版 db.py 配合时接口返回空
+    结果（客户端 404/空结果均降级为纯本机），原有同步服务不受影响。
+    """
+    return callable(getattr(db, "query_usage_records", None))
+
+
 # ===== 鉴权辅助 =====
 
 def get_master_token():
@@ -238,21 +247,26 @@ def sync():
         "max_snapshot_ts": max_snapshot_ts,
         "accepted_agent_quota_snapshots": accepted_agent_quota_snapshots,
         "max_agent_quota_snapshot_ts": max_agent_quota_snapshot_ts,
-        # 服务端协议版本：5 = 明细支持会话/项目维度（session_id / project_key /
+        # 服务端协议版本：6 = 支持逐条明细查询（GET /usage_records，请求日志页
+        # 「全部设备」口径）；5 = 明细支持会话/项目维度（session_id / project_key /
         # project_display）；4 = 额度快照带 account 维度（多账号采样隔离与
         # 多端今日增量合并）；3 = 支持 Agent 额度快照同步；若当前加载的是
-        # 旧版 db.py，则降级为 4/3/2，客户端按版本探测能力。
+        # 旧版 db.py，则降级为 5/4/3/2，客户端按版本探测能力。
         # proto 2 的多来源 usage_records.source 行为。
         # 客户端据此探测——旧版服务端（无 source 列）会把 codex 记录按
         # (device_id, local_rowid) 撞键静默丢弃，客户端发现 proto < 2 时
         # 不会推进 codex 游标，升级服务端后自动恢复，数据不丢。
         "proto": (
-            5
-            if _session_project_available()
+            6
+            if _usage_records_query_available()
             else (
-                4
-                if _quota_account_available()
-                else (3 if _agent_quota_storage_available() else 2)
+                5
+                if _session_project_available()
+                else (
+                    4
+                    if _quota_account_available()
+                    else (3 if _agent_quota_storage_available() else 2)
+                )
             )
         ),
     })
@@ -378,6 +392,60 @@ def agent_quota_snapshots():
         from_ms, to_ms, filter_ids, source=source or None
     )
     return jsonify({"snapshots": snapshots})
+
+
+@app.get("/usage_records")
+def usage_records():
+    """逐条明细查询：返回指定设备集合在时间范围内的 total + rows + by_model。
+
+    请求日志页「全部设备」口径用。客户端本机记录本地直读，远端查询恒带
+    exclude_device=<本机 device_id>（与 /usage 的 exclude_device 语义一致），
+    两集合不相交，客户端直接拼接即可，无需去重。
+    query 参数：
+    - from_ms / to_ms：半开区间 [from_ms, to_ms)，毫秒时间戳；
+    - source：来源过滤（可选，如 'zcode' / 'codex'），不传 = 全部来源；
+    - model_id：模型 id 精确过滤（可选）；
+    - devices / exclude_device：设备集合过滤（复用 _resolve_device_filter）；
+    - limit / offset：行数分页，limit 夹紧上限 5000。
+    rows 按 started_at DESC 返回（同毫秒 device_id/source/local_rowid 稳定序）；
+    by_model 按 (source, provider_id, model_id) 分组，供客户端把远端汇总按
+    真实 source 归并进对应来源路做成本折算与分源缓存命中率。
+    与旧版 db.py 配合（宝塔热替换窗口）时返回空结果而不是 500，客户端据此
+    降级为纯本机口径。
+    """
+    err, _ = require_device_token()
+    if err:
+        return err
+
+    if not _usage_records_query_available():
+        return jsonify({"total": 0, "rows": [], "by_model": []})
+
+    from_ms = int(request.args.get("from_ms", "0"))
+    to_ms = int(request.args.get("to_ms", str(db.now_ms())))
+    source = (request.args.get("source") or "").strip()
+    model_id = (request.args.get("model_id") or "").strip()
+    limit = request.args.get("limit", "500")
+    offset = request.args.get("offset", "0")
+
+    all_devices = db.list_devices()
+    all_ids = [d["device_id"] for d in all_devices]
+    filter_ids, has_filter_param = _resolve_device_filter(request.args, all_ids)
+
+    # 边界：显式指定了 devices/exclude_device 但过滤后为空，返回空结果而非全部
+    if has_filter_param and not filter_ids:
+        return jsonify({"total": 0, "rows": [], "by_model": []})
+
+    return jsonify(
+        db.query_usage_records(
+            from_ms,
+            to_ms,
+            filter_ids,
+            source=source or None,
+            model_id=model_id or None,
+            limit=limit,
+            offset=offset,
+        )
+    )
 
 
 @app.post("/period_detail")

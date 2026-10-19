@@ -34,8 +34,9 @@
  *    （期间页头弱标记「远端合并中」）；请求序号守卫保证旧请求的结果不覆盖新
  *    数据，且各阶段都基于同一份累加状态发布，远端结果不会回退本地数据；
  *  - 同步配置与本地取数并行发起，只有远端合并等待配置（避免「先按未启用同步
- *    的本机口径取一遍、拿到设备配置后又全量重取」的双取）；getSyncConfig 失败
- *    或超时（SYNC_CONFIG_TIMEOUT_MS）按未启用同步处理，不卡首屏；
+ *    的本机口径取一遍、拿到设备配置后又全量重取」的双取）；读取走两页共享
+ *    缓存（../syncConfig，每次取数 refresh 强制重读），失败或超时按未启用
+ *    同步处理，不卡首屏；
  *  - 数据范围（本机 / 全部设备）是纯视图切换：远端数据在同步开启时随加载
  *    一并取回，切范围不重新取数、不进入加载态（loading 只在首载与手动刷新
  *    出现）。
@@ -66,10 +67,13 @@ import {
   getAgentQuotaHistory,
   getCursorConfig,
   getQuotaHistory,
-  getSyncConfig,
   remoteUsage,
 } from "../../api";
 import { remoteSourceOf } from "../compare/model";
+import {
+  peekSyncConfigCached,
+  readSyncConfigCached,
+} from "../syncConfig";
 import {
   QUOTA_LOOKBACK_DAYS,
   REMOTE_WINDOW_DAYS,
@@ -94,19 +98,12 @@ import {
 /** 日桶粒度（趋势/热力图/指标卡共用；不随范围切换，避免重复取数） */
 const TREND_BUCKET: TrendBucket = "day";
 
-/** 同步配置等待上限：超时按「未启用同步」回退本机口径单次加载（不卡首屏） */
-const SYNC_CONFIG_TIMEOUT_MS = 5000;
-
 /** 模块级结果缓存：主窗口切页（条件渲染 = 卸载）后重进即刻渲染，无加载态。
  *  只存在于本窗口的 JS 模块内存里，不落盘；进程退出即失效。 */
 let overviewCache: { data: OverviewRaw; at: number } | null = null;
 
 /** 缓存新鲜期：超过则在后台静默刷新（不阻塞界面，完成后替换数据） */
 const CACHE_FRESH_MS = 60_000;
-
-/** 最近一次读到的同步配置（模块级记忆）：重进页面时先按上次配置渲染，
- *  范围控件不会因「缓存命中、配置尚未重读」而短暂禁用/回落本机口径。 */
-let cachedSyncConfig: SyncConfig | null = null;
 
 /** 5 小时窗口剩余（无该窗口的 Agent 为 null） */
 export interface Hour5Info {
@@ -695,12 +692,14 @@ export function useOverviewData(): OverviewDataState {
   const [error, setError] = useState<string | null>(null);
   const [lastUpdatedAt, setLastUpdatedAt] = useState<number | null>(null);
   const [remotePending, setRemotePending] = useState(false);
-  // 同步配置初值取模块级记忆（本次会话上次读到的值）：重进页面时不闪
-  // 「未启用同步」、范围控件不短暂禁用；随后仍会重读刷新
+  // 同步配置初值取共享模块级记忆（本次会话上次读到的有效配置，两页共用）：
+  // 重进页面时不闪「未启用同步」、范围控件不短暂禁用；随后仍会重读刷新
   const [syncConfig, setSyncConfig] = useState<SyncConfig | null>(
-    () => cachedSyncConfig
+    () => peekSyncConfigCached()
   );
-  const [syncReady, setSyncReady] = useState(() => cachedSyncConfig != null);
+  const [syncReady, setSyncReady] = useState(
+    () => peekSyncConfigCached() != null
+  );
   const [nonce, setNonce] = useState(0);
   const [scope, setScopeState] = useState<OverviewScope>(() => loadOverviewScope());
   // 请求序号：并发触发 / 阶段式发布时只应用最新一次请求的结果
@@ -715,7 +714,6 @@ export function useOverviewData(): OverviewDataState {
   useEffect(() => {
     const reqId = ++reqIdRef.current;
     let cancelled = false;
-    let syncTimer: number | null = null;
     const isCurrent = () => !cancelled && reqId === reqIdRef.current;
     const manual = manualRef.current;
     manualRef.current = false;
@@ -728,21 +726,13 @@ export function useOverviewData(): OverviewDataState {
       setError(null);
     }
 
-    // 同步配置与本地取数并行发起：仅远端合并等待它（读取失败 / 超时按
-    // 「未启用同步」处理，本地文件读通常毫秒级，超时兜底不卡首屏）。
-    // 命中新鲜缓存时也重读：面板里刚改过同步开关的话，范围控件不该停在旧状态。
-    const syncPromise = Promise.race([
-      getSyncConfig().catch(() => null),
-      new Promise<null>((resolve) => {
-        syncTimer = window.setTimeout(() => resolve(null), SYNC_CONFIG_TIMEOUT_MS);
-      }),
-    ]);
-    const disposeSyncTimer = () => {
-      if (syncTimer != null) window.clearTimeout(syncTimer);
-    };
-    syncPromise.then((config) => {
-      disposeSyncTimer();
-      cachedSyncConfig = config;
+    // 同步配置与本地取数并行发起：仅远端合并等待它（读取失败 / 超时在共享
+    // 读取内部按「未启用同步」处理，本地文件读通常毫秒级，超时兜底不卡首屏）。
+    // 命中缓存也强制重读（refresh）：面板里刚改过同步开关的话，范围控件
+    // 不该停在旧状态。同一份 promise 复用给远端合并，保证状态更新与远端
+    // 等待看到同一次读取结果（不重复发 IPC）
+    const syncRead = readSyncConfigCached({ refresh: true });
+    syncRead.then((config) => {
       if (!isCurrent()) return;
       setSyncConfig(config);
       setSyncReady(true);
@@ -754,7 +744,6 @@ export function useOverviewData(): OverviewDataState {
       setRemotePending(false);
       return () => {
         cancelled = true;
-        disposeSyncTimer();
       };
     }
 
@@ -764,7 +753,7 @@ export function useOverviewData(): OverviewDataState {
 
     (async () => {
       try {
-        await loadOverview(syncPromise, (payload) => {
+        await loadOverview(syncRead, (payload) => {
           // 序号守卫：旧请求（含旧请求的后续阶段）的结果一律丢弃
           if (!isCurrent()) return;
           setData(payload.data);
@@ -788,7 +777,6 @@ export function useOverviewData(): OverviewDataState {
 
     return () => {
       cancelled = true;
-      disposeSyncTimer();
     };
   }, [nonce]);
 

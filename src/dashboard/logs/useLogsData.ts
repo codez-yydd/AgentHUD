@@ -20,13 +20,21 @@
  *    由页面的空态提示 + 「清除模型筛选」按钮交给用户决定）。
  *  - 时间范围支持自定义区间（custom 非空即生效，优先于预设档 range）：起止
  *    已在页面侧折算为本地自然日半开区间 [fromMs, toMs)，这里直接下发，
- *    不再按 rangeWindow 的「此刻」口径推算。
+ *    不再按 rangeWindow 的「此刻」口径推算；
+ *  - 数据范围（scope = local | all）参与请求键与 effect 依赖：切到「全部
+ *    设备」即重新取数（后端并入远端其他设备明细），远端不可达 / 未启用同步 /
+ *    旧服务端 404 由后端降级为纯本机口径（failedSources 里给 "remote"），
+ *    这里照常渲染数据，不清空表格；
+ *  - 首发请求挂起在同步配置就绪（ready）之后：scope 偏好缺省「全部设备」，
+ *    配置未读到时无法确定实际口径，先按本机查再全量重取会双取（总览页
+ *    useOverviewData 的反 pattern 注记），等待期骨架本就在展示。
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getRequestLogModels, getRequestLogs } from "../../api";
 import type {
   RequestLogModelCount,
   RequestLogRow,
+  RequestLogScope,
   RequestLogSource,
   RequestLogSummary,
 } from "../../types";
@@ -42,6 +50,15 @@ export interface LogsQuery {
   source: string;
   /** 模型 id 精确筛选；空串 = 不筛 */
   model: string;
+  /** 数据范围：local = 仅本机；all = 本机 + 其他设备（后端合并远端明细，
+   *  远端不可达自动降级为本机口径并在 failedSources 里给 "remote"） */
+  scope: RequestLogScope;
+  /** 同步配置是否就绪：未就绪时挂起首发请求（明细 + 清单都不发）。scope
+   *  偏好可能是「全部设备」且缺省即为 all——配置到位前无法确定实际口径，
+   *  先按本机查一遍、配置到达后再按全部设备全量重取会双取 7 库并闪一次
+   *  数据（总览页 useOverviewData 的既有反 pattern 注记）；等待期骨架本就
+   *  在展示，getSyncConfig 是本地文件读取，挂起成本可忽略 */
+  ready: boolean;
   /** 页码（1 基，页面语义；转成后端的 0 基） */
   page: number;
 }
@@ -79,6 +96,8 @@ export function useLogsData({
   custom,
   source,
   model,
+  scope,
+  ready,
   page,
 }: LogsQuery): LogsDataState {
   const [rows, setRows] = useState<RequestLogRow[]>([]);
@@ -103,18 +122,23 @@ export function useLogsData({
 
   // 明细：筛选、页码与手动刷新触发；窗口在 effect 内取「此刻」计算，
   // 不进依赖（Date.now() 每次渲染都变，进依赖会把 effect 变成每次渲染都跑）；
-  // 自定义区间直接使用（起止已是本地自然日边界，不再按「此刻」推算）
+  // 自定义区间直接使用（起止已是本地自然日边界，不再按「此刻」推算）。
+  // ready = false（同步配置未读到）时挂起请求：silent 标记照常消费（挂起期
+  // 自动刷新定时器置位的静默标记直接丢弃，配置到位后的首射永远是非静默的
+  // 完整语义），loading 保持初值 true，骨架继续展示
   useEffect(() => {
-    const reqId = ++rowsReqRef.current;
-    const isCurrent = () => reqId === rowsReqRef.current;
     const silent = silentRef.current;
     silentRef.current = false;
+    if (!ready) return;
+    const reqId = ++rowsReqRef.current;
+    const isCurrent = () => reqId === rowsReqRef.current;
     const { fromMs, toMs } = custom ?? rangeWindow(range, Date.now());
     // 静默刷新保持现有画面：不置 loading（按钮不转圈、表格不压暗）
     if (!silent) setLoading(true);
     getRequestLogs(fromMs, toMs, page - 1, LOG_PAGE_SIZE, {
       agent: source ? (source as RequestLogSource) : undefined,
       model: model || undefined,
+      scope,
     })
       .then((result) => {
         if (!isCurrent()) return;
@@ -143,20 +167,22 @@ export function useLogsData({
         setFailedSources([]);
         setError(shortError(e));
       });
-  }, [custom, range, source, model, page, nonce]);
+  }, [custom, range, source, model, scope, ready, page, nonce]);
 
-  // 模型清单：只随来源 / 范围（与手动刷新）重取；成功才发布（失败保持 null，
-  // 页面不做失效校正，下拉退化为「全部模型」而不是给出错误清单）。
-  // 键含自定义区间的起止毫秒：不同自定义范围不共用同一份清单
-  const modelsKey = `${range}|${source}|${
+  // 模型清单：只随来源 / 范围 / 数据范围（与手动刷新）重取；成功才发布（失败
+  // 保持 null，页面不做失效校正，下拉退化为「全部模型」而不是给出错误清单）。
+  // 键含自定义区间的起止毫秒：不同自定义范围不共用同一份清单；ready 门控同明细
+  const modelsKey = `${range}|${source}|${scope}|${
     custom ? `${custom.fromMs}-${custom.toMs}` : ""
   }`;
   useEffect(() => {
+    if (!ready) return;
     const reqId = ++modelsReqRef.current;
     const isCurrent = () => reqId === modelsReqRef.current;
     const { fromMs, toMs } = custom ?? rangeWindow(range, Date.now());
     getRequestLogModels(fromMs, toMs, {
       agent: source ? (source as RequestLogSource) : undefined,
+      scope,
     })
       .then((list) => {
         if (isCurrent()) setModels({ key: modelsKey, list });
@@ -164,7 +190,7 @@ export function useLogsData({
       .catch(() => {
         /* 静默：清单失败不影响明细展示 */
       });
-  }, [range, source, modelsKey, nonce]);
+  }, [range, source, scope, ready, modelsKey, nonce]);
 
   const reload = useCallback((options?: { silent?: boolean }) => {
     silentRef.current = options?.silent === true;

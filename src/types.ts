@@ -1243,6 +1243,12 @@ export interface SessionsPage {
 
 // ===== 请求日志（主窗口「请求日志」页，与 Rust request_logs.rs 一一对应）=====
 
+/** 请求日志页的数据范围：local = 仅本机；all = 本机 + 其他设备（与总览页
+ *  OverviewScope 同款取值与持久化键，zbar-dashboard-scope）。「all」需已启用
+ *  多设备同步；远端不可达 / 旧服务端 404 时后端降级为纯本机口径并在
+ *  failed_sources 里给 "remote" 弱提示。 */
+export type RequestLogScope = "local" | "all";
+
 /** 请求日志的**后端来源名**（get_request_logs / get_request_log_models 的 agent
  *  参数）。注意它与 UI 侧 AgentId 是两个域：UI `zai` → `zcode`、
  *  `opencodego` → `opencode`、`minimax` → `minimaxcode`（与 sync.rs 的上传来源名
@@ -1289,6 +1295,9 @@ export interface RequestLogRow {
   /** 速度口径质量标记（与 SpeedQuality 契约一致）：request_average = 请求
    *  平均近似，界面带 ≈ 前缀；generation = 真实生成窗口。无速度为 null。 */
   speed_quality?: SpeedQuality | null;
+  /** 远端行的设备 id（「全部设备」口径下从服务端明细带回；本机行无该字段）。
+   *  远端行耗时 / 首字 / 速度恒 null（服务端明细不含这些列）。 */
+  device?: string;
 }
 
 /** 请求日志的全范围汇总（当前筛选条件下的指标卡数据；不是当前页聚合）。

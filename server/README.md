@@ -125,6 +125,7 @@ PORT=8080 python3 app.py
 | `POST /register` | Master Token | 注册设备，返回 Device Token |
 | `POST /sync` | Device Token | 增量上传用量明细（每条可带 source，缺省 zcode；proto 5 起可带会话/项目字段） |
 | `GET /usage` | Device Token | 聚合查询（overall + by_model + trend，可选 source 过滤） |
+| `GET /usage_records` | Device Token | 逐条明细查询（total + rows + by_model，请求日志页「全部设备」口径用） |
 | `GET /models` | Device Token | 全部设备 × 全部来源的模型清单（distinct，价格配置用） |
 | `GET /snapshots` | Device Token | Z.ai 额度快照查询 |
 | `GET /agent-quota-snapshots` | Device Token | Codex / Claude / Cursor 额度快照查询 |
@@ -160,6 +161,12 @@ PORT=8080 python3 app.py
 ## proto 5：会话 / 项目维度
 
 `POST /sync` 上传的明细 records 每条新增三个可选字段：`session_id`（会话 ID）、`project_key`（归一化后的项目路径键，如 `/users/chacca/code/my-app`，无法归属时为 null）、`project_display`（原始形态路径）。服务端在 `usage_records` 表幂等补列存储（全部可空，不改主键）。**旧客户端（proto 2/3/4）完全不受影响**：不传新字段即照旧落库为 NULL；客户端探测 `/sync` 响应中的 `proto: 5` 后才会启用新字段上传。项目维度数据当前仅落库存储，服务端暂无聚合查询接口（原 `GET /projects` 已随手机端查看功能下线移除）。
+
+---
+
+## proto 6：逐条明细查询（GET /usage_records）
+
+新增只读查询接口，不涉及表结构变化：请求日志页「全部设备」口径用它拉取其他设备的逐条请求明细。query 参数 `from_ms` / `to_ms`（必填，半开区间）、`source` / `model_id`（可选过滤）、`devices` / `exclude_device`（设备集合，语义与 `/usage` 一致）、`limit` / `offset`（行分页，limit 夹紧上限 5000）。响应 `{total, rows, by_model}`：rows 按 `started_at DESC`（同毫秒 `device_id/source/local_rowid` 稳定序）返回逐条全字段（带 `device_id`）；`by_model` 按 `(source, provider_id, model_id)` 分组供客户端按真实来源折算成本。客户端远端查询恒带 `exclude_device=<本机>`，与本机直读数据不相交，拼接即免去重。旧版服务端无此接口（404）或宝塔热替换窗口（新 app.py + 旧 db.py，返回空结果）时，客户端自动降级为纯本机口径，不报错。
 
 ---
 

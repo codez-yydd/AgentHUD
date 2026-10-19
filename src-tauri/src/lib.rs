@@ -1606,6 +1606,19 @@ async fn remote_usage(req: RemoteUsageRequest) -> Result<RemoteUsage, String> {
         .map_err(|e| format!("远端用量任务失败: {e}"))?
 }
 
+/// 拉取远端逐条请求明细（GET /usage_records，请求日志页「全部设备」口径的
+/// 原始远端数据；页面常规链路走 request_logs::get_request_logs 的远端合并，
+/// 本命令供独立调试 / 备用）。内部为同步 HTTP（ureq，10s 超时），必须卸载
+/// 主线程。
+#[tauri::command]
+async fn remote_usage_records(
+    req: sync::RemoteUsageRecordsRequest,
+) -> Result<sync::RemoteUsageRecords, String> {
+    tauri::async_runtime::spawn_blocking(move || sync::fetch_remote_usage_records(req))
+        .await
+        .map_err(|e| format!("远端请求明细任务失败: {e}"))?
+}
+
 /// 拉取远端额度快照（带 device_id，供对比页/报告页跨设备周额度解析）
 #[tauri::command]
 async fn remote_snapshots(req: RemoteSnapshotRequest) -> Result<Vec<RemoteSnapshot>, String> {
@@ -2587,6 +2600,7 @@ pub fn run() {
             sync_now,
             disconnect_device,
             remote_usage,
+            remote_usage_records,
             remote_snapshots,
             remote_agent_quota_snapshots,
             list_remote_devices,
@@ -2627,7 +2641,8 @@ pub fn run() {
             get_opencode_debug,
             get_minimaxcode_usage,
             get_minimaxcode_debug,
-            // 主窗口「请求日志」页：7 个本地来源的请求级明细分页 + 模型筛选清单
+            // 主窗口「请求日志」页：7 个本地来源（scope=all 并入远端其他设备）
+            // 的请求级明细分页 + 模型筛选清单（async 命令，内部 spawn_blocking）
             request_logs::get_request_logs,
             request_logs::get_request_log_models,
             list_accounts,

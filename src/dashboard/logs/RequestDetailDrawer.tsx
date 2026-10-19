@@ -136,6 +136,11 @@ export function RequestDetailDrawer({
               {t("dashboard.logs.detailBasic")}
             </h3>
             <Kv label={t("dashboard.logs.detailSource")} value={sourceLabel(row.source)} />
+            {/* 设备归属：仅远端行有（「全部设备」口径从服务端明细带回，响应
+                只有 device_id，直接显示）；本机行不显示该行 */}
+            {row.device != null && row.device !== "" && (
+              <Kv label={t("dashboard.logs.detailDevice")} value={row.device} mono />
+            )}
             <Kv label={t("dashboard.logs.detailModel")} value={row.model_id || "—"} />
             <Kv
               label={t("dashboard.logs.detailProvider")}
