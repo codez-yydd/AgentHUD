@@ -773,6 +773,8 @@ body,
   --color-emerald-700: #6ee7b7;
   --color-amber-600: #fbbf24;
   --color-amber-700: #fcd34d;
+  /* amber-800：AlertBanner warning 文字色，延续 amber 自定义亮色序列再提一档（600/700 映射 Tailwind 400/300，800 取 amber-200），bg-amber-500/12 浅琥珀底上暗色可读 */
+  --color-amber-800: #fde68a;
   --color-orange-700: #fdba74;
   --color-blue-600: #60a5fa;
   --color-blue-700: #93c5fd;
