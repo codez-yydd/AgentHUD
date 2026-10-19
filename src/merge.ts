@@ -41,8 +41,9 @@ export function modelCost(
   };
   const exact = pricing.usd[modelId];
   if (exact) return lookup(exact);
-  // 兜底查找与 hasPositivePrice/PricingPanel 共用同一实现：小写+点号归一之外
-  // 还剔除不可见字符（身份折叠域同款），避免隐藏字符变体代表行查不到价
+  // 兜底查找与 hasPositivePrice/主窗口 PricingPage 共用同一实现（原窄窗
+  // PricingPanel 已随二期减负移除）：小写+点号归一之外还剔除不可见字符
+  // （身份折叠域同款），避免隐藏字符变体代表行查不到价
   const hit = lookupPrice(pricing.usd, modelId);
   if (hit) return lookup(hit);
   return 0;

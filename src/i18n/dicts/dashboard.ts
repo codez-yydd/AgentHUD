@@ -229,10 +229,10 @@ export const dashboard = {
   "dashboard.pricing.currencyLabel": "币种",
   "dashboard.pricing.cny": "¥ 人民币",
   "dashboard.pricing.usd": "$ 美元",
-  // 币种切换的「仅本页查看」标注（持久化币种由面板负责，从属语言）
+  // 币种切换的「仅本页查看」标注（全局币种由界面语言推导，无手动切换入口）
   "dashboard.pricing.currencyViewOnly": "仅本页",
   "dashboard.pricing.currencyViewOnlyHint":
-    "仅本页查看口径，不修改全局币种（全局币种跟随界面语言，可在悬浮面板切换）",
+    "仅本页查看口径，不修改全局币种（全局币种跟随界面语言：中文 ¥ / 英文 $）",
   // 未保存改动提示与保存按钮 dirty 文案
   "dashboard.pricing.dirtyHint": "{count} 处未保存",
   "dashboard.pricing.saveDirty": "保存 *",

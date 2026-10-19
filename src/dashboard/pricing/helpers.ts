@@ -1,8 +1,8 @@
 /**
  * 价格设置页（主窗口大窗版）的纯工具与表格行模型：无 React。
  *
- * 金额格式化 / 汇率折算 / 草稿解析与窄窗 PricingPanel 同口径（逐字复制，
- * 窄窗原件不动），保证两版显示与落盘数值完全一致。
+ * 金额格式化 / 汇率折算 / 草稿解析沿用原窄窗 PricingPanel 的口径（窄窗实现
+ * 已随二期减负移除，本模块为唯一实现）。
  */
 import type { ModelInfo, ModelPrice, PricingConfig } from "../../types";
 import { canonicalModelId, displayModelName, lookupPrice } from "../../modelName";

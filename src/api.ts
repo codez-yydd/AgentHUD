@@ -356,9 +356,13 @@ export async function setPanelSticky(sticky: boolean): Promise<void> {
 /** 打开主窗口（Dashboard 管理/分析大窗）：窗口已存在则显示并聚焦，
  *  不存在则由 Rust 侧 main_window.rs 建窗（1100×720 普通系统窗）。
  *  主窗口"关闭=隐藏不销毁"，所以反复调用即秒开；建窗失败时 reject，
- *  调用方自行决定是否提示（面板侧静默，不打断交互）。 */
-export async function openMainWindow(): Promise<void> {
-  await invoke("open_main_window");
+ *  调用方自行决定是否提示（面板侧静默，不打断交互）。
+ *  page（可选）：Dashboard 侧栏页 id（"overview" | "logs" | "compare" |
+ *  "pricing"，窄窗二期减负后面板价格入口传 "pricing" 直达主窗口定价页）。
+ *  合法时开窗/聚焦后由 Rust 侧 emit zbar://dashboard-navigate 跳页
+ *  （DashboardApp.tsx 监听）；缺省/非法只开窗不导航。 */
+export async function openMainWindow(page?: string): Promise<void> {
+  await invoke("open_main_window", { page: page ?? null });
 }
 
 // ===== 周额度追踪 / 对比页 =====

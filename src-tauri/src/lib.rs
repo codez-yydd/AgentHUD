@@ -2258,7 +2258,8 @@ fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
                 // 建窗/聚焦主体（内部自判"已存在则显示聚焦"）；失败只记
                 // 日志，不 panic、不影响托盘后续交互
                 "open-main" => {
-                    if let Err(e) = main_window::open_main_window_on_main_thread(app) {
+                    // page 传 None：托盘入口只开窗不导航，停留在上次页面
+                    if let Err(e) = main_window::open_main_window_on_main_thread(app, None) {
                         eprintln!("[zbar-main-window] 打开主窗口失败: {e}");
                     }
                 }

@@ -115,6 +115,8 @@ export const en: typeof zh = {
     "stats.unpin": "Disable always on top",
     "stats.github": "GitHub repository",
     "stats.priceSettings": "Pricing",
+    // Title/aria for the "Pricing" footer button: pricing now lives in the main window
+    "stats.priceSettingsHint": "Pricing (opens in main window)",
     "stats.sourcesAria": "Data sources",
 
     // 设备筛选
@@ -1427,11 +1429,11 @@ export const en: typeof zh = {
     "dashboard.pricing.currencyLabel": "Currency",
     "dashboard.pricing.cny": "¥ CNY",
     "dashboard.pricing.usd": "$ USD",
-    // View-only currency switch for this page (the persisted global currency
-    // follows the interface language and lives in the panel)
+    // View-only currency switch for this page (the global currency derives
+    // from the interface language; there is no manual switch)
     "dashboard.pricing.currencyViewOnly": "this page only",
     "dashboard.pricing.currencyViewOnlyHint":
-      "View-only for this page; does not change the global currency (the global currency follows the interface language and can be switched in the floating panel).",
+      "View-only for this page; does not change the global currency (the global currency follows the interface language: Chinese ¥ / English $).",
     // Unsaved-changes hint + Save button dirty label
     "dashboard.pricing.dirtyHint": "{count} unsaved",
     "dashboard.pricing.saveDirty": "Save *",

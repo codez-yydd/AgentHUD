@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { UPDATE_READY_KEY, UPDATE_READY_EVENT } from "./updater";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { openUrl } from "@tauri-apps/plugin-opener";
@@ -81,7 +81,6 @@ interface Props {
   agentVisibility: AgentVisibility;
   /** 凭证驱动 provider 的「已有凭证」状态（provider → bool；App 启动/事件时批量刷新） */
   credentialPresence: Record<string, boolean>;
-  onGoPricing: () => void;
   onGoSync: () => void;
   onGoReports: () => void;
   onGoTheme: () => void;
@@ -128,7 +127,6 @@ export function StatsPanel({
   pricing,
   agentVisibility,
   credentialPresence,
-  onGoPricing,
   onGoSync,
   onGoReports,
   onGoTheme,
@@ -398,6 +396,32 @@ export function StatsPanel({
     []
   );
 
+  // 打开主窗口的统一入口（标题栏图标按钮 + 底部「价格设置」按钮共用）：
+  // 可选 page 为 Dashboard 侧栏页 id——合法时 Rust 侧开窗/聚焦后向主窗口
+  // 发 zbar://dashboard-navigate 跳页（价格入口传 "pricing" 直达定价页），
+  // 缺省只开窗。失败提示复用底部信息行的轻胶囊（2.4s 自动消失）
+  const openMainWindowWithToast = useCallback((page?: string) => {
+    openMainWindow(page)
+      .then(() => {
+        // 成功：清掉上一次的失败提示
+        if (mainOpenTimerRef.current != null) {
+          window.clearTimeout(mainOpenTimerRef.current);
+          mainOpenTimerRef.current = null;
+        }
+        setMainOpenFailed(false);
+      })
+      .catch(() => {
+        setMainOpenFailed(true);
+        if (mainOpenTimerRef.current != null) {
+          window.clearTimeout(mainOpenTimerRef.current);
+        }
+        mainOpenTimerRef.current = window.setTimeout(() => {
+          mainOpenTimerRef.current = null;
+          setMainOpenFailed(false);
+        }, 2400);
+      });
+  }, []);
+
   useEffect(() => {
     if (!isWindows) return;
     fetchPin()
@@ -488,29 +512,9 @@ export function StatsPanel({
             </button>
             {/* 主窗口（Dashboard 大窗）入口：显示器图标，与相邻工具按钮同款
                 尺寸/悬停样式。放大窗分析（与托盘标题同口径）是「去别的窗口」
-                的导航，与 ⇅（同步）这类入口同组 */}
+                的导航，与 ⇅（同步）这类入口同组；不带 page（停留在上次页面） */}
             <button
-              onClick={() => {
-                openMainWindow()
-                  .then(() => {
-                    // 成功：清掉上一次的失败提示
-                    if (mainOpenTimerRef.current != null) {
-                      window.clearTimeout(mainOpenTimerRef.current);
-                      mainOpenTimerRef.current = null;
-                    }
-                    setMainOpenFailed(false);
-                  })
-                  .catch(() => {
-                    setMainOpenFailed(true);
-                    if (mainOpenTimerRef.current != null) {
-                      window.clearTimeout(mainOpenTimerRef.current);
-                    }
-                    mainOpenTimerRef.current = window.setTimeout(() => {
-                      mainOpenTimerRef.current = null;
-                      setMainOpenFailed(false);
-                    }, 2400);
-                  });
-              }}
+              onClick={() => openMainWindowWithToast()}
               className="toolbar-btn"
               title={t("dashboard.openMainWindow")}
               aria-label={t("dashboard.openMainWindow")}
@@ -896,7 +900,9 @@ export function StatsPanel({
         />
       )}
 
-      {/* 底部：刷新时刻 + 价格设置入口。主窗口入口已回到标题栏图标按钮
+      {/* 底部：刷新时刻 + 价格设置入口（窄窗二期减负：面板不再有价格页，
+          入口改为打开主窗口并直达定价页，跳页走 Rust 侧
+          zbar://dashboard-navigate）。主窗口入口已回到标题栏图标按钮
           （见上方工具条），打开失败的轻提示仍留在这一行——工具条内没有放
           文字胶囊的位置，底部行有富余空间 */}
       <div className="px-3 py-1.5 border-t border-slate-900/8 flex items-center justify-between gap-2 text-[10px] text-slate-600/50">
@@ -917,8 +923,10 @@ export function StatsPanel({
             </span>
           )}
           <button
-            onClick={onGoPricing}
+            onClick={() => openMainWindowWithToast("pricing")}
             className="hover:text-sky-600 transition-colors font-medium"
+            title={t("stats.priceSettingsHint")}
+            aria-label={t("stats.priceSettingsHint")}
           >
             {t("stats.priceSettings")}
           </button>

@@ -16,6 +16,9 @@
 //! - 启动预热：应用 setup 阶段（托盘初始化后）即预建隐藏的主窗口
 //!   （visible(false)，见 prebuild_main_window），dashboard.html 的 WebView
 //!   提前加载，首次打开只剩 show + focus，不再等冷启动。
+//! - 跳页：open_main_window 可带 page（Dashboard 侧栏页 id，白名单见
+//!   DASHBOARD_PAGES），开窗/聚焦后经 zbar://dashboard-navigate 事件让
+//!   DashboardApp 切到对应页（面板价格入口 → 主窗口定价页走此通道）。
 //!
 //! 建窗铁律（照搬 pet.rs / session_hud.rs）：
 //! - WebviewWindowBuilder 必须在主线程事件循环上下文调用。合法调用点：
@@ -30,7 +33,7 @@
 
 use std::sync::mpsc;
 use std::time::Duration;
-use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 
 /// 主窗口 label（与 capabilities/dashboard.json 的 windows 白名单、
 /// dashboard.html 入口一致）
@@ -47,18 +50,49 @@ pub const MAIN_WINDOW_MIN_HEIGHT: f64 = 640.0;
 /// 正常路径毫秒级返回
 const MAIN_WINDOW_OP_TIMEOUT: Duration = Duration::from_secs(8);
 
+/// 面板 → 主窗口的跳页事件（风格沿 zbar://appearance-changed）：
+/// open_main_window 带 page 参数时，开窗/聚焦后 emit_to 主窗口 WebView，
+/// 由 DashboardApp.tsx 监听并 setView（payload 为下方白名单内的页 id）
+const DASHBOARD_NAVIGATE_EVENT: &str = "zbar://dashboard-navigate";
+
+/// 主窗口可跳转页白名单（与 src/dashboard/DashboardApp.tsx 的 View 枚举
+/// 一致，改动任一侧需同步）。不在名单内的 page 只开窗不导航
+const DASHBOARD_PAGES: [&str; 4] = ["overview", "logs", "compare", "pricing"];
+
+/// page 参数收敛：合法页 id 原样放行，缺省/非法一律 None（只开窗不导航）
+fn normalize_dashboard_page(page: Option<&str>) -> Option<&str> {
+    match page {
+        Some(p) if DASHBOARD_PAGES.contains(&p) => Some(p),
+        _ => None,
+    }
+}
+
+/// 向主窗口 WebView 发跳页事件（emit_to 定向 main-window，不广播到面板/
+/// 宠物等其余窗口）。发送失败静默：导航是锦上添花，窗口本身已打开聚焦
+fn emit_dashboard_navigate(app: &AppHandle, page: Option<&str>) {
+    if let Some(page) = normalize_dashboard_page(page) {
+        let _ = app.emit_to(MAIN_WINDOW_LABEL, DASHBOARD_NAVIGATE_EVENT, page);
+    }
+}
+
 /// 打开主窗口命令（悬浮窗统计页按钮与托盘菜单共用同一主体）：
 /// - 窗口已存在（含"关闭=隐藏"后仍存活）→ show + unminimize + set_focus；
 /// - 不存在 → 主线程建窗（dashboard.html）。
+/// - page（可选）：合法页 id 时开窗/聚焦后向主窗口发 zbar://dashboard-navigate
+///   跳页（如面板价格入口传 "pricing"）；缺省/非法只开窗不导航。
 ///
 /// async + channel + 超时等待：见模块 doc 的死锁防护说明。返回 Err 时
 /// 前端只需静默（窗口创建失败由后端日志与错误串表达），不阻断交互。
 #[tauri::command]
-pub async fn open_main_window(app: AppHandle) -> Result<(), String> {
+pub async fn open_main_window(
+    app: AppHandle,
+    page: Option<String>,
+) -> Result<(), String> {
     let (tx, rx) = mpsc::channel::<Result<(), String>>();
     let app_main = app.clone();
+    // page 整体 move 进闭包（'static 要求），闭包体内再 as_deref 借用
     app.run_on_main_thread(move || {
-        let _ = tx.send(open_main_window_on_main_thread(&app_main));
+        let _ = tx.send(open_main_window_on_main_thread(&app_main, page.as_deref()));
     })
     .map_err(|e| format!("投递主窗口操作到主线程失败: {e}"))?;
 
@@ -72,7 +106,11 @@ pub async fn open_main_window(app: AppHandle) -> Result<(), String> {
 /// 铁律）：托盘菜单回调可直接调用（on_menu_event 在主线程执行），命令与
 /// 其他上下文须经 run_on_main_thread 投递。窗口已存在时只显示/聚焦，
 /// 不重复建窗（WebviewWindowBuilder 对同名 label 会直接报错）。
-pub fn open_main_window_on_main_thread(app: &AppHandle) -> Result<(), String> {
+/// page 语义同 open_main_window 命令（None = 只开窗不导航，托盘入口用）。
+pub fn open_main_window_on_main_thread(
+    app: &AppHandle,
+    page: Option<&str>,
+) -> Result<(), String> {
     if let Some(win) = app.get_webview_window(MAIN_WINDOW_LABEL) {
         // 关闭=隐藏后的秒开路径：显示 → 取消最小化 → 聚焦（顺序固定，
         // 最小化状态下直接 set_focus 在 Windows 上不会还原窗口）。
@@ -81,9 +119,18 @@ pub fn open_main_window_on_main_thread(app: &AppHandle) -> Result<(), String> {
         let _ = win.show();
         let _ = win.unminimize();
         let _ = win.set_focus();
+        // 已存在窗口的 WebView 与页面监听均已就绪，跳页事件必达
+        emit_dashboard_navigate(app, page);
         return Ok(());
     }
-    ensure_main_window(app, true)
+    let outcome = ensure_main_window(app, true);
+    // 兜底新建路径：WebView 尚未加载完 dashboard.html，事件可能赶在监听
+    // 注册前被丢弃——启动预热让该路径几乎不会走到（prebuild 失败才出现），
+    // 仍尽力发送；丢失时主窗口落在默认总览页，用户可侧栏手动切换
+    if outcome.is_ok() {
+        emit_dashboard_navigate(app, page);
+    }
+    outcome
 }
 
 /// 应用启动时预建主窗口（隐藏）：把 WebView 的冷启动成本从「首次打开」
@@ -139,4 +186,30 @@ fn ensure_main_window(app: &AppHandle, visible: bool) -> Result<(), String> {
     .map_err(|e| format!("创建主窗口失败: {e}"))?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_dashboard_page;
+
+    #[test]
+    fn 合法页id原样放行() {
+        for page in ["overview", "logs", "compare", "pricing"] {
+            assert_eq!(normalize_dashboard_page(Some(page)), Some(page));
+        }
+    }
+
+    #[test]
+    fn 缺省与非法页id只开窗不导航() {
+        assert_eq!(normalize_dashboard_page(None), None);
+        // 大小写敏感：与 DashboardApp 的 View 值字面不一致即非法
+        assert_eq!(normalize_dashboard_page(Some("Pricing")), None);
+        // 未知页 / 空串 / 事件名仿冒一律忽略
+        assert_eq!(normalize_dashboard_page(Some("stats")), None);
+        assert_eq!(normalize_dashboard_page(Some("")), None);
+        assert_eq!(
+            normalize_dashboard_page(Some("zbar://dashboard-navigate")),
+            None
+        );
+    }
 }

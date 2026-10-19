@@ -15,6 +15,8 @@ export const stats = {
   "stats.unpin": "取消常驻",
   "stats.github": "GitHub 仓库",
   "stats.priceSettings": "价格设置",
+  // 底部「价格设置」按钮的 title/aria：窄窗二期减负后价格页移到主窗口
+  "stats.priceSettingsHint": "价格设置（将在主窗口打开）",
   "stats.sourcesAria": "统计来源",
 
   // ===== 设备筛选 =====

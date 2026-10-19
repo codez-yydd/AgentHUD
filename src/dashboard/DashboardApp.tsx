@@ -24,6 +24,20 @@ import { PricingPage } from "./PricingPage";
 /** 主区视图（新增页面时在此扩展） */
 type View = "overview" | "logs" | "compare" | "pricing";
 
+/** 面板 → 主窗口跳页事件（Rust 侧 open_main_window(page) 在开窗/聚焦后
+ *  emit_to 本窗，见 main_window.rs；事件名风格沿 zbar://appearance-changed，
+ *  两侧字面量需保持一致）。payload 为下方合法页 id */
+const DASHBOARD_NAVIGATE_EVENT = "zbar://dashboard-navigate";
+
+/** 跳页 payload 的合法值（与 View 枚举同源；与 Rust 侧 DASHBOARD_PAGES
+ *  白名单字面一致，改动任一侧需同步）。非法值忽略，保持当前页 */
+const NAVIGATABLE_VIEWS: readonly string[] = [
+  "overview",
+  "logs",
+  "compare",
+  "pricing",
+];
+
 /** 侧栏导航项：顺序即展示顺序；labelKey 同时用作页面标题词典键 */
 const NAV_ITEMS: {
   view: View;
@@ -91,6 +105,32 @@ export function DashboardApp() {
       dispose?.();
     };
   }, [setLocale]);
+
+  // 面板入口跳页（如窄窗「价格设置」按钮 → 本窗定价页）：监听 Rust 侧
+  // zbar://dashboard-navigate，payload 合法才 setView（Rust 侧已按白名单
+  // 过滤，这里兜底校验，非法/缺省忽略）。窗口预建隐藏时 WebView 已存活、
+  // 本监听已注册，事件可达（appearance-changed 同款前提）；导航是离散
+  // 意图，无需外观同步那套同值守卫。监听失败静默：入口退化为只开窗。
+  useEffect(() => {
+    let dispose: (() => void) | undefined;
+    let cancelled = false;
+    listen<string>(DASHBOARD_NAVIGATE_EVENT, (event) => {
+      if (NAVIGATABLE_VIEWS.includes(event.payload)) {
+        setView(event.payload as View);
+      }
+    })
+      .then((unlisten) => {
+        if (cancelled) unlisten();
+        else dispose = unlisten;
+      })
+      .catch(() => {
+        /* 静默：保持当前页 */
+      });
+    return () => {
+      cancelled = true;
+      dispose?.();
+    };
+  }, []);
 
   return (
     <div className="db-shell">

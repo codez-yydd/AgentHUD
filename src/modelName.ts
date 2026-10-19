@@ -86,8 +86,9 @@ export function priceLookupCandidates(raw: string): string[] {
 
 /** 价格表条目查找：按 priceLookupCandidates 的顺序，每条候选先精确命中、
  *  其次按 priceLookupKey 兜底（大小写/点号/不可见字符差异）。
- *  供 hasPositivePrice / merge.ts modelCost / PricingPanel 表单显示共用，
- *  保证「⚠ 判定、花费计算、价格编辑」三处读到同一份价格。 */
+ *  供 hasPositivePrice / merge.ts modelCost / 主窗口 PricingPage 表格显示
+ *  共用（原窄窗 PricingPanel 已随二期减负移除），保证「⚠ 判定、花费计算、
+ *  价格编辑」三处读到同一份价格。 */
 export function lookupPrice(
   usd: Record<string, ModelPrice>,
   modelId: string

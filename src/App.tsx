@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { StatsPanel } from "./StatsPanel";
-import { PricingPanel } from "./PricingPanel";
 import { SettingsPanel } from "./SettingsPanel";
 import { SyncPanel } from "./SyncPanel";
 import { DataProvider } from "./DataCache";
@@ -44,10 +43,11 @@ import {
 } from "./agentVisibility";
 
 // 皮肤域三层视图：skinHub（分类页）→ skinStandalone（免注入子页）/
-// theme（需注入子页）；分类页本身不发起任何注入状态检测
+// theme（需注入子页）；分类页本身不发起任何注入状态检测。
+// 窄窗二期减负：价格设置页已收编到主窗口（Dashboard 定价页），面板不再有
+// pricing 视图——统计页「价格设置」按钮改为 openMainWindow("pricing") 直达
 type View =
   | "stats"
-  | "pricing"
   | "sync"
   | "reports"
   | "skinHub"
@@ -59,8 +59,8 @@ export default function App() {
   const { locale, setLocale } = useI18n();
   const [view, setView] = useState<View>("stats");
   // 币种从属语言：中文=人民币、英文=美元。语言是显式偏好，切换语言时币种跟随
-  // （含启动对齐，菜单栏标题同步刷新）；价格表页仍可临时切换查看另一币种口径，
-  // 切语言或重启后回到语言对应值
+  // （含启动对齐，菜单栏标题同步刷新）。窄窗价格页移除后本窗不再有手动切换
+  // 币种的入口，币种只随语言（临时切换口径的需求由主窗口定价页承接）
   const langCurrency: Currency = locale === "en" ? "usd" : "cny";
   const [currency, setCurrency] = useState<Currency>(langCurrency);
   const [pricing, setPricing] = useState<PricingConfig>({
@@ -258,28 +258,13 @@ export default function App() {
     };
   }, []);
 
-  // 语言对应币种生效：启动时把后端偏好对齐到语言（覆盖旧的手动值，保证菜单栏
-  // 标题与界面一致），语言切换时立即跟随并持久化
+  // 语言对应币种生效：启动时把后端偏好对齐到语言（覆盖历史遗留的手动值，
+  // 保证菜单栏标题与界面一致），语言切换时立即跟随并持久化。本地
+  // zbar-currency 键已无任何读取方（窄窗价格页移除后废弃），不再写入
   useEffect(() => {
     setCurrency(langCurrency);
-    try {
-      localStorage.setItem("zbar-currency", langCurrency);
-    } catch {
-      /* 忽略：QuotaExceededError、隐私模式等（对齐 cache.ts） */
-    }
     saveCurrency(langCurrency).catch(() => {});
   }, [langCurrency]);
-
-  // 切换货币（价格表页临时查看口径）：同步写后端 + 本地缓存，菜单栏标题随之刷新
-  const handleCurrencyChange = (c: Currency) => {
-    setCurrency(c);
-    try {
-      localStorage.setItem("zbar-currency", c);
-    } catch {
-      /* 忽略：QuotaExceededError、隐私模式等（对齐 cache.ts） */
-    }
-    saveCurrency(c).catch(() => {});
-  };
 
   useEffect(() => {
     fetchPricing()
@@ -314,19 +299,12 @@ export default function App() {
             pricing={pricing}
             agentVisibility={agentVisibility}
             credentialPresence={credentialPresence}
-            onGoPricing={() => setView("pricing")}
             onGoSync={() => setView("sync")}
             onGoReports={() => setView("reports")}
             onGoTheme={() => setView("skinHub")}
             onGoSettings={() => setView("settings")}
             initialAdd={pendingAddProvider}
             onInitialAddConsumed={() => setPendingAddProvider(null)}
-          />
-        ) : view === "pricing" ? (
-          <PricingPanel
-            currency={currency}
-            onCurrencyChange={handleCurrencyChange}
-            onBack={backToStats}
           />
         ) : view === "reports" ? (
           <ReportsPanel
