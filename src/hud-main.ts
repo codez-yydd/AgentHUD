@@ -5,25 +5,27 @@
  * panel 的组件体系，条目渲染在壳内直接完成。职责：
  * - 数据流：监听 zbar://hud-bar-usage（hud_bar.rs 数据线程每 30s 组装、
  *   内容变化才推的各 Agent 额度），每个 Agent 一个条目——"语义环 +
- *   品牌图标 + 已用百分比"（参照 jazzenchen/agent-hud-open Simple 模式：
- *   环画已用比例、旁边直接写数字，抬眼可读）；环与数字取该 Agent 全部
- *   窗口中已用% 最高（= 余量最紧）的窗口，颜色按已用阈值分档：<70% 绿
- *   / 70–89% 黄 / ≥90% 红（与注入版统计条的三档阈值同源：已用 70% =
- *   剩余 30%；数值色 = 环色，健康态也用绿）。设置里已开启但本轮没取到
- *   额度的 Agent 也保留弱化条目（「—」），不再整条消失；
+ *   品牌图标"（参照 jazzenchen/agent-hud-open Simple 模式；**条上不出
+ *   数字**，抬眼从环的比例与颜色读健康度，具体数值全在悬浮详情卡里）。
+ *   环取该 Agent 全部窗口中已用% 最高（= 余量最紧）的窗口，颜色按已用
+ *   阈值分档：<70% 绿 / 70–89% 黄 / ≥90% 红（与注入版统计条的三档阈值
+ *   同源：已用 70% = 剩余 30%）。设置里已开启但本轮没取到额度的 Agent
+ *   也保留弱化条目，不再整条消失；
  * - 布局流：监听 zbar://hud-bar-layout（payload = { orientation, edge }，
  *   贴边吸附换边后 Rust 推送）切换竖排 flex column（贴左/右）与横排
  *   flex row（贴顶），并记住停靠边（.edge-right 类让面板贴窗口右缘，
  *   卡片按边定位方向）；启动时按窗口横竖比自判兜底（窗口尺寸由 Rust
- *   bar_metrics 按停靠边预置：竖排恒 128 逻辑宽、横排恒 92 逻辑高，条长
- *   下限 120 保证两者可分；layout 事件在页面未就绪时丢失也不怕）；
- * - 悬浮抽屉 + 详情卡：pointerenter 条 → 70ms 后给 #hud-root 加 .hud-open，
- *   面板宽度 68 → 102，百分比由 overflow 裁切后随宽度过渡拉出（类似
- *   element-ui 抽屉）；悬浮到某个条目就直接显示该 Agent 的详情卡，不用先
- *   点击。卡片内容：品牌头像 + 名称/套餐/健康态 + 每窗口两行式额度行（状态
+ *   bar_metrics 按停靠边预置：竖排恒 68 逻辑宽、横排恒 70 逻辑高，条长
+ *   下限 96 保证两者可分；layout 事件在页面未就绪时丢失也不怕）；
+ * - 悬浮详情卡：pointerenter 条 → 70ms 后给 #hud-root 加 .hud-open
+ *   （只驱动悬停高亮，两种朝向都不做抽屉展开——窗口宽度按收起态收死），
+ *   悬浮到某个条目就直接显示该 Agent 的详情卡，不用先点击。
+ *   卡片内容：品牌头像 + 名称/套餐/健康态 + 每窗口两行式额度行（状态
  *   点/标签/已用%、进度轨/剩余/倒计时）+ Token 区（24h 输入/输出/缓存堆叠
  *   直方图、今日/请求/峰值）+ 底部「打开主窗口」按钮 → invoke
- *   open_main_window("overview")。指针可移到卡上操作，离开条/卡约 260ms
+ *   open_main_window("overview")。余额型条目（dsh = DeepSeek 官方余额）
+ *   没有百分比窗口：额度区换成余额行（金额 + 赠送/充值拆分）。指针可移到
+ *   卡上操作，离开条/卡约 260ms
  *   后收卡。**卡片渲染在独立的 hud-card 窗口里**（同一份 bundle 按窗口
  *   label 分派成"卡模式"，见文件末尾）：条窗口全程不改几何，所以悬浮时
  *   不会出现"扩窗那一帧整条瞬移"的闪现（WebView2 的渲染子窗口锚定父窗口
@@ -61,10 +63,10 @@ import { LOCALE_KEY } from "./i18n/locale";
  *  新窗口左上角，就是"首次悬浮闪现移动"） */
 const HUD_CARD_WINDOW_LABEL = "hud-card";
 const CARD_MODE = getCurrentWindow().label === HUD_CARD_WINDOW_LABEL;
-/** 卡片窗口四周留白（逻辑 px）：卡片投影在 16px 处被窗口边缘裁掉，与旧
- *  与旧版"卡片画在条窗口内、四周留 16 呼吸位"观感一致；与 Rust
- *  hud_bar::CARD_PAD 同步 */
-const CARD_PAD = 16;
+/** 卡片窗口四周留白（逻辑 px）：卡片在窗口内的偏移 = 投影可用的全部
+ *  空间；留白越小，卡片四周那圈"透明边框"越窄。与 Rust hud_bar::CARD_PAD
+ *  同步（改一处必须改另一处，否则卡片会被窗口裁切） */
+const CARD_PAD = 8;
 const CARD_OPEN_EVENT = "zbar://hud-card-open";
 const CARD_CLOSE_EVENT = "zbar://hud-card-close";
 
@@ -84,6 +86,15 @@ interface HudBarQuota {
   resetAt: number | null;
 }
 
+/** 按量计费余额（后端 ProviderQuotaBalance 同字段；当前只有 dsh =
+ *  DeepSeek 开放平台官方余额） */
+interface HudBarBalance {
+  amount: number;
+  currency: string;
+  granted?: number;
+  toppedUp?: number;
+}
+
 /** 单个 Agent 条目（source 与图标键一致；plan 为后端可选下发的套餐名） */
 interface HudBarAgent {
   source: string;
@@ -91,11 +102,20 @@ interface HudBarAgent {
   /** 后端状态：缺省 = 实时额度正常；"unavailable" = 已开启但暂无额度 */
   status?: "unavailable";
   quotas: HudBarQuota[];
+  /** 余额型条目（dsh）：有值时 quotas 恒空，条目显示官方余额而不是百分比 */
+  balance?: HudBarBalance;
 }
 
-/** 开启但没取到额度的条目（未登录 / 凭证过期 / 网络失败） */
+/** 余额型条目（有余额、且没有百分比窗口） */
+function isBalanceAgent(agent: HudBarAgent): boolean {
+  return agent.balance != null && agent.quotas.length === 0;
+}
+
+/** 开启但没取到额度的条目（未登录 / 凭证过期 / 网络失败）；余额型条目
+ *  有余额即在线，不算离线 */
 function isOffline(agent: HudBarAgent): boolean {
-  return agent.status === "unavailable" || agent.quotas.length === 0;
+  if (agent.status === "unavailable") return true;
+  return agent.quotas.length === 0 && !isBalanceAgent(agent);
 }
 
 /** 数据事件 payload（内容变化才推；倒计时由本地基于 resetAt 计算） */
@@ -222,6 +242,13 @@ const AGENT_ICONS: Record<string, { viewBox: string; body: string }> = {
       '<path fill="currentColor" fill-rule="evenodd" clip-rule="evenodd" d="M3.28 1.1H20.72V22.9H3.28V1.1ZM7.64 5.46H16.36V18.54H7.64V5.46Z"/>' +
       '<path fill="currentColor" fill-opacity="0.55" d="M7.64 9.82H16.36V18.54H7.64V9.82Z"/>',
   },
+  // DeepSeek Harness mark：鲸鱼（与 BrandIcon.tsx 的 dsh 路径逐字节一致；
+  // 眼睛是反向绕行的子路径，nonzero 填充规则下挖空）
+  dsh: {
+    viewBox: "0 0 24 24",
+    body:
+      '<path fill="currentColor" d="M7.9 8.4h7.8a4.3 4.3 0 0 1 0 8.6H7.9a4.3 4.3 0 0 1 0-8.6ZM17.5 10 22.8 6.2v6.4ZM9.9 3.6a1.2 1.2 0 1 1-2.4 0 1.2 1.2 0 0 1 2.4 0ZM13.9 5.4a.9.9 0 1 1-1.8 0 .9.9 0 0 1 1.8 0ZM7.5 12.2a1.1 1.1 0 1 0 2.2 0 1.1 1.1 0 0 0-2.2 0Z"/>',
+  },
 };
 
 /** source → 显示名（卡片标题用，与总览页 agentLabel 同名口径） */
@@ -233,6 +260,7 @@ const SOURCE_LABELS: Record<string, string> = {
   kimi: "Kimi Code",
   opencodego: "OpenCode Go",
   minimax: "MiniMax Code",
+  dsh: "DeepSeek Harness",
 };
 
 /** XML 文本转义（首字母可能来自后端 source 字符串，进 innerHTML 前兜底） */
@@ -317,6 +345,14 @@ interface Msg {
   /** 已开启但暂无额度数据 */
   offline: string;
   offlineHint: string;
+  /** 余额型条目（dsh = DeepSeek 官方余额）：区块标题与拆分标签 */
+  balance: string;
+  granted: string;
+  toppedUp: string;
+  /** 余额型条目的副标题（替代"订阅额度与用量"） */
+  balanceSubtitle: string;
+  /** 已开启但没有配置 DeepSeek Key 时的提示 */
+  balanceHint: string;
   /** 行 aria-label：完整口径（已用/剩余/重置） */
   rowTitle: (
     label: string,
@@ -348,6 +384,11 @@ const MESSAGES: Record<"zh" | "en", Msg> = {
     noRecent: "24h 无本地调用",
     offline: "未连接",
     offlineHint: "未获取到实时额度，登录对应客户端后自动出现",
+    balance: "官方余额",
+    granted: "赠送",
+    toppedUp: "充值",
+    balanceSubtitle: "DeepSeek 官方余额与用量",
+    balanceHint: "未配置 DeepSeek API Key，在主窗口 DSH 面板里添加后自动显示余额",
     rowTitle: (label, used, remain, reset) =>
       `${label} 已用 ${used}% · 剩余 ${remain}%${reset ? ` · ${reset} 后重置` : ""}`,
   },
@@ -372,6 +413,11 @@ const MESSAGES: Record<"zh" | "en", Msg> = {
     noRecent: "No local calls in 24h",
     offline: "Offline",
     offlineHint: "No live quota yet. Sign in to the agent to populate it.",
+    balance: "Balance",
+    granted: "Granted",
+    toppedUp: "Top-up",
+    balanceSubtitle: "DeepSeek balance & usage",
+    balanceHint: "No DeepSeek API key yet. Add one in the DSH panel to show the balance.",
     rowTitle: (label, used, remain, reset) =>
       `${label} used ${used}% · ${remain}% left${reset ? ` · resets in ${reset}` : ""}`,
   },
@@ -449,6 +495,66 @@ function fmtCount(n: number): string {
   } catch {
     return String(Math.round(v));
   }
+}
+
+/** 币种 → 显示符号（后端给 "CNY"/"USD" 或已是符号；未知币种原样前缀） */
+function currencySymbol(currency: string): string {
+  const c = (currency ?? "").trim();
+  const upper = c.toUpperCase();
+  if (upper === "CNY" || upper === "RMB" || c === "¥" || c === "￥") return "¥";
+  if (upper === "USD" || c === "$") return "$";
+  if (upper === "EUR" || c === "€") return "€";
+  if (upper === "GBP" || c === "£") return "£";
+  return upper ? `${upper} ` : "¥";
+}
+
+/** 余额完整值（详情卡）：两位小数 + 千分位 */
+function fmtMoneyFull(amount: number, currency: string): string {
+  const sym = currencySymbol(currency);
+  const v = Number.isFinite(amount) ? Math.max(0, amount) : 0;
+  try {
+    return `${sym}${v.toLocaleString(msg === MESSAGES.zh ? "zh-CN" : "en-US", {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    })}`;
+  } catch {
+    return `${sym}${v.toFixed(2)}`;
+  }
+}
+
+/** 详情卡余额行（dsh = DeepSeek 官方余额）：头行「官方余额 + 金额」，
+ *  体行「赠送 x · 充值 y」（后端有拆分时才出）。 */
+function appendBalanceRow(
+  parent: HTMLElement,
+  balance: HudBarBalance,
+  t: Msg
+): void {
+  const wrap = document.createElement("div");
+  wrap.className = "hud-balance";
+  const head = document.createElement("div");
+  head.className = "hud-balance-head";
+  const label = document.createElement("span");
+  label.className = "hud-balance-label";
+  label.textContent = t.balance;
+  const value = document.createElement("span");
+  value.className = "hud-balance-value";
+  value.textContent = fmtMoneyFull(balance.amount, balance.currency);
+  head.append(label, value);
+  wrap.appendChild(head);
+  const parts: string[] = [];
+  if (balance.granted != null) {
+    parts.push(`${t.granted} ${fmtMoneyFull(balance.granted, balance.currency)}`);
+  }
+  if (balance.toppedUp != null) {
+    parts.push(`${t.toppedUp} ${fmtMoneyFull(balance.toppedUp, balance.currency)}`);
+  }
+  if (parts.length > 0) {
+    const sub = document.createElement("div");
+    sub.className = "hud-balance-sub";
+    sub.textContent = parts.join(" · ");
+    wrap.appendChild(sub);
+  }
+  parent.appendChild(wrap);
 }
 
 /** 详情卡额度行（两行式）：
@@ -775,7 +881,7 @@ let detailSource: string | null = null;
 let pointerInside = false;
 /** 鼠标是否在详情卡内（hover 开卡后允许移到卡上操作，不立即收） */
 let cardHovered = false;
-/** hover 展开的短延迟（防扫过时误触发抽屉） */
+/** hover 的短延迟（防扫过时误触发 .hud-open 标记与详情卡） */
 let expandTimer: ReturnType<typeof setTimeout> | null = null;
 /** hover 离开后的收起延迟（让指针在条/卡之间移动时不闪烁） */
 let collapseTimer: ReturnType<typeof setTimeout> | null = null;
@@ -790,13 +896,11 @@ let pointerWatch: ReturnType<typeof setInterval> | null = null;
 let pointerCheckInflight = false;
 /** 指针连续在条/卡之外的起始时刻（0 = 当前在范围内） */
 let pointerOutsideSince = 0;
-/** 详情卡打开序号：异步等待抽屉动画期间被收起或切换时，旧流程作废 */
+/** 详情卡打开序号：异步流程（等 Rust 回执/卡片落位）期间被收起或切换时，旧流程作废 */
 let showSeq = 0;
 /** 上一次卡片入场的 source/时刻：短时间内同源重建不再重放入场动画
  *  （动画从 0 重播看起来就是"卡片又冒出来一次"） */
 let lastMount: { source: string; at: number } | null = null;
-/** 抽屉展开动画的起始时刻（详情卡要等宽度过渡结束再锚定） */
-let dockOpenedAt = 0;
 /** 阈值拖拽会话（pointerdown 记录起点；null = 无拖拽会话） */
 let drag: { x: number; y: number; started: boolean } | null = null;
 /** 拖拽启动后需吞掉一次 click（pointerup 后 click 仍会派发——不吞会在
@@ -830,10 +934,11 @@ function applyEdge(next: HudBarLayout["edge"]): void {
   rootEl.classList.toggle("edge-right", next === "right");
 }
 
-/** 单条目环 SVG：42px 语义圆环（外径 42、stroke 4、圆头、12 点起顺时
- *  针——rotate(-90) 把 dash 起点从 3 点挪到 12 点、底轨 --hud-ring-track）
- *  + 中心品牌图标（20px，见 .hud-agent-icon）。stroke 按"已用%"画
- *  （dasharray），颜色按已用档（<70 绿 / 70–89 黄 / ≥90 红） */
+/** 单条目环 SVG：语义圆环（viewBox 42 内画外径 42、stroke 4、圆头、12 点
+ *  起顺时针——rotate(-90) 把 dash 起点从 3 点挪到 12 点、底轨
+ *  --hud-ring-track）。CSS 渲染尺寸 32px（等比缩放），+ 中心品牌图标
+ *  （15px，见 .hud-agent-icon）。stroke 按"已用%"画（dasharray），颜色按
+ *  已用档（<70 绿 / 70–89 黄 / ≥90 红）；余额型条目 used=0，只留底轨 */
 function ringSvg(usedPct: number, source: string, offline = false): string {
   const r = 18;
   const c = 2 * Math.PI * r;
@@ -860,8 +965,9 @@ function ringSvg(usedPct: number, source: string, offline = false): string {
   );
 }
 
-/** 重建条目列表（数据/语言/布局变化时全量重建，条目数 ≤ 6，开销可忽略）。
- *  条目 = 环 + 品牌图标 + 已用百分比（数字与环同档色）。空态占位节点常驻
+/** 重建条目列表（数据/语言/布局变化时全量重建，条目数 ≤ 8，开销可忽略）。
+ *  条目 = 环 + 品牌图标，**条上不出数字**（百分比/余额全进悬浮详情卡，
+ *  两种朝向一致）；余额型条目（dsh）环内不画进度弧。空态占位节点常驻
  *  胶囊面板内部（#hud-empty 挂在 #hud-strip 下，空态撑起面板高度且自带
  *  拖拽属性可拖动），重建前先摘下、清空后再挂回 */
 function renderItems(): void {
@@ -876,35 +982,32 @@ function renderItems(): void {
   let shown = 0;
   for (const agent of agents) {
     const tight = tightestWindow(agent.quotas);
+    const balance = isBalanceAgent(agent) ? agent.balance! : null;
     const offline = isOffline(agent);
     const used = tight ? usedPctOf(tight) : 0;
-    const lv = levelOf(used);
+    const label = SOURCE_LABELS[agent.source] ?? agent.source;
     const item = document.createElement("div");
     item.className = offline ? "hud-item offline" : "hud-item";
     item.dataset.source = agent.source;
+    // 完整口径留给读屏（条上不显示文字，数字只在详情卡里）
     item.setAttribute(
       "aria-label",
       offline
-        ? `${SOURCE_LABELS[agent.source] ?? agent.source} · ${msg.offline}`
-        : `${SOURCE_LABELS[agent.source] ?? agent.source} · ${used}%`
+        ? `${label} · ${msg.offline}`
+        : balance
+          ? `${label} · ${msg.balance} ${fmtMoneyFull(balance.amount, balance.currency)}`
+          : `${label} · ${used}%`
     );
-    item.innerHTML =
-      ringSvg(used, agent.source, offline) +
-      `<span class="hud-pct ${offline ? "hud-off" : lv}">${
-        offline ? "—" : `${used}%`
-      }</span>`;
+    item.innerHTML = ringSvg(used, agent.source, offline);
     stripEl.appendChild(item);
     shown++;
   }
-  // 抽屉两态宽度：竖排只变宽（68 → 102），横排按条目数计算
-  // （条目 50 → 84，条内 gap 恒 2）。宽度经 CSS 变量交给样式表过渡，
-  // 窗口本身尺寸不变（Rust 侧仍按展开态条目数建窗）。
+  // 面板宽度：**两种朝向都不展开**（横排按条目数撑开、竖排恒 56），
+  // 窗口尺寸由 Rust bar_metrics 维护，这里只把宽度写进 CSS 变量。
   const count = Math.max(1, shown);
   const gaps = (count - 1) * 2;
-  const collapsedW = orientation === "horizontal" ? 18 + count * 50 + gaps : 68;
-  const expandedW = orientation === "horizontal" ? 18 + count * 84 + gaps : 102;
+  const collapsedW = orientation === "horizontal" ? 16 + count * 40 + gaps : 56;
   stripEl.style.setProperty("--hud-w-collapsed", `${collapsedW}px`);
-  stripEl.style.setProperty("--hud-w-expanded", `${expandedW}px`);
   stripEl.appendChild(emptyEl);
   emptyEl.textContent = msg.empty;
   emptyEl.classList.toggle("on", shown === 0);
@@ -929,15 +1032,17 @@ function findAgent(source: string | null): HudBarAgent | null {
   return usage?.agents.find((a) => a.source === source) ?? null;
 }
 
-/** 卡片骨架：品牌头像（38px 圆角瓦片）+ Agent 名/套餐徽标 + 副标题 +
+/** 卡片骨架：品牌头像（34px 圆角瓦片）+ Agent 名/套餐徽标 + 副标题 +
  *  右侧健康状态胶囊。显示名/套餐/状态都走 textContent（后端字符串与
- *  用户套餐名不进 innerHTML）。 */
+ *  用户套餐名不进 innerHTML）。余额型条目（dsh）没有百分比健康度，
+ *  右侧胶囊改显示「官方余额」。 */
 function buildCardShell(
   source: string,
   className: string,
   plan: string | undefined,
   tightestUsed: number,
-  offline = false
+  offline = false,
+  balance: HudBarBalance | null = null
 ): HTMLElement {
   const card = document.createElement("div");
   card.className = className;
@@ -966,15 +1071,19 @@ function buildCardShell(
   }
   const sub = document.createElement("div");
   sub.className = "hud-card-sub";
-  sub.textContent = msg.subtitle;
+  sub.textContent = balance ? msg.balanceSubtitle : msg.subtitle;
   title.append(nameRow, sub);
 
-  const lv = offline ? "hud-off" : levelOf(tightestUsed);
+  const lv = offline ? "hud-off" : balance ? "hud-ok" : levelOf(tightestUsed);
   const status = document.createElement("span");
   status.className = `hud-status ${lv}`;
   const dot = document.createElement("i");
   const statusText = document.createElement("span");
-  statusText.textContent = offline ? msg.offline : msg.status(tightestUsed);
+  statusText.textContent = offline
+    ? msg.offline
+    : balance
+      ? msg.balance
+      : msg.status(tightestUsed);
   status.append(dot, statusText);
 
   head.append(avatar, title, status);
@@ -1010,13 +1119,15 @@ function buildDetailCard(source: string): HTMLElement | null {
   const agent = findAgent(source);
   if (!agent) return null;
   const offline = isOffline(agent);
+  const balance = isBalanceAgent(agent) ? agent.balance! : null;
   const tight = tightestWindow(agent.quotas);
   const card = buildCardShell(
     source,
     "hud-card",
     agent.plan,
     tight ? usedPctOf(tight) : 0,
-    offline
+    offline,
+    balance
   );
   if (offline) {
     const empty = document.createElement("div");
@@ -1024,9 +1135,12 @@ function buildDetailCard(source: string): HTMLElement | null {
     const title = document.createElement("b");
     title.textContent = msg.offline;
     const hint = document.createElement("span");
-    hint.textContent = msg.offlineHint;
+    // 余额型条目（dsh）的"未连接"是没录 DeepSeek API Key，不是客户端登录态
+    hint.textContent = source === "dsh" ? msg.balanceHint : msg.offlineHint;
     empty.append(title, hint);
     card.appendChild(empty);
+  } else if (balance) {
+    appendBalanceRow(card, balance, msg);
   } else {
     for (const q of agent.quotas) {
       appendQuotaRow(card, q, msg);
@@ -1039,7 +1153,9 @@ function buildDetailCard(source: string): HTMLElement | null {
   meta.className = "hud-foot-meta";
   meta.textContent = offline
     ? `${msg.offline} · ${msg.live}`
-    : `${msg.windows(agent.quotas.length)} · ${msg.live}`;
+    : balance
+      ? `${msg.balance} · ${msg.live}`
+      : `${msg.windows(agent.quotas.length)} · ${msg.live}`;
   foot.append(meta, buildOpenMainBtn());
   card.appendChild(foot);
   return card;
@@ -1154,7 +1270,6 @@ async function checkPointer(): Promise<void> {
       cardHovered = true;
       if (!rootEl.classList.contains("hud-open")) {
         rootEl.classList.add("hud-open");
-        dockOpenedAt = performance.now();
       }
     }
     return;
@@ -1212,8 +1327,9 @@ function scheduleCardClose(waitMs = 260): void {
   }, waitMs);
 }
 
-/** 抽屉推入：条目宽度从环的位置向外过渡，数值由 overflow 裁切后
- *  拉出。hover 给 90ms 防扫过误触；点击详情立即展开 */
+/** 悬停标记：.hud-open 已不改变布局（条不做抽屉展开），只作为"指针在
+ *  条上"的状态位给收起逻辑与调试用。hover 给 70ms 防扫过误触；点击详情
+ *  立即置位 */
 function openDock(immediate = false): void {
   if (dragging) return; // 拖拽中保持默认的收起态
   clearCollapseTimer();
@@ -1222,7 +1338,6 @@ function openDock(immediate = false): void {
   if (immediate) {
     clearExpandTimer();
     rootEl.classList.add("hud-open");
-    dockOpenedAt = performance.now();
     return;
   }
   if (expandTimer) return;
@@ -1230,11 +1345,10 @@ function openDock(immediate = false): void {
     expandTimer = null;
     if (rootEl.classList.contains("hud-open")) return;
     rootEl.classList.add("hud-open");
-    dockOpenedAt = performance.now();
   }, 70);
 }
 
-/** 抽屉收出：详情打开或指针仍在条内时不收 */
+/** 悬停标记复位：详情打开或指针仍在条内时不收 */
 function closeDock(waitMs = 220): void {
   clearCollapseTimer();
   if (detailSource || pointerInside) return;
@@ -1242,33 +1356,25 @@ function closeDock(waitMs = 220): void {
     collapseTimer = null;
     if (detailSource || pointerInside) return;
     rootEl.classList.remove("hud-open");
-    dockOpenedAt = 0;
   }, waitMs);
 }
 
-/** 详情卡必须在抽屉宽度动画结束后再测量锚点，否则卡片会按半展开
- *  的条右缘定位、与最终面板重叠 */
+/** 悬停标记（.hud-open）与卡片锚点的准备：条**不再做抽屉展开**（两种
+ *  朝向都只露环、宽度恒定），所以这里没有任何过渡要等——只保证标记已
+ *  落到当前帧，卡片立即锚定（以前要等 300ms 宽度动画，否则卡片会按
+ *  半展开的面板边缘定位；现在展开态不存在了，再等就是白等） */
 async function ensureDockOpen(): Promise<void> {
   clearExpandTimer();
   clearCollapseTimer();
   if (!rootEl.classList.contains("hud-open")) {
     rootEl.classList.add("hud-open");
-    dockOpenedAt = performance.now();
   }
-  let reduce = false;
-  try {
-    reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-  } catch {
-    /* 老内核无 matchMedia：按有动画处理 */
-  }
-  const wait = reduce ? 0 : 300 - (performance.now() - dockOpenedAt);
-  if (wait > 0) await delay(wait);
 }
 
 /** 详情卡：品牌头（套餐/健康态）+ 逐窗口额度行 + 24h Token 直方图 +
  *  底栏（窗口数/刷新说明 + 打开主窗口）。卡片本体在**独立窗口**里渲染
- *  （见 Rust hud_bar.rs 的建窗注释）：本函数只负责等抽屉展开、把 hover
- *  条目中心的物理坐标交给 Rust，摆位与入场由 Rust + 卡片窗自己完成。
+ *  （见 Rust hud_bar.rs 的建窗注释）：本函数把 hover 条目中心的物理坐标
+ *  交给 Rust，摆位与入场由 Rust + 卡片窗自己完成。
  *  force 供数据刷新时重开一次（卡片页按新数据重渲染、不重放入场动画）。 */
 async function showDetailCard(
   source: string,
@@ -1292,7 +1398,7 @@ async function showDetailCard(
     .forEach((el) => el.classList.remove("active"));
   item.classList.add("active");
   await ensureDockOpen();
-  // 等抽屉动画期间被收起或切到别的条目：本次流程作废
+  // 异步准备期间被收起或切到别的条目：本次流程作废
   if (seq !== showSeq || detailSource !== source) return;
   // 条目中心 → 物理屏幕坐标（Rust 侧几何全用物理 px）
   const rect = item.getBoundingClientRect();
@@ -1377,7 +1483,6 @@ function collapseForDrag(): void {
   // 会变成一张飘在桌面上的孤儿卡）
   void invoke("hud_card_close", { animate: false }).catch(() => {});
   rootEl.classList.remove("hud-open");
-  dockOpenedAt = 0;
 }
 
 /** 把 Rust 回执落到本地布局：朝向/停靠边变化时重渲染（条目宽度变量
@@ -1523,7 +1628,7 @@ stripEl.addEventListener("pointerover", (e) => {
   // 数字）之间移动会连续派发 pointerover，重排计时器会让卡迟迟不出现，
   // 重挂节点则会重放入场动画——这是"同一图标内移动时闪动"的根因。
   // 注意这里**不看卡是否已挂载**：showDetailCard 先置 detailSource 再
-  // await 抽屉动画，期间卡还不存在；若此时重排计时器，每次移动都会
+  // await ensureDockOpen，期间卡还不存在；若此时重排计时器，每次移动都会
   // 用新流程作废旧流程，卡会被无限推迟。
   if (detailSource === source) return;
   if (hoverPending === source) return;

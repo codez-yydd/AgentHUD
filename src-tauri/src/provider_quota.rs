@@ -52,7 +52,8 @@ pub struct ProviderQuotaWindow {
 }
 
 /// 按量计费余额（DeepSeek / Moonshot / 通义 Token 等充值型 provider）。
-#[derive(Debug, Clone, Serialize)]
+/// PartialEq：HUD 停靠条把它塞进 HudBarAgent（变更检测用）后需要比较。
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderQuotaBalance {
     /// 当前余额

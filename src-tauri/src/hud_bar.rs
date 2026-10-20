@@ -25,7 +25,7 @@
 //! 窗口形态与铁律（照搬 session_hud.rs / pet.rs）：
 //! - 透明、无边框、置顶、skipTaskbar、shadow 关闭、不可 resize、
 //!   focusable(false)+focused(false)（不抢编辑器焦点，鼠标交互不受影响）；
-//! - Windows 隐藏建窗 → set_size → show 的钳宽顺序（118 逻辑宽远小于
+//! - Windows 隐藏建窗 → set_size → show 的钳宽顺序（68 逻辑宽远小于
 //!   WM_GETMINMAXINFO 默认最小跟踪宽度，min_inner_size(1,1) 覆盖，
 //!   见 pet.rs 的事故记载）；
 //! - 建窗/窗口操作必须在主线程事件循环上下文：合法调用点是 setup 阶段
@@ -47,7 +47,7 @@
 //! 回声由 SNAP_POS 位置比对拦截（吸附/扩窗闭包末尾写入，闭包在事件循环
 //! 线程同步执行完毕后回声才分发，时序安全）。
 //!
-//! 详情卡：条窗口厚度只有 118 逻辑 px（贴顶 86），卡片画不下也不能溢出
+//! 详情卡：条窗口厚度只有 68 逻辑 px（贴顶 70），卡片画不下也不能溢出
 //! 窗口边界——所以卡片有**自己的窗口**（"hud-card"，透明置顶、不抢焦点、
 //! 常驻隐藏预热）。条前端 hover 条目时只 invoke hud_card_open（带 hover
 //! 条目中心的物理坐标），Rust 记下锚点通知卡片页；卡片页按自身实测高度
@@ -78,7 +78,7 @@ use tauri::{
 use crate::claude::ClaudeRateLimits;
 use crate::codex::CodexRateLimits;
 use crate::kimi::KimiRateLimits;
-use crate::provider_quota::ProviderQuotaEntry;
+use crate::provider_quota::{ProviderQuotaBalance, ProviderQuotaEntry};
 use crate::quota::QuotaResult;
 
 // ============================================================
@@ -97,30 +97,28 @@ pub const HUD_BAR_LAYOUT_EVENT: &str = "zbar://hud-bar-layout";
 pub const HUD_BAR_POPOVER_EVENT: &str = "zbar://hud-bar-popover";
 
 /// 条厚度（逻辑 px）：竖排 = 窗口宽（贴左/右）。几何分解与 hud.html
-/// 栅格一一对应：透明屏缘间隙 8×2（#hud-root 的 padding）+ 面板内边距
-/// 9×2 + 条目内容宽 84（环 42 + 间距 6 + 百分比 28 + 条目内边距 4×2）
-/// = 118。改任一侧必须同步另一侧，否则出现裁切或空白
-const BAR_THICK: f64 = 118.0;
-/// 横排（贴顶）窗口高：屏缘间隙 8×2 + 面板内边距 9×2 + 条目高 52 = 86
-const BAR_THICK_TOP: f64 = 86.0;
-/// 竖排单条目长度（逻辑 px）：条目盒高 52（环 42 上下各 5），与 hud.html
+/// 栅格一一对应：透明屏缘间隙 6×2（#hud-root 的 padding）+ 面板内边距
+/// 8×2 + 条目宽 40（环 32 + 条目内边距 4×2）= 68。两种朝向都**不做抽屉
+/// 展开**（条上只有环与图标，百分比/金额全进详情卡），所以窗口可以贴着
+/// 面板收死，不留透明画布。改任一侧必须同步另一侧，否则出现裁切或空白
+const BAR_THICK: f64 = 68.0;
+/// 横排（贴顶）窗口高：屏缘间隙 6×2 + 面板内边距 8×2 + 条目高 42 = 70
+const BAR_THICK_TOP: f64 = 70.0;
+/// 竖排单条目长度（逻辑 px）：条目盒高 42（环 32 上下各 5），与 hud.html
 /// .hud-item 尺寸同步
-const ITEM_LEN: f64 = 52.0;
-/// 横排收起态单条目宽度（逻辑 px）：只露环 + 内边距（hud.html 收起态
-/// .hud-item width 50 同步）。展开时百分比被拉出、条目变宽到 ITEM_W
-const ITEM_W_COLLAPSED: f64 = 50.0;
-/// 横排单条目宽度（逻辑 px）：环 42 + 间距 6 + 百分比 28 + 条目侧内边距
-/// 4×2 = 84（与 hud.html 横排 .hud-item 同步）
-const ITEM_W: f64 = 84.0;
+const ITEM_LEN: f64 = 42.0;
+/// 单条目宽度（逻辑 px）：只露环 + 内边距（hud.html .hud-item width 40
+/// 同步）。横竖排共用同一宽度——没有展开态
+const ITEM_W_COLLAPSED: f64 = 40.0;
 /// 条目间距（逻辑 px）：hud.html #hud-strip 的 gap 同步
 const ITEM_GAP: f64 = 2.0;
 /// 条与屏缘的视觉间隙（逻辑 px）：hud.html #hud-root padding 同步；吸附
 /// 把窗口贴到屏幕边 x=0/y=0，面板离缘全靠它
-const BAR_PAD: f64 = 8.0;
+const BAR_PAD: f64 = 6.0;
 /// 面板内边距（逻辑 px）：hud.html #hud-strip padding 同步
-const PANEL_PAD: f64 = 9.0;
+const PANEL_PAD: f64 = 8.0;
 /// 条长度下限（逻辑 px）：单条目时也保持该长度
-const BAR_MIN_LEN: f64 = 112.0;
+const BAR_MIN_LEN: f64 = 96.0;
 /// 详情卡窗口 label（独立窗口，见 hud_card 段）与事件名
 pub const HUD_CARD_WINDOW_LABEL: &str = "hud-card";
 /// 打开一张卡（payload = { source, edge, animate }）
@@ -131,14 +129,17 @@ pub const HUD_CARD_CLOSE_EVENT: &str = "zbar://hud-card-close";
 pub const HUD_CARD_PLACED_EVENT: &str = "zbar://hud-card-placed";
 /// 详情卡宽度（逻辑 px）：hud.html .hud-card width 同步
 const CARD_W: f64 = 304.0;
-/// 卡片窗口四周留白（逻辑 px）：卡片外阴影（blur 64 / offset-y 24）在
-/// 16px 处被窗口边缘裁掉，与旧的"扩窗画布内留 16 呼吸位"观感一致
-const CARD_PAD: f64 = 16.0;
+/// 卡片窗口四周留白（逻辑 px）：只服务两件事——① 卡片投影必须落在窗口
+/// 内（hud.html .hud-card 的 blur+offset 之和 ≤ 本值，否则阴影被窗口边缘
+/// 硬裁成一条可见的矩形描边）；② 抽屉入场位移不被裁切。**值越小越好**：
+/// 这圈透明留白会连同背景一起被看见（就是"卡片四周多出来的透明边框"），
+/// 还会吃掉鼠标事件——16 时肉眼已能明显看到一圈，收到 8
+const CARD_PAD: f64 = 8.0;
 /// 卡片与条之间的间隙（逻辑 px）：hud.html #hud-pop 侧留白一致
 const CARD_GAP: f64 = 8.0;
-/// 展开态面板宽度（逻辑 px）：竖排 = 条目 84 + 面板内边距 9×2。卡片
-/// 横向位置以**展开态**面板边缘为基准（卡片只在抽屉展开后出现）
-const PANEL_W_EXPANDED: f64 = ITEM_W + PANEL_PAD * 2.0;
+/// 面板宽度（逻辑 px）：条目 40 + 面板内边距 8×2。卡片横向位置以面板
+/// 边缘为基准（卡片挂在条外侧）
+const PANEL_W: f64 = ITEM_W_COLLAPSED + PANEL_PAD * 2.0;
 /// 窗口操作（建窗/吸附/拖拽/卡片落位）的等待超时：仅事件循环异常时兜底
 const HUD_BAR_OP_TIMEOUT: Duration = Duration::from_secs(8);
 /// 数据拍周期（毫秒）：各源额度组装与推送节拍（zai/provider 查询另有
@@ -211,8 +212,8 @@ impl BarEdge {
     }
 }
 
-/// 条窗口尺寸（宽, 高）：竖排 = 118 × 条长，横排 = 条长 ×
-/// 86。条长 = 两端留白 + 面板内边距 + 条目数 × 条目长 + 条目间距，下限
+/// 条窗口尺寸（宽, 高）：竖排 = 68 × 条长，横排 = 条长 ×
+/// 70。条长 = 两端留白 + 面板内边距 + 条目数 × 条目长 + 条目间距，下限
 /// BAR_MIN_LEN（单条目也给悬浮卡留纵向空间）。返回**逻辑 px**（建窗
 /// builder.position / inner_size 走逻辑坐标）。吸附/拖拽闭包与建窗共
 /// 包与建窗共用。
@@ -226,9 +227,9 @@ fn bar_metrics(edge: BarEdge, items: usize) -> (f64, f64) {
             (BAR_THICK, len)
         }
         BarEdge::Top => {
-            // 收起态条目只有 50 宽（百分比被 overflow 裁掉）：窗口必须与
-            // 可见面板等宽，否则条两侧挂着一圈透明画布（挡点击，拖拽时
-            // 指针与条目也对不上）
+            // 条目只有 40 宽（两种朝向都不出抽屉，数字全进详情卡）：
+            // 窗口必须与可见面板等宽，否则条两侧挂着一圈透明画布
+            // （挡点击，拖拽时指针与条目也对不上）
             let len = (BAR_PAD * 2.0 + PANEL_PAD * 2.0 + n * ITEM_W_COLLAPSED + gaps)
                 .max(BAR_MIN_LEN);
             (len, BAR_THICK_TOP)
@@ -264,9 +265,9 @@ fn card_placement(
     let gap = CARD_GAP * scale;
     let x = match edge {
         // 贴右：面板钉在窗口右缘，卡片在面板左侧（窗口整体左侧延展）
-        BarEdge::Right => bx + (BAR_THICK - BAR_PAD - PANEL_W_EXPANDED) * scale - gap - card_w,
+        BarEdge::Right => bx + (BAR_THICK - BAR_PAD - PANEL_W) * scale - gap - card_w,
         // 贴左：卡片在面板右侧
-        BarEdge::Left => bx + (BAR_PAD + PANEL_W_EXPANDED) * scale + gap,
+        BarEdge::Left => bx + (BAR_PAD + PANEL_W) * scale + gap,
         // 贴顶：水平跟随条目中心
         BarEdge::Top => anchor_center_x - card_w / 2.0,
     };
@@ -511,7 +512,7 @@ pub struct HudBarQuota {
 }
 
 /// 单个 Agent 条目（source 与前端 BrandIcon 键一致：zai/codex/claude/
-/// kimi/opencodego/minimax/cursor）
+/// kimi/dsh/opencodego/minimax/cursor）
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HudBarAgent {
@@ -526,6 +527,12 @@ pub struct HudBarAgent {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
     pub quotas: Vec<HudBarQuota>,
+    /// 按量计费余额（当前只有 dsh = DeepSeek 开放平台余额：DSH 是纯本地
+    /// 采集型 agent，没有 5h/周等订阅窗口，唯一可展示的"额度"就是官方
+    /// 余额）。有余额时 quotas 恒空，前端把条目渲染成余额型（环内不画
+    /// 进度弧，展开位显示金额而不是百分比）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub balance: Option<ProviderQuotaBalance>,
 }
 
 /// 套餐字符串收敛：去空白，空串视为未知（避免详情卡出现空徽标）。
@@ -553,7 +560,25 @@ fn push_agent(
         plan: plan.filter(|value| !value.trim().is_empty()),
         status: None,
         quotas,
+        balance: None,
     });
+}
+
+/// DeepSeek 平台余额 → HUD 条目（source="dsh"）：DeepSeek Harness 自身
+/// 没有订阅额度窗口，它的"额度"就是开放平台余额（凭证通道 provider id
+/// 仍是 deepseek）。取第一条 ok 且带余额的凭证条目；没有凭证/查询失败
+/// 返回 None，由 fill_unavailable 补「已开启但暂无数据」的弱化占位。
+fn dsh_agent(entries: &[ProviderQuotaEntry]) -> Option<HudBarAgent> {
+    let entry = entries
+        .iter()
+        .find(|e| e.status == "ok" && e.balance.is_some())?;
+    Some(HudBarAgent {
+        source: "dsh".into(),
+        plan: plan_of(entry.plan_name.as_deref()),
+        status: None,
+        quotas: Vec::new(),
+        balance: entry.balance.clone(),
+    })
 }
 
 /// HUD 固定展示顺序（也是设置页 agent 顺序）：实时额度源与"已开启但
@@ -564,6 +589,7 @@ const HUD_SOURCES: &[&str] = &[
     "claude",
     "cursor",
     "kimi",
+    "dsh",
     "opencodego",
     "minimax",
 ];
@@ -584,6 +610,7 @@ fn fill_unavailable(agents: &mut Vec<HudBarAgent>) {
             plan: None,
             status: Some("unavailable".to_string()),
             quotas: Vec::new(),
+            balance: None,
         });
     }
     agents.sort_by_key(|agent| {
@@ -711,6 +738,7 @@ fn provider_windows(entries: &[ProviderQuotaEntry]) -> Option<Vec<HudBarQuota>> 
 
 /// 组装一拍数据：只含有窗口数据的源（查询失败/无额度数据的源本轮直接
 /// 不出现，不阻塞其他源）。ts 由调用方取当下时间。
+#[allow(clippy::too_many_arguments)]
 fn build_usage(
     zai: Option<&QuotaResult>,
     codex: Option<&CodexRateLimits>,
@@ -718,6 +746,7 @@ fn build_usage(
     kimi: Option<&KimiRateLimits>,
     opencodego: Option<&[ProviderQuotaEntry]>,
     minimax: Option<&[ProviderQuotaEntry]>,
+    dsh: Option<&[ProviderQuotaEntry]>,
 ) -> Vec<HudBarAgent> {
     let mut agents = Vec::new();
     if let Some(result) = zai {
@@ -782,6 +811,10 @@ fn build_usage(
             );
         }
     }
+    // dsh 走余额口径（不是百分比窗口），单独组装：只含官方余额 + 套餐名
+    if let Some(agent) = dsh.and_then(dsh_agent) {
+        agents.push(agent);
+    }
     agents
 }
 
@@ -814,6 +847,7 @@ pub(crate) fn cursor_agent() -> Option<HudBarAgent> {
             plan: plan_of(snapshot.membership_type.as_deref()),
             status: None,
             quotas,
+            balance: None,
         })
     }
 }
@@ -1042,13 +1076,15 @@ fn feed_loop(app: AppHandle) {
     let mut cache: Option<String> = None;
     // 数据拍节拍锚点：远过去，保证首拍立即执行（启动恢复/托盘开启秒出数据）
     let mut last_tick = Instant::now() - Duration::from_secs(FEED_TICK_MS + 1);
-    // zai / opencodego / minimax 的查询结果缓存（单线程访问，局部变量即可）
+    // zai / opencodego / minimax / dsh 的查询结果缓存（单线程访问，局部
+    // 变量即可）
     let mut zai_cache: Option<QueryCache<QuotaResult>> = None;
     // Cursor 套餐额度单独缓存：fetch_cursor_snapshot 可能拉 events（较慢），
     // 60s 内复用，且只在该 agent 开启时查询
     let mut cursor_cache: Option<QueryCache<HudBarAgent>> = None;
     let mut ocg_cache: Option<QueryCache<Vec<ProviderQuotaEntry>>> = None;
     let mut mmx_cache: Option<QueryCache<Vec<ProviderQuotaEntry>>> = None;
+    let mut dsh_cache: Option<QueryCache<Vec<ProviderQuotaEntry>>> = None;
     // 窗口尺寸已同步到的条目数（条目数变化才经主线程 set_size）
     let mut synced_items = 0usize;
     loop {
@@ -1081,6 +1117,15 @@ fn feed_loop(app: AppHandle) {
                         .map(|v| QueryCache { at: Instant::now(), value: Some(v) })
                         .or_else(|| Some(QueryCache { at: Instant::now(), value: None }));
             }
+            // dsh：DeepSeek 平台余额（provider id 仍是 deepseek，与主面板
+            // DSH 面板底部的余额区同一通道）。未录 Key 时 query 返回空数组，
+            // dsh 由 fill_unavailable 补占位；同样 60s 缓存限频
+            if !dsh_cache.as_ref().is_some_and(|c| c.fresh()) {
+                dsh_cache = Some(QueryCache {
+                    at: Instant::now(),
+                    value: crate::provider_quota::query_provider_quota("deepseek").ok(),
+                });
+            }
             // codex/claude/kimi：fetch_live_rate_limits 内建 60s/15s 双 TTL +
             // single-flight 缓存，直接调用即可（大概率命中缓存零 HTTP）
             let codex = crate::codex::fetch_live_rate_limits().ok().flatten();
@@ -1099,6 +1144,7 @@ fn feed_loop(app: AppHandle) {
                 kimi.as_ref(),
                 ocg_cache.as_ref().and_then(|c| c.value.as_deref()),
                 mmx_cache.as_ref().and_then(|c| c.value.as_deref()),
+                dsh_cache.as_ref().and_then(|c| c.value.as_deref()),
             );
             if let Some(cursor) = cursor_cache.as_ref().and_then(|c| c.value.as_ref()) {
                 agents.push(cursor.clone());
@@ -1302,11 +1348,11 @@ pub fn ensure_hud_bar_window(app: &AppHandle) -> Result<(), String> {
     .skip_taskbar(true)
     .shadow(false)
     .resizable(false)
-    // 双击拖拽区不能把 118×条长 的小窗最大化（undecorated 窗在 Windows
+    // 双击拖拽区不能把 68×条长 的小窗最大化（undecorated 窗在 Windows
     // 上双击标题区默认触发最大化，小窗被拉满整屏）
     .maximizable(false)
     // Windows 钳宽修复（照搬 pet.rs / session_hud.rs）：tao 的
-    // WM_GETMINMAXINFO 默认最小跟踪宽度会把 118 逻辑宽的小窗出生即钳宽，
+    // WM_GETMINMAXINFO 默认最小跟踪宽度会把 68 逻辑宽的小窗出生即钳宽，
     // min_inner_size 覆盖该值
     .min_inner_size(1.0, 1.0)
     // 不抢焦点（照搬 pet.rs）：focusable(false) 映射 WS_EX_NOACTIVATE 从
@@ -1824,7 +1870,7 @@ fn opt_point(x: Option<f64>, y: Option<f64>) -> Option<(f64, f64)> {
 }
 
 /// 拖拽开始：登记指针在条长方向的比例位置，并置 DRAGGING（Moved 挂点/
-/// 吸附守护让位）。前端在收起抽屉与画布之后调用，保证拖的是 118×条长 的
+/// 吸附守护让位）。前端在收起抽屉与画布之后调用，保证拖的是 68×条长 的
 /// 收缩窗而不是整块透明画布。
 /// 指针默认取系统光标（物理坐标）：跨屏拖拽时前端事件的 screenX 在各屏
 /// 缩放比不同时口径不一，只有 GetCursorPos 是全局一致的。
@@ -2072,13 +2118,13 @@ mod tests {
     #[test]
     fn snap_target_左右贴边竖排顶贴边横排() {
         // scale=1 时物理 == 逻辑。贴左：x=0、竖排尺寸（宽 = 条厚）；
-        // 1 条目长度 16+18+52 = 86 < 下限 112 取下限
+        // 1 条目长度 12+16+42 = 70 < 下限 96 取下限
         let (w, h, x, y) =
             snap_target(BarEdge::Left, 1920.0, 1080.0, 333.0, 222.0, 1, 1.0);
         assert_eq!((x, y), (0.0, 222.0)); // 垂直位置保持拖放落点
         assert_eq!(w, BAR_THICK);
         assert_eq!(h, BAR_MIN_LEN);
-        // 3 条目长度 136 > 下限：留白 16 + 面板内边距 18 + 3×52 + 2×2
+        // 3 条目长度 158 > 下限：留白 12 + 面板内边距 16 + 3×42 + 2×2
         let (_, h3, _, _) = snap_target(BarEdge::Left, 1920.0, 1080.0, 0.0, 0.0, 3, 1.0);
         let h3_expect =
             BAR_PAD * 2.0 + PANEL_PAD * 2.0 + 3.0 * ITEM_LEN + 2.0 * ITEM_GAP;
@@ -2087,7 +2133,7 @@ mod tests {
         let (_, _, x, _) =
             snap_target(BarEdge::Right, 1920.0, 1080.0, 1500.0, 222.0, 2, 1.0);
         assert_eq!(x, 1920.0 - BAR_THICK);
-        // 贴顶：y=0、横排高 = BAR_THICK_TOP；宽按收起态条目宽（50）计算
+        // 贴顶：y=0、横排高 = BAR_THICK_TOP；宽按收起态条目宽（40）计算
         let (w, h, x, y) = snap_target(BarEdge::Top, 1920.0, 1080.0, 333.0, 5.0, 3, 1.0);
         assert_eq!((y, h), (0.0, BAR_THICK_TOP));
         let w_expect = BAR_PAD * 2.0
@@ -2131,7 +2177,7 @@ mod tests {
         assert!((mon_x..mon_x + mon_w).contains(&gx));
         assert_eq!(th, BAR_THICK_TOP);
         // 用例 2：窗口中心在副屏右缘附近（局部 cx=1200，距右 80）→ 贴副屏
-        // 右缘，全局落点 = 1920 + (1280 − 118)，不会落在主屏
+        // 右缘，全局落点 = 1920 + (1280 − 100)，不会落在主屏
         let edge = nearest_edge(mon_w, mon_h, 1200.0, 400.0);
         assert_eq!(edge, BarEdge::Right);
         let (_, _, tx, _) = snap_target(edge, mon_w, mon_h, 1200.0, 400.0, 2, 1.0);
@@ -2148,51 +2194,51 @@ mod tests {
 
     #[test]
     fn bar_metrics_单条目取下限与横竖排栅格() {
-        // 单条目长度 16+18+52 = 86 < 下限 112：竖排取 112 高
+        // 单条目长度 12+16+42 = 70 < 下限 96：竖排取 96 高
         let (w, h) = bar_metrics(BarEdge::Left, 1);
         assert_eq!((w, h), (BAR_THICK, BAR_MIN_LEN));
         // 零条目按 1 条（空态占位）处理
         let (_, h0) = bar_metrics(BarEdge::Left, 0);
         assert_eq!(h0, BAR_MIN_LEN);
-        // 4 条目：留白 16 + 内边距 18 + 4×52 + 3×2 = 248
+        // 4 条目：留白 12 + 内边距 16 + 4×42 + 3×2 = 202
         let (_, h4) = bar_metrics(BarEdge::Left, 4);
-        assert!((h4 - 248.0).abs() < f64::EPSILON);
-        // 横排收起态 3 条目：留白 16 + 内边距 18 + 3×50 + 2×2 = 188，高 86
+        assert!((h4 - 202.0).abs() < f64::EPSILON);
+        // 横排收起态 3 条目：留白 12 + 内边距 16 + 3×40 + 2×2 = 152，高 70
         let (wt, ht) = bar_metrics(BarEdge::Top, 3);
-        assert!((wt - 188.0).abs() < f64::EPSILON);
+        assert!((wt - 152.0).abs() < f64::EPSILON);
         assert_eq!(ht, BAR_THICK_TOP);
     }
 
     #[test]
     fn card_placement_按停靠边挂到条外侧并钳进工作区() {
-        // scale=1：条窗口 118×410 落在 (1000,300)，工作区 1920×1080
+        // scale=1：条窗口 100×334 落在 (1000,300)，工作区 1920×1080
         let area = (0.0, 0.0, 1920.0, 1080.0);
-        let bar = (1000.0, 300.0, 118.0, 410.0);
-        // 贴右：卡片在面板左侧，右缘贴条窗口左缘（与展开态面板留 8 间隙）
+        let bar = (1000.0, 300.0, 68.0, 334.0);
+        // 贴右：卡片在面板左侧，右缘贴条窗口左缘（与面板留 8 间隙）
         assert_eq!(
             card_placement(BarEdge::Right, bar, 0.0, 500.0, 304.0, 300.0, area, 1.0),
-            (696.0, 350.0)
+            (694.0, 350.0)
         );
         // 贴左：卡片在面板右侧 = 窗口右缘外 8px
         assert_eq!(
             card_placement(BarEdge::Left, bar, 0.0, 500.0, 304.0, 300.0, area, 1.0),
-            (1118.0, 350.0)
+            (1070.0, 350.0)
         );
         // 贴顶：卡片挂在条下方，水平跟随 hover 条目中心（400 → 卡片居中）
-        let top_bar = (100.0, 0.0, 396.0, 86.0);
+        let top_bar = (100.0, 0.0, 320.0, 70.0);
         assert_eq!(
             card_placement(BarEdge::Top, top_bar, 400.0, 40.0, 304.0, 300.0, area, 1.0),
-            (248.0, 86.0)
+            (248.0, 72.0)
         );
         // 纵向钳位：条目贴底时卡片不出工作区（1080 − 300 − 4 = 776）
-        let low_bar = (1000.0, 900.0, 118.0, 410.0);
+        let low_bar = (1000.0, 900.0, 68.0, 334.0);
         assert_eq!(
             card_placement(BarEdge::Right, low_bar, 0.0, 1105.0, 304.0, 300.0, area, 1.0).1,
             776.0
         );
         // 跨屏（工作区原点为负）+ 125% 缩放：贴右时卡片落在副屏内
         let sub = (-3200.0, -103.0, 3200.0, 1720.0);
-        let sub_bar = (-148.0, 600.0, 147.5, 512.5);
+        let sub_bar = (-85.0, 600.0, 85.0, 417.5);
         let (cx, cy) = card_placement(
             BarEdge::Right,
             sub_bar,
@@ -2203,38 +2249,38 @@ mod tests {
             sub,
             1.25,
         );
-        assert!((cx - (-528.0)).abs() < 0.01);
+        assert!((cx - (-467.5)).abs() < 0.01);
         assert!((cy - 656.0).abs() < 0.01);
     }
 
     #[test]
     fn drag_geometry_拖动中始终贴最近的边() {
         // 工作区 1920×1080；顶带 = clamp(1080×0.14)=150；7 条目竖排
-        // 118×410、横排 396×86
+        // 68×334、横排 320×70
         let area = (0.0, 0.0, 1920.0, 1080.0);
         // 左半边中部：贴左，沿边按抓取比例 0.5 停放
         assert_eq!(
             drag_geometry(BarEdge::Left, 7, (300.0, 500.0), 0.5, area, 1.0),
-            (BarEdge::Left, 0.0, 295.0, 118.0, 410.0)
+            (BarEdge::Left, 0.0, 333.0, 68.0, 334.0)
         );
         // 同一次拖动（不松手）到右半边：立刻变右边布局
         assert_eq!(
             drag_geometry(BarEdge::Left, 7, (1500.0, 500.0), 0.5, area, 1.0),
-            (BarEdge::Right, 1802.0, 295.0, 118.0, 410.0)
+            (BarEdge::Right, 1852.0, 333.0, 68.0, 334.0)
         );
         // 继续拖到顶部：变横排贴顶，沿 x 按比例停放
         assert_eq!(
             drag_geometry(BarEdge::Left, 7, (900.0, 40.0), 0.5, area, 1.0),
-            (BarEdge::Top, 702.0, 0.0, 396.0, 86.0)
+            (BarEdge::Top, 740.0, 0.0, 320.0, 70.0)
         );
         // 从顶部拖下来（离开迟滞带）：按中线落左/落右
         assert_eq!(
             drag_geometry(BarEdge::Top, 7, (800.0, 300.0), 0.5, area, 1.0),
-            (BarEdge::Left, 0.0, 95.0, 118.0, 410.0)
+            (BarEdge::Left, 0.0, 133.0, 68.0, 334.0)
         );
         assert_eq!(
             drag_geometry(BarEdge::Top, 7, (1200.0, 300.0), 0.5, area, 1.0),
-            (BarEdge::Right, 1802.0, 95.0, 118.0, 410.0)
+            (BarEdge::Right, 1852.0, 133.0, 68.0, 334.0)
         );
         // 左右迟滞：左在 55% 内保持，越过才换右
         assert_eq!(
@@ -2250,10 +2296,10 @@ mod tests {
             drag_geometry(BarEdge::Top, 7, (900.0, 180.0), 0.5, area, 1.0).0,
             BarEdge::Top
         );
-        // 沿边钳位：指针远在右侧时条尾贴工作区右缘（1920−396=1524）
+        // 沿边钳位：指针远在右侧时条尾贴工作区右缘（1920−320=1600）
         assert_eq!(
             drag_geometry(BarEdge::Top, 7, (1900.0, 10.0), 0.5, area, 1.0),
-            (BarEdge::Top, 1524.0, 0.0, 396.0, 86.0)
+            (BarEdge::Top, 1600.0, 0.0, 320.0, 70.0)
         );
     }
 
@@ -2279,19 +2325,19 @@ mod tests {
     fn drag_geometry_跨屏拖到副屏贴边() {
         // 副屏工作区（物理）：-3200,-103 3200×1720；scale 1.25
         let area = (-3200.0, -103.0, 3200.0, 1720.0);
-        // 7 条目 ×1.25：竖排 147.5×512.5、横排 495×107.5
-        // 指针在副屏右半边 → 贴副屏右边（x = -3200+3200-147.5）
+        // 7 条目 ×1.25：竖排 85×417.5、横排 400×87.5
+        // 指针在副屏右半边 → 贴副屏右边（x = -3200+3200-85）
         let (e, x, y, w, h) = drag_geometry(BarEdge::Left, 7, (-1000.0, 500.0), 0.5, area, 1.25);
         assert_eq!(e, BarEdge::Right);
-        assert_eq!((w, h), (147.5, 512.5));
-        assert_eq!(x, -147.5);
-        assert!((y - 243.75).abs() < 1e-9);
+        assert_eq!((w, h), (85.0, 417.5));
+        assert_eq!(x, -85.0);
+        assert!((y - 291.25).abs() < 1e-9);
         // 指针在副屏顶部 → 横排贴副屏上沿
         let (e2, x2, y2, w2, h2) =
             drag_geometry(BarEdge::Left, 7, (-1600.0, -80.0), 0.5, area, 1.25);
         assert_eq!(e2, BarEdge::Top);
-        assert_eq!((y2, w2, h2), (-103.0, 495.0, 107.5));
-        assert_eq!(x2, -3200.0 + 1600.0 - 247.5);
+        assert_eq!((y2, w2, h2), (-103.0, 400.0, 87.5));
+        assert_eq!(x2, -3200.0 + 1600.0 - 200.0);
     }
 
     // ---- payload 组装 ----
@@ -2424,14 +2470,52 @@ mod tests {
             monthly_reset_at: None,
         };
         // codex/claude/opencodego/minimax 全 None（查询失败）：不出现
-        let agents = build_usage(Some(&zai), None, None, Some(&kimi), None, None);
+        let agents = build_usage(Some(&zai), None, None, Some(&kimi), None, None, None);
         assert_eq!(
             agents.iter().map(|a| a.source.as_str()).collect::<Vec<_>>(),
             vec!["zai", "kimi"]
         );
         assert_eq!(agents[1].quotas.len(), 2); // kimi 月窗口未填：仅 5h + 周
         // 全部失败：空列表（前端空态占位）
-        assert!(build_usage(None, None, None, None, None, None).is_empty());
+        assert!(build_usage(None, None, None, None, None, None, None).is_empty());
+    }
+
+    #[test]
+    fn dsh_agent_取官方余额_无余额不出现() {
+        let mut entry = provider_entry("ok", vec![]);
+        entry.balance = Some(ProviderQuotaBalance {
+            amount: 54.64,
+            currency: "CNY".into(),
+            granted: Some(4.64),
+            topped_up: Some(50.0),
+        });
+        let agent = dsh_agent(std::slice::from_ref(&entry)).expect("有余额应出现");
+        assert_eq!(agent.source, "dsh");
+        assert!(agent.quotas.is_empty(), "余额型条目不带百分比窗口");
+        let balance = agent.balance.expect("余额透传");
+        assert_eq!(balance.amount, 54.64);
+        assert_eq!(balance.currency, "CNY");
+        assert_eq!(balance.granted, Some(4.64));
+        // 失败条目 / 无余额条目：不出条目（由 fill_unavailable 补占位）
+        assert!(dsh_agent(&[provider_entry("expired", vec![])]).is_none());
+        assert!(dsh_agent(&[provider_entry("ok", vec![])]).is_none());
+        assert!(dsh_agent(&[]).is_none());
+        // build_usage 里同样只透出一个余额型条目
+        let agents = build_usage(
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(std::slice::from_ref(&entry)),
+        );
+        assert_eq!(
+            agents.iter().map(|a| a.source.as_str()).collect::<Vec<_>>(),
+            vec!["dsh"]
+        );
+        assert!(agents[0].balance.is_some());
+        assert!(agents[0].quotas.is_empty());
     }
 
     // ---- 配置收敛 ----
