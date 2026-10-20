@@ -76,13 +76,9 @@
         width: 100%;
         height: 100%;
         padding: 8px; /* BAR_PAD（与 Rust bar_metrics 同步） */
-        /* 纵向居中：扩窗时 Rust 在条的上下**对称**补画布并把窗口整体上移。
-           只要条在画布内垂直居中，条画在屏幕上哪一行就只取决于
-           (窗口上移量, 窗口高度) 这一对值，与两者谁先落地无关——所以
-           不需要前端再补 padding-top。此前用 padding-top 抵消上移量，
-           OS 先把窗口改大、CSS 变量还没写进去的那一帧，整条会瞬间跳到
-           屏幕上方再弹回（"卡片错乱出现/像瞬移了几下"的真因）。
-           横排贴顶时窗口只向下长、y 不动，见 .horizontal 的 flex-start。 */
+        /* 尺寸由 Rust bar_metrics 按停靠边下发，窗口就是条本身（不再为
+           卡片扩窗——卡片是独立的 hud-card 窗口，见 Rust hud_bar 模块
+           doc）。这里只管把面板摆在窗口的对应边缘。 */
         display: flex;
         flex-direction: column;
         align-items: flex-start;
@@ -328,6 +324,23 @@
       #hud-pop.open {
         display: block;
       }
+      /* 详情卡窗口形态（label = hud-card，同一份页面的另一种模式）：条与
+         空态全部隐藏，弹出层直接铺满窗口，卡片由 hud-main.ts 摆到
+         (16px, 16px)。窗口尺寸 = 卡片尺寸 + 2×16（Rust hud_bar::CARD_PAD
+         同步）——卡片在独立窗口里渲染，条窗口全程不改几何，所以悬浮时
+         不会再有"扩窗那一帧整条瞬移"的问题 */
+      html[data-mode="card"] #hud-root {
+        display: block;
+        padding: 0;
+        overflow: visible;
+      }
+      html[data-mode="card"] #hud-strip,
+      html[data-mode="card"] #hud-empty {
+        display: none;
+      }
+      html[data-mode="card"] #hud-pop {
+        display: block;
+      }
       /* 悬浮详情卡：宽 304（Rust 扩窗 336 的画布内两侧各留 16 呼吸），
          近纯黑 + 顶部极淡靛蓝光晕 + 1px 描边 + 深投影；绝对定位由
          hud-main.ts 按停靠边写入 left/top。入场 = **抽屉式推出**：起点
@@ -358,13 +371,14 @@
         animation: hud-card-in 0.24s cubic-bezier(0.23, 1, 0.32, 1);
       }
       /* 抽屉方向：卡片在条右侧 → 从左侧（条下）推出；贴右反过来；贴顶
-         从条下沿往上压一点再落下 */
+         从条下沿往上压一点再落下。位移量 8px：卡片现在渲染在**独立窗口**
+         里，窗口只比卡片大 16px（CARD_PAD），位移再大会被窗口边缘裁掉 */
       .hud-card.drawer-l {
-        --hud-in-x: -30px;
+        --hud-in-x: -8px;
         transform-origin: 0% 50%;
       }
       .hud-card.drawer-r {
-        --hud-in-x: 30px;
+        --hud-in-x: 8px;
         transform-origin: 100% 50%;
       }
       .hud-card.drawer-t {

@@ -47,18 +47,23 @@
 //! 回声由 SNAP_POS 位置比对拦截（吸附/扩窗闭包末尾写入，闭包在事件循环
 //! 线程同步执行完毕后回声才分发，时序安全）。
 //!
-//! 弹出层（悬浮 tooltip / 详情卡）：窗口厚度仅 118 逻辑 px（贴顶 86），
-//! 卡片画不下也不能溢出窗口边界——采用"扩窗"方案：前端 hover/点击条目
-//! 时 invoke hud_bar_set_popover(true)，Rust 沿条外侧方向把窗口加出
-//! 336 逻辑 px 宽的透明画布（贴左向右扩、贴右整体左移并向右扩宽、贴顶
-//! 向下扩），再向下补 450 逻辑 px 纵向画布容纳详情卡高度，卡片渲染在
-//! 扩展区；条离屏幕工作区底边不足时，整体上移一个 drop 并把画布改到条
-//! **上方**，返回 top inset + above 标记：前端给根节点加等量 padding-top，
-//! 条在屏幕上不动，卡片渲染在条上方而不被任务栏裁切。离开/收起时反向
-//! 缩回。扩窗期间用户拖动条区域 → 吸附闭包先强制缩回再计算，保证吸附
-//! 几何永远是收缩态。Rust 侧单方面缩回（吸附强制缩回 / 托盘关闭）会广播
-//! zbar://hud-bar-popover {open:false}，前端据此收敛本地扩窗态并收卡
-//!（防两端状态失步）。
+//! 详情卡：条窗口厚度只有 118 逻辑 px（贴顶 86），卡片画不下也不能溢出
+//! 窗口边界——所以卡片有**自己的窗口**（"hud-card"，透明置顶、不抢焦点、
+//! 常驻隐藏预热）。条前端 hover 条目时只 invoke hud_card_open（带 hover
+//! 条目中心的物理坐标），Rust 记下锚点通知卡片页；卡片页按自身实测高度
+//! 回报尺寸，Rust 算屏幕落点（贴着条的展开面板、纵向上对条目中心、钳进
+//! 工作区）后改尺寸+移位+show——**此时卡片内容还是 measuring 隐藏态**，
+//! 所以这些窗口操作一次都不会被看见；卡片页确认视口到位后再露出并播
+//! 抽屉动画。
+//!
+//! 为什么不再"扩窗"：卡片在条的外侧，而条贴着屏幕边缘，扩窗必然要 OS
+//! 改条窗口的位置与尺寸。WebView2 的渲染子窗口锚定父窗口左上角，父窗口
+//! 先变大/移位、渲染进程还没按新视口重排的那一帧，整条会被画到新窗口的
+//! 左上角（实机录屏逐帧拍到：条瞬移到屏幕左上方一帧再弹回——这正是
+//! "第一次悬浮时卡片闪现移动"）。条窗口全程不动就没有这一帧；卡片窗口
+//! 只在自身内容不可见时变几何，同样不会有可见的错位。Rust 侧单方面收卡
+//!（吸附强制回位 / 托盘关闭）会广播 zbar://hud-bar-popover {open:false}，
+//! 条前端据此收敛本地详情态（防两端状态失步）。
 
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -87,8 +92,8 @@ pub const HUD_BAR_WINDOW_LABEL: &str = "hud-bar";
 pub const HUD_BAR_USAGE_EVENT: &str = "zbar://hud-bar-usage";
 /// 布局切换事件（吸附换边后推送，payload = { orientation, edge }）
 pub const HUD_BAR_LAYOUT_EVENT: &str = "zbar://hud-bar-layout";
-/// 扩窗态单方面变更通知（Rust 侧吸附强制缩回 / 托盘关闭后广播
-/// { open: false }，前端收敛本地扩窗态并收卡，防两端失步）
+/// 详情态单方面变更通知（Rust 侧吸附强制回位 / 托盘关闭后已隐藏卡片
+/// 窗口并广播 { open: false }，条前端据此收敛本地详情态，防两端失步）
 pub const HUD_BAR_POPOVER_EVENT: &str = "zbar://hud-bar-popover";
 
 /// 条厚度（逻辑 px）：竖排 = 窗口宽（贴左/右）。几何分解与 hud.html
@@ -114,19 +119,27 @@ const ITEM_GAP: f64 = 2.0;
 const BAR_PAD: f64 = 8.0;
 /// 面板内边距（逻辑 px）：hud.html #hud-strip padding 同步
 const PANEL_PAD: f64 = 9.0;
-/// 条长度下限（逻辑 px）：单条目时也保持该长度，给悬浮卡留出纵向空间
-/// （详情卡最高约 3 行 + 按钮，扩窗时另有 POPOVER_DROP 纵向画布兜底）
+/// 条长度下限（逻辑 px）：单条目时也保持该长度
 const BAR_MIN_LEN: f64 = 112.0;
-/// 弹出层画布扩展量（逻辑 px）：hover/详情卡渲染区（横向）。详情卡宽
-/// 304 + 两侧各留 16 呼吸位；贴右时扩展量同时是卡片左移的基准，须
-/// ≥ 卡宽 + 边距（336 = 304 + 32）。
-const POPOVER_EXT: f64 = 336.0;
-/// 弹出层纵向画布单侧扩展量上限（逻辑 px）：竖排时**上下对称**各补同一
-/// 份（见 popover_vertical_room），详情卡（头 + 最多 3 行额度 + Token
-/// 直方图 + 底栏）实测约 440，画布够高卡片才能沿条长方向跟随 hover 的
-/// 条目，而不是被迫贴到画布顶端；贴顶横排只向下补该量（条在上沿）。
-const POPOVER_DROP: f64 = 480.0;
-/// 窗口操作（建窗/吸附/扩窗）的等待超时：仅事件循环异常时兜底
+/// 详情卡窗口 label（独立窗口，见 hud_card 段）与事件名
+pub const HUD_CARD_WINDOW_LABEL: &str = "hud-card";
+/// 打开一张卡（payload = { source, edge, animate }）
+pub const HUD_CARD_OPEN_EVENT: &str = "zbar://hud-card-open";
+/// 收回一张卡（payload = { animate }）
+pub const HUD_CARD_CLOSE_EVENT: &str = "zbar://hud-card-close";
+/// 窗口已按卡片尺寸落位（前端据此确认视口到位再露出卡片）
+pub const HUD_CARD_PLACED_EVENT: &str = "zbar://hud-card-placed";
+/// 详情卡宽度（逻辑 px）：hud.html .hud-card width 同步
+const CARD_W: f64 = 304.0;
+/// 卡片窗口四周留白（逻辑 px）：卡片外阴影（blur 64 / offset-y 24）在
+/// 16px 处被窗口边缘裁掉，与旧的"扩窗画布内留 16 呼吸位"观感一致
+const CARD_PAD: f64 = 16.0;
+/// 卡片与条之间的间隙（逻辑 px）：hud.html #hud-pop 侧留白一致
+const CARD_GAP: f64 = 8.0;
+/// 展开态面板宽度（逻辑 px）：竖排 = 条目 84 + 面板内边距 9×2。卡片
+/// 横向位置以**展开态**面板边缘为基准（卡片只在抽屉展开后出现）
+const PANEL_W_EXPANDED: f64 = ITEM_W + PANEL_PAD * 2.0;
+/// 窗口操作（建窗/吸附/拖拽/卡片落位）的等待超时：仅事件循环异常时兜底
 const HUD_BAR_OP_TIMEOUT: Duration = Duration::from_secs(8);
 /// 数据拍周期（毫秒）：各源额度组装与推送节拍（zai/provider 查询另有
 /// 60s 结果缓存，实际 HTTP 频率 ≤ 60s 一次）
@@ -198,10 +211,10 @@ impl BarEdge {
     }
 }
 
-/// 收缩态（非扩窗）窗口尺寸（宽, 高）：竖排 = 118 × 条长，横排 = 条长 ×
+/// 条窗口尺寸（宽, 高）：竖排 = 118 × 条长，横排 = 条长 ×
 /// 86。条长 = 两端留白 + 面板内边距 + 条目数 × 条目长 + 条目间距，下限
 /// BAR_MIN_LEN（单条目也给悬浮卡留纵向空间）。返回**逻辑 px**（建窗
-/// builder.position / inner_size 走逻辑坐标）。pub(crate) 供吸附/扩窗闭
+/// builder.position / inner_size 走逻辑坐标）。吸附/拖拽闭包与建窗共
 /// 包与建窗共用。
 fn bar_metrics(edge: BarEdge, items: usize) -> (f64, f64) {
     let n = items.max(1) as f64;
@@ -223,44 +236,49 @@ fn bar_metrics(edge: BarEdge, items: usize) -> (f64, f64) {
     }
 }
 
-/// 贴顶横排展开态的画布宽度（逻辑 px）：条目 50→84 后条变长，扩窗画布
-/// 必须按展开宽度给，卡片才能跟着变宽的条目定位。
-fn top_expanded_width(items: usize) -> f64 {
-    let n = items.max(1) as f64;
-    let gaps = (n - 1.0).max(0.0) * ITEM_GAP;
-    (BAR_PAD * 2.0 + PANEL_PAD * 2.0 + n * ITEM_W + gaps).max(BAR_MIN_LEN)
-}
-
-/// 收缩态窗口尺寸的物理像素版（吸附/扩窗闭包的 set_size 走物理坐标，
+/// 收缩态窗口尺寸的物理像素版（吸附/拖拽闭包的 set_size 走物理坐标，
 /// 与 outer_size 同口径可直接比对）
 fn bar_metrics_physical(edge: BarEdge, items: usize, scale: f64) -> (f64, f64) {
     let (w, h) = bar_metrics(edge, items);
     (w * scale, h * scale)
 }
 
-/// 竖排扩窗的纵向画布（物理 px）：**上下对称**各补 `room`。
+/// 卡片在屏幕上的落点（**物理 px，全局虚拟桌面坐标**）：纯函数，便于单测。
 ///
-/// 为什么必须对称：扩窗是「窗口上移 room + 高度增加 2·room」一对 OS 操作，
-/// 而条在屏幕上的位置要保持不动。此前是上下各按余量独立分配 + 前端补
-/// padding-top 来抵消上移量——那个 padding 是**另一条异步路径**（invoke
-/// 回来以后才写 CSS 变量），OS 先把窗口改大、CSS 还没写进去的那一帧，
-/// 条会按旧 padding 画在画布顶端（实机 screencast 抓到过：整条瞬间跳到
-/// 屏幕上方 343px 再弹回来）。改成上下对称 + 条在画布内垂直居中后，
-/// 条的位置只取决于 (窗口上移量, 窗口高度)，而这两者总是同时落地，
-/// 因此**任何落帧顺序都画在同一条屏幕位置上**，不需要前端补偿。
-///
-/// `room` 取上下可用余量与 `drop` 的较小者（屏幕底边的任务栏不能盖住
-/// 卡片）。纯函数，便于单测。
-fn popover_vertical_room(
-    win_y: f64,
-    bar_h: f64,
-    drop: f64,
-    area_top: f64,
-    area_bottom: f64,
-) -> f64 {
-    let above = (win_y - area_top).max(0.0);
-    let below = (area_bottom - (win_y + bar_h)).max(0.0);
-    drop.min(above).min(below)
+/// 基准是**条的窗口矩形**（不是条目/面板）：竖排贴着屏幕左右缘，卡片挂在
+/// 窗口外侧、与展开态面板留 CARD_GAP；横排贴在下方、水平跟随 hover 条目
+/// 的中心。纵向竖排对条目中心，横排挂在条下方（与旧的前端 placeCard 同一
+/// 套观感）。最后钳进工作区（4px 安全边距），保证不越出屏幕（含任务栏）。
+#[allow(clippy::too_many_arguments)]
+fn card_placement(
+    edge: BarEdge,
+    bar: (f64, f64, f64, f64),
+    anchor_center_x: f64,
+    anchor_center_y: f64,
+    card_w: f64,
+    card_h: f64,
+    area: (f64, f64, f64, f64),
+    scale: f64,
+) -> (f64, f64) {
+    let (bx, by, _bw, _bh) = bar;
+    let gap = CARD_GAP * scale;
+    let x = match edge {
+        // 贴右：面板钉在窗口右缘，卡片在面板左侧（窗口整体左侧延展）
+        BarEdge::Right => bx + (BAR_THICK - BAR_PAD - PANEL_W_EXPANDED) * scale - gap - card_w,
+        // 贴左：卡片在面板右侧
+        BarEdge::Left => bx + (BAR_PAD + PANEL_W_EXPANDED) * scale + gap,
+        // 贴顶：水平跟随条目中心
+        BarEdge::Top => anchor_center_x - card_w / 2.0,
+    };
+    let y = match edge {
+        BarEdge::Left | BarEdge::Right => anchor_center_y - card_h / 2.0,
+        BarEdge::Top => by + (BAR_THICK_TOP - BAR_PAD) * scale + gap,
+    };
+    let (ax, ay, aw, ah) = area;
+    let margin = 4.0 * scale;
+    let x = x.clamp(ax + margin, (ax + aw - card_w - margin).max(ax + margin));
+    let y = y.clamp(ay + margin, (ay + ah - card_h - margin).max(ay + margin));
+    (x, y)
 }
 
 /// 拖拽中的停靠边判定（逻辑 px）：与 agent-hud-open 的 dragPlacement 同一个
@@ -825,12 +843,39 @@ static SNAP_POS: OnceLock<Mutex<Option<(f64, f64)>>> = OnceLock::new();
 static CURRENT_EDGE: AtomicUsize = AtomicUsize::new(0);
 /// 当前条目数（含空态占位 1）：数据线程更新，建窗/吸附/扩窗算尺寸用
 static ITEM_COUNT: AtomicUsize = AtomicUsize::new(1);
-/// 弹出层扩窗态：true = 窗口已加出弹出画布
-static EXPANDED: AtomicBool = AtomicBool::new(false);
-/// 扩窗时为包住卡片而整体上移的物理像素（0 = 不上移）。画布上下对称、
-/// 条在窗口内垂直居中，所以缩窗时把它加回 y 就回到原位（前端不再需要
-/// 任何 padding 补偿）。
-static POPOVER_SHIFT_UP: AtomicU64 = AtomicU64::new(0);
+/// 详情卡窗口当前是否可见（true = 已按卡片尺寸落位并 show）
+static CARD_VISIBLE: AtomicBool = AtomicBool::new(false);
+/// 本次卡片请求的锚点（物理 px：hover 条目中心的 x/y）与来源，供
+/// hud_card_measure 落位时用
+static CARD_ANCHOR: OnceLock<Mutex<Option<CardAnchor>>> = OnceLock::new();
+/// 卡片窗口当前占用的屏幕矩形（物理 px）：前端悬浮守护据此判断"指针还在
+/// 卡上"，Rust 侧关窗时清空
+static CARD_RECT: OnceLock<Mutex<Option<HudCardRect>>> = OnceLock::new();
+
+/// 卡片锚点（物理 px）：竖排用 center_y、横排用 center_x
+#[derive(Debug, Clone, Copy)]
+struct CardAnchor {
+    center_x: f64,
+    center_y: f64,
+}
+
+/// 卡片屏幕矩形（物理 px，全局虚拟桌面坐标）
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HudCardRect {
+    pub x: f64,
+    pub y: f64,
+    pub w: f64,
+    pub h: f64,
+}
+
+fn card_anchor_slot() -> &'static Mutex<Option<CardAnchor>> {
+    CARD_ANCHOR.get_or_init(|| Mutex::new(None))
+}
+
+fn card_rect_slot() -> &'static Mutex<Option<HudCardRect>> {
+    CARD_RECT.get_or_init(|| Mutex::new(None))
+}
 /// 强制下一拍立即查询并推送（托盘开启后 0.2s 内出首帧数据）
 static FORCE_PUSH: AtomicBool = AtomicBool::new(false);
 /// 自定义拖拽进行中：Moved 挂点与吸附守护全部让位（拖拽位置由前端
@@ -1067,14 +1112,16 @@ fn feed_loop(app: AppHandle) {
             let key = serde_json::to_string(&agents).unwrap_or_default();
             if forced || cache.as_deref() != Some(key.as_str()) {
                 cache = Some(key);
-                let _ = app.emit_to(
-                    HUD_BAR_WINDOW_LABEL,
+                // 广播（不是 emit_to 条窗口）：额度数据两个窗口都要——条页画
+                // 条目，卡片窗口画详情卡（卡片是独立 webview，拿不到 emit_to
+                // 只发给条的 payload，卡里就会是空数据）
+                let _ = app.emit(
                     HUD_BAR_USAGE_EVENT,
                     HudBarUsage { ts, agents: agents.clone() },
                 );
             }
-            // 条目数变化 → 窗口尺寸自适应（收缩态才动；扩窗态缩回时自然
-            // 恢复正确尺寸）。空态占 1 条。
+            // 条目数变化 → 窗口尺寸自适应（拖拽中由 drag_geometry 接管，
+            // 这里不插手）。空态占 1 条。
             let items = agents.len().max(1);
             ITEM_COUNT.store(items, Ordering::Relaxed);
             if items != synced_items {
@@ -1088,20 +1135,20 @@ fn feed_loop(app: AppHandle) {
     }
 }
 
-/// 把窗口尺寸同步到当前条目数（收缩态；主线程闭包体，**物理坐标**——
-/// set_size 与 outer_size 同口径）。位置不动（左上角锚定：贴左/贴顶时
-/// 贴边坐标不变，贴右时条厚不变 x 仍贴右缘——set_size 保持左上角，
-/// 右缘会暂时内缩，下一次吸附/拖放会重新贴齐，可接受的一期简化）。
-/// 扩窗态不干预（缩回时按最新条目数恢复）。
+/// 把窗口尺寸同步到当前条目数（主线程闭包体，**物理坐标**——set_size 与
+/// outer_size 同口径）。位置不动（左上角锚定：贴左/贴顶时贴边坐标不变，
+/// 贴右时条厚不变 x 仍贴右缘——set_size 保持左上角，右缘会暂时内缩，下一
+/// 次吸附/拖放会重新贴齐，可接受的一期简化）。
 fn sync_bar_size(app: &AppHandle) {
     let Some(win) = app.get_webview_window(HUD_BAR_WINDOW_LABEL) else {
         return;
     };
-    if EXPANDED.load(Ordering::Relaxed) {
-        return;
-    }
     let Ok(scale) = win.scale_factor() else { return };
     if scale <= 0.0 {
+        return;
+    }
+    if DRAGGING.load(Ordering::Relaxed) {
+        // 拖拽中条的形状由 drag_geometry 每帧接管，这里别插手
         return;
     }
     let (w, h) = bar_metrics_physical(current_edge(), item_count(), scale);
@@ -1126,17 +1173,9 @@ fn snap_to_edge(app: &AppHandle) {
     if scale <= 0.0 {
         return;
     }
-    // 扩窗态先缩回：吸附几何必须按收缩态计算（扩窗画布会把中心拉向屏幕
-    // 内侧，最近边判定失真）；缩回是程序侧单方面动作，广播 popover 事件
-    // 让前端收敛本地扩窗态并收卡
-    if EXPANDED.load(Ordering::Relaxed) {
-        let _ = apply_popover(app, false);
-        let _ = app.emit_to(
-            HUD_BAR_WINDOW_LABEL,
-            HUD_BAR_POPOVER_EVENT,
-            serde_json::json!({ "open": false }),
-        );
-    }
+    // 收起态的卡片先收掉：吸附几何按条自身的矩形计算（卡片是独立窗口，
+    // 不影响几何判定，但程序侧回位后卡片位置就过期了）
+    force_close_card(app);
     let Ok(pos) = win.outer_position() else { return };
     let Ok(size) = win.outer_size() else { return };
     let Ok(mon) = win.current_monitor() else { return };
@@ -1215,6 +1254,14 @@ pub fn handle_hud_bar_window_moved(win: &tauri::Window, pos: tauri::PhysicalPosi
 /// 语义；勾选刷新是 P2-8：落盘后菜单若不重建会残留开启勾）。
 pub fn handle_hud_bar_window_destroyed(app: &AppHandle) {
     stop_feed();
+    // 卡片是独立窗口，条销毁后它必须一起销毁（否则留一块点不到的透明窗）
+    if let Some(card) = app.get_webview_window(HUD_CARD_WINDOW_LABEL) {
+        let _ = card.destroy();
+    }
+    if let Ok(mut guard) = card_rect_slot().lock() {
+        *guard = None;
+    }
+    CARD_VISIBLE.store(false, Ordering::Relaxed);
     let mut cfg = load_hud_bar_config();
     if cfg.enabled {
         cfg.enabled = false;
@@ -1222,7 +1269,6 @@ pub fn handle_hud_bar_window_destroyed(app: &AppHandle) {
         crate::refresh_tray_menu(app);
     }
     LAST_MOVED_AT.store(0, Ordering::Relaxed);
-    EXPANDED.store(false, Ordering::Relaxed);
 }
 
 // ============================================================
@@ -1238,6 +1284,7 @@ pub fn ensure_hud_bar_window(app: &AppHandle) -> Result<(), String> {
     if let Some(win) = app.get_webview_window(HUD_BAR_WINDOW_LABEL) {
         let _ = win.show();
         push_layout(app, edge);
+        ensure_hud_card_window(app)?;
         return Ok(());
     }
     CURRENT_EDGE.store(edge.index(), Ordering::Relaxed);
@@ -1313,6 +1360,9 @@ pub fn ensure_hud_bar_window(app: &AppHandle) -> Result<(), String> {
     if let Ok(mut guard) = snap_pos_slot().lock() {
         *guard = Some((x, y));
     }
+    // 卡片窗口同时预热（隐藏态）：第一次 hover 才能秒开（建窗 ~300ms 不能
+    // 落在 hover 路径上）
+    ensure_hud_card_window(app)?;
     // 首帧布局事件（页面未就绪时丢失无妨，前端按窗口横竖比自判兜底）
     push_layout(app, edge);
     Ok(())
@@ -1357,23 +1407,19 @@ pub fn toggle_from_tray(app: &AppHandle) -> Result<bool, String> {
         cfg.enabled = false;
         save_hud_bar_config(&cfg)?;
         if let Some(win) = app.get_webview_window(HUD_BAR_WINDOW_LABEL) {
-            // 扩窗态直接隐藏会把"大窗口"记忆留给下次（再次显示时先按收缩
-            // 尺寸归位，防隐藏期间的大窗口挡住桌面角落交互）；缩回是程序
-            // 侧单方面动作，广播 popover 事件让前端收敛本地扩窗态并收卡
-            let _ = apply_popover(app, false);
-            let _ = app.emit_to(
-                HUD_BAR_WINDOW_LABEL,
-                HUD_BAR_POPOVER_EVENT,
-                serde_json::json!({ "open": false }),
-            );
+            // 隐藏条之前先把卡片收掉（卡片是独立窗口，不跟着条一起隐藏会
+            // 留一块悬浮在黑边上的卡）；广播 popover 事件让条前端收敛状态
+            force_close_card(app);
             let _ = win.hide();
         }
+        hide_card_window(app);
         stop_feed();
         Ok(false)
     } else {
         cfg.enabled = true;
         save_hud_bar_config(&cfg)?;
         ensure_hud_bar_window(app)?;
+        ensure_hud_card_window(app)?;
         start_feed(app.clone());
         FORCE_PUSH.store(true, Ordering::Relaxed);
         Ok(true)
@@ -1381,137 +1427,252 @@ pub fn toggle_from_tray(app: &AppHandle) -> Result<bool, String> {
 }
 
 // ============================================================
-// 弹出层扩窗命令（hover 小卡 / 详情卡的画布）
+// 详情卡独立窗口
 // ============================================================
+//
+// 卡片为什么必须独立成窗：卡片要挂在条的**外侧**，而条贴着屏幕边缘，所以
+// 承载卡片的窗口只能向屏幕内侧长出去——那必然要 OS 改窗口位置与尺寸。而
+// WebView2 的渲染子窗口锚定在父窗口左上角：父窗口先变大/移位、渲染进程还
+// 没按新视口重排的那一帧，整条会被画到新窗口的左上角（实机录屏逐帧抓到过：
+// 条瞬移到屏幕左上方 336×274 处一帧再弹回——"第一次悬浮时卡片闪现移动"）。
+// 改成"条窗口永远不动、卡片自己一个窗口"后，hover 全程没有任何窗口几何
+// 变化，这一帧错位从根上消失；卡片窗口只在**自己的内容不可见**时改尺寸/
+// 移位（页面侧先 .measuring 藏起来量，量完由 Rust 摆位 + show，再露出），
+// 因此它自己的重排也永远不会被看见。
 
-/// 扩窗/缩窗主体（主线程闭包体，**物理坐标**——outer_position/set_position/
-/// set_size 全程物理，多显示器下与全局虚拟桌面坐标一致）：open = 沿条
-/// 外侧加出 POPOVER_EXT 宽的弹出画布（贴右时整体左移保条不动），竖排再
-/// 在**上下两侧对称**补同量纵向画布；缩回 = 恢复收缩尺寸与位置。
-///
-/// 纵向对称是刻意的：条在画布内垂直居中（hud.html #hud-root justify-content:
-/// center），于是「窗口上移 room + 高度 +2·room」这对操作无论被 OS 以什么
-/// 顺序/时机落地，条画出来都在同一屏幕位置上，前端不需要补 padding，
-/// 也就不存在"扩窗已生效、CSS 补偿还没写进去"的那一帧（那一帧会让整条
-/// 瞬间跳上去再弹回，是"卡片错乱出现/像瞬移"的根因）。贴顶横排只向下
-/// 补：条在上沿，上方没有可用空间，且 y/宽度都不变，天然不受落帧顺序影响。
-fn apply_popover(app: &AppHandle, open: bool) -> Result<HudPopoverState, String> {
-    let Some(win) = app.get_webview_window(HUD_BAR_WINDOW_LABEL) else {
-        return Ok(HudPopoverState::default());
-    };
-    if EXPANDED.load(Ordering::Relaxed) == open {
-        // 同态早返回：只回当前视口尺寸（前端据此确认"扩窗已落地"）
-        return Ok(popover_state_of(&win));
+/// 确保 "hud-card" 窗口存在（隐藏态预热，第一次 hover 才能秒开）。
+/// 必须在主线程事件循环上下文调用（建窗铁律，同 ensure_hud_bar_window）。
+pub fn ensure_hud_card_window(app: &AppHandle) -> Result<(), String> {
+    if app.get_webview_window(HUD_CARD_WINDOW_LABEL).is_some() {
+        return Ok(());
     }
-    let edge = current_edge();
-    let items = item_count();
-    let Ok(pos) = win.outer_position() else {
-        return Ok(HudPopoverState::default());
-    };
-    let Ok(scale) = win.scale_factor() else {
-        return Ok(HudPopoverState::default());
-    };
-    if scale <= 0.0 {
-        return Ok(HudPopoverState::default());
+    let win = WebviewWindowBuilder::new(
+        app,
+        HUD_CARD_WINDOW_LABEL,
+        WebviewUrl::App("hud.html".into()),
+    )
+    .title("AgentHUD Card")
+    // 占位尺寸：每次开卡都按卡片实测高度重设（内容此刻不可见，重设不会被看见）
+    .inner_size(CARD_W + CARD_PAD * 2.0, CARD_W + CARD_PAD * 2.0)
+    .decorations(false)
+    .transparent(true)
+    .always_on_top(true)
+    .skip_taskbar(true)
+    .shadow(false)
+    .resizable(false)
+    .maximizable(false)
+    .min_inner_size(1.0, 1.0)
+    // 不抢焦点（同停靠条）：卡片只做悬浮展示与点击，"打开主窗口"按钮走 IPC
+    .focusable(false)
+    .focused(false)
+    .visible(false)
+    .build()
+    .map_err(|e| format!("创建详情卡窗口失败: {e}"))?;
+    #[cfg(target_os = "macos")]
+    let _ = win.set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
+    let _ = win;
+    Ok(())
+}
+
+/// 隐藏卡片窗口并清掉"卡在哪"的记忆（Rust 侧单方面收卡时的公共尾段）
+fn hide_card_window(app: &AppHandle) {
+    if let Some(win) = app.get_webview_window(HUD_CARD_WINDOW_LABEL) {
+        let _ = win.hide();
     }
-    // 收缩尺寸、横向扩展量与纵向画布全部物理像素（逻辑常量 ×scale）
-    let (cw, ch) = bar_metrics_physical(edge, items, scale);
-    let ext = POPOVER_EXT * scale;
-    let drop = POPOVER_DROP * scale;
-    let x = pos.x as f64;
-    let y = pos.y as f64;
-    // 纵向画布：竖排上下对称各 room（条在画布内居中 → 位置与扩窗无关）；
-    // 贴顶只向下补，y 不动。
-    let (mut up, mut down) = (0.0, 0.0);
-    if open {
-        match edge {
-            BarEdge::Left | BarEdge::Right => {
-                if let Ok(Some(mon)) = win.current_monitor() {
-                    // 用工作区而不是整屏：任务栏会盖住窗口底部，卡片底栏
-                    // 不能被搜索框/任务栏吃掉
-                    let area = mon.work_area();
-                    let area_top = area.position.y as f64;
-                    let area_bottom = area_top + area.size.height as f64;
-                    let room = popover_vertical_room(y, ch, drop, area_top, area_bottom);
-                    up = room;
-                    down = room;
-                }
-            }
-            // 贴顶：条在上沿，只能向下补画布（y 不变，横排靠 align-items
-            // 顶对齐，同样不受落帧顺序影响）
-            BarEdge::Top => down = drop,
-        }
+    CARD_VISIBLE.store(false, Ordering::Relaxed);
+    if let Ok(mut guard) = card_rect_slot().lock() {
+        *guard = None;
     }
-    let ny = if open {
-        y - up
-    } else {
-        // 缩回：把扩窗时上移的量还回去
-        y + POPOVER_SHIFT_UP.load(Ordering::Relaxed) as f64
-    };
-    let nx = match edge {
-        // 贴左/贴顶：条在窗口左/顶缘，左上角不动
-        BarEdge::Left | BarEdge::Top => x,
-        // 贴右：条必须钉在窗口右缘——扩窗画布加在左侧（x 左移），缩回平移回来
-        BarEdge::Right => {
-            if open {
-                x - ext
-            } else {
-                x + ext
-            }
-        }
-    };
-    let (nw, nh) = if open {
-        // 贴顶横排：条目展开后变宽（50→84），画布按展开宽度算
-        let ew = match edge {
-            BarEdge::Left | BarEdge::Right => cw + ext,
-            BarEdge::Top => top_expanded_width(items) * scale + ext,
-        };
-        (ew, ch + up + down)
-    } else {
-        (cw, ch)
-    };
-    POPOVER_SHIFT_UP.store(
-        if open { up.round().max(0.0) as u64 } else { 0 },
-        Ordering::Relaxed,
+}
+
+/// 程序侧收卡（吸附强制回位 / 托盘关闭条）：隐藏卡片窗口 + 广播 popover
+/// 事件让条前端收敛本地详情态（条页不再回发 close，避免来回乒乓）
+fn force_close_card(app: &AppHandle) {
+    if !CARD_VISIBLE.swap(false, Ordering::Relaxed) {
+        return;
+    }
+    hide_card_window(app);
+    let _ = app.emit_to(
+        HUD_BAR_WINDOW_LABEL,
+        HUD_BAR_POPOVER_EVENT,
+        serde_json::json!({ "open": false }),
     );
-    win.set_position(PhysicalPosition::new(nx.round() as i32, ny.round() as i32))
-        .map_err(|e| format!("停靠条扩窗定位失败: {e}"))?;
-    win.set_size(PhysicalSize::new(nw.round().max(1.0) as u32, nh.round().max(1.0) as u32))
-        .map_err(|e| format!("停靠条扩窗改尺寸失败: {e}"))?;
-    EXPANDED.store(open, Ordering::Relaxed);
-    // 程序侧落点登记（逻辑坐标，与 Moved 挂点同口径）：随后的 Moved 回声
-    // 被拦截，不触发吸附
-    if let Ok(mut guard) = snap_pos_slot().lock() {
-        *guard = Some((nx / scale, ny / scale));
+}
+
+/// 主线程闭包投递 + 超时等待（窗口操作必须落在事件循环线程；同步命令占
+/// 主线程会自等待死锁——同 hud_bar_set_popover 的建窗铁律）
+fn on_main_thread<T, F>(app: &AppHandle, f: F) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, String> + Send + 'static,
+{
+    let (tx, rx) = mpsc::channel::<Result<T, String>>();
+    app.run_on_main_thread(move || {
+        let _ = tx.send(f());
+    })
+    .map_err(|e| format!("投递卡片窗口操作到主线程失败: {e}"))?;
+    match rx.recv_timeout(HUD_BAR_OP_TIMEOUT) {
+        Ok(outcome) => outcome,
+        Err(e) => Err(format!("卡片窗口操作超时: {e}")),
     }
-    // 目标视口尺寸（逻辑 px）给前端确认"扩窗已落地"，再去给卡片定位
-    Ok(HudPopoverState {
-        width: nw / scale,
-        height: nh / scale,
+}
+
+/// 开卡：登记锚点（hover 条目中心的物理坐标）后通知卡片页渲染。
+/// 条前端只负责"哪一条 Agent、锚在哪"，尺寸与屏幕落点由 Rust + 卡片页决定。
+#[tauri::command]
+pub async fn hud_card_open(
+    source: String,
+    center_x: f64,
+    center_y: f64,
+    animate: bool,
+    app: AppHandle,
+) -> Result<(), String> {
+    let app_main = app.clone();
+    on_main_thread(&app, move || {
+        ensure_hud_card_window(&app_main)?;
+        if let Ok(mut guard) = card_anchor_slot().lock() {
+            *guard = Some(CardAnchor {
+                center_x,
+                center_y,
+            });
+        }
+        CARD_VISIBLE.store(true, Ordering::Relaxed);
+        app_main
+            .emit_to(
+                HUD_CARD_WINDOW_LABEL,
+                HUD_CARD_OPEN_EVENT,
+                serde_json::json!({
+                    "source": source,
+                    "edge": current_edge().key(),
+                    "animate": animate,
+                    "pad": CARD_PAD,
+                }),
+            )
+            .map_err(|e| format!("通知卡片窗口失败: {e}"))
     })
 }
 
-/// 当前窗口的目标视口尺寸（逻辑 px = 前端 window.innerWidth/innerHeight）。
-/// 纯读，不碰窗口，用于同态早返回与失败兜底。
-fn popover_state_of(win: &WebviewWindow) -> HudPopoverState {
-    let scale = win.scale_factor().unwrap_or(1.0);
-    if scale <= 0.0 {
-        return HudPopoverState::default();
-    }
-    match win.inner_size() {
-        Ok(size) => HudPopoverState {
-            width: size.width as f64 / scale,
-            height: size.height as f64 / scale,
-        },
-        Err(_) => HudPopoverState::default(),
-    }
+/// 卡片页量好了自身尺寸（CSS px）→ 摆窗口。**此刻卡片内容还是隐藏态**
+/// （页面侧 .measuring），所以 set_size/set_position/show 都不会被看见；
+/// 回执目标视口尺寸（CSS px），前端等视口真正到位后再露出卡片并入场。
+#[tauri::command]
+pub async fn hud_card_measure(
+    width: f64,
+    height: f64,
+    app: AppHandle,
+) -> Result<HudCardViewport, String> {
+    let app_main = app.clone();
+    on_main_thread(&app, move || {
+        let Some(win) = app_main.get_webview_window(HUD_CARD_WINDOW_LABEL) else {
+            return Err("详情卡窗口不存在".into());
+        };
+        let scale = win
+            .scale_factor()
+            .map_err(|e| format!("读取卡片缩放比失败: {e}"))?;
+        if scale <= 0.0 {
+            return Err("卡片缩放比非法".into());
+        }
+        let anchor = card_anchor_slot()
+            .lock()
+            .ok()
+            .and_then(|g| *g)
+            .ok_or_else(|| "缺少卡片锚点".to_string())?;
+        let bar_win = app_main
+            .get_webview_window(HUD_BAR_WINDOW_LABEL)
+            .ok_or_else(|| "停靠条窗口不存在".to_string())?;
+        let bar_pos = bar_win
+            .outer_position()
+            .map_err(|e| format!("读取停靠条位置失败: {e}"))?;
+        let (bw, bh) = bar_metrics_physical(current_edge(), item_count(), scale);
+        // 工作区按**条所在的屏**取（卡片永远跟着条；指针可能已经飘到别的屏）
+        let (area, _) = monitor_area_under(
+            &bar_win,
+            (bar_pos.x as f64 + bw / 2.0, bar_pos.y as f64 + bh / 2.0),
+        );
+        let cw = width * scale;
+        let ch = height * scale;
+        let (cx, cy) = card_placement(
+            current_edge(),
+            (bar_pos.x as f64, bar_pos.y as f64, bw, bh),
+            anchor.center_x,
+            anchor.center_y,
+            cw,
+            ch,
+            area,
+            scale,
+        );
+        let pad = CARD_PAD * scale;
+        win.set_size(PhysicalSize::new(
+            (cw + pad * 2.0).round().max(1.0) as u32,
+            (ch + pad * 2.0).round().max(1.0) as u32,
+        ))
+        .map_err(|e| format!("卡片窗口改尺寸失败: {e}"))?;
+        win.set_position(PhysicalPosition::new(
+            (cx - pad).round() as i32,
+            (cy - pad).round() as i32,
+        ))
+        .map_err(|e| format!("卡片窗口定位失败: {e}"))?;
+        win.show()
+            .map_err(|e| format!("显示卡片窗口失败: {e}"))?;
+        CARD_VISIBLE.store(true, Ordering::Relaxed);
+        if let Ok(mut guard) = card_rect_slot().lock() {
+            *guard = Some(HudCardRect {
+                x: cx,
+                y: cy,
+                w: cw,
+                h: ch,
+            });
+        }
+        let viewport = HudCardViewport {
+            width: width + CARD_PAD * 2.0,
+            height: height + CARD_PAD * 2.0,
+        };
+        app_main
+            .emit_to(HUD_CARD_WINDOW_LABEL, HUD_CARD_PLACED_EVENT, viewport)
+            .map_err(|e| format!("通知卡片落位失败: {e}"))?;
+        Ok(viewport)
+    })
 }
 
+/// 收卡：先通知卡片页播退出动画（它播完会回 hud_card_hide）。屏幕矩形
+/// 立刻作废，避免悬浮守护还把指针当成"在卡上"而不收卡。
+#[tauri::command]
+pub async fn hud_card_close(animate: bool, app: AppHandle) -> Result<(), String> {
+    if let Ok(mut guard) = card_rect_slot().lock() {
+        *guard = None;
+    }
+    app.emit_to(
+        HUD_CARD_WINDOW_LABEL,
+        HUD_CARD_CLOSE_EVENT,
+        serde_json::json!({ "animate": animate }),
+    )
+    .map_err(|e| format!("通知卡片窗口收卡失败: {e}"))
+}
+
+/// 卡片页播完退出动画后真正隐藏窗口
+#[tauri::command]
+pub async fn hud_card_hide(app: AppHandle) -> Result<(), String> {
+    let app_main = app.clone();
+    on_main_thread(&app, move || {
+        hide_card_window(&app_main);
+        Ok(())
+    })
+}
+
+/// 卡片窗口的目标视口尺寸（CSS px）
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HudCardViewport {
+    pub width: f64,
+    pub height: f64,
+}
+
+
 /// 前端悬浮守护用的光标/窗口几何（**物理像素**，与 cursor_position /
-/// outer_position 同口径）。DOM 的 pointerleave 在透明扩窗画布上并不可靠：
-/// 扩窗后整个矩形都参与命中测试，指针停在空白区时 WebView 不一定派发
-/// leave；贴顶扩宽若再触发布局偏移，还会 enter/leave 抖动。前端按 150ms
-/// 轮询本命令，用真实光标位置判断"是否还在条/卡上"，彻底脱离 DOM 事件。
+/// outer_position 同口径）。DOM 的 pointerleave 只在指针真的离开窗口时可靠，
+/// 而卡片是另一个窗口——指针从条移到卡上时条的 pointerleave 会先到，光靠
+/// DOM 事件会把卡收掉。前端按 150ms 轮询本命令，用真实光标位置判断"是否
+/// 还在条/卡上"，彻底脱离 DOM 事件。
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HudBarPointerState {
@@ -1523,6 +1684,8 @@ pub struct HudBarPointerState {
     pub window_y: i32,
     /// 逻辑/物理缩放比（客户端 CSS px = (物理 − 窗口原点) / scale）
     pub scale: f64,
+    /// 当前详情卡的屏幕矩形（物理 px）；None = 没有可见的卡
+    pub card: Option<HudCardRect>,
 }
 
 /// 读取停靠条当前光标与窗口几何（供前端悬浮守护轮询）。
@@ -1546,43 +1709,8 @@ pub fn hud_bar_pointer_state(app: AppHandle) -> Result<HudBarPointerState, Strin
         window_x: pos.x,
         window_y: pos.y,
         scale: if scale > 0.0 { scale } else { 1.0 },
+        card: card_rect_slot().lock().ok().and_then(|g| *g),
     })
-}
-
-/// 扩窗结果：**目标视口尺寸**（逻辑 px，等于前端的 window.innerWidth /
-/// innerHeight）。前端拿它确认"扩窗真的落地了"再给卡片定位——扩窗由 OS
-/// 异步完成，只等"两帧稳定"会把还在路上的 resize 当成已稳定，卡片就会先
-/// 按旧几何画一帧再被挪走。0 表示取不到（前端退化为只等几何稳定）。
-///
-/// 纵向不再回传 topInset：画布上下对称、条在画布内居中，位置与扩窗无关
-/// （见 apply_popover）。
-#[derive(Debug, Clone, Copy, Default, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct HudPopoverState {
-    pub width: f64,
-    pub height: f64,
-}
-
-/// 前端弹出层开关（hover 小卡进入/离开、详情卡展开/收起时 invoke）。
-/// 返回扩窗后的目标视口尺寸：前端据此等视口到位，保证卡片贴着 hover 的
-/// 条目显示、不越出工作区。
-/// async + run_on_main_thread + channel + 超时等待（建窗铁律：窗口操作
-/// 必须落在事件循环线程；同步命令占主线程会自等待死锁）。
-#[tauri::command]
-pub async fn hud_bar_set_popover(
-    open: bool,
-    app: AppHandle,
-) -> Result<HudPopoverState, String> {
-    let (tx, rx) = mpsc::channel::<Result<HudPopoverState, String>>();
-    let app_main = app.clone();
-    app.run_on_main_thread(move || {
-        let _ = tx.send(apply_popover(&app_main, open));
-    })
-    .map_err(|e| format!("投递停靠条扩窗操作到主线程失败: {e}"))?;
-    match rx.recv_timeout(HUD_BAR_OP_TIMEOUT) {
-        Ok(outcome) => outcome,
-        Err(e) => Err(format!("停靠条扩窗操作超时: {e}")),
-    }
 }
 
 /// 拖拽状态回执（逻辑 px，屏幕坐标）。前端据此切换横竖排/停靠边，
@@ -2033,39 +2161,50 @@ mod tests {
         let (wt, ht) = bar_metrics(BarEdge::Top, 3);
         assert!((wt - 188.0).abs() < f64::EPSILON);
         assert_eq!(ht, BAR_THICK_TOP);
-        // 横排展开态（条目 50→84）画布宽：18 + 3×84 + 2×2 + 16 = 290
-        assert!((top_expanded_width(3) - 290.0).abs() < f64::EPSILON);
     }
 
     #[test]
-    fn popover_vertical_room_上下对称取余量() {
-        // 上下都够：各补一个 drop（画布把条和上下余量都包住）
+    fn card_placement_按停靠边挂到条外侧并钳进工作区() {
+        // scale=1：条窗口 118×410 落在 (1000,300)，工作区 1920×1080
+        let area = (0.0, 0.0, 1920.0, 1080.0);
+        let bar = (1000.0, 300.0, 118.0, 410.0);
+        // 贴右：卡片在面板左侧，右缘贴条窗口左缘（与展开态面板留 8 间隙）
         assert_eq!(
-            popover_vertical_room(600.0, 392.0, 480.0, 0.0, 1600.0),
-            480.0
+            card_placement(BarEdge::Right, bar, 0.0, 500.0, 304.0, 300.0, area, 1.0),
+            (696.0, 350.0)
         );
-        // 实机贴右布局：y=449、条长 392、工作区 0..1104
-        // 上方 449、下方 263 → 对称取 263（小的那侧），条仍在画布正中
+        // 贴左：卡片在面板右侧 = 窗口右缘外 8px
         assert_eq!(
-            popover_vertical_room(449.0, 392.0, 480.0, 0.0, 1104.0),
-            263.0
+            card_placement(BarEdge::Left, bar, 0.0, 500.0, 304.0, 300.0, area, 1.0),
+            (1118.0, 350.0)
         );
-        // 贴顶：上方没有余量 → 对称画布为 0，不能出现负值（横排另有向下补）
+        // 贴顶：卡片挂在条下方，水平跟随 hover 条目中心（400 → 卡片居中）
+        let top_bar = (100.0, 0.0, 396.0, 86.0);
         assert_eq!(
-            popover_vertical_room(0.0, 392.0, 480.0, 0.0, 1104.0),
-            0.0
+            card_placement(BarEdge::Top, top_bar, 400.0, 40.0, 304.0, 300.0, area, 1.0),
+            (248.0, 86.0)
         );
-        // 条比工作区还长：上下都不扩
+        // 纵向钳位：条目贴底时卡片不出工作区（1080 − 300 − 4 = 776）
+        let low_bar = (1000.0, 900.0, 118.0, 410.0);
         assert_eq!(
-            popover_vertical_room(0.0, 800.0, 480.0, 0.0, 700.0),
-            0.0
+            card_placement(BarEdge::Right, low_bar, 0.0, 1105.0, 304.0, 300.0, area, 1.0).1,
+            776.0
         );
-        // 多显示器：工作区原点不在 0（y 为全局物理坐标）→ 上方 60、下方 988
-        // 取小者 60
-        assert_eq!(
-            popover_vertical_room(1500.0, 392.0, 480.0, 1440.0, 2880.0),
-            60.0
+        // 跨屏（工作区原点为负）+ 125% 缩放：贴右时卡片落在副屏内
+        let sub = (-3200.0, -103.0, 3200.0, 1720.0);
+        let sub_bar = (-148.0, 600.0, 147.5, 512.5);
+        let (cx, cy) = card_placement(
+            BarEdge::Right,
+            sub_bar,
+            0.0,
+            856.0,
+            380.0,
+            400.0,
+            sub,
+            1.25,
         );
+        assert!((cx - (-528.0)).abs() < 0.01);
+        assert!((cy - 656.0).abs() < 0.01);
     }
 
     #[test]

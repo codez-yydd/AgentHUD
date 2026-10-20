@@ -2883,10 +2883,15 @@ pub fn run() {
             // 悬浮窗热区拖拽尺寸会话："用户调整中"标志置位/清除 + 结束即时落盘核校
             session_hud::session_hud_resize_begin,
             session_hud::session_hud_resize_end,
-            // HUD 停靠条弹出层扩窗（hover 小卡/详情卡的画布开关，主线程
-            // 窗口操作经命令投递）+ 首帧补推（页面 listen 就绪后强制数据
-            // 线程重推一帧，销毁重开/页面重载不再丢首帧）
-            hud_bar::hud_bar_set_popover,
+            // HUD 详情卡（独立窗口）：开卡登记锚点 → 卡片页量尺寸后摆窗口
+            // 并 show（此时内容仍是隐藏态，不会被看见）→ 播完退出动画再真
+            // 隐藏。条窗口全程不动，hover 期间没有任何窗口几何变化
+            hud_bar::hud_card_open,
+            hud_bar::hud_card_measure,
+            hud_bar::hud_card_close,
+            hud_bar::hud_card_hide,
+            // 首帧补推（页面 listen 就绪后强制数据线程重推一帧，销毁重开/
+            // 页面重载不再丢首帧）+ 悬浮守护用的光标/窗口/卡片几何
             hud_bar::hud_bar_pointer_state,
             hud_bar::hud_bar_refresh,
             // 停靠条拖拽：begin 登记抓取点、move 逐帧算落点并贴边换向、

@@ -17,29 +17,28 @@
  *   卡片按边定位方向）；启动时按窗口横竖比自判兜底（窗口尺寸由 Rust
  *   bar_metrics 按停靠边预置：竖排恒 128 逻辑宽、横排恒 92 逻辑高，条长
  *   下限 120 保证两者可分；layout 事件在页面未就绪时丢失也不怕）；
- * - 悬浮抽屉 + 详情卡：pointerenter 条 → 90ms 后给 #hud-root 加 .hud-open，
- *   面板宽度 70 → 112（横排按 50 → 100/条计算），百分比由 overflow 裁切后
- *   随宽度过渡拉出（0.34s cubic-bezier，类似 element-ui 抽屉）；同时悬浮
- *   到某个条目就直接显示该 Agent 的详情卡，不用先点击。卡片内容：品牌
- *   头像 + 名称/套餐/健康态 + 每窗口两行式额度行（状态点/标签/已用%、
- *   进度轨/剩余/倒计时）+ Token 区（24h 输入/输出/缓存堆叠直方图、
- *   今日/请求/峰值）+ 底部「打开主窗口」按钮 → invoke
+ * - 悬浮抽屉 + 详情卡：pointerenter 条 → 70ms 后给 #hud-root 加 .hud-open，
+ *   面板宽度 68 → 102，百分比由 overflow 裁切后随宽度过渡拉出（类似
+ *   element-ui 抽屉）；悬浮到某个条目就直接显示该 Agent 的详情卡，不用先
+ *   点击。卡片内容：品牌头像 + 名称/套餐/健康态 + 每窗口两行式额度行（状态
+ *   点/标签/已用%、进度轨/剩余/倒计时）+ Token 区（24h 输入/输出/缓存堆叠
+ *   直方图、今日/请求/峰值）+ 底部「打开主窗口」按钮 → invoke
  *   open_main_window("overview")。指针可移到卡上操作，离开条/卡约 260ms
- *   后收卡；点击条目仍可打开，点击其他区域收起。卡片按边定位：贴左卡在
- *   条右侧、贴右卡在条左侧、贴顶卡在条下方；纵向跟随 hover 的条目居中
- *   （Rust 扩窗时在**上下两侧对称**补画布，条在画布内居中，位置与扩窗
- *   无关，卡片因此能贴着条目而不是被顶到画布边缘），入场是从条那一
- *   侧滑出的抽屉式动画；
- * - 扩窗态同步：监听 zbar://hud-bar-popover（Rust 侧吸附强制缩回/托盘
- *   关闭时单方面缩窗后广播 { open:false }），收敛本地扩窗态并收卡（详情
- *   开着也收），防两端状态失步；扩窗命令返回 {width,height}（目标视口
- *   尺寸），卡片定位前先等视口到位；
+ *   后收卡。**卡片渲染在独立的 hud-card 窗口里**（同一份 bundle 按窗口
+ *   label 分派成"卡模式"，见文件末尾）：条窗口全程不改几何，所以悬浮时
+ *   不会出现"扩窗那一帧整条瞬移"的闪现（WebView2 的渲染子窗口锚定父窗口
+ *   左上角，父窗口一改尺寸/位置，重排完成前那一帧就会把整条画到新窗口
+ *   左上角，实机录屏逐帧抓到过）；卡片窗口在自己内容 measuring 隐藏时改
+ *   尺寸/移位，摆好视口再露出并播抽屉动画；
+ * - 详情态同步：监听 zbar://hud-bar-popover（Rust 侧吸附强制回位/托盘关闭
+ *   时单方面收卡后广播 { open:false }），只收敛本地状态——卡片窗口已被
+ *   Rust 隐藏，条页不回发 close（防两个方向来回乒乓）；
  * - 首帧保障：三路 listen 全部注册完成后 invoke hud_bar_refresh（数据
  *   线程按"内容未变"静默跳过时，refresh 强制 200ms 内重推一帧，销毁重开
  *   /页面重载不丢首帧）；
  * - 空态：无数据时显示一条占位小字（"暂无数据"），不闪窗；
  * - 拖拽：条目 .hud-item 不带原生拖拽属性（会吞点击），改为阈值自定义
- *   拖拽——越过 4px 后先把抽屉/卡片/扩窗画布全部收掉，再由前端逐帧把
+ *   拖拽——越过 4px 后先把抽屉/详情卡全部收掉，再由前端逐帧把
  *   指针逻辑坐标发给 Rust（hud_bar_drag_move）：远离屏幕边缘时跟手，
  *   靠近左/右/上边 ≤26px 时吸附成该边并切换横竖排（拖到顶部变横排），
  *   松手时必定吸附落盘；拖完吞掉一次 click，并暂停悬停 600ms；
@@ -50,10 +49,24 @@
  */
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { APPEARANCE_CHANGED_EVENT } from "./appearance";
 import { getAgentTokenSummary, type AgentTokenSummary } from "./api";
 import { loadAgentVisibility } from "./agentVisibility";
 import { LOCALE_KEY } from "./i18n/locale";
+
+/** 详情卡窗口 label（与 Rust hud_bar::HUD_CARD_WINDOW_LABEL 同步）：同一份
+ *  bundle 按窗口 label 决定跑"条"还是"卡"——卡片是独立窗口，见 Rust 侧
+ *  的建窗注释（条窗口一旦为卡片改几何，WebView2 会在那一帧把整条画到
+ *  新窗口左上角，就是"首次悬浮闪现移动"） */
+const HUD_CARD_WINDOW_LABEL = "hud-card";
+const CARD_MODE = getCurrentWindow().label === HUD_CARD_WINDOW_LABEL;
+/** 卡片窗口四周留白（逻辑 px）：卡片投影在 16px 处被窗口边缘裁掉，与旧
+ *  与旧版"卡片画在条窗口内、四周留 16 呼吸位"观感一致；与 Rust
+ *  hud_bar::CARD_PAD 同步 */
+const CARD_PAD = 16;
+const CARD_OPEN_EVENT = "zbar://hud-card-open";
+const CARD_CLOSE_EVENT = "zbar://hud-card-close";
 
 // ============================================================
 // 数据契约（Rust hud_bar.rs 的 HudBarUsage，camelCase 序列化）
@@ -97,22 +110,37 @@ interface HudBarLayout {
   edge: "left" | "right" | "top";
 }
 
-/** Rust hud_bar_set_popover 的返回：扩窗后的**目标视口尺寸**（逻辑 px，
- *  等于 window.innerWidth/innerHeight；0 = 取不到）。前端等视口到位后
- *  才给卡片定位——扩窗由 OS 异步完成，只等"两帧稳定"会把还在路上的
- *  resize 当成已稳定。 */
-interface HudPopoverState {
-  width: number;
-  height: number;
+/** 卡片在屏幕上的矩形（**物理 px**，与光标同口径）：Rust 摆好卡片窗口后
+ *  回传，条页的悬浮守护据此判断"指针还在卡上"（卡片是独立窗口，DOM 事件
+ *  看不到另一边） */
+interface HudCardRect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
 }
 
-/** Rust hud_bar_pointer_state：光标与窗口左上角的全局物理坐标 */
+/** Rust hud_bar_pointer_state：光标与窗口左上角的全局物理坐标 + 卡片矩形 */
 interface HudBarPointerState {
   cursorX: number;
   cursorY: number;
   windowX: number;
   windowY: number;
   scale: number;
+  card: HudCardRect | null;
+}
+
+/** zbar://hud-card-open 的 payload（Rust 推给卡片窗口） */
+interface HudCardOpenPayload {
+  source: string;
+  edge: "left" | "right" | "top";
+  animate: boolean;
+}
+
+/** hud_card_measure 的返回：卡片窗口的目标视口尺寸（CSS px） */
+interface HudCardViewport {
+  width: number;
+  height: number;
 }
 
 /** Rust 拖拽回执：当前停靠边/朝向 + 窗口逻辑几何（屏幕坐标） */
@@ -486,7 +514,8 @@ const CHART_BARS = 24;
 const CHART_H = 56;
 
 /** 详情卡 Token 区：标题 + 24h 堆叠直方图 + 三段图例 + 今日/请求/峰值。
- *  先建固定高度占位再异步回填——卡片定位后若长高会被扩窗画布裁切。 */
+ *  先建固定高度占位再异步回填——卡片定位后若长高会把窗口撑大（独立窗
+ *  口按卡片实测尺寸落位，占位先撑住高度就不会出现"露出后再长高"）。 */
 function buildTokenSection(source: string): HTMLElement {
   const sec = document.createElement("div");
   sec.className = "hud-tokens";
@@ -739,10 +768,9 @@ let orientation: "vertical" | "horizontal" =
   window.innerWidth > window.innerHeight ? "horizontal" : "vertical";
 /** 当前停靠边（layout 事件携带；初始按 orientation 推断，事件到达后校正） */
 let barEdge: HudBarLayout["edge"] = orientation === "horizontal" ? "top" : "left";
-/** 详情卡打开的 source（null = 无详情） */
+/** 详情卡打开的 source（null = 无详情）。卡片本体在**另一个窗口**，这里
+ *  只保留"哪一条开着"用于高亮与收卡判定 */
 let detailSource: string | null = null;
-/** 扩窗态（与 Rust EXPANDED 对应；invoke 失败按本地记忆幂等收敛） */
-let expanded = false;
 /** 鼠标是否在停靠条内（收起计时器的判定依据） */
 let pointerInside = false;
 /** 鼠标是否在详情卡内（hover 开卡后允许移到卡上操作，不立即收） */
@@ -757,23 +785,13 @@ let cardCloseTimer: ReturnType<typeof setTimeout> | null = null;
 let hoverSwitchTimer: ReturnType<typeof setTimeout> | null = null;
 /** 已在排队等待开卡的条目（同一条目内的子元素切换不再重排计时器） */
 let hoverPending: string | null = null;
-/** 弹出层收起动画的清理计时器（动画播完再清 DOM/缩窗） */
-let hideTimer: ReturnType<typeof setTimeout> | null = null;
-/** 悬浮守护轮询：真实光标位置（DOM pointerleave 在透明扩窗画布上不可靠） */
+/** 悬浮守护轮询：真实光标位置（卡片在另一个窗口，DOM 事件看不到） */
 let pointerWatch: ReturnType<typeof setInterval> | null = null;
 let pointerCheckInflight = false;
 /** 指针连续在条/卡之外的起始时刻（0 = 当前在范围内） */
 let pointerOutsideSince = 0;
-/** 详情卡打开序号：异步扩窗/等待动画期间被收起或切换时，旧流程作废 */
+/** 详情卡打开序号：异步等待抽屉动画期间被收起或切换时，旧流程作废 */
 let showSeq = 0;
-/** 扩窗请求序号：open/close 快速交错时只让最后一次结果落地 */
-let popoverSeq = 0;
-/** 扩窗后的目标视口尺寸（Rust 回执，逻辑 px；null = 未知/收缩态）。
- *  卡片定位前用它确认"扩窗真的落地了"，而不是靠肉眼帧数猜。 */
-let popoverTarget: { w: number; h: number } | null = null;
-/** 卡片入场前等几何收敛的上限（毫秒）：超过就按当下几何露出，
- *  宁可差一点也不能让卡迟迟不出现 */
-const CARD_SETTLE_MS = 320;
 /** 上一次卡片入场的 source/时刻：短时间内同源重建不再重放入场动画
  *  （动画从 0 重播看起来就是"卡片又冒出来一次"） */
 let lastMount: { source: string; at: number } | null = null;
@@ -805,7 +823,7 @@ function applyOrientation(next: "vertical" | "horizontal"): void {
   rootEl.classList.toggle("horizontal", next === "horizontal");
 }
 
-/** 停靠边 → 面板贴边方向：贴右时窗口扩窗向左平移，面板必须钉在窗口
+/** 停靠边 → 面板贴边方向：贴右时面板必须钉在窗口
  *  右缘（.edge-right），否则会随窗口一起左移离开屏缘 */
 function applyEdge(next: HudBarLayout["edge"]): void {
   barEdge = next;
@@ -894,19 +912,14 @@ function renderItems(): void {
   if (detailSource && !agents.some((a) => a.source === detailSource)) {
     closeDetail();
   } else if (detailSource) {
-    // 详情仍有效：补挂高亮（重建即丢）并重新锚定卡片
+    // 详情仍有效：补挂高亮（重建即丢）并按新条目几何重开一次卡（卡片页
+    // 按新数据重渲染、不重放入场动画，位置跟着条目走）
     const item = stripEl.querySelector<HTMLElement>(
       `.hud-item[data-source="${detailSource}"]`
     );
     if (item) {
       item.classList.add("active");
-      const existing = popEl.querySelector<HTMLElement>(".hud-card");
-      if (cardHovered && existing) {
-        // 指针正在卡上：只重锚，不换 DOM，避免数据刷新把卡抽走导致闪
-        placeCard(existing, item);
-      } else {
-        void showDetailCard(detailSource, item, true);
-      }
+      void showDetailCard(detailSource, item, true);
     }
   }
 }
@@ -914,118 +927,6 @@ function renderItems(): void {
 function findAgent(source: string | null): HudBarAgent | null {
   if (!source) return null;
   return usage?.agents.find((a) => a.source === source) ?? null;
-}
-
-/** 数值钳入闭区间 [min(4, lo), hi]（4px 安全边距；窗口极窄时下限让位） */
-function clampTo(v: number, hi: number): number {
-  return Math.min(Math.max(4, v), Math.max(4, hi));
-}
-
-/** 卡片与面板之间的间隙（逻辑 px）：面板离屏缘也是 8，视觉上连成一体 */
-const CARD_GAP = 8;
-
-/** 卡片抽屉方向类：起点压回条的那一侧，条 z-index 更高 → 看起来像从
- *  面板里抽出来（贴左从左推、贴右从右推、贴顶从上推） */
-function drawerClass(): string {
-  if (orientation === "horizontal") return "drawer-t";
-  return barEdge === "right" ? "drawer-r" : "drawer-l";
-}
-
-/**
- * 定位卡片（详情卡与 hover 卡共用），**按停靠边定向**：
- * - 竖排贴左（edge=left）：卡在面板右侧（left = strip.right + 8）；
- * - 竖排贴右（edge=right）：卡在面板左侧（left = strip.left − 8 − 卡宽）；
- * - 横排贴顶（edge=top）：卡在面板下方（top = strip.bottom + 8）。
- * 水平方向以**面板**边缘为基准（不是条目边缘——条目距面板内边距
- * 9px，按条目算会让卡片叠进面板 1px）；纵向跟随 hover 条目的中心，
- * 再钳进窗口（Rust 扩窗已按工作区余量在上下两侧补出画布，卡片贴条目
- * 显示不会被裁）。
- *
- * **纯定位**：要求卡已挂在 #hud-pop 内且画布已 .open（否则量不到卡宽/
- * 卡高）。**幂等**：重复调用只更新 left/top，不重挂节点、不重放动画
- * ——pointerover 在条目内部随子元素切换连续派发，重挂会让入场动画
- * 反复从头播（同一图标内持续移动时"闪动"的根因）。
- */
-function placeCard(card: HTMLElement, item: HTMLElement): void {
-  cancelHide();
-  card.classList.remove("leaving");
-  popEl.classList.add("open");
-  const rect = item.getBoundingClientRect();
-  const strip = stripEl.getBoundingClientRect();
-  const cardW = card.offsetWidth;
-  const cardH = card.offsetHeight;
-  const maxX = window.innerWidth - cardW - 4;
-  const maxY = window.innerHeight - cardH - 4;
-  // 横向：贴左卡在条右侧、贴右卡在条左侧、贴顶跟随条目中心
-  const left =
-    orientation === "vertical"
-      ? barEdge === "right"
-        ? strip.left - CARD_GAP - cardW
-        : strip.right + CARD_GAP
-      : rect.left + rect.width / 2 - cardW / 2;
-  // 纵向：竖排对条目中心，横排挂在条下方
-  const top =
-    orientation === "vertical"
-      ? rect.top + rect.height / 2 - cardH / 2
-      : strip.bottom + CARD_GAP;
-  card.style.left = `${clampTo(left, maxX)}px`;
-  card.style.top = `${clampTo(top, maxY)}px`;
-}
-
-/** 一帧后继续（rAF：与绘制节拍对齐，避免同一帧内连测多次） */
-function nextFrame(): Promise<void> {
-  return new Promise<void>((resolve) => {
-    requestAnimationFrame(() => resolve());
-  });
-}
-
-/**
- * 挂载 + 入场：先以 `.measuring`（visibility:hidden、无动画）挂进画布，
- * 再逐帧收敛 left/top，直到「几何连续两帧一致 + 扩窗后的视口尺寸到位」，
- * 最后撤掉 .measuring 露出并起抽屉动画。
- *
- * 为什么要先藏起来量：扩窗（OS）与视口 relayout（WebView）都是异步的，
- * setPopover 返回时视口可能还要变一两帧；若卡片这时已经可见，它会先按
- * 旧几何画出来再被挪走——看起来就是"卡片错乱地出现、像瞬间移动了几下"。
- * 隐藏态测量让"第一帧可见"必然是最终位置，代价只是多等一两帧
- * （16–32ms），肉眼不可见。
- */
-async function mountCard(
-  card: HTMLElement,
-  item: HTMLElement,
-  animate: boolean
-): Promise<void> {
-  cancelHide();
-  popEl.classList.add("open");
-  if (card.parentElement !== popEl) {
-    card.classList.add(drawerClass());
-    if (!animate) card.classList.add("no-anim");
-    card.classList.add("measuring");
-    popEl.appendChild(card);
-  }
-  const deadline = performance.now() + CARD_SETTLE_MS;
-  let prev = "";
-  for (;;) {
-    if (!card.isConnected) return; // 收敛期间被收起/换卡
-    placeCard(card, item);
-    const cur = `${card.style.left}|${card.style.top}`;
-    const stable = cur === prev;
-    prev = cur;
-    if (stable && viewportSettled()) break;
-    if (performance.now() > deadline) break;
-    await nextFrame();
-  }
-  card.classList.remove("measuring");
-}
-
-/** 扩窗后的目标视口是否已到位（Rust 回执的尺寸；取不到时视为已到位） */
-function viewportSettled(): boolean {
-  const t = popoverTarget;
-  if (!t || !(t.w > 0) || !(t.h > 0)) return true;
-  return (
-    Math.abs(window.innerWidth - t.w) <= 2 &&
-    Math.abs(window.innerHeight - t.h) <= 2
-  );
 }
 
 /** 卡片骨架：品牌头像（38px 圆角瓦片）+ Agent 名/套餐徽标 + 副标题 +
@@ -1144,49 +1045,11 @@ function buildDetailCard(source: string): HTMLElement | null {
   return card;
 }
 
-/** 等视口与条几何真正落定：扩窗是 OS 异步完成的，WebView 的 relayout 还会
- *  再晚一两帧。判据是「Rust 回执的目标视口尺寸已到位 + 条的位置/尺寸连续
- *  两帧不变」，最多等 CARD_SETTLE_MS（取不到目标尺寸时退化为只等稳定）。 */
-async function settleLayout(): Promise<void> {
-  const deadline = performance.now() + CARD_SETTLE_MS;
-  let prev = "";
-  for (let i = 0; i < 24; i++) {
-    const r = stripEl.getBoundingClientRect();
-    const sig =
-      `${window.innerWidth}x${window.innerHeight}|` +
-      `${r.left},${r.top},${r.width},${r.height}`;
-    if (sig === prev && viewportSettled()) return;
-    prev = sig;
-    if (performance.now() > deadline) return;
-    await nextFrame();
-  }
-}
-
-/** 扩窗/缩窗 invoke。**每次都真发**（不再按本地 expanded 短路）：页面在
- *  扩窗态被热更新/重载后，本地记忆归零而 Rust 仍展开，短路会让卡片在
- *  收缩窗里渲染（被裁/被顶到窗口外）——Rust 侧对同态请求本就是 O(1)
- *  早返回，多一次命令往返换取两端永不失步。返回值是扩窗后的目标视口
- *  尺寸，前端据此确认尺寸到位后再给卡片定位。 */
-async function setPopover(open: boolean): Promise<void> {
-  const seq = ++popoverSeq;
-  expanded = open;
-  try {
-    const state = await invoke<HudPopoverState>("hud_bar_set_popover", {
-      open,
-    });
-    // open/close 快速交错：旧请求的返回值不再落地，避免窗口被过期的
-    // 扩窗结果留在展开态
-    if (seq !== popoverSeq) return;
-    popoverTarget = open ? { w: state.width, h: state.height } : null;
-    // 首次打开：等扩窗后的视口真正落定，卡片再按最终几何定位/入场
-    if (open) await settleLayout();
-  } catch {
-    /* 失败回退本地态：下一次操作重试（卡可能被窗口边界裁切，交互仍可用） */
-    if (seq === popoverSeq) {
-      expanded = !open;
-      popoverTarget = null;
-    }
-  }
+/** 卡片抽屉方向类：起点压回条的那一侧，条 z-index 更高 → 看起来像从
+ *  面板里抽出来（贴左从左推、贴右从右推、贴顶从上推） */
+function drawerClass(): string {
+  if (orientation === "horizontal") return "drawer-t";
+  return barEdge === "right" ? "drawer-r" : "drawer-l";
 }
 
 function delay(ms: number): Promise<void> {
@@ -1246,27 +1109,20 @@ function stopPointerWatch(): void {
 
 /**
  * 悬浮守护：每 150ms 用 Rust GetCursorPos 的真实屏幕坐标判断指针是否
- * 还在条/卡上。DOM pointerleave 在"扩窗后整块透明画布都参与命中测试"
- * 的场景下并不可靠（指针停在空白区时不一定派发 leave），这是"移出去
- * 不折叠"的根因；真实坐标不依赖 WebView 的事件派发，也能识别贴顶扩宽
- * 时条布局位移导致的假 enter/leave 抖动。
+ * 还在条/卡上。卡片在**另一个窗口**，DOM 事件天然跨不过去（指针移到卡上
+ * 时条只会收到 pointerleave），所以"指针还在卡上就别收卡"必须靠真实
+ * 坐标 + Rust 记录的卡片屏幕矩形；真实坐标也不受 WebView 事件派发抖动
+ * 影响，是"移出去不折叠/移上去不误收"的统一兜底。
  */
 async function checkPointer(): Promise<void> {
   // 拖拽中：指针被窗口带着走，任何"离开条/卡"的判定都不成立，直接让位
   if (dragging) return;
   const dockOpen = rootEl.classList.contains("hud-open");
-  if (!detailSource && !dockOpen && !expanded) {
-    // 抽屉/卡片还在排队（hover 70ms 防扫过、条目切换 60ms 防抖、收起动画
-    // 150ms）时别停守护：ensurePointerWatch 会立即跑一次本函数，那一刻
-    // .hud-open 还没加上，一停就会让"移出去不折叠"的兜底整段失效
-    if (
-      !expandTimer &&
-      !hoverPending &&
-      !hideTimer &&
-      !popEl.firstChild
-    ) {
-      stopPointerWatch();
-    }
+  if (!detailSource && !dockOpen) {
+    // 抽屉/卡片还在排队（hover 70ms 防扫过、条目切换 60ms 防抖）时别停
+    // 守护：ensurePointerWatch 会立即跑一次本函数，那一刻 .hud-open 还没
+    // 加上，一停就会让"移出去不折叠"的兜底整段失效
+    if (!expandTimer && !hoverPending) stopPointerWatch();
     return;
   }
   if (pointerCheckInflight) return;
@@ -1282,10 +1138,8 @@ async function checkPointer(): Promise<void> {
   if (!Number.isFinite(state.scale) || state.scale <= 0) return;
   const x = (state.cursorX - state.windowX) / state.scale;
   const y = (state.cursorY - state.windowY) / state.scale;
-  // 正在播收回动画的卡不算命中（它已不接鼠标，且即将被清掉）
-  const card = popEl.querySelector<HTMLElement>(".hud-card:not(.leaving)");
   const overStrip = pointerInRect(x, y, stripEl.getBoundingClientRect());
-  const overCard = pointerInRect(x, y, card?.getBoundingClientRect() ?? null);
+  const overCard = cardContains(state.card, state.cursorX, state.cursorY);
 
   if (overStrip || overCard) {
     pointerOutsideSince = 0;
@@ -1306,12 +1160,12 @@ async function checkPointer(): Promise<void> {
     return;
   }
 
-  // 指针在窗口内的透明区（扩窗画布）或窗口外：都算离开条/卡
+  // 指针既不在条上也不在卡上：超宽限就收
   pointerInside = false;
   cardHovered = false;
   if (pointerOutsideSince === 0) pointerOutsideSince = performance.now();
-  // 卡片重建/异步测量时可能短暂取不到 rect，多给 400ms 宽限
-  const grace = detailSource && !card ? 650 : 220;
+  // 卡片还没落位（刚 open、窗口尺寸在途）：多给一段宽限，别把刚开的卡收掉
+  const grace = detailSource && !state.card ? 650 : 220;
   if (performance.now() - pointerOutsideSince < grace) return;
   pointerOutsideSince = 0;
   if (detailSource) {
@@ -1319,9 +1173,22 @@ async function checkPointer(): Promise<void> {
     return;
   }
   if (dockOpen) closeDock(0);
-  // 收起动画进行中：缩窗交给 hidePop 的计时器（立刻缩会把退出动画裁掉）
-  if (expanded && !hideTimer) void setPopover(false);
-  if (!detailSource && !rootEl.classList.contains("hud-open")) stopPointerWatch();
+  if (!rootEl.classList.contains("hud-open")) stopPointerWatch();
+}
+
+/** 光标（物理 px）是否落在卡片矩形内（2px 容差，圆角/边框不误判） */
+function cardContains(
+  card: HudCardRect | null,
+  px: number,
+  py: number
+): boolean {
+  if (!card || !(card.w > 0) || !(card.h > 0)) return false;
+  return (
+    px >= card.x - 2 &&
+    px <= card.x + card.w + 2 &&
+    py >= card.y - 2 &&
+    py <= card.y + card.h + 2
+  );
 }
 
 function ensurePointerWatch(): void {
@@ -1398,41 +1265,11 @@ async function ensureDockOpen(): Promise<void> {
   if (wait > 0) await delay(wait);
 }
 
-/** 取消仍在进行的收起动画（新卡要进来时调用：否则旧计时器到点后会把
- *  新卡一起清掉并缩窗） */
-function cancelHide(): void {
-  if (hideTimer) {
-    clearTimeout(hideTimer);
-    hideTimer = null;
-  }
-}
-
-/** 收起弹出层：卡片先按抽屉方向推回条里（0.14s），动画播完再清节点、
- *  缩窗——先缩窗会把卡片瞬间裁掉，看不到退出动画。期间 .leaving 关闭
- *  pointer-events，避免残影挡住鼠标或被指针守护误判成"还在卡上" */
-function hidePop(): void {
-  if (hideTimer) return; // 已在收起动画中
-  const card = popEl.querySelector<HTMLElement>(".hud-card");
-  if (!card || !popEl.classList.contains("open")) {
-    popEl.classList.remove("open");
-    popEl.innerHTML = "";
-    void setPopover(false);
-    return;
-  }
-  card.classList.add("leaving");
-  hideTimer = setTimeout(() => {
-    hideTimer = null;
-    popEl.innerHTML = "";
-    popEl.classList.remove("open");
-    void setPopover(false);
-  }, 150);
-}
-
 /** 详情卡：品牌头（套餐/健康态）+ 逐窗口额度行 + 24h Token 直方图 +
- *  底栏（窗口数/刷新说明 + 打开主窗口）。
- *  悬浮条目即打开（同源重复 pointerover 只重定位、不重建）；force 供
- *  数据刷新时强制换内容。先等抽屉展开、再等 Rust 扩窗落地（含视口尺寸
- *  到位），最后才在隐藏态测量、收敛后露出并入场。 */
+ *  底栏（窗口数/刷新说明 + 打开主窗口）。卡片本体在**独立窗口**里渲染
+ *  （见 Rust hud_bar.rs 的建窗注释）：本函数只负责等抽屉展开、把 hover
+ *  条目中心的物理坐标交给 Rust，摆位与入场由 Rust + 卡片窗自己完成。
+ *  force 供数据刷新时重开一次（卡片页按新数据重渲染、不重放入场动画）。 */
 async function showDetailCard(
   source: string,
   item: HTMLElement,
@@ -1440,17 +1277,14 @@ async function showDetailCard(
 ): Promise<void> {
   clearCardCloseTimer();
   ensurePointerWatch();
-  cancelHide();
   const seq = ++showSeq;
-  const existing = popEl.querySelector<HTMLElement>(".hud-card:not(.leaving)");
-  if (!force && detailSource === source && existing) {
-    placeCard(existing, item);
-    return;
+  // 数据刷新（同一 Agent 重开）：内容变、位置不变，不重放抽屉动画
+  const refreshing = detailSource === source;
+  if (!force && refreshing && lastMount && lastMount.source === source) {
+    // 同一条目重复 hover（条目内部子元素切换）：刚开过的卡直接复用，
+    // 不重发 open（重发会让卡片页重建 DOM，看起来就是"卡片又闪一下"）
+    if (performance.now() - lastMount.at < 600) return;
   }
-  // 数据刷新（同一 Agent 重建卡）：内容变、位置不变，不重放抽屉动画
-  const refreshing = existing !== null && detailSource === source;
-  const card = buildDetailCard(source);
-  if (!card) return;
   detailSource = source;
   // 条目高亮标明详情归属（closeDetail / 重建时移除）
   stripEl
@@ -1458,33 +1292,52 @@ async function showDetailCard(
     .forEach((el) => el.classList.remove("active"));
   item.classList.add("active");
   await ensureDockOpen();
-  // 等待动画/扩窗期间被收起或切到别的条目：本次流程作废
+  // 等抽屉动画期间被收起或切到别的条目：本次流程作废
   if (seq !== showSeq || detailSource !== source) return;
-  await setPopover(true);
+  // 条目中心 → 物理屏幕坐标（Rust 侧几何全用物理 px）
+  const rect = item.getBoundingClientRect();
+  let st: HudBarPointerState;
+  try {
+    st = await invoke<HudBarPointerState>("hud_bar_pointer_state");
+  } catch {
+    return;
+  }
   if (seq !== showSeq || detailSource !== source) return;
-  popEl.innerHTML = "";
-  // 刚入场过的同源卡重建（数据刷新/扩窗重试）：不重放推入动画
+  const scale = Number.isFinite(st.scale) && st.scale > 0 ? st.scale : 1;
+  const centerX = st.windowX + (rect.left + rect.width / 2) * scale;
+  const centerY = st.windowY + (rect.top + rect.height / 2) * scale;
   const recent =
     lastMount !== null &&
     lastMount.source === source &&
     performance.now() - lastMount.at < 600;
-  await mountCard(card, item, !refreshing && !recent);
+  try {
+    await invoke("hud_card_open", {
+      source,
+      centerX,
+      centerY,
+      animate: !refreshing && !recent,
+    });
+  } catch {
+    /* 静默：卡片窗口预热失败时下一次 hover 重试 */
+    return;
+  }
   if (seq === showSeq && detailSource === source) {
     lastMount = { source, at: performance.now() };
   }
 }
 
 function closeDetail(): void {
+  const had = detailSource !== null;
   clearCardCloseTimer();
   clearHoverSwitchTimer();
   hoverPending = null;
-  showSeq++; // 作废仍在等待动画/扩窗的打开流程
+  showSeq++; // 作废仍在等待抽屉动画的打开流程
   cardHovered = false;
   detailSource = null;
   stripEl
     .querySelectorAll(".hud-item.active")
     .forEach((el) => el.classList.remove("active"));
-  hidePop();
+  if (had) void invoke("hud_card_close", { animate: true }).catch(() => {});
   closeDock(120);
 }
 
@@ -1495,7 +1348,7 @@ function hitItem(e: Event): HTMLElement | null {
 }
 
 // ---- 阈值拖拽（.hud-item 不带 drag-region 属性，手动接管）----
-// 越过 4px 即接管为**自定义拖拽**：先把抽屉/详情卡/扩窗画布全部收掉
+// 越过 4px 即接管为**自定义拖拽**：先把抽屉/详情卡全部收掉
 // （拖的是 118×条长 的收缩窗，不是整块透明画布），再由前端每帧把指针的
 // 逻辑屏幕坐标发给 Rust（hud_bar_drag_move），由 drag_geometry 决定跟手
 // 还是吸附到左/右/顶并切换横竖排——这就是"拖到边缘自动变形"。
@@ -1520,9 +1373,9 @@ function collapseForDrag(): void {
   stripEl
     .querySelectorAll(".hud-item.active")
     .forEach((el) => el.classList.remove("active"));
-  cancelHide();
-  popEl.classList.remove("open");
-  popEl.innerHTML = "";
+  // 卡片是独立窗口：拖拽前必须先收掉（拖动中窗口跟着指针跑，卡片留在原地
+  // 会变成一张飘在桌面上的孤儿卡）
+  void invoke("hud_card_close", { animate: false }).catch(() => {});
   rootEl.classList.remove("hud-open");
   dockOpenedAt = 0;
 }
@@ -1539,8 +1392,8 @@ function applyDragState(st: HudDragState): void {
   renderItems();
 }
 
-/** 拖拽开始：先缩回画布（等 Rust 真正把窗口改回条尺寸），再交给 Rust
- *  按系统光标驱动。指针位置不再从前端事件取——跨屏时各屏缩放比不同，
+/** 拖拽开始：直接交给 Rust 按系统光标驱动（条窗口本身就是收缩尺寸，不再
+ *  需要"先缩回画布"）。指针位置不再从前端事件取——跨屏时各屏缩放比不同，
  *  只有 GetCursorPos 是全局一致的；前端只负责"开始/结束"两个时机。 */
 async function beginDrag(): Promise<void> {
   dragging = true;
@@ -1548,7 +1401,6 @@ async function beginDrag(): Promise<void> {
   suppressClick = true;
   collapseForDrag();
   try {
-    await setPopover(false);
     const st = await invoke<HudDragState>("hud_bar_drag_begin");
     // 松手发生在 begin 落地之前（快速拖一下又放开）：立刻结束会话，
     // 否则 Rust 侧 DRAGGING 会一直挂着、后续吸附全被挡掉
@@ -1671,7 +1523,7 @@ stripEl.addEventListener("pointerover", (e) => {
   // 数字）之间移动会连续派发 pointerover，重排计时器会让卡迟迟不出现，
   // 重挂节点则会重放入场动画——这是"同一图标内移动时闪动"的根因。
   // 注意这里**不看卡是否已挂载**：showDetailCard 先置 detailSource 再
-  // await 抽屉/扩窗，期间卡还不存在；若此时重排计时器，每次移动都会
+  // await 抽屉动画，期间卡还不存在；若此时重排计时器，每次移动都会
   // 用新流程作废旧流程，卡会被无限推迟。
   if (detailSource === source) return;
   if (hoverPending === source) return;
@@ -1701,18 +1553,6 @@ stripEl.addEventListener("pointerleave", () => {
   scheduleCardClose(260);
   closeDock();
 });
-popEl.addEventListener("pointerover", () => {
-  cardHovered = true;
-  clearCardCloseTimer();
-  clearCollapseTimer();
-});
-popEl.addEventListener("pointerout", (e) => {
-  const to = e.relatedTarget as Node | null;
-  if (to && popEl.contains(to)) return; // 卡片内部子元素之间移动
-  cardHovered = false;
-  if (to && stripEl.contains(to)) return; // 回到条上：由 pointerover 接管
-  scheduleCardClose(220);
-});
 // 点击条目与卡片之外的区域：收起详情卡（缩窗）
 document.addEventListener("pointerdown", (e) => {
   const t = e.target as HTMLElement;
@@ -1740,47 +1580,12 @@ setInterval(() => {
   }
 }, 3000);
 
-// 倒计时不随数据事件刷新（Rust 只在额度变化时推），本地定时重绘打开的
-// 详情卡；抽屉是否展开由 hover/详情态决定，不在这里改
-setInterval(() => {
-  if (!detailSource || cardHovered) return; // 指针在卡上时别换 DOM，防闪
-  const source = detailSource;
-  const card = buildDetailCard(source);
-  if (!card) return;
-  const item = stripEl.querySelector<HTMLElement>(
-    `.hud-item[data-source="${source}"]`
-  );
-  if (!item) return;
-  popEl.innerHTML = "";
-  // 只是刷新倒计时：不重放抽屉动画（mountCard 隐藏态量一次即露出）
-  void mountCard(card, item, false);
-}, 30_000);
-
-/** 视口变化（扩窗/缩窗落地、DPI 切换）后重锚当前卡：扩窗是 OS 异步完成
- *  的，resize 事件可能晚于挂载；这时卡片会停在按旧视口算出的位置。幂等
- *  重锚只改 left/top、不重放动画，位置没变时等于空操作。 */
-let replantRaf = 0;
-function replantCard(): void {
-  if (replantRaf) return;
-  replantRaf = requestAnimationFrame(() => {
-    replantRaf = 0;
-    if (!detailSource) return;
-    const card = popEl.querySelector<HTMLElement>(
-      ".hud-card:not(.leaving):not(.measuring)"
-    );
-    const item = stripEl.querySelector<HTMLElement>(
-      `.hud-item[data-source="${detailSource}"]`
-    );
-    if (card && item) placeCard(card, item);
-  });
-}
-window.addEventListener("resize", replantCard);
 
 // ============================================================
 // 主流程：语言初始化 + 事件监听（主题不跟随：恒定深色）
 // ============================================================
 
-const main = async (): Promise<void> => {
+const mainBar = async (): Promise<void> => {
   applyOrientation(orientation);
   applyEdge(barEdge);
   renderItems();
@@ -1812,20 +1617,22 @@ const main = async (): Promise<void> => {
     /* 静默：保持启动时按窗口横竖比自判的布局 */
   }
 
-  // 扩窗态同步流：Rust 侧单方面缩窗（吸附强制缩回 / 托盘关闭）后广播
-  // { open:false }——收敛本地扩窗态并收卡（详情开着也收），防失步
+  // 详情态失同步流：Rust 侧单方面收卡（吸附强制回位 / 托盘关闭）后广播
+  // { open:false }——卡片窗口已被 Rust 隐藏，这里只收敛本地状态，别回发
+  // close（两边来回乒乓会把刚开的卡立刻收掉）
   try {
     await listen<{ open: boolean }>("zbar://hud-bar-popover", (e) => {
-      if (!e.payload.open) {
-        expanded = false;
-        popoverTarget = null;
-        if (detailSource) closeDetail();
-        else hidePop();
-        if (!pointerInside) closeDock(0);
-      }
+      if (e.payload.open) return;
+      showSeq++;
+      detailSource = null;
+      cardHovered = false;
+      stripEl
+        .querySelectorAll(".hud-item.active")
+        .forEach((el) => el.classList.remove("active"));
+      if (!pointerInside) closeDock(0);
     });
   } catch {
-    /* 静默：失去同步时本地态由下一次 hover/点击的幂等 setPopover 收敛 */
+    /* 静默：失去同步时本地态由下一次 hover/点击的幂等 open 收敛 */
   }
 
   // 外观同步流：主面板语言切换后广播（重读 localStorage 对比；语言变化
@@ -1842,14 +1649,197 @@ const main = async (): Promise<void> => {
     /* 静默：保持启动时读取的语言 */
   }
 
-  // 自愈：热更新/页面重载可能发生在扩窗态（Rust 仍展开、本页记忆归零），
-  // 启动时先收敛到收缩态，避免卡片渲染在收缩窗里被裁
-  await setPopover(false);
-
-  // 首帧保障：三路数据/布局/扩窗 listen 全部注册完成后强制数据线程重推
-  // 一帧（数据线程按"内容未变"静默跳过时销毁重开/页面重载会永远空窗；
+  // 首帧保障：数据/布局两路 listen 全部注册完成后强制数据线程重推一帧
+  //（数据线程按"内容未变"静默跳过时销毁重开/页面重载会永远空窗；
   // refresh 只置标志，线程 200ms 内响应，数据已有缓存时零 HTTP）
   invoke("hud_bar_refresh").catch(() => {});
 };
 
-void main();
+// ============================================================
+// 详情卡窗口（label = hud-card，同一份 bundle 的另一种模式）
+// ============================================================
+//
+// 卡片为什么独立成窗见 Rust hud_bar.rs 的建窗注释。这里只有一条纪律：
+// **改窗口尺寸/位置的那几帧，卡片内容必须是 .measuring（不可见）**，否则
+// WebView2 会把旧内容按左上角锚定画一帧（条页当年"首次悬浮闪现移动"
+// 就是同一个机制）。所以流程固定为：挂隐藏卡 → 量尺寸 → 交给 Rust 摆窗口
+// + show → 等视口到位 → 撤 .measuring 露出并播抽屉动画。
+
+/** 卡片页当前展示的 source（null = 无卡） */
+let cardSource: string | null = null;
+/** 开卡序号：快速换卡/收起时，旧流程作废 */
+let cardSeq = 0;
+/** 退出动画的收尾计时器 */
+let cardExitTimer: ReturnType<typeof setTimeout> | null = null;
+/** 当前卡片节点（用于播退出动画） */
+let cardEl: HTMLElement | null = null;
+
+/** 等卡片窗口视口到位：Rust 摆好窗口后 innerWidth/innerHeight 才等于回执
+ *  的目标尺寸。隐藏窗口里 rAF 不跑，用 setTimeout 轮询（最多 320ms）。 */
+async function waitCardViewport(target: HudCardViewport): Promise<void> {
+  const deadline = performance.now() + 320;
+  for (;;) {
+    if (
+      Math.abs(window.innerWidth - target.width) <= 2 &&
+      Math.abs(window.innerHeight - target.height) <= 2
+    ) {
+      return;
+    }
+    if (performance.now() > deadline) return;
+    await delay(8);
+  }
+}
+
+/** 开卡（含数据刷新时的重绘）：先隐藏量尺寸，交给 Rust 摆位，再露出入场 */
+async function openCard(payload: HudCardOpenPayload): Promise<void> {
+  const seq = ++cardSeq;
+  if (cardExitTimer) {
+    clearTimeout(cardExitTimer);
+    cardExitTimer = null;
+  }
+  // 抽屉方向跟着停靠边走（贴左从左推、贴右从右推、贴顶从上展开）
+  applyOrientation(payload.edge === "top" ? "horizontal" : "vertical");
+  applyEdge(payload.edge);
+  const card = buildDetailCard(payload.source);
+  if (!card) {
+    closeCard(false);
+    return;
+  }
+  const prev = cardEl;
+  const prevHeight = prev ? Math.ceil(prev.getBoundingClientRect().height) : -1;
+  card.classList.add(drawerClass());
+  if (!payload.animate) card.classList.add("no-anim");
+  card.classList.add("measuring");
+  card.style.left = `${CARD_PAD}px`;
+  card.style.top = `${CARD_PAD}px`;
+  popEl.classList.add("open");
+  popEl.appendChild(card);
+  const box = card.getBoundingClientRect();
+  const width = Math.ceil(box.width) || 304;
+  const height = Math.ceil(box.height);
+  const sameSource = cardSource === payload.source;
+  cardEl = card;
+  cardSource = payload.source;
+  // 尺寸没变（同源重绘、倒计时刷新）：直接换 DOM，不动窗口也就不会有一帧
+  // 半透明的"卡片消失再出现"
+  if (prev && prev !== card && sameSource && prevHeight === height) {
+    prev.remove();
+    card.classList.remove("measuring");
+    return;
+  }
+  // 尺寸变了（换 Agent / 行数变化）：旧卡一起藏起来，等窗口按新尺寸摆好
+  // 再露出——窗口改尺寸那一帧的内容必须是不可见的（见文件末尾说明）
+  if (prev && prev !== card) prev.classList.add("measuring");
+  if (prev && prev !== card) prev.remove();
+  let target: HudCardViewport;
+  try {
+    target = await invoke<HudCardViewport>("hud_card_measure", {
+      width,
+      height,
+    });
+  } catch {
+    return;
+  }
+  if (seq !== cardSeq) return; // 期间被收起或换了卡
+  await waitCardViewport(target);
+  if (seq !== cardSeq) return;
+  card.classList.remove("measuring"); // 第一帧可见即在最终位置
+}
+
+/** 收卡：播完退出动画再让 Rust 真正隐藏窗口（窗口尺寸保持不变） */
+function closeCard(animate: boolean): void {
+  cardSeq++;
+  const card = cardEl;
+  cardEl = null;
+  cardSource = null;
+  const finish = (): void => {
+    popEl.innerHTML = "";
+    popEl.classList.remove("open");
+    void invoke("hud_card_hide").catch(() => {});
+  };
+  if (!card || !animate) {
+    finish();
+    return;
+  }
+  card.classList.add("leaving");
+  cardExitTimer = setTimeout(() => {
+    cardExitTimer = null;
+    finish();
+  }, 150);
+}
+
+/** 卡片窗口冷启动兜底：确保窗口此刻是隐藏态（Rust 建窗即 visible(false)，
+ *  这里只是热重载后自愈） */
+const mainCard = async (): Promise<void> => {
+  document.documentElement.dataset.mode = "card";
+  try {
+    await listen<HudBarUsage>("zbar://hud-bar-usage", (e) => {
+      usage = e.payload;
+      // 卡开着就按新数据重绘（不重放入场动画）
+      if (cardSource) {
+        void openCard({ source: cardSource, edge: barEdge, animate: false });
+      }
+    });
+  } catch {
+    /* 静默：保持空态 */
+  }
+  try {
+    await listen<HudCardOpenPayload>(CARD_OPEN_EVENT, (e) => {
+      void openCard(e.payload);
+    });
+  } catch {
+    /* 静默：条侧 open 失败会由下一次 hover 重试 */
+  }
+  try {
+    await listen<{ animate?: boolean }>(CARD_CLOSE_EVENT, (e) => {
+      closeCard(e.payload?.animate !== false);
+    });
+  } catch {
+    /* 静默 */
+  }
+  try {
+    await listen(APPEARANCE_CHANGED_EVENT, () => {
+      const next = detectMsg();
+      if (next !== msg) {
+        msg = next;
+        if (cardSource) {
+          void openCard({ source: cardSource, edge: barEdge, animate: false });
+        }
+      }
+    });
+  } catch {
+    /* 静默 */
+  }
+  // 倒计时/剩余时间不随数据事件刷新：卡开着时定时重绘（同旧版 30s 节拍）
+  setInterval(() => {
+    if (cardSource) {
+      void openCard({ source: cardSource, edge: barEdge, animate: false });
+    }
+  }, 30_000);
+  invoke("hud_bar_refresh").catch(() => {});
+  void invoke("hud_card_hide").catch(() => {});
+};
+
+if (CARD_MODE) {
+  void mainCard();
+} else {
+  void mainBar();
+}
+
+// 开发态状态快照：逐帧验证脚本（.preview/）据此判断"到底是谁把卡收了"。
+// 生产包被 tree-shake 掉（import.meta.env.DEV 为 false）
+if (import.meta.env.DEV) {
+  (window as unknown as Record<string, unknown>).__hudDebug = () => ({
+    mode: CARD_MODE ? "card" : "bar",
+    detailSource,
+    cardSource,
+    dock: rootEl.classList.contains("hud-open"),
+    pointerInside,
+    cardHovered,
+    showSeq,
+    cardSeq,
+    lastMount,
+    usageAgents: usage?.agents.length ?? -1,
+    t: Math.round(performance.now()),
+  });
+}
