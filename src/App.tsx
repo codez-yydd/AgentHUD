@@ -15,6 +15,7 @@ import {
   hasProviderCredentials,
   remoteSourcePresence,
   saveCurrency,
+  syncAgentVisibility,
 } from "./api";
 import { startUpdateScheduler } from "./updater";
 import { useI18n } from "./i18n";
@@ -145,9 +146,17 @@ export default function App() {
     setAgentVisibility((current) => {
       const next = { ...current, [id]: visible };
       saveAgentVisibility(next);
+      // 同步 Rust 侧镜像：ZCode 注入额度线程据此只查/只显示开启的 agent
+      void syncAgentVisibility(next).catch(() => {});
       return next;
     });
   };
+
+  // 启动时把 localStorage 里的展示开关镜像到 Rust（注入额度线程/后续冷启
+  // 动读取），避免首次运行还按默认名单显示
+  useEffect(() => {
+    void syncAgentVisibility(loadAgentVisibility()).catch(() => {});
+  }, []);
 
   // ===== 凭证驱动的 provider 联动 =====
   // 1) presence 探测：启动时批量查全部探测名单（凭证驱动的新 provider +
@@ -222,7 +231,11 @@ export default function App() {
   // 3) visibility 层广播：设置页之外的写入（enableAgentByCredential）
   //    经事件通知本组件重读 localStorage，保持单一真相源。
   useEffect(() => {
-    const sync = () => setAgentVisibility(loadAgentVisibility());
+    const sync = () => {
+      const next = loadAgentVisibility();
+      setAgentVisibility(next);
+      void syncAgentVisibility(next).catch(() => {});
+    };
     window.addEventListener(AGENT_VISIBILITY_EVENT, sync);
     return () => window.removeEventListener(AGENT_VISIBILITY_EVENT, sync);
   }, []);

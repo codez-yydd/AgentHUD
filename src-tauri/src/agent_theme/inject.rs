@@ -804,9 +804,62 @@ pub const EFFECTS_JS: &str = r#"// =============================================
 /// 与 effects.js 同款：自愈、静默失败、空值防御；DOM 选择器集中在头部
 /// 常量，便于实机比对调整。
 pub const USAGE_JS: &str = r#"// ============================================================
-// ZBAR-THEME-V36
+// ZBAR-THEME-V43
 // ZBar Agent 对话页用量统计条（由 ZBar 落盘并随版本升级覆盖）
 // ============================================================
+// V43 变更（实机反馈 V42 条仍略高，再收一档；只动渲染端几何）：
+//   a) 条高 max(36px, 字号×2.6) → max(32px, 字号×2.3)，圆角 12 → 10；
+//   b) 留白带 31 → 27px，输入框再回落 4px；条底仍 −13、顶距 8px、
+//      条底离软件底部约 14px 的贴底关系不变。
+// V42 变更（实机反馈 V41 条偏高、条底离软件底部约 37px 太空，输入框被
+//   留白带顶得偏高；只动渲染端几何）：
+//   a) 条高 max(46px, 字号×3.2) → max(36px, 字号×2.6)，圆角 14 → 12；
+//   b) 条底 bottom 10 → −13（伸到 region 下缘之外 13px），条顶距输入框
+//      卡片下缘 8px；留白带高 = 条高 + 8 − 13 = 31px（14px 字号档），
+//      输入框随之回落，条底离软件底部约 14px；
+//   c) 字段集、卡片同宽对齐、可见性窗口不变（仍为 V41 的 V36 字段）。
+// V41 变更（撤回 V40 注入条的多 Agent 订阅额度与抽屉两态——用户实机反
+//   馈：抽屉动效是给 HUD 的，ZCode 注入条仍应保持 V36 的字段；只需要
+//   调与对话框的间距、保持输入框宽度、再加一点高度）：
+//   a) 底部状态条恢复原字段集：速度 / 本轮 / 会话 / 工具 / 今日 /
+//      额度 5h / 每周 / 缓存，不再加载 usage-agents.js，也不再渲染
+//      Codex/OpenCode Go/Cursor 等分段；
+//   b) 恢复按输入框卡片对齐（applyCardAlign：left=card.offsetLeft、
+//      width=card.offsetWidth），条与对话框严格同宽同起点；
+//   c) 高度提高到 max(46px, 字号×3.2)，上下留白带 = 实测条高 + 2×10，
+//      条与卡片底边/输入区底边各留 10px；
+//   d) 留白带仍只在条可见时生效（data-zbar-usage-quota-band），关闭开
+//      关/空会话不再给输入区垫底；COMPOSER_PAD_BOTTOM_PX 66 兜底。
+// V37 变更（底部额度行降行高 + 与输入框卡片/状态栏双侧恒定间隔 +
+//   卡片对齐修复——实机用户反馈：额度行高度偏高、与输入框卡片贴得太
+//   近要"间隔一点点"，复检确认要上下双侧都有间隔。仅渲染端改动，数
+//   据契约与 V36 完全一致）：
+//   a) 废弃负偏移挂卡片下边缘外侧方案（单边加大与卡片间距、下方几乎
+//      贴死状态栏，方向不对），改预留留白带——照会话条用 padding-top
+//      预留空间的同款模式，ensureStyle 给 .chat-composer-region 追加
+//      padding-bottom:var(--zbar-usage-pad-bottom,24px)（新常量
+//      COMPOSER_PAD_BOTTOM_PX = 24，仅作 CSS 兜底）；
+//   b) 留白带高度改动态实测（V37 初版静态预算实机失衡：假设行高 16px
+//      实测约 26px——含胶囊背景条/边框/分段纵向 padding，行顶被顶出
+//      24px 带外与输入框卡片贴死重叠、带下却空置，上下间隔 1:15）：
+//      行渲染后 syncQuotaBand 实测 bar.offsetHeight，带高 = 行高 +
+//      2×QUOTA_BAR_GAP_PX（=5，行 bottom 同值）经 --zbar-usage-pad-
+//      bottom 行内变量写入（setRegionPadBottom 照 setRegionPad 惯例：
+//      region 迁移还原旧 region、不高于基数回落 CSS 兜底；行隐藏/空
+//      会话保留最近一次写入值不新增移除路径；region 缺失 fixed 兜底
+//      路径不施加）——任何行高下上下间隔恒定 5px；
+//   c) 额度行行高 line-height 1.4 → 1.25（行盒收窄）；
+//   d) 胶囊纵向 padding 同步收紧：.zbar-usage-qb-line 1px 2px →
+//      0 2px、.zbar-usage-qseg 2px 6px → 1px 5px（字号与配色不动）；
+//   e) 卡片对齐修复（实机复检：底部条深灰背景横贯全屏、卡片左缘缩进
+//      约 48px 未对齐——V35"region 直接子元素首中即用"在卡片非直接
+//      子元素/前面有满宽兄弟元素两类结构下取到满宽容器）：
+//      locateComposerCard 增语义锚点路径（region 内 textarea/
+//      [contenteditable] 向上取最外层非满宽可见祖先，通用 HTML 语义
+//      非 ZCode 类名），V35 直接子元素扫描保留为兜底；applyCardAlign
+//      改 getBoundingClientRect 相对换算（锚点可命中深层元素，
+//      offsetLeft 不再与 region 内 absolute 同坐标系），卡片水平越界
+//      时返回 false 回退现状。
 // V36 变更（浅色主题文字可读性——用户实测反馈：ZCode 浅色主题白底
 //   下注入统计条文字太淡看不清。仅渲染端样式改动，数据契约与 V35 完
 //   全一致；深色主题渲染零变化——新增规则全部带 html:not(.dark) 前缀
@@ -1556,6 +1609,17 @@ pub const USAGE_JS: &str = r#"// ===============================================
   var COMPOSER_PAD_TOP_PX = 26; /* 输入区容器顶部留白基数（px）：ensureStyle
     的 padding-top 为 var(--zbar-usage-pad-top,26px) !important（CSS 内无法
     引用 JS 变量，故基数写死在兜底值里），调整须同步本常量与 CSS 兜底 */
+  var COMPOSER_PAD_BOTTOM_PX = 27; /* 输入区容器底部留白带兜底（px，V43）：
+    仅作 CSS 静态兜底（页面首帧/行内变量写入失败时的落点，约等于 14px 字
+    号档条高 32 + 顶部 8 − 条底外扩 13）；运行期由 setRegionPadBottom 按
+    「实测条高 + QUOTA_BAR_GAP_PX + QUOTA_BAR_BOTTOM_PX」经
+    --zbar-usage-pad-bottom 行内变量覆盖（照 --zbar-usage-pad-top 同款
+    模式），调整须同步本常量与 CSS 兜底 */
+  var VAR_PAD_BOTTOM = "--zbar-usage-pad-bottom"; /* 输入区容器底部留白带
+    变量（V37）：由 setRegionPadBottom 按实测条高动态写入；V40 起只在条
+    可见时随 ATTR_QUOTA_BAND 属性生效，条移除时连同属性一起清除（不再像
+    V37 那样常驻 24px 兜底、条关闭仍给输入区垫底）；syncComposerPad 只维
+    护 --zbar-usage-pad-top，不触碰本变量 */
   var SESSION_BAR_Z = 30; /* 会话条 z-index：适度抬高，不遮挡弹层 */
   var VAR_SESSION_BAR = "--zbar-usage-session-bar"; /* 开关变量（variables.css 渲染 1/0） */
   var VAR_TURN_BAR = "--zbar-usage-turn-bar"; /* 每轮统计条开关变量（variables.css 渲染 1/0） */
@@ -1567,13 +1631,26 @@ pub const USAGE_JS: &str = r#"// ===============================================
   var ATTR_QUOTA_BAR = "data-zbar-usage-quota"; /* 额度行标记（防重复挂载） */
   var ATTR_QUOTA_BAR_FIXED = "data-zbar-usage-quota-fixed"; /* 额度行兜底
     定位标记：region 缺失退回 fixed 时打上，样式表据此把 absolute 切换
-    为 fixed 贴底右侧；迁回 region 时移除自动还原（同会话条
+    为 fixed 贴底居中；迁回 region 时移除自动还原（同会话条
     ATTR_SESSION_BAR_FIXED 模式） */
-  var QUOTA_BAR_BOTTOM_PX = -20; /* 额度行 bottom 负偏移（px）：absolute
-    定位到输入卡片下边缘外侧（负值 = 容器底边之下），紧贴卡片不遮内
-    容、不占布局空间；V29 由 -14 微调——字号升回基准后行盒更高，加深
-    偏移并把行高压缩到 1.4；V30 再由 -16 加深至 -20（行尾新增「缓存」
-    段后行内容更宽，保持贴卡观感且不超窗口底边）；实机可调 */
+  var ATTR_QUOTA_BAND = "data-zbar-usage-quota-band"; /* 输入区底部留白带
+    生效标记（V40）：打在 .chat-composer-region 上时 CSS 才注入
+    padding-bottom（值读 VAR_PAD_BOTTOM），条不可见即移除——避免关闭
+    统计条/空会话时输入区永久多出 27px 底垫 */
+  var QUOTA_BAR_GAP_PX = 8; /* 底部状态条与输入框卡片下缘的间隔（px，
+    V42）：留白带高 = 条高 + 本值 + QUOTA_BAR_BOTTOM_PX（后者为负 =
+    条底伸到 region 下缘之外，吃掉状态栏上方的空白）——条顶距卡片恒
+    定本值；字号（10~16px）/条高变化时带高随之实测调整 */
+  var QUOTA_BAR_BOTTOM_PX = -13; /* 额度行 bottom 偏移（px，V43）：负值
+    让条底伸到 region 下缘之外 13px，贴近软件底部；V41 为 10（完全
+    在带内，条底离软件底部约 37px，实机反馈太空）。V37 初版为 4px 的静态预算方案——带
+    固定 24px + 假设行高 16px，实机行高约 26px（含背景条与 padding）远
+    超假设，行顶被顶出带外与输入框卡片贴死/重叠、带下却空置，上下间隔
+    1:15 失衡，改 syncQuotaBand 动态实测 + 恒定间隔）；V29~V36 曾为负偏
+    移方案——V29 由 -14 微调并把行高压缩到 1.4；V30 再由 -16 加深至 -20
+    （行尾新增「缓存」段后行内容更宽，保持贴卡观感且不超窗口底边）；V37
+    初版加深至 -24 应"间隔一点点"反馈，实机复检方向不对（只单边加大与
+    卡片的间距、下方几乎贴死状态栏）；实机可调 */
   var QUOTA_BAR_FALLBACK_RIGHT_PX = 18; /* region 缺失兜底 fixed 的右边距
     （与宠物默认位置边距同款） */
   var QUOTA_BAR_FALLBACK_BOTTOM_PX = 10; /* region 缺失兜底 fixed 的下边距 */
@@ -1813,11 +1890,25 @@ pub const USAGE_JS: &str = r#"// ===============================================
        * 自动跟随。V25：留白改为读 --zbar-usage-pad-top（兜底 26px），
        * renderSessionBar 在模型行显示时以行内变量把留白抬到 26 + 14×行数
        * px（模型行住进多出来的留白里），隐藏/迁移时 removeProperty 还原。
+       * V37：追加底部留白带 padding-bottom:var(--zbar-usage-pad-bottom,
+       * 24px)（基数与 COMPOSER_PAD_BOTTOM_PX 同步，照本条 padding-top 预
+       * 留空间的同款模式）——底部统计行住进带内（bottom 5px = QUOTA_BAR_
+       * GAP_PX，见 QUOTA_BAR_BOTTOM_PX），与输入框卡片、宿主状态栏上下
+       * 双侧各留间隔；V37R 起带高由 syncQuotaBand 按实测行高动态写入变
+       * 量（setRegionPadBottom），本兜底值只覆盖页面首帧/写入失败窗口，
+       * 行隐藏时保留（同顶部 26px 基数惯例，syncComposerPad 只维护
+       * --zbar-usage-pad-top）。
        * relative 通常无副作用（region 自带 z-20，设计上已是定位元素）；
        * 若 ZCode 改用其它定位方案，本 !important 规则有覆盖风险，实机
        * 回访留意 */
       ".chat-composer-region{position:relative !important;padding-top:var(" +
       VAR_PAD_TOP + "," + COMPOSER_PAD_TOP_PX + "px) !important;}" +
+      /* V40：底部留白带只在统计条实际可见时生效（属性由
+       * setRegionPadBottom 打上、removeQuotaBar/固定兜底路径清除）——
+       * 条关闭/空会话不再永久给输入区垫底 */
+      ".chat-composer-region[" + ATTR_QUOTA_BAND + "]{" +
+      "padding-bottom:var(" + VAR_PAD_BOTTOM + "," +
+      COMPOSER_PAD_BOTTOM_PX + "px) !important;}" +
       /* 会话累计条（V5）：不占消息布局。V13 定位改 absolute：住进输入
        * 区容器顶部留白（left + translateX 水平居中），不再 fixed/bottom。
        * V35：卡片命中时行内 left + transform:none 覆盖为左缘对齐输入框
@@ -1962,62 +2053,61 @@ pub const USAGE_JS: &str = r#"// ===============================================
       "[" + ATTR_SESSION_BAR + "] .zbar-usage-tps-fast{color:#34d399;}" +
       "[" + ATTR_SESSION_BAR + "] .zbar-usage-tps-mid{color:#fbbf24;}" +
       "[" + ATTR_SESSION_BAR + "] .zbar-usage-tps-slow{color:#f87171;}" +
-      /* V28 独立额度行 → V33 分段胶囊状态条：定位机制 V28 原样——
-       * absolute 挂 .chat-composer-region、bottom 负偏移
-       * （QUOTA_BAR_BOTTOM_PX）贴输入卡片下边缘外侧、right 右对齐、
-       * 不占布局空间（与输入区顶部留白几何无联动），pointer-events:
-       * none 不挡输入区交互。V29：字号基准 --zbar-usage-font-size、
-       * 行高 1.4（bottom 加深后行盒不超窗口底边）保留。V33 视觉升级：
-       * 容器只承载定位与字体，胶囊观感由 .zbar-usage-qb-line 承担
-       * （见下）。V35：卡片命中时行内 left/width/right:auto 覆盖为两
-       * 缘精确对齐输入框卡片，右对齐退为未命中回退。开关
-       * usage_quota_bar 语义升级为整条开关 */
+      /* V41：底部状态条恢复 V36 的字段集（速度 / 本轮 / 会话 / 工具 /
+       * 今日 / 额度 5h / 每周 / 缓存），不再把其它 Agent 的订阅额度
+       * 注入这里。容器按输入框卡片对齐（renderQuotaBar 里
+       * applyCardAlign 写 left/width），高度 46px，上下各留
+       * QUOTA_BAR_GAP_PX 的呼吸位。条本身不占布局空间（留白带由
+       * region 的 padding-bottom 参与），外层 pointer-events:none、
+       * 胶囊本体 auto，不挡输入区交互。字号/高度基准由
+       * --zbar-usage-font-size 控制 */
       "[" + ATTR_QUOTA_BAR + "]{" +
-      "position:absolute;bottom:" + QUOTA_BAR_BOTTOM_PX + "px;right:0;" +
+      "position:absolute;bottom:" + QUOTA_BAR_BOTTOM_PX + "px;left:0;right:0;" +
       "z-index:" + SESSION_BAR_Z + ";" +
       "max-width:100%;" +
       "font-family:var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);" +
       "font-size:var(--zbar-usage-font-size,10px);" +
-      "font-weight:400;line-height:1.4;" +
-      "letter-spacing:.02em;color:inherit;" +
+      "font-weight:400;line-height:1.2;" +
+      "letter-spacing:.015em;color:inherit;" +
       "font-variant-numeric:tabular-nums;" +
       "user-select:none;-webkit-user-select:none;" +
       "pointer-events:none;}" +
-      /* V33 胶囊本体：玻璃拟态——背景/边框消费客户端语义变量（随 .dark
-       * 翻转，缺失回退半透明深底）、backdrop blur(14px)+saturate(1.3)
-       * 带前缀、内高光+双层投影、圆角 10px；flex nowrap + overflow
-       * hidden + 右缘 mask 线性渐隐兜底（内容超 region 宽被截断时右缘
-       * 溶解示意；渐隐尾值 0.45 非全透明，未截断时仅轻微压暗末段右缘
-       * 空白，不产生可感知的破相）。行透明沿用 --zbar-usage-opacity
-       * （随热重载即时生效，模板内仅保留兜底值） */
+      /* V41 胶囊本体：占满容器（容器已与输入框卡片同宽），固定
+       * max(46px, 字号×3.2) 高；完整分段居中排布，超宽由
+       * fitQuotaSegments 按优先级隐藏 */
       "[" + ATTR_QUOTA_BAR + "] .zbar-usage-qb-line{" +
-      "display:flex;align-items:stretch;white-space:nowrap;overflow:hidden;" +
-      "padding:1px 2px;" +
-      "background:var(--color-card, rgba(28,30,36,.72));" +
+      "position:relative;display:flex;align-items:center;justify-content:center;" +
+      "box-sizing:border-box;width:100%;max-width:100%;" +
+      "height:max(32px, calc(var(--zbar-usage-font-size,10px) * 2.3));" +
+      "padding:0 calc(var(--zbar-usage-font-size,10px) * .9);" +
+      "white-space:nowrap;overflow:hidden;pointer-events:auto;" +
+      "background:var(--color-card, rgba(28,30,36,.92));" +
       "border:1px solid var(--color-border, rgba(127,127,127,.22));" +
       "border-radius:10px;" +
-      "box-shadow:inset 0 1px 0 rgba(255,255,255,.05), 0 4px 14px rgba(0,0,0,.28), 0 1px 3px rgba(0,0,0,.2);" +
-      "-webkit-backdrop-filter:blur(14px) saturate(1.3);backdrop-filter:blur(14px) saturate(1.3);" +
-      "-webkit-mask-image:linear-gradient(90deg,#000 calc(100% - 16px),rgba(0,0,0,.45));" +
-      "mask-image:linear-gradient(90deg,#000 calc(100% - 16px),rgba(0,0,0,.45));" +
+      "box-shadow:inset 0 1px 0 rgba(255,255,255,.05), 0 8px 22px rgba(0,0,0,.26), 0 1px 3px rgba(0,0,0,.18);" +
+      "-webkit-backdrop-filter:blur(12px) saturate(1.2);backdrop-filter:blur(12px) saturate(1.2);" +
       "opacity:var(--zbar-usage-opacity,.55);}" +
-      /* V33 分段：弹性盒项；容器 pointer-events:none、分段 auto——只有
+      /* 完整分段容器：flex:none 保证内容不被压扁，超宽由
+       * fitQuotaSegments 按优先级隐藏 */
+      "[" + ATTR_QUOTA_BAR + "] .zbar-usage-qfull{" +
+      "display:flex;align-items:center;flex:none;" +
+      "gap:calc(var(--zbar-usage-font-size,10px) * .55);" +
+      "white-space:nowrap;pointer-events:auto;}" +
+      /* V41 分段：弹性盒项；容器 pointer-events:none、分段 auto——只有
        * 分段本身捕获指针出 title/悬停，不挡输入区交互（同模型行语义）。
-       * V34：段内水平 padding 9px → 6px、段内 parts 间距改 flex gap 3px
-       * 承担（图标-文字与数值-次级信息统一，文本不再携带语义间距空
-       * 格），收窄降宽降低溢出触发频率；发丝分隔线 = 相邻兄弟
-       * ::before（1px 客户端边框变量、高度约条高 55%、两侧 6px 呼吸由
-       * 分段内边距提供），分段整段省略时相邻选择器自动无残留；悬停极
-       * 轻高亮（currentColor 6% 混色，不支持 color-mix 的内核回退中性
-       * 灰，双层声明兜底） */
+       * 段内水平 padding/间距/图标尺寸随字号缩放，发丝分隔线 = 相邻
+       * 兄弟 ::before，分段整段省略时相邻选择器自动无残留；悬停极轻
+       * 高亮 */
       "[" + ATTR_QUOTA_BAR + "] .zbar-usage-qseg{" +
-      "position:relative;display:flex;align-items:center;gap:3px;white-space:nowrap;" +
-      "padding:2px 6px;pointer-events:auto;cursor:default;border-radius:7px;}" +
+      "position:relative;display:flex;align-items:center;flex:none;" +
+      "gap:calc(var(--zbar-usage-font-size,10px) * .34);white-space:nowrap;" +
+      "padding:0 calc(var(--zbar-usage-font-size,10px) * .36);" +
+      "pointer-events:auto;cursor:default;border-radius:8px;}" +
       /* V34 溢出适配隐藏态（fitQuotaSegments 按 data-prio 升序整段隐
        * 藏/贪心恢复；DOM 常驻，恢复零重建） */
       "[" + ATTR_QUOTA_BAR + "] .zbar-usage-qseg-off{display:none;}" +
       "[" + ATTR_QUOTA_BAR + "] .zbar-usage-qseg + .zbar-usage-qseg::before{" +
-      "content:\"\";position:absolute;left:0;top:22%;bottom:22%;width:1px;" +
+      "content:\"\";position:absolute;left:0;top:20%;bottom:20%;width:1px;" +
       "background:var(--color-border, rgba(127,127,127,.22));}" +
       "[" + ATTR_QUOTA_BAR + "] .zbar-usage-qseg:hover{" +
       "background:rgba(127,127,127,.07);" +
@@ -2026,37 +2116,34 @@ pub const USAGE_JS: &str = r#"// ===============================================
        * 签/单位弱色（qdim = 客户端 --color-foreground-subtle 兜底灰）、
        * 次要信息更弱一档（qfaint = 同弱色 + 0.72 透明，重置倒计时）。
        * 额度段三档变色挂在分段 span 上——主数值部分继承变色，倒计时
-       * 子 span 由 qfaint 显式回灰，阈变色仍只属于剩余百分比（V31 界
-       * 线不变） */
+       * 子 span 由 qfaint 显式回灰，阈变色仍只属于剩余百分比 */
       "[" + ATTR_QUOTA_BAR + "] .zbar-usage-qval{font-weight:600;}" +
       "[" + ATTR_QUOTA_BAR + "] .zbar-usage-qdim{color:var(--color-foreground-subtle, rgba(120,130,145,.95));}" +
       "[" + ATTR_QUOTA_BAR + "] .zbar-usage-qfaint{color:var(--color-foreground-subtle, rgba(120,130,145,.95));opacity:.72;}" +
-      /* V33 分段行内 SVG 图标（createElementNS 构建，stroke 随
-       * currentColor 不单独上色；尺寸 = 字号 × 1.4，默认 14px 随字号缩
-       * 放；fill none + round cap/join + 线宽 1.7）。V34：与文字间距由
-       * 段容器 flex gap 统一承担，删除 margin-right */
+      /* 分段行内 SVG 图标（createElementNS 构建，stroke 随 currentColor
+       * 不单独上色；尺寸 = 字号 × 1.2；fill none + round cap/join + 线宽
+       * 1.7）；与文字间距由段容器 flex gap 统一承担 */
       "[" + ATTR_QUOTA_BAR + "] .zbar-usage-qico{" +
-      "width:calc(var(--zbar-usage-font-size,10px) * 1.4);" +
-      "height:calc(var(--zbar-usage-font-size,10px) * 1.4);" +
+      "width:calc(var(--zbar-usage-font-size,10px) * 1.2);" +
+      "height:calc(var(--zbar-usage-font-size,10px) * 1.2);" +
       "flex:none;fill:none;stroke:currentColor;stroke-width:1.7;" +
       "stroke-linecap:round;stroke-linejoin:round;opacity:.9;}" +
-      /* V33 子代理呼吸蓝点（2px，轻量 opacity 脉动；动画禁用偏好下静
-       * 态常亮，不做位移动画） */
+      /* 子代理呼吸蓝点（2px，轻量 opacity 脉动；动画禁用偏好下静态常亮） */
       "[" + ATTR_QUOTA_BAR + "] .zbar-usage-qdot{" +
       "width:2px;height:2px;border-radius:50%;background:#60a5fa;margin-left:4px;" +
       "flex:none;animation:zbarUsagePulse 2s ease-in-out infinite;}" +
       "@keyframes zbarUsagePulse{0%,100%{opacity:.25;}50%{opacity:1;}}" +
       "@media (prefers-reduced-motion: reduce){" +
       "[" + ATTR_QUOTA_BAR + "] .zbar-usage-qdot{animation:none;opacity:.85;}}" +
-      /* V33 速度段三档色（与模型行/每轮条同阈值同色系） */
+      /* 速度段三档色（与模型行/每轮条同阈值同色系） */
       "[" + ATTR_QUOTA_BAR + "] .zbar-usage-tps-fast{color:#34d399;}" +
       "[" + ATTR_QUOTA_BAR + "] .zbar-usage-tps-mid{color:#fbbf24;}" +
       "[" + ATTR_QUOTA_BAR + "] .zbar-usage-tps-slow{color:#f87171;}" +
-      /* V28 兜底：region 缺失时挂 body 并打上标记，退回 fixed 贴底右
-       * 侧（边距见 QUOTA_BAR_FALLBACK_* 常量，迁回 region 自动还原） */
+      /* V28 兜底：region 缺失时挂 body 并打上标记，退回 fixed 贴底；V41
+       * 起整条占满视口宽度（正常路径由 applyCardAlign 对齐输入框卡片） */
       "[" + ATTR_QUOTA_BAR + "][" + ATTR_QUOTA_BAR_FIXED + "]{" +
-      "position:fixed;top:auto;right:" + QUOTA_BAR_FALLBACK_RIGHT_PX +
-      "px;bottom:" + QUOTA_BAR_FALLBACK_BOTTOM_PX + "px;}" +
+      "position:fixed;top:auto;left:0;right:0;transform:none;" +
+      "bottom:" + QUOTA_BAR_FALLBACK_BOTTOM_PX + "px;}" +
       /* V29 起额度三档配色（充足继承行色灰白、<30 黄、<10 红）；V33 起
        * 类挂在分段 span 上（倒计时子 span 经 qfaint 显式回灰，见上） */
       "[" + ATTR_QUOTA_BAR + "] .zbar-usage-quota-mid{color:#fbbf24;}" +
@@ -2998,7 +3085,12 @@ pub const USAGE_JS: &str = r#"// ===============================================
    * 三层注入清干净后调用。region 归属：会话条挂载的 region 优先（会
    * 条是留白的原始宿主，模型行挂载时也跟随它），会话条不在 region 时
    * 用模型底板挂载的 region；两者都不在 region（含兜底 fixed 路径）
-   * 时不施加变量，旧 region 的变量经 setRegionPad 迁移逻辑还原 */
+   * 时不施加变量，旧 region 的变量经 setRegionPad 迁移逻辑还原。
+   * V37 起底部留白带（--zbar-usage-pad-bottom）由 setRegionPadBottom
+   * 独立维护（syncQuotaBand 实测行高后写入，照本函数/setRegionPad 同款
+   * 惯例）——本函数与 setRegionPad 仍只维护 --zbar-usage-pad-top 变量
+   * （region.style.setProperty/removeProperty），不整体重写
+   * style.padding，不触碰 padding-bottom */
   function syncComposerPad() {
     var sessIn =
       sessionBarEnabled() &&
@@ -3066,6 +3158,60 @@ pub const USAGE_JS: &str = r#"// ===============================================
     }
   }
 
+  /* V40 底部留白带写入：只有统计条实际可见时才给 region 打属性 + 写变
+   * 量（CSS 选择器 .chat-composer-region[data-zbar-usage-quota-band] 才注
+   * 入 padding-bottom）；注入层迁移 region 时旧 region 的属性/变量必须
+   * 一起清——否则旧输入区永久多出一截底垫。条移除/开关关闭/空会话时由
+   * clearQuotaBand 显式清除，不再保留"最近一次写入值"（V37 的常驻兜底
+   * 会让关闭状态也垫 24px）。与 setRegionPad 相互独立（顶部/底部各一个
+   * 变量、各自记忆 region，同一 region 上互不干扰） */
+  var paddedBottomRegion = null; /* 已施加底部留白带的 region（迁移时还原） */
+  function setRegionPadBottom(region, px) {
+    if (paddedBottomRegion && paddedBottomRegion !== region) {
+      try {
+        paddedBottomRegion.style.removeProperty(VAR_PAD_BOTTOM);
+        paddedBottomRegion.removeAttribute(ATTR_QUOTA_BAND);
+      } catch (e) {}
+      paddedBottomRegion = null;
+    }
+    if (!region) return;
+    try {
+      /* 属性先于变量写入：同一拍内浏览器只做一次样式计算，不会先按兜底
+       * 27px 垫一下再改为实测值 */
+      region.setAttribute(ATTR_QUOTA_BAND, "");
+      region.style.setProperty(VAR_PAD_BOTTOM, px + "px");
+      paddedBottomRegion = region;
+    } catch (e) {
+      /* 内联样式不可写时静默：属性仍在、变量缺失 → CSS 兜底 27px，条
+       * 可能被多垫一点，但不影响输入区本身可用 */
+    }
+  }
+
+  /* V40 清除底部留白带（条移除 / 固定兜底路径 / 空会话）：属性与变量
+   * 一起清，CSS 选择器不再命中，region 恢复自身 padding-bottom */
+  function clearQuotaBand() {
+    if (!paddedBottomRegion) return;
+    try {
+      paddedBottomRegion.style.removeProperty(VAR_PAD_BOTTOM);
+      paddedBottomRegion.removeAttribute(ATTR_QUOTA_BAND);
+    } catch (e) {}
+    paddedBottomRegion = null;
+  }
+
+  /* V43 底部留白带动态实测：条渲染后实测 bar.offsetHeight（条高随
+   * --zbar-usage-font-size 缩放，14px 档约 32px），带高 = 条高 +
+   * QUOTA_BAR_GAP_PX + QUOTA_BAR_BOTTOM_PX（后者为负，条底伸到 region
+   * 下缘之外贴近软件底部）——条顶距输入框卡片下缘恒定 GAP。region
+   * 缺失（fixed 兜底路径）不施加；条未挂进 region/量不到高度（0）跳
+   * 过。每渲染拍重测（字号热重载/分段增减引起的条高变化自然跟随），
+   * 写入幂等、开销可忽略（同 setRegionPad 节奏） */
+  function syncQuotaBand(bar, region) {
+    if (!region || !bar || bar.parentElement !== region) return;
+    var h = bar.offsetHeight;
+    if (!(h > 0)) return;
+    setRegionPadBottom(region, h + QUOTA_BAR_GAP_PX + QUOTA_BAR_BOTTOM_PX);
+  }
+
   function removeBar() {
     if (sessionBar && sessionBar.parentNode) {
       sessionBar.parentNode.removeChild(sessionBar);
@@ -3114,17 +3260,53 @@ pub const USAGE_JS: &str = r#"// ===============================================
 
   /* ---- V35 输入框卡片定位（注入条与输入框卡片左右缘对齐的唯一测量
    *      入口）---- 零选择器假设：不依赖 ZCode 内部类名（选择器仍只有
-   *      既有 SEL_* 常量），只按"region 直接子元素 + 几何特征 + 自家
-   *      标记排除"推断——遍历 region 直接子元素，跳过带 data-zbar-
-   *      usage-* 属性（自家注入元素：每轮条不会出现在这里，会话条/模
-   *      型行/底部条会）或绝对定位（装饰层与自家条，positioned 子元素
-   *      也不是文档流里的卡片）的元素，取第一个可见且 offsetWidth >
-   *      100 的元素视为"输入框卡片"；找不到（选择器失效/结构变更/空
-   *      region）返回 null，调用方回退各自现状（会话条居中、底部条右
-   *      对齐自然宽、模型行居中） */
+   * 既有 SEL_* 常量 + 本函数内的通用 HTML 语义锚点 textarea/
+   * [contenteditable]），只按"几何特征 + 自家标记排除"推断。
+   * V37R 双路径修订（实机复检：底部条深灰背景横贯全屏、输入框卡片左缘
+   * 缩进约 48px 未对齐——V35"region 直接子元素首中即用"在两类真实结构
+   * 下都会取错：① 输入框卡片不是 region 直接子元素（外层还有满宽的
+   * 布局行/居中列容器，首中即用取到满宽容器，条宽被写成 region 全宽）；
+   * ② 直接子元素里卡片之前还有别的满宽可见元素（建议条/工具行）。
+   * 修复：① 语义锚点优先——region 内的可编辑输入元素（textarea /
+   * contenteditable，通用 HTML 语义非 ZCode 类名，任何聊天输入框必有）
+   * 自它向上取"最外层非满宽可见祖先"为卡片/列容器（列容器与卡片同宽
+   * 同左缘——居中列、缩进列都成立；全链满宽 = 卡片铺满 region 无缩进，
+   * 对齐 region 即正确，自然落到 ② 的首中路径）；② V35 原直接子元素
+   * 扫描保留为兜底（锚点找不到时维持 V35 既有语义与现状回退） ---- */
   function locateComposerCard(region) {
     if (!region) return null;
     try {
+      /* ① 语义锚点路径：可编辑元素 → 最外层非满宽可见祖先 */
+      var editable = null;
+      try {
+        editable = region.querySelector("textarea, [contenteditable=true]");
+      } catch (e0) {}
+      if (editable) {
+        var rw = region.clientWidth;
+        var best = null;
+        var anc = editable.parentElement;
+        while (anc && anc !== region) {
+          /* 非满宽判定 rw-4 容忍盒模型取整噪声；可见 + 宽 >100 沿用
+           * V35 纪律（跳过装饰性窄元素），持续上溯取离 region 最近的一
+           * 个（外层嵌套多个同宽容器时取最外层——与卡片视觉左右缘一致 */
+          if (
+            visibleEl(anc) &&
+            anc.offsetWidth > 100 &&
+            anc.offsetWidth < rw - 4
+          ) {
+            best = anc;
+          }
+          anc = anc.parentElement;
+        }
+        if (best) return best;
+        /* 全链满宽：不返回锚点路径结果，落 ② 首个合格直接子元素（满
+         * 宽场景对齐它即对齐 region，视觉正确） */
+      }
+      /* ② V35 原路径（兜底）：遍历 region 直接子元素，跳过带
+       * data-zbar-usage-* 属性（自家注入元素：每轮条不会出现在这里，
+       * 会话条/模型行/底部条会）或绝对定位（装饰层与自家条，positioned
+       * 子元素也不是文档流里的卡片）的元素，取第一个可见且
+       * offsetWidth > 100 的元素视为"输入框卡片" */
       var kids = region.children;
       for (var i = 0; i < kids.length; i++) {
         var el = kids[i];
@@ -3137,12 +3319,12 @@ pub const USAGE_JS: &str = r#"// ===============================================
               break;
             }
           }
-        } catch (e0) {}
+        } catch (e1) {}
         if (skip) continue;
         try {
           var pos = getComputedStyle(el).position;
           if (pos === "absolute" || pos === "fixed") continue;
-        } catch (e1) {}
+        } catch (e2) {}
         if (!visibleEl(el)) continue;
         if (el.offsetWidth > 100) return el;
       }
@@ -3152,29 +3334,37 @@ pub const USAGE_JS: &str = r#"// ===============================================
     return null;
   }
 
-  /* V35 对齐写入口：卡片命中且其 offsetParent 即 region（V13 注入的
-   * relative 规则生效）时，把条的水平几何改为与卡片对齐——offsetLeft
-   * 与 region 内 absolute 的 left 同一坐标系（同为 region 的 padding
-   * edge 基准），left = card.offsetLeft 使左缘精确对齐；withWidth 时
-   * 再令 width = card.offsetWidth，右缘同步对齐（底部条行内 right:
-   * auto 显式让位样式表 right:0；模型底板 box-sizing:border-box，宽
-   * 度即底板总宽；会话条自然宽不传 width）。每渲染拍重算、值变才写
-   * style（沿用文件既有低写入纪律）。未命中（含 offsetParent 不一致
-   * 的坐标系防御）返回 false，调用方 clearCardAlign 回退现状。窗口缩
-   * 放不触发渲染拍：由下一渲染拍/15s 兜底拍自愈修正（同
-   * fitQuotaSegments 的溢出适配节奏，不做 resize 监听——V13 起既有哲
-   * 学） */
+  /* V35 对齐写入口 + V37R 坐标系修订：卡片命中时把条的水平几何改为与
+   * 卡片对齐。V35 以 offsetLeft（card.offsetParent === region 时与
+   * region 内 absolute left 同一坐标系）直接取值；V37R 锚点路径可命中
+   * region 深层元素（offsetParent 是中间定位元素而非 region，
+   * offsetLeft 不再同坐标系），改 getBoundingClientRect 相对换算——
+   * 行内 left 相对 region 的 padding box（绝对定位包含块），region 计
+   * 算边框宽（通常 0）先扣除；卡片水平范围须落在 region 内（±1px 容
+   * 差，坐标系一致性防御的等价替代）。withWidth 时再令 width = 卡片
+   * 宽，右缘同步对齐（底部条行内 right:auto 显式让位样式表 right:0；
+   * 模型底板 box-sizing:border-box，宽度即底板总宽；会话条自然宽不传
+   * width）。每渲染拍重算、值变才写 style（沿用文件既有低写入纪律）。
+   * 未命中（含几何越界的坐标系防御）返回 false，调用方 clearCardAlign
+   * 回退现状。窗口缩放不触发渲染拍：由下一渲染拍/15s 兜底拍自愈修正
+   * （同 fitQuotaSegments 的溢出适配节奏，不做 resize 监听——V13 起
+   * 既有哲学） */
   function applyCardAlign(bar, region, withWidth) {
     var card = locateComposerCard(region);
-    if (!card || card.offsetParent !== region) return false;
+    if (!card) return false;
     try {
-      var l = card.offsetLeft + "px";
+      var cr = card.getBoundingClientRect();
+      var rr = region.getBoundingClientRect();
+      if (!(cr.width > 100)) return false; /* 复核宽度下限（锚点祖先已过滤，防御） */
+      if (cr.left < rr.left - 1 || cr.right > rr.right + 1) return false;
+      var bw = parseFloat(getComputedStyle(region).borderLeftWidth) || 0;
+      var l = Math.round(cr.left - rr.left - bw) + "px";
       if (bar.style.left !== l) bar.style.left = l;
       /* 会话条/模型行样式表的 left:50%+translateX(-50%) 居中须一并失
        * 效（底部条无 transform，写 none 为无害幂等） */
       if (bar.style.transform !== "none") bar.style.transform = "none";
       if (withWidth) {
-        var w = card.offsetWidth + "px";
+        var w = Math.round(cr.width) + "px";
         if (bar.style.width !== w) bar.style.width = w;
         if (bar.style.right !== "auto") bar.style.right = "auto";
       }
@@ -3577,7 +3767,7 @@ pub const USAGE_JS: &str = r#"// ===============================================
     box.setAttribute("data-zbar-usage-msig", sig);
   }
 
-  /* ---- V28/V29 独立额度行（输入框卡片底部外侧，右对齐单行小字）----
+  /* ---- V28/V29 独立额度行（region 底部留白带内，右对齐单行小字）----
    * V27 的额度段曾拼在会话条 segs 尾部；V28 移出为独立一行：额度是账
    * 号级慢变量，不随会话切换/清空变化，也不该被会话条开关连带隐藏。
    * V29 补充空会话隐藏（实机复检后从全局级升级为会话级口径）：
@@ -3592,8 +3782,11 @@ pub const USAGE_JS: &str = r#"// ===============================================
    * 复。挂载照会话条 V13
  * 模式——absolute 挂进 .chat-composer-region（复用
  * pickComposerRegion，额度无会话归属、传空 id 即取第一个可见容
- * 器），bottom 负偏移（QUOTA_BAR_BOTTOM_PX）贴输入卡片下边缘外侧，
- * 不占布局空间、不与顶部留白几何联动；region 缺失回退挂 body +
+ * 器），bottom 偏移（QUOTA_BAR_BOTTOM_PX，V37 起带内 bottom 5px =
+ * QUOTA_BAR_GAP_PX）住进 region padding-bottom 预留的留白带（带高
+ * V37R 起由 syncQuotaBand 实测行高动态写入），行本身不占布局（留白
+ * 带由 region 的 padding-bottom 参与布局）、不与顶部留白计算联动；region
+ * 缺失回退挂 body +
  * fixed 贴底右侧（标记属性切换定位，迁回自动还原，同会话条兜底模
  * 式）。渲染节拍：renderAll 主路径每拍调用——额度数据 onload 与开
  * 关热重载都直接生效，不依赖会话条渲染节奏。开关经
@@ -3612,10 +3805,12 @@ pub const USAGE_JS: &str = r#"// ===============================================
  * sessHasData/anchor 同源传入，供「速度」「本轮」分段取活动轮
  * runs 行）；额度/缓存为其中尾部两段（V32 文本与阈变色逻辑原样），
  * 开关 usage_quota_bar 语义升级为整条开关。V35：水平几何改为与输入
- * 框卡片对齐（locateComposerCard/applyCardAlign：left = card.offsetLeft、
- * width = card.offsetWidth，两缘精确对齐——右对齐自然宽的遗留左缘悬
- * 空问题），未命中回退右对齐自然宽；每渲染拍重算、值变才写 style，
- * 窗口缩放由下一渲染拍/兜底拍自愈（不做 resize 监听）---- */
+ * 框卡片对齐（locateComposerCard/applyCardAlign，两缘精确对齐——右
+ * 对齐自然宽的遗留左缘悬空问题），未命中回退右对齐自然宽；每渲染拍
+ * 重算、值变才写 style，窗口缩放由下一渲染拍/兜底拍自愈（不做
+ * resize 监听）。V37R：对齐取值改 rect 相对换算 + 锚点路径（卡片可
+ * 为 region 深层元素，见 locateComposerCard 注释），底部留白带改
+ * syncQuotaBand 动态实测（见上）---- */
   var quotaBar = null; /* 已挂载的额度行元素（跨渲染复用，幂等更新） */
   var quotaMountWarned = false; /* 挂载异常一次性告警标志（同会话条
     mountWarned 的 V14 模式：此前类问题曾被 catch 静默吞掉无从发现） */
@@ -3662,6 +3857,8 @@ pub const USAGE_JS: &str = r#"// ===============================================
       quotaBar.parentNode.removeChild(quotaBar);
     }
     quotaBar = null;
+    /* V40：条不可见 → 底部留白带一并撤掉（关闭开关/空会话不再垫底） */
+    clearQuotaBand();
   }
 
   /* ---- V33 底部状态条取值链路（数据全部来自既有全局状态，沿用既有
@@ -3973,6 +4170,10 @@ pub const USAGE_JS: &str = r#"// ===============================================
       segs[hqi].h = quotaFitHidden.indexOf(segs[hqi].prio) >= 0;
     }
     var bar = ensureQuotaBar();
+    /* V37R：挂载成功的 region 提升到外层——渲染尾部 syncQuotaBand 要
+     * 用它实测行高、写底部留白带（fixed 兜底路径 region 为 null，不施
+     * 加，见 syncQuotaBand） */
+    var quotaRegion = null;
     try {
       /* 挂载（V28 原样）：额度/今日无会话归属——pickComposerRegion 传
        * 空 id 即取第一个可见容器（多会话保活下同样成立）。region 缺失
@@ -3980,22 +4181,25 @@ pub const USAGE_JS: &str = r#"// ===============================================
        * fixed 贴底右侧 */
       var region = pickComposerRegion("");
       if (region) {
+        quotaRegion = region;
         if (bar.parentElement !== region) region.appendChild(bar);
         if (bar.hasAttribute(ATTR_QUOTA_BAR_FIXED)) {
           bar.removeAttribute(ATTR_QUOTA_BAR_FIXED);
         }
-        /* V35：胶囊条左缘/宽度精确对齐输入框卡片（右对齐自然宽的遗留
-         * 左缘悬空——实机反馈），未命中清掉行内对齐回退右对齐自然宽；
-         * 溢出优先级隐藏照常（fitQuotaSegments 按卡片宽度自然生效） */
+        /* V41：恢复按输入框卡片对齐——left = card.offsetLeft、width =
+         * card.offsetWidth，条与对话框严格同宽同起点；未命中回退整条
+         * 占满 region（left/right:0），溢出优先级隐藏照常由
+         * fitQuotaSegments 按卡片宽度处理 */
         if (!applyCardAlign(bar, region, true)) clearCardAlign(bar);
       } else {
         if (bar.parentElement !== document.body) {
           document.body.appendChild(bar);
         }
         bar.setAttribute(ATTR_QUOTA_BAR_FIXED, "");
-        /* V35：兜底 fixed 路径清掉行内对齐——fixed 贴底右侧不再受残
-         * 留 left/width 干扰 */
+        /* V40：兜底 fixed 路径清掉行内对齐与残留底部留白带（fixed 居中
+         * 贴底不受旧 left/width 干扰） */
         clearCardAlign(bar);
+        clearQuotaBand();
       }
     } catch (e) {
       /* 挂载异常：一次性告警（同会话条 V14 模式），之后每周期静默重试 */
@@ -4013,6 +4217,9 @@ pub const USAGE_JS: &str = r#"// ===============================================
      * 后由 fitQuotaSegments 做溢出适配（必要时修正 DOM 并同步签名） */
     renderQuotaLine(bar, quotaSigOf(segs), segs);
     fitQuotaSegments(bar, segs);
+    /* V37R：渲染/溢出适配完成后实测行高、同步底部留白带（行高含分段
+     * 隐藏态的最终布局；fixed 兜底路径 quotaRegion 为 null 不施加） */
+    syncQuotaBand(bar, quotaRegion);
   }
 
   /* V33 底部状态条渲染：签名比对（renderModelRows 同款「元素即状态」
@@ -4029,13 +4236,23 @@ pub const USAGE_JS: &str = r#"// ===============================================
    * 属于剩余百分比） */
   function renderQuotaLine(bar, sig, segs) {
     var line = bar.querySelector(":scope > .zbar-usage-qb-line");
-    if (line && bar.getAttribute("data-zbar-usage-qsig") === sig) return;
+    if (
+      line &&
+      line.querySelector(":scope > .zbar-usage-qfull") &&
+      bar.getAttribute("data-zbar-usage-qsig") === sig
+    ) {
+      return;
+    }
     if (!line) {
       line = document.createElement("div");
       line.className = "zbar-usage-qb-line";
       bar.appendChild(line);
     }
     while (line.firstChild) line.removeChild(line.firstChild);
+    /* V41 完整分段容器：条与输入框卡片同宽，内容居中；超宽由
+     * fitQuotaSegments 按优先级隐藏 */
+    var full = document.createElement("span");
+    full.className = "zbar-usage-qfull";
     for (var qj = 0; qj < segs.length; qj++) {
       var seg = segs[qj];
       var sp = document.createElement("span");
@@ -4056,12 +4273,13 @@ pub const USAGE_JS: &str = r#"// ===============================================
         sp.appendChild(pp);
       }
       if (seg.dot) {
-        var dot = document.createElement("span");
-        dot.className = "zbar-usage-qdot";
-        sp.appendChild(dot);
+        var sdot = document.createElement("span");
+        sdot.className = "zbar-usage-qdot";
+        sp.appendChild(sdot);
       }
-      line.appendChild(sp);
+      full.appendChild(sp);
     }
+    line.appendChild(full);
     bar.setAttribute("data-zbar-usage-qsig", sig);
   }
 
@@ -4082,29 +4300,36 @@ pub const USAGE_JS: &str = r#"// ===============================================
     return sig;
   }
 
-  /* ---- V34 溢出适配（P1：条宽不足时右缘 mask 渐隐曾把额度/每周/缓存
-   *      三段视觉吃掉——改为分段优先级隐藏，mask 仅保留为最终兜底）----
-   * 规则：溢出（scrollWidth > clientWidth）时按优先级从低到高整段隐藏
-   * ——缓存(1) → 今日(2) → 工具(3) → 本轮(4) → 子代理(5) → 会话(6)，
-   * 每步复测、不再溢出即停；⚡速度与额度两段 prio 0 永不隐藏；全部可
-   * 见时不做任何隐藏。无溢出但存在隐藏段时按优先级降序贪心恢复（优先
-   * 恢复重要段），恢复某段即溢出则回退该段并停。每次修正同步
-   * quotaFitHidden 并重写签名（隐藏态计入）——下一拍构建态与 DOM 一
-   * 致，签名命中零 DOM；常规拍（内容/宽度均不变、无溢出）只做两次布
-   * 局读取、零 DOM 写。隐藏经 .zbar-usage-qseg-off class（DOM 常驻，
-   * 恢复零重建）。窗口宽度变化不触发渲染拍，由下一个数据拍/15s 兜底
-   * 拍自愈修正（与注入层其它状态自愈同节奏） */
+  /* ---- V34 溢出适配（V41 以卡片宽度为准）----
+   * 规则：以**条的实际可用宽度**（bar 宽度 − 胶囊左右 padding/边框）为
+   * 准，完整分段容器 scrollWidth 超出时按优先级从低到高整段隐藏——缓存
+   * (1) → 今日(2) → 工具(3) → 本轮(4) → 子代理(5) → 会话(6)，每步复测、
+   * 不再溢出即停；速度与额度 prio 0 永不隐藏。无溢
+   * 出但存在隐藏段时按优先级降序贪心恢复（优先恢复重要段），恢复即溢出
+   * 则回退该段并停。每次修正同步 quotaFitHidden 并重写签名（隐藏态计入）
+   * ——下一拍构建态与 DOM 一致，签名命中零 DOM；常规拍只做布局读取、
+   * 零 DOM 写。隐藏经 .zbar-usage-qseg-off class（DOM 常驻，恢复零重建）。
+   * 窗口宽度变化不触发渲染拍，由下一个数据拍/15s 兜底拍自愈修正。 */
   function fitQuotaSegments(bar, segs) {
     var line = bar.querySelector(":scope > .zbar-usage-qb-line");
-    if (!line || line.children.length !== segs.length) return;
+    if (!line) return;
+    var full = line.querySelector(":scope > .zbar-usage-qfull");
+    if (!full || full.children.length !== segs.length) return;
+    var cs = getComputedStyle(line);
+    var pad = (parseFloat(cs.paddingLeft) || 0) + (parseFloat(cs.paddingRight) || 0);
+    var border =
+      (parseFloat(cs.borderLeftWidth) || 0) +
+      (parseFloat(cs.borderRightWidth) || 0);
+    var avail = Math.max(0, bar.clientWidth - pad - border);
+    if (!(avail > 0)) return;
     var changed = false;
     function isOff(i) {
-      var el = line.children[i];
+      var el = full.children[i];
       if (!el) return false;
       return (" " + el.className + " ").indexOf(" zbar-usage-qseg-off ") >= 0;
     }
     function setOff(i, off) {
-      var el = line.children[i];
+      var el = full.children[i];
       if (!el) return;
       if (off) {
         if (!isOff(i)) {
@@ -4119,8 +4344,10 @@ pub const USAGE_JS: &str = r#"// ===============================================
         changed = true;
       }
     }
-    if (line.scrollWidth > line.clientWidth) {
-      /* 溢出：优先级升序隐藏（prio 0 永不隐藏），每步复测 */
+    function overflows() {
+      return full.scrollWidth > avail;
+    }
+    if (overflows()) {
       var hideOrder = [];
       for (var oi = 0; oi < segs.length; oi++) {
         if (segs[oi].prio > 0) hideOrder.push({ p: segs[oi].prio, i: oi });
@@ -4128,11 +4355,9 @@ pub const USAGE_JS: &str = r#"// ===============================================
       hideOrder.sort(function (a, b) { return a.p - b.p; });
       for (var hi = 0; hi < hideOrder.length; hi++) {
         setOff(hideOrder[hi].i, true);
-        if (line.scrollWidth <= line.clientWidth) break;
+        if (!overflows()) break;
       }
     } else {
-      /* 无溢出：优先级降序贪心恢复（优先恢复重要段），恢复即溢出则
-       * 回退该段并停 */
       var showOrder = [];
       for (var ri = 0; ri < segs.length; ri++) {
         if (segs[ri].prio > 0) showOrder.push({ p: segs[ri].prio, i: ri });
@@ -4141,7 +4366,7 @@ pub const USAGE_JS: &str = r#"// ===============================================
       for (var sj = 0; sj < showOrder.length; sj++) {
         if (!isOff(showOrder[sj].i)) continue;
         setOff(showOrder[sj].i, false);
-        if (line.scrollWidth > line.clientWidth) {
+        if (overflows()) {
           setOff(showOrder[sj].i, true);
           break;
         }
@@ -5888,8 +6113,8 @@ mod tests {
     #[test]
     fn usage_js_v34_分段状态条与设计语言() {
         // ---- 版本标记（V35 起头部升级，V34 特征全部保留）----
-        assert!(USAGE_JS.contains("ZBAR-THEME-V36"));
-        assert!(!USAGE_JS.contains("ZBAR-THEME-V35"), "版本头应已升到 V36");
+        assert!(USAGE_JS.contains("ZBAR-THEME-V43"));
+        assert!(!USAGE_JS.contains("ZBAR-THEME-V42"), "版本头应已升到 V43");
         // ---- 字体跟随客户端（任务红线：--font-mono 引用）：四个注入层
         // （每轮条/会话条/模型底板/底部条）各一条 font-family 声明，缺失
         // 回退既有等宽栈
@@ -5903,7 +6128,7 @@ mod tests {
         // ---- 颜色跟随客户端语义变量 + 兜底（速度/额度三档语义色保留硬编码）----
         assert!(USAGE_JS.contains("var(--color-foreground-subtle, rgba(120,130,145,.95))"));
         assert!(USAGE_JS.contains("var(--color-border, rgba(127,127,127,.22))"));
-        assert!(USAGE_JS.contains("var(--color-card, rgba(28,30,36,.72))"));
+        assert!(USAGE_JS.contains("var(--color-card, rgba(28,30,36,.92))"));
         assert!(
             USAGE_JS.contains("background:var(--color-card, rgba(2,6,23,.72))")
                 && USAGE_JS
@@ -5918,24 +6143,32 @@ mod tests {
         // 带前缀、内高光+双层投影、圆角、右缘 mask 渐隐截断兜底 ----
         assert!(
             USAGE_JS
-                .contains("-webkit-backdrop-filter:blur(14px) saturate(1.3);backdrop-filter:blur(14px) saturate(1.3);"),
-            "胶囊应带前缀的 blur(14px) saturate(1.3) 毛玻璃"
+                .contains("-webkit-backdrop-filter:blur(12px) saturate(1.2);backdrop-filter:blur(12px) saturate(1.2);"),
+            "胶囊应带前缀的 blur(12px) saturate(1.2) 毛玻璃"
         );
         assert!(
             USAGE_JS.contains(
-                "box-shadow:inset 0 1px 0 rgba(255,255,255,.05), 0 4px 14px rgba(0,0,0,.28), 0 1px 3px rgba(0,0,0,.2);"
+                "box-shadow:inset 0 1px 0 rgba(255,255,255,.05), 0 8px 22px rgba(0,0,0,.26), 0 1px 3px rgba(0,0,0,.18);"
             ),
             "胶囊应有内高光 + 双层投影"
         );
         assert!(
-            USAGE_JS
-                .contains("mask-image:linear-gradient(90deg,#000 calc(100% - 16px),rgba(0,0,0,.45));"),
-            "胶囊应有右缘 mask 线性渐隐截断兜底（尾值非全透明）"
+            USAGE_JS.contains("white-space:nowrap;overflow:hidden;")
+                && USAGE_JS.contains("function fitQuotaSegments(bar, segs)"),
+            "胶囊应 overflow:hidden 并由 fitQuotaSegments 按优先级隐藏分段（不再用右缘 mask 压暗末段文字）"
         );
-        assert!(USAGE_JS.contains("border-radius:10px;"), "胶囊圆角 10px");
+        assert!(USAGE_JS.contains("border-radius:10px;"), "状态条圆角 10px");
         assert!(
-            USAGE_JS.contains("max-width:100%;"),
-            "底部条宽不强行撑满 region：右对齐自然宽 + max-width 100%"
+            USAGE_JS.contains("width:100%;max-width:100%;")
+                && USAGE_JS.contains("height:max(32px, calc(var(--zbar-usage-font-size,10px) * 2.3));")
+                && !USAGE_JS.contains("zbar-usage-qb-line:hover")
+                && !USAGE_JS.contains("zbar-usage-qmini"),
+            "V43 底栏恢复全宽常显：与卡片同宽、32px 高，不再有窄态/悬浮抽屉"
+        );
+        assert!(
+            USAGE_JS.contains("zbar-usage-qfull")
+                && !USAGE_JS.contains("zbar-usage-qmini-dot"),
+            "V41 只保留完整分段容器"
         );
         // ---- 文字三级层级（亮度+字重，不靠字号）----
         assert!(USAGE_JS.contains(".zbar-usage-dim{opacity:.66;}"));
@@ -6048,10 +6281,13 @@ mod tests {
         );
         // ---- 红线复核：定位/挂载/闸门/轮询机制零改动 ----
         assert!(
-            USAGE_JS.contains("var QUOTA_BAR_BOTTOM_PX = -20")
-                && USAGE_JS
-                    .contains("position:absolute;bottom:\" + QUOTA_BAR_BOTTOM_PX + \"px;right:0;"),
-            "底部条定位机制零改动（bottom 负偏移 + 右对齐 absolute）"
+            USAGE_JS.contains("var QUOTA_BAR_BOTTOM_PX = -13")
+                && USAGE_JS.contains(
+                    "position:absolute;bottom:\" + QUOTA_BAR_BOTTOM_PX + \"px;left:0;right:0;"
+                )
+                && !USAGE_JS.contains("function loadAgents()")
+                && !USAGE_JS.contains("__ZBAR_AGENTS__"),
+            "V43 底部条容器定位（负 bottom 贴近软件底部 + 左右 0），不再加载多 Agent 额度旁路"
         );
         assert!(
             USAGE_JS.contains("var QUOTA_POLL_MS = 30000") && USAGE_JS.contains("function loadQuota"),
@@ -6067,7 +6303,7 @@ mod tests {
             USAGE_JS.contains("var quotaFitHidden = [];")
                 && USAGE_JS.contains("function quotaSigOf(segs)")
                 && USAGE_JS.contains("function fitQuotaSegments(bar, segs)")
-                && USAGE_JS.contains("if (line.scrollWidth > line.clientWidth) {")
+                && USAGE_JS.contains("return full.scrollWidth > avail;")
                 && USAGE_JS.contains(".zbar-usage-qseg-off{display:none;}"),
             "V34 应有溢出适配机制（fitQuotaSegments 逐级隐藏/贪心恢复 + qseg-off class + 隐藏态计入签名）"
         );
@@ -6077,7 +6313,9 @@ mod tests {
             "fit 修正后应同步 quotaFitHidden 并重写签名（下一拍构建态与 DOM 一致，签名命中零 DOM）"
         );
         assert!(
-            USAGE_JS.contains("renderQuotaLine(bar, quotaSigOf(segs), segs);\n    fitQuotaSegments(bar, segs);"),
+            USAGE_JS.contains(
+                "renderQuotaLine(bar, quotaSigOf(segs), segs);\n    fitQuotaSegments(bar, segs);"
+            ),
             "renderQuotaBar 渲染后应执行溢出适配（每拍复测，常规拍零 DOM 写）"
         );
         // prio 编号：速度/额度 0 永不隐藏；缓存 1 → 今日 2 → 工具 3 →
@@ -6123,9 +6361,13 @@ mod tests {
             "额度/缓存段口径说明应入词表并挂到分段 title"
         );
         assert!(
-            USAGE_JS.contains("\"position:relative;display:flex;align-items:center;gap:3px;white-space:nowrap;\"")
-                && USAGE_JS.contains("\"padding:2px 6px;pointer-events:auto;cursor:default;border-radius:7px;}\""),
-            "分段应 gap 3px 承担段内间距、padding 收窄至 6px（降低溢出触发频率）"
+            USAGE_JS.contains("\"position:relative;display:flex;align-items:center;flex:none;\"")
+                && USAGE_JS
+                    .contains("gap:calc(var(--zbar-usage-font-size,10px) * .34);white-space:nowrap;")
+                && USAGE_JS
+                    .contains("padding:0 calc(var(--zbar-usage-font-size,10px) * .36);")
+                && USAGE_JS.contains("pointer-events:auto;cursor:default;border-radius:8px;}"),
+            "V40 分段间距/padding 随字号缩放，分隔线由相邻兄弟承担"
         );
         assert!(
             USAGE_JS.contains("function fmtTokensShort(n)")
@@ -6147,14 +6389,17 @@ mod tests {
     #[test]
     fn usage_js_v35_卡片对齐与缓存率() {
         // ---- 版本标记 ----
-        assert!(USAGE_JS.contains("ZBAR-THEME-V36"));
-        assert!(!USAGE_JS.contains("ZBAR-THEME-V35"), "版本头应已升到 V36");
-        // ---- 任务 A：输入框卡片定位（零选择器假设）----
+        assert!(USAGE_JS.contains("ZBAR-THEME-V43"));
+        assert!(!USAGE_JS.contains("ZBAR-THEME-V42"), "版本头应已升到 V43");
+        // ---- 任务 A：输入框卡片定位（零选择器假设 + V37R 语义锚点）----
         assert!(
             USAGE_JS.contains("function locateComposerCard(region)")
                 && USAGE_JS.contains("indexOf(\"data-zbar-usage-\") === 0")
-                && USAGE_JS.contains("el.offsetWidth > 100"),
-            "V35 应有 locateComposerCard：遍历 region 直接子元素，跳过带 data-zbar-usage-* 属性（自家注入元素）或绝对定位的元素，取第一个可见且 offsetWidth>100 的元素"
+                && USAGE_JS.contains("el.offsetWidth > 100")
+                && USAGE_JS
+                    .contains("region.querySelector(\"textarea, [contenteditable=true]\")")
+                && USAGE_JS.contains("anc.offsetWidth < rw - 4"),
+            "V35 locateComposerCard 直接子元素扫描应保留；V37R 增语义锚点路径（textarea/contenteditable 向上取最外层非满宽可见祖先——实机卡片非直接子元素/前面有满宽兄弟时首中即用取错）"
         );
         // 对齐写入口 + 回退清理 helper
         assert!(
@@ -6162,11 +6407,16 @@ mod tests {
                 && USAGE_JS.contains("function clearCardAlign(bar)"),
             "V35 应有对齐写入口（值变才写）与回退清理 helper"
         );
-        // 命中前提：offsetParent 即 region（V13 relative 规则生效，
-        // offsetLeft 与 region 内 absolute left 同一坐标系）
+        // V37R 坐标系修订：锚点路径可命中 region 深层元素（offsetParent
+        // 是中间定位元素而非 region，offsetLeft 不再同坐标系），对齐改
+        // rect 相对换算；保留卡片水平范围越界防御（offsetParent ===
+        // region 一致性防御的等价替代）
         assert!(
-            USAGE_JS.contains("if (!card || card.offsetParent !== region) return false;"),
-            "对齐应以 offsetParent === region 为前提（坐标系一致性防御）"
+            USAGE_JS.contains("var cr = card.getBoundingClientRect();")
+                && USAGE_JS.contains("var rr = region.getBoundingClientRect();")
+                && USAGE_JS
+                    .contains("if (cr.left < rr.left - 1 || cr.right > rr.right + 1) return false;"),
+            "对齐应改 rect 相对换算并保留卡片水平越界防御（V37R 深层卡片坐标系）"
         );
         // 三个注入层挂载块接线：会话条自然宽（不带宽度），底部条与模
         // 型行底板带宽度；各命中/兜底分支都有对齐或清理
@@ -6180,12 +6430,16 @@ mod tests {
         assert_eq!(
             USAGE_JS
                 .matches("if (!applyCardAlign(bar, region, true)) clearCardAlign(bar);")
-                .count()
-                + USAGE_JS
-                    .matches("if (!applyCardAlign(box, region, true)) clearCardAlign(box);")
-                    .count(),
-            2,
-            "底部胶囊条与模型行底板应对齐卡片左缘/宽度（withWidth）"
+                .count(),
+            1,
+            "V41 底部状态条恢复写卡片宽度（与对话框同宽）"
+        );
+        assert_eq!(
+            USAGE_JS
+                .matches("if (!applyCardAlign(box, region, true)) clearCardAlign(box);")
+                .count(),
+            1,
+            "模型行底板仍对齐卡片"
         );
         assert_eq!(
             USAGE_JS.matches("clearCardAlign(bar);").count()
@@ -6259,8 +6513,8 @@ mod tests {
     #[test]
     fn usage_js_v36_浅色主题可读性() {
         // ---- 版本标记 ----
-        assert!(USAGE_JS.contains("ZBAR-THEME-V36"));
-        assert!(!USAGE_JS.contains("ZBAR-THEME-V35"), "版本头应已升到 V36");
+        assert!(USAGE_JS.contains("ZBAR-THEME-V43"));
+        assert!(!USAGE_JS.contains("ZBAR-THEME-V42"), "版本头应已升到 V43");
         // ---- a) 透明度下限：三处行透明消费点（每轮条容器/会话条行/
         // 底部条行）以 max() 兜 .82 底（用户调高 >.82 仍取用户值），
         // dim/qfaint 弱色同步提亮；规则全部带 html:not(.dark) 前缀 ----
@@ -6453,8 +6707,8 @@ mod tests {
         // 存」段并存）；d) ✚ 缓存写段 cw 0 整段隐藏（含启动窗口占位
         // 态）、>0 带 title（词表新增 cwTitle 双语条目，
         // renderRowParts/renderBarLine 补 title 通道））
-        assert!(USAGE_JS.contains("ZBAR-THEME-V36"));
-        assert!(!USAGE_JS.contains("ZBAR-THEME-V35"), "版本头应已升到 V36");
+        assert!(USAGE_JS.contains("ZBAR-THEME-V43"));
+        assert!(!USAGE_JS.contains("ZBAR-THEME-V42"), "版本头应已升到 V43");
         assert!(!USAGE_JS.contains("ZBAR-THEME-V33"), "版本头不应回退");
         assert!(!USAGE_JS.contains("ZBAR-THEME-V31"), "版本头不应回退");
         assert!(!USAGE_JS.contains("ZBAR-THEME-V30"), "版本头不应回退");
@@ -6526,15 +6780,16 @@ mod tests {
             "额度行应有防重复标记属性与独立开关变量（variables.css 渲染 1/0，缺失视为开启）"
         );
         assert!(
-            USAGE_JS
-                .contains("position:absolute;bottom:\" + QUOTA_BAR_BOTTOM_PX + \"px;right:0;"),
-            "额度行应 absolute 定位到输入卡片底部外侧（bottom 负偏移）并右对齐"
+            USAGE_JS.contains(
+                "position:absolute;bottom:\" + QUOTA_BAR_BOTTOM_PX + \"px;left:0;right:0;"
+            ),
+            "V40 额度行应 absolute 满宽定位进 region 底部留白带（bottom 间隔）"
         );
         assert!(
             USAGE_JS.contains("ATTR_QUOTA_BAR_FIXED")
                 && USAGE_JS.contains("QUOTA_BAR_FALLBACK_RIGHT_PX")
                 && USAGE_JS.contains("QUOTA_BAR_FALLBACK_BOTTOM_PX"),
-            "region 缺失兜底路径应有 fixed 切换标记与贴底右侧常量（同会话条兜底模式）"
+            "region 缺失兜底路径应有 fixed 切换标记与贴底居中常量（同会话条兜底模式）"
         );
         assert!(
             USAGE_JS.contains("quotaLead: \"额度\"")
@@ -6570,24 +6825,76 @@ mod tests {
             "V29 应删除更新时间戳尾段（fmtClock/词表 updated/专用样式全删）"
         );
         // V29 额度行样式修正：字号升回基准（取消 ×0.9 缩小）、行高压缩
-        // 1.4（限定额度行 CSS 块切片断言，避免与模型行 ×0.9 规则串味）
+        // 1.4（V37 再压至 1.25）（限定额度行 CSS 块切片断言，避免与模
+        // 型行 ×0.9 规则串味）
         let qcss_lo = USAGE_JS
             .find("\"[\" + ATTR_QUOTA_BAR + \"]{\"")
             .expect("额度行样式块应存在");
-        let qcss = &USAGE_JS[qcss_lo..qcss_lo + 700];
+        // 切片右界回退到 UTF-8 字符边界（CSS 片段含中文注释，固定
+        // +700 可能落在多字节字符中间导致 panic）
+        let mut qcss_end = (qcss_lo + 700).min(USAGE_JS.len());
+        while qcss_end > qcss_lo && !USAGE_JS.is_char_boundary(qcss_end) {
+            qcss_end -= 1;
+        }
+        let qcss = &USAGE_JS[qcss_lo..qcss_end];
         assert!(
             qcss.contains("font-size:var(--zbar-usage-font-size,10px);")
                 && !qcss.contains("* .9"),
             "额度行字号应与统计元素同级（取消 ×0.9 缩小）: {qcss}"
         );
         assert!(
-            qcss.contains("line-height:1.4;"),
-            "额度行行高应压缩（bottom 负偏移加深后不超窗口底边）: {qcss}"
+            qcss.contains("line-height:1.2;")
+                && qcss.contains("left:0;right:0;")
+                && USAGE_JS.contains("width:100%;max-width:100%;")
+                && USAGE_JS.contains("height:max(32px, calc(var(--zbar-usage-font-size,10px) * 2.3));")
+                && !USAGE_JS.contains("width:176px"),
+            "V43 额度行应满宽容器 + 32px 高常显胶囊（line-height 1.2）: {qcss}"
         );
         assert!(
-            USAGE_JS.contains("var QUOTA_BAR_BOTTOM_PX = -20")
-                && !USAGE_JS.contains("var QUOTA_BAR_BOTTOM_PX = -16"),
-            "V30 额度行 bottom 负偏移应再加深至 -20（行尾新增缓存段后贴卡观感不变）"
+            USAGE_JS.contains("var QUOTA_BAR_BOTTOM_PX = -13")
+                && USAGE_JS.contains("var QUOTA_BAR_GAP_PX = 8")
+                && !USAGE_JS.contains("var QUOTA_BAR_BOTTOM_PX = -24")
+                && !USAGE_JS.contains("var QUOTA_BAR_BOTTOM_PX = -20")
+                && !USAGE_JS.contains("var QUOTA_BAR_BOTTOM_PX = 4")
+                && !USAGE_JS.contains("var QUOTA_BAR_BOTTOM_PX = 5"),
+            "V40 额度行应废弃负偏移与静态预算，浮胶囊 bottom = QUOTA_BAR_GAP_PX 恒定间隔"
+        );
+        // V37 底部留白带：region 注入 padding-bottom（照会话条 padding-top
+        // 预留空间同款模式），常量与 CSS 兜底两处同步；负向断言防负偏移
+        // 方案回流（历史数值仅允许出现在沿革注释中，不允许出现在定义处）
+        assert!(
+            USAGE_JS.contains("var COMPOSER_PAD_BOTTOM_PX = 27")
+                && USAGE_JS.contains("VAR_PAD_BOTTOM = \"--zbar-usage-pad-bottom\"")
+                && USAGE_JS.contains("ATTR_QUOTA_BAND = \"data-zbar-usage-quota-band\"")
+                && USAGE_JS.contains(
+                    "\".chat-composer-region[\" + ATTR_QUOTA_BAND + \"]{\""
+                )
+                && USAGE_JS
+                    .contains("padding-bottom:var(\" + VAR_PAD_BOTTOM + \",\" +")
+                && USAGE_JS
+                    .contains("COMPOSER_PAD_BOTTOM_PX + \"px) !important;}\""),
+            "V43 底部留白带：只在 [data-zbar-usage-quota-band] 属性命中时注入 padding-bottom（27px 兜底）"
+        );
+        // V37R 留白带动态实测：静态预算实机失衡（行实际高约 26px 远超假设
+        // 16px，行顶顶出带外与卡片贴死、带下空置 1:15）——行渲染后实测
+        // bar.offsetHeight，带高 = 条高 + GAP + BOTTOM 经 setRegionPadBottom 写入
+        // （照 setRegionPad 惯例：region 迁移还原、不高于基数回落 CSS 兜
+        // 底；行隐藏/空会话保留最近一次写入值不新增移除路径；fixed 兜底
+        // 路径不施加）
+        assert!(
+            USAGE_JS.contains("function syncQuotaBand(bar, region)")
+                && USAGE_JS.contains("var h = bar.offsetHeight;")
+                && USAGE_JS
+                    .contains("setRegionPadBottom(region, h + QUOTA_BAR_GAP_PX + QUOTA_BAR_BOTTOM_PX);")
+                && USAGE_JS.contains("function setRegionPadBottom(region, px)")
+                && USAGE_JS
+                    .contains("region.style.setProperty(VAR_PAD_BOTTOM, px + \"px\");")
+                && USAGE_JS.contains("region.setAttribute(ATTR_QUOTA_BAND, \"\");")
+                && USAGE_JS.contains("function clearQuotaBand()")
+                && USAGE_JS
+                    .contains("paddedBottomRegion.removeAttribute(ATTR_QUOTA_BAND);")
+                && USAGE_JS.contains("syncQuotaBand(bar, quotaRegion);"),
+            "V43 底部留白带应动态实测条高（offsetHeight + GAP + BOTTOM），属性随条可见性打上/清除"
         );
         // renderQuotaBar 体内：会话级无数据/开关关闭移除（V29 P1 修复：
         // sessHasData 入参闸取代初版全局判定 sessionDataEmpty——后者
@@ -6709,7 +7016,8 @@ mod tests {
         // 点；无 innerHTML 注入面
         assert!(
             ql_body.contains("data-zbar-usage-qsig")
-                && ql_body.contains("if (line && bar.getAttribute(\"data-zbar-usage-qsig\") === sig) return;")
+                && ql_body.contains("line.querySelector(\":scope > .zbar-usage-qfull\")")
+                && ql_body.contains("bar.getAttribute(\"data-zbar-usage-qsig\") === sig")
                 && ql_body.contains("bar.setAttribute(\"data-zbar-usage-qsig\", sig);"),
             "底部状态条应以签名比对渲染分段（V33：无变化零 DOM，行/容器重建时属性缺失自动重渲）: {ql_body}"
         );
@@ -6975,8 +7283,8 @@ mod tests {
         );
         assert!(
             USAGE_JS.contains("padding-top:var(")
-                && USAGE_JS.contains("COMPOSER_PAD_TOP_PX + \"px) !important;}"),
-            "输入区留白应读动态变量并保留 26px 兜底"
+                && USAGE_JS.contains("COMPOSER_PAD_TOP_PX + \"px) !important;"),
+            "输入区顶部留白应读动态变量并保留 26px 兜底（V37 起规则尾接 padding-bottom 声明，不再以规则块收尾符结束）"
         );
         assert!(
             USAGE_JS.contains("function setRegionPad"),

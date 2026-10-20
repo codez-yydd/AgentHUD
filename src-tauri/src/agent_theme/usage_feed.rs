@@ -742,11 +742,10 @@ fn quota_loop() {
     }
 }
 
-/// 单次额度查询与写盘：调用 quota::query_quota（内部含 15s HTTP 总超时，
-/// 本函数只消费不改动其查询逻辑），成功才原子写出 usage-quota.js 小文件
-/// （.tmp + rename，与速度/心跳小文件同款）；失败静默保留上次文件内容
-/// （未登录/网络异常属常态，不刷日志——渲染端停留在上次成功值，下周期
-/// 自然重试）。usage-speed.js 旁路绝不携带额度字段，额度只走本文件。
+/// 单次额度查询与写盘（V41）：额度线程每 60s 查询 ZCode 自身 5h/周窗口，
+/// 成功才原子写出 usage-quota.js（V31 v:2 契约）。查询期间皮肤可能被还
+/// 原/卸载：写盘前复核安装状态，已卸载则不重建目录。查询失败/文件写失败
+/// 静默保留上次文件，下一周期重试。
 fn quota_query_once() {
     let result = (|| -> Result<(), String> {
         let quota = crate::quota::query_quota()?;
@@ -781,7 +780,7 @@ fn quota_query_once() {
         fs::rename(&tmp, &target)
             .map_err(|e| format!("替换 {} 失败: {e}", target.display()))
     })();
-    // 失败静默（结果仅用于"保留上次文件"的语义，不外泄不刷日志）
+    // 失败静默（结果仅用于“保留上次文件”的语义，不外泄不刷日志）
     let _ = result;
 }
 

@@ -1263,7 +1263,35 @@ pub const EFFECTS_JS_VERSION: u32 = 6;
 /// 变化）：三处行透明消费点以 max(var(--zbar-usage-opacity,.55),.82)
 /// 兜下限、dim/qfaint 弱色提亮，四组容器 tps 三档 + 会话条/底部条
 /// quota 两档追加浅色加深变体（#059669/#d97706/#dc2626）。
-pub const USAGE_JS_VERSION: u32 = 36;
+/// V37：底部额度行降行高 + 与输入框卡片/状态栏双侧加间距（仅渲染端
+/// 样式微调，数据契约与 V36 完全一致）——实机反馈额度行高度偏高、与
+/// 输入框卡片贴得太近要"间隔一点点"，复检要求上下双侧都有间隔：a) 废
+/// 弃负偏移挂卡片下边缘外侧方案（只单边加大与卡片间距、下方几乎贴死
+/// 状态栏，方向不对），改预留留白带——照会话条 padding-top 预留空间
+/// 同款模式，region 注入 padding-bottom:var(--zbar-usage-pad-bottom,
+/// 24px)（新常量 COMPOSER_PAD_BOTTOM_PX），QUOTA_BAR_BOTTOM_PX 语义
+/// 改为带内距 region 底边的 bottom 偏移，-20 → 4（行高约 16px 住进
+/// 24px 带，行顶距卡片/行底距带底各约 4px）；b) 额度行 line-height
+/// 1.4 → 1.25（行盒收窄）；c) 胶囊纵向 padding 同步收紧
+/// （.zbar-usage-qb-line 1px 2px → 0 2px、.zbar-usage-qseg
+/// 2px 6px → 1px 5px）；字号与灰白 + 阈值变色纪律不动。
+/// V40：底部状态条重做为居中浮胶囊 + 留白带按可见条动态生效 + 字号档
+/// 自适配高度（仅渲染端，数据契约与 V37 完全一致）——实机反馈条像横贯
+/// 全宽的深色带、与输入框卡片贴死：a) 定位改 width:max-content +
+/// left:50% + translateX(-50%)，不再按输入框卡片拉满全宽，清掉 V35 遗留
+/// 行内 left/width；b) 胶囊高度 max(32px, 字号×2.6)（14px 档约 36px），
+/// 内边距/分段 padding/圆角随字号缩放；c) 新增
+/// data-zbar-usage-quota-band 属性选择器，留白带只在条可见时生效，
+/// removeQuotaBar/固定兜底路径清除属性与变量（不再常驻垫底）；d)
+/// QUOTA_BAR_GAP_PX 5 → 10、COMPOSER_PAD_BOTTOM_PX 24 → 56。
+/// V41：撤回 V40 注入条的多 Agent 订阅额度与窄/宽抽屉两态（用户澄清：
+/// 抽屉动效属于 HUD，ZCode 注入条继续用 V36 字段集），恢复按输入框卡片
+/// 对齐（left/width），高度 46px、上下各 10px；额度线程只写 ZCode 自身
+/// 5h/周（删除 usage-agents.js 旁路）。
+/// V42：条高 46 → 36、圆角 14 → 12；条底伸到 region 外 13px，条顶距卡片
+/// 8px，留白带 66 → 31px（输入框回落，条底离软件底部约 14px）。
+/// V43：条高 36 → 32、圆角 12 → 10；留白带 31 → 27px（输入框再回落 4px）。
+pub const USAGE_JS_VERSION: u32 = 43;
 
 /// 桌面像素宠物脚本 pet.js 的版本化落盘标记。
 /// 版本头写在模板首行注释（ZBAR-THEME-V 标记，提取器与

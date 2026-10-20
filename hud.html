@@ -1,0 +1,843 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AgentHUD Bar</title>
+    <!--
+      HUD 停靠条入口（hud-bar）：贴屏幕边缘常驻的透明小条，与主面板
+      （index.html）/宠物窗（pet.html）/会话悬浮窗（session-hud.html）互不
+      影响。页面为极简薄壳——
+      - /src/hud-main.ts：零 React 宿主壳（照 session-hud-main.ts 范式），
+        监听 zbar://hud-bar-usage（额度数据，内容变化才推）与
+        zbar://hud-bar-layout（贴边吸附后的横竖排切换与停靠边），另监听
+        zbar://appearance-changed 同步主面板语言（主题不跟随：条为恒定
+        深色，参照 jazzenchen/agent-hud-open Simple 模式的审美锚点）。
+      - 视觉：每 Agent 一行 "语义环 + 品牌图标 + 已用百分比"（百分比与环
+        同色，按已用 <70 绿 / <90 黄 / ≥90 红分档）；停靠条为近纯黑圆角
+        面板。收起态只露出 42px 环（面板 70 宽），鼠标悬浮时宽度以 0.34s
+        过渡展开到 112、百分比从环右侧拉出（抽屉动效），同时直接浮出该
+        Agent 的额度与 Token 明细卡；移入卡片可继续操作。详情卡为
+        360px 宽：品牌头像 + 套餐徽标 + 健康状态、逐窗口两行式额度行
+        （状态点/已用%/进度轨/剩余与倒计时）、24h 输入/输出/缓存堆叠
+        直方图 + 今日/请求/峰值，底栏为窗口数与「打开主窗口」入口。
+      - 布局：#hud-root 竖排 flex column / 横排 flex row（.horizontal
+        类切换）。**胶囊面板固定尺寸**（竖排 112×N、横排 N×76，不写
+        width/height:100%）——弹出层会把窗口向外扩出 392×460 的透明画布，
+        面板若按百分比拉伸会被扩窗拉成横条（V1 实机问题）。停靠边经
+        .edge-right 类控制横向贴右（右边缘扩窗时窗口整体左移，面板钉在
+        窗口右缘才能保持屏幕位置不动）；贴左/贴顶默认 flex-start。
+      - 拖拽热区分层（Tauri 2 的 data-tauri-drag-region 只认 mousedown
+        目标元素自身带属性）：#hud-root（背景留白壳，含 8px padding 区）
+        与 #hud-empty 直接带属性；#hud-strip 胶囊底带属性；条目 .hud-item
+        本身不带属性（带属性会吞点击，且 startDragging 的模态循环会吃掉
+        mouseup 导致 click 不触发——标题栏改造时踩过），改为 hud-main.ts
+        的"阈值拖拽"：pointerdown 记录起点、位移超 4px 才手动
+        startDragging（拖拽已启动则跳过随后派发的 click），未超阈值松手
+        = 纯点击开详情卡。
+      - 尺寸栅格：窗口 128 宽（竖排）/ 92 高（横排），透明屏缘间隙 8
+        （#hud-root padding）；胶囊面板 112×条长（竖排）/ 条长×76（横排），
+        面板内边距 10、条目 92×56（竖排）/ 100×56（横排）、条目间距 2、
+        环 42。与 Rust 侧 hud_bar.rs 的 bar_metrics 常量（BAR_THICK/
+        BAR_THICK_TOP/ITEM_LEN/ITEM_W/BAR_PAD/PANEL_PAD/ITEM_GAP）一一
+        对应，窗口尺寸由 Rust 按条目数与停靠边维护，页面内容必须落在同样
+        的栅格上，否则出现裁切或空白。
+      - 弹出画布：悬浮详情卡渲染在 #hud-pop 层（absolute 定位），
+        画布空间由 Rust 侧扩窗命令（hud_bar_set_popover）在条外侧加出
+        392px（竖排/贴顶再向下加 460px 纵向画布，贴右向左扩并平移 x、
+        贴顶向下扩）——小窗里放不下卡片也不能溢出窗口边界，扩窗是唯一可行方
+        案；扩窗前 #hud-pop 保持隐藏（display:none），窗口缩回后不残留
+        可点区域。
+      - 视觉 token：恒定深色（不随亮/暗主题切换），语义色集中 --hud-*
+        变量；窗口透明由 Rust 侧 transparent(true) 提供，面板用 CSS 画。
+    -->
+    <style>
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        width: 100%;
+        height: 100%;
+        background: transparent;
+        overflow: hidden;
+      }
+      /* 根节点 = 透明留白壳：竖排 flex column（默认，贴左/右）、横排
+         flex row（.horizontal，贴顶）。padding 8px 表达面板与屏缘的视觉
+         间隙（BAR_PAD，与 Rust bar_metrics 同步——窗口由 Rust 贴边 x=0/
+         y=0 落位，面板离缘全靠本 padding）。align-items:flex-start 让面板
+         固定贴在扩窗画布的外侧；.edge-right 改 flex-end（贴右时画布在
+         窗口左侧，面板钉右缘）。恒定深色，无亮色分支与 .dark 切换 */
+      #hud-root {
+        --hud-ok: #4ade80; /* 语义环/百分比：已用 <70% 绿 */
+        --hud-warn: #fbbf24; /* 已用 70–89% 黄 */
+        --hud-low: #f87171; /* 已用 ≥90% 红 */
+        --hud-ring-track: #2b2e33; /* 环底轨 */
+        box-sizing: border-box;
+        width: 100%;
+        height: 100%;
+        padding: 8px; /* BAR_PAD（与 Rust bar_metrics 同步） */
+        /* 纵向居中：扩窗时 Rust 在条的上下**对称**补画布并把窗口整体上移。
+           只要条在画布内垂直居中，条画在屏幕上哪一行就只取决于
+           (窗口上移量, 窗口高度) 这一对值，与两者谁先落地无关——所以
+           不需要前端再补 padding-top。此前用 padding-top 抵消上移量，
+           OS 先把窗口改大、CSS 变量还没写进去的那一帧，整条会瞬间跳到
+           屏幕上方再弹回（"卡片错乱出现/像瞬移了几下"的真因）。
+           横排贴顶时窗口只向下长、y 不动，见 .horizontal 的 flex-start。 */
+        display: flex;
+        flex-direction: column;
+        align-items: flex-start;
+        justify-content: center;
+        gap: 0;
+        font-family:
+          -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+          "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+        user-select: none;
+        -webkit-user-select: none;
+        cursor: default;
+      }
+      /* 横排（贴顶）：行布局，条目沿水平方向排。**必须 flex-start**：
+         扩窗只向右加画布、窗口左上角不动，横向居中（justify-content:center）
+         会让面板随宽度变化整块右移；纵向同理必须顶对齐（align-items 默认
+         值），因为横排扩窗只向下加高、y 不变。 */
+      #hud-root.horizontal {
+        flex-direction: row;
+        justify-content: flex-start;
+      }
+      /* 贴右：面板钉在窗口右缘（扩窗画布在左，窗口整体左移而屏缘不动） */
+      #hud-root.edge-right {
+        align-items: flex-end;
+      }
+      /* 胶囊面板：固定厚度 112（竖排）/ 固定高度 76（横排），长度由条目
+         数决定（Rust 同步窗口尺寸）——不写 100%，否则弹窗扩宽/扩高时被
+         拉成长条。近纯黑半透明 + 1px 内描边 + 深投影，浅色壁纸上也立得
+         住。圆角 28（≈ 面板厚度 1/4，方角感与参考产品一致）。**描边用
+         inset box-shadow 而非 border**：border 会占用 box-sizing 宽高，
+         使内容宽只剩 90、条目 92 溢出 2px；inset 描边不占布局，条目与
+         Rust bar_metrics 的 112/76 栅格精确吻合 */
+      #hud-strip {
+        flex: none;
+        box-sizing: border-box;
+        position: relative; /* 详情卡抽屉动画的遮挡基准：条压在弹出层之上 */
+        z-index: 2;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 2px; /* ITEM_GAP（与 Rust bar_metrics 同步） */
+        /* 收起宽度由 hud-main.ts 按条目数写入（--hud-w-collapsed）；
+           默认 68 = 面板内边距 9×2 + 环 42 + 条目内边距 4×2 */
+        width: var(--hud-w-collapsed, 68px);
+        padding: 9px; /* PANEL_PAD（与 Rust bar_metrics 同步） */
+        overflow: hidden;
+        background: rgba(9, 10, 13, 0.97);
+        border-radius: 28px;
+        /* 外阴影控制在窗口 8px 留白内（blur 10 − spread 2 = 8）：
+           收起态面板只占 70px，过大的 44px 阴影会在窗口右缘被硬裁成
+           一块深色矩形，视觉上把窄条又撑宽了 */
+        box-shadow:
+          inset 0 0 0 1px rgba(255, 255, 255, 0.075),
+          inset 0 1px 0 rgba(255, 255, 255, 0.06),
+          0 4px 10px -2px rgba(0, 0, 0, 0.5);
+        /* 抽屉式展开：宽度从环的位置向外推出，内容由 overflow 裁切 */
+        transition: width 0.28s cubic-bezier(0.22, 0.8, 0.2, 1);
+      }
+      #hud-root.hud-open #hud-strip {
+        width: var(--hud-w-expanded, 102px);
+      }
+      #hud-root.horizontal #hud-strip {
+        flex-direction: row;
+        width: var(--hud-w-collapsed, 68px);
+        height: 70px; /* PANEL_PAD×2 + ITEM_H(52) */
+        padding: 9px;
+      }
+      #hud-root.horizontal.hud-open #hud-strip {
+        width: var(--hud-w-expanded, 102px);
+      }
+      /* 单条目：语义环 + 品牌图标 + 已用百分比。竖排纵向排、横排横向
+         排；不带 data-tauri-drag-region——条目可点/可悬浮，不参与拖拽 */
+      .hud-item {
+        position: relative;
+        flex: none;
+        box-sizing: border-box;
+        /* 收起态只露出 42px 环：42 + 条目内边距 4×2 = 50；展开到 82
+           （环 42 + 间距 6 + 百分比 26 + 内边距 4×2） */
+        width: 50px;
+        height: 52px; /* ITEM_H（竖排 = 条目高 / 横排 = 条目高） */
+        display: flex;
+        align-items: center;
+        gap: 0;
+        padding: 0 4px;
+        border-radius: 15px;
+        cursor: pointer;
+        overflow: hidden;
+        transition:
+          width 0.28s cubic-bezier(0.22, 0.8, 0.2, 1),
+          gap 0.28s cubic-bezier(0.22, 0.8, 0.2, 1),
+          background-color 120ms ease;
+      }
+      #hud-root.hud-open .hud-item {
+        width: 84px; /* 102 − PANEL_PAD×2（竖排条目占满面板内容宽） */
+        gap: 6px;
+      }
+      #hud-root.horizontal .hud-item {
+        width: 50px;
+        height: 52px;
+      }
+      #hud-root.horizontal.hud-open .hud-item {
+        width: 84px; /* ITEM_W（横排条目宽） */
+      }
+      /* 贴右停靠：环钉在屏幕右缘，百分比从左侧抽屉推出（视觉镜像） */
+      #hud-root.edge-right .hud-item {
+        flex-direction: row-reverse;
+      }
+      .hud-item:hover {
+        background: rgba(255, 255, 255, 0.075);
+      }
+      .hud-item.active {
+        background: rgba(255, 255, 255, 0.1);
+      }
+      /* 已开启但暂无额度：整条弱化，环只留底轨，百分比位显示「—」。
+         不隐藏条目——订阅列表的完整性与"是否取到实时额度"解耦 */
+      .hud-item.offline {
+        opacity: 0.52;
+      }
+      .hud-item.offline:hover {
+        opacity: 0.78;
+      }
+      /* 环容器：42px 语义圆环（stroke 4、12 点起顺时针，stroke 按"已用
+         %"画、色按已用阈值分档）+ 中心品牌图标 */
+      .hud-ring {
+        position: relative;
+        flex: none;
+        width: 42px;
+        height: 42px;
+      }
+      .hud-ring svg {
+        display: block;
+        width: 42px;
+        height: 42px;
+      }
+      /* 环心 agent 图标：约 20px（环内径的 ~54%），品牌单色 currentColor
+         白（minimax 多段轮廓在 20px 下糊成色块，已降级为深底白首字母
+         徽标，见 hud-main.ts） */
+      .hud-ring .hud-agent-icon {
+        position: absolute;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: #fff;
+        pointer-events: none;
+      }
+      .hud-ring .hud-agent-icon svg {
+        width: 20px;
+        height: 20px;
+      }
+      /* 已用百分比：与环同档语义色，14px/650，等宽数字防跳动；竖排右
+         对齐（贴面板右缘），横排左对齐（紧接环右侧）。收起时宽度归零、
+         透明度归零并朝停靠边轻移；展开时宽度/透明度一起复位，形成抽屉
+         拉出数值的效果（只变宽不淡入淡出整块面板） */
+      .hud-pct {
+        flex: none;
+        width: 0;
+        min-width: 0;
+        overflow: hidden;
+        text-align: right;
+        font-size: 12.5px;
+        font-weight: 650;
+        line-height: 1;
+        letter-spacing: -0.02em;
+        font-variant-numeric: tabular-nums;
+        white-space: nowrap;
+        opacity: 0;
+        transform: translateX(-8px);
+        transition:
+          width 0.28s cubic-bezier(0.22, 0.8, 0.2, 1),
+          opacity 0.16s ease,
+          transform 0.28s cubic-bezier(0.22, 0.8, 0.2, 1);
+      }
+      #hud-root.hud-open .hud-pct {
+        width: 28px;
+        min-width: 28px;
+        opacity: 1;
+        transform: none;
+        transition-delay: 0.06s, 0.12s, 0.06s;
+      }
+      /* 贴右：数值从右往左拉出（往环的方向轻移） */
+      #hud-root.edge-right .hud-pct {
+        transform: translateX(8px);
+      }
+      #hud-root.edge-right.hud-open .hud-pct {
+        transform: none;
+      }
+      #hud-root.horizontal .hud-pct {
+        text-align: left;
+      }
+      @media (prefers-reduced-motion: reduce) {
+        #hud-strip,
+        .hud-item,
+        .hud-pct {
+          transition: none;
+        }
+      }
+      .hud-ok {
+        color: var(--hud-ok);
+      }
+      .hud-warn {
+        color: var(--hud-warn);
+      }
+      .hud-low {
+        color: var(--hud-low);
+      }
+      .hud-off {
+        color: #6f7680;
+      }
+      /* 空态占位：面板内居中暗灰小字（不闪窗） */
+      #hud-empty {
+        box-sizing: border-box;
+        width: 100%;
+        height: 52px;
+        display: none;
+        align-items: center;
+        justify-content: center;
+        font-size: 11px;
+        color: #6b7280;
+        letter-spacing: 0.04em;
+      }
+      #hud-empty.on {
+        display: flex;
+      }
+      /* 横排空态：面板宽度由条目宽撑起，空态占位给固定宽（与 ITEM_W
+         同步），否则 width:100% 在 auto 宽的面板里塌成文字宽 */
+      #hud-root.horizontal #hud-empty {
+        width: 50px;
+        height: 52px;
+      }
+      #hud-root.horizontal.hud-open #hud-empty {
+        width: 84px;
+      }
+      /* 弹出画布层：悬浮详情卡的宿主。absolute 铺满窗口（扩窗
+         后画布在面板外侧的扩展区），pointer-events none（不挡条目交互），
+         卡片本体 auto。缩窗态保持 display:none（画布不存在） */
+      #hud-pop {
+        position: absolute;
+        inset: 0;
+        display: none;
+        pointer-events: none;
+        z-index: 1;
+      }
+      #hud-pop.open {
+        display: block;
+      }
+      /* 悬浮详情卡：宽 304（Rust 扩窗 336 的画布内两侧各留 16 呼吸），
+         近纯黑 + 顶部极淡靛蓝光晕 + 1px 描边 + 深投影；绝对定位由
+         hud-main.ts 按停靠边写入 left/top。入场 = **抽屉式推出**：起点
+         压回条的一侧（.drawer-l/-r/-t 给 --hud-in-x/-y），条 z-index 更高
+         会把重叠段遮住，视觉上像卡片从条里被抽出来，而不是凭空淡入 */
+      .hud-card {
+        position: absolute;
+        box-sizing: border-box;
+        width: 304px;
+        padding: 13px 14px 12px;
+        --hud-in-x: 0px;
+        --hud-in-y: 0px;
+        background:
+          radial-gradient(
+            120% 90% at 100% 0%,
+            rgba(99, 102, 241, 0.13),
+            transparent 58%
+          ),
+          linear-gradient(180deg, #121419 0%, #0b0c0f 100%);
+        border: 1px solid rgba(255, 255, 255, 0.09);
+        border-radius: 18px;
+        box-shadow:
+          0 24px 64px rgba(0, 0, 0, 0.62),
+          0 2px 8px rgba(0, 0, 0, 0.4),
+          inset 0 1px 0 rgba(255, 255, 255, 0.07);
+        color: #e9ebee;
+        pointer-events: auto;
+        animation: hud-card-in 0.24s cubic-bezier(0.23, 1, 0.32, 1);
+      }
+      /* 抽屉方向：卡片在条右侧 → 从左侧（条下）推出；贴右反过来；贴顶
+         从条下沿往上压一点再落下 */
+      .hud-card.drawer-l {
+        --hud-in-x: -30px;
+        transform-origin: 0% 50%;
+      }
+      .hud-card.drawer-r {
+        --hud-in-x: 30px;
+        transform-origin: 100% 50%;
+      }
+      .hud-card.drawer-t {
+        --hud-in-y: 0px;
+        transform-origin: 50% 0%;
+        /* 贴顶：卡片在条下方，入场做成"从条下沿展开"（纵向不位移，
+           否则视觉上像从屏幕顶上掉下来） */
+        animation-name: hud-card-unfold;
+      }
+      @keyframes hud-card-unfold {
+        from {
+          opacity: 0;
+          transform: scaleY(0.92);
+        }
+        to {
+          opacity: 1;
+          transform: none;
+        }
+      }
+      @keyframes hud-card-in {
+        from {
+          opacity: 0;
+          transform: translate(var(--hud-in-x), var(--hud-in-y));
+        }
+        to {
+          opacity: 1;
+          transform: none;
+        }
+      }
+      /* 收回：反向推回条里（先播完再缩窗，见 hidePop）。动画期间不吃鼠标 */
+      .hud-card.leaving {
+        pointer-events: none;
+        animation: hud-card-out 0.14s cubic-bezier(0.4, 0, 0.9, 0.4) forwards;
+      }
+      @keyframes hud-card-out {
+        from {
+          opacity: 1;
+          transform: none;
+        }
+        to {
+          opacity: 0;
+          transform: translate(var(--hud-in-x), var(--hud-in-y));
+        }
+      }
+      /* 数据刷新/倒计时重绘换 DOM：位置不变，不重放推入动画（防闪）。
+         仅限"没有在收回"的卡：收起动画必须照常播（.leaving 同权重，
+         这里用 :not 显式让位） */
+      .hud-card.no-anim:not(.leaving) {
+        animation: none;
+      }
+      /* 挂载测量态：先按不可见 + 无动画挂进画布，等 left/top 收敛到最终
+         位置后再撤掉本类露出并起抽屉动画。扩窗（OS）与 relayout（WebView）
+         都是异步的，提前可见会让卡片先画在旧几何处再被挪走 */
+      .hud-card.measuring {
+        visibility: hidden;
+        animation: none;
+      }
+      /* 卡头：38px 品牌头像瓦片 + 名称/套餐徽标/副标题 + 健康状态胶囊 */
+      .hud-card-head {
+        display: flex;
+        align-items: center;
+        gap: 9px;
+      }
+      .hud-card-avatar {
+        flex: none;
+        width: 34px;
+        height: 34px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 10px;
+        background: linear-gradient(145deg, #24262c, #15171b);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+        color: #fff;
+      }
+      .hud-card-avatar svg {
+        width: 18px;
+        height: 18px;
+      }
+      .hud-card-title {
+        flex: 1;
+        min-width: 0;
+      }
+      .hud-card-name-row {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        min-width: 0;
+      }
+      .hud-card-name {
+        font-size: 14px;
+        font-weight: 650;
+        letter-spacing: -0.01em;
+        color: #f7f8f9;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .hud-plan {
+        flex: none;
+        padding: 2px 5px;
+        font-size: 9px;
+        font-weight: 650;
+        line-height: 1.1;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: #c7cbd2;
+        background: rgba(255, 255, 255, 0.075);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        border-radius: 5px;
+      }
+      .hud-card-sub {
+        margin-top: 3px;
+        font-size: 10.5px;
+        color: #7f858d;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .hud-status {
+        flex: none;
+        display: flex;
+        align-items: center;
+        gap: 5px;
+        height: 22px;
+        padding: 0 8px;
+        border-radius: 99px;
+        font-size: 10.5px;
+        font-weight: 600;
+        background: rgba(74, 222, 128, 0.1);
+        border: 1px solid rgba(74, 222, 128, 0.18);
+      }
+      .hud-status i {
+        width: 5px;
+        height: 5px;
+        border-radius: 50%;
+        background: currentColor;
+        box-shadow: 0 0 6px currentColor;
+      }
+      .hud-status.hud-warn {
+        background: rgba(251, 191, 36, 0.1);
+        border-color: rgba(251, 191, 36, 0.2);
+      }
+      .hud-status.hud-low {
+        background: rgba(248, 113, 113, 0.1);
+        border-color: rgba(248, 113, 113, 0.2);
+      }
+      .hud-status.hud-off {
+        background: rgba(255, 255, 255, 0.055);
+        border-color: rgba(255, 255, 255, 0.09);
+        color: #8b919a;
+      }
+      /* 未连接说明块：替代额度行，解释为什么没有百分比 */
+      .hud-offline {
+        display: flex;
+        flex-direction: column;
+        gap: 3px;
+        margin-top: 10px;
+        padding: 10px 11px;
+        background: rgba(255, 255, 255, 0.035);
+        border: 1px solid rgba(255, 255, 255, 0.07);
+        border-radius: 10px;
+      }
+      .hud-offline b {
+        font-size: 11.5px;
+        font-weight: 600;
+        color: #c3c8cf;
+      }
+      .hud-offline span {
+        font-size: 10px;
+        line-height: 1.45;
+        color: #7d838c;
+      }
+      /* 额度行（两行式）：头行 状态点/标签/已用%；体行 进度轨/剩余与
+         倒计时。行间发丝线分隔，数值与轨道同档语义色（健康也用绿） */
+      .hud-qrow {
+        padding: 8px 0 7px;
+      }
+      .hud-qrow + .hud-qrow {
+        border-top: 1px solid rgba(255, 255, 255, 0.055);
+      }
+      .hud-qhead {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .hud-qdot {
+        flex: none;
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: currentColor;
+        box-shadow: 0 0 7px currentColor;
+      }
+      .hud-qlabel {
+        flex: 1;
+        min-width: 0;
+        font-size: 12px;
+        font-weight: 600;
+        letter-spacing: 0.005em;
+        color: #e4e7eb;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .hud-qval {
+        flex: none;
+        font-size: 14px;
+        font-weight: 700;
+        letter-spacing: -0.01em;
+        font-variant-numeric: tabular-nums;
+      }
+      .hud-qbody {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-top: 6px;
+        padding-left: 14px;
+      }
+      .hud-qtrack {
+        flex: 1;
+        height: 5px;
+        border-radius: 99px;
+        background: #24272d;
+        overflow: hidden;
+        box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.4);
+      }
+      .hud-qfill {
+        display: block;
+        height: 100%;
+        border-radius: 99px;
+        background: currentColor;
+        box-shadow: 0 0 7px currentColor;
+        opacity: 0.9;
+      }
+      .hud-qmeta {
+        flex: none;
+        font-size: 10px;
+        color: #858b93;
+        font-variant-numeric: tabular-nums;
+        white-space: nowrap;
+      }
+      /* Token 区：标题 + 24h 堆叠直方图 + 图例 + 今日/请求/峰值三格。
+         图表高度固定（异步回填不改变卡片高度，防定位后裁切） */
+      .hud-tokens {
+        margin-top: 10px;
+        padding-top: 10px;
+        border-top: 1px solid rgba(255, 255, 255, 0.06);
+      }
+      .hud-tokens-head {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 10px;
+      }
+      .hud-tokens-title {
+        font-size: 11px;
+        font-weight: 600;
+        letter-spacing: 0.02em;
+        color: #c2c7ce;
+      }
+      .hud-tokens-total {
+        font-size: 10.5px;
+        color: #858b93;
+        font-variant-numeric: tabular-nums;
+        white-space: nowrap;
+      }
+      .hud-legend {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        margin-top: 5px;
+      }
+      .hud-legend-item {
+        display: flex;
+        align-items: center;
+        gap: 5px;
+        font-size: 9.5px;
+        color: #7f858d;
+        white-space: nowrap;
+      }
+      .hud-legend-item i {
+        width: 5px;
+        height: 5px;
+        border-radius: 2px;
+      }
+      .hud-legend-value {
+        font-weight: 600;
+        color: #aeb4bc;
+        font-variant-numeric: tabular-nums;
+      }
+      .hud-seg-in {
+        background: #8b7cf6;
+      }
+      .hud-seg-out {
+        background: #34d399;
+      }
+      .hud-seg-cache {
+        background: #38bdf8;
+      }
+      .hud-chart {
+        position: relative;
+        display: flex;
+        align-items: flex-end;
+        gap: 2px;
+        height: 52px;
+        margin-top: 6px;
+        padding-top: 2px;
+        background: repeating-linear-gradient(
+          to top,
+          rgba(255, 255, 255, 0.035) 0 1px,
+          transparent 1px 19px
+        );
+      }
+      /* 基线画在柱子上层，避免柱间间隙把 1px 边线切成虚线 */
+      .hud-chart::after {
+        content: "";
+        position: absolute;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        height: 1px;
+        background: rgba(255, 255, 255, 0.08);
+        pointer-events: none;
+        z-index: 2;
+      }
+      .hud-bar {
+        flex: 1;
+        min-width: 0;
+        height: 50px;
+        display: flex;
+        align-items: flex-end;
+        justify-content: center;
+      }
+      .hud-bar-stack {
+        width: 100%;
+        display: flex;
+        flex-direction: column;
+        justify-content: flex-end;
+        overflow: hidden;
+        border-radius: 2px 2px 0 0;
+        transform-origin: bottom;
+        animation: hud-bar-grow 0.4s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+        transition: opacity 0.12s ease;
+      }
+      @keyframes hud-bar-grow {
+        from {
+          transform: scaleY(0);
+        }
+        to {
+          transform: scaleY(1);
+        }
+      }
+      .hud-bar-seg {
+        display: block;
+        width: 100%;
+      }
+      .hud-bar-seg:first-child {
+        border-radius: 2px 2px 0 0;
+      }
+      .hud-seg-other {
+        background: #5b6270;
+      }
+      .hud-bar.empty {
+        height: 3px;
+        border-radius: 99px;
+        background: #343943;
+      }
+      .hud-chart:hover .hud-bar-stack {
+        opacity: 0.55;
+      }
+      .hud-chart .hud-bar:hover .hud-bar-stack {
+        opacity: 1;
+      }
+      .hud-chart-empty {
+        position: absolute;
+        inset: 0;
+        display: none;
+        align-items: center;
+        justify-content: center;
+        font-size: 10.5px;
+        color: #858c95;
+        letter-spacing: 0.02em;
+      }
+      .hud-chart-empty.on {
+        display: flex;
+      }
+      .hud-stats {
+        display: grid;
+        grid-template-columns: 0.9fr 0.9fr 1.35fr;
+        gap: 7px;
+        margin-top: 8px;
+      }
+      .hud-stat {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        min-width: 0;
+      }
+      .hud-stat-label {
+        font-size: 9.5px;
+        color: #767c85;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .hud-stat-value {
+        font-size: 11.5px;
+        font-weight: 600;
+        color: #e6e8eb;
+        font-variant-numeric: tabular-nums;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      /* 底栏：窗口数/刷新说明 + 打开主窗口按钮 */
+      .hud-card-foot {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        margin-top: 11px;
+        padding-top: 10px;
+        border-top: 1px solid rgba(255, 255, 255, 0.06);
+      }
+      .hud-foot-meta {
+        font-size: 10px;
+        color: #767c85;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .hud-open-btn {
+        flex: none;
+        display: flex;
+        align-items: center;
+        gap: 5px;
+        height: 27px;
+        padding: 0 10px 0 12px;
+        font-size: 11px;
+        font-weight: 600;
+        font-family: inherit;
+        color: #f5f6f8;
+        background: linear-gradient(180deg, #2c3037, #23262c);
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        border-radius: 8px;
+        cursor: pointer;
+        white-space: nowrap;
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+      }
+      .hud-open-btn svg {
+        width: 11px;
+        height: 11px;
+        opacity: 0.7;
+      }
+      .hud-open-btn:hover {
+        background: linear-gradient(180deg, #353a42, #2a2e35);
+      }
+    </style>
+  </head>
+
+  <body>
+    <div id="hud-root" data-tauri-drag-region="">
+      <!-- 空态占位放在胶囊面板内部（空态时撑起面板高度）。可拖拽层：根
+           节点背景留白壳 + 胶囊条底 + 空态占位都带 data-tauri-drag-region
+           （空态无点击功能，直接带属性可拖）；条目 .hud-item 不带属性
+           （防吞点击），由 hud-main.ts 阈值拖拽接管 -->
+      <div id="hud-strip" data-tauri-drag-region="">
+        <div id="hud-empty" data-tauri-drag-region=""></div>
+      </div>
+    </div>
+    <div id="hud-pop"></div>
+    <script type="module" src="/src/hud-main.ts"></script>
+  </body>
+</html>

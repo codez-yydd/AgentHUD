@@ -3,6 +3,7 @@
 mod accounts;
 mod agent_quota_history;
 mod agent_theme;
+mod agent_visibility;
 mod alibaba;
 mod alibabatoken;
 mod claude;
@@ -14,6 +15,7 @@ mod deepseek;
 mod dsh;
 mod gemini;
 mod grok;
+mod hud_bar;
 mod kimi;
 mod kimi_oauth;
 mod local_agents;
@@ -51,7 +53,7 @@ use chrono::TimeZone;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use tauri::{
-    menu::{Menu, MenuItem},
+    menu::{CheckMenuItem, Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     AppHandle, LogicalPosition, Manager, PhysicalSize, WindowEvent,
 };
@@ -567,38 +569,173 @@ async fn get_compare_tokens_for_agent(
     periods: Vec<(i64, i64)>,
 ) -> Result<Vec<WeeklyTokenBucket>, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let buckets = match source.as_str() {
-            "zai" => db::query_period_buckets(&periods),
-            "codex" => codex::query_period_buckets(&periods),
-            "claude" => claude::query_period_buckets(&periods),
-            "cursor" => {
-                let from_ms = periods.iter().map(|(from, _)| *from).min().unwrap_or(0);
-                let to_ms = periods.iter().map(|(_, to)| *to).max().unwrap_or(0);
-                cursor::fetch_cursor_period_buckets(from_ms, to_ms, &periods)
-            }
-            // 注册表内的本地读取型 agent（kimi/dsh/opencode/未来新增）：
-            // 新增 agent 只要注册表加一行就自动可按来源对比，不必再改这里。
-            other => match local_agents::compare_period_buckets(
-                local_agents::all(),
-                other,
-                &periods,
-            ) {
-                Some(result) => result,
-                None => Err(format!("未知的对比 Agent: {source}")),
-            },
-        }?;
-        Ok(buckets
-            .into_iter()
-            .map(|b| WeeklyTokenBucket {
-                reset_at: b.reset_at,
-                end_at: b.end_at,
-                total_tokens: b.total_tokens,
-                requests: b.requests,
-            })
-            .collect())
+        compare_tokens_for_agent_blocking(&source, &periods)
     })
     .await
     .map_err(|e| format!("按 Agent 对比 token 任务失败: {e}"))?
+}
+
+/// 按来源聚合 Token 的阻塞实现：`get_compare_tokens_for_agent` 与 HUD
+/// 详情卡的今日/24h 汇总共用同一套来源路由（zai/codex/claude/cursor ∪
+/// 本地注册表 kimi/dsh/opencode/minimaxcode）。HUD 的 agent id 与后端
+/// 来源名在调用侧做一次别名映射。
+fn compare_tokens_for_agent_blocking(
+    source: &str,
+    periods: &[(i64, i64)],
+) -> Result<Vec<WeeklyTokenBucket>, String> {
+    let buckets = match source {
+        "zai" => db::query_period_buckets(periods),
+        "codex" => codex::query_period_buckets(periods),
+        "claude" => claude::query_period_buckets(periods),
+        "cursor" => {
+            let from_ms = periods.iter().map(|(from, _)| *from).min().unwrap_or(0);
+            let to_ms = periods.iter().map(|(_, to)| *to).max().unwrap_or(0);
+            cursor::fetch_cursor_period_buckets(from_ms, to_ms, periods)
+        }
+        other => match local_agents::compare_period_buckets(
+            local_agents::all(),
+            other,
+            periods,
+        ) {
+            Some(result) => result,
+            None => Err(format!("未知的对比 Agent: {source}")),
+        },
+    }?;
+    Ok(buckets
+        .into_iter()
+        .map(|b| WeeklyTokenBucket {
+            reset_at: b.reset_at,
+            end_at: b.end_at,
+            total_tokens: b.total_tokens,
+            requests: b.requests,
+        })
+        .collect())
+}
+
+/// HUD 详情卡 24h 柱状图的单小时桶。
+///
+/// 除总量外拆出输入/输出/缓存三段：详情卡画堆叠柱（与参考产品
+/// agent-hud-open 的 Tokens 直方图同构），图例与 tooltip 也用这三段。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentTokenBucket {
+    /// 本地整点标签（"14:00"）
+    label: String,
+    tokens: i64,
+    requests: i64,
+    input_tokens: i64,
+    output_tokens: i64,
+    cache_tokens: i64,
+}
+
+/// HUD 详情卡的 Token 汇总（点击/悬浮条目时才查询，避免 30s 轮询里反复
+/// 扫全部 agent 库）：今日（本地自然日）+ 最近 24h 的 token / 请求数 +
+/// 24h 小时分布（柱状图）。
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentTokenSummary {
+    today_tokens: i64,
+    today_requests: i64,
+    day_tokens: i64,
+    day_requests: i64,
+    /// 本地库累计（全时段）：24h 为空时详情卡仍能给出"用过量"的实据，
+    /// 而不是整块显示 0。Cursor 无本地库，恒 0（前端显示「—」）。
+    total_tokens: i64,
+    total_requests: i64,
+    buckets: Vec<AgentTokenBucket>,
+}
+
+/// 按来源查最近 24h 小时桶（HUD 详情卡柱状图）。
+///
+/// 与 `compare_tokens_for_agent_blocking` 相同的来源映射与容错口径：查询
+/// 失败不让整个汇总失败（汇总仍可显示今日/24h 数字），Cursor 没有本地
+/// 小时库，直接返回空数组（前端只画汇总不画柱）。
+fn agent_token_trend_blocking(
+    source: &str,
+    from_ms: i64,
+    to_ms: i64,
+) -> Result<Vec<AgentTokenBucket>, String> {
+    let buckets = match source {
+        "zai" => db::query_trend(from_ms, to_ms, "hour"),
+        "codex" => codex::query_trend(from_ms, to_ms, "hour"),
+        "claude" => claude::query_trend(from_ms, to_ms, "hour"),
+        "kimi" => kimi::query_trend(from_ms, to_ms, "hour"),
+        "dsh" => dsh::query_trend(from_ms, to_ms, "hour"),
+        "opencode" => opencode::query_trend(from_ms, to_ms, "hour"),
+        "minimaxcode" => minimaxcode::query_trend(from_ms, to_ms, "hour"),
+        // Cursor 的 usage 在远端 events 接口，没有本地小时库；返回空数组
+        // 而不是报错，汇总照常展示。
+        _ => return Ok(Vec::new()),
+    }?;
+    Ok(buckets
+        .into_iter()
+        .map(|b| AgentTokenBucket {
+            label: b.label,
+            tokens: b.total_tokens,
+            requests: b.requests,
+            input_tokens: b.by_model.iter().map(|m| m.input_tokens).sum(),
+            output_tokens: b.by_model.iter().map(|m| m.output_tokens).sum(),
+            cache_tokens: b.by_model.iter().map(|m| m.cache_read_tokens).sum(),
+        })
+        .collect())
+}
+
+#[tauri::command]
+async fn get_agent_token_summary(source: String) -> Result<AgentTokenSummary, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let now = chrono::Local::now().timestamp_millis();
+        let today_start = chrono::Local::now()
+            .date_naive()
+            .and_hms_opt(0, 0, 0)
+            .and_then(|naive| chrono::Local.from_local_datetime(&naive).single())
+            .map(|value| value.timestamp_millis())
+            .unwrap_or(now);
+        let day_start = now - 86_400_000;
+        let periods = vec![(today_start, now), (day_start, now)];
+        // HUD 侧的 source 用 UI agent id；后端本地注册表的 source 名略有
+        // 差异（opencodego → opencode、minimax → minimaxcode）。
+        let backend_source = match source.as_str() {
+            "opencodego" => "opencode",
+            "minimax" => "minimaxcode",
+            other => other,
+        };
+        let buckets = compare_tokens_for_agent_blocking(backend_source, &periods)?;
+        let today = buckets.first();
+        let day = buckets.get(1);
+        // 累计只对本地来源查；Cursor 的 usage 在远端 events 接口，
+        // 全时段拉取代价过大且没有本地小时库，保持 0（前端显示「—」）。
+        let (total_tokens, total_requests) = if backend_source == "cursor" {
+            (0, 0)
+        } else {
+            compare_tokens_for_agent_blocking(backend_source, &[(0, now)])
+                .ok()
+                .and_then(|all| all.into_iter().next())
+                .map(|b| (b.total_tokens, b.requests))
+                .unwrap_or((0, 0))
+        };
+        // 柱状图失败只丢图，不让整张卡的汇总一起失败。
+        let trend = agent_token_trend_blocking(backend_source, day_start, now).unwrap_or_default();
+        Ok(AgentTokenSummary {
+            today_tokens: today.map(|b| b.total_tokens).unwrap_or(0),
+            today_requests: today.map(|b| b.requests).unwrap_or(0),
+            day_tokens: day.map(|b| b.total_tokens).unwrap_or(0),
+            day_requests: day.map(|b| b.requests).unwrap_or(0),
+            total_tokens,
+            total_requests,
+            buckets: trend,
+        })
+    })
+    .await
+    .map_err(|e| format!("HUD Token 汇总任务失败: {e}"))?
+}
+
+/// 主面板把 localStorage 里的 agent 展示开关同步到 Rust 侧镜像文件，
+/// 供 ZCode 注入额度线程过滤「设置里开启的 agent」。
+#[tauri::command]
+fn save_agent_visibility(
+    visibility: std::collections::BTreeMap<String, bool>,
+) -> Result<(), String> {
+    crate::agent_visibility::save(&visibility)
 }
 
 // ===== Cursor 用量统计 =====
@@ -2230,15 +2367,48 @@ fn spawn_fx_rate_refresher() {
     });
 }
 
+/// 构建托盘右键菜单（三项：打开主窗口 / HUD 停靠条（勾选态随当前配置）/
+/// 退出 AgentHUD）。抽成独立函数：停靠条开关切换后需按新勾选态整体重建
+/// 菜单——CheckMenuItem 持有内部句柄不是可捕获进事件闭包的跨线程对象，
+/// 同线程重建整个菜单是最简单可靠的做法（set_menu 只换菜单，托盘上注册
+/// 的 on_menu_event 回调不受影响）。
+fn build_main_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
+    let open_main_item = MenuItem::with_id(app, "open-main", "打开主窗口", true, None::<&str>)?;
+    // 勾选态读当前配置（enabled 默认 false：未开启即无勾）
+    let hud_bar_item = CheckMenuItem::with_id(
+        app,
+        "hud-bar-toggle",
+        "HUD 停靠条",
+        true,
+        hud_bar::load_hud_bar_config().enabled,
+        None::<&str>,
+    )?;
+    let quit_item = MenuItem::with_id(app, "quit", "退出 AgentHUD", true, None::<&str>)?;
+    Menu::with_items(app, &[&open_main_item, &hud_bar_item, &quit_item])
+}
+
+/// 重建托盘菜单（勾选态读当前配置）：托盘开关切换后与 hud-bar 窗口异常
+/// 销毁（开关复位落盘）后两处共用，保证菜单勾选与实际开关一致。失败只
+/// 记日志（托盘仍可用，下次切换再试）。
+pub(crate) fn refresh_tray_menu(app: &AppHandle) {
+    if let Some(tray) = app.tray_by_id("main") {
+        match build_main_menu(app) {
+            Ok(next) => {
+                let _ = tray.set_menu(Some(next));
+            }
+            Err(e) => eprintln!("[zbar-tray] 重建托盘菜单失败: {e}"),
+        }
+    }
+}
+
 /// 初始化托盘图标
 fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
-    // 右键菜单两项：「打开主窗口」（Dashboard 管理/分析大窗，见
-    // main_window.rs）与「退出 AgentHUD」。左键单击仍是切换悬浮面板
-    //（show_menu_on_left_click(false) + 下方 Click 分支），主窗口入口
-    // 只在右键菜单里，避免与左键"切换面板"的既有习惯冲突。
-    let open_main_item = MenuItem::with_id(app, "open-main", "打开主窗口", true, None::<&str>)?;
-    let quit_item = MenuItem::with_id(app, "quit", "退出 AgentHUD", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&open_main_item, &quit_item])?;
+    // 右键菜单三项：「打开主窗口」（Dashboard 管理/分析大窗，见
+    // main_window.rs）/「HUD 停靠条」（贴边常驻额度条的开关，勾选态随
+    // hud-bar.json 的 enabled）/「退出 AgentHUD」。左键单击仍是切换悬浮
+    // 面板（show_menu_on_left_click(false) + 下方 Click 分支），主窗口
+    // 入口只在右键菜单里，避免与左键"切换面板"的既有习惯冲突。
+    let menu = build_main_menu(app)?;
 
     // 初始标题只用占位文字：真实标题（今日花费 + token）的生成依次做
     // SQLite 查询、开启同步后的远程 HTTP、Cursor events 冷缓存全量分页拉取，
@@ -2263,6 +2433,13 @@ fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
                         eprintln!("[zbar-main-window] 打开主窗口失败: {e}");
                     }
                 }
+                // HUD 停靠条开关：on_menu_event 本身在主线程回调，可直接
+                // 走建窗/隐藏主体（toggle_from_tray 内部按新开关落盘并启停
+                // 数据线程）。切换后重建菜单刷新勾选态（见 refresh_tray_menu）
+                "hud-bar-toggle" => match hud_bar::toggle_from_tray(app) {
+                    Ok(_) => refresh_tray_menu(app),
+                    Err(e) => eprintln!("[zbar-hud-bar] 切换停靠条失败: {e}"),
+                },
                 _ => {}
             }
         })
@@ -2438,6 +2615,8 @@ pub fn run() {
                         pet::handle_pet_window_moved(window, *pos);
                     } else if window.label() == session_hud::SESSION_HUD_WINDOW_LABEL {
                         session_hud::handle_session_hud_window_moved(window, *pos);
+                    } else if window.label() == hud_bar::HUD_BAR_WINDOW_LABEL {
+                        hud_bar::handle_hud_bar_window_moved(window, *pos);
                     }
                 }
                 WindowEvent::Resized(size) => {
@@ -2453,6 +2632,8 @@ pub fn run() {
                         pet::handle_pet_window_destroyed(window.app_handle());
                     } else if window.label() == session_hud::SESSION_HUD_WINDOW_LABEL {
                         session_hud::handle_session_hud_window_destroyed(window.app_handle());
+                    } else if window.label() == hud_bar::HUD_BAR_WINDOW_LABEL {
+                        hud_bar::handle_hud_bar_window_destroyed(window.app_handle());
                     }
                 }
                 // 主窗口（Dashboard）：点标题栏"×"= 隐藏不销毁（常驻秒开）。
@@ -2595,6 +2776,9 @@ pub fn run() {
             // 会话 Token 悬浮窗（Session HUD）：配置开启时恢复悬浮窗并
             // 启动会话快照轮询（未开启零开销，与宠物窗互不依赖）
             session_hud::start_if_enabled(app.handle());
+            // HUD 停靠条（hud-bar）：配置开启时恢复贴边停靠条并启动额度
+            // 数据线程（未开启零开销，与宠物/会话悬浮窗互不依赖）
+            hud_bar::start_if_enabled(app.handle());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -2640,6 +2824,8 @@ pub fn run() {
             clear_quota_history,
             get_compare_tokens,
             get_compare_tokens_for_agent,
+            get_agent_token_summary,
+            save_agent_visibility,
             get_cursor_usage,
             get_cursor_config,
             set_cursor_config,
@@ -2697,6 +2883,17 @@ pub fn run() {
             // 悬浮窗热区拖拽尺寸会话："用户调整中"标志置位/清除 + 结束即时落盘核校
             session_hud::session_hud_resize_begin,
             session_hud::session_hud_resize_end,
+            // HUD 停靠条弹出层扩窗（hover 小卡/详情卡的画布开关，主线程
+            // 窗口操作经命令投递）+ 首帧补推（页面 listen 就绪后强制数据
+            // 线程重推一帧，销毁重开/页面重载不再丢首帧）
+            hud_bar::hud_bar_set_popover,
+            hud_bar::hud_bar_pointer_state,
+            hud_bar::hud_bar_refresh,
+            // 停靠条拖拽：begin 登记抓取点、move 逐帧算落点并贴边换向、
+            // end 吸附落盘（前端 16ms 一拍驱动，替代 startDragging 模态）
+            hud_bar::hud_bar_drag_begin,
+            hud_bar::hud_bar_drag_move,
+            hud_bar::hud_bar_drag_end,
             // 主窗口（Dashboard）：托盘菜单与悬浮窗统计页按钮共用的打开入口
             main_window::open_main_window,
             model_speed::get_model_speed,

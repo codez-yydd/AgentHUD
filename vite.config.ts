@@ -15,7 +15,9 @@ export default defineConfig(async () => ({
   // dev server 直接服务根目录的 pet.html，无需额外配置）+ 会话悬浮窗
   // session-hud.html（同款范式，Rust 侧以 WebviewUrl::App 加载）+ 主窗口
   // dashboard.html（管理/分析大窗，Rust 侧 main_window.rs 以
-  // WebviewUrl::App("dashboard.html") 加载，同款范式）
+  // WebviewUrl::App("dashboard.html") 加载，同款范式）+ HUD 停靠条
+  // hud.html（贴边常驻额度条，Rust 侧 hud_bar.rs 以 WebviewUrl::App 加载，
+  // 同款范式）
   build: {
     rollupOptions: {
       input: {
@@ -25,6 +27,7 @@ export default defineConfig(async () => ({
           new URL("./session-hud.html", import.meta.url)
         ),
         dashboard: fileURLToPath(new URL("./dashboard.html", import.meta.url)),
+        hud: fileURLToPath(new URL("./hud.html", import.meta.url)),
       },
     },
   },

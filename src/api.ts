@@ -237,6 +237,42 @@ export async function getAgentQuotaHistory(
   });
 }
 
+/** HUD 详情卡 24h 柱状图的单小时桶（输入/输出/缓存三段堆叠）。 */
+export interface AgentTokenBucket {
+  label: string;
+  tokens: number;
+  requests: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheTokens: number;
+}
+
+/** HUD 详情卡 Token 汇总（今日 + 最近 24h + 小时分布）。 */
+export interface AgentTokenSummary {
+  todayTokens: number;
+  todayRequests: number;
+  dayTokens: number;
+  dayRequests: number;
+  /** 本地库全时段累计；Cursor 无本地库，恒 0 */
+  totalTokens: number;
+  totalRequests: number;
+  buckets: AgentTokenBucket[];
+}
+
+/** 按 Agent 汇总今日/24h token（HUD 点击条目时按需查询）。 */
+export async function getAgentTokenSummary(
+  source: string
+): Promise<AgentTokenSummary> {
+  return invoke<AgentTokenSummary>("get_agent_token_summary", { source });
+}
+
+/** 把主面板的 agent 展示开关镜像到 Rust 侧（ZCode 注入额度过滤用）。 */
+export async function syncAgentVisibility(
+  visibility: Record<string, boolean>
+): Promise<void> {
+  return invoke("save_agent_visibility", { visibility });
+}
+
 /** 拉取远端 Codex / Claude / Cursor 额度快照（带 device_id）。 */
 export async function remoteAgentQuotaSnapshots(
   fromMs: number,

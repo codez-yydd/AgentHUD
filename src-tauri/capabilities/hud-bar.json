@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "hud-bar",
+  "description": "Minimal capability for the HUD dock bar window (event listen + window dragging; custom commands like hud_bar_set_popover / open_main_window are not ACL-gated)",
+  "windows": ["hud-bar"],
+  "permissions": ["core:event:default", "core:window:allow-start-dragging"]
+}

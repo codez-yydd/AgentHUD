@@ -49,3 +49,6 @@ ios/**/Pods/
 
 # 速度折叠常驻测试的 tsc 编译产物（npm run test:speed 生成）
 .tmp-speed-test/
+
+# 本地联调脚本与截图（HUD 逐帧验证用的 CDP/screencast 脚本，不入库）
+.preview/
