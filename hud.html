@@ -167,13 +167,23 @@
       .hud-item.active {
         background: rgba(255, 255, 255, 0.1);
       }
-      /* 已开启但暂无额度：整条弱化，环只留底轨（不隐藏条目——订阅列表的
-         完整性与"是否取到实时额度"解耦） */
+      /* 有订阅额度证据、但本轮没取到额度（未登录/凭证过期/网络抖动）：
+         整条弱化，环只留底轨。**"没有订阅也没有今日用量"的 agent 根本不
+         进列表**（见 hud_bar.rs 的 fill_placeholders）——这类条目能出现，
+         本身就说明 Rust 侧认为它该在（订阅粘滞/今日用量/用量未知）。 */
       .hud-item.offline {
         opacity: 0.52;
       }
       .hud-item.offline:hover {
         opacity: 0.78;
+      }
+      /* 只有用量、没有订阅额度：比 offline 亮一档——它没有被"额度暂时
+         查不到"弱化，而是被今日用量保留下来的（详情卡说明原因） */
+      .hud-item.usage-only {
+        opacity: 0.72;
+      }
+      .hud-item.usage-only:hover {
+        opacity: 0.9;
       }
       /* 环容器：32px 语义圆环（12 点起顺时针，stroke 按"已用%"画、色按
          已用阈值分档）。一个额度窗口一圈：5h / 周 / 月依次由外向内同心

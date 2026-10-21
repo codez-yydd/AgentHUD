@@ -43,6 +43,7 @@ mod session_hud;
 mod shortcut;
 mod stepfun;
 mod sync;
+mod today_usage;
 mod token_speed;
 mod zcode_crypto;
 mod zcode_sessions;
@@ -701,24 +702,6 @@ struct HudRemoteTokens {
     trend: Vec<sync::RemoteTrendBucket>,
 }
 
-/// HUD 的后端来源名 → 同步服务端的 `source`。
-///
-/// 只列会进明细同步的来源：cursor 的用量在 Cursor 自己的 events 接口，
-/// 不在同步库里；余额型条目（dsh）本身有本地明细，照常合并。`zai` 在
-/// 服务端叫 `zcode`，其余来源名一致。
-fn hud_sync_source(backend_source: &str) -> Option<&'static str> {
-    match backend_source {
-        "zai" => Some("zcode"),
-        "codex" => Some("codex"),
-        "claude" => Some("claude"),
-        "kimi" => Some("kimi"),
-        "dsh" => Some("dsh"),
-        "opencode" => Some("opencode"),
-        "minimaxcode" => Some("minimaxcode"),
-        _ => None,
-    }
-}
-
 /// 拉取其他设备的 Token 汇总（恒排除本机 device_id，本机部分由本地库直读）。
 ///
 /// 三次请求都是聚合，不拉逐条明细：
@@ -734,7 +717,9 @@ fn fetch_hud_remote_tokens(
     today_start: i64,
     now: i64,
 ) -> Option<HudRemoteTokens> {
-    let sync_source = hud_sync_source(backend_source)?;
+    // 后端来源名 → 同步服务 source（`zai` 在服务端叫 `zcode`、`opencode`
+    // 等异名映射统一在 today_usage 的命名表里，别再手写字面量）
+    let sync_source = crate::today_usage::sync_source(backend_source)?;
     let cfg = sync::load_sync_config().ok()?;
     if !cfg.enabled || cfg.device_token.is_empty() || cfg.device_id.is_empty() {
         return None;
@@ -2344,6 +2329,15 @@ fn today_tray_title(app: &AppHandle) -> String {
         })
         .unwrap_or(0.0);
 
+    // 今日各来源 token（键 = HUD source）。标题只消费合计，停靠条消费
+    // 分来源明细（判断「既没有订阅额度、今日也没有用量」的 agent 该不该
+    // 出现在条上，见 today_usage 模块）。本机直读与远端都往这里累加，
+    // 查询失败的来源不写键 = 0，语义正好是"今日没用过"。
+    let mut by_source: BTreeMap<String, i64> = BTreeMap::new();
+    if let Ok(stats) = &stats {
+        by_source.insert("zai".to_string(), stats.overall.total_tokens);
+    }
+
     // 多设备同步：合并远端（其他设备）今日数据
     let cfg = sync::load_sync_config().unwrap_or_default();
     if cfg.enabled && !cfg.device_token.is_empty() {
@@ -2381,6 +2375,15 @@ fn today_tray_title(app: &AppHandle) -> String {
                     )
                 })
                 .sum::<f64>();
+            // 同一份远端聚合按 source 归到各 Agent（服务端 source 名 →
+            // HUD source：zcode→zai、opencode→opencodego、
+            // minimaxcode→minimax），供停靠条做「今日是否用过量」判定；
+            // HUD 不展示的来源（未来新增）忽略即可。
+            for model in &remote.by_model {
+                if let Some(hud) = crate::today_usage::hud_source(&model.source) {
+                    *by_source.entry(hud.to_string()).or_insert(0) += model.total_tokens;
+                }
+            }
         }
     }
 
@@ -2391,6 +2394,7 @@ fn today_tray_title(app: &AppHandle) -> String {
     {
         total += cursor_tokens;
         cost += cursor_cost_usd;
+        by_source.insert("cursor".to_string(), cursor_tokens);
     }
 
     // Codex：合并今日用量（本地导入库；未安装/失败静默降级，
@@ -2402,6 +2406,7 @@ fn today_tray_title(app: &AppHandle) -> String {
             .iter()
             .map(|m| cost_for(m, &pricing.usd))
             .sum::<f64>();
+        by_source.insert("codex".to_string(), stats.overall.total_tokens);
     }
 
     // Claude：合并今日用量（本地导入库；未安装/失败静默降级，同上）
@@ -2412,20 +2417,30 @@ fn today_tray_title(app: &AppHandle) -> String {
             .iter()
             .map(|m| cost_for(m, &pricing.usd))
             .sum::<f64>();
+        by_source.insert("claude".to_string(), stats.overall.total_tokens);
     }
 
     // 注册表内的本地读取型 agent（kimi/dsh/opencode/未来新增）：合并今日用量。
     // 口径与上面 ZCode 段完全一致（token 合计 + by_model 按价格表 cost_for 计费）；
     // 单源查询失败静默跳过（未安装该 agent 时的常态）。新增 agent 只要注册表
     // 加一行就自动计入，不必再改这里。
-    for (_source, stats) in local_agents::stats(local_agents::all(), today_start, now_ms) {
+    for (source, stats) in local_agents::stats(local_agents::all(), today_start, now_ms) {
         total += stats.overall.total_tokens;
         cost += stats
             .by_model
             .iter()
             .map(|m| cost_for(m, &pricing.usd))
             .sum::<f64>();
+        // 后端来源名 → HUD source（opencode → opencodego、minimaxcode →
+        // minimax）；注册表未来新增但 HUD 不展示的来源会被忽略。
+        if let Some(hud) = crate::today_usage::hud_source(source) {
+            *by_source.entry(hud.to_string()).or_insert(0) += stats.overall.total_tokens;
+        }
     }
+
+    // 写今日用量快照（HUD 停靠条据此隐藏"没有订阅也没有用量"的 agent、
+    // 有用量时动态加回）。放在最后：本拍各来源都已累加完。
+    crate::today_usage::store(today_start, by_source);
 
     let _ = app; // 占位
     let sym = if is_usd { "$" } else { "¥" };
@@ -3200,17 +3215,6 @@ mod tests {
         );
         // 同名不同来源不去重（cost_for 按模型 id 计价，表单按 model_id 再去重展示）
         assert_eq!(merged.len(), 4);
-    }
-
-    /// HUD 多设备口径的来源映射：HUD 别名（opencodego/minimax）已在调用侧
-    /// 折成后端来源名，这里只处理与服务端 source 的差异；cursor 不进同步库。
-    #[test]
-    fn hud_sync_source_maps_server_names() {
-        assert_eq!(hud_sync_source("zai"), Some("zcode"));
-        assert_eq!(hud_sync_source("opencode"), Some("opencode"));
-        assert_eq!(hud_sync_source("minimaxcode"), Some("minimaxcode"));
-        assert_eq!(hud_sync_source("cursor"), None);
-        assert_eq!(hud_sync_source("unknown"), None);
     }
 
     /// 远端桶 label 兼容三种形态：毫秒时间戳（新版服务端）、秒级时间戳

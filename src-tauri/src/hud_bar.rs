@@ -66,6 +66,7 @@
 //! 条前端据此收敛本地详情态（防两端状态失步）。
 
 use serde::{Deserialize, Serialize};
+use std::collections::{BTreeSet, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{mpsc, Mutex, OnceLock};
 use std::thread;
@@ -528,8 +529,11 @@ pub struct HudBarAgent {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub plan: Option<String>,
     /// 数据状态：None = 实时额度正常；"unavailable" = 该 Agent 已开启但
-    /// 本轮没取到额度（未登录/凭证过期/网络失败）。前端把它渲染成
-    /// 弱化的占位条目，而不是整条消失——设置里打开的订阅必须看得见。
+    /// 本轮没取到额度（未登录/凭证过期/网络失败），前端渲染成弱化的占位
+    /// 条目；"usage" = 没有订阅额度证据、但今日有用量（`today_usage` 快照
+    /// 里有 token），图标按用量动态保留，详情卡说明"无订阅、仅按用量显示"。
+    /// 两种占位都不随查询失败/跨日忽隐忽现：是否出现由 fill_placeholders
+    /// 的准入证据决定（见其注释）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
     pub quotas: Vec<HudBarQuota>,
@@ -573,7 +577,7 @@ fn push_agent(
 /// DeepSeek 平台余额 → HUD 条目（source="dsh"）：DeepSeek Harness 自身
 /// 没有订阅额度窗口，它的"额度"就是开放平台余额（凭证通道 provider id
 /// 仍是 deepseek）。取第一条 ok 且带余额的凭证条目；没有凭证/查询失败
-/// 返回 None，由 fill_unavailable 补「已开启但暂无数据」的弱化占位。
+/// 返回 None，由 fill_placeholders 按「订阅/今日用量」证据补占位。
 fn dsh_agent(entries: &[ProviderQuotaEntry]) -> Option<HudBarAgent> {
     let entry = entries
         .iter()
@@ -600,21 +604,67 @@ const HUD_SOURCES: &[&str] = &[
     "minimax",
 ];
 
-/// 给设置里已开启、但本轮没有额度数据的来源补占位条目。占位条目
-/// `quotas` 为空、`status = "unavailable"`：前端显示弱化图标与「—」，
-/// 悬浮卡说明未连接原因；这样"订阅列表"不再随查询失败时有时无。
-fn fill_unavailable(agents: &mut Vec<HudBarAgent>) {
+/// 占位条目的准入证据（纯数据，单测不必碰真实设置文件/系统时钟）。
+///
+/// 规则（用户口径）：**既没有订阅额度、今日也没有用量**的 agent 不出现在
+/// 停靠条上；有订阅（本会话取到过该来源的额度/余额）或今日有 token 用量
+/// 任一条成立，条目就动态加回来。
+///
+/// - `visible`：设置页开启的来源（Rust 侧镜像，见 agent_visibility）；
+/// - `subscribed`：本会话内取到过额度/余额的来源（**粘滞**——额度查询偶发
+///   失败/网络抖动时，已确认存在的订阅不该忽隐忽现）；
+/// - `today`：今日各来源 token（`today_usage` 快照，已含其他设备）。`None`
+///   = 快照不可用（托盘线程还没跑完/已停摆）：此时**保守放行**，退回旧行为
+///   （设置里开启就出占位），绝不把「不知道」当成「没用量」把图标藏掉。
+struct PlaceholderEvidence<'a> {
+    visible: &'a BTreeSet<String>,
+    subscribed: &'a HashSet<String>,
+    today: Option<&'a crate::today_usage::TodayUsage>,
+}
+
+impl PlaceholderEvidence<'_> {
+    /// 该来源有没有"该出现在条上"的证据（不含今日用量/订阅的展示语义）。
+    fn allows(&self, source: &str) -> bool {
+        if !self.visible.contains(source) {
+            return false;
+        }
+        if self.subscribed.contains(source) {
+            return true;
+        }
+        match self.today {
+            Some(today) => today.used(source),
+            None => true, // 今日用量未知：保守放行（见结构体注释）
+        }
+    }
+
+    /// 占位条目的状态：有订阅证据（或用量未知）= `unavailable`（额度暂不可
+    /// 用）；只有用量证据 = `usage`（没有订阅额度，靠今日用量保留在条上）。
+    fn status(&self, source: &str) -> &'static str {
+        if self.subscribed.contains(source) || self.today.is_none() {
+            "unavailable"
+        } else {
+            "usage"
+        }
+    }
+}
+
+/// 给"该出现但本轮没有额度数据"的来源补占位条目，并按固定顺序排序。
+///
+/// 占位条目 `quotas` 为空、`status` 见 [`PlaceholderEvidence::status`]：
+/// 前端据此渲染弱化图标与「—」，悬浮卡说明是"额度未连接"还是"无订阅、
+/// 仅按今日用量保留"。没有订阅也没有用量的来源直接不出现（不再常驻）。
+fn fill_placeholders(agents: &mut Vec<HudBarAgent>, evidence: &PlaceholderEvidence<'_>) {
     for source in HUD_SOURCES {
         if agents.iter().any(|agent| agent.source == *source) {
             continue;
         }
-        if !crate::agent_visibility::is_visible(source) {
+        if !evidence.allows(source) {
             continue;
         }
         agents.push(HudBarAgent {
             source: (*source).to_string(),
             plan: None,
-            status: Some("unavailable".to_string()),
+            status: Some(evidence.status(source).to_string()),
             quotas: Vec::new(),
             balance: None,
         });
@@ -1153,6 +1203,9 @@ fn feed_loop(app: AppHandle) {
     let mut dsh_cache: Option<QueryCache<Vec<ProviderQuotaEntry>>> = None;
     // 窗口尺寸已同步到的条目数（条目数变化才经主线程 set_size）
     let mut synced_items = 0usize;
+    // 本会话内取到过额度/余额的来源 = 订阅存在的证据（粘滞）。额度查询偶发
+    // 失败时，已确认的订阅不该从条上消失（见 PlaceholderEvidence）
+    let mut subscribed: HashSet<String> = HashSet::new();
     loop {
         if FEED_STOP.load(Ordering::Relaxed) {
             return;
@@ -1185,7 +1238,8 @@ fn feed_loop(app: AppHandle) {
             }
             // dsh：DeepSeek 平台余额（provider id 仍是 deepseek，与主面板
             // DSH 面板底部的余额区同一通道）。未录 Key 时 query 返回空数组，
-            // dsh 由 fill_unavailable 补占位；同样 60s 缓存限频
+            // dsh 由 fill_placeholders 按「订阅/今日用量」证据补占位；同样
+            // 60s 缓存限频
             if !dsh_cache.as_ref().is_some_and(|c| c.fresh()) {
                 dsh_cache = Some(QueryCache {
                     at: Instant::now(),
@@ -1215,9 +1269,34 @@ fn feed_loop(app: AppHandle) {
             if let Some(cursor) = cursor_cache.as_ref().and_then(|c| c.value.as_ref()) {
                 agents.push(cursor.clone());
             }
-            // 已开启但本轮无额度数据的订阅补弱化占位（未登录/凭证过期/
-            // 网络失败），保证 HUD 的订阅列表稳定，不随查询结果忽隐忽现
-            fill_unavailable(&mut agents);
+            // 订阅证据：本拍真取到额度/余额的来源记进粘滞集合
+            for agent in &agents {
+                if agent.status.is_none() {
+                    subscribed.insert(agent.source.clone());
+                }
+            }
+            // 设置页关掉的 agent 不进 payload（前端 renderItems 仍按同一份
+            // 偏好过滤，但 Rust 侧先滤掉才能让 ITEM_COUNT / 窗口尺寸与实际
+            // 渲染的条目数一致——否则隐藏一个有额度的 agent 会让条多出一格
+            // 空位）。可见性镜像一次读文件，本拍内反复用。
+            let visibility = crate::agent_visibility::load();
+            agents.retain(|agent| {
+                crate::agent_visibility::is_visible_in(&visibility, &agent.source)
+            });
+            let visible_sources: BTreeSet<String> = HUD_SOURCES
+                .iter()
+                .filter(|source| crate::agent_visibility::is_visible_in(&visibility, source))
+                .map(|source| (*source).to_string())
+                .collect();
+            // 今日用量快照（托盘标题线程每 30s 写一次，已含其他设备），
+            // 用来决定"既没订阅、今日也没用量"的来源不出现。
+            let today_snapshot = crate::today_usage::snapshot().filter(|s| s.fresh());
+            let evidence = PlaceholderEvidence {
+                visible: &visible_sources,
+                subscribed: &subscribed,
+                today: today_snapshot.as_ref(),
+            };
+            fill_placeholders(&mut agents, &evidence);
             let ts = chrono::Utc::now().timestamp_millis();
             // 变化检测：agents 序列化字节不变则不 emit（倒计时由前端本地
             // 计算，无需按秒推送）
@@ -2579,7 +2658,7 @@ mod tests {
         assert_eq!(balance.amount, 54.64);
         assert_eq!(balance.currency, "CNY");
         assert_eq!(balance.granted, Some(4.64));
-        // 失败条目 / 无余额条目：不出条目（由 fill_unavailable 补占位）
+        // 失败条目 / 无余额条目：不出条目（由 fill_placeholders 补占位）
         assert!(dsh_agent(&[provider_entry("expired", vec![])]).is_none());
         assert!(dsh_agent(&[provider_entry("ok", vec![])]).is_none());
         assert!(dsh_agent(&[]).is_none());
@@ -2635,4 +2714,147 @@ mod tests {
         assert_eq!(BarEdge::Left.orientation(), "vertical");
         assert_eq!(BarEdge::Top.orientation(), "horizontal");
     }
+    // ---- 占位准入：没有订阅也没有今日用量的 agent 不出现 ----
+
+    /// 造一个"实时额度正常"的条目（用于验证占位不会和真条目重复）。
+    fn quota_agent(source: &str) -> HudBarAgent {
+        HudBarAgent {
+            source: source.into(),
+            plan: None,
+            status: None,
+            quotas: vec![HudBarQuota {
+                key: "hour5".into(),
+                label_zh: "5h".into(),
+                label_en: "5h".into(),
+                used_pct: 10.0,
+                reset_at: None,
+            }],
+            balance: None,
+        }
+    }
+
+    fn names(agents: &[HudBarAgent]) -> Vec<&str> {
+        agents.iter().map(|a| a.source.as_str()).collect()
+    }
+
+    /// 造一份"今日用量"快照（准入判定只看 tokens，不校验新鲜度）。
+    fn today_usage_with(pairs: &[(&str, i64)]) -> crate::today_usage::TodayUsage {
+        crate::today_usage::TodayUsage {
+            day_start: 0,
+            at: 0,
+            tokens: pairs
+                .iter()
+                .map(|(source, tokens)| ((*source).to_string(), *tokens))
+                .collect(),
+        }
+    }
+
+    /// 今日有用量但没订阅：条目出现，状态是 usage（不是 unavailable）。
+    #[test]
+    fn 有用量无订阅的条目按用量出现() {
+        let visible = BTreeSet::from(["zai".to_string(), "codex".to_string()]);
+        let subscribed = HashSet::new();
+        let today = today_usage_with(&[("zai", 123)]);
+        let mut agents = Vec::new();
+        let evidence = PlaceholderEvidence {
+            visible: &visible,
+            subscribed: &subscribed,
+            today: Some(&today),
+        };
+        fill_placeholders(&mut agents, &evidence);
+        assert_eq!(names(&agents), vec!["zai"]);
+        assert_eq!(agents[0].status.as_deref(), Some("usage"));
+        assert!(agents[0].quotas.is_empty());
+    }
+
+    /// 既没订阅也没有今日用量：不出现（旧行为是常驻占位）。
+    #[test]
+    fn 无订阅且无今日用量不出现() {
+        let visible = BTreeSet::from(["zai".to_string(), "codex".to_string()]);
+        let subscribed = HashSet::new();
+        let today = today_usage_with(&[("zai", 0)]);
+        let mut agents = Vec::new();
+        let evidence = PlaceholderEvidence {
+            visible: &visible,
+            subscribed: &subscribed,
+            today: Some(&today),
+        };
+        fill_placeholders(&mut agents, &evidence);
+        assert!(agents.is_empty(), "零用量 + 零订阅的来源必须隐藏");
+    }
+
+    /// 订阅证据粘滞：本轮额度查询失败（不在 agents 里）也要保留占位，
+    /// 状态仍是 unavailable（不是 usage），避免把"订阅在、额度暂时查不到"
+    /// 误标成"没有订阅"。
+    #[test]
+    fn 订阅证据粘滞抵消额度查询失败() {
+        let visible = BTreeSet::from(["codex".to_string()]);
+        let subscribed = HashSet::from(["codex".to_string()]);
+        let today = today_usage_with(&[]);
+        let mut agents = Vec::new();
+        let evidence = PlaceholderEvidence {
+            visible: &visible,
+            subscribed: &subscribed,
+            today: Some(&today),
+        };
+        fill_placeholders(&mut agents, &evidence);
+        assert_eq!(names(&agents), vec!["codex"]);
+        assert_eq!(agents[0].status.as_deref(), Some("unavailable"));
+    }
+
+    /// 今日用量快照不可用（托盘线程还没跑完/停摆）：保守放行，退回旧行为，
+    /// 不能把「不知道」当成「没用量」把图标藏掉。
+    #[test]
+    fn 今日用量未知时保守显示占位() {
+        let visible = BTreeSet::from(["kimi".to_string()]);
+        let subscribed = HashSet::new();
+        let mut agents = Vec::new();
+        let evidence = PlaceholderEvidence {
+            visible: &visible,
+            subscribed: &subscribed,
+            today: None,
+        };
+        fill_placeholders(&mut agents, &evidence);
+        assert_eq!(names(&agents), vec!["kimi"]);
+        assert_eq!(agents[0].status.as_deref(), Some("unavailable"));
+    }
+
+    /// 设置页关掉的来源一律不出占位（即使今日有用量）。
+    #[test]
+    fn 设置关闭的来源不出占位() {
+        let visible = BTreeSet::new();
+        let subscribed = HashSet::from(["zai".to_string()]);
+        let today = today_usage_with(&[("zai", 9)]);
+        let mut agents = Vec::new();
+        let evidence = PlaceholderEvidence {
+            visible: &visible,
+            subscribed: &subscribed,
+            today: Some(&today),
+        };
+        fill_placeholders(&mut agents, &evidence);
+        assert!(agents.is_empty());
+    }
+
+    /// 真额度条目不会被占位重复，且整体按 HUD_SOURCES 固定顺序排
+    /// （占位不能全被追加到末尾）。
+    #[test]
+    fn 占位与真条目不重复且按固定顺序排() {
+        let visible = BTreeSet::from([
+            "zai".to_string(),
+            "codex".to_string(),
+            "cursor".to_string(),
+        ]);
+        let subscribed = HashSet::new();
+        let today = today_usage_with(&[("zai", 5)]);
+        let mut agents = vec![quota_agent("cursor")];
+        let evidence = PlaceholderEvidence {
+            visible: &visible,
+            subscribed: &subscribed,
+            today: Some(&today),
+        };
+        fill_placeholders(&mut agents, &evidence);
+        assert_eq!(names(&agents), vec!["zai", "cursor"]);
+    }
+
+
 }

@@ -101,8 +101,10 @@ interface HudBarBalance {
 interface HudBarAgent {
   source: string;
   plan?: string;
-  /** 后端状态：缺省 = 实时额度正常；"unavailable" = 已开启但暂无额度 */
-  status?: "unavailable";
+  /** 后端状态：缺省 = 实时额度正常；"unavailable" = 已开启但暂无额度
+   *  （未登录/凭证过期/网络失败）；"usage" = 没有订阅额度证据、但今日有
+   *  用量（图标按用量保留在条上，不再常驻） */
+  status?: "unavailable" | "usage";
   quotas: HudBarQuota[];
   /** 余额型条目（dsh）：有值时 quotas 恒空，条目显示官方余额而不是百分比 */
   balance?: HudBarBalance;
@@ -113,8 +115,9 @@ function isBalanceAgent(agent: HudBarAgent): boolean {
   return agent.balance != null && agent.quotas.length === 0;
 }
 
-/** 开启但没取到额度的条目（未登录 / 凭证过期 / 网络失败）；余额型条目
- *  有余额即在线，不算离线 */
+/** 没有实时额度可画的条目：额度查询失败（unavailable）与"只有用量、
+ *  没有订阅额度"（usage）都算——条上都是空环，区别只在详情卡文案。
+ *  余额型条目有余额即在线，不算离线 */
 function isOffline(agent: HudBarAgent): boolean {
   if (agent.status === "unavailable") return true;
   return agent.quotas.length === 0 && !isBalanceAgent(agent);
@@ -352,6 +355,9 @@ interface Msg {
   /** 已开启但暂无额度数据 */
   offline: string;
   offlineHint: string;
+  /** 没有订阅额度、但今日有用量（条目按用量保留）的状态与说明 */
+  usageOnly: string;
+  usageOnlyHint: string;
   /** 余额型条目（dsh = DeepSeek 官方余额）：区块标题与拆分标签 */
   balance: string;
   granted: string;
@@ -395,6 +401,9 @@ const MESSAGES: Record<"zh" | "en", Msg> = {
     noRecent: "24h 无调用",
     offline: "未连接",
     offlineHint: "未获取到实时额度，登录对应客户端后自动出现",
+    usageOnly: "仅用量",
+    usageOnlyHint:
+      "未检测到订阅额度；今天用过这个 Agent，所以图标保留在停靠条上",
     balance: "官方余额",
     granted: "赠送",
     toppedUp: "充值",
@@ -428,6 +437,9 @@ const MESSAGES: Record<"zh" | "en", Msg> = {
     noRecent: "No calls in 24h",
     offline: "Offline",
     offlineHint: "No live quota yet. Sign in to the agent to populate it.",
+    usageOnly: "Usage only",
+    usageOnlyHint:
+      "No subscription quota found — the icon stays because this agent was used today",
     balance: "Balance",
     granted: "Granted",
     toppedUp: "Top-up",
@@ -1046,6 +1058,7 @@ function renderItems(): void {
   for (const agent of agents) {
     const balance = isBalanceAgent(agent) ? agent.balance! : null;
     const offline = isOffline(agent);
+    const usageOnly = agent.status === "usage";
     const label = SOURCE_LABELS[agent.source] ?? agent.source;
     // 条的环面：每个窗口一圈（最多三圈，与 RING_LAYOUTS 对齐）；余额型
     // 条目 windows 为空，只剩单圈底轨
@@ -1057,16 +1070,24 @@ function renderItems(): void {
       )
       .join(" · ");
     const item = document.createElement("div");
-    item.className = offline ? "hud-item offline" : "hud-item";
+    // usage（只有用量、没有订阅额度）比 offline（订阅额度暂时查不到）亮一档：
+    // 条目万金油语义仍是"没有实时额度"，但它是被今日用量保留下来的
+    item.className = usageOnly
+      ? "hud-item usage-only"
+      : offline
+        ? "hud-item offline"
+        : "hud-item";
     item.dataset.source = agent.source;
     // 完整口径留给读屏（条上不显示文字，数字只在详情卡里）
     item.setAttribute(
       "aria-label",
-      offline
-        ? `${label} · ${msg.offline}`
-        : balance
-          ? `${label} · ${msg.balance} ${fmtMoneyFull(balance.amount, balance.currency)}`
-          : `${label} · ${quotaText}`
+      usageOnly
+        ? `${label} · ${msg.usageOnly}`
+        : offline
+          ? `${label} · ${msg.offline}`
+          : balance
+            ? `${label} · ${msg.balance} ${fmtMoneyFull(balance.amount, balance.currency)}`
+            : `${label} · ${quotaText}`
     );
     item.innerHTML = ringSvg(quotas, agent.source, offline);
     stripEl.appendChild(item);
@@ -1112,7 +1133,8 @@ function buildCardShell(
   plan: string | undefined,
   tightestUsed: number,
   offline = false,
-  balance: HudBarBalance | null = null
+  balance: HudBarBalance | null = null,
+  usageOnly = false
 ): HTMLElement {
   const card = document.createElement("div");
   card.className = className;
@@ -1149,11 +1171,13 @@ function buildCardShell(
   status.className = `hud-status ${lv}`;
   const dot = document.createElement("i");
   const statusText = document.createElement("span");
-  statusText.textContent = offline
-    ? msg.offline
-    : balance
-      ? msg.balance
-      : msg.status(tightestUsed);
+  statusText.textContent = usageOnly
+    ? msg.usageOnly
+    : offline
+      ? msg.offline
+      : balance
+        ? msg.balance
+        : msg.status(tightestUsed);
   status.append(dot, statusText);
 
   head.append(avatar, title, status);
@@ -1189,6 +1213,7 @@ function buildDetailCard(source: string): HTMLElement | null {
   const agent = findAgent(source);
   if (!agent) return null;
   const offline = isOffline(agent);
+  const usageOnly = agent.status === "usage";
   const balance = isBalanceAgent(agent) ? agent.balance! : null;
   const tight = tightestWindow(agent.quotas);
   const card = buildCardShell(
@@ -1197,9 +1222,21 @@ function buildDetailCard(source: string): HTMLElement | null {
     agent.plan,
     tight ? usedPctOf(tight) : 0,
     offline,
-    balance
+    balance,
+    usageOnly
   );
-  if (offline) {
+  if (usageOnly) {
+    // 没有订阅额度、但今日有用量：条目是被用量保留下来的，说明为什么
+    // 没有百分比（下面 Token 区照常显示今日/24h 数据）
+    const empty = document.createElement("div");
+    empty.className = "hud-offline";
+    const title = document.createElement("b");
+    title.textContent = msg.usageOnly;
+    const hint = document.createElement("span");
+    hint.textContent = msg.usageOnlyHint;
+    empty.append(title, hint);
+    card.appendChild(empty);
+  } else if (offline) {
     const empty = document.createElement("div");
     empty.className = "hud-offline";
     const title = document.createElement("b");
@@ -1221,11 +1258,13 @@ function buildDetailCard(source: string): HTMLElement | null {
   foot.className = "hud-card-foot";
   const meta = document.createElement("span");
   meta.className = "hud-foot-meta";
-  meta.textContent = offline
-    ? `${msg.offline} · ${msg.live}`
-    : balance
-      ? `${msg.balance} · ${msg.live}`
-      : `${msg.windows(agent.quotas.length)} · ${msg.live}`;
+  meta.textContent = usageOnly
+    ? `${msg.usageOnly} · ${msg.live}`
+    : offline
+      ? `${msg.offline} · ${msg.live}`
+      : balance
+        ? `${msg.balance} · ${msg.live}`
+        : `${msg.windows(agent.quotas.length)} · ${msg.live}`;
   foot.append(meta, buildOpenMainBtn());
   card.appendChild(foot);
   return card;
@@ -1752,6 +1791,10 @@ setInterval(() => {
   if (next !== lastVisibilitySig) {
     lastVisibilitySig = next;
     renderItems();
+    // 可见性也参与 Rust 侧的条目组装（关掉的 agent 不进 payload，
+    // 保证 window 尺寸与渲染条目数一致）：让数据线程立刻重读镜像并重推
+    // 一帧，否则新开启的 agent 要等下一个 30s 拍才出现
+    if (!CARD_MODE) void invoke("hud_bar_refresh").catch(() => {});
   }
 }, 3000);
 

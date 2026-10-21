@@ -33,7 +33,13 @@ pub fn load() -> BTreeMap<String, bool> {
 
 /// 某个来源是否在设置里开启。未写入的键按默认名单判定。
 pub fn is_visible(source: &str) -> bool {
-    let map = load();
+    is_visible_in(&load(), source)
+}
+
+/// 基于已加载的开关 map 判定（一拍里要判多个来源时先用 `load()` 读一次，
+/// 避免每个来源都读一遍文件——HUD 数据线程每拍要判全量 HUD_SOURCES）。
+/// 未写入的键按默认名单判定。
+pub fn is_visible_in(map: &BTreeMap<String, bool>, source: &str) -> bool {
     if let Some(value) = map.get(source) {
         return *value;
     }
