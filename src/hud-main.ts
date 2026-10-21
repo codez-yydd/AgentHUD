@@ -7,10 +7,11 @@
  *   内容变化才推的各 Agent 额度），每个 Agent 一个条目——"语义环 +
  *   品牌图标"（参照 jazzenchen/agent-hud-open Simple 模式；**条上不出
  *   数字**，抬眼从环的比例与颜色读健康度，具体数值全在悬浮详情卡里）。
- *   环取该 Agent 全部窗口中已用% 最高（= 余量最紧）的窗口，颜色按已用
- *   阈值分档：<70% 绿 / 70–89% 黄 / ≥90% 红（与注入版统计条的三档阈值
- *   同源：已用 70% = 剩余 30%）。设置里已开启但本轮没取到额度的 Agent
- *   也保留弱化条目，不再整条消失；
+ *   **每个额度窗口一圈**（同心：外圈 5h/Auto/interval、往里周、月，最多
+ *   三圈——见 RING_LAYOUTS）：每个环按自己的已用% 画、颜色按已用阈值分档
+ *   （<70% 绿 / 70–89% 黄 / ≥90% 红，与注入版统计条的三档阈值同源：已用
+ *   70% = 剩余 30%）；窗口多时中心品牌图标收小给内环让位。设置里已开启但
+ *   本轮没取到额度的 Agent 也保留弱化条目（单圈底轨），不再整条消失；
  * - 布局流：监听 zbar://hud-bar-layout（payload = { orientation, edge }，
  *   贴边吸附换边后 Rust 推送）切换竖排 flex column（贴左/右）与横排
  *   flex row（贴顶），并记住停靠边（.edge-right 类让面板贴窗口右缘，
@@ -934,32 +935,59 @@ function applyEdge(next: HudBarLayout["edge"]): void {
   rootEl.classList.toggle("edge-right", next === "right");
 }
 
-/** 单条目环 SVG：语义圆环（viewBox 42 内画外径 42、stroke 4、圆头、12 点
- *  起顺时针——rotate(-90) 把 dash 起点从 3 点挪到 12 点、底轨
- *  --hud-ring-track）。CSS 渲染尺寸 32px（等比缩放），+ 中心品牌图标
- *  （15px，见 .hud-agent-icon）。stroke 按"已用%"画（dasharray），颜色按
- *  已用档（<70 绿 / 70–89 黄 / ≥90 红）；余额型条目 used=0，只留底轨 */
-function ringSvg(usedPct: number, source: string, offline = false): string {
-  const r = 18;
-  const c = 2 * Math.PI * r;
-  const used = Math.min(100, Math.max(0, usedPct));
-  const dash = `${(used / 100) * c} ${c}`;
-  const lv = levelOf(used);
-  const strokeVar =
-    lv === "hud-ok" ? "--hud-ok" : lv === "hud-warn" ? "--hud-warn" : "--hud-low";
-  // 0% / 未连接不画进度弧：round linecap 对 0 长度 dash 会渲染成一个
-  // 绿点，看起来像"在线健康"，与「—」语义冲突
-  const arc =
-    !offline && used > 0
-      ? `<circle cx="21" cy="21" r="${r}" fill="none" stroke="var(${strokeVar})" stroke-width="4" ` +
-        `stroke-linecap="round" stroke-dasharray="${dash}" transform="rotate(-90 21 21)"/>`
-      : "";
+/** 多窗口同心环的几何档位：[窗口数 − 1] → 半径（外→内）/ 统一描边 /
+ *  中心图标边长。窗口越多环越靠里，必须把图标收小给内环让位——32px 的
+ *  环里三圈 + 15px 图标会互相压住（42 视口下 15px 图标对角线半径 ≈13.9，
+ *  正好撞上第二圈）。数值以 viewBox 42 为单位，渲染统一 32px。 */
+const RING_LAYOUTS: { radii: number[]; stroke: number; icon: number }[] = [
+  { radii: [18], stroke: 4, icon: 15 },
+  // 双环：内环内缘 ≈ 12.1 视口单位（9.2px 半径），11.5px 图标对角线半径
+  // 8.1px，留 1.1px 余量——满底品牌块（zai 的白色圆角方）也不会贴住内环
+  { radii: [18, 13.5], stroke: 2.8, icon: 11.5 },
+  { radii: [18, 14.4, 10.8], stroke: 2.3, icon: 10 },
+];
+
+/** 单条目环 SVG：**每个额度窗口一圈**（同心，外圈 = 后端窗口顺序里的第一个，
+ *  即 5h / Auto / interval，往里依次是周、月）。12 点起顺时针（rotate(-90)
+ *  把 dash 起点从 3 点挪到 12 点），底轨 --hud-ring-track，进度弧按"已用%"
+ *  画（dasharray）、颜色按各自已用档（<70 绿 / 70–89 黄 / ≥90 红）。
+ *  余额型条目没有窗口：只留一圈底轨；未连接同理（不画弧）。 */
+function ringSvg(
+  quotas: HudBarQuota[],
+  source: string,
+  offline = false
+): string {
+  const wins = quotas.slice(0, RING_LAYOUTS.length);
+  const layout = RING_LAYOUTS[Math.max(0, wins.length - 1)];
+  const { stroke } = layout;
+  let arcs = "";
+  if (wins.length === 0) {
+    // 余额型 / 空数据：一圈底轨，图标按单环尺寸
+    arcs = `<circle cx="21" cy="21" r="18" fill="none" stroke="var(--hud-ring-track)" stroke-width="4"/>`;
+  }
+  wins.forEach((q, i) => {
+    const r = layout.radii[i];
+    const c = 2 * Math.PI * r;
+    const used = offline ? 0 : usedPctOf(q);
+    const lv = levelOf(used);
+    const strokeVar =
+      lv === "hud-ok"
+        ? "--hud-ok"
+        : lv === "hud-warn"
+          ? "--hud-warn"
+          : "--hud-low";
+    arcs +=
+      `<circle cx="21" cy="21" r="${r}" fill="none" stroke="var(--hud-ring-track)" stroke-width="${stroke}"/>` +
+      // 0% / 未连接不画进度弧：round linecap 对 0 长度 dash 会渲染成一个
+      // 绿点，看起来像"在线健康"，与「—」语义冲突
+      (used > 0
+        ? `<circle cx="21" cy="21" r="${r}" fill="none" stroke="var(${strokeVar})" stroke-width="${stroke}" ` +
+          `stroke-linecap="round" stroke-dasharray="${(used / 100) * c} ${c}" transform="rotate(-90 21 21)"/>`
+        : "");
+  });
   return (
-    `<div class="hud-ring">` +
-    `<svg viewBox="0 0 42 42" aria-hidden="true">` +
-    `<circle cx="21" cy="21" r="${r}" fill="none" stroke="var(--hud-ring-track)" stroke-width="4"/>` +
-    arc +
-    `</svg>` +
+    `<div class="hud-ring" style="--hud-icon-size:${layout.icon}px">` +
+    `<svg viewBox="0 0 42 42" aria-hidden="true">${arcs}</svg>` +
     `<span class="hud-agent-icon">${iconSvg(source)}</span>` +
     `</div>`
   );
@@ -981,11 +1009,18 @@ function renderItems(): void {
   stripEl.innerHTML = "";
   let shown = 0;
   for (const agent of agents) {
-    const tight = tightestWindow(agent.quotas);
     const balance = isBalanceAgent(agent) ? agent.balance! : null;
     const offline = isOffline(agent);
-    const used = tight ? usedPctOf(tight) : 0;
     const label = SOURCE_LABELS[agent.source] ?? agent.source;
+    // 条的环面：每个窗口一圈（最多三圈，与 RING_LAYOUTS 对齐）；余额型
+    // 条目 windows 为空，只剩单圈底轨
+    const quotas = offline ? [] : agent.quotas.slice(0, RING_LAYOUTS.length);
+    const quotaText = quotas
+      .map(
+        (q) =>
+          `${msg === MESSAGES.en ? q.labelEn : q.labelZh} ${usedPctOf(q)}%`
+      )
+      .join(" · ");
     const item = document.createElement("div");
     item.className = offline ? "hud-item offline" : "hud-item";
     item.dataset.source = agent.source;
@@ -996,9 +1031,9 @@ function renderItems(): void {
         ? `${label} · ${msg.offline}`
         : balance
           ? `${label} · ${msg.balance} ${fmtMoneyFull(balance.amount, balance.currency)}`
-          : `${label} · ${used}%`
+          : `${label} · ${quotaText}`
     );
-    item.innerHTML = ringSvg(used, agent.source, offline);
+    item.innerHTML = ringSvg(quotas, agent.source, offline);
     stripEl.appendChild(item);
     shown++;
   }

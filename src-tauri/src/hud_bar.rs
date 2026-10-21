@@ -70,6 +70,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{mpsc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
+use tauri::utils::config::BackgroundThrottlingPolicy;
 use tauri::{
     AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, PhysicalSize,
     WebviewUrl, WebviewWindow, WebviewWindowBuilder,
@@ -150,6 +151,11 @@ const FEED_TICK_MS: u64 = 30_000;
 const FAST_TICK_MS: u64 = 200;
 /// 拖放结束判定（毫秒）：Moved 事件静默超过该时长视为松手，触发贴边吸附
 const SNAP_IDLE_MS: u64 = 300;
+/// 卡片悬浮守护的离开宽限（毫秒）：真实光标离开条/卡超过该时长才由 Rust
+/// 兜底收卡。取 500 = 条页判定 220ms + 卡片退出动画 150ms 之后再留余量：
+/// 正常路径（条页收起 + 动画 + hud_card_hide）先走完，CARD_VISIBLE 已置
+/// false，这里的兜底根本不会触发；只有条页轮询停摆、卡片变成孤儿时才生效。
+const CARD_CLOSE_GRACE_MS: u64 = 500;
 /// zai / provider 额度查询的结果缓存时长（成功与失败同 TTL：失败也短暂
 /// 缓存防 30s 拍重试风暴；codex/claude/kimi 用各自模块内建的双 TTL 缓存）
 const QUERY_CACHE_TTL: Duration = Duration::from_secs(60);
@@ -1030,13 +1036,17 @@ impl<T> QueryCache<T> {
     }
 }
 
-/// 吸附守护线程主循环：只做"拖放结束检测"——Moved 静默 ≥ SNAP_IDLE_MS
-/// 且非回声 → 置零锚点防重复投递，经 run_on_main_thread 投递吸附闭包
-/// （snap_to_edge 在主线程读窗口实时几何，本线程不持任何窗口引用）。
+/// 吸附/收卡守护线程主循环：拖放结束检测（Moved 静默 ≥ SNAP_IDLE_MS
+/// 且非回声 → 投递 snap_to_edge）+ 卡片悬浮守护（见 card_guard_tick）。
 fn snap_loop() {
+    let mut outside_since: Option<Instant> = None;
     loop {
         if FEED_STOP.load(Ordering::Relaxed) {
             return;
+        }
+        let app = snap_app_slot().lock().ok().and_then(|g| g.clone());
+        if let Some(app) = app.as_ref() {
+            card_guard_tick(app, &mut outside_since);
         }
         let moved_at = LAST_MOVED_AT.load(Ordering::Relaxed);
         // 自定义拖拽期间不做静默吸附：位置由 hud_bar_drag_move 逐步接管
@@ -1048,13 +1058,69 @@ fn snap_loop() {
             LAST_MOVED_AT.store(0, Ordering::Relaxed);
             // snap_to_edge 需要 AppHandle 投递主线程闭包；本线程没有 handle，
             // 经 SNAP_APP 全局槽取（start_feed 时存入）
-            if let Some(app) = snap_app_slot().lock().ok().and_then(|g| g.clone()) {
+            if let Some(app) = app {
                 let app_snap = app.clone();
                 let _ = app.run_on_main_thread(move || snap_to_edge(&app_snap));
             }
         }
         thread::sleep(Duration::from_millis(FAST_TICK_MS));
     }
+}
+
+/// 卡片悬浮守护（Rust 侧权威兜底）：卡片可见期间，真实光标连续
+/// CARD_CLOSE_GRACE_MS 不在「条窗口 ∪ 卡片窗口」内就收卡。
+///
+/// 条页自己有一套 150ms 的 checkPointer（还要维护 .hud-open 高亮与卡片锚点），
+/// 但那套判定依赖条页本地状态：页面重载/状态失步/某次 invoke 卡住时轮询会
+/// 停摆，卡片窗口就成了关不掉的孤儿（实测：点开卡片 → 移到卡上 → 移走，
+/// 偶尔不复位）。这里只认光标与两个窗口的屏幕矩形，状态只有"离开起始时刻"，
+/// 不受前端影响；命中后投递主线程 force_close_card（隐藏窗口 + 两端收敛）。
+fn card_guard_tick(app: &AppHandle, outside_since: &mut Option<Instant>) {
+    if !CARD_VISIBLE.load(Ordering::Relaxed) {
+        *outside_since = None;
+        return;
+    }
+    // 用 AppHandle 的 cursor_position（走事件循环消息）而不是 Window 的同名
+    // 方法：后者在 Linux 上是直接调 GDK，从守护线程调不安全；AppHandle 版本
+    // 会把读取投递回主线程。
+    let Ok(cursor) = app.cursor_position() else {
+        // 读不到光标：本拍跳过但不清零，别把"刚离开"误判成"还在"
+        return;
+    };
+    let mut inside = false;
+    for win in [
+        app.get_webview_window(HUD_BAR_WINDOW_LABEL),
+        app.get_webview_window(HUD_CARD_WINDOW_LABEL),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        let (Ok(pos), Ok(size)) = (win.outer_position(), win.outer_size()) else {
+            continue;
+        };
+        // 2px 容差：圆角/缩放边缘不误判；卡片窗口自带 CARD_PAD 留白，
+        // 用窗口矩形而不是卡片内容矩形——指针落在留白上也算"在卡上"
+        let left = pos.x as f64 - 2.0;
+        let top = pos.y as f64 - 2.0;
+        let right = (pos.x + size.width as i32) as f64 + 2.0;
+        let bottom = (pos.y + size.height as i32) as f64 + 2.0;
+        if cursor.x >= left && cursor.x <= right && cursor.y >= top && cursor.y <= bottom {
+            inside = true;
+            break;
+        }
+    }
+    if inside {
+        *outside_since = None;
+        return;
+    }
+    let now = Instant::now();
+    let since = *outside_since.get_or_insert(now);
+    if now.duration_since(since) < Duration::from_millis(CARD_CLOSE_GRACE_MS) {
+        return;
+    }
+    *outside_since = None;
+    let app_close = app.clone();
+    let _ = app.run_on_main_thread(move || force_close_card(&app_close));
 }
 
 /// 吸附线程的 AppHandle 槽（snap_loop 投递主线程闭包需要；start_feed
@@ -1355,6 +1421,12 @@ pub fn ensure_hud_bar_window(app: &AppHandle) -> Result<(), String> {
     // WM_GETMINMAXINFO 默认最小跟踪宽度会把 68 逻辑宽的小窗出生即钳宽，
     // min_inner_size 覆盖该值
     .min_inner_size(1.0, 1.0)
+    // 后台节流必须关掉：HUD 窗永不抢焦点（focusable(false)），macOS 会把
+    // "非活跃 App 的 webview"判成后台并按 WKInactiveSchedulingPolicy 暂停
+    // JS 调度 —— 悬浮守护的 150ms 轮询一停，指针移出/点桌面后详情卡就再也
+    // 收不掉（卡片退出动画、30s 倒计时同理）。Disabled 让定时器在 App 失活
+    // 时照常跑；Windows/Linux 上 wry 忽略该属性。
+    .background_throttling(BackgroundThrottlingPolicy::Disabled)
     // 不抢焦点（照搬 pet.rs）：focusable(false) 映射 WS_EX_NOACTIVATE 从
     // 根上不激活；停靠条无键盘交互，点击条目/拖动都不需要激活
     .focusable(false)
@@ -1508,6 +1580,9 @@ pub fn ensure_hud_card_window(app: &AppHandle) -> Result<(), String> {
     .resizable(false)
     .maximizable(false)
     .min_inner_size(1.0, 1.0)
+    // 卡片窗同样关后台节流：收卡靠卡片页 150ms 退出动画后的 hud_card_hide，
+    // 定时器被暂停会让窗口停在"已经该隐藏"的状态（同条窗的理由，见上）
+    .background_throttling(BackgroundThrottlingPolicy::Disabled)
     // 不抢焦点（同停靠条）：卡片只做悬浮展示与点击，"打开主窗口"按钮走 IPC
     .focusable(false)
     .focused(false)
@@ -1532,12 +1607,20 @@ fn hide_card_window(app: &AppHandle) {
 }
 
 /// 程序侧收卡（吸附强制回位 / 托盘关闭条）：隐藏卡片窗口 + 广播 popover
-/// 事件让条前端收敛本地详情态（条页不再回发 close，避免来回乒乓）
+/// 事件让条前端收敛本地详情态（条页不再回发 close，避免来回乒乓）。
+/// 卡片页也要收一次 close（animate=false）：它的 30s 重绘定时器在窗口隐藏后
+/// 仍在跑（卡片窗也关掉了后台节流），不通知就会继续按 cardSource 重建 DOM，
+/// 万一行数变化触发 measure → 已隐藏的卡片窗会自己再 show 出来。
 fn force_close_card(app: &AppHandle) {
     if !CARD_VISIBLE.swap(false, Ordering::Relaxed) {
         return;
     }
     hide_card_window(app);
+    let _ = app.emit_to(
+        HUD_CARD_WINDOW_LABEL,
+        HUD_CARD_CLOSE_EVENT,
+        serde_json::json!({ "animate": false }),
+    );
     let _ = app.emit_to(
         HUD_BAR_WINDOW_LABEL,
         HUD_BAR_POPOVER_EVENT,

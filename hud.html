@@ -175,8 +175,9 @@
       .hud-item.offline:hover {
         opacity: 0.78;
       }
-      /* 环容器：32px 语义圆环（stroke 4、12 点起顺时针，stroke 按"已用
-         %"画、色按已用阈值分档）+ 中心品牌图标 */
+      /* 环容器：32px 语义圆环（12 点起顺时针，stroke 按"已用%"画、色按
+         已用阈值分档）。一个额度窗口一圈：5h / 周 / 月依次由外向内同心
+         （几何档位见 hud-main.ts 的 RING_LAYOUTS），窗口多时图标会收小 */
       .hud-ring {
         position: relative;
         flex: none;
@@ -188,9 +189,10 @@
         width: 32px;
         height: 32px;
       }
-      /* 环心 agent 图标：约 15px（环内径的 ~54%），品牌单色 currentColor
-         白（minimax 多段轮廓在小尺寸下糊成色块，已降级为深底白首字母
-         徽标，见 hud-main.ts） */
+      /* 环心 agent 图标：单环 15px（环内径的 ~54%）；双环/三环时由
+         hud-main.ts 写入 --hud-icon-size 收小（11.5 / 10），避免压住内环。
+         品牌单色 currentColor 白（minimax 多段轮廓在小尺寸下糊成色块，已
+         降级为深底白首字母徽标，见 hud-main.ts） */
       .hud-ring .hud-agent-icon {
         position: absolute;
         inset: 0;
@@ -201,8 +203,8 @@
         pointer-events: none;
       }
       .hud-ring .hud-agent-icon svg {
-        width: 15px;
-        height: 15px;
+        width: var(--hud-icon-size, 15px);
+        height: var(--hud-icon-size, 15px);
       }
       /* 条上不出数字（两种朝向统一）：百分比/余额只在悬浮详情卡里给，
          条目 = 环 + 品牌图标，视觉上就是一条安静的图标带 */

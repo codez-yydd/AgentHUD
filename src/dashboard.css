@@ -1008,8 +1008,14 @@ body {
   gap: 14px;
 }
 
+/* 卡片自己就是尺寸上下文：字号与副行排布按**卡片实际宽度**自适应，而不是
+   按窗口写死断点。窗口 1100（设计基准）时四卡各 ~200px，27px 数值 + 11px
+   双列副行「输入 158.5亿 / 输出 8745.6亿」必然截成省略号；宽窗时又要撑得
+   起信息层级——用容器查询把这两档连续插值，中间任何窗口尺寸都落在一个
+   舒服的比例上（不同 DPI/缩放也不用另调）。 */
 .db-metric {
   padding: 15px 17px 16px;
+  container-type: inline-size;
 }
 
 .db-metric__label {
@@ -1025,7 +1031,10 @@ body {
   align-items: baseline;
   gap: 3px;
   margin-top: 10px;
+  /* 兜底（不支持容器查询的旧内核）在前，流体档在后；cqw 非法时整条忽略，
+     旧内核仍拿到 27px */
   font-size: 27px;
+  font-size: clamp(22px, 13.6cqw, 27px);
   font-weight: 700;
   line-height: 1;
   letter-spacing: -0.02em;
@@ -1043,6 +1052,7 @@ body {
 
 .db-metric__unit {
   font-size: 15px;
+  font-size: clamp(12px, 7.2cqw, 15px);
   font-weight: 600;
   opacity: 0.75;
 }
@@ -1050,14 +1060,24 @@ body {
 .db-metric__sub {
   margin-top: 8px;
   font-size: 11px;
+  font-size: clamp(10.5px, 5.2cqw, 11px);
   color: var(--db-text-dim);
 }
 
-/* 副行双列（第 1/2 卡）：两列等宽各自单行截断，替代原先「A · B」整行长串 */
+/* 副行双列（第 1/2 卡）：两列等宽各自单行截断，替代原先「A · B」整行长串。
+   **窄卡（内容宽 < 190）改成上下两行**：分项数字（输入 158.5亿）本来就不是
+   短语，挤进半列只能出省略号；整行放得下时优先完整显示而不是省高度。 */
 .db-metric__subgrid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
+}
+
+@container (max-width: 190px) {
+  .db-metric__subgrid {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 2px;
+  }
 }
 
 .db-metric__subcell {
