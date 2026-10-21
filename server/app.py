@@ -77,6 +77,20 @@ def _usage_records_query_available():
     return callable(getattr(db, "query_usage_records", None))
 
 
+def _provider_quota_sync_available():
+    """判断当前加载的 db.py 是否支持全量 provider 额度同步（proto 7）。
+
+    宝塔热替换窗口（新 app.py + 旧 db.py）下，旧版 db.py 的
+    agent_quota_snapshots 无 label/plan_name/balance 列、AGENT_QUOTA_WINDOWS
+    无新 provider——新客户端上传的 provider 快照会被静默丢弃。此处同时探测
+    迁移函数与新白名单（deepseek 等余额型来源），两项齐备才报 proto 7；
+    客户端据此决定是否推进 provider 快照游标，未升级时不推进、升级后补传。
+    """
+    return callable(getattr(db, "_migrate_agent_quota_snapshots", None)) and (
+        "deepseek" in getattr(db, "AGENT_QUOTA_WINDOWS", {})
+    )
+
+
 # ===== 鉴权辅助 =====
 
 def get_master_token():
@@ -247,25 +261,32 @@ def sync():
         "max_snapshot_ts": max_snapshot_ts,
         "accepted_agent_quota_snapshots": accepted_agent_quota_snapshots,
         "max_agent_quota_snapshot_ts": max_agent_quota_snapshot_ts,
-        # 服务端协议版本：6 = 支持逐条明细查询（GET /usage_records，请求日志页
-        # 「全部设备」口径）；5 = 明细支持会话/项目维度（session_id / project_key /
-        # project_display）；4 = 额度快照带 account 维度（多账号采样隔离与
-        # 多端今日增量合并）；3 = 支持 Agent 额度快照同步；若当前加载的是
-        # 旧版 db.py，则降级为 5/4/3/2，客户端按版本探测能力。
+        # 服务端协议版本：7 = 支持全量 provider 额度同步（agent_quota_snapshots
+        # 扩展 label/plan_name/balance/message 字段 + AGENT_QUOTA_WINDOWS 收录
+        # deepseek/moonshot/minimax/opencodego/alibaba/qoder/longcat/mimo/
+        # stepfun/grok/alibabatoken）；6 = 支持逐条明细查询（GET /usage_records，
+        # 请求日志页「全部设备」口径）；5 = 明细支持会话/项目维度（session_id /
+        # project_key / project_display）；4 = 额度快照带 account 维度（多账号
+        # 采样隔离与多端今日增量合并）；3 = 支持 Agent 额度快照同步；若当前
+        # 加载的是旧版 db.py，则降级为 6/5/4/3/2，客户端按版本探测能力。
         # proto 2 的多来源 usage_records.source 行为。
         # 客户端据此探测——旧版服务端（无 source 列）会把 codex 记录按
         # (device_id, local_rowid) 撞键静默丢弃，客户端发现 proto < 2 时
         # 不会推进 codex 游标，升级服务端后自动恢复，数据不丢。
         "proto": (
-            6
-            if _usage_records_query_available()
+            7
+            if _provider_quota_sync_available()
             else (
-                5
-                if _session_project_available()
+                6
+                if _usage_records_query_available()
                 else (
-                    4
-                    if _quota_account_available()
-                    else (3 if _agent_quota_storage_available() else 2)
+                    5
+                    if _session_project_available()
+                    else (
+                        4
+                        if _quota_account_available()
+                        else (3 if _agent_quota_storage_available() else 2)
+                    )
                 )
             )
         ),

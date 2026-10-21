@@ -107,6 +107,11 @@ pub struct SyncConfig {
     /// 已上传到的 Agent 额度快照 ts 游标。
     #[serde(default)]
     pub last_uploaded_agent_quota_snapshot_ts: i64,
+    /// 已上传到的 provider 额度快照 ts 游标（方案 B：deepseek 等 11 个
+    /// 凭证型 provider 的快照与 Agent 快照同通道混传，但游标独立——
+    /// 仅在服务端 proto >= 7 时推进，旧服务端丢弃新 source 后不会丢数据）。
+    #[serde(default)]
+    pub last_uploaded_provider_quota_ts: i64,
     /// 上次成功同步的毫秒时间戳。
     #[serde(default)]
     pub last_sync_at: i64,
@@ -142,6 +147,7 @@ impl Default for SyncConfig {
             last_uploaded_minimaxcode_rev_ts: 0,
             last_uploaded_snapshot_ts: 0,
             last_uploaded_agent_quota_snapshot_ts: 0,
+            last_uploaded_provider_quota_ts: 0,
             last_sync_at: 0,
         }
     }
@@ -197,7 +203,8 @@ struct SyncResponse {
     accepted_agent_quota_snapshots: usize,
     #[serde(default)]
     max_agent_quota_snapshot_ts: Option<i64>,
-    /// 服务端协议版本：2 = 支持多来源，3 = 支持 Agent 额度快照。
+    /// 服务端协议版本：2 = 支持多来源，3 = 支持 Agent 额度快照，
+    /// 7 = 支持全量 provider 额度快照（label/plan_name/balance/message）。
     /// 旧服务端不返回 → 0。codex 上传前据此探测，防止旧服务端按
     /// (device_id, local_rowid) 撞键静默丢弃记录后游标仍推进。
     #[serde(default)]
@@ -396,6 +403,59 @@ pub struct SyncOutcome {
     pub last_sync_at: i64,
 }
 
+/// 服务端对 provider 额度快照（proto 7）支持状态的进程内缓存：
+/// (最近一次探测时刻, 是否支持)。未知 / 距上次探测超过 30 分钟时返回 true
+/// （本轮附加发送一次，按响应更新缓存）；确认不支持的窗口期内返回 false
+/// （跳过附加，避免每轮把未确认的历史快照重发一遍的冗余流量；服务端升级
+/// 后最多 30 分钟自动恢复）。仅进程内有效，重启后重探一次，代价可控。
+static PROVIDER_SYNC_STATE: OnceLock<Mutex<Option<(Instant, bool)>>> = OnceLock::new();
+const PROVIDER_PROTO_RECHECK: Duration = Duration::from_secs(30 * 60);
+
+fn should_attach_provider_snapshots() -> bool {
+    let cell = PROVIDER_SYNC_STATE.get_or_init(|| Mutex::new(None));
+    let Ok(state) = cell.lock() else {
+        return true; // 锁中毒时按未知处理：附加发送并由响应兜底
+    };
+    should_attach_with(*state, Instant::now())
+}
+
+/// 「本轮是否附加发送 provider 快照」的判定（纯函数，单测注入假时刻）：
+/// - 从未探测（None）→ true（首轮探测）；
+/// - 上次探测支持 → true（正常增量，每轮都带）；
+/// - 上次探测不支持且未到重探窗口 → false（跳过附加，零冗余流量）；
+/// - 上次探测不支持但已超过 30 分钟 → true（服务端可能已升级，重探）。
+fn should_attach_with(probe: Option<(Instant, bool)>, now: Instant) -> bool {
+    match probe {
+        None => true,
+        Some((at, supported)) => supported || now.duration_since(at) >= PROVIDER_PROTO_RECHECK,
+    }
+}
+
+fn remember_provider_proto_supported(supported: bool) {
+    let cell = PROVIDER_SYNC_STATE.get_or_init(|| Mutex::new(None));
+    if let Ok(mut state) = cell.lock() {
+        *state = Some((Instant::now(), supported));
+    }
+}
+
+/// provider 快照游标的推进决策（纯函数，单测注入 mock proto 响应）：
+/// 仅当「本轮确实附加发送了 provider 快照」且「服务端自报 proto >= 7」时
+/// 推进到本批最大 ts；否则保留本地游标——旧服务端按 AGENT_QUOTA_WINDOWS
+/// 白名单静默丢弃新 source，此时推进游标会让未确认的 provider 快照永久
+/// 丢失（参考 codex 游标在 proto < 2 不推进的先例）。
+fn provider_quota_cursor_after(
+    attached: bool,
+    proto: u32,
+    provider_max: Option<i64>,
+    current: i64,
+) -> i64 {
+    if attached && proto >= 7 {
+        provider_max.unwrap_or(current)
+    } else {
+        current
+    }
+}
+
 /// 执行一次增量上传（分阶段）：先 zcode 明细（含额度快照），再 codex / claude /
 /// dsh / opencode / kimi 各派生库的明细。各来源游标相互独立：
 /// - zcode 失败：整体返回 Err，游标不前进（下次重试），与原有行为一致；
@@ -435,6 +495,27 @@ pub fn upload_incremental() -> Result<SyncOutcome, String> {
         .max();
     let mut agent_quota_snapshot_cursor_advanced = false;
 
+    // provider 额度快照（方案 B）：与 Agent 快照同请求字段混传（source 区分），
+    // 但游标独立。仅在「服务端确认支持 proto 7」期间附加发送——旧服务端会
+    // 按 AGENT_QUOTA_WINDOWS 静默丢弃新 source，若照发照推进游标，provider
+    // 快照会永久丢失（参考 codex 在 proto < 2 不推进游标的先例）。支持状态
+    // 来自上一次 /sync 响应的 proto 字段，未知或过期（30 分钟）时重探一轮：
+    // 附带发送一次并按响应更新缓存；确认不支持期间跳过附加（零冗余流量），
+    // 服务端升级后最长 30 分钟自动恢复上传。
+    let mut pending_provider_quota_snapshots = Vec::new();
+    let provider_quota_max_ts;
+    if should_attach_provider_snapshots() {
+        pending_provider_quota_snapshots = crate::provider_quota_history::load_all()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|snapshot| snapshot.ts > cfg.last_uploaded_provider_quota_ts)
+            .collect::<Vec<_>>();
+    }
+    provider_quota_max_ts = pending_provider_quota_snapshots
+        .iter()
+        .map(|snapshot| snapshot.ts)
+        .max();
+
     // ===== 阶段一：zcode 明细（records 固定 source="zcode"）=====
     let mut since = cfg.last_uploaded_rowid;
     let mut total_uploaded = 0usize;
@@ -448,7 +529,11 @@ pub fn upload_incremental() -> Result<SyncOutcome, String> {
         let records = query_zcode_rows_with_sessions(since, BATCH, zcode_with_projects)?;
         // 明细耗尽，且还有未发的快照 → 发一个空 records 的批次把快照送出
         let records_empty = records.is_empty();
-        if records_empty && pending_snaps.is_empty() && pending_agent_quota_snapshots.is_empty() {
+        if records_empty
+            && pending_snaps.is_empty()
+            && pending_agent_quota_snapshots.is_empty()
+            && pending_provider_quota_snapshots.is_empty()
+        {
             break;
         }
         if records_empty && !first_batch {
@@ -458,7 +543,10 @@ pub fn upload_incremental() -> Result<SyncOutcome, String> {
         // 本批最大 rowid（游标必须至少推进到这里，否则死循环）
         let batch_max = records.last().map(|r| r.local_rowid).unwrap_or(since);
 
-        // 快照只在首批携带（一次性发完）；之后清空避免重复发
+        // 快照只在首批携带（一次性发完）；之后清空避免重复发。
+        // provider 快照与 Agent 快照混在同一数组（source 区分），请求的
+        // last_agent_quota_snapshot_ts 仍只取 Agent 侧最大值——服务端按请求
+        // 值回传，Agent 游标语义保持不变；provider 游标由下方按 proto 独立推进。
         let snaps_to_send = if first_batch {
             std::mem::take(&mut pending_snaps)
         } else {
@@ -466,7 +554,9 @@ pub fn upload_incremental() -> Result<SyncOutcome, String> {
         };
         let last_snapshot_ts = if first_batch { snap_max_ts } else { None };
         let agent_quota_snapshots_to_send = if first_batch {
-            std::mem::take(&mut pending_agent_quota_snapshots)
+            let mut snapshots = std::mem::take(&mut pending_agent_quota_snapshots);
+            snapshots.append(&mut pending_provider_quota_snapshots);
+            snapshots
         } else {
             Vec::new()
         };
@@ -475,6 +565,7 @@ pub fn upload_incremental() -> Result<SyncOutcome, String> {
         } else {
             None
         };
+        let provider_snapshots_attached = first_batch && provider_quota_max_ts.is_some();
 
         let payload = SyncPayload {
             records,
@@ -513,6 +604,29 @@ pub fn upload_incremental() -> Result<SyncOutcome, String> {
             } else {
                 eprintln!(
                     "[zbar-sync] 服务端版本过旧（不支持 Agent 额度快照），本地快照暂不推进上传游标"
+                );
+            }
+        }
+        // provider 额度快照游标：仅 proto >= 7 的服务端真正接收（旧服务端按
+        // 白名单静默丢弃新 source）。附加发送后按响应 proto 决定推进与否
+        // （决策逻辑抽在 provider_quota_cursor_after，单测覆盖），并更新
+        // 进程内支持缓存（不支持的 30 分钟内不再附加以免重传风暴，服务端
+        // 升级后自动重探恢复）。
+        if first_batch && provider_snapshots_attached {
+            let advanced = provider_quota_cursor_after(
+                provider_snapshots_attached,
+                resp.proto,
+                provider_quota_max_ts,
+                cfg.last_uploaded_provider_quota_ts,
+            );
+            if advanced != cfg.last_uploaded_provider_quota_ts {
+                cfg.last_uploaded_provider_quota_ts = advanced;
+                remember_provider_proto_supported(true);
+            } else if resp.proto < 7 {
+                remember_provider_proto_supported(false);
+                eprintln!(
+                    "[zbar-sync] 服务端未升级到 proto 7（当前 proto={}），provider 额度快照暂不推进上传游标，升级服务端后自动补传",
+                    resp.proto
                 );
             }
         }
@@ -1780,9 +1894,10 @@ pub fn set_auto_cleanup(req: AutoCleanupServerRequest) -> Result<AutoCleanupConf
 /// `disconnect_resets_every_source_cursor` 抓住——它按 serde 字段名扫描所有
 /// `last_uploaded_*`，不依赖人工枚举。
 ///
-/// 刻意不动 `last_uploaded_snapshot_ts` / `last_uploaded_agent_quota_snapshot_ts`：
-/// 那是额度快照通道的游标，重置它会让下次注册后重传全部历史快照（行为变更），
-/// 与本次任务无关，保持既有语义（只补传本次连接后新增的快照）。
+/// 刻意不动 `last_uploaded_snapshot_ts` / `last_uploaded_agent_quota_snapshot_ts` /
+/// `last_uploaded_provider_quota_ts`：那是额度快照通道的游标，重置它会让下次
+/// 注册后重传全部历史快照（行为变更），与本次任务无关，保持既有语义
+/// （只补传本次连接后新增的快照）。
 fn reset_source_cursors(cfg: &mut SyncConfig) {
     cfg.last_uploaded_rowid = 0;
     cfg.last_uploaded_codex_rowid = 0;
@@ -2191,9 +2306,10 @@ mod tests {
         let after = serde_json::to_value(&cfg).expect("序列化失败");
         let after = after.as_object().expect("配置应是 JSON 对象");
         // 额度快照通道的游标不属于「来源明细」，reset_source_cursors 刻意不动
-        const SNAPSHOT_CURSORS: [&str; 2] = [
+        const SNAPSHOT_CURSORS: [&str; 3] = [
             "last_uploaded_snapshot_ts",
             "last_uploaded_agent_quota_snapshot_ts",
+            "last_uploaded_provider_quota_ts",
         ];
         let mut checked = 0usize;
         for (key, value) in after.iter() {
@@ -2221,5 +2337,66 @@ mod tests {
             Some(&serde_json::json!(1_234)),
             "快照游标保持既有语义（不重置）"
         );
+    }
+
+    // ===== provider 快照游标门控（proto 7）=====
+
+    /// proto < 7 的服务端会按白名单静默丢弃新 source：此时游标必须原地不动，
+    /// 否则未确认的 provider 快照永久丢失（codex 在 proto < 2 不推进的同款语义）。
+    #[test]
+    fn provider_cursor_holds_when_proto_below_7() {
+        assert_eq!(
+            provider_quota_cursor_after(true, 6, Some(9_000), 5_000),
+            5_000,
+            "proto 6：即使已附加发送，游标也不得推进"
+        );
+        assert_eq!(
+            provider_quota_cursor_after(true, 3, Some(9_000), 0),
+            0,
+            "proto 3（旧服务端）：游标不推进"
+        );
+        assert_eq!(
+            provider_quota_cursor_after(false, 7, Some(9_000), 5_000),
+            5_000,
+            "本轮未附加发送（支持缓存确认不支持）：游标不推进"
+        );
+    }
+
+    /// proto >= 7 且本轮确实附加发送：游标推进到本批最大 ts。
+    #[test]
+    fn provider_cursor_advances_on_proto7_ack() {
+        assert_eq!(
+            provider_quota_cursor_after(true, 7, Some(9_000), 5_000),
+            9_000
+        );
+        // 未来版本（8+）同样视为支持
+        assert_eq!(
+            provider_quota_cursor_after(true, 8, Some(9_000), 5_000),
+            9_000
+        );
+        // 防御分支：附加发送但无待发数据（max=None）→ 保留原值
+        assert_eq!(provider_quota_cursor_after(true, 7, None, 5_000), 5_000);
+    }
+
+    /// 附加发送的判定（30 分钟重探状态机，注入假时刻）：
+    /// 未探测 → 附加；确认支持 → 每轮附加；确认不支持且未到窗口 → 跳过；
+    /// 超过 30 分钟 → 重探。
+    #[test]
+    fn provider_attach_gate_rechecks_after_30_minutes() {
+        let now = Instant::now();
+        // 从未探测：首轮附加（探测即真实上传，无副作用）
+        assert!(should_attach_with(None, now));
+        // 上次探测支持：正常增量，每轮都附加
+        assert!(should_attach_with(Some((now, true)), now));
+        // 上次探测不支持、29 分钟后：窗口期内跳过（零冗余流量）
+        assert!(!should_attach_with(
+            Some((now - PROVIDER_PROTO_RECHECK + Duration::from_secs(60), false)),
+            now
+        ));
+        // 上次探测不支持、31 分钟后：服务端可能已升级，重探
+        assert!(should_attach_with(
+            Some((now - PROVIDER_PROTO_RECHECK - Duration::from_secs(60), false)),
+            now
+        ));
     }
 }

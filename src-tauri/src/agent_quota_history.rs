@@ -37,16 +37,32 @@ pub struct AgentQuotaWindow {
 }
 
 /// 一个 Agent 在某个时刻的完整额度快照。
+///
+/// 后四个可选字段为 provider 通道（provider_quota_history）扩展：CLI 通道
+/// （codex / claude / cursor / kimi 本地登录态）恒为 None，旧 jsonl 行缺字段
+/// 时按 serde 默认解出 None，读写双向兼容。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AgentQuotaSnapshot {
-    /// 数据来源：codex / claude / cursor。
+    /// 数据来源：codex / claude / cursor / kimi / 各 provider 名。
     pub source: String,
     /// 采样时间（毫秒）。
     pub ts: i64,
-    /// 套餐类型，例如 plus / pro / max。
+    /// 套餐类型，例如 plus / pro / max（CLI 通道）。
     pub plan_type: Option<String>,
     /// 当前可用的额度窗口。
     pub windows: Vec<AgentQuotaWindow>,
+    /// 凭证备注名（provider 通道：同 provider 多凭证的账号维度，≤64 字）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// 套餐展示名（provider 通道：DeepSeek 等无 plan_type 概念的来源，≤64 字）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan_name: Option<String>,
+    /// 按量计费余额（余额型 provider；整体可空）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub balance: Option<crate::provider_quota::ProviderQuotaBalance>,
+    /// 查询失败原因（status != ok 的错误态快照，≤128 字）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
 }
 
 pub fn history_path() -> Result<PathBuf, String> {
@@ -61,7 +77,13 @@ pub fn append_snapshot(snapshot: &AgentQuotaSnapshot) {
     }
     let mut sanitized = snapshot.clone();
     sanitized.windows.retain(|window| is_valid_used_pct(window.used_pct));
-    if sanitized.windows.is_empty() {
+    // 空窗口的快照仅在携带 provider 扩展载荷（余额 / 套餐名 / 错误原因）时
+    // 保留——CLI 通道的调用不带这些字段，空窗口照旧丢弃，行为不变。
+    if sanitized.windows.is_empty()
+        && sanitized.balance.is_none()
+        && sanitized.plan_name.is_none()
+        && sanitized.message.is_none()
+    {
         return;
     }
     if let Err(e) = try_append(&sanitized) {
@@ -395,6 +417,10 @@ mod tests {
                 used_pct: pct,
                 reset_at,
             }],
+            label: None,
+            plan_name: None,
+            balance: None,
+            message: None,
         }
     }
 
@@ -485,6 +511,10 @@ mod tests {
                 used_pct: pct,
                 reset_at,
             }],
+            label: None,
+            plan_name: None,
+            balance: None,
+            message: None,
         }
     }
 

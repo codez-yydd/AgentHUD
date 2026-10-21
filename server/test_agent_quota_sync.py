@@ -68,10 +68,14 @@ class AgentQuotaSyncTest(unittest.TestCase):
                     "device_id": "TEXT",
                     "source": "TEXT",
                     "ts": "INTEGER",
+                    "label": "TEXT",
                     "plan_type": "TEXT",
+                    "plan_name": "TEXT",
                     "window_key": "TEXT",
                     "used_pct": "REAL",
                     "reset_at": "INTEGER",
+                    "balance_json": "TEXT",
+                    "message": "TEXT",
                 },
             )
         finally:
@@ -109,7 +113,7 @@ class AgentQuotaSyncTest(unittest.TestCase):
         )
         body = response.get_json()
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(body["proto"], 5)
+        self.assertEqual(body["proto"], 7)
         self.assertEqual(body["accepted"], 0)
         self.assertEqual(body["accepted_snapshots"], 1)
         self.assertEqual(body["max_snapshot_ts"], 100)
@@ -150,7 +154,7 @@ class AgentQuotaSyncTest(unittest.TestCase):
         )
         body = response.get_json()
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(body["proto"], 5)
+        self.assertEqual(body["proto"], 7)
         self.assertEqual(body["accepted_agent_quota_snapshots"], 0)
         self.assertIsNone(body["max_agent_quota_snapshot_ts"])
 
@@ -282,6 +286,276 @@ class AgentQuotaSyncTest(unittest.TestCase):
         self.assertEqual(
             db.query_agent_quota_snapshots(0, 100, ["device-a"]), []
         )
+
+    def test_provider_snapshots_with_balance_and_label_round_trip(self):
+        """proto 7：余额型 provider 快照（空 windows + balance）落库并回读。"""
+        accepted = db.insert_agent_quota_snapshots(
+            "device-a",
+            [
+                {
+                    "source": "deepseek",
+                    "ts": 5_000,
+                    "label": "主账号",
+                    "plan_name": "Pay-as-you-go",
+                    "windows": [],
+                    "balance": {
+                        "amount": 110.5,
+                        "currency": "CNY",
+                        "granted": 10.0,
+                        "topped_up": 100.5,
+                    },
+                }
+            ],
+            5_000,
+        )
+        self.assertEqual(accepted, 1)
+
+        snapshots = db.query_agent_quota_snapshots(0, 9_000, ["device-a"])
+        self.assertEqual(len(snapshots), 1)
+        snap = snapshots[0]
+        self.assertEqual(snap["source"], "deepseek")
+        self.assertEqual(snap["label"], "主账号")
+        self.assertEqual(snap["plan_name"], "Pay-as-you-go")
+        self.assertEqual(snap["windows"], [])
+        self.assertEqual(
+            snap["balance"],
+            {
+                "amount": 110.5,
+                "currency": "CNY",
+                "granted": 10.0,
+                "topped_up": 100.5,
+            },
+        )
+
+    def test_provider_snapshots_multi_label_same_ts_do_not_collide(self):
+        """同 source 同 ts 多凭证（label 维度）互不撞键，查询按账号拆分。"""
+        db.insert_agent_quota_snapshots(
+            "device-a",
+            [
+                {
+                    "source": "moonshot",
+                    "ts": 6_000,
+                    "label": "账号一",
+                    "windows": [],
+                    "balance": {"amount": 1.0, "currency": "CNY"},
+                },
+                {
+                    "source": "moonshot",
+                    "ts": 6_000,
+                    "label": "账号二",
+                    "windows": [],
+                    "balance": {"amount": 2.0, "currency": "CNY"},
+                },
+            ],
+            6_000,
+        )
+        snapshots = db.query_agent_quota_snapshots(0, 9_000, ["device-a"])
+        self.assertEqual({s["label"] for s in snapshots}, {"账号一", "账号二"})
+        amounts = {s["label"]: s["balance"]["amount"] for s in snapshots}
+        self.assertEqual(amounts, {"账号一": 1.0, "账号二": 2.0})
+
+    def test_provider_window_snapshot_keeps_windows_and_plan(self):
+        """有窗口的 provider 快照（qoder credits）窗口按白名单保留。"""
+        db.insert_agent_quota_snapshots(
+            "device-a",
+            [
+                {
+                    "source": "qoder",
+                    "ts": 7_000,
+                    "label": "工作号",
+                    "plan_name": "Pro",
+                    "windows": [
+                        {"key": "credits", "used_pct": 42.5, "reset_at": 7_500},
+                        # 白名单外窗口被过滤
+                        {"key": "unknown_window", "used_pct": 10.0},
+                    ],
+                }
+            ],
+            7_000,
+        )
+        snapshots = db.query_agent_quota_snapshots(0, 9_000, ["device-a"])
+        self.assertEqual(len(snapshots), 1)
+        self.assertEqual(len(snapshots[0]["windows"]), 1)
+        self.assertEqual(snapshots[0]["windows"][0]["key"], "credits")
+        self.assertEqual(snapshots[0]["plan_name"], "Pro")
+
+    def test_error_state_snapshot_without_payload_stays_dropped(self):
+        """旧客户端语义：空 windows 且不带 proto 7 载荷的快照照旧整体丢弃。"""
+        accepted = db.insert_agent_quota_snapshots(
+            "device-a",
+            [{"source": "codex", "ts": 8_000, "windows": []}],
+            8_000,
+        )
+        self.assertEqual(accepted, 0)
+
+    def test_error_state_snapshot_with_message_is_stored(self):
+        """错误态快照（message 有值）落哨兵行，回读供手机端展示错误原因。"""
+        accepted = db.insert_agent_quota_snapshots(
+            "device-a",
+            [
+                {
+                    "source": "deepseek",
+                    "ts": 8_500,
+                    "label": "过期号",
+                    "windows": [],
+                    "message": "API Key 无效或已过期",
+                }
+            ],
+            8_500,
+        )
+        self.assertEqual(accepted, 1)
+        snapshots = db.query_agent_quota_snapshots(0, 9_000, ["device-a"])
+        snap = next(s for s in snapshots if s["ts"] == 8_500)
+        self.assertEqual(snap["windows"], [])
+        self.assertEqual(snap["message"], "API Key 无效或已过期")
+
+    def test_camel_case_balance_keys_are_accepted(self):
+        """桌面端 serde camelCase（toppedUp）与 snake_case 双键兼容落库。
+
+        历史缺陷：桌面 ProviderQuotaBalance 序列化为 toppedUp，而解析端只读
+        topped_up——充值金额被静默丢弃。本用例按真实桌面载荷形态（camelCase）
+        构造请求，防止测试再用 snake_case 自证掩盖键名漂移。
+        """
+        db.insert_agent_quota_snapshots(
+            "device-a",
+            [
+                {
+                    "source": "deepseek",
+                    "ts": 9_100,
+                    "label": "camelCase 键",
+                    "windows": [],
+                    # 桌面端 serde rename_all = "camelCase" 的真实形态
+                    "balance": {
+                        "amount": 88.0,
+                        "currency": "CNY",
+                        "granted": 8.0,
+                        "toppedUp": 80.0,
+                    },
+                }
+            ],
+            9_100,
+        )
+        snapshots = db.query_agent_quota_snapshots(0, 9_900, ["device-a"])
+        self.assertEqual(len(snapshots), 1)
+        balance = snapshots[0]["balance"]
+        # 回读口径统一为 snake_case
+        self.assertEqual(balance["granted"], 8.0)
+        self.assertEqual(balance["topped_up"], 80.0)
+        self.assertNotIn("toppedUp", balance)
+
+    def test_merge_backfills_proto7_payload_on_conflict(self):
+        """设备合并冲突时：窗口行守较高用量；哨兵行的扩展载荷按 COALESCE 回填。
+
+        哨兵行（window_key=''，used_pct=0）沿用 used_pct < ? 门控会永假——
+        余额/错误原因在合并时会被静默丢掉，此处锁定回填语义。
+        """
+        # 目标设备先落一条无载荷的哨兵行（旧版本/部分数据）
+        db.insert_agent_quota_snapshots(
+            "device-a",
+            [
+                {
+                    "source": "deepseek",
+                    "ts": 9_500,
+                    "label": "合并账号",
+                    "windows": [],
+                    "balance": {"amount": 1.0, "currency": "CNY"},
+                }
+            ],
+            9_500,
+        )
+        # 手工把目标行的载荷清空，模拟「同主键但目标无扩展数据」的冲突形态
+        conn = db.get_conn()
+        try:
+            conn.execute(
+                """
+                UPDATE agent_quota_snapshots
+                SET balance_json = NULL, message = NULL
+                WHERE device_id = 'device-a' AND ts = 9500
+                """
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        # 来源设备同主键行带余额与错误原因
+        db.insert_agent_quota_snapshots(
+            "device-b",
+            [
+                {
+                    "source": "deepseek",
+                    "ts": 9_500,
+                    "label": "合并账号",
+                    "windows": [],
+                    "balance": {"amount": 5.5, "currency": "CNY"},
+                    "message": "余额暂不可用于 API 调用",
+                }
+            ],
+            9_500,
+        )
+        db.merge_devices("device-b", "device-a")
+
+        merged = db.query_agent_quota_snapshots(0, 9_900, ["device-a"])
+        snap = next(s for s in merged if s["ts"] == 9_500)
+        # 扩展载荷从来源行回填（目标为空时不丢）
+        self.assertEqual(snap["balance"]["amount"], 5.5)
+        self.assertEqual(snap["message"], "余额暂不可用于 API 调用")
+        # 来源设备数据已迁走
+        self.assertEqual(db.query_agent_quota_snapshots(0, 9_900, ["device-b"]), [])
+
+    def test_legacy_schema_migrates_in_place(self):
+        """旧 schema（无 label 列）的库 init_db 后自动迁移，老数据保留。"""
+        # 造一个旧结构的库（proto 6 及之前的表定义）
+        conn = db.get_conn()
+        try:
+            conn.execute("DROP TABLE agent_quota_snapshots")
+            conn.execute(
+                """
+                CREATE TABLE agent_quota_snapshots (
+                    device_id   TEXT    NOT NULL,
+                    source      TEXT    NOT NULL,
+                    ts          INTEGER NOT NULL,
+                    plan_type   TEXT    NOT NULL DEFAULT '',
+                    window_key  TEXT    NOT NULL,
+                    used_pct    REAL    NOT NULL DEFAULT 0,
+                    reset_at    INTEGER,
+                    PRIMARY KEY (device_id, source, ts, window_key)
+                )
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO agent_quota_snapshots
+                    (device_id, source, ts, plan_type, window_key, used_pct, reset_at)
+                VALUES ('device-a', 'codex', 100, 'pro', 'weekly', 12.0, 200)
+                """
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        db.init_db()  # 迁移 + 二次 init 幂等
+        db.init_db()
+
+        snapshots = db.query_agent_quota_snapshots(0, 1_000, ["device-a"])
+        self.assertEqual(len(snapshots), 1)
+        self.assertEqual(snapshots[0]["windows"][0]["used_pct"], 12.0)
+        self.assertIsNone(snapshots[0]["label"])
+        # 迁移后同 ts 不同 label 的新快照可继续落库
+        db.insert_agent_quota_snapshots(
+            "device-a",
+            [
+                {
+                    "source": "deepseek",
+                    "ts": 100,
+                    "label": "新账号",
+                    "windows": [],
+                    "balance": {"amount": 3.0, "currency": "CNY"},
+                }
+            ],
+            100,
+        )
+        merged = db.query_agent_quota_snapshots(0, 1_000, ["device-a"])
+        self.assertEqual({s.get("label") for s in merged}, {None, "新账号"})
 
 
 if __name__ == "__main__":

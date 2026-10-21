@@ -798,6 +798,10 @@ pub fn backfill_today_rate_limit_history() -> Result<usize, String> {
                 ts,
                 plan_type: limits.plan_type.clone(),
                 windows,
+                label: None,
+                plan_name: None,
+                balance: None,
+                message: None,
             });
         }
     }

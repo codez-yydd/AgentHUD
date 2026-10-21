@@ -35,6 +35,7 @@ mod pricing;
 mod projects;
 mod provider_credentials;
 mod provider_quota;
+mod provider_quota_history;
 mod qoder;
 mod quota;
 mod quota_history;
@@ -532,11 +533,13 @@ async fn get_agent_quota_history(
     .map_err(|e| format!("读取 Agent 额度快照任务失败: {e}"))?
 }
 
-/// 清空额度快照历史（设置页"清理历史"用）。
+/// 清空额度快照历史（设置页"清理历史"用）。provider 快照历史
+/// （provider_quota_history）与 Agent 快照历史一并清理，保持口径一致。
 #[tauri::command]
 fn clear_quota_history() -> Result<(), String> {
     quota_history::clear_history()?;
-    agent_quota_history::clear_history()
+    agent_quota_history::clear_history()?;
+    provider_quota_history::clear_history()
 }
 
 /// 对比页"实际 token"列（本地部分）：对一组周期 [reset_at, end_at)
@@ -1583,6 +1586,10 @@ fn append_agent_quota_snapshot_at(
         ts,
         plan_type,
         windows,
+        label: None,
+        plan_name: None,
+        balance: None,
+        message: None,
     });
 }
 

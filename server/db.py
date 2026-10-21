@@ -10,6 +10,7 @@
   旧库首次启动自动迁移（见 _migrate_usage_records），老数据无损。
 """
 
+import json
 import math
 import sqlite3
 import threading
@@ -91,16 +92,28 @@ CREATE TABLE IF NOT EXISTS quota_snapshots (
 # Agent 额度快照按窗口拆行保存，查询时再组装回客户端使用的 snapshot 形状。
 # plan_type 为空时统一保存为空字符串；快照身份不含 plan_type，避免套餐标签
 # 变化后同一来源/时间/窗口产生重复采样。
+# proto 7（全量 provider 额度同步）扩展四列：
+# - label：凭证备注名（同一 provider 多凭证的账号维度，进主键——同设备同
+#   来源同毫秒的多凭证采样互不撞键；旧数据统一 ''，与旧主键去重一致）；
+# - plan_name：套餐展示名（DeepSeek 等无 plan_type 概念的 provider 用）；
+# - balance_json：按量计费余额（{amount, currency, granted?, topped_up?}）；
+# - message：查询失败原因（status != ok 的错误态快照，供手机端展示）。
+# 窗口为空的余额型/错误态快照落一行 window_key='' 的哨兵行（used_pct=0），
+# 组装回快照时该行不进 windows 数组、只贡献 label/plan_name/balance/message。
 SCHEMA_AGENT_QUOTA_SNAPSHOTS = """
 CREATE TABLE IF NOT EXISTS agent_quota_snapshots (
-    device_id   TEXT    NOT NULL,
-    source      TEXT    NOT NULL,
-    ts          INTEGER NOT NULL,
-    plan_type   TEXT    NOT NULL DEFAULT '',
-    window_key  TEXT    NOT NULL,
-    used_pct    REAL    NOT NULL DEFAULT 0,
-    reset_at    INTEGER,
-    PRIMARY KEY (device_id, source, ts, window_key)
+    device_id    TEXT    NOT NULL,
+    source       TEXT    NOT NULL,
+    ts           INTEGER NOT NULL,
+    label        TEXT    NOT NULL DEFAULT '',
+    plan_type    TEXT    NOT NULL DEFAULT '',
+    plan_name    TEXT,
+    window_key   TEXT    NOT NULL,
+    used_pct     REAL    NOT NULL DEFAULT 0,
+    reset_at     INTEGER,
+    balance_json TEXT,
+    message      TEXT,
+    PRIMARY KEY (device_id, source, ts, label, window_key)
 )
 """
 
@@ -124,6 +137,22 @@ AGENT_QUOTA_WINDOWS = {
     # 服务端会**静默丢弃**它的额度快照，导致多设备额度视图里 kimi 永远没有数据。
     # 窗口键与 codex/claude 同款，直接并进来即可。
     "kimi": {"hour5", "weekly"},
+    # ===== proto 7：全量 provider 额度同步（窗口键 = 桌面 provider_quota.rs
+    # 各模块归一后的 ProviderQuotaWindow.key，白名单与客户端
+    # provider_quota_history.rs 的 PROVIDER_SNAPSHOT_SOURCES 保持一致）。
+    # 窗口键集合为空 = 纯余额型 provider（无百分比窗口，快照只带 balance），
+    # insert 侧按「windows 为空但 balance/plan_name/message 有值即落库」放行。
+    "deepseek": set(),
+    "moonshot": set(),
+    "minimax": {"interval", "weekly"},
+    "opencodego": {"hour5", "weekly", "monthly"},
+    "alibaba": {"hour5", "weekly", "monthly"},
+    "qoder": {"credits"},
+    "longcat": {"quota", "fuel"},
+    "mimo": {"credits"},
+    "stepfun": {"sub_credits", "topup_credits"},
+    "grok": {"monthly"},
+    "alibabatoken": {"credits"},
 }
 
 SCHEMA_CONFIG = """
@@ -252,6 +281,49 @@ def _migrate_usage_records_columns(conn):
         )
 
 
+def _migrate_agent_quota_snapshots(conn):
+    """agent_quota_snapshots 扩展 provider 维度的幂等自动迁移（proto 7）。
+
+    老表无 label 列（主键 device_id+source+ts+window_key）时：建新表（主键
+    扩为 device_id+source+ts+label+window_key，并带 plan_name / balance_json /
+    message 三列）→ 旧数据全部按 label='' 搬入 → 删旧表 → 改名。单事务完成，
+    老数据无损；已迁移/全新库直接跳过（可重复调用，幂等）。旧数据 label=''
+    与旧主键的去重行为一致；同设备多凭证的采样此后按 label 区分互不撞键。
+    """
+    cols = [r["name"] for r in conn.execute("PRAGMA table_info(agent_quota_snapshots)").fetchall()]
+    if not cols or "label" in cols:
+        return
+
+    conn.isolation_level = None  # 手动管理事务，保证搬迁原子性
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute(SCHEMA_AGENT_QUOTA_SNAPSHOTS.replace(
+            "IF NOT EXISTS agent_quota_snapshots", "IF NOT EXISTS agent_quota_snapshots_new"
+        ))
+        conn.execute(
+            """
+            INSERT INTO agent_quota_snapshots_new
+                (device_id, source, ts, label, plan_type, plan_name,
+                 window_key, used_pct, reset_at, balance_json, message)
+            SELECT device_id, source, ts, '', plan_type, NULL,
+                   window_key, used_pct, reset_at, NULL, NULL
+            FROM agent_quota_snapshots
+            """
+        )
+        conn.execute("DROP TABLE agent_quota_snapshots")
+        conn.execute("ALTER TABLE agent_quota_snapshots_new RENAME TO agent_quota_snapshots")
+        conn.execute("COMMIT")
+        print(
+            "[zbar-sync] agent_quota_snapshots 已自动迁移：新增 label/plan_name/"
+            "balance_json/message 列，老数据无损保留"
+        )
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+    finally:
+        conn.isolation_level = ""
+
+
 def init_db():
     """初始化数据库：创建数据目录 + 自动建库建表（幂等，可重复调用）。
 
@@ -271,8 +343,17 @@ def init_db():
         _migrate_usage_records(conn)
         _migrate_quota_snapshots(conn)
         _migrate_usage_records_columns(conn)
+        _migrate_agent_quota_snapshots(conn)
         if not conn.in_transaction:
-            for sql in (INDEX_STARTED, INDEX_DEVICE_STARTED, INDEX_SNAPSHOT_TS):
+            # 迁移中的 DROP TABLE 会连带删掉索引（含 agent 快照表上的两个），
+            # 这里重放一遍挂回新表
+            for sql in (
+                INDEX_STARTED,
+                INDEX_DEVICE_STARTED,
+                INDEX_SNAPSHOT_TS,
+                INDEX_AGENT_QUOTA_SNAPSHOT_TS,
+                INDEX_AGENT_QUOTA_SNAPSHOT_SOURCE_TS,
+            ):
                 conn.execute(sql)
             conn.commit()
     finally:
@@ -788,12 +869,55 @@ def query_snapshots(from_ms, to_ms, device_ids):
         conn.close()
 
 
+def _parse_snapshot_balance(balance):
+    """解析快照携带的按量余额（{amount, currency, granted?, topped_up?}）。
+
+    非法输入（非字典 / amount 缺失或非有限数）返回 None——视为未携带，
+    与旧客户端不上传该字段的行为一致。合法时序列化为 JSON 字符串落库。
+    """
+    if not isinstance(balance, dict):
+        return None
+    try:
+        amount = float(balance.get("amount"))
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(amount):
+        return None
+    out = {"amount": amount}
+    currency = balance.get("currency")
+    if isinstance(currency, str) and currency.strip():
+        out["currency"] = currency.strip()[:16]
+    # 双键兼容：桌面端 ProviderQuotaBalance 是 serde camelCase（序列化为
+    # toppedUp），其余调用方（测试/未来客户端）可能用 snake_case；两个键
+    # 都接受，取第一个可解析的有限数。granted 单词无形态差异，无需双写。
+    for out_key, in_keys in (("granted", ("granted",)),
+                             ("topped_up", ("topped_up", "toppedUp"))):
+        for key in in_keys:
+            try:
+                value = balance.get(key)
+                if value is None:
+                    continue
+                value = float(value)
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(value):
+                out[out_key] = value
+                break
+    return json.dumps(out, ensure_ascii=False)
+
+
 def insert_agent_quota_snapshots(device_id, snapshots, uploaded_at):
     """批量插入 Agent 额度快照，并按窗口行幂等去重。
 
     客户端上传的是一个 snapshot 对象数组，每个对象包含多个 windows；
     服务端将其展平存储。uploaded_at 为兼容现有同步写入接口保留，当前表
     不需要记录上传时间。
+
+    proto 7 扩展：每个 snapshot 还可带 label（凭证备注名，同来源多凭证的
+    账号维度）、plan_name（套餐名）、balance（余额对象）、message（错误态
+    原因），均可缺省。windows 过滤后为空但上述任一字段有值时，落一行
+    window_key='' 的哨兵行（余额型 / 错误态快照）；旧客户端的快照不带
+    这些字段，空窗口照旧整体丢弃，行为与 proto 3-6 完全一致。
     """
     if not snapshots:
         return 0
@@ -809,11 +933,16 @@ def insert_agent_quota_snapshots(device_id, snapshots, uploaded_at):
             ts = int(snapshot.get("ts"))
         except (TypeError, ValueError):
             continue
+        label = str(snapshot.get("label") or "").strip()[:64]
         plan_type = str(snapshot.get("plan_type") or "").strip()[:64]
+        plan_name = str(snapshot.get("plan_name") or "").strip()[:64]
+        message = str(snapshot.get("message") or "").strip()[:128]
+        balance_json = _parse_snapshot_balance(snapshot.get("balance"))
         windows = snapshot.get("windows") or []
         if not isinstance(windows, (list, tuple)):
             continue
 
+        window_rows = 0
         for window in windows[:16]:
             if not isinstance(window, dict):
                 continue
@@ -838,10 +967,34 @@ def insert_agent_quota_snapshots(device_id, snapshots, uploaded_at):
                     device_id,
                     source,
                     ts,
+                    label,
                     plan_type,
+                    plan_name or None,
                     window_key,
                     used_pct,
                     reset_at,
+                    balance_json,
+                    message or None,
+                )
+            )
+            window_rows += 1
+
+        # 哨兵行：无窗口的余额型 / 错误态快照（有任一 proto 7 扩展载荷才落库，
+        # 旧客户端的空窗口快照不会进入该分支——行为不变）
+        if window_rows == 0 and (plan_name or balance_json or message):
+            rows.append(
+                (
+                    device_id,
+                    source,
+                    ts,
+                    label,
+                    plan_type,
+                    plan_name or None,
+                    "",  # window_key 哨兵：组装回快照时不进 windows
+                    0.0,
+                    None,
+                    balance_json,
+                    message or None,
                 )
             )
 
@@ -860,9 +1013,9 @@ def insert_agent_quota_snapshots(device_id, snapshots, uploaded_at):
                 cur.execute(
                     """
                     INSERT OR IGNORE INTO agent_quota_snapshots
-                        (device_id, source, ts, plan_type, window_key,
-                         used_pct, reset_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                        (device_id, source, ts, label, plan_type, plan_name,
+                         window_key, used_pct, reset_at, balance_json, message)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     row,
                 )
@@ -873,19 +1026,26 @@ def insert_agent_quota_snapshots(device_id, snapshots, uploaded_at):
                 updated = cur.execute(
                     """
                     UPDATE agent_quota_snapshots
-                    SET plan_type = ?, used_pct = ?, reset_at = ?
+                    SET plan_type = ?, used_pct = ?, reset_at = ?,
+                        plan_name = COALESCE(?, plan_name),
+                        balance_json = COALESCE(?, balance_json),
+                        message = COALESCE(?, message)
                     WHERE device_id = ? AND source = ? AND ts = ?
-                      AND window_key = ? AND used_pct < ?
+                      AND label = ? AND window_key = ? AND used_pct < ?
                     """,
                     (
-                        row[3],
+                        row[4],
+                        row[7],
+                        row[8],
                         row[5],
-                        row[6],
+                        row[9],
+                        row[10],
                         row[0],
                         row[1],
                         row[2],
-                        row[4],
-                        row[5],
+                        row[3],
+                        row[6],
+                        row[7],
                     ),
                 )
                 accepted += updated.rowcount
@@ -909,15 +1069,31 @@ def max_agent_quota_snapshot_ts_of(device_id):
         conn.close()
 
 
+def _decode_snapshot_balance(balance_json):
+    """把 balance_json 列还原为客户端可解析的余额对象（损坏/非法返回 None）。"""
+    if not balance_json:
+        return None
+    try:
+        value = json.loads(balance_json)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+    if not isinstance(value, dict) or "amount" not in value:
+        return None
+    return value
+
+
 def _group_agent_quota_rows(rows):
     """把展平的 agent_quota_snapshots 行组装回客户端 snapshot 形状。
 
-    按 (device_id, source, ts, plan_type) 分组，windows 逐行追加；
+    按 (device_id, source, ts, plan_type, label) 分组，windows 逐行追加；
     /agent-quota-snapshots 使用本组装逻辑，保证返回口径稳定。
+    proto 7 扩展字段（label / plan_name / balance / message）随组透传：
+    label 空串归一为 None（旧数据语义 = 无账号维度）；window_key='' 的
+    哨兵行不进 windows 数组，只贡献扩展载荷。
     """
     grouped = {}
     for row in rows:
-        key = (row["device_id"], row["source"], row["ts"], row["plan_type"])
+        key = (row["device_id"], row["source"], row["ts"], row["plan_type"], row["label"])
         snapshot = grouped.get(key)
         if snapshot is None:
             snapshot = {
@@ -925,24 +1101,31 @@ def _group_agent_quota_rows(rows):
                 "source": row["source"],
                 "ts": row["ts"],
                 "plan_type": row["plan_type"] or None,
+                "label": row["label"] or None,
+                "plan_name": row["plan_name"] or None,
+                "balance": _decode_snapshot_balance(row["balance_json"]),
+                "message": row["message"] or None,
                 "windows": [],
             }
             grouped[key] = snapshot
-        snapshot["windows"].append(
-            {
-                "key": row["window_key"],
-                "used_pct": row["used_pct"],
-                "reset_at": row["reset_at"],
-            }
-        )
+        if row["window_key"]:
+            snapshot["windows"].append(
+                {
+                    "key": row["window_key"],
+                    "used_pct": row["used_pct"],
+                    "reset_at": row["reset_at"],
+                }
+            )
     return list(grouped.values())
 
 
 def query_agent_quota_snapshots(from_ms, to_ms, device_ids, source=None):
     """查询 Agent 额度快照，并组装为客户端可直接解析的 snapshot 形状。
 
-    返回的每个对象包含 device_id、source、ts、plan_type 和 windows；
-    device_ids 为空表示查询全部设备，source 为空表示查询全部来源。
+    返回的每个对象包含 device_id、source、ts、plan_type、windows 及 proto 7
+    扩展字段（label / plan_name / balance / message，旧数据为 None——旧
+    客户端忽略未知字段，天然兼容）；device_ids 为空表示查询全部设备，
+    source 为空表示查询全部来源。
     """
     dev_frag, dev_params = _build_device_filter(device_ids)
     src_frag, src_params = _build_source_filter(source)
@@ -950,12 +1133,12 @@ def query_agent_quota_snapshots(from_ms, to_ms, device_ids, source=None):
     try:
         rows = conn.execute(
             f"""
-            SELECT device_id, source, ts, plan_type, window_key,
-                   used_pct, reset_at
+            SELECT device_id, source, ts, label, plan_type, plan_name,
+                   window_key, used_pct, reset_at, balance_json, message
             FROM agent_quota_snapshots
             WHERE ts >= ? AND ts < ? {dev_frag} {src_frag}
             ORDER BY ts ASC, device_id ASC, source ASC,
-                     plan_type ASC, window_key ASC
+                     plan_type ASC, label ASC, window_key ASC
             """,
             [from_ms, to_ms] + dev_params + src_params,
         ).fetchall()
@@ -1323,11 +1506,13 @@ def merge_devices(source_id, target_id):
             )
             snapshots_moved = snap.rowcount
 
-            # 3) Agent 额度快照：按完整窗口主键迁移，冲突时保留较高用量。
-            # 不使用 INSERT ... SELECT ... ON CONFLICT，兼容旧版 SQLite。
+            # 3) Agent 额度快照：按完整窗口主键（含 proto 7 的 label 维度）
+            # 迁移，冲突时保留较高用量。不使用 INSERT ... SELECT ... ON CONFLICT，
+            # 兼容旧版 SQLite。
             agent_rows = conn.execute(
                 """
-                SELECT source, ts, plan_type, window_key, used_pct, reset_at
+                SELECT source, ts, label, plan_type, plan_name, window_key,
+                       used_pct, reset_at, balance_json, message
                 FROM agent_quota_snapshots
                 WHERE device_id = ?
                 """,
@@ -1338,39 +1523,73 @@ def merge_devices(source_id, target_id):
                     target_id,
                     row["source"],
                     row["ts"],
+                    row["label"],
                     row["plan_type"],
+                    row["plan_name"],
                     row["window_key"],
                     row["used_pct"],
                     row["reset_at"],
+                    row["balance_json"],
+                    row["message"],
                 )
                 inserted = conn.execute(
                     """
                     INSERT OR IGNORE INTO agent_quota_snapshots
-                        (device_id, source, ts, plan_type, window_key,
-                         used_pct, reset_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                        (device_id, source, ts, label, plan_type, plan_name,
+                         window_key, used_pct, reset_at, balance_json, message)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     values,
                 ).rowcount
                 if not inserted:
+                    # 冲突时分两步走，各自守自己的语义：
+                    # a) 窗口值修订：较高用量者胜（used_pct < ? 门控——
+                    #    哨兵行双方 used_pct 都是 0，此分支对哨兵行天然不生效，
+                    #    窗口行行为与旧版完全一致）；
                     conn.execute(
                         """
                         UPDATE agent_quota_snapshots
                         SET plan_type = ?, used_pct = ?, reset_at = ?
                         WHERE device_id = ? AND source = ? AND ts = ?
-                          AND window_key = ? AND used_pct < ?
+                          AND label = ? AND window_key = ? AND used_pct < ?
                         """,
                         (
-                            values[3],
-                            values[5],
-                            values[6],
+                            values[4],
+                            values[7],
+                            values[8],
                             values[0],
                             values[1],
                             values[2],
-                            values[4],
-                            values[5],
+                            values[3],
+                            values[6],
+                            values[7],
                         ),
                     )
+                    # b) proto 7 扩展载荷回填：仅来源行携带且目标行为空时覆盖
+                    #    （COALESCE 判空，不带 used_pct 门控——余额型 / 错误态
+                    #    哨兵行的 used_pct 恒为 0，若沿用 used_pct < ? 条件将
+                    #    永假，余额与错误原因在设备合并时会被静默丢掉）。
+                    if values[5] or values[9] or values[10]:
+                        conn.execute(
+                            """
+                            UPDATE agent_quota_snapshots
+                            SET plan_name = COALESCE(plan_name, ?),
+                                balance_json = COALESCE(balance_json, ?),
+                                message = COALESCE(message, ?)
+                            WHERE device_id = ? AND source = ? AND ts = ?
+                              AND label = ? AND window_key = ?
+                            """,
+                            (
+                                values[5],
+                                values[9],
+                                values[10],
+                                values[0],
+                                values[1],
+                                values[2],
+                                values[3],
+                                values[6],
+                            ),
+                        )
             conn.execute(
                 "DELETE FROM agent_quota_snapshots WHERE device_id = ?",
                 (source_id,),

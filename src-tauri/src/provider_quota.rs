@@ -19,7 +19,7 @@
 //! 「接入中」提示）。
 
 use crate::provider_credentials;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 // ============================================================
 // 数据结构（与前端 types.ts 逐字段对齐；Option 字段缺省时省略，
@@ -53,7 +53,8 @@ pub struct ProviderQuotaWindow {
 
 /// 按量计费余额（DeepSeek / Moonshot / 通义 Token 等充值型 provider）。
 /// PartialEq：HUD 停靠条把它塞进 HudBarAgent（变更检测用）后需要比较。
-#[derive(Debug, Clone, PartialEq, Serialize)]
+/// Deserialize：额度快照历史（provider_quota_history）原样携带余额字段。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderQuotaBalance {
     /// 当前余额
@@ -278,6 +279,11 @@ pub(crate) fn query_provider_quota(
             );
         }
     }
+    // 4. 采样写入 provider 快照历史（方案 B：全量额度同步）。仅覆盖 11 个
+    //    凭证型 provider（gemini / codex / claude / cursor / kimi 不在此列，
+    //    见 provider_quota_history 模块注释）；失败只记日志不影响查询结果。
+    //    每条凭证一条快照（label 区分），余额型 / 错误态同样落盘。
+    crate::provider_quota_history::record_entries(provider, &entries);
     Ok(entries)
 }
 
