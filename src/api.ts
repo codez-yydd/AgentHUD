@@ -253,13 +253,16 @@ export interface AgentTokenSummary {
   todayRequests: number;
   dayTokens: number;
   dayRequests: number;
-  /** 本地库全时段累计；Cursor 无本地库，恒 0 */
+  /** 全时段累计（全部设备口径，Cursor 无明细恒 0） */
   totalTokens: number;
   totalRequests: number;
+  /** true = 已并入同步服务上的其他设备（全部设备口径）；false = 仅本机 */
+  allDevices: boolean;
   buckets: AgentTokenBucket[];
 }
 
-/** 按 Agent 汇总今日/24h token（HUD 点击条目时按需查询）。 */
+/** 按 Agent 汇总今日/24h token（HUD 点击条目时按需查询）。
+ *  同步可用时后端会并入其他设备（排除本机防双计）。 */
 export async function getAgentTokenSummary(
   source: string
 ): Promise<AgentTokenSummary> {

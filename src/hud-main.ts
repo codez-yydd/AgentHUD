@@ -23,7 +23,8 @@
  *   悬浮到某个条目就直接显示该 Agent 的详情卡，不用先点击。
  *   卡片内容：品牌头像 + 名称/套餐/健康态 + 每窗口两行式额度行（状态
  *   点/标签/已用%、进度轨/剩余/倒计时）+ Token 区（24h 输入/输出/缓存堆叠
- *   直方图、今日/请求/峰值）+ 底部「打开主窗口」按钮 → invoke
+ *   直方图、今日/请求/峰值；多设备同步可用时并入其他设备，卡上标注
+ *   「全部设备 / 仅本机」口径）+ 底部「打开主窗口」按钮 → invoke
  *   open_main_window("overview")。余额型条目（dsh = DeepSeek 官方余额）
  *   没有百分比窗口：额度区换成余额行（金额 + 赠送/充值拆分）。指针可移到
  *   卡上操作，离开条/卡约 260ms
@@ -335,8 +336,13 @@ interface Msg {
   cache: string;
   requests: string;
   peak: string;
-  /** 本地库全时段累计 */
+  /** 全时段累计 */
   total: string;
+  /** Token 区口径标签：全部设备 / 仅本机 */
+  scopeAll: string;
+  scopeLocal: string;
+  scopeAllHint: string;
+  scopeLocalHint: string;
   /** 底栏刷新说明 */
   live: string;
   /** 无小时分布时的占位 */
@@ -380,9 +386,13 @@ const MESSAGES: Record<"zh" | "en", Msg> = {
     requests: "24h 请求",
     peak: "峰值",
     total: "累计",
+    scopeAll: "全部设备",
+    scopeLocal: "仅本机",
+    scopeAllHint: "已合并同步服务上的其他设备（不含本机重复计数）",
+    scopeLocalHint: "多设备同步未启用或不可达，仅统计本机",
     live: "30s 刷新",
-    noTrend: "暂无本地 Token 数据",
-    noRecent: "24h 无本地调用",
+    noTrend: "暂无 Token 数据",
+    noRecent: "24h 无调用",
     offline: "未连接",
     offlineHint: "未获取到实时额度，登录对应客户端后自动出现",
     balance: "官方余额",
@@ -409,9 +419,13 @@ const MESSAGES: Record<"zh" | "en", Msg> = {
     requests: "24h requests",
     peak: "Peak",
     total: "Total",
+    scopeAll: "All devices",
+    scopeLocal: "This device",
+    scopeAllHint: "Merged with other devices from the sync server (this device not counted twice)",
+    scopeLocalHint: "Multi-device sync is off or unreachable — this device only",
     live: "30s refresh",
-    noTrend: "No local token data",
-    noRecent: "No local calls in 24h",
+    noTrend: "No token data",
+    noRecent: "No calls in 24h",
     offline: "Offline",
     offlineHint: "No live quota yet. Sign in to the agent to populate it.",
     balance: "Balance",
@@ -620,22 +634,30 @@ const TOKEN_CACHE_TTL = 60_000;
 const CHART_BARS = 24;
 const CHART_H = 56;
 
-/** 详情卡 Token 区：标题 + 24h 堆叠直方图 + 三段图例 + 今日/请求/峰值。
- *  先建固定高度占位再异步回填——卡片定位后若长高会把窗口撑大（独立窗
- *  口按卡片实测尺寸落位，占位先撑住高度就不会出现"露出后再长高"）。 */
+/** 详情卡 Token 区：标题 + 口径标签（全部设备/仅本机）+ 24h 堆叠直方图
+ *  + 三段图例 + 今日/请求/峰值。先建固定高度占位再异步回填——卡片定位后
+ *  若长高会把窗口撑大（独立窗口按卡片实测尺寸落位，占位先撑住高度就不会
+ *  出现"露出后再长高"）。 */
 function buildTokenSection(source: string): HTMLElement {
   const sec = document.createElement("div");
   sec.className = "hud-tokens";
 
   const head = document.createElement("div");
   head.className = "hud-tokens-head";
+  const titleWrap = document.createElement("span");
+  titleWrap.className = "hud-tokens-title-wrap";
   const title = document.createElement("span");
   title.className = "hud-tokens-title";
   title.textContent = msg.tokens;
+  // 口径标签：数据回来前隐藏，避免先闪「仅本机」再变「全部设备」
+  const scope = document.createElement("span");
+  scope.className = "hud-scope";
+  scope.hidden = true;
+  titleWrap.append(title, scope);
   const total = document.createElement("span");
   total.className = "hud-tokens-total";
   total.textContent = "—";
-  head.append(title, total);
+  head.append(titleWrap, total);
   sec.appendChild(head);
 
   const legend = document.createElement("div");
@@ -769,16 +791,29 @@ function paintTokenSection(sec: HTMLElement, data: AgentTokenSummary | null): vo
   const totalEl = sec.querySelector<HTMLElement>(".hud-tokens-total");
   const empty = sec.querySelector<HTMLElement>(".hud-chart-empty");
   const values = sec.querySelectorAll<HTMLElement>(".hud-stat-value");
+  const scopeEl = sec.querySelector<HTMLElement>(".hud-scope");
   if (!data) {
     if (totalEl) totalEl.textContent = "—";
+    if (scopeEl) scopeEl.hidden = true;
     values.forEach((el) => (el.textContent = "—"));
     empty?.classList.add("on");
     return;
   }
+  // 口径标签：多设备同步可用时后端已并入其他设备，卡片明确标注，
+  // 避免「到底算的是哪台」的疑问；同步不可达则如实显示仅本机。
+  if (scopeEl) {
+    scopeEl.hidden = false;
+    scopeEl.textContent = data.allDevices ? msg.scopeAll : msg.scopeLocal;
+    scopeEl.dataset.scope = data.allDevices ? "all" : "local";
+    scopeEl.setAttribute(
+      "aria-label",
+      data.allDevices ? msg.scopeAllHint : msg.scopeLocalHint
+    );
+  }
   const buckets = data.buckets ?? [];
-  // 没有任何小时桶 = 该来源没有本地 token 库（Cursor 的用量在远端
-  // events 接口），此时显示「—」而不是误导性的 0。有桶但 24h 全空
-  // （如 OpenCode 只剩历史会话）则回落到"累计"，仍给出实据。
+  // 没有任何小时桶 = 本机与其他设备都没有该来源的 Token 数据（Cursor 的
+  // 用量在远端 events 接口），此时显示「—」而不是误导性的 0。有桶但 24h
+  // 全空（如 OpenCode 只剩历史会话）则回落到"累计"，仍给出实据。
   const hasLibrary = buckets.length > 0;
   const recent = buckets.slice(-CHART_BARS);
   if (totalEl) {

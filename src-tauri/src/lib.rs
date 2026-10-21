@@ -631,6 +631,11 @@ struct AgentTokenBucket {
 /// HUD 详情卡的 Token 汇总（点击/悬浮条目时才查询，避免 30s 轮询里反复
 /// 扫全部 agent 库）：今日（本地自然日）+ 最近 24h 的 token / 请求数 +
 /// 24h 小时分布（柱状图）。
+///
+/// **口径为全部设备**：多设备同步可用时，会并入同步服务上其他设备（排除
+/// 本机 device_id，本机部分仍直读本地库，避免双计）的今日/24h/累计；
+/// 同步未启用、未注册或请求失败则退回纯本机口径，并通过 `all_devices`
+/// 告诉前端当前是哪种口径。
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct AgentTokenSummary {
@@ -638,10 +643,12 @@ struct AgentTokenSummary {
     today_requests: i64,
     day_tokens: i64,
     day_requests: i64,
-    /// 本地库累计（全时段）：24h 为空时详情卡仍能给出"用过量"的实据，
-    /// 而不是整块显示 0。Cursor 无本地库，恒 0（前端显示「—」）。
+    /// 累计（全时段）：24h 为空时详情卡仍能给出"用过量"的实据，而不是
+    /// 整块显示 0。Cursor 无本地/同步明细，恒 0（前端显示「—」）。
     total_tokens: i64,
     total_requests: i64,
+    /// true = 已并入其他设备（全部设备口径）；false = 仅本机。
+    all_devices: bool,
     buckets: Vec<AgentTokenBucket>,
 }
 
@@ -680,6 +687,142 @@ fn agent_token_trend_blocking(
         .collect())
 }
 
+/// HUD 详情卡「其他设备」的 Token 汇总。
+///
+/// 只保存三档合计 + 24h 小时桶：足够与本地直读结果合并出「全部设备」
+/// 口径，又不把远端逐条明细搬进 HUD。
+struct HudRemoteTokens {
+    today_tokens: i64,
+    today_requests: i64,
+    day_tokens: i64,
+    day_requests: i64,
+    total_tokens: i64,
+    total_requests: i64,
+    trend: Vec<sync::RemoteTrendBucket>,
+}
+
+/// HUD 的后端来源名 → 同步服务端的 `source`。
+///
+/// 只列会进明细同步的来源：cursor 的用量在 Cursor 自己的 events 接口，
+/// 不在同步库里；余额型条目（dsh）本身有本地明细，照常合并。`zai` 在
+/// 服务端叫 `zcode`，其余来源名一致。
+fn hud_sync_source(backend_source: &str) -> Option<&'static str> {
+    match backend_source {
+        "zai" => Some("zcode"),
+        "codex" => Some("codex"),
+        "claude" => Some("claude"),
+        "kimi" => Some("kimi"),
+        "dsh" => Some("dsh"),
+        "opencode" => Some("opencode"),
+        "minimaxcode" => Some("minimaxcode"),
+        _ => None,
+    }
+}
+
+/// 拉取其他设备的 Token 汇总（恒排除本机 device_id，本机部分由本地库直读）。
+///
+/// 三次请求都是聚合，不拉逐条明细：
+/// 1. `/usage` 24h（hour 桶）→ 24h 合计 + 直方图桶；
+/// 2. `/usage` 今日（day 桶；`overall` 仍按精确区间统计）→ 今日合计；
+/// 3. `/usage_records` 累计（limit=0，只要 by_model 汇总）→ 累计合计。
+///    不走 `/usage` 是因为它从 from_ms 起逐桶循环，0 → now 的日桶有上万个。
+///
+/// 同步未启用、未注册、缺本机 device_id（无法排除本机）或任一请求失败
+/// 都返回 None：HUD 宁可少算，不能双计或把失败伪装成全部设备。
+fn fetch_hud_remote_tokens(
+    backend_source: &str,
+    today_start: i64,
+    now: i64,
+) -> Option<HudRemoteTokens> {
+    let sync_source = hud_sync_source(backend_source)?;
+    let cfg = sync::load_sync_config().ok()?;
+    if !cfg.enabled || cfg.device_token.is_empty() || cfg.device_id.is_empty() {
+        return None;
+    }
+    let request = |from_ms: i64, bucket: &str| sync::RemoteUsageRequest {
+        from_ms,
+        to_ms: now,
+        bucket: bucket.to_string(),
+        exclude_device: cfg.device_id.clone(),
+        devices: String::new(),
+        source: sync_source.to_string(),
+    };
+    let day = sync::fetch_remote_usage(request(now - 86_400_000, "hour")).ok()?;
+    let today = sync::fetch_remote_usage(request(today_start, "day")).ok()?;
+    let records = sync::fetch_remote_usage_records(sync::RemoteUsageRecordsRequest {
+        from_ms: 0,
+        to_ms: now,
+        source: sync_source.to_string(),
+        model_id: String::new(),
+        exclude_device: cfg.device_id,
+        devices: String::new(),
+        limit: 0,
+        offset: 0,
+    })
+    .ok()?;
+    Some(HudRemoteTokens {
+        today_tokens: today.overall.total_tokens,
+        today_requests: today.overall.requests,
+        day_tokens: day.overall.total_tokens,
+        day_requests: day.overall.requests,
+        total_tokens: records.by_model.iter().map(|m| m.total_tokens).sum(),
+        total_requests: records.by_model.iter().map(|m| m.requests).sum(),
+        trend: day.trend,
+    })
+}
+
+/// 远端桶 label → 本地小时标签 "HH:00"（与 `db::bucket_label` 同口径）。
+///
+/// 新版服务端返回桶起始毫秒字符串；旧服务端可能是 ISO 时间（兼容解析）。
+fn remote_trend_label(label: &str) -> Option<String> {
+    let ms = match label.parse::<i64>() {
+        Ok(n) if n < 1_000_000_000_000 => n * 1000, // 秒级时间戳
+        Ok(n) => n,
+        Err(_) => chrono::DateTime::parse_from_rfc3339(label)
+            .ok()?
+            .timestamp_millis(),
+    };
+    chrono::Local
+        .timestamp_millis_opt(ms)
+        .single()
+        .map(|d| d.format("%H:00").to_string())
+}
+
+/// 远端 24h 桶 → 本地 `AgentTokenBucket`（本机完全没有该来源的库、但其他
+/// 设备有数据时，用它撑起直方图时间轴）。
+fn remote_bucket_to_local(bucket: &sync::RemoteTrendBucket) -> Option<AgentTokenBucket> {
+    Some(AgentTokenBucket {
+        label: remote_trend_label(&bucket.label)?,
+        tokens: bucket.total_tokens,
+        requests: bucket.requests,
+        input_tokens: bucket.by_model.iter().map(|m| m.input_tokens).sum(),
+        output_tokens: bucket.by_model.iter().map(|m| m.output_tokens).sum(),
+        cache_tokens: bucket.by_model.iter().map(|m| m.cache_read_tokens).sum(),
+    })
+}
+
+/// 把远端 24h 小时桶并入本地桶，按本地小时标签对齐。
+///
+/// 本地 `query_trend` 会返回区间内每个小时（含空桶），时间轴以本地为准：
+/// 远端只往同标签桶累加，找不到标签的桶丢弃（说明落在本地轴之外）。三段
+/// 口径与本地一致，展示层仍用「总量 − 缓存 − 输出」反推输入（见
+/// hud-main.ts 的 paintChart），故这里直接累加各段原始值即可。
+fn merge_remote_trend(buckets: &mut [AgentTokenBucket], remote: &[sync::RemoteTrendBucket]) {
+    for r in remote {
+        let Some(label) = remote_trend_label(&r.label) else {
+            continue;
+        };
+        let Some(bucket) = buckets.iter_mut().find(|b| b.label == label) else {
+            continue;
+        };
+        bucket.tokens += r.total_tokens;
+        bucket.requests += r.requests;
+        bucket.input_tokens += r.by_model.iter().map(|m| m.input_tokens).sum::<i64>();
+        bucket.output_tokens += r.by_model.iter().map(|m| m.output_tokens).sum::<i64>();
+        bucket.cache_tokens += r.by_model.iter().map(|m| m.cache_read_tokens).sum::<i64>();
+    }
+}
+
 #[tauri::command]
 async fn get_agent_token_summary(source: String) -> Result<AgentTokenSummary, String> {
     tauri::async_runtime::spawn_blocking(move || {
@@ -704,7 +847,7 @@ async fn get_agent_token_summary(source: String) -> Result<AgentTokenSummary, St
         let day = buckets.get(1);
         // 累计只对本地来源查；Cursor 的 usage 在远端 events 接口，
         // 全时段拉取代价过大且没有本地小时库，保持 0（前端显示「—」）。
-        let (total_tokens, total_requests) = if backend_source == "cursor" {
+        let (mut total_tokens, mut total_requests) = if backend_source == "cursor" {
             (0, 0)
         } else {
             compare_tokens_for_agent_blocking(backend_source, &[(0, now)])
@@ -713,15 +856,52 @@ async fn get_agent_token_summary(source: String) -> Result<AgentTokenSummary, St
                 .map(|b| (b.total_tokens, b.requests))
                 .unwrap_or((0, 0))
         };
+        let mut today_tokens = today.map(|b| b.total_tokens).unwrap_or(0);
+        let mut today_requests = today.map(|b| b.requests).unwrap_or(0);
+        let mut day_tokens = day.map(|b| b.total_tokens).unwrap_or(0);
+        let mut day_requests = day.map(|b| b.requests).unwrap_or(0);
         // 柱状图失败只丢图，不让整张卡的汇总一起失败。
-        let trend = agent_token_trend_blocking(backend_source, day_start, now).unwrap_or_default();
+        let mut trend =
+            agent_token_trend_blocking(backend_source, day_start, now).unwrap_or_default();
+        // 全部设备口径：本机部分上面已直读，这里并入同步服务上其他设备
+        // （远端恒带 exclude_device=本机，两个集合不相交，相加即免去重）。
+        // 同步未启用/不可达 → None，保持纯本机并由 all_devices 告知前端。
+        let remote = fetch_hud_remote_tokens(backend_source, today_start, now);
+        if let Some(remote) = &remote {
+            today_tokens += remote.today_tokens;
+            today_requests += remote.today_requests;
+            day_tokens += remote.day_tokens;
+            day_requests += remote.day_requests;
+            total_tokens += remote.total_tokens;
+            total_requests += remote.total_requests;
+            if trend.is_empty() {
+                // 本机没有该来源的库、但其他设备用过：用远端桶撑起时间轴。
+                // 远端服务即使零数据也会返回整段空桶；此时保持空轴（前端
+                // 显示「—」），别把「哪儿都没有数据」伪装成「24h 零调用」。
+                let has_remote_data = remote.total_tokens > 0
+                    || remote
+                        .trend
+                        .iter()
+                        .any(|b| b.total_tokens > 0 || b.requests > 0);
+                if has_remote_data {
+                    trend = remote
+                        .trend
+                        .iter()
+                        .filter_map(remote_bucket_to_local)
+                        .collect();
+                }
+            } else {
+                merge_remote_trend(&mut trend, &remote.trend);
+            }
+        }
         Ok(AgentTokenSummary {
-            today_tokens: today.map(|b| b.total_tokens).unwrap_or(0),
-            today_requests: today.map(|b| b.requests).unwrap_or(0),
-            day_tokens: day.map(|b| b.total_tokens).unwrap_or(0),
-            day_requests: day.map(|b| b.requests).unwrap_or(0),
+            today_tokens,
+            today_requests,
+            day_tokens,
+            day_requests,
             total_tokens,
             total_requests,
+            all_devices: remote.is_some(),
             buckets: trend,
         })
     })
@@ -3020,5 +3200,151 @@ mod tests {
         );
         // 同名不同来源不去重（cost_for 按模型 id 计价，表单按 model_id 再去重展示）
         assert_eq!(merged.len(), 4);
+    }
+
+    /// HUD 多设备口径的来源映射：HUD 别名（opencodego/minimax）已在调用侧
+    /// 折成后端来源名，这里只处理与服务端 source 的差异；cursor 不进同步库。
+    #[test]
+    fn hud_sync_source_maps_server_names() {
+        assert_eq!(hud_sync_source("zai"), Some("zcode"));
+        assert_eq!(hud_sync_source("opencode"), Some("opencode"));
+        assert_eq!(hud_sync_source("minimaxcode"), Some("minimaxcode"));
+        assert_eq!(hud_sync_source("cursor"), None);
+        assert_eq!(hud_sync_source("unknown"), None);
+    }
+
+    /// 远端桶 label 兼容三种形态：毫秒时间戳（新版服务端）、秒级时间戳
+    /// （旧数据）、ISO 时间；统一格式化成本地 "HH:00" 与本地桶对齐。
+    #[test]
+    fn remote_trend_label_accepts_ms_iso_and_seconds() {
+        use chrono::TimeZone as _;
+        let ms: i64 = 1_700_000_000_000;
+        let expect = chrono::Local
+            .timestamp_millis_opt(ms)
+            .single()
+            .unwrap()
+            .format("%H:00")
+            .to_string();
+        assert_eq!(
+            remote_trend_label(&ms.to_string()).as_deref(),
+            Some(expect.as_str())
+        );
+        assert_eq!(
+            remote_trend_label(&(ms / 1000).to_string()).as_deref(),
+            Some(expect.as_str())
+        );
+        let iso = chrono::Utc
+            .timestamp_millis_opt(ms)
+            .single()
+            .unwrap()
+            .to_rfc3339();
+        assert_eq!(remote_trend_label(&iso).as_deref(), Some(expect.as_str()));
+        assert_eq!(remote_trend_label("not-a-time"), None);
+    }
+
+    /// 远端 24h 桶按本地小时标签并入：同标签累加三段与请求数，轴外桶丢弃。
+    #[test]
+    fn merge_remote_trend_aligns_by_local_hour_and_sums() {
+        use chrono::TimeZone as _;
+        let hour_ms = |h: u32| {
+            chrono::Local
+                .with_ymd_and_hms(2024, 1, 1, h, 0, 0)
+                .single()
+                .unwrap()
+                .timestamp_millis()
+        };
+        let label = |h: u32| {
+            chrono::Local
+                .timestamp_millis_opt(hour_ms(h))
+                .single()
+                .unwrap()
+                .format("%H:00")
+                .to_string()
+        };
+        let mut buckets = vec![
+            AgentTokenBucket {
+                label: label(14),
+                tokens: 10,
+                requests: 1,
+                input_tokens: 4,
+                output_tokens: 3,
+                cache_tokens: 3,
+            },
+            AgentTokenBucket {
+                label: label(15),
+                tokens: 100,
+                requests: 2,
+                input_tokens: 50,
+                output_tokens: 20,
+                cache_tokens: 30,
+            },
+        ];
+        let remote = vec![
+            sync::RemoteTrendBucket {
+                label: hour_ms(15).to_string(),
+                by_model: vec![sync::RemoteTrendBucketModel {
+                    model_id: "glm-4.6".into(),
+                    provider_id: "zai".into(),
+                    requests: 2,
+                    input_tokens: 40,
+                    output_tokens: 10,
+                    cache_read_tokens: 50,
+                    total_tokens: 100,
+                }],
+                total_tokens: 100,
+                requests: 2,
+            },
+            // 落在本地 24h 轴之外：丢弃，不新增柱
+            sync::RemoteTrendBucket {
+                label: hour_ms(23).to_string(),
+                by_model: vec![],
+                total_tokens: 999,
+                requests: 9,
+            },
+        ];
+
+        merge_remote_trend(&mut buckets, &remote);
+
+        assert_eq!(buckets.len(), 2);
+        assert_eq!(buckets[0].tokens, 10, "未命中的本地桶保持不变");
+        assert_eq!(buckets[1].tokens, 200);
+        assert_eq!(buckets[1].requests, 4);
+        assert_eq!(buckets[1].input_tokens, 90);
+        assert_eq!(buckets[1].output_tokens, 30);
+        assert_eq!(buckets[1].cache_tokens, 80);
+    }
+
+    /// 本机没有该来源的库时，远端桶要能独立撑起直方图（标签 + 三段）。
+    #[test]
+    fn remote_bucket_to_local_maps_axis_and_segments() {
+        use chrono::TimeZone as _;
+        let ms = chrono::Local
+            .with_ymd_and_hms(2024, 1, 1, 15, 0, 0)
+            .single()
+            .unwrap()
+            .timestamp_millis();
+        let remote = sync::RemoteTrendBucket {
+            label: ms.to_string(),
+            by_model: vec![sync::RemoteTrendBucketModel {
+                model_id: "glm-4.6".into(),
+                provider_id: "zai".into(),
+                requests: 2,
+                input_tokens: 40,
+                output_tokens: 10,
+                cache_read_tokens: 50,
+                total_tokens: 100,
+            }],
+            total_tokens: 100,
+            requests: 2,
+        };
+
+        let local = remote_bucket_to_local(&remote).expect("毫秒 label 应能映射");
+
+        assert_eq!(local.label, "15:00");
+        assert_eq!(local.tokens, 100);
+        assert_eq!(local.requests, 2);
+        assert_eq!(local.input_tokens, 40);
+        assert_eq!(local.output_tokens, 10);
+        assert_eq!(local.cache_tokens, 50);
     }
 }

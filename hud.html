@@ -621,6 +621,29 @@
         letter-spacing: 0.02em;
         color: #c2c7ce;
       }
+      .hud-tokens-title-wrap {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        min-width: 0;
+      }
+      /* Token 口径标签：全部设备（已并入同步上的其他设备）/ 仅本机 */
+      .hud-scope {
+        font-size: 9px;
+        line-height: 1;
+        padding: 2px 5px;
+        border-radius: 999px;
+        border: 1px solid rgba(255, 255, 255, 0.09);
+        background: rgba(255, 255, 255, 0.04);
+        color: #8f969e;
+        letter-spacing: 0.02em;
+        white-space: nowrap;
+      }
+      .hud-scope[data-scope="all"] {
+        color: #8fbfff;
+        border-color: rgba(96, 160, 255, 0.32);
+        background: rgba(96, 160, 255, 0.12);
+      }
       .hud-tokens-total {
         font-size: 10.5px;
         color: #858b93;
