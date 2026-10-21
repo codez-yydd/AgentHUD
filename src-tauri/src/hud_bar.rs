@@ -883,6 +883,14 @@ pub(crate) fn cursor_agent() -> Option<HudBarAgent> {
     let from = now - 30 * 24 * 3600 * 1000;
     let snapshot = crate::cursor::fetch_cursor_snapshot(from, now).ok()?;
     let plan = snapshot.plan.as_ref()?;
+    // 免费账号（membership = free / hobby）在 usage-summary 里同样返回 plan，
+    // 且 auto/api/total 恒 0、limit 0——单看「有没有百分比」会把免费档当成
+    // 订阅，于是没订阅、当天也没用过的 Cursor 常驻在条上。这里按
+    // membership 判「有没有订阅」，没订阅就不出额度条目（当天真用过的话，
+    // 今日用量证据会把它以「仅用量」加回来）。
+    if !crate::cursor::plan_is_paid(snapshot.membership_type.as_deref(), plan) {
+        return None;
+    }
     let reset = snapshot
         .billing_cycle_end
         .as_deref()

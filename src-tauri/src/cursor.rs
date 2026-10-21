@@ -972,6 +972,28 @@ pub struct CursorPlanInfo {
     pub api_pct: Option<f64>,
 }
 
+/// 免费档的 membership 标识（Cursor 早期叫 Hobby，现在叫 free；大小写与
+/// 前后空白都不敏感）。这两种**没有订阅额度**，不能当"有额度订阅"看。
+const FREE_MEMBERSHIPS: &[&str] = &["free", "hobby"];
+
+/// 该账号是否有付费订阅（决定 HUD 停靠条要不要常驻这个 agent）。
+///
+/// 为什么需要单独判定：免费账号的 `usage-summary` 同样返回 `plan`，而且
+/// `autoPercentUsed` / `apiPercentUsed` / `totalPercentUsed` 都是 0、
+/// `used` / `limit` / `remaining` 也是 0——"plan 存在且有百分比"区分不了
+/// 「没订阅」和「有订阅但本周期还没用量」。判据按可信度分三层：
+/// 1. `membershipType` 明确是 free / hobby → 没订阅；
+/// 2. `membershipType` 是其它非空值（pro / pro_plus / ultra / business /
+///    team …）→ 有订阅。**不能再看金额**：团队档可能 limit 为 0（不限量）；
+/// 3. `membershipType` 缺失（旧接口/异常响应）→ 退回看额度痕迹：limit 或
+///    used 大于 0 才算有订阅，全 0 视为免费。
+pub fn plan_is_paid(membership: Option<&str>, plan: &CursorPlanInfo) -> bool {
+    match membership.map(|value| value.trim().to_ascii_lowercase()) {
+        Some(value) if !value.is_empty() => !FREE_MEMBERSHIPS.contains(&value.as_str()),
+        _ => plan.limit_cents.unwrap_or(0) > 0 || plan.used_cents.unwrap_or(0) > 0,
+    }
+}
+
 /// Cursor 今天事件用量换算出的额度增量（百分比）。
 ///
 /// Cursor 的 usage-summary 百分比可能长时间保持不变，但 events 接口会先
@@ -1442,6 +1464,45 @@ mod tests {
             Some("api")
         );
         assert_eq!(cursor_event_bucket(Some("OTHER_EVENT")), None);
+    }
+
+    /// 免费档（free / hobby）即使 usage-summary 给了 plan 与 0% 的
+    /// auto/api，也必须判成"没有订阅"（HUD 不常驻）；付费档不受金额影响
+    /// （团队档 limit 可能为 0）；membership 缺失时退回看额度痕迹。
+    #[test]
+    fn plan_is_paid_distinguishes_free_hobby_and_paid() {
+        let zero_plan = CursorPlanInfo {
+            enabled: Some(true),
+            used_cents: Some(0),
+            limit_cents: Some(0),
+            remaining_cents: Some(0),
+            total_pct: Some(0.0),
+            auto_pct: Some(0.0),
+            api_pct: Some(0.0),
+        };
+        // 1) 免费档：plan 存在、百分比齐全也不算订阅
+        assert!(!plan_is_paid(Some("free"), &zero_plan));
+        assert!(!plan_is_paid(Some("Free "), &zero_plan));
+        assert!(!plan_is_paid(Some("hobby"), &zero_plan));
+
+        // 2) 付费档：即使额度上限为 0（团队不限量）也算有订阅
+        assert!(plan_is_paid(Some("pro"), &zero_plan));
+        assert!(plan_is_paid(Some("pro_plus"), &zero_plan));
+        assert!(plan_is_paid(Some("business"), &zero_plan));
+
+        // 3) membership 缺失：有额度痕迹才算
+        assert!(!plan_is_paid(None, &zero_plan));
+        assert!(!plan_is_paid(Some("  "), &zero_plan));
+        let used_plan = CursorPlanInfo {
+            used_cents: Some(120),
+            ..zero_plan.clone()
+        };
+        assert!(plan_is_paid(None, &used_plan));
+        let limited_plan = CursorPlanInfo {
+            limit_cents: Some(30000),
+            ..zero_plan
+        };
+        assert!(plan_is_paid(None, &limited_plan));
     }
 
     #[test]
