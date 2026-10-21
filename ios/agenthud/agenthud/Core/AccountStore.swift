@@ -187,8 +187,14 @@ public final class AccountStore: ObservableObject {
     }
 
     /// 把账号清单摘要写入 App Group（Widget Intent 的动态选项数据源）：
-    /// 全部直连账号 + 三个只读同步分组。「跟随主账号」由 Intent 端固定构造。
-    public func writeWidgetAccountOptions(planNames: [String: String] = [:]) {
+    /// 全部直连账号 + 只读同步分组。「跟随主账号」由 Intent 端固定构造。
+    /// syncAgents 为同步分组清单：默认列 CLI 同步型（codex/claude/cursor/kimi，
+    /// server 长期支持）；查询后会以「实际有同步数据的 agent」重写（双形态
+    /// provider 无同步数据时不占选项位）。选中 id 为 "sync:<agent>"，多账号
+    /// 分组时 Widget 取该 agent 的第一个分组。
+    public func writeWidgetAccountOptions(planNames: [String: String] = [:],
+                                          syncAgents: [AgentKind] =
+                                            [.codex, .claude, .cursor, .kimi]) {
         guard let sd = sharedDefaults else { return }
         var options: [WidgetAccountOption] = accounts.map { account in
             WidgetAccountOption(id: account.id.uuidString,
@@ -197,7 +203,7 @@ public final class AccountStore: ObservableObject {
                                 kind: "direct",
                                 planName: planNames[account.id.uuidString])
         }
-        for agent in [AgentKind.codex, .claude, .cursor] {
+        for agent in syncAgents {
             options.append(WidgetAccountOption(
                 id: Self.syncOptionId(agent),
                 agent: agent.rawValue,
@@ -211,6 +217,10 @@ public final class AccountStore: ObservableObject {
     }
 
     /// 最近一次查询后合并各账号 planName（Intent 选项副标题用）。
+    /// 同步分组清单 = 默认兜底四项（codex/claude/cursor/kimi，server 长期
+    /// 支持）∪ 实际有同步数据的 agent。兜底不收缩：server 不可达 / 查询
+    /// 失败时 syncedGroups 为空，若按空清单重写会让已钉住 "sync:xxx" 的
+    /// Widget 选项静默消失（离线时被迫回退主账号）。
     public func refreshOptionPlanNames(directEntries: [QuotaEntry],
                                        syncedGroups: [SyncedAgentQuotaGroup]) {
         var planNames: [String: String] = [:]
@@ -219,13 +229,17 @@ public final class AccountStore: ObservableObject {
                 planNames[entry.accountId] = plan
             }
         }
+        // 默认兜底在前，实际有数据的分组追加（去重），保证清单只增不减
+        var syncedAgents: [AgentKind] = [.codex, .claude, .cursor, .kimi]
         for group in syncedGroups {
-            if let plan = group.planType, !plan.isEmpty {
+            if let plan = group.planBadge, !plan.isEmpty {
                 planNames[Self.syncOptionId(group.agent)] = plan
             }
+            if !syncedAgents.contains(group.agent) {
+                syncedAgents.append(group.agent)
+            }
         }
-        guard !planNames.isEmpty else { return }
-        writeWidgetAccountOptions(planNames: planNames)
+        writeWidgetAccountOptions(planNames: planNames, syncAgents: syncedAgents)
     }
 
     // MARK: - 旧版单 GLM 账号迁移

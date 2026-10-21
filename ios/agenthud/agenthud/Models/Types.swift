@@ -182,11 +182,15 @@ public struct QuotaConfig: Codable, Hashable {
 // MARK: - 多 Agent 多账号额度体系（对齐桌面 provider_credentials + provider_quota.rs）
 
 /// 额度 agent 类型。前 6 个为直连型（本机配凭证直接查官方接口）；
-/// codex / claude / cursor 为只读同步型（凭证只在桌面端配置并上传快照，
-/// iOS 从 server 拉取展示，不可在本机配置凭证）。
+/// codex / claude / cursor / kimi 为只读同步型（凭证只在桌面端配置并上传
+/// 快照，iOS 从 server 拉取展示，不可在本机配置凭证）；qoder / longcat /
+/// mimo / stepfun / grok / alibabatoken 同为纯同步型（桌面 provider 通道）；
+/// deepseek / moonshot / minimax / opencodego / alibaba 为双形态——既支持
+/// 本机直连，也接收桌面同步的快照（数据来源标「桌面同步」区分）。
 public enum AgentKind: String, Codable, CaseIterable, Identifiable {
     case zai, deepseek, moonshot, minimax, opencodego, alibaba
     case codex, claude, cursor
+    case kimi, qoder, longcat, mimo, stepfun, grok, alibabatoken
 
     public var id: String { rawValue }
 
@@ -195,9 +199,15 @@ public enum AgentKind: String, Codable, CaseIterable, Identifiable {
         switch self {
         case .zai, .deepseek, .moonshot, .minimax, .opencodego, .alibaba:
             return true
-        case .codex, .claude, .cursor:
+        case .codex, .claude, .cursor, .kimi, .qoder, .longcat,
+             .mimo, .stepfun, .grok, .alibabatoken:
             return false
         }
+    }
+
+    /// 纯同步型：无直连形态，额度数据只能来自桌面端上传的快照。
+    public var isSyncOnly: Bool {
+        !isDirect
     }
 
     /// 需要国内/国际站区域选择的 agent（查询端点按 region 分流）。
@@ -205,12 +215,13 @@ public enum AgentKind: String, Codable, CaseIterable, Identifiable {
         switch self {
         case .zai, .moonshot, .minimax, .alibaba:
             return true
-        case .deepseek, .opencodego, .codex, .claude, .cursor:
+        case .deepseek, .opencodego, .codex, .claude, .cursor, .kimi,
+             .qoder, .longcat, .mimo, .stepfun, .grok, .alibabatoken:
             return false
         }
     }
 
-    /// 设置页/额度页的显示名（对齐桌面端文案口径）。
+    /// 设置页/额度页的显示名（对齐桌面端 agentVisibility.ts 的 label 口径）。
     public var displayName: String {
         switch self {
         case .zai: return "GLM Coding Plan"
@@ -222,6 +233,13 @@ public enum AgentKind: String, Codable, CaseIterable, Identifiable {
         case .codex: return "Codex"
         case .claude: return "Claude"
         case .cursor: return "Cursor"
+        case .kimi: return "Kimi Code"
+        case .qoder: return "Qoder"
+        case .longcat: return "LongCat"
+        case .mimo: return "MiMo"
+        case .stepfun: return "StepFun"
+        case .grok: return "Grok"
+        case .alibabatoken: return "百炼Token包"
         }
     }
 
@@ -234,7 +252,9 @@ public enum AgentKind: String, Codable, CaseIterable, Identifiable {
         case .minimax: return "sk-cp-... Coding Plan Token"
         case .opencodego: return "OpenCode API Key"
         case .alibaba: return "sk-... DashScope API Key"
-        case .codex, .claude, .cursor: return ""
+        case .codex, .claude, .cursor, .kimi, .qoder, .longcat,
+             .mimo, .stepfun, .grok, .alibabatoken:
+            return ""
         }
     }
 }
@@ -393,13 +413,37 @@ public struct RemoteAgentQuotaWindowDTO: Codable, Hashable {
     public var reset_at: Int?
 }
 
-/// 单条远端快照（桌面已上传的 Codex / Claude / Cursor 采样）。
+/// 快照携带的按量余额（proto 7 扩展；服务端 balance_json 列还原结果）。
+public struct RemoteAgentQuotaBalanceDTO: Codable, Hashable {
+    public var amount: Double
+    public var currency: String?
+    public var granted: Double?
+    public var topped_up: Double?
+
+    public func toLocal() -> QuotaBalance {
+        QuotaBalance(amount: amount,
+                     currency: currency ?? "",
+                     granted: granted,
+                     toppedUp: topped_up)
+    }
+}
+
+/// 单条远端快照（桌面已上传的 Codex / Claude / Cursor / Kimi 及各 provider 采样）。
+/// proto 7 扩展字段全部 Optional：旧服务端不回传时解码为 nil（向后兼容）。
 public struct RemoteAgentQuotaSnapshotDTO: Codable, Hashable {
     public var source: String
     public var ts: Int
     public var plan_type: String?
     public var windows: [RemoteAgentQuotaWindowDTO]
     public var device_id: String?
+    /// 凭证备注名（同 provider 多凭证的账号维度）
+    public var label: String?
+    /// 套餐展示名（provider 通道）
+    public var plan_name: String?
+    /// 按量余额（余额型 provider）
+    public var balance: RemoteAgentQuotaBalanceDTO?
+    /// 查询失败原因（错误态快照）
+    public var message: String?
 }
 
 // MARK: - 同步配置（对应 sync.json）
@@ -470,6 +514,9 @@ public struct RemoteSnapshot: Codable, Hashable {
     public var mcp_used: Int?
     public var mcp_total: Int?
     public var device_id: String
+    /// 归属账号指纹（proto 4 起服务端回传；旧服务端/旧数据为 nil，
+    /// 多账号同步展示时归入无 label 的单卡）
+    public var account: String?
 
     // 与本地 QuotaSnapshot 互转的便利
     public func toLocal() -> QuotaSnapshot {

@@ -52,7 +52,10 @@ struct StatsView: View {
             .navigationTitle("统计")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
+                // navigationBarTrailing：与 top 系 placement 视觉等价（导航栏
+                // 右上角），规避 iOS 27 模拟器 runtime 上该 placement 导致
+                // 整棵 TabView 白屏的兼容性问题
+                ToolbarItem(placement: .navigationBarTrailing) {
                     Button {
                         loadRange()
                     } label: {

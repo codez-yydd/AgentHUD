@@ -378,7 +378,7 @@ private struct WidgetDisplayPickerRow: View {
                 Text("\(account.agent.displayName) · \(account.label)")
                     .tag(account.id.uuidString)
             }
-            ForEach([AgentKind.codex, .claude, .cursor], id: \.rawValue) { agent in
+            ForEach(AgentKind.allCases.filter { $0.isSyncOnly }, id: \.rawValue) { agent in
                 Text("\(agent.displayName)（桌面同步）")
                     .tag(AccountStore.syncOptionId(agent))
             }

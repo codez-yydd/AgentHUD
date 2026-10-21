@@ -77,6 +77,13 @@ enum WidgetSharedStore {
         case "codex": return "Codex"
         case "claude": return "Claude"
         case "cursor": return "Cursor"
+        case "kimi": return "Kimi Code"
+        case "qoder": return "Qoder"
+        case "longcat": return "LongCat"
+        case "mimo": return "MiMo"
+        case "stepfun": return "StepFun"
+        case "grok": return "Grok"
+        case "alibabatoken": return "百炼Token包"
         default: return raw
         }
     }

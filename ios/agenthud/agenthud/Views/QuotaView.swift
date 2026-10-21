@@ -3,8 +3,9 @@
 //  agenthud
 //
 //  多 Agent 多账号额度监控：直连账号按 agent 分组，每账号一张卡
-//  （套餐徽章 + 各窗口进度条 + 余额行）；codex/claude/cursor 为只读
-//  同步型，卡片带「桌面同步」标注与更新时间。
+//  （套餐徽章 + 各窗口进度条 + 余额行）；codex/claude/cursor/kimi 及全部
+//  provider 为只读同步型（同一 provider 多凭证按 label 拆卡），卡片带
+//  「桌面同步」标注与更新时间；余额型同步卡展示余额，错误态展示失败原因。
 //  直连数据走 AgentQuotaClients（官方接口），同步数据走 server 快照。
 //
 
@@ -20,7 +21,7 @@ struct QuotaView: View {
                 VStack(spacing: 16) {
                     if !settings.isQuotaConfigured && refresh.syncedQuotaGroups.isEmpty {
                         NotConfiguredBanner(
-                            message: "尚未配置额度账号，请在设置中添加；Codex / Claude / Cursor 额度由桌面端同步，需先连接同步服务。")
+                            message: "尚未配置额度账号，请在设置中添加；其余 agent 额度由桌面端同步，需先连接同步服务。")
                             .padding(.horizontal)
                     } else {
                         if refresh.quotaRefreshing && refresh.quotaEntries.isEmpty {
@@ -51,7 +52,10 @@ struct QuotaView: View {
             .navigationTitle("额度监控")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
+                // navigationBarTrailing：与 top 系 placement 视觉等价（导航栏
+                // 右上角），规避 iOS 27 模拟器 runtime 上该 placement 导致
+                // 整棵 TabView 白屏的兼容性问题
+                ToolbarItem(placement: .navigationBarTrailing) {
                     Button {
                         Task { await refresh.refreshQuotaOnly() }
                     } label: { Image(systemName: "arrow.clockwise") }
@@ -214,8 +218,11 @@ private struct SyncedQuotaCard: View {
         Card(title: nil) {
             VStack(alignment: .leading, spacing: 10) {
                 HStack(spacing: 8) {
-                    Text(group.agent.displayName)
+                    // 多凭证拆分条目时展示「服务名 · 账号名」，单凭证/无 label
+                    // 时直接服务名（displayTitle 已兜底）
+                    Text(group.displayTitle)
                         .font(.subheadline.weight(.semibold))
+                        .lineLimit(1)
                     // 「桌面同步」来源徽章：与直连型视觉区分
                     Label("桌面同步", systemImage: "arrow.triangle.2.circlepath.icloud")
                         .font(.caption2)
@@ -223,24 +230,68 @@ private struct SyncedQuotaCard: View {
                         .background(Capsule().fill(Color.blue.opacity(0.15)))
                         .foregroundColor(.blue)
                     Spacer()
-                    if let plan = group.planType, !plan.isEmpty {
+                    if let plan = group.planBadge {
                         Text(plan.uppercased())
                             .font(.caption.weight(.semibold).monospaced())
                             .padding(.horizontal, 8).padding(.vertical, 3)
                             .background(Capsule().fill(Color.yellow.opacity(0.2)))
                     }
                 }
-                ForEach(group.windows) { w in
-                    if let pct = w.usedPercent {
-                        ProgressBar(pct: Int(pct.rounded()),
-                                    label: w.title,
-                                    resetMs: w.resetsAt)
+                if group.isError {
+                    // 错误态：不展示窗口/余额，只展示失败原因
+                    HStack(spacing: 6) {
+                        StatusBadge(status: "error")
+                        Text(group.message ?? "查询失败")
+                            .font(.caption)
+                            .foregroundColor(.orange)
+                            .lineLimit(2)
+                    }
+                } else {
+                    ForEach(group.windows) { w in
+                        if let pct = w.usedPercent {
+                            ProgressBar(pct: Int(pct.rounded()),
+                                        label: w.title,
+                                        resetMs: w.resetsAt)
+                        }
+                    }
+                    // 余额行（余额型 provider 的同步形态，复用直连卡样式）
+                    if let balance = group.balance {
+                        balanceRow(balance)
+                    }
+                    if group.windows.isEmpty && group.balance == nil {
+                        Text("暂无额度数据")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
                     }
                 }
                 Text("更新于 \(updatedAtText)")
                     .font(.caption2)
                     .foregroundColor(.secondary)
             }
+        }
+    }
+
+    /// 余额行（与直连 AccountQuotaCard 同款视觉）。
+    private func balanceRow(_ b: QuotaBalance) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Divider()
+            HStack {
+                Text("余额")
+                    .font(.subheadline.weight(.medium))
+                Spacer()
+                Text("\(b.currency)\(String(format: "%.2f", b.amount))")
+                    .font(.subheadline.monospacedDigit().weight(.semibold))
+            }
+            HStack(spacing: 12) {
+                if let granted = b.granted {
+                    Tag("赠送 \(String(format: "%.2f", granted))")
+                }
+                if let toppedUp = b.toppedUp {
+                    Tag("充值 \(String(format: "%.2f", toppedUp))")
+                }
+            }
+            .font(.caption2)
+            .foregroundColor(.secondary)
         }
     }
 }

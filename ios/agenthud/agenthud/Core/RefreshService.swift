@@ -142,18 +142,94 @@ public final class RefreshService: ObservableObject {
             return
         }
         let nowMs = Int(Date().timeIntervalSince1970 * 1000)
-        // 拉最近 24h：足够覆盖最新一轮采样，又不至于把远古快照混进来
-        guard let snaps = try? await APIClient.shared.agentQuotaSnapshots(
-            serverURL: settings.sync.server_url,
-            deviceToken: settings.sync.device_token,
-            fromMs: nowMs - 24 * 3_600_000,
-            toMs: nowMs) else {
-            // 服务端不支持 / 不可达：该组降级隐藏，不报错
-            self.syncedQuotaGroups = []
-            return
+        let fromMs = nowMs - 24 * 3_600_000
+        let server = settings.sync.server_url
+        let token = settings.sync.device_token
+
+        // 1) Codex / Claude / Cursor / Kimi + 全部 provider 的额度快照
+        //    （服务端不支持 / 不可达：该组降级隐藏，不报错）
+        var groups: [SyncedAgentQuotaGroup] = []
+        if let snaps = try? await APIClient.shared.agentQuotaSnapshots(
+            serverURL: server, deviceToken: token,
+            fromMs: fromMs, toMs: nowMs) {
+            groups = AgentQuotaSync.buildGroups(
+                from: AgentQuotaSync.mergeSnapshots(snaps))
         }
-        self.syncedQuotaGroups = AgentQuotaSync.buildGroups(
-            from: AgentQuotaSync.mergeSnapshots(snaps))
+
+        // 2) GLM 多账号快照（/snapshots 通道，桌面端 account 维度已上传；
+        //    每个 account 一张同步卡，label 用账号指纹对齐桌面端展示）
+        if let zaiSnaps = try? await APIClient.shared.snapshots(
+            serverURL: server, deviceToken: token,
+            fromMs: fromMs, toMs: nowMs) {
+            groups.append(contentsOf: Self.buildGlmSyncGroups(from: zaiSnaps))
+        }
+
+        self.syncedQuotaGroups = groups
+    }
+
+    /// GLM（Z.ai）额度快照 → 同步分组：按 account 指纹分组、同秒去重取高、
+    /// 每账号取最新一条（窗口映射对齐桌面 quota_history 的三档口径）。
+    /// account 为 nil（旧客户端数据）归入无 label 的单卡。
+    static func buildGlmSyncGroups(from snaps: [RemoteSnapshot]) -> [SyncedAgentQuotaGroup] {
+        struct Key: Hashable { let account: String; let second: Int }
+
+        var byKey: [Key: (snap: RemoteSnapshot, windows: [QuotaWindow])] = [:]
+        for snap in snaps {
+            let account = snap.account?.trimmingCharacters(in: .whitespaces) ?? ""
+            var windows: [QuotaWindow] = []
+            if snap.hour5_pct > 0 || snap.weekly_pct > 0 || snap.mcp_pct > 0 {
+                windows.append(QuotaWindow(key: "hour5", title: "5h",
+                                           usedPercent: Double(snap.hour5_pct)))
+                windows.append(QuotaWindow(key: "weekly", title: "本周",
+                                           usedPercent: Double(snap.weekly_pct),
+                                           resetsAt: snap.weekly_reset))
+                if snap.mcp_pct > 0 {
+                    windows.append(QuotaWindow(key: "mcp", title: "MCP 月度",
+                                               usedPercent: Double(snap.mcp_pct),
+                                               used: snap.mcp_used.map(Double.init),
+                                               total: snap.mcp_total.map(Double.init),
+                                               unit: "次"))
+                }
+            }
+            let key = Key(account: account, second: snap.ts / 1000)
+            if var previous = byKey[key] {
+                // 同秒多设备：各窗口百分比取高
+                var map: [String: QuotaWindow] = [:]
+                for w in previous.windows { map[w.key] = w }
+                for w in windows {
+                    if (w.usedPercent ?? 0) > (map[w.key]?.usedPercent ?? -1) {
+                        map[w.key] = w
+                    }
+                }
+                previous.windows = map.values.sorted { $0.key < $1.key }
+                previous.snap = previous.snap.ts <= snap.ts ? previous.snap : snap
+                byKey[key] = previous
+            } else {
+                byKey[key] = (snap, windows)
+            }
+        }
+
+        // 每 account 取最新一条
+        var latest: [String: (ts: Int, windows: [QuotaWindow], level: String)] = [:]
+        for (key, value) in byKey {
+            let label = key.account
+            if let old = latest[label], old.ts >= value.snap.ts { continue }
+            let level = value.snap.level.trimmingCharacters(in: .whitespaces)
+            latest[label] = (value.snap.ts, value.windows, level)
+        }
+        // 账号指纹排序输出（无 label 的主形态排最前）
+        return latest
+            .sorted { $0.key < $1.key }
+            .map { label, value in
+                SyncedAgentQuotaGroup(agent: .zai,
+                                      label: label.isEmpty ? "" : "账号 \(label)",
+                                      planType: value.level.isEmpty ? nil : value.level,
+                                      planName: nil,
+                                      updatedAtMs: value.ts,
+                                      windows: value.windows,
+                                      balance: nil,
+                                      message: nil)
+            }
     }
 
     // MARK: - 内部
@@ -257,7 +333,8 @@ public final class RefreshService: ObservableObject {
         }
 
         if let group {
-            // 同步型：窗口映射 hour5/weekly/mcp；cursor 的 auto 窗并入 weekly 槽
+            // 同步型：窗口映射 hour5/weekly/mcp；cursor 的 auto 窗并入 weekly 槽。
+            // 余额型同步分组（deepseek 等）透传 balance，Widget 走余额卡渲染。
             let windows = group.windows
             hour5Pct = pct(windows, "hour5")
             weeklyPct = pct(windows, "weekly") ?? pct(windows, "cursor_auto")
@@ -266,10 +343,11 @@ public final class RefreshService: ObservableObject {
             weeklyResetMs = windows.first {
                 $0.key == "weekly" || $0.key == "cursor_auto"
             }?.resetsAt
-            planName = group.planType
-            accountLabel = group.agent.displayName
+            planName = group.planBadge
+            accountLabel = group.displayTitle
             agentKind = group.agent.rawValue
             isSynced = true
+            balance = group.balance
             updatedAt = TimeInterval(group.updatedAtMs) / 1000
         } else if let q = entry {
             let windows = q.windows

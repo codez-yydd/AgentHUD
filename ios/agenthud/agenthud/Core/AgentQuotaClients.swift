@@ -65,7 +65,8 @@ public actor AgentQuotaClients {
             return await queryOpencodeGo(entry, token: token)
         case .alibaba:
             return await queryAlibaba(entry, token: token)
-        case .codex, .claude, .cursor:
+        case .codex, .claude, .cursor, .kimi, .qoder, .longcat,
+             .mimo, .stepfun, .grok, .alibabatoken:
             return QuotaEntry(accountId: entry.id.uuidString,
                               label: entry.label,
                               agent: entry.agent,
