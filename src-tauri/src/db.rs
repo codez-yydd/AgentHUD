@@ -628,6 +628,11 @@ pub(crate) fn default_source() -> String {
 /// codex/claude 源由各自导入库填充；查不到映射的行保持 None。旧服务端
 /// 反序列化时按 serde 默认忽略未知字段，序列化端 None 时跳过不发，
 /// 双向兼容 proto 2/3/4。
+/// proto 8 起还携带耗时/首字（来源库真实 duration_ms /
+/// time_to_first_token_ms > 0 才给）。上传不按 proto 门控：旧服务端
+/// insert_usage_records 用显式字段名的 r.get 逐键读取，未知 JSON 键
+/// 天然忽略、多传字段无害（与 proto 5 门控的原因不同——那只是避免白传
+/// 大对象；这两个字段很小，直接携带，服务端忽略即可）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UsageRow {
     pub local_rowid: i64,
@@ -659,23 +664,44 @@ pub struct UsageRow {
     /// 原始形态 cwd（保留大小写，供前端展示；无则为 None）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project_display: Option<String>,
+    /// 请求耗时毫秒（来源库真实 duration_ms > 0 才给；仅用于同步上传，
+    /// 旧服务端忽略该字段，无需 proto 门控）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<f64>,
+    /// 首字毫秒（来源库真实 time_to_first_token_ms > 0 才给；同上）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub time_to_first_token_ms: Option<f64>,
 }
 
 /// 查询 rowid > since 的明细记录（增量上传用）。
 /// 只读连接也能 SELECT rowid。按 rowid 升序，便于游标推进。
 pub fn query_since(since: i64, limit: usize) -> Result<Vec<UsageRow>, String> {
     let conn = open_db()?;
+    query_since_at(&conn, since, limit)
+}
+
+/// `query_since` 的纯查询内核（连接注入版，供单元测试）。
+pub(crate) fn query_since_at(
+    conn: &Connection,
+    since: i64,
+    limit: usize,
+) -> Result<Vec<UsageRow>, String> {
+    // proto 8：耗时/首字按列存在性带出（口径与 request_logs 的行级查询
+    // 一致——真实值 > 0 才给，老库无列恒 None，禁止时间戳差估算）
+    let (duration, ttft) = speed_columns(conn);
+    let sql = format!(
+        "SELECT rowid, started_at, model_id, provider_id,
+                COALESCE(input_tokens,0), COALESCE(output_tokens,0),
+                COALESCE(cache_read_input_tokens,0), COALESCE(cache_creation_input_tokens,0),
+                COALESCE(reasoning_tokens,0), COALESCE(computed_total_tokens,0),
+                {duration}, {ttft}
+         FROM model_usage
+         WHERE rowid > ?1
+         ORDER BY rowid ASC
+         LIMIT ?2"
+    );
     let mut stmt = conn
-        .prepare(
-            "SELECT rowid, started_at, model_id, provider_id,
-                    COALESCE(input_tokens,0), COALESCE(output_tokens,0),
-                    COALESCE(cache_read_input_tokens,0), COALESCE(cache_creation_input_tokens,0),
-                    COALESCE(reasoning_tokens,0), COALESCE(computed_total_tokens,0)
-             FROM model_usage
-             WHERE rowid > ?1
-             ORDER BY rowid ASC
-             LIMIT ?2",
-        )
+        .prepare(&sql)
         .map_err(|e| format!("准备增量查询失败: {e}"))?;
     let rows = stmt
         .query_map(rusqlite::params![since, limit as i64], |row| {
@@ -697,12 +723,32 @@ pub fn query_since(since: i64, limit: usize) -> Result<Vec<UsageRow>, String> {
                 session_id: None,
                 project_key: None,
                 project_display: None,
+                duration_ms: row.get(10)?,
+                time_to_first_token_ms: row.get(11)?,
             })
         })
         .map_err(|e| format!("读取增量记录失败: {e}"))?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| format!("读取增量记录失败: {e}"))?;
     Ok(rows)
+}
+
+/// 耗时/首字取值表达式（proto 8 同步上传用，两列拼进增量查询 SELECT 尾部）：
+/// 只听来源库的**真实**列且值 > 0 才给，无列恒 NULL——与 request_logs 的
+/// duration_expr / select_list 同款口径，禁止任何时间戳差估算。
+pub(crate) fn speed_columns(conn: &Connection) -> (&'static str, &'static str) {
+    (
+        if has_column(conn, "model_usage", "duration_ms") {
+            "CASE WHEN COALESCE(duration_ms,0) > 0 THEN duration_ms END"
+        } else {
+            "NULL"
+        },
+        if has_column(conn, "model_usage", "time_to_first_token_ms") {
+            "CASE WHEN time_to_first_token_ms > 0 THEN time_to_first_token_ms END"
+        } else {
+            "NULL"
+        },
+    )
 }
 
 /// 当前本地库的最大 rowid（供「待上传条数」显示用）。
@@ -1309,5 +1355,50 @@ mod tests {
         assert_eq!(overall.speed_generation_ms, Some(sum_ms));
         assert_eq!(overall.speed_sample_count, Some(2));
         assert!(approx(overall.max_tps.unwrap(), 500.0));
+    }
+
+    /// query_since 的 SELECT 动态拼列 ↔ 数字下标映射回归测试：SELECT 尾部由
+    /// speed_columns 动态拼入耗时/首字两列，行读取用数字下标——列序与下标
+    /// 错位会让相邻字段串值。含两列的库验证全字段映射，缺两列的库验证
+    /// 降级 None（NULL 占位分支，列数不变）。
+    #[test]
+    fn query_since_maps_speed_columns() {
+        // 分支一：含 duration_ms / time_to_first_token_ms 两列（zcode_like_db 同构）
+        let conn = zcode_like_db();
+        insert(&conn, 1000, 30, Some(1500), Some(220));
+        insert(&conn, 2000, 8, Some(0), Some(0));
+        let rows = query_since_at(&conn, 0, 10).unwrap();
+        assert_eq!(rows.len(), 2);
+        let first = &rows[0];
+        assert_eq!(first.started_at, 1000);
+        assert_eq!(first.output_tokens, 30);
+        assert_eq!(first.computed_total_tokens, 30);
+        assert_eq!(first.source, "zcode");
+        assert!((first.duration_ms.unwrap() - 1500.0).abs() < 1e-6);
+        assert!((first.time_to_first_token_ms.unwrap() - 220.0).abs() < 1e-6);
+        assert_eq!(rows[1].duration_ms, None, "duration_ms=0 不给值");
+        assert_eq!(rows[1].time_to_first_token_ms, None, "ttft=0 不给值");
+
+        // 分支二：缺两列的库（老结构同构）：两字段降级 None，查询不报错
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE model_usage (
+                started_at INTEGER, model_id TEXT, provider_id TEXT,
+                output_tokens INTEGER DEFAULT 0,
+                input_tokens INTEGER DEFAULT 0,
+                cache_read_input_tokens INTEGER DEFAULT 0,
+                cache_creation_input_tokens INTEGER DEFAULT 0,
+                reasoning_tokens INTEGER DEFAULT 0,
+                computed_total_tokens INTEGER DEFAULT 0
+            );
+            INSERT INTO model_usage (started_at, model_id, provider_id, output_tokens, computed_total_tokens)
+             VALUES (3000, 'm', 'p', 300, 300);",
+        )
+        .unwrap();
+        let rows = query_since_at(&conn, 0, 10).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].output_tokens, 300, "COALESCE 后 token 列映射不应受拼列影响");
+        assert_eq!(rows[0].duration_ms, None, "无 duration_ms 列应恒 None");
+        assert_eq!(rows[0].time_to_first_token_ms, None, "无 ttft 列应恒 None");
     }
 }

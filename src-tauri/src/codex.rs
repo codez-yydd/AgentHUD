@@ -1343,21 +1343,25 @@ pub fn query_trend(
 /// 查询 id > since 的明细记录（同步上传用）。source 固定 "codex"，local_rowid = id。
 /// proto 5：附带会话 id 与项目维度（project_key / 原始 cwd 来自 session_meta，
 /// 未回填的会话两字段为 None，服务端落 NULL）。
+/// proto 8：耗时/首字按列存在性带出（本库 model_usage 无这两列 → 恒 None，
+/// 与 request_logs 的行级查询同款动态降级口径）。
 pub fn query_since(since: i64, limit: usize) -> Result<Vec<db::UsageRow>, String> {
     import_incremental()?;
     let conn = open_codex_db()?;
+    let (duration, ttft) = db::speed_columns(&conn);
+    let sql = format!(
+        "SELECT mu.id, mu.started_at, mu.model_id, mu.provider_id,
+                mu.input_tokens, mu.output_tokens, mu.cache_read_input_tokens,
+                mu.cache_creation_input_tokens, mu.reasoning_tokens, mu.computed_total_tokens,
+                mu.session_id, sm.project_key, sm.cwd, {duration}, {ttft}
+         FROM model_usage mu
+         LEFT JOIN session_meta sm ON sm.session_id = mu.session_id
+         WHERE mu.id > ?1
+         ORDER BY mu.id ASC
+         LIMIT ?2"
+    );
     let mut stmt = conn
-        .prepare(
-            "SELECT mu.id, mu.started_at, mu.model_id, mu.provider_id,
-                    mu.input_tokens, mu.output_tokens, mu.cache_read_input_tokens,
-                    mu.cache_creation_input_tokens, mu.reasoning_tokens, mu.computed_total_tokens,
-                    mu.session_id, sm.project_key, sm.cwd
-             FROM model_usage mu
-             LEFT JOIN session_meta sm ON sm.session_id = mu.session_id
-             WHERE mu.id > ?1
-             ORDER BY mu.id ASC
-             LIMIT ?2",
-        )
+        .prepare(&sql)
         .map_err(|e| format!("准备 Codex 增量查询失败: {e}"))?;
     let rows = stmt
         .query_map(rusqlite::params![since, limit as i64], |row| {
@@ -1376,6 +1380,8 @@ pub fn query_since(since: i64, limit: usize) -> Result<Vec<db::UsageRow>, String
                 session_id: row.get(10)?,
                 project_key: row.get(11)?,
                 project_display: row.get(12)?,
+                duration_ms: row.get(13)?,
+                time_to_first_token_ms: row.get(14)?,
             })
         })
         .map_err(|e| format!("读取 Codex 增量记录失败: {e}"))?
@@ -1402,20 +1408,35 @@ pub fn query_model_revised_since(
 ) -> Result<Vec<ModelRevisionRow>, String> {
     import_incremental()?;
     let conn = open_codex_db()?;
+    query_model_revised_since_at(&conn, since_ts, after_id, limit)
+}
+
+/// `query_model_revised_since` 的纯查询内核（连接注入版，供单元测试）。
+/// 下标对应关系由 revised_query_maps_revision_and_speed_columns 测试锁定。
+pub(crate) fn query_model_revised_since_at(
+    conn: &Connection,
+    since_ts: i64,
+    after_id: i64,
+    limit: usize,
+) -> Result<Vec<ModelRevisionRow>, String> {
+    // proto 8：与 query_since 同款耗时/首字列（本库无这两列 → 恒 None）
+    let (duration, ttft) = db::speed_columns(conn);
+    let sql = format!(
+        "SELECT mu.id, mu.started_at, mu.model_id, mu.provider_id,
+                mu.input_tokens, mu.output_tokens, mu.cache_read_input_tokens,
+                mu.cache_creation_input_tokens, mu.reasoning_tokens, mu.computed_total_tokens,
+                mu.model_revision_at, mu.session_id, sm.project_key, sm.cwd,
+                {duration}, {ttft}
+         FROM model_usage mu
+         LEFT JOIN session_meta sm ON sm.session_id = mu.session_id
+         WHERE (mu.model_revision_at > ?1
+                OR (mu.model_revision_at = ?1 AND mu.id > ?2))
+           AND mu.model_id != ''
+         ORDER BY mu.model_revision_at ASC, mu.id ASC
+         LIMIT ?3"
+    );
     let mut stmt = conn
-        .prepare(
-            "SELECT mu.id, mu.started_at, mu.model_id, mu.provider_id,
-                    mu.input_tokens, mu.output_tokens, mu.cache_read_input_tokens,
-                    mu.cache_creation_input_tokens, mu.reasoning_tokens, mu.computed_total_tokens,
-                    mu.model_revision_at, mu.session_id, sm.project_key, sm.cwd
-             FROM model_usage mu
-             LEFT JOIN session_meta sm ON sm.session_id = mu.session_id
-             WHERE (mu.model_revision_at > ?1
-                    OR (mu.model_revision_at = ?1 AND mu.id > ?2))
-               AND mu.model_id != ''
-             ORDER BY mu.model_revision_at ASC, mu.id ASC
-             LIMIT ?3",
-        )
+        .prepare(&sql)
         .map_err(|e| format!("准备 Codex 模型修订查询失败: {e}"))?;
     let rows = stmt
         .query_map(rusqlite::params![since_ts, after_id, limit as i64], |row| {
@@ -1432,9 +1453,15 @@ pub fn query_model_revised_since(
                     reasoning_tokens: row.get(8)?,
                     computed_total_tokens: row.get(9)?,
                     source: "codex".into(),
-                    session_id: row.get(12)?,
-                    project_key: row.get(13)?,
-                    project_display: row.get(14)?,
+                    // 列序以 SELECT 为准：model_revision_at=10 挤占了 query_since
+                    // 里的 session_id 位，此后逐列 +1（session_id=11、project_key=12、
+                    // cwd=13、duration=14、ttft=15；speed_columns 无列时以 NULL
+                    // 字面量占位，列数不变）
+                    session_id: row.get(11)?,
+                    project_key: row.get(12)?,
+                    project_display: row.get(13)?,
+                    duration_ms: row.get(14)?,
+                    time_to_first_token_ms: row.get(15)?,
                 },
                 revision_at: row.get(10)?,
             })
@@ -2430,6 +2457,115 @@ mod tests {
         assert_eq!(rows(&conn).len(), 3, "重解析不应改变行数");
 
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// query_model_revised_since 的 SELECT 列序 ↔ row.get 数字下标映射回归测试。
+    /// 本查询比 query_since 多一列 model_revision_at（下标 10），其后所有列
+    /// 顺移一位——历史上正是在这里沿用了 query_since 的下标导致错位且 get(16)
+    /// 越界，codex 修订上传通道整体不可用。含耗时/首字两列的库（模拟）验证
+    /// 全字段映射，缺两列的库（生产 schema 同构）验证 NULL 占位降级分支。
+    #[test]
+    fn revised_query_maps_revision_and_speed_columns() {
+        let conn = Connection::open_in_memory().expect("打开内存库失败");
+        // 与 open_codex_db 的 SCHEMA_SQL 同构，另补耗时/首字两列
+        conn.execute_batch(
+            "CREATE TABLE model_usage (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                event_seq INTEGER NOT NULL,
+                started_at INTEGER NOT NULL,
+                model_id TEXT NOT NULL DEFAULT '',
+                provider_id TEXT NOT NULL DEFAULT 'codex',
+                input_tokens INTEGER NOT NULL DEFAULT 0,
+                output_tokens INTEGER NOT NULL DEFAULT 0,
+                cache_read_input_tokens INTEGER NOT NULL DEFAULT 0,
+                cache_creation_input_tokens INTEGER NOT NULL DEFAULT 0,
+                reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+                computed_total_tokens INTEGER NOT NULL DEFAULT 0,
+                model_revision_at INTEGER NOT NULL DEFAULT 0,
+                duration_ms REAL,
+                time_to_first_token_ms REAL
+             );
+             CREATE TABLE session_meta (
+                session_id  TEXT PRIMARY KEY,
+                cwd         TEXT,
+                project_key TEXT,
+                captured_at INTEGER
+             );
+             INSERT INTO model_usage (session_id, event_seq, started_at, model_id,
+                input_tokens, output_tokens, computed_total_tokens,
+                model_revision_at, duration_ms, time_to_first_token_ms)
+             VALUES
+                ('s-1', 1, 1000, 'gpt-5.1-codex', 200, 100, 300, 900, 3200.5, 480.0),
+                -- 空模型名的行不进修订通道
+                ('s-2', 1, 2000, '', 1, 1, 2, 950, 10.0, 1.0);
+             INSERT INTO session_meta (session_id, cwd, project_key, captured_at)
+             VALUES ('s-1', '/w/demo', 'demo', 1);",
+        )
+        .expect("建表并写入样例行失败");
+
+        let rows = query_model_revised_since_at(&conn, 0, 0, 10).expect("修订查询失败");
+        assert_eq!(rows.len(), 1, "空模型名行不进修订通道");
+        let first = &rows[0];
+        assert_eq!(first.revision_at, 900, "model_revision_at 取下标 10");
+        let u = &first.usage;
+        // 逐字段对齐 SELECT 列序：model_revision_at(10) 之后顺移一位——
+        // session_id=11、project_key=12、cwd=13、duration=14、ttft=15
+        assert_eq!(u.local_rowid, 1);
+        assert_eq!(u.started_at, 1000);
+        assert_eq!(u.model_id, "gpt-5.1-codex");
+        assert_eq!(u.input_tokens, 200);
+        assert_eq!(u.output_tokens, 100);
+        assert_eq!(u.computed_total_tokens, 300);
+        assert_eq!(u.session_id.as_deref(), Some("s-1"), "session_id 应取下标 11");
+        assert_eq!(u.project_key.as_deref(), Some("demo"), "project_key 应取下标 12");
+        assert_eq!(u.project_display.as_deref(), Some("/w/demo"), "cwd 应取下标 13");
+        assert!((u.duration_ms.unwrap() - 3200.5).abs() < 1e-6);
+        assert!((u.time_to_first_token_ms.unwrap() - 480.0).abs() < 1e-6);
+
+        // 缺耗时/首字两列的库（生产 schema 同构）：两字段降级 None，列数仍
+        // 以 NULL 字面量占位，查询不报错、其余列不错位
+        conn.execute_batch(
+            "DROP TABLE model_usage;
+             DROP TABLE session_meta;
+             CREATE TABLE model_usage (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                event_seq INTEGER NOT NULL,
+                started_at INTEGER NOT NULL,
+                model_id TEXT NOT NULL DEFAULT '',
+                provider_id TEXT NOT NULL DEFAULT '',
+                input_tokens INTEGER NOT NULL DEFAULT 0,
+                output_tokens INTEGER NOT NULL DEFAULT 0,
+                cache_read_input_tokens INTEGER NOT NULL DEFAULT 0,
+                cache_creation_input_tokens INTEGER NOT NULL DEFAULT 0,
+                reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+                computed_total_tokens INTEGER NOT NULL DEFAULT 0,
+                model_revision_at INTEGER NOT NULL DEFAULT 0
+             );
+             CREATE TABLE session_meta (
+                session_id  TEXT PRIMARY KEY,
+                cwd         TEXT,
+                project_key TEXT,
+                captured_at INTEGER
+             );
+             INSERT INTO model_usage (session_id, event_seq, started_at, model_id,
+                computed_total_tokens, model_revision_at)
+             VALUES ('s-9', 1, 1000, 'gpt-5.1-codex', 30, 990);
+             INSERT INTO session_meta (session_id, cwd, project_key, captured_at)
+             VALUES ('s-9', '/w/x', 'x', 1);",
+        )
+        .expect("重建缺列表失败");
+        let rows = query_model_revised_since_at(&conn, 0, 0, 10).expect("缺列库修订查询失败");
+        assert_eq!(rows.len(), 1);
+        let u = &rows[0].usage;
+        assert_eq!(rows[0].revision_at, 990);
+        assert_eq!(u.duration_ms, None, "无 duration_ms 列应恒 None");
+        assert_eq!(u.time_to_first_token_ms, None, "无 ttft 列应恒 None");
+        assert_eq!(u.session_id.as_deref(), Some("s-9"), "NULL 占位分支下标不应漂移");
+        assert_eq!(u.project_key.as_deref(), Some("x"));
+        assert_eq!(u.project_display.as_deref(), Some("/w/x"));
+        assert_eq!(u.computed_total_tokens, 30);
     }
 }
 

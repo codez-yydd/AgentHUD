@@ -1377,20 +1377,26 @@ pub fn query_trend(
 /// source 固定 "kimi"，local_rowid = id。项目维度（project_key / project_display）
 /// 暂不带：kimi 的项目维度在 session_meta 表、需 join 才拿得到，而服务端的
 /// 项目聚合接口已下线（维度仅落库存储），故按最小改动只带 session_id。
+/// proto 8：附带耗时（本库 duration_ms 为真实请求耗时，无 TTFT 列 →
+/// 首字恒 None）。
 pub fn query_since(since: i64, limit: usize) -> Result<Vec<db::UsageRow>, String> {
     import_incremental()?;
     let conn = open_kimi_db()?;
+    // proto 8：耗时/首字按列存在性带出（真实值 > 0 才给，无列恒 None，
+    // 不做时间戳差估算；口径与 db::query_since 一致）
+    let (duration, ttft) = db::speed_columns(&conn);
+    let sql = format!(
+        "SELECT id, started_at, model_id, provider_id,
+                input_tokens, output_tokens, cache_read_input_tokens,
+                cache_creation_input_tokens, reasoning_tokens, computed_total_tokens,
+                session_id, {duration}, {ttft}
+         FROM model_usage
+         WHERE id > ?1
+         ORDER BY id ASC
+         LIMIT ?2"
+    );
     let mut stmt = conn
-        .prepare(
-            "SELECT id, started_at, model_id, provider_id,
-                    input_tokens, output_tokens, cache_read_input_tokens,
-                    cache_creation_input_tokens, reasoning_tokens, computed_total_tokens,
-                    session_id
-             FROM model_usage
-             WHERE id > ?1
-             ORDER BY id ASC
-             LIMIT ?2",
-        )
+        .prepare(&sql)
         .map_err(|e| format!("准备 Kimi 增量查询失败: {e}"))?;
     let rows = stmt
         .query_map(rusqlite::params![since, limit as i64], |row| {
@@ -1409,6 +1415,8 @@ pub fn query_since(since: i64, limit: usize) -> Result<Vec<db::UsageRow>, String
                 session_id: row.get(10)?,
                 project_key: None,
                 project_display: None,
+                duration_ms: row.get(11)?,
+                time_to_first_token_ms: row.get(12)?,
             })
         })
         .map_err(|e| format!("读取 Kimi 增量记录失败: {e}"))?
@@ -1442,17 +1450,30 @@ pub fn query_revised_since(
 ) -> Result<Vec<db::UsageRow>, String> {
     import_incremental()?;
     let conn = open_kimi_db()?;
+    query_revised_since_at(&conn, since_ts, after_id, limit)
+}
+
+/// `query_revised_since` 的纯查询内核（连接注入版，供单元测试）。
+pub(crate) fn query_revised_since_at(
+    conn: &Connection,
+    since_ts: i64,
+    after_id: i64,
+    limit: usize,
+) -> Result<Vec<db::UsageRow>, String> {
+    // proto 8：与 query_since 同款耗时/首字列（口径一致）
+    let (duration, ttft) = db::speed_columns(conn);
+    let sql = format!(
+        "SELECT id, started_at, model_id, provider_id,
+                input_tokens, output_tokens, cache_read_input_tokens,
+                cache_creation_input_tokens, reasoning_tokens, computed_total_tokens,
+                session_id, {duration}, {ttft}
+         FROM model_usage
+         WHERE updated_at > ?1 AND id > ?2
+         ORDER BY id ASC
+         LIMIT ?3"
+    );
     let mut stmt = conn
-        .prepare(
-            "SELECT id, started_at, model_id, provider_id,
-                    input_tokens, output_tokens, cache_read_input_tokens,
-                    cache_creation_input_tokens, reasoning_tokens, computed_total_tokens,
-                    session_id
-             FROM model_usage
-             WHERE updated_at > ?1 AND id > ?2
-             ORDER BY id ASC
-             LIMIT ?3",
-        )
+        .prepare(&sql)
         .map_err(|e| format!("准备 Kimi 修订查询失败: {e}"))?;
     let rows = stmt
         .query_map(rusqlite::params![since_ts, after_id, limit as i64], |row| {
@@ -1471,6 +1492,8 @@ pub fn query_revised_since(
                 session_id: row.get(10)?,
                 project_key: None,
                 project_display: None,
+                duration_ms: row.get(11)?,
+                time_to_first_token_ms: row.get(12)?,
             })
         })
         .map_err(|e| format!("读取 Kimi 修订记录失败: {e}"))?
@@ -4705,5 +4728,84 @@ mod tests {
             credential_fingerprint("rt-abc"),
             credential_fingerprint("rt-abd")
         );
+    }
+
+    /// query_revised_since 的 SELECT 动态拼列 ↔ 数字下标映射回归测试：
+    /// SELECT 尾部由 speed_columns 动态拼入耗时/首字两列（本库生产 schema 只有
+    /// duration_ms、无 ttft 列，这里建含两列的库验证完整映射），行读取用
+    /// 数字下标——列序与下标错位会让相邻字段串值。缺两列的库再验证降级 None。
+    #[test]
+    fn revised_query_maps_speed_and_session_columns() {
+        let conn = Connection::open_in_memory().expect("打开内存库失败");
+        // 与 open_kimi_db_at 的建表同构，另补 time_to_first_token_ms 列
+        conn.execute_batch(
+            "CREATE TABLE model_usage (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                dedupe_key TEXT NOT NULL,
+                started_at INTEGER NOT NULL,
+                model_id TEXT NOT NULL DEFAULT '',
+                provider_id TEXT NOT NULL DEFAULT 'kimi',
+                input_tokens INTEGER NOT NULL DEFAULT 0,
+                output_tokens INTEGER NOT NULL DEFAULT 0,
+                cache_read_input_tokens INTEGER NOT NULL DEFAULT 0,
+                cache_creation_input_tokens INTEGER NOT NULL DEFAULT 0,
+                reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+                computed_total_tokens INTEGER NOT NULL DEFAULT 0,
+                duration_ms INTEGER,
+                time_to_first_token_ms REAL,
+                updated_at INTEGER NOT NULL DEFAULT 0,
+                UNIQUE(dedupe_key)
+             );
+             INSERT INTO model_usage (session_id, dedupe_key, started_at, model_id,
+                input_tokens, output_tokens, computed_total_tokens, duration_ms,
+                time_to_first_token_ms, updated_at)
+             VALUES
+                ('s-1', 'd-1', 1000, 'kimi-k3', 80, 40, 120, 1800, 260.5, 900),
+                -- 0 值耗时不给值（CASE WHEN > 0 口径）
+                ('s-1', 'd-2', 2000, 'kimi-k3', 10, 5, 15, 0, 0, 950);",
+        )
+        .expect("建表并写入样例行失败");
+
+        let rows = query_revised_since_at(&conn, 800, 0, 10).expect("修订查询失败");
+        assert_eq!(rows.len(), 2);
+        let first = &rows[0];
+        // 逐字段对齐 SELECT 列序（session_id 紧邻耗时列，一并断言防错位串值）
+        assert_eq!(first.local_rowid, 1);
+        assert_eq!(first.session_id.as_deref(), Some("s-1"));
+        assert_eq!(first.model_id, "kimi-k3");
+        assert_eq!(first.computed_total_tokens, 120);
+        assert!((first.duration_ms.unwrap() - 1800.0).abs() < 1e-6);
+        assert!((first.time_to_first_token_ms.unwrap() - 260.5).abs() < 1e-6);
+        assert_eq!(rows[1].duration_ms, None, "duration_ms=0 不给值");
+        assert_eq!(rows[1].time_to_first_token_ms, None, "ttft=0 不给值");
+
+        // 缺耗时/首字两列的库：两字段降级 None，查询不报错（列数仍以 NULL 占位）
+        conn.execute_batch(
+            "DROP TABLE model_usage;
+             CREATE TABLE model_usage (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                dedupe_key TEXT NOT NULL,
+                started_at INTEGER NOT NULL,
+                model_id TEXT NOT NULL DEFAULT '',
+                provider_id TEXT NOT NULL DEFAULT '',
+                input_tokens INTEGER NOT NULL DEFAULT 0,
+                output_tokens INTEGER NOT NULL DEFAULT 0,
+                cache_read_input_tokens INTEGER NOT NULL DEFAULT 0,
+                cache_creation_input_tokens INTEGER NOT NULL DEFAULT 0,
+                reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+                computed_total_tokens INTEGER NOT NULL DEFAULT 0,
+                updated_at INTEGER NOT NULL DEFAULT 0
+             );
+             INSERT INTO model_usage (session_id, dedupe_key, started_at, updated_at)
+             VALUES ('s-9', 'd-9', 1000, 999);",
+        )
+        .expect("重建缺列表失败");
+        let rows = query_revised_since_at(&conn, 900, 0, 10).expect("缺列库修订查询失败");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].duration_ms, None, "无 duration_ms 列应恒 None");
+        assert_eq!(rows[0].time_to_first_token_ms, None, "无 ttft 列应恒 None");
+        assert_eq!(rows[0].session_id.as_deref(), Some("s-9"));
     }
 }

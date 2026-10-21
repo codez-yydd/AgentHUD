@@ -1619,17 +1619,22 @@ pub(crate) fn query_revised_since_at(
 }
 
 /// `query_since` / `query_revised_since` 共用的行查询（WHERE/分页由调用方给，
-/// 两者列口径完全一致，只有过滤条件不同）。
+/// 两者列口径完全一致，只有过滤条件不同）。proto 8：附带耗时/首字
+/// （本库 duration_ms 为真实请求总耗时；time_to_first_token_ms 列存在但
+/// 恒 NULL，见模块头 TTFT 说明 → 首字实际恒 None）。
 fn query_rows_at(
     conn: &Connection,
     tail: &str,
     params: impl rusqlite::Params,
 ) -> Result<Vec<db::UsageRow>, String> {
+    // proto 8：耗时/首字按列存在性带出（真实值 > 0 才给，无列恒 None，
+    // 不做时间戳差估算；口径与 db::query_since 一致）
+    let (duration, ttft) = db::speed_columns(conn);
     let sql = format!(
         "SELECT id, started_at, model_id, provider_id,
                 input_tokens, output_tokens, cache_read_input_tokens,
                 cache_creation_input_tokens, reasoning_tokens, computed_total_tokens,
-                session_id, project_key, cwd
+                session_id, project_key, cwd, {duration}, {ttft}
          FROM model_usage {tail}"
     );
     let mut stmt = conn
@@ -1652,6 +1657,8 @@ fn query_rows_at(
                 session_id: row.get(10)?,
                 project_key: row.get(11)?,
                 project_display: row.get(12)?,
+                duration_ms: row.get(13)?,
+                time_to_first_token_ms: row.get(14)?,
             })
         })
         .map_err(|e| format!("读取 MiniMax Code 明细失败: {e}"))?

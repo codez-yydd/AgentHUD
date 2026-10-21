@@ -1007,20 +1007,25 @@ pub fn query_period_buckets(periods: &[(i64, i64)]) -> Result<Vec<db::PeriodBuck
 
 /// 查询 id > since 的明细记录（同步增量上传用）。
 /// source 固定 "dsh"，local_rowid = 自增 id；带上 proto 5 的会话/项目维度。
+/// proto 8：附带耗时/首字（本库两列均为源数据真实值）。
 pub fn query_since(since: i64, limit: usize) -> Result<Vec<db::UsageRow>, String> {
     import_incremental()?;
     let conn = open_dsh_db()?;
+    // proto 8：耗时/首字按列存在性带出（真实值 > 0 才给，无列恒 None，
+    // 不做时间戳差估算；口径与 db::query_since 一致）
+    let (duration, ttft) = db::speed_columns(&conn);
+    let sql = format!(
+        "SELECT id, started_at, model_id, provider_id,
+                input_tokens, output_tokens, cache_read_input_tokens,
+                cache_creation_input_tokens, reasoning_tokens, computed_total_tokens,
+                session_id, project_key, cwd, {duration}, {ttft}
+         FROM model_usage
+         WHERE id > ?1
+         ORDER BY id ASC
+         LIMIT ?2"
+    );
     let mut stmt = conn
-        .prepare(
-            "SELECT id, started_at, model_id, provider_id,
-                    input_tokens, output_tokens, cache_read_input_tokens,
-                    cache_creation_input_tokens, reasoning_tokens, computed_total_tokens,
-                    session_id, project_key, cwd
-             FROM model_usage
-             WHERE id > ?1
-             ORDER BY id ASC
-             LIMIT ?2",
-        )
+        .prepare(&sql)
         .map_err(|e| format!("准备 DSH 明细查询失败: {e}"))?;
     let rows = stmt
         .query_map(rusqlite::params![since, limit as i64], |row| {
@@ -1039,6 +1044,8 @@ pub fn query_since(since: i64, limit: usize) -> Result<Vec<db::UsageRow>, String
                 session_id: row.get(10)?,
                 project_key: row.get(11)?,
                 project_display: row.get(12)?,
+                duration_ms: row.get(13)?,
+                time_to_first_token_ms: row.get(14)?,
             })
         })
         .map_err(|e| format!("读取 DSH 明细失败: {e}"))?
@@ -1062,17 +1069,30 @@ pub fn query_revised_since(
 ) -> Result<Vec<db::UsageRow>, String> {
     import_incremental()?;
     let conn = open_dsh_db()?;
+    query_revised_since_at(&conn, since_ts, after_id, limit)
+}
+
+/// `query_revised_since` 的纯查询内核（连接注入版，供单元测试）。
+pub(crate) fn query_revised_since_at(
+    conn: &Connection,
+    since_ts: i64,
+    after_id: i64,
+    limit: usize,
+) -> Result<Vec<db::UsageRow>, String> {
+    // proto 8：与 query_since 同款耗时/首字列（口径一致）
+    let (duration, ttft) = db::speed_columns(conn);
+    let sql = format!(
+        "SELECT id, started_at, model_id, provider_id,
+                input_tokens, output_tokens, cache_read_input_tokens,
+                cache_creation_input_tokens, reasoning_tokens, computed_total_tokens,
+                session_id, project_key, cwd, {duration}, {ttft}
+         FROM model_usage
+         WHERE updated_at > ?1 AND id > ?2
+         ORDER BY id ASC
+         LIMIT ?3"
+    );
     let mut stmt = conn
-        .prepare(
-            "SELECT id, started_at, model_id, provider_id,
-                    input_tokens, output_tokens, cache_read_input_tokens,
-                    cache_creation_input_tokens, reasoning_tokens, computed_total_tokens,
-                    session_id, project_key, cwd
-             FROM model_usage
-             WHERE updated_at > ?1 AND id > ?2
-             ORDER BY id ASC
-             LIMIT ?3",
-        )
+        .prepare(&sql)
         .map_err(|e| format!("准备 DSH 修订查询失败: {e}"))?;
     let rows = stmt
         .query_map(rusqlite::params![since_ts, after_id, limit as i64], |row| {
@@ -1091,6 +1111,8 @@ pub fn query_revised_since(
                 session_id: row.get(10)?,
                 project_key: row.get(11)?,
                 project_display: row.get(12)?,
+                duration_ms: row.get(13)?,
+                time_to_first_token_ms: row.get(14)?,
             })
         })
         .map_err(|e| format!("读取 DSH 修订行失败: {e}"))?
@@ -1932,5 +1954,98 @@ mod tests {
             "应快速返回，实际耗时 {:?}",
             started.elapsed()
         );
+    }
+
+    /// query_revised_since 的 SELECT 动态拼列 ↔ 数字下标映射回归测试：
+    /// SELECT 尾部由 speed_columns 动态拼入耗时/首字两列，行读取用数字
+    /// 下标——一旦列序与下标错位（相邻字段互换）或越界，字段值就会串位。
+    /// 建含 duration_ms / time_to_first_token_ms 两列的库验证全字段映射，
+    /// 再用缺两列的库验证降级为 None（has_column 分支，列数仍以 NULL 占位）。
+    #[test]
+    fn revised_query_maps_speed_and_session_columns() {
+        let conn = Connection::open_in_memory().expect("打开内存库失败");
+        // 与 open_dsh_db 的建表同构（列名必须与生产 schema 一致才能测出映射）
+        conn.execute_batch(
+            "CREATE TABLE model_usage (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                dedupe_key TEXT NOT NULL,
+                started_at INTEGER NOT NULL,
+                model_id TEXT NOT NULL DEFAULT '',
+                provider_id TEXT NOT NULL DEFAULT 'deepseek-account',
+                input_tokens INTEGER NOT NULL DEFAULT 0,
+                output_tokens INTEGER NOT NULL DEFAULT 0,
+                cache_read_input_tokens INTEGER NOT NULL DEFAULT 0,
+                cache_creation_input_tokens INTEGER NOT NULL DEFAULT 0,
+                reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+                computed_total_tokens INTEGER NOT NULL DEFAULT 0,
+                duration_ms REAL,
+                time_to_first_token_ms INTEGER,
+                updated_at INTEGER NOT NULL DEFAULT 0,
+                cwd TEXT,
+                project_key TEXT,
+                delegation_depth INTEGER NOT NULL DEFAULT 0,
+                UNIQUE(dedupe_key)
+             );",
+        )
+        .expect("建测试表失败");
+        conn.execute_batch(
+            "INSERT INTO model_usage (session_id, dedupe_key, started_at, model_id,
+                input_tokens, output_tokens, computed_total_tokens, duration_ms,
+                time_to_first_token_ms, updated_at, cwd, project_key)
+             VALUES
+                ('s-1', 'd-1', 1000, 'deepseek-flash', 100, 20, 120, 2500.5, 310.0, 500, '/w/p1', 'p1'),
+                -- 0/NULL 的耗时首字不给值（CASE WHEN > 0 口径），但列映射必须正确
+                ('s-1', 'd-2', 2000, 'deepseek-flash', 10, 5, 15, 0, NULL, 600, '/w/p1', 'p1'),
+                -- updated_at 不达标的行不被选出
+                ('s-2', 'd-3', 3000, 'deepseek-flash', 1, 1, 2, 900.0, 100.0, 400, '/w/p2', 'p2');",
+        )
+        .expect("写入样例行失败");
+
+        let rows = query_revised_since_at(&conn, 450, 0, 10).expect("修订查询失败");
+        assert_eq!(rows.len(), 2, "updated_at > 450 的行只有两行");
+        let first = &rows[0];
+        // 逐字段对齐 SELECT 列序（相邻字段一并断言，防错位串值）
+        assert_eq!(first.local_rowid, 1);
+        assert_eq!(first.session_id.as_deref(), Some("s-1"));
+        assert_eq!(first.project_key.as_deref(), Some("p1"));
+        assert_eq!(first.project_display.as_deref(), Some("/w/p1"));
+        assert_eq!(first.output_tokens, 20);
+        assert_eq!(first.computed_total_tokens, 120);
+        assert!((first.duration_ms.unwrap() - 2500.5).abs() < 1e-6);
+        assert!((first.time_to_first_token_ms.unwrap() - 310.0).abs() < 1e-6);
+        let second = &rows[1];
+        assert_eq!(second.duration_ms, None, "duration_ms=0 不给值");
+        assert_eq!(second.time_to_first_token_ms, None, "ttft NULL 不给值");
+
+        // 缺耗时/首字两列的库（老结构同构）：两字段降级 None，查询不报错
+        conn.execute_batch(
+            "DROP TABLE model_usage;
+             CREATE TABLE model_usage (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                dedupe_key TEXT NOT NULL,
+                started_at INTEGER NOT NULL,
+                model_id TEXT NOT NULL DEFAULT '',
+                provider_id TEXT NOT NULL DEFAULT '',
+                input_tokens INTEGER NOT NULL DEFAULT 0,
+                output_tokens INTEGER NOT NULL DEFAULT 0,
+                cache_read_input_tokens INTEGER NOT NULL DEFAULT 0,
+                cache_creation_input_tokens INTEGER NOT NULL DEFAULT 0,
+                reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+                computed_total_tokens INTEGER NOT NULL DEFAULT 0,
+                updated_at INTEGER NOT NULL DEFAULT 0,
+                cwd TEXT,
+                project_key TEXT
+             );
+             INSERT INTO model_usage (session_id, dedupe_key, started_at, updated_at)
+             VALUES ('s-9', 'd-9', 1000, 700);",
+        )
+        .expect("重建缺列表失败");
+        let rows = query_revised_since_at(&conn, 650, 0, 10).expect("缺列库修订查询失败");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].duration_ms, None, "无 duration_ms 列应恒 None");
+        assert_eq!(rows[0].time_to_first_token_ms, None, "无 ttft 列应恒 None");
+        assert_eq!(rows[0].session_id.as_deref(), Some("s-9"));
     }
 }

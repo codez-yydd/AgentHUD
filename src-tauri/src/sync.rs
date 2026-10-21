@@ -792,10 +792,10 @@ fn zcode_projects_supported(base: &str, token: &str) -> bool {
 }
 
 /// 查询主库 rowid > since 的 zcode 明细（与 db::query_since 同 SQL、同
-/// rowid 游标口径，仅多带 session_id 列），并按 zcode_sessions 派生库的
-/// session_id → (project_key, cwd) 映射填充三字段。
+/// rowid 游标口径，多带 session_id 列与 proto 8 的耗时/首字列），并按
+/// zcode_sessions 派生库的 session_id → (project_key, cwd) 映射填充三字段。
 /// with_projects=false、主库无 session_id 列或映射查不到该会话时，三字段
-/// 保持 None（与 db::query_since 原行为逐字节一致）。
+/// 保持 None；耗时/首字无列恒 None（禁止时间戳差估算）。
 fn query_zcode_rows_with_sessions(
     since: i64,
     limit: usize,
@@ -806,17 +806,38 @@ fn query_zcode_rows_with_sessions(
     if !db::has_column(&conn, "model_usage", "session_id") {
         return db::query_since(since, limit);
     }
-    let sql = "SELECT rowid, started_at, model_id, provider_id,
+    let map = if with_projects {
+        crate::zcode_sessions::session_project_map()
+    } else {
+        HashMap::new()
+    };
+    query_zcode_rows_with_sessions_at(&conn, since, limit, &map)
+}
+
+/// `query_zcode_rows_with_sessions` 的纯查询内核（连接 + 项目映射注入版，
+/// 供单元测试锁定 SELECT 动态拼列 ↔ 数字下标映射）。
+fn query_zcode_rows_with_sessions_at(
+    conn: &rusqlite::Connection,
+    since: i64,
+    limit: usize,
+    project_map: &HashMap<String, (String, String)>,
+) -> Result<Vec<UsageRow>, String> {
+    // proto 8：耗时/首字按列存在性带出（真实值 > 0 才给，无列恒 None，
+    // 不做时间戳差估算；口径与 db::query_since 一致）
+    let (duration, ttft) = db::speed_columns(conn);
+    let sql = format!(
+        "SELECT rowid, started_at, model_id, provider_id,
             COALESCE(input_tokens,0), COALESCE(output_tokens,0),
             COALESCE(cache_read_input_tokens,0), COALESCE(cache_creation_input_tokens,0),
             COALESCE(reasoning_tokens,0), COALESCE(computed_total_tokens,0),
-            session_id
+            session_id, {duration}, {ttft}
      FROM model_usage
      WHERE rowid > ?1
      ORDER BY rowid ASC
-     LIMIT ?2";
+     LIMIT ?2"
+    );
     let mut stmt = conn
-        .prepare(sql)
+        .prepare(&sql)
         .map_err(|e| format!("准备 zcode 增量查询失败: {e}"))?;
     // 中间结构：(UsageRow, 该行的 session_id)；session_id 不进 UsageRow
     // （db.rs 的同步契约结构，禁止改动），回填完成后丢弃
@@ -839,6 +860,8 @@ fn query_zcode_rows_with_sessions(
                     session_id: None,
                     project_key: None,
                     project_display: None,
+                    duration_ms: row.get(11)?,
+                    time_to_first_token_ms: row.get(12)?,
                 },
                 row.get::<_, Option<String>>(10)?,
             ))
@@ -848,15 +871,10 @@ fn query_zcode_rows_with_sessions(
         .map_err(|e| format!("读取 zcode 增量记录失败: {e}"))?;
 
     // 逐行回填维度：查到映射才附带三字段（绑定出现，查不到保持 None）
-    let map = if with_projects {
-        crate::zcode_sessions::session_project_map()
-    } else {
-        HashMap::new()
-    };
     Ok(rows
         .into_iter()
         .map(|(mut row, session_id)| {
-            if let Some((key, display)) = session_id.as_ref().and_then(|id| map.get(id)) {
+            if let Some((key, display)) = session_id.as_ref().and_then(|id| project_map.get(id)) {
                 row.session_id = session_id.clone();
                 row.project_key = Some(key.clone());
                 row.project_display = Some(display.clone());
@@ -1334,7 +1352,10 @@ pub fn fetch_remote_usage(req: RemoteUsageRequest) -> Result<RemoteUsage, String
 // ===== 远端逐条请求明细（请求日志页「全部设备」口径）=====
 
 /// GET /usage_records 返回的单条明细（字段与服务端 db.query_usage_records
-/// 的行一致）。服务端明细不含耗时 / 首字 / 速度列，客户端这三项恒为空。
+/// 的行一致）。proto 8 起服务端回传耗时/首字（duration_ms /
+/// time_to_first_token_ms，真实值才非 None；旧服务端不返回该键 → None，
+/// serde default 兜底）。速度列仍不回传——行级速度原料（first_token_at /
+/// completed_at）远端不上传，由前端 speedOf 用耗时+首字+output 推导。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RemoteUsageRecord {
     #[serde(default)]
@@ -1367,6 +1388,12 @@ pub struct RemoteUsageRecord {
     pub project_key: Option<String>,
     #[serde(default)]
     pub project_display: Option<String>,
+    /// 请求耗时毫秒（proto 8 起服务端回传；旧服务端不返回该键 → None）
+    #[serde(default)]
+    pub duration_ms: Option<f64>,
+    /// 首字毫秒（proto 8 起服务端回传；旧服务端不返回该键 → None）
+    #[serde(default)]
+    pub time_to_first_token_ms: Option<f64>,
 }
 
 /// GET /usage_records 的 by_model 分组：按 (source, provider_id, model_id)
@@ -2032,6 +2059,8 @@ mod tests {
             session_id: None,
             project_key: None,
             project_display: None,
+            duration_ms: None,
+            time_to_first_token_ms: None,
         }
     }
 
@@ -2398,5 +2427,88 @@ mod tests {
             Some((now - PROVIDER_PROTO_RECHECK - Duration::from_secs(60), false)),
             now
         ));
+    }
+
+    /// query_zcode_rows_with_sessions 的 SELECT 动态拼列 ↔ 数字下标映射回归
+    /// 测试：SELECT 尾部由 speed_columns 动态拼入耗时/首字两列（本查询还多带
+    /// 一列 session_id），行读取用数字下标——列序与下标错位会让相邻字段串值。
+    /// 含两列的库验证全字段映射与项目维度回填，缺两列的库验证降级 None。
+    #[test]
+    fn zcode_rows_query_maps_speed_and_session_columns() {
+        let conn = rusqlite::Connection::open_in_memory().expect("打开内存库失败");
+        conn.execute_batch(
+            "CREATE TABLE model_usage (
+                started_at INTEGER, model_id TEXT, provider_id TEXT,
+                input_tokens INTEGER DEFAULT 0, output_tokens INTEGER DEFAULT 0,
+                cache_read_input_tokens INTEGER DEFAULT 0,
+                cache_creation_input_tokens INTEGER DEFAULT 0,
+                reasoning_tokens INTEGER DEFAULT 0,
+                computed_total_tokens INTEGER DEFAULT 0,
+                session_id TEXT,
+                duration_ms INTEGER,
+                time_to_first_token_ms INTEGER
+             );
+             INSERT INTO model_usage (started_at, model_id, provider_id, output_tokens,
+                computed_total_tokens, session_id, duration_ms, time_to_first_token_ms)
+             VALUES
+                (1000, 'glm-5.3', 'zai', 30, 30, 's-1', 1500, 220),
+                -- 0 值耗时首字不给值（CASE WHEN > 0 口径）
+                (2000, 'glm-5.3', 'zai', 8, 8, 's-2', 0, 0),
+                -- 无会话的行：三字段保持 None
+                (3000, 'glm-5.3', 'zai', 5, 5, NULL, NULL, NULL);",
+        )
+        .expect("建表并写入样例行失败");
+        let mut map = HashMap::new();
+        map.insert(
+            "s-1".to_string(),
+            ("proj-1".to_string(), "/d/proj-1".to_string()),
+        );
+
+        let rows =
+            query_zcode_rows_with_sessions_at(&conn, 0, 10, &map).expect("zcode 增量查询失败");
+        assert_eq!(rows.len(), 3);
+        let first = &rows[0];
+        assert_eq!(first.started_at, 1000);
+        assert_eq!(first.output_tokens, 30);
+        assert_eq!(first.source, "zcode");
+        // session_id 紧邻耗时列，一并断言防错位串值
+        assert_eq!(first.session_id.as_deref(), Some("s-1"));
+        assert_eq!(first.project_key.as_deref(), Some("proj-1"));
+        assert_eq!(first.project_display.as_deref(), Some("/d/proj-1"));
+        assert!((first.duration_ms.unwrap() - 1500.0).abs() < 1e-6);
+        assert!((first.time_to_first_token_ms.unwrap() - 220.0).abs() < 1e-6);
+        let second = &rows[1];
+        assert_eq!(second.session_id, None, "map 查不到的会话三字段保持 None");
+        assert_eq!(second.project_key, None);
+        assert_eq!(second.duration_ms, None, "duration_ms=0 不给值");
+        assert_eq!(second.time_to_first_token_ms, None, "ttft=0 不给值");
+        let third = &rows[2];
+        assert_eq!(third.session_id, None, "无会话行三字段恒 None");
+        assert_eq!(third.duration_ms, None, "NULL 耗时不给值");
+
+        // 缺耗时/首字两列的库（保留 session_id——内核 SQL 恒含该列，无该列的
+        // 老主库由薄壳 has_column 分支整体转投 db::query_since，不进内核）：
+        // 两字段走 NULL 占位降级恒 None，查询不报错
+        let conn = rusqlite::Connection::open_in_memory().expect("打开内存库失败");
+        conn.execute_batch(
+            "CREATE TABLE model_usage (
+                started_at INTEGER, model_id TEXT, provider_id TEXT,
+                input_tokens INTEGER DEFAULT 0, output_tokens INTEGER DEFAULT 0,
+                cache_read_input_tokens INTEGER DEFAULT 0,
+                cache_creation_input_tokens INTEGER DEFAULT 0,
+                reasoning_tokens INTEGER DEFAULT 0,
+                computed_total_tokens INTEGER DEFAULT 0,
+                session_id TEXT
+             );
+             INSERT INTO model_usage (started_at, model_id, provider_id, output_tokens, session_id)
+             VALUES (5000, 'glm-5.3', 'zai', 50, 's-8');",
+        )
+        .expect("重建缺列表失败");
+        let rows = query_zcode_rows_with_sessions_at(&conn, 0, 10, &HashMap::new())
+            .expect("缺列库 zcode 增量查询失败");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].output_tokens, 50);
+        assert_eq!(rows[0].duration_ms, None, "无 duration_ms 列应恒 None");
+        assert_eq!(rows[0].time_to_first_token_ms, None, "无 ttft 列应恒 None");
     }
 }

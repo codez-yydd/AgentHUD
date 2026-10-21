@@ -654,9 +654,13 @@ fn query_source_models(
 // ===== 全部设备口径（scope = "all"）：远端一路的接入 =====
 
 /// 远端单条明细 → 请求日志行：按真实 source 归并进对应来源路，因此 source /
-/// model / token 各字段与本地行同语义直接透传；耗时 / 首字 / 速度恒 None
-/// （服务端明细无这些列，前端灰化「—」，不做估算回退）；project 取
-/// project_display、退回 project_key；花费由调用方对当前页统一折算，此置 0；
+/// model / token 各字段与本地行同语义直接透传；耗时 / 首字自 proto 8 起
+/// 透传（服务端回传来源库真实 duration_ms / time_to_first_token_ms；
+/// 旧服务端不返回 → None，前端显示「—」，不做估算回退）。速度原料
+/// （first_token_at / completed_at）远端不上传，speed_tps / speed_quality
+/// 恒 None——前端 speedOf 走第二层公式（生成段 = duration − ttft，按
+/// output 推导，带 ≈ 近似标记）。project 取 project_display、退回
+/// project_key；花费由调用方对当前页统一折算，此置 0；
 /// device 带回设备 id 供前端展示归属。
 fn remote_row_to_log(record: &crate::sync::RemoteUsageRecord) -> RequestLogRow {
     RequestLogRow {
@@ -678,8 +682,8 @@ fn remote_row_to_log(record: &crate::sync::RemoteUsageRecord) -> RequestLogRow {
             .clone()
             .filter(|p| !p.is_empty())
             .or_else(|| record.project_key.clone()),
-        duration_ms: None,
-        ttft_ms: None,
+        duration_ms: record.duration_ms.filter(|value| *value > 0.0),
+        ttft_ms: record.time_to_first_token_ms.filter(|value| *value > 0.0),
         speed_tps: None,
         speed_quality: None,
         device: Some(record.device_id.clone()),
@@ -1531,8 +1535,9 @@ mod tests {
     }
 
     /// 远端响应按真实 source 分桶：聚合来自 by_model（含 token 各项）、明细
-    /// 行字段映射（耗时 / 首字 / 速度恒 None、project_display 优先、device
-    /// 带回）；不在来源集合里的 source（cursor）跳过；空模型分组只进总和。
+    /// 行字段映射（proto 8 起耗时 / 首字透传、速度恒 None、project_display
+    /// 优先、device 带回）；不在来源集合里的 source（cursor）跳过；空模型
+    /// 分组只进总和。
     #[test]
     fn split_remote_records_buckets_by_source() {
         let resp = crate::sync::RemoteUsageRecords {
@@ -1554,6 +1559,8 @@ mod tests {
                     session_id: Some("s9".into()),
                     project_key: Some("/repo".into()),
                     project_display: Some("repo".into()),
+                    duration_ms: Some(2500.0),
+                    time_to_first_token_ms: Some(500.0),
                 },
                 crate::sync::RemoteUsageRecord {
                     device_id: "dev-b".into(),
@@ -1571,6 +1578,8 @@ mod tests {
                     session_id: None,
                     project_key: None,
                     project_display: None,
+                    duration_ms: None,
+                    time_to_first_token_ms: None,
                 },
             ],
             by_model: vec![
@@ -1618,8 +1627,8 @@ mod tests {
         assert_eq!(row.device.as_deref(), Some("dev-a"));
         assert_eq!(row.project.as_deref(), Some("repo"));
         assert_eq!(row.total_tokens, 170);
-        assert!(row.duration_ms.is_none());
-        assert!(row.ttft_ms.is_none());
+        assert_eq!(row.duration_ms, Some(2500.0), "远端行耗时透传");
+        assert_eq!(row.ttft_ms, Some(500.0), "远端行首字透传");
         assert!(row.speed_tps.is_none());
         assert!(row.speed_quality.is_none());
         assert_eq!(row.session_id.as_deref(), Some("s9"));
@@ -1648,6 +1657,8 @@ mod tests {
                     session_id: None,
                     project_key: None,
                     project_display: None,
+                    duration_ms: None,
+                    time_to_first_token_ms: None,
                 }],
                 by_model: vec![crate::sync::RemoteUsageModelGroup {
                     source: "codex".into(),
@@ -1743,7 +1754,7 @@ mod tests {
     }
 
     /// 远端行序列化：device 字段带回设备 id；本机行省略该字段（旧前端契约
-    /// 不受影响）。
+    /// 不受影响）。proto 8：耗时/首字透传（服务端回传真实值），速度恒 null。
     #[test]
     fn remote_row_serialization_contract() {
         let mut local = crate::sync::RemoteUsageRecord {
@@ -1762,12 +1773,15 @@ mod tests {
             session_id: None,
             project_key: None,
             project_display: None,
+            duration_ms: Some(1200.0),
+            time_to_first_token_ms: Some(300.0),
         };
         local.device_id = "dev-a".into();
         let row = remote_row_to_log(&local);
         let json = serde_json::to_value(&row).unwrap();
         assert_eq!(json["device"], "dev-a");
-        assert!(json["duration_ms"].is_null());
+        assert_eq!(json["duration_ms"], 1200.0, "远端行耗时透传");
+        assert_eq!(json["ttft_ms"], 300.0, "远端行首字透传");
         assert!(json["speed_tps"].is_null());
 
         let mut local_row = row.clone();
