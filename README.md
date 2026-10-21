@@ -1,353 +1,352 @@
-# AgentHUD · 多 Agent 用量监控
+# AgentHUD · Multi-Agent Usage Monitor
+
+[English](README.md) | [简体中文](README.zh-CN.md)
+
+AgentHUD is an open-source observability dashboard for AI coding agents, providing unified usage, quota, cost and performance monitoring across Codex, Claude, Cursor, ZCode, Kimi Code and more.
 
 ![Tauri](https://img.shields.io/badge/Tauri-2.0-orange) ![React](https://img.shields.io/badge/React-19-blue) ![TypeScript](https://img.shields.io/badge/TypeScript-5.8-3178c6) ![TailwindCSS](https://img.shields.io/badge/Tailwind-v4-38bdf8) ![Rust](https://img.shields.io/badge/Rust-edition%202021-dea584) ![License](https://img.shields.io/badge/License-MIT-yellow) ![Platform](https://img.shields.io/badge/Platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey) [![GitHub Repo](https://img.shields.io/badge/GitHub-codez--yydd%2FAgentHUD-181717?logo=github)](https://github.com/codez-yydd/AgentHUD) [![Gitee Repo](https://img.shields.io/badge/Gitee-codezwx%2FAgentHUD-C71D23?logo=gitee)](https://gitee.com/codezwx/AgentHUD)
 
-一个常驻系统托盘的轻量监控伴侣，实时统计 [Z.ai（ZCode）](https://z.ai)、Codex、Claude、Cursor、Kimi Code 等多个 CLI Agent 的 Token 用量、订阅额度与花费。托盘唤出毛玻璃悬浮面板查看今日 / 7 天 / 30 天明细并按模型分组；另有主窗口大屏（用量总览 / 请求日志 / 周额度对比 / 价格设置）、会话 Token 悬浮窗、桌面宠物与跨设备同步。
+A lightweight tray-resident monitoring companion that tracks Token usage, subscription quotas and spending across multiple CLI agents in real time — [Z.ai (ZCode)](https://z.ai), Codex, Claude, Cursor, Kimi Code, and more. Summon a vibrancy floating panel from the tray for today / 7-day / 30-day breakdowns grouped by model; a full dashboard window (usage overview / request logs / weekly quota compare / pricing settings), a session token HUD, a desktop pet and cross-device sync are also included.
 
-> macOS 上的形态：菜单栏标题实时显示「今日花费 + 总 Token」，点击图标弹出贴近菜单栏的 popover 面板；Dock 不显示图标，失焦自动收起。
-
----
-
-## 📍 仓库地址
-
-- **GitHub**：[codez-yydd/AgentHUD](https://github.com/codez-yydd/AgentHUD)
-- **Gitee**：[codezwx/AgentHUD](https://gitee.com/codezwx/AgentHUD)
-
-两个仓库内容完全一致，任一仓库均可获取最新版本；GitHub / Gitee 双仓库自动降级的更新源也基于此配置。
+> On macOS: the menu-bar title shows today's cost + total tokens in real time; clicking the icon pops a popover panel hugging the menu bar; the Dock icon is hidden, and the panel auto-dismisses on blur.
 
 ---
 
-## 🎬 动态壁纸效果
+## 📍 Repositories
 
-![ZCode 动态壁纸演示](doc/img/zcode-skin.gif)
+- **GitHub**: [codez-yydd/AgentHUD](https://github.com/codez-yydd/AgentHUD)
+- **Gitee**: [codezwx/AgentHUD](https://gitee.com/codezwx/AgentHUD)
 
-> 一键把动态视频壁纸注入 ZCode 桌面应用，作为对话背景——安装前自动备份，可随时还原。
+Both repositories have exactly the same content — the latest version can be obtained from either one; the GitHub / Gitee dual-repo auto-fallback update source is also based on these addresses.
 
 ---
 
-## 📑 目录
+## 🎬 Live Wallpaper Demo
 
-- [📍 仓库地址](#-仓库地址)
-- [🎬 动态壁纸效果](#-动态壁纸效果)
-- [📸 界面截图](#-界面截图)
-- [✨ 功能特性](#-功能特性)
-- [🧱 技术栈](#-技术栈)
-- [📁 项目结构](#-项目结构)
-- [📋 环境要求](#-环境要求)
-- [🚀 快速开始](#-快速开始)
-- [📜 常用脚本](#-常用脚本)
-- [📦 打包发布](#-打包发布)
-  - [🔄 应用内自动更新（双仓库）](#-应用内自动更新双仓库)
-- [⚙️ 配置说明](#️-配置说明)
-  - [数据库路径](#数据库路径)
-  - [价格配置](#价格配置)
-  - [Coding Plan 额度监控](#coding-plan-额度监控)
-  - [全局快捷键](#全局快捷键)
-  - [动态壁纸](#动态壁纸)
-  - [Cursor 统计](#cursor-统计)
-  - [Kimi Code 统计](#kimi-code-统计)
-  - [凭证管理](#凭证管理)
-  - [周额度对比与报表](#周额度对比与报表)
-  - [多设备同步](#多设备同步)
-- [🧮 计费规则](#-计费规则)
-- [🔒 数据安全](#-数据安全)
+![ZCode live wallpaper demo](doc/img/zcode-skin.webp)
+
+> Inject a live video wallpaper into the ZCode desktop app as the conversation background in one click — the original app is backed up automatically before installation and can be restored anytime.
+
+---
+
+## 📑 Contents
+
+- [📍 Repositories](#-repositories)
+- [🎬 Live Wallpaper Demo](#-live-wallpaper-demo)
+- [📸 Screenshots](#-screenshots)
+- [✨ Features](#-features)
+- [🧱 Tech Stack](#-tech-stack)
+- [📁 Project Structure](#-project-structure)
+- [📋 Prerequisites](#-prerequisites)
+- [🚀 Quick Start](#-quick-start)
+- [📜 Scripts](#-scripts)
+- [📦 Build & Release](#-build--release)
+  - [🔄 In-app auto update (dual repos)](#-in-app-auto-update-dual-repos)
+- [⚙️ Configuration](#️-configuration)
+  - [Database Path](#database-path)
+  - [Pricing](#pricing)
+  - [Coding Plan Quota Monitor](#coding-plan-quota-monitor)
+  - [Global Hotkey](#global-hotkey)
+  - [Dynamic wallpaper](#dynamic-wallpaper)
+  - [Cursor Stats](#cursor-stats)
+  - [Kimi Code Stats](#kimi-code-stats)
+  - [Credentials](#credentials)
+  - [Weekly Compare & Reports](#weekly-compare--reports)
+  - [Multi-device Sync](#multi-device-sync)
+- [🧮 Billing Rules](#-billing-rules)
+- [🔒 Data Safety](#-data-safety)
 - [📄 License](#-license)
 
 ---
 
-## 📸 界面截图
+## 📸 Screenshots
 
 <table>
   <tr>
     <td width="50%" align="center">
-      <img src="doc/img/summary.png" width="320" alt="汇总视图"/><br/>
-      <b>汇总视图</b> — 多服务合计花费 / Token 与订阅额度
+      <img src="doc/img/hud-top.png" width="320" alt="HUD · top bar & detail"/><br/>
+      <b>HUD · top bar & detail</b> — capsule top bar with a pop-up usage panel
     </td>
     <td width="50%" align="center">
-      <img src="doc/img/zai-quota.png" width="320" alt="Z.ai 视图"/><br/>
-      <b>Z.ai 视图</b> — Coding Plan 5 小时 / 每周 / MCP 额度
-    </td>
-  </tr>
-  <tr>
-    <td width="50%" align="center">
-      <img src="doc/img/summary-trend.png" width="320" alt="趋势与模型排行"/><br/>
-      <b>趋势与模型排行</b> — 按时段用量趋势与模型排行
-    </td>
-    <td width="50%" align="center">
-      <img src="doc/img/dashboard-overview.png" width="320" alt="主窗口 · 用量总览"/><br/>
-      <b>主窗口 · 用量总览</b> — 跨服务用量、花费与趋势汇总
+      <img src="doc/img/hud-dock.png" width="320" alt="HUD · edge dock & detail card"/><br/>
+      <b>HUD · edge dock & detail card</b> — slim edge dock with a floating detail card
     </td>
   </tr>
   <tr>
     <td width="50%" align="center">
-      <img src="doc/img/settings.png" width="320" alt="价格设置"/><br/>
-      <b>价格设置</b> — 美元单价、汇率折算与全局快捷键
+      <img src="doc/img/summary.png" width="320" alt="Summary view"/><br/>
+      <b>Summary view</b> — Total cost / tokens across services & subscription quotas
     </td>
     <td width="50%" align="center">
-      <img src="doc/img/sync.png" width="320" alt="设备同步"/><br/>
-      <b>设备同步</b> — 多设备增量同步与数据管理
-    </td>
-  </tr>
-  <tr>
-    <td width="50%" align="center">
-      <img src="doc/img/speed.png" width="320" alt="模型速度排行"/><br/>
-      <b>模型速度排行</b> — 「速度」标签页：分位速度、首字延迟与成功率
-    </td>
-    <td width="50%" align="center">
-      <img src="doc/img/tokeninfo.png" width="320" alt="会话Token悬浮窗"/><br/>
-      <b>会话 Token 悬浮窗</b> — 免注入实时 Token、流式速度与模型速度行
+      <img src="doc/img/zai-quota.png" width="320" alt="Z.ai view"/><br/>
+      <b>Z.ai view</b> — Coding Plan 5-hour / weekly / MCP quotas
     </td>
   </tr>
   <tr>
     <td width="50%" align="center">
-      <img src="doc/img/dashboard-logs.png" width="320" alt="主窗口 · 请求日志"/><br/>
-      <b>主窗口 · 请求日志</b> — 各 Agent 请求明细、耗时、缓存与花费
+      <img src="doc/img/summary-trend.png" width="320" alt="Trend & model ranking"/><br/>
+      <b>Trend & model ranking</b> — Hourly usage trend and model ranking
     </td>
     <td width="50%" align="center">
-      <img src="doc/img/usage-report.png" width="320" alt="用量报告"/><br/>
-      <b>用量报告</b> — 活跃度 / Token 活动热力图与日报周报导出
+      <img src="doc/img/dashboard-overview.png" width="320" alt="Dashboard · usage overview"/><br/>
+      <b>Dashboard · Usage Overview</b> — Cross-service usage, cost & trend summary
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" align="center">
+      <img src="doc/img/settings.png" width="320" alt="Pricing settings"/><br/>
+      <b>Pricing settings</b> — USD unit prices, FX rate & global hotkey
+    </td>
+    <td width="50%" align="center">
+      <img src="doc/img/sync.png" width="320" alt="Device sync"/><br/>
+      <b>Device sync</b> — Incremental multi-device sync & data management
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" align="center">
+      <img src="doc/img/speed.png" width="320" alt="Model speed ranking"/><br/>
+      <b>Model speed ranking</b> — "Speed" tab: percentile speeds, TTFT & success rate
+    </td>
+    <td width="50%" align="center">
+      <img src="doc/img/tokeninfo.png" width="320" alt="Session token HUD"/><br/>
+      <b>Session token HUD</b> — injection-free live tokens, streaming speed & per-model rows
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" align="center">
+      <img src="doc/img/dashboard-logs.png" width="320" alt="Dashboard · request logs"/><br/>
+      <b>Dashboard · Request Logs</b> — per-agent request details: duration, cache & cost
+    </td>
+    <td width="50%" align="center">
+      <img src="doc/img/usage-report.png" width="320" alt="Usage report"/><br/>
+      <b>Usage report</b> — activity / token heatmap & daily / weekly report export
     </td>
   </tr>
 </table>
 
 ---
 
-## ✨ 功能特性
+## ✨ Features
 
-**🖥 核心体验**
+**🖥 Core experience**
 
-- **实时菜单栏标题** — 常驻 macOS 顶部菜单栏，每 30 秒刷新，显示今日自然日的总花费（`¥xx.xx`，美元模式下为 `$xx.xx`）与总 Token（如 `3.7M`）。
-- **浮动统计面板** — 点击托盘图标唤出，支持 **今日 / 24h / 7天 / 30天 / 自定义** 时间范围切换。
-- **🖥 主窗口 Dashboard** — 独立大窗形态，侧边栏分页管理：用量总览（跨服务 Token / 花费 / 趋势 / 活跃热力图）、请求日志、周额度对比与价格设置。
-- **📜 请求日志** — 逐请求明细（时间、来源、模型、Token 构成、花费、耗时与速度），支持按来源 / 模型筛选与自动刷新。
-- **原生体验** — macOS 使用 `popover` 毛玻璃材质 + 透明窗口；Windows/Linux 面板贴近任务栏展开。
-- **自动刷新** — 面板数据每 30 秒自动拉取一次。
-- **⌨️ 全局快捷键** — 默认 `alt+shift+z` 唤起 / 隐藏面板，可在设置中自定义或停用。
-- **🎨 动态壁纸** — 一键把动态视频壁纸注入 ZCode 桌面应用，作为对话背景；安装前自动备份原版、可随时还原。ZCode 升级后壁纸会失效，需重新安装；macOS 上注入后 ZCode 内置更新将不可用（还原也无法恢复），需前往官网重新下载。
-- **🖥 会话 Token 悬浮窗** — 免注入的桌面悬浮窗：按 agent 分组（ZCode / Claude / Codex / Kimi Code / DeepSeek Harness / OpenCode / MiniMax Code / Cursor）实时展示各会话累计 Token（输入 / 输出 / 缓存 / 请求数）、流式生成速度（t/s 与首字延迟）与实时状态点（有运行中信号的来源显示生成中 / 空闲，其余为中性灰点），底部按「来源 × 模型」给出窗口速度行（真生成窗口口径不带 ≈，整请求耗时口径带 ≈）。活跃窗口内无会话的 agent 回退展示「今日最近会话」并淡显标注，组头仍为该 agent 今日合计。支持拖拽边缘 / 四角自由调整大小（尺寸与位置自动记忆），标题栏内置设置面板（字体大小 / 窗口透明度）与一键关闭；语言、主题跟随主面板。在「皮肤」页开启。
-- **🐶 桌面宠物** — 内置智谱娘默认形象，支持 Petdex 自定义形象导入；七状态任务联动动画随 ZCode 任务状态实时切换；注入版（嵌入 ZCode 界面，可拖拽）与悬浮窗双形态按需选择，按屏幕比例提供尺寸档位，皮肤页统一管理。
-- **🖼 皮肤分类页** — 「皮肤」入口（调色板图标）改为分类导航：会话悬浮窗、桌面宠物等免注入功能独立成页、秒开即用；动态壁纸等需注入功能单独一页，进入时才检测 ZCode 注入环境。
+- **Live menu-bar title** — lives in the macOS menu bar, refreshing every 30s, showing today's total cost (`¥xx.xx`, or `$xx.xx` in USD mode) and total tokens (e.g. `3.7M`).
+- **Floating stats panel** — summoned by clicking the tray icon; supports **today / 24h / 7d / 30d / custom** time ranges.
+- **🖥 Dashboard main window** — a standalone large window with sidebar tabs: usage overview (cross-service tokens / cost / trends / activity heatmap), request logs, weekly quota compare and pricing settings.
+- **📜 Request logs** — per-request details (time, source, model, token breakdown, cost, duration & speed) with source / model filters and auto refresh.
+- **Native feel** — macOS uses the `popover` vibrancy material + transparent window; Windows/Linux panels unfold near the taskbar.
+- **Auto refresh** — panel data is re-fetched every 30 seconds.
+- **⌨️ Global hotkey** — summon / hide the panel with `alt+shift+z` by default; customizable or disable-able in settings.
+- **🎨 Dynamic wallpaper** — inject a live video wallpaper into the ZCode desktop app as the conversation background in one click; the original app is backed up automatically before installation and can be restored anytime. The wallpaper is invalidated after a ZCode upgrade and needs to be reinstalled; on macOS, ZCode's built-in updater becomes unavailable after injection (even restoring cannot bring it back) — re-download ZCode from the official site.
+- **🖥 Session token HUD** — an injection-free desktop overlay grouped by agent (ZCode / Claude / Codex / Kimi Code / DeepSeek Harness / OpenCode / MiniMax Code / Cursor) showing live per-session cumulative tokens (input / output / cache / request count), streaming speed (t/s & first-token latency) and a live state dot (sources with a real running signal read generating / idle, the rest stay a neutral grey dot), with per-source × per-model window speed rows at the bottom (true generation window has no ≈, whole-request estimates carry ≈). Agents with no session inside the active window fall back to showing their latest session today, dimmed and labelled, while the group header still shows that agent's today total. Resize freely by dragging edges / corners (size & position remembered); a built-in settings panel (font size / opacity) and a one-click close button live in the title bar; language & theme follow the main panel. Enable it from the "Skins" page.
+- **🐶 Desktop pet** — ships with the default Zhipu-chan character and supports Petdex custom imports; a 7-state task-linked animation reacts to ZCode task states in real time; choose between the injected form (embedded in the ZCode UI, draggable) and the floating form, with screen-proportional size tiers; managed on the Skins page.
+- **🖼 Skins hub** — the "Skins" entry (palette icon) is now a category page: injection-free features (session HUD, desktop pet) get their own page and open instantly, while injection-required features (dynamic wallpaper) live on a separate page where the ZCode install is only scanned on entry.
 
-**🤖 多服务用量统计**
+**🤖 Multi-service usage stats**
 
-- **Coding Plan 额度监控** — 订阅用户可在面板顶部查看 **5 小时窗口**、**每周额度**与 **MCP 月度额度**的用量进度条，颜色随用量警示（绿→琥珀→红），并显示下次重置倒计时。凭证与接口端点**自动读取**本机 ZCode 客户端登录态（`~/.zcode/v2/config.json`），零配置。
-- **🖥 Cursor 用量统计** — 自动读取本机 Cursor 应用的登录凭据，统计 Pro / Auto / API 套餐额度与 Token 花费明细，美元花费按汇率折算后并入汇总视图；旧版设置页手动填写的 Cookie 会**自动迁移**为凭证（老用户无感升级），支持添加多个 Cookie 实现多账号堆叠显示。
-- **🟢 Codex 用量统计** — 解析本机 `~/.codex/sessions` 会话记录统计 Token 用量与花费；ChatGPT 订阅登录的机器上还可实时拉取 **5 小时 / 每周**额度进度条（API 中转模式自动隐藏额度块）。
-- **🟠 Claude 用量统计** — 解析本机 `~/.claude/projects` 会话记录统计 Token 用量与花费（含子代理会话，按 message 去重防重复计数）；claude.ai 订阅登录的机器上实时拉取 **5 小时会话 / 每周**额度（第三方中转模式自动隐藏额度块）。订阅增强：**模型专属周额度窗口**（Opus / Sonnet 独立额度池）、**超额消费（extra usage）金额行**、凭证失效时给出明确报错并引导重新授权、套餐名识别（Max 5x / Max 20x），支持手动粘贴 `sk-ant-oat` Token 添加多账号（「其他账号」堆叠区）。
-- **🖥️ Kimi Code 用量统计** — 解析本机 `~/.kimi-code/sessions` 会话记录（`wire.jsonl`）统计 Token 用量、花费与 **Token 输出速度**；已登录 Kimi Code CLI 的机器上自动探测本地凭据（OAuth 过期时后台自动续期，无需配置），实时拉取订阅额度：**5 小时滚动窗口 / 周期额度**进度条与重置倒计时、加油包余额、官方会员档位名；面板底部「其他账号」区支持 **OAuth 网页登录**（设备码流程，无需安装 CLI）或手动粘贴 API Key / OAuth 令牌，多账号堆叠显示（区域分中国站 / 国际站）。
-- **🟢 MiniMax Code 用量统计** — 解析本机 MiniMax Code 的本地数据（`~/.minimax`）统计 Token 用量与花费；同一页面顶部展示 MiniMax Coding Plan 订阅额度（**5 小时 / 周**双窗口进度条与重置倒计时），额度由面板底部手动添加的 `sk-cp-` API Key 查询（没装 MiniMax Code、把订阅用在别的 agent 里也能查；未配置时只展示本地用量，不占位空标题）。
-- **🐋 DeepSeek Harness 用量统计** — 解析本机 `~/.dsh` 会话事件日志统计 Token 用量、花费与**真生成速度（含 TTFT）**；面板底部「DeepSeek 平台余额」区可手动添加 **DeepSeek 开放平台 API Key**，实时展示账户余额与赠送 / 充值拆分（DSH 自身按量计费，没有订阅额度窗口）。
-- **🔑 通用凭证管理** — 各 Agent 面板页内置凭证入口（设置页不提供凭证配置）：每个服务可添加**多个凭证**（多账号 / 多订阅堆叠显示），支持备注（区分订阅等级）、编辑与删除，部分服务支持选择 **region**（中国站 / 国际站）。凭证明文保存在本地 `~/.agenthud/credentials/`（目录权限 700、文件 600，仅存本机）。详见[凭证管理](#凭证管理)。
-- **🧩 新增 10 个订阅 / 额度服务** — 凭证驱动，默认隐藏，添加凭证或启用后显示，按凭证类型分组：
-  - **API Key 型**（服务控制台创建 Key 后粘贴）：MiniMax（5h + 周双窗口）、通义灵码 Coding Plan（5h / 周 / 月三窗口）
-  - **手动 Cookie 型**（浏览器 F12 复制 Cookie 粘贴）：Qoder（大模型积分）、LongCat 美团（Token 配额 + 加油包）、小米 MiMo（余额 + 积分）、百炼 Token 包（5h / 7 天窗口，Team / Personal 双形态）
-  - **手动 Token 型**（控制台获取 Token 后粘贴）：StepFun 阶跃星辰（速率 / 积分双套餐形态，Oasis-Token）
-  - **本地读取型**（零凭证即可用，面板底部也有 API Key 录入区）：Gemini（读取 Gemini CLI 登录态，自动刷新 token）、Grok（读取 grok CLI 登录态，支持多 token）、OpenCode Go（本地 SQLite 用量估算，或手动 API Key 直连官方用量接口）、MiniMax Code（本地 `~/.minimax` 用量，或手动 `sk-cp-` Coding Plan Key 查套餐额度）
-- **🫘 火山引擎（Volcengine 火山方舟）** — 已预留入口，额度查询即将上线。
-- **🧭 多服务汇总视图** — 「汇总 / Z.ai / Codex / Claude / Cursor / Kimi Code」标签切换：多服务合计花费与 Token、订阅额度卡片、分时趋势图与模型排行。
-- **⚡ 速度与首字延迟** — 基于调用耗时统计**平均输出速度（tok/s）**与**首字延迟（TTFT）**，含噪声过滤口径（整块下发识别、计时异常剔除）。ZCode / Claude 面板可用；Kimi Code 面板可用 TPS（由请求耗时推算的输出速度口径、无 TTFT，首字延迟与 Claude 一样隐藏）；Codex / Cursor 数据源无耗时字段，自动隐藏。平均速度统一按「首 Token → 完成」的真实生成区间加权计算（带 ≈ 的为含等待时间的请求近似值）；注入 ZCode 界面的皮肤注入版同样在每轮 / 会话条展示「均 / 快 / 慢」聚合与模型分组速度行，与悬浮窗口径一致。
-- **🏎 模型速度排行** — 统计面板「速度」标签页按模型比较流式输出表现：平均速度与「慢 / 平均 / 快」分位（p10/p50/p90）、首字延迟、输入 / 输出 / 耗时明细、请求数与成功率，支持今日 / 7 天切换与 30 秒自动刷新，并区分展示真实「速度样本」数（与总请求数区分）。
-- **🎯 当前模型** — 各 Agent 面板显示「当前模型」（口径：最近一次调用使用的模型 + 相对时间），汇总页各服务分组同步展示。
+- **Coding Plan quota monitor** — subscribers can view the **5-hour window**, **weekly quota** and **MCP monthly quota** progress bars at the top of the panel; the color escalates with usage (green → amber → red) and shows a reset countdown. Credentials and the API endpoint are read **automatically** from the local ZCode client's signed-in state (`~/.zcode/v2/config.json`) — zero configuration.
+- **🖥 Cursor usage stats** — reads the local Cursor app's login credentials automatically; tracks Pro / Auto / API plan quotas and per-model token costs, with USD costs converted at the FX rate and merged into the summary view. Cookies previously entered manually on the old settings page are **migrated automatically** into the credential system (a seamless upgrade for existing users), and multiple cookies can be added for stacked multi-account display.
+- **🟢 Codex usage stats** — parses local `~/.codex/sessions` records to tally token usage and cost; on machines signed in with a ChatGPT subscription, **5-hour / weekly** quota bars are also fetched live (hidden automatically in API relay mode).
+- **🟠 Claude usage stats** — parses local `~/.claude/projects` session records to tally token usage and cost (sub-agent sessions included, deduplicated by message); on machines signed in to claude.ai, subscription quotas are fetched live (**5-hour session / weekly**, hidden automatically in third-party relay modes). Subscription enhancements: **model-specific weekly quota windows** (separate Opus / Sonnet pools), an **extra usage** spend row, a clear error with re-auth guidance when credentials expire, plan-tier detection (Max 5x / Max 20x), and manual `sk-ant-oat` tokens for additional accounts (stacked in an "Other accounts" section).
+- **🖥️ Kimi Code usage stats** — parses local `~/.kimi-code/sessions` session records (`wire.jsonl`) to tally token usage, cost and **token output speed (TPS)**; on machines signed in to the Kimi Code CLI, local credentials are detected automatically (OAuth expiry renewed in the background — no configuration needed) to fetch subscription quotas live: **5-hour rolling window / cycle quota** progress bars with reset countdowns, booster wallet balance and official membership tier name; the "Other accounts" section at the bottom of the panel supports **OAuth web sign-in** (device-code flow, no CLI required) as well as pasting an API key / OAuth token manually, stacking multiple accounts (China / International region).
+- **🟢 MiniMax Code usage stats** — parses MiniMax Code's local data (`~/.minimax`) to tally token usage and cost; the same page shows the MiniMax Coding Plan subscription quota at the top (**5-hour / weekly** progress bars with reset countdowns), fetched with an `sk-cp-` API key added at the bottom of the panel (so it also works without MiniMax Code installed, when the subscription is used from another agent; without a key it shows local usage only, with no empty placeholder block).
+- **🐋 DeepSeek Harness usage stats** — parses local `~/.dsh` session event logs to tally token usage, cost and **true generation speed (with TTFT)**; the "DeepSeek platform balance" section at the bottom of the panel accepts a **DeepSeek open platform API key** and shows the account balance with its granted / topped-up breakdown (DSH itself is pay-as-you-go and has no subscription quota window).
+- **🔑 Universal credential manager** — every agent panel has a built-in credentials entry (no credential config on the settings page): each service accepts **multiple credentials** (multi-account / multi-subscription, displayed stacked), with notes (to distinguish plan tiers), editing and deletion; some services also offer a **region** choice (China / International). Credentials are stored in plain text locally under `~/.agenthud/credentials/` (directory mode 700, file mode 600, this machine only). See [Credentials](#credentials).
+- **🧩 10 new subscription / quota services** — credential-driven and hidden by default; each appears once a credential is added or the service is enabled, grouped by credential type:
+  - **API Key** (create a key in the service console and paste it): MiniMax (5-hour + weekly dual windows), Tongyi Lingma Coding Plan (5h / weekly / monthly windows)
+  - **Manual cookie** (copy the cookie from browser DevTools and paste): Qoder (LLM credits), LongCat by Meituan (token quota + booster packs), Xiaomi MiMo (balance + credits), Alibaba Cloud Bailian token packs (5h / 7-day windows, Team / Personal variants)
+  - **Manual token** (grab the token from the console and paste): StepFun (rate / credits dual-plan variants, Oasis-Token)
+  - **Local read** (works with zero credentials; an API key section is also available at the bottom of the panel): Gemini (reads the Gemini CLI signed-in state, auto token refresh), Grok (reads the grok CLI signed-in state, multiple tokens supported), OpenCode Go (usage estimated from a local SQLite DB, or a manual API key querying the official usage endpoint), MiniMax Code (usage from local `~/.minimax`, or a manual `sk-cp-` Coding Plan key for the plan quota)
+- **🫘 Volcengine (Ark)** — entry reserved; quota queries coming soon.
+- **🧭 Multi-service summary view** — summary / Z.ai / Codex / Claude / Cursor / Kimi Code tabs: total cost & tokens across services, subscription quota cards, hourly trend chart and model ranking.
+- **⚡ Speed & TTFT** — average output speed (tok/s) and first-token latency (TTFT) from per-call durations, with noise filtering (whole-block delivery detection, timing-outlier rejection). Available on ZCode / Claude / Kimi Code panels (Kimi Code's tok/s is a TPS estimate derived from request durations with no TTFT, so first-token latency is hidden there just like Claude; Codex / Cursor data sources carry no duration and auto-hide these columns). Average speeds are weighted over the real generation span (first token → completion; ≈ marks request-level approximations that include waiting time); the injected ZCode skin likewise shows avg/fast/slow aggregates and per-model speed rows on each turn / session bar, aligned with the HUD's methodology.
+- **🏎 Model speed ranking** — the "Speed" tab in the stats panel compares streaming performance per model: average speed with slow / average / fast percentiles (p10/p50/p90), first-token latency, input / output / duration details, request counts and success rate; today / 7-day toggle with 30-second auto refresh, and a distinct "speed sample" count (separate from total requests).
+- **🎯 Current model** — each agent panel shows the "current model" (latest model actually used + relative time); the summary page shows it per service group.
 
-**💰 价格与计费**
+**💰 Pricing & billing**
 
-- **价格配置** — 为每个模型设置「输入 / 输出 / 缓存读」三项**美元**单价（每百万 Token），配置持久化到 `~/.agenthud/pricing.json`，人民币花费按当前汇率自动折算；支持一键「检查价格更新」，与内置参考表离线对比（定价数据源自 [cc-switch](https://github.com/farion1231/cc-switch) 开源项目，不联网）。
-- **缓存感知计费** — `input_tokens` 已包含缓存读部分，计费时缓存读按缓存价单独计算，非缓存输入按输入价计算，避免重复计费。
-- **💱 汇率自动更新** — USD→CNY 汇率默认每日自动联网更新（也可改为手动填写），用于各服务的美元花费折算与人民币参考价换算。
+- **Pricing config** — set **USD** unit prices (per million tokens) for input / output / cache-read on each model, persisted to `~/.agenthud/pricing.json`, with CNY costs converted automatically at the current FX rate; a one-click "check price updates" compares against the built-in reference table offline (pricing data from the open-source [cc-switch](https://github.com/farion1231/cc-switch) project, no network access).
+- **Cache-aware billing** — `input_tokens` already includes cache-read tokens; cache-read is billed at the cache rate and non-cache input at the input rate, avoiding double counting.
+- **💱 Auto FX rate** — the USD→CNY rate is refreshed online daily by default (manual input supported); used to convert USD costs across services and for CNY reference prices.
 
-**📊 数据与报表**
+**📊 Data & reports**
 
-- **Token 明细** — 输入、输出、缓存读、缓存写、推理 Token 分类统计，并按占比可视化。
-- **按模型分组** — 列出每个模型的请求数、Token、花费；未配置价格的模型会标记 ⚠ 提示。
-- **📈 周额度对比** — 基于本地额度快照（90 天滚动保留）对比每个重置周期的额度用量，支持跨设备合并。
-- **📝 日报 / 周报** — 一键生成 Markdown 日报（今日）/ 周报（近 7 天）并保存到本地。
+- **Token breakdown** — input, output, cache-read, cache-write and reasoning tokens, visualized by proportion.
+- **Per-model grouping** — requests, tokens and cost per model; models without pricing are flagged with ⚠.
+- **📈 Weekly quota compare** — compare quota usage across reset cycles based on local quota snapshots (90-day rolling retention), with cross-device merge.
+- **📝 Daily / weekly reports** — one-click Markdown report (daily = today, weekly = last 7 days) saved locally.
 
-**🔄 同步与更新**
+**🔄 Sync & update**
 
-- **🔄 多设备同步** — 自托管同步服务（`server/`），让公司 / 家里等多台电脑汇总查看全量用量。明细增量上传 + `(device, rowid)` 去重，支持**设备筛选**（全部 / 本机 / 指定设备）和**数据清理**（按设备 / 按时间 / 全清 + 可配置自动定时清理）。已上传的来源（ZCode / Codex / Claude / Kimi Code / DeepSeek Harness / OpenCode / MiniMax Code）在汇总页、对比页、报告页都会按同一设备筛选口径合并本机与其它设备的用量；其它设备在用而本机没装对应 CLI 时，也会自动显示该来源的卡片与页签。详见 [server/README.md](./server/README.md)。
-- **⬆️ 应用内自动更新** — 设置 →「关于与更新」检查 / 下载 / 静默安装新版本，更新源 **GitHub / Gitee 双仓库自动降级**，更新包签名校验；启动静默检查，有新版时设置入口亮红点。
+- **🔄 Multi-device sync** — self-hosted sync server (`server/`) to aggregate usage across machines (office / home). Incremental detail upload + `(device, rowid)` dedup, with **device filtering** (all / local / specific device) and **data cleanup** (by device / by time / all + configurable auto cleanup). Every uploaded source (ZCode / Codex / Claude / Kimi Code / DeepSeek Harness / OpenCode / MiniMax Code) is merged across devices on the summary, compare and report pages under the same device-filter semantics; when another machine uses an agent but this one has no CLI installed, its card and tab still appear. See [server/README.md](./server/README.md).
+- **⬆️ In-app auto update** — Settings → "About & update" to check / download / silently install new versions; endpoints fall back between **GitHub and Gitee** automatically, packages are signature-verified, and a silent startup check lights a red dot on the settings entry when a new version is available.
 
 ---
 
-## 🧱 技术栈
+## 🧱 Tech Stack
 
-| 层 | 技术 |
+| Layer | Tech |
 | --- | --- |
-| 桌面框架 | [Tauri 2](https://tauri.app/)（Rust 后端 + WebView 前端） |
-| 前端 | React 19 + TypeScript + Vite 7 |
-| 样式 | Tailwind CSS v4（`@tailwindcss/vite`） |
-| 数据库 | SQLite（`rusqlite`，只读访问 ZCode / OpenCode 等本地数据库） |
-| macOS 原生 | `objc2` / `objc2-app-kit`（毛玻璃透明度调优、Accessory 模式隐藏 Dock） |
+| Desktop | [Tauri 2](https://tauri.app/) (Rust backend + WebView frontend) |
+| Frontend | React 19 + TypeScript + Vite 7 |
+| Styling | Tailwind CSS v4 (`@tailwindcss/vite`) |
+| Database | SQLite (`rusqlite`, read-only access to local agent DBs such as ZCode / OpenCode) |
+| macOS native | `objc2` / `objc2-app-kit` (vibrancy tuning, Accessory mode to hide Dock) |
 
 ---
 
-## 📁 项目结构
+## 📁 Project Structure
 
 ```
 AgentHUD/
-├── src/                      # 前端（React）
-│   ├── App.tsx               # 视图路由：统计 / 价格设置 / 设备同步 / 周额度对比 / 报表
-│   ├── StatsPanel.tsx        # 统计面板（含设备筛选器 + 本地/远端数据合并）
-│   ├── SummaryTab.tsx        # 汇总视图（多服务合计 / 趋势 / 模型排行）
-│   ├── CursorPanel.tsx       # Cursor 视图（额度 + 用量统计）
-│   ├── AgentUsagePanel.tsx   # 单 CLI Agent 通用用量面板（Codex / Claude 共用）
-│   ├── CodexPanel.tsx        # Codex 视图（AgentUsagePanel 品牌皮肤）
-│   ├── ClaudePanel.tsx       # Claude 视图（AgentUsagePanel 品牌皮肤）
-│   ├── KimiPanel.tsx         # Kimi Code 视图（AgentUsagePanel 品牌皮肤）
-│   ├── SkinHubPanel.tsx       # 皮肤分类导航页（免注入 / 需注入入口卡）
-│   ├── PricingPanel.tsx      # 价格配置面板
-│   ├── SettingsPanel.tsx     # 设置页（透明度 / 语言 / 开机自启 / 数据来源 / 汇率 / 快捷键）
-│   ├── QuotaPanel.tsx        # Coding Plan 额度监控
-│   ├── ComparePanel.tsx      # 周额度对比
-│   ├── ReportPanel.tsx       # 日报 / 周报（Markdown 导出）
-│   ├── SyncPanel.tsx         # 设备同步设置面板（注册 / 数据管理）
-│   ├── RangePicker.tsx       # 时间范围选择器
-│   ├── session-hud-main.ts    # 会话 Token 悬浮窗入口（免注入独立页）
-│   ├── pet-main.ts            # 桌面宠物悬浮形态入口
-│   ├── api.ts                # invoke 封装（调用 Rust 命令）
-│   ├── types.ts              # 与 Rust 结构一一对应的 TS 类型
-│   ├── format.ts             # Token / 金额 / 百分比格式化
-│   └── main.tsx              # 入口
-├── src-tauri/                # Rust 后端（客户端）
+├── src/                      # Frontend (React)
+│   ├── App.tsx               # View router: stats / pricing / sync / weekly compare / reports
+│   ├── StatsPanel.tsx        # Stats panel (device filter + local/remote merge)
+│   ├── SummaryTab.tsx        # Summary view (multi-service totals / trend / model ranking)
+│   ├── CursorPanel.tsx       # Cursor view (quotas + usage stats)
+│   ├── KimiPanel.tsx         # Kimi Code view (quotas + usage stats)
+│   ├── SkinHubPanel.tsx       # Skins hub navigation page (injection-free / injection-required cards)
+│   ├── PricingPanel.tsx      # Pricing config panel
+│   ├── SettingsPanel.tsx     # Settings page (opacity / language / autostart / sources / FX rate / hotkey)
+│   ├── QuotaPanel.tsx        # Coding Plan quota monitor
+│   ├── ComparePanel.tsx      # Weekly quota compare
+│   ├── ReportPanel.tsx       # Daily / weekly reports (Markdown export)
+│   ├── SyncPanel.tsx         # Device sync settings (register / data management)
+│   ├── RangePicker.tsx       # Time-range picker
+│   ├── session-hud-main.ts    # Session token HUD entry (standalone injection-free page)
+│   ├── pet-main.ts            # Desktop pet floating-form entry
+│   ├── api.ts                # invoke wrappers (Rust commands)
+│   ├── types.ts              # TS types mirroring the Rust structs
+│   ├── format.ts             # Token / currency / percent formatting
+│   └── main.tsx              # Entry
+├── src-tauri/                # Rust backend
 │   ├── src/
-│   │   ├── lib.rs            # 应用入口、托盘、面板逻辑、Tauri 命令
-│   │   ├── db.rs             # SQLite 只读查询（统计 / 模型列表 / 增量查询）
-│   │   ├── pricing.rs        # 价格配置读写 + 内置参考表差异检查
-│   │   ├── quota.rs          # Coding Plan 额度查询（自动读取 ZCode 客户端凭证；5 小时 / 每周 / MCP）
-│   │   ├── quota_history.rs  # 额度快照历史（JSONL，90 天滚动保留）
-│   │   ├── cursor.rs         # Cursor 用量统计（自动凭据 / Cookie / API）
-│   │   ├── codex.rs          # Codex 用量统计（sessions 解析 + 实时订阅额度）
-│   │   ├── claude.rs         # Claude 用量统计（projects 解析 + OAuth 实时额度）
-│   │   ├── kimi.rs           # Kimi Code 用量统计（wire.jsonl 解析 + OAuth 内存续期额度）
-│   │   ├── session_hud.rs     # 会话 Token 悬浮窗（配置 / 建关窗 / 缩放记忆）
-│   │   ├── pets.rs            # 桌面宠物（内置形象 / Petdex 导入）
-│   │   ├── agent_theme/       # ZCode 界面注入（动态壁纸 / 注入版速度聚合）
-│   │   ├── shortcut.rs       # 全局快捷键配置
-│   │   ├── sync.rs           # 多设备同步（配置 / 增量上传 / 远端查询 / 清理）
+│   │   ├── lib.rs            # App entry, tray, panel logic, Tauri commands
+│   │   ├── db.rs             # Read-only SQLite queries (stats / model list)
+│   │   ├── pricing.rs        # Pricing config read/write + built-in reference table diff check
+│   │   ├── quota.rs          # Coding Plan quota queries (auto ZCode-client credentials; 5h / weekly / MCP)
+│   │   ├── quota_history.rs  # Quota snapshot history (JSONL, 90-day retention)
+│   │   ├── cursor.rs         # Cursor usage stats (auto credentials / cookie / API)
+│   │   ├── kimi.rs           # Kimi Code usage stats (wire.jsonl parsing + OAuth in-memory renewal for live quotas)
+│   │   ├── session_hud.rs     # Session token HUD (config / open-close / resize memory)
+│   │   ├── pets.rs            # Desktop pets (built-in character / Petdex import)
+│   │   ├── agent_theme/       # ZCode UI injection (dynamic wallpaper / injected speed aggregates)
+│   │   ├── shortcut.rs       # Global hotkey config
+│   │   ├── sync.rs           # Multi-device sync (config / incremental upload / cleanup)
 │   │   └── main.rs
-│   ├── capabilities/         # Tauri 权限配置
-│   └── tauri.conf.json       # 窗口 / 打包配置
-├── server/                   # 自托管同步服务（Python + Flask）
-│   ├── app.py                # Flask 应用 + 所有接口
-│   ├── db.py                 # SQLite 操作（自动建库建表）
-│   ├── auth.py               # 鉴权（master token / device token）
-│   ├── config.py             # 配置（端口 / 数据目录）
-│   └── README.md             # 部署文档
-├── session-hud.html           # 会话 Token 悬浮窗页面
-├── pet.html                   # 桌面宠物页面
+│   ├── capabilities/         # Tauri permissions
+│   └── tauri.conf.json       # Window / bundling config
+├── session-hud.html           # Session token HUD page
+├── pet.html                   # Desktop pet page
 ├── index.html
 └── vite.config.ts
 ```
 
 ---
 
-## 📋 环境要求
+## 📋 Prerequisites
 
-1. **Node.js** ≥ 18（推荐 20+）及 npm
-2. **Rust**（stable 工具链）—— 通过 [rustup](https://rustup.rs/) 安装
-3. Tauri 2 的系统依赖：
-   - **macOS**：Xcode Command Line Tools（`xcode-select --install`）
-   - **Windows**：Microsoft Edge WebView2 + MSVC 构建工具
-   - **Linux**：`webkit2gtk`、`libayatana-appindicator` 等（详见 [Tauri 文档](https://v2.tauri.app/start/prerequisites/)）
+1. **Node.js** ≥ 18 (20+ recommended) and npm
+2. **Rust** (stable toolchain) — install via [rustup](https://rustup.rs/)
+3. Tauri 2 system dependencies:
+   - **macOS**: Xcode Command Line Tools (`xcode-select --install`)
+   - **Windows**: Microsoft Edge WebView2 + MSVC build tools
+   - **Linux**: `webkit2gtk`, `libayatana-appindicator`, etc. (see [Tauri docs](https://v2.tauri.app/start/prerequisites/))
 
-4. 至少一个受支持的 CLI Agent 已安装并已产生使用记录（如 **ZCode CLI**，数据库位于 `~/.zcode/cli/db/db.sqlite`；Codex / Claude / Cursor / Kimi Code 等来源可选）
+4. At least one supported CLI agent installed and having produced usage records (e.g. **ZCode CLI**, DB at `~/.zcode/cli/db/db.sqlite`; Codex / Claude / Cursor / Kimi Code sources are optional)
 
 ---
 
-## 🚀 快速开始
+## 🚀 Quick Start
 
 ```bash
-# 1. 安装依赖
+# 1. Install dependencies
 npm install
 
-# 2. 开发模式（同时启动 Vite 与 Tauri 窗口，热重载）
+# 2. Dev mode (starts both Vite and the Tauri window with hot reload)
 npm run tauri dev
 ```
 
-开发服务器运行在 `http://localhost:1420`，Tauri 会加载它并打开原生窗口。
+The dev server runs at `http://localhost:1420`; Tauri loads it and opens the native window.
 
 ---
 
-## 📜 常用脚本
+## 📜 Scripts
 
-| 命令 | 说明 |
+| Command | Description |
 | --- | --- |
-| `npm run dev` | 仅启动 Vite 前端开发服务器（浏览器调试，无 Tauri 原生能力） |
-| `npm run tauri dev` | **开发模式**：启动前端 + Tauri 原生窗口，支持热重载 |
-| `npm run build` | 类型检查 + 构建前端产物到 `dist/` |
-| `npm run tauri build` | **打包**：生成可分发的安装包（`.app` / `.dmg` / `.msi` / `.AppImage`） |
-| `npm run preview` | 本地预览已构建的前端产物 |
+| `npm run dev` | Start the Vite dev server only (browser debugging, no native capabilities) |
+| `npm run tauri dev` | **Dev mode**: frontend + native Tauri window, with hot reload |
+| `npm run build` | Type-check + build the frontend into `dist/` |
+| `npm run tauri build` | **Bundle**: produce distributable installers (`.app` / `.dmg` / `.msi` / `.AppImage`) |
+| `npm run preview` | Locally preview the built frontend |
 
 ---
 
-## 📦 打包发布
+## 📦 Build & Release
 
 ```bash
-# 生成当前平台的安装包，输出在 src-tauri/target/release/bundle/
+# Build installers for the current platform; output in src-tauri/target/release/bundle/
 npm run tauri build
 ```
 
-- **macOS**：`AgentHUD.app`、`.dmg`
-- **Windows**：`.msi`、`NSIS .exe`
-- **Linux**：`.deb`、`.AppImage`、`.rpm`
+- **macOS**: `AgentHUD.app`, `.dmg`
+- **Windows**: `.msi`, NSIS `.exe`
+- **Linux**: `.deb`, `.AppImage`, `.rpm`
 
-如需指定目标：
+To target a specific architecture:
 
 ```bash
 npm run tauri build -- --target aarch64-apple-darwin
 ```
 
-### 🔄 应用内自动更新（双仓库）
+### 🔄 In-app auto update (dual repos)
 
-应用内置自动更新：设置 →「关于与更新」检查新版本、下载并静默安装；启动时会静默检查一次，有新版本时设置入口按钮显示红点。更新源为 **GitHub / Gitee 双 endpoint**，依次自动降级，任一仓库可达即可完成更新。
+The app has a built-in updater: Settings → "About & update" checks, downloads and silently installs new versions; a silent check also runs at startup and lights a red dot on the settings entry. Update endpoints fall back between **GitHub / Gitee** automatically — either repo being reachable is enough.
 
-**首次发版准备**（一次性）：
+**One-time setup for the first release**:
 
-1. 生成更新签名密钥对（私钥丢失将**永远无法**再推送更新，务必备份到安全位置）：
+1. Generate the update signing keypair (if you lose the private key you can **never** push updates again — back it up somewhere safe):
 
    ```bash
    npx tauri signer generate -w ~/.tauri/zbar-updater.key
    ```
 
-2. 公钥（`~/.tauri/zbar-updater.key.pub` 内容）写入 `src-tauri/tauri.conf.json` 的 `plugins.updater.pubkey`（本项目已配置）。
-3. 在仓库 **Settings → Secrets and variables → Actions** 添加 Secrets：
-   - `TAURI_SIGNING_PRIVATE_KEY`：私钥文件 `~/.tauri/zbar-updater.key` 的**完整内容**
-   - `GITEE_TOKEN`（可选）：Gitee 私人令牌（设置 → 私人令牌，勾选 projects）；缺失时自动跳过 Gitee 更新源，仅发布 GitHub 源
+2. Put the public key (`~/.tauri/zbar-updater.key.pub`) into `plugins.updater.pubkey` of `src-tauri/tauri.conf.json` (already configured for this project).
+3. Add repository Secrets under **Settings → Secrets and variables → Actions**:
+   - `TAURI_SIGNING_PRIVATE_KEY`: the **full content** of the private key file `~/.tauri/zbar-updater.key`
+   - `GITEE_TOKEN` (optional): a Gitee personal access token (with the projects scope); when missing, the Gitee endpoint is skipped and only the GitHub source is published
 
-**发布新版本**（GitHub Actions 云端构建双平台，本地无需任何工具链）：
+**Releasing a new version** (built in the cloud by GitHub Actions for both platforms — no local toolchain needed):
 
 ```bash
-# 版本号已在 package.json / src-tauri/tauri.conf.json / src-tauri/Cargo.toml 三处同步并提交后：
+# After the version is synced in package.json / src-tauri/tauri.conf.json / src-tauri/Cargo.toml and committed:
 git tag v0.2.0
 git push origin v0.2.0
 ```
 
-流水线（`.github/workflows/release.yml`）自动完成：三平台并行签名构建（Windows x64 / macOS Apple Silicon / macOS Intel，产物带 `.sig`）→ 生成两份 `latest.json`（安装包下载地址分别指向 GitHub / Gitee 各自仓库）→ 创建 GitHub Release（tag `v{版本}`，自动标记 latest）→ 重建 Gitee 固定 tag `latest` 的 Release（作为更新元数据源）。Gitee 源上传失败或未配置 token 时，在 Actions 页面重跑 `release` job 即可单独补发。
+The pipeline (`.github/workflows/release.yml`) automatically: builds and signs three platforms in parallel (Windows x64 / macOS Apple Silicon / macOS Intel, artifacts carry `.sig`) → generates two `latest.json` files (installer download URLs pointing at each repo) → creates a GitHub Release (tag `v{version}`, marked latest) → recreates the Gitee Release under the fixed tag `latest` (update metadata source). If the Gitee upload fails or the token is missing, re-run the `release` job from the Actions page to publish it alone.
 
-> macOS 安装包未做开发者证书签名与公证，首次打开需右键安装包 →「打开」，或在系统设置中允许。
+> The macOS packages are not signed with a developer certificate nor notarized; on first launch right-click the app → "Open", or allow it in System Settings.
 
 ---
 
-## ⚙️ 配置说明
+## ⚙️ Configuration
 
-### 数据目录
+### Database Path
 
-AgentHUD 的全部本地数据（价格配置、凭证、账号快照、宠物库等）保存在 **`~/.agenthud/`**。更名前版本的数据目录为 `~/.zbar/`——新版本首次启动会自动把 `~/.zbar` 无感迁移到 `~/.agenthud`（失败时继续使用旧目录、下次启动自动重试），无需手动搬移。
+AgentHUD opens ZCode's SQLite database in **read-only** mode and never interferes with ZCode's writes.
 
-### 数据库路径
+Lookup priority:
 
-AgentHUD 以 **只读** 方式访问 ZCode 的 SQLite 数据库，不会干扰 ZCode 的写入。
+1. Environment variable **`ZBAR_DB`** (path to a custom `.sqlite` file)
+2. Default path: **`~/.zcode/cli/db/db.sqlite`**
 
-定位优先级：
+### Pricing
 
-1. 环境变量 **`ZBAR_DB`**（指向自定义的 `.sqlite` 文件）
-2. 默认路径：**`~/.zcode/cli/db/db.sqlite`**
+Edit visually via the "⚙ Pricing" page inside the panel, or edit the file directly:
 
-### 价格配置
-
-通过面板内的「价格设置」可视化编辑，或直接编辑文件：
-
-**路径：`~/.agenthud/pricing.json`**（只存美元价；人民币花费按当前汇率自动折算，无需单独维护）
+**Path: `~/.agenthud/pricing.json`** (USD prices only; CNY costs are converted automatically at the current FX rate — no separate maintenance needed)
 
 ```json
 {
@@ -357,24 +356,24 @@ AgentHUD 以 **只读** 方式访问 ZCode 的 SQLite 数据库，不会干扰 Z
 }
 ```
 
-- 单位：**每百万 Token** 的美元价格
-- 三个字段：`input`（非缓存输入）、`output`（输出）、`cache_read`（缓存读）
-- 只需填写需要计费的模型；未填的模型在面板中显示 `—` 并标记 ⚠
-- 汇率在「设置 → 汇率」中统一配置（每日自动更新），人民币花费 = 美元花费 × 汇率
+- Unit: price **per million tokens**
+- Three fields: `input` (non-cache input), `output`, `cache_read`
+- Only fill in the models you want billed; unpriced models show `—` and are flagged ⚠
+- The FX rate is configured centrally under "Settings → FX rate" (auto-updated daily); CNY cost = USD cost × rate
 
-面板内支持一键「检查价格更新」：与内置参考表离线对比（不联网），内置表定价数据源自 [cc-switch](https://github.com/farion1231/cc-switch) 开源项目的成本定价模块（另补充了 Z.ai 特有模型），确认差异后合并进本地价格表；有新模型发布时在 `public/pricing-defaults.json` 中补充发布即可。
+The panel also supports one-click "check price updates": it compares offline against the built-in reference table (no network access), whose pricing data comes from the cost-pricing module of the open-source [cc-switch](https://github.com/farion1231/cc-switch) project (plus Z.ai-specific models); confirmed differences are merged into the local price table. When a new model ships, add it to `public/pricing-defaults.json` and release.
 
-### Coding Plan 额度监控
+### Coding Plan Quota Monitor
 
-订阅 GLM Coding Plan 的用户可在统计面板顶部查看 5 小时窗口、每周额度与 MCP 月度额度的实时用量。
+GLM Coding Plan subscribers can view real-time usage of the 5-hour window, weekly quota and MCP monthly quota at the top of the stats panel.
 
-**零配置**：凭证自动只读本机 ZCode 客户端的登录态——`~/.zcode/v2/config.json` 中内置 Coding Plan provider 的 apiKey（**只读，绝不写回**），接口端点按该 provider 的 baseURL 自动推断（`open.bigmodel.cn` / `api.z.ai`）。前提是本机 ZCode 客户端已登录 Coding Plan 订阅；未登录时面板显示登录引导，不影响其他功能。
+**Zero configuration**: the credential is read automatically (read-only, never written back) from the local ZCode client's signed-in state — the apiKey of the built-in Coding Plan provider in `~/.zcode/v2/config.json` — and the API endpoint is inferred from that provider's baseURL (`open.bigmodel.cn` / `api.z.ai`). The only prerequisite is that the ZCode client on this machine is signed in to a Coding Plan subscription; otherwise the panel shows a sign-in prompt without affecting other features.
 
-额度数据通过 `GET /api/monitor/usage/quota/limit` 接口实时获取，每 30 秒自动刷新。
+Quota data is fetched live via `GET /api/monitor/usage/quota/limit` and auto-refreshes every 30 seconds.
 
-### 全局快捷键
+### Global Hotkey
 
-默认 `alt+shift+z` 唤起 / 隐藏面板，可在「设置 → 全局快捷键」中修改或停用，配置持久化到 `~/.agenthud/shortcut.json`：
+Summon / hide the panel with `alt+shift+z` by default; change or disable it under "⚙ Pricing → Global hotkey". Persisted to `~/.agenthud/shortcut.json`:
 
 ```json
 {
@@ -383,77 +382,77 @@ AgentHUD 以 **只读** 方式访问 ZCode 的 SQLite 数据库，不会干扰 Z
 }
 ```
 
-### 动态壁纸
+### Dynamic wallpaper
 
-点击工具栏的 🎨 按钮即可打开「动态壁纸」，把动态视频注入 ZCode 桌面应用作为对话背景。安装前会自动备份原版资源，随时可一键还原。
+Open "Dynamic wallpaper" via the 🎨 button in the toolbar and inject a live video wallpaper into the ZCode desktop app as the conversation background. The original resources are backed up automatically before installation and can be restored anytime with one click.
 
-注意事项：
+Notes:
 
-- ZCode 升级后壁纸会失效，需要重新安装一次。
-- macOS 上注入后，ZCode 自带的内置更新将不可用（还原也无法恢复），升级 ZCode 请前往官网重新下载。
+- The wallpaper is invalidated after a ZCode upgrade and needs to be reinstalled.
+- On macOS, ZCode's built-in updater becomes unavailable after injection (even restoring cannot bring it back) — to upgrade ZCode, re-download it from the official website.
 
-### Cursor 统计
+### Cursor Stats
 
-自动读取本机 Cursor 应用的本地登录凭据（需已安装并登录 Cursor），无需配置。
+Reads the local Cursor app's login credentials automatically (Cursor must be installed and signed in) — no configuration needed.
 
-**汇率**（设置 → 汇率）：USD→CNY 默认每日自动联网更新，也可取消勾选后手动填写；各服务的美元花费按此汇率折算成人民币。配置保存在 `~/.agenthud/cursor.json`（仅存于本机）。
+**FX rate** (Settings → FX rate): USD→CNY refreshed online daily by default, or entered manually; USD costs across services are converted to CNY at this rate. The config is stored at `~/.agenthud/cursor.json` (locally only).
 
-### Kimi Code 统计
+### Kimi Code Stats
 
-解析本机 `~/.kimi-code/sessions` 会话记录（`wire.jsonl`）统计用量与速度，前置条件是已安装并登录 Kimi Code CLI 且产生过本地会话；订阅额度接口通过本地凭据自动拉取（OAuth 过期时后台自动续期，无需配置），也可在面板底部「其他账号」区手动添加凭证（OAuth 网页登录或 API Key）。
+Parses local `~/.kimi-code/sessions` session records (`wire.jsonl`). Prerequisite: the Kimi Code CLI is installed, signed in, and has produced local sessions. Subscription quotas are fetched live via the locally detected credentials (renewed automatically in the background when OAuth expires), or by adding a credential manually in the "Other accounts" section at the bottom of the panel (OAuth web sign-in or API key).
 
-### 凭证管理
+### Credentials
 
-除自动读取本机登录态的服务（ZCode / Codex / Claude / Kimi Code / Cursor 等）外，其余订阅 / 额度服务通过**凭证**接入。凭证入口在各 Agent 面板页内（设置页不提供凭证配置）。
+Services that cannot be auto-detected from the local sign-in state (ZCode / Codex / Claude / Kimi Code / Cursor, etc.) are connected via **credentials**. The credentials entry lives inside each agent panel (not on the settings page).
 
-**Kimi 开放平台余额（月之暗面）** 已下架：其语义已被 Kimi Code 面板的凭证通道覆盖（同一件事不再在界面里出现两遍），已存在的凭证文件不会被删除，只是不再有界面入口。
+**Kimi open platform / Moonshot balance** was retired: Kimi Code's credential channel already covers it (the same thing no longer appears twice in the UI). Existing credential files are not deleted; they simply have no UI entry any more.
 
-**不装 CLI 也能看额度**：Kimi Code / MiniMax Code / OpenCode / DeepSeek Harness 四个面板底部各有一个手动 API Key 录入区（有凭证时自动展开）——把订阅用在别的 agent、本机没装对应官方 CLI 时，粘一个 Key 就能直连官方接口读订阅额度 / 账户余额。其中 OpenCode 与 MiniMax Code 另可在 tab 栏「＋添加服务」浮层直接录入（录完 tab 自动出现）；DeepSeek 平台余额的入口只在 DeepSeek Harness 面板内（该 tab 可在设置页手动开启，有 Key 后会自动保持显示）。
+**Read quota without the CLI**: the Kimi Code, MiniMax Code, OpenCode and DeepSeek Harness panels each have a manual API key section at the bottom (auto-expanded once a credential exists). If you use a subscription through another agent and have not installed the vendor CLI, paste a key there to query the plan quota / account balance straight from the official endpoint. OpenCode and MiniMax Code can also be added from the "+ Add service" menu in the tab bar (the tab then appears automatically); the DeepSeek platform balance entry lives inside the DeepSeek Harness panel only (enable that tab from the settings page, and it stays visible once a key exists).
 
-- **多凭证堆叠** — 每个服务可添加多个凭证（多账号 / 多订阅），面板中堆叠显示；支持备注（如区分订阅等级）、编辑与删除。
-- **region 选择** — 部分服务支持选择中国站 / 国际站。
-- **本地存储** — 每个服务一个 JSON 文件，明文保存在 `~/.agenthud/credentials/`（目录权限 700、文件 600），仅存本机、不参与多设备同步。
+- **Stacked credentials** — each service accepts multiple credentials (multi-account / multi-subscription), displayed stacked in the panel; notes (e.g. to distinguish plan tiers), editing and deletion are supported.
+- **Region** — some services offer a China / International region choice.
+- **Local storage** — one JSON file per service, stored in plain text under `~/.agenthud/credentials/` (directory mode 700, file mode 600); this machine only, never synced.
 
-按凭证类型：
+By credential type:
 
-| 类型 | 获取方式 | 服务 |
+| Type | How to obtain | Services |
 | --- | --- | --- |
-| API Key | 服务控制台创建 Key 后粘贴 | MiniMax（5h + 周双窗口）、通义灵码 Coding Plan（5h / 周 / 月三窗口）、OpenCode Go（5h / 周 / 月三窗口）、DeepSeek 平台余额、Kimi Code |
-| Cookie | 浏览器 F12 复制 Cookie 粘贴 | Qoder（大模型积分）、LongCat 美团（Token 配额 + 加油包）、小米 MiMo（余额 + 积分）、百炼 Token 包（5h / 7 天窗口，Team / Personal 双形态） |
-| Token | 控制台获取 Token 后粘贴 | StepFun 阶跃星辰（速率 / 积分双套餐形态，Oasis-Token）、Kimi Code（OAuth 令牌，也可用设备码网页登录） |
+| API Key | Create a key in the service console and paste it | MiniMax (5-hour + weekly dual windows), Tongyi Lingma Coding Plan (5h / weekly / monthly windows), OpenCode Go (5h / weekly / monthly windows), DeepSeek platform balance, Kimi Code |
+| Cookie | Copy the cookie from browser DevTools (F12) and paste | Qoder (LLM credits), LongCat by Meituan (token quota + booster packs), Xiaomi MiMo (balance + credits), Alibaba Cloud Bailian token packs (5h / 7-day windows, Team / Personal variants) |
+| Token | Grab the token from the console and paste | StepFun (rate / credits dual-plan variants, Oasis-Token), Kimi Code (OAuth token; a device-code web sign-in is also available) |
 
-另有四个**本地读取型**服务零凭证即可使用：Gemini（读取 Gemini CLI 登录态，自动刷新 token）、Grok（读取 grok CLI 登录态，支持多 token）、OpenCode Go（本地 SQLite 用量估算）、MiniMax Code（本地 `~/.minimax` 用量与花费）。其中 OpenCode Go / MiniMax Code 以及 Kimi Code / DeepSeek Harness 同时支持手动录入 API Key（见上），按「本地数据 + 手动凭证」双源并列查询。
+Four more services work with **zero credentials** by reading local state: Gemini (Gemini CLI signed-in state, auto token refresh), Grok (grok CLI signed-in state, multiple tokens), OpenCode Go (usage estimated from a local SQLite DB), MiniMax Code (usage and cost from local `~/.minimax`). OpenCode Go / MiniMax Code, as well as Kimi Code and DeepSeek Harness, additionally accept a manually added API key (see above), queried as two parallel sources: local data + manual credential.
 
-各类型凭证的具体获取步骤，以应用内添加凭证时的引导文案为准。
+For the exact steps, follow the in-app guidance shown when adding a credential.
 
-### 周额度对比与报表
+### Weekly Compare & Reports
 
-- **周额度对比** — 以额度快照历史为数据源（`~/.agenthud/quota_history.jsonl`，append-only，90 天滚动保留），按重置周期对比额度用量，支持跨设备合并。
-- **日报 / 周报** — 面板内一键生成 Markdown 报表（日报 = 今日，周报 = 近 7 天）并保存为 `.md` 文件。
+- **Weekly quota compare** — based on local quota snapshots (`~/.agenthud/quota_history.jsonl`, append-only, 90-day rolling retention); compare quota usage across reset cycles, with cross-device merge.
+- **Daily / weekly reports** — generate a Markdown report in one click (daily = today, weekly = last 7 days) and save it as a `.md` file.
 
-### 多设备同步
+### Multi-device Sync
 
-多台电脑（公司 / 家里）汇总查看全量用量。通过自托管同步服务实现，数据存在你自己的服务器上。
+Aggregate usage across machines (office / home) via a self-hosted sync server — the data stays on your own server.
 
-**部署服务端**（Python + Flask，装个依赖直接跑）：
+**Deploy the server** (Python + Flask):
 
 ```bash
 cd server
-pip3 install -r requirements.txt   # 只需 Flask
-python3 app.py                      # 启动后日志会打印 Master Token
+pip3 install -r requirements.txt   # Flask only
+python3 app.py                      # the Master Token is printed on startup
 ```
 
-详见 [server/README.md](./server/README.md)。
+See [server/README.md](./server/README.md).
 
-**客户端配置**：点击面板顶部 **⇅** 图标进入「设备同步」设置，填写服务器地址 + Master Token + 设备名称（如 `work` / `home`），点「连接并注册」。
+**Client setup**: click the **⇅** icon at the top of the panel to open "Device sync", fill in the server URL + Master Token + device name (e.g. `work` / `home`), then click "Connect & register".
 
-注册成功后：
+After registering:
 
-- **设备筛选器** — 统计面板顶部出现设备下拉，可选「全部（汇总）」「本机」或指定设备。
-- **同步模式** — 手动（点「立即同步」）或自动（按间隔自动上传）。
-- **数据管理** — 按设备 / 按时间 / 全部清空，可配置服务端自动定时清理。
+- **Device filter** — a device dropdown appears at the top of the stats panel: "All (summary)" / "This device" / a specific device.
+- **Sync mode** — manual ("Sync now") or automatic (upload on an interval).
+- **Data management** — cleanup by device / by time / all, plus configurable server-side auto cleanup.
 
-配置保存在 **`~/.agenthud/sync.json`**（Master Token 不持久化，注册后即丢弃）：
+The config is stored at `~/.agenthud/sync.json` (the Master Token is not persisted — discarded right after registration):
 
 ```json
 {
@@ -468,35 +467,35 @@ python3 app.py                      # 启动后日志会打印 Master Token
 }
 ```
 
-**同步原理**：各 Agent 的本地用量记录是只增不删的，客户端按 `rowid` 增量上传，服务端用 `(device_id, local_rowid)` 去重。查询时本机数据查本地、其他设备数据查远端，合并展示，避免重复计算。
+**How it works**: local usage records of every agent are append-only. Clients upload incrementally by `rowid`; the server dedups by `(device_id, local_rowid)`. Local data is queried locally, other devices' data remotely, then merged for display — no double counting.
 
 ---
 
-## 🧮 计费规则
+## 🧮 Billing Rules
 
-为避免重复计费，输入类 Token 拆分计算：
+To avoid double counting, input tokens are split:
 
 ```
-非缓存输入 = input_tokens - cache_read_tokens
+non_cache_input = input_tokens - cache_read_tokens
 
-花费 = 非缓存输入 × input价
-     + output_tokens   × output价
-     + cache_read      × cache_read价
-        （单位：每百万 Token，结果以货币计）
+cost = non_cache_input * input_rate
+     + output_tokens   * output_rate
+     + cache_read      * cache_read_rate
+        (per-million-token rates; result in the chosen currency)
 ```
 
-面板与菜单栏标题共用同一套 Rust 计算逻辑，保证数字一致。
+The panel and the menu-bar title share the same Rust calculation logic, so the numbers always match.
 
 ---
 
-## 🔒 数据安全
+## 🔒 Data Safety
 
-- 数据库连接使用 `SQLITE_OPEN_READ_ONLY`，**只读不写**，绝不影响各 Agent 本地数据。
-- 价格配置仅保存在用户本地 `~/.agenthud/` 目录，不上传任何数据。
-- **账号切换**会把 ZCode 登录态快照保存在 `~/.agenthud/accounts/`（目录权限 700、文件 600）用于一键切换，**仅存本机、不参与多设备同步**；本应用为非官方社区工具，与智谱 AI 官方无关。
-- **服务凭证**保存在 `~/.agenthud/credentials/`（目录权限 700、文件 600），仅存本机、不参与多设备同步。
-- **多设备同步**为可选功能，默认关闭。启用后仅同步模型名、Token 数量、时间戳，**不含代码和对话内容**。服务端自托管，数据存在你自己的服务器上。
-- 面板失焦自动隐藏，窗口常驻不销毁，点击托盘即可重新唤出。
+- The DB connection uses `SQLITE_OPEN_READ_ONLY` — **strictly read-only**, never touching any agent's local data.
+- Pricing config is stored only in the user-local `~/.agenthud/` directory; nothing is uploaded.
+- **Account switching** saves ZCode login snapshots under `~/.agenthud/accounts/` (directory mode 700, file mode 600) for one-click switching. Snapshots **stay on this machine only** and are never synced. This app is an unofficial community tool, not affiliated with Zhipu AI.
+- Service **credentials** are stored under `~/.agenthud/credentials/` (directory mode 700, file mode 600); they stay on this machine and are never synced.
+- **Multi-device sync** is optional and off by default. When enabled, only model names, token counts and timestamps are synced — **never code or conversation content**. The server is self-hosted; the data stays on your own server.
+- The panel hides on blur; the window stays alive (not destroyed) and can be re-summoned by clicking the tray.
 
 ---
 
