@@ -13,6 +13,10 @@
 #   发行说明（第二个参数）可选，缺省用"自动更新通道"默认文案；
 #   与 GitHub Release 说明保持一致时传入相同文本
 #
+#   产物不全（payload ≠ 8 个）时默认拒绝发布：部分发布会让 latest.json 缺
+#   平台条目、另一平台用户收不到更新（v1.7.0 踩坑）；确认要部分发布时
+#   前置 ALLOW_PARTIAL=1 降级为警告继续
+#
 # 令牌来源（按优先级，绝不写入仓库文件）：
 #   1. 环境变量 GITEE_TOKEN
 #   2. macOS 钥匙串：security find-generic-password -s zbar-gitee-token -w
@@ -128,7 +132,18 @@ while IFS= read -r name; do
   gh_curl -fSL --max-time 300 -o "$WORK/$name" "$DL_BASE/$name"
   [[ "$name" == gitee-latest.json ]] || PAYLOAD+=("$name")
 done <<< "$ASSETS"
-[[ ${#PAYLOAD[@]} -eq 8 ]] || echo "警告：payload 数量 ${#PAYLOAD[@]}（预期 8），请核对"
+# payload 必须齐 8 个（双平台安装包 + .sig 签名）：部分发布会让 latest.json
+# 缺平台条目、另一平台用户收不到更新，默认硬性拒绝（v1.7.0 只发出 Windows
+# 包的踩坑）；确认要部分发布时前置 ALLOW_PARTIAL=1 降级为警告
+if [[ ${#PAYLOAD[@]} -ne 8 ]]; then
+  if [[ "${ALLOW_PARTIAL:-0}" == "1" ]]; then
+    echo "警告：payload 数量 ${#PAYLOAD[@]}（预期 8），ALLOW_PARTIAL=1 下继续部分发布" >&2
+  else
+    echo "错误：GitHub Release 产物不全（payload 数量 ${#PAYLOAD[@]}，预期 8），通常是 CI 尚未完成或构建失败。" >&2
+    echo "拒绝部分发布：latest.json 会缺平台条目，另一平台用户将收不到更新。请等 CI 产物齐全后重跑，确认要部分发布可前置 ALLOW_PARTIAL=1。" >&2
+    exit 1
+  fi
+fi
 [[ ${#PAYLOAD[@]} -gt 0 ]] || { echo '错误：未下载到任何程序附件'; exit 1; }
 [[ -f "$WORK/gitee-latest.json" ]] || { echo '错误：缺少 gitee-latest.json（由 Release 流水线生成）'; exit 1; }
 

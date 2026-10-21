@@ -46,6 +46,23 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: 校验 tag 与版本号一致
+        shell: bash
+        run: |
+          # tag 必须打在版本号已提交的 commit 上，否则 CI 按旧版本号构建、
+          # 产物全部标错版本（v1.7.0 踩坑）；workflow_dispatch 触发时跳过。
+          # 3 个 matrix 平台各校验一次，开销可忽略
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            CONF_VERSION=$(python3 -c "import json;print(json.load(open('src-tauri/tauri.conf.json'))['version'])")
+            if [[ "${GITHUB_REF_NAME#v}" != "$CONF_VERSION" ]]; then
+              echo "错误：tag ${GITHUB_REF_NAME} 与 src-tauri/tauri.conf.json 的 version（${CONF_VERSION}）不一致。"
+              echo "tag 必须打在版本号已提交的 commit 上：请先提交并推送版本号变更，删除错误 tag 后重新打 tag 触发构建。"
+              exit 1
+            fi
+          else
+            echo "非 tag 触发（${GITHUB_REF}），跳过版本号一致性校验"
+          fi
+
       - uses: actions/setup-node@v4
         with:
           node-version: 20
@@ -129,6 +146,9 @@ jobs:
             VERSION=$(python3 -c "import json;print(json.load(open('src-tauri/tauri.conf.json'))['version'])")
           fi
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          # gen_latest.py 是子进程，VERSION 不 export 读不到，会回退读
+          # tauri.conf.json（tag 打错时拿到旧版本号）
+          export VERSION
 
           GH_BASE="https://github.com/$GH_REPO_NAME/releases/download/v$VERSION"
           GITEE_BASE="https://gitee.com/$GITEE_REPO_NAME/releases/download/latest"
@@ -145,18 +165,24 @@ jobs:
           gh release view "v$VERSION" >/dev/null 2>&1 && gh release delete "v$VERSION" --yes || true
           # Release 说明（Markdown 分类条目版，与线上已更新的说明保持一致，防止重跑回退）
           NOTES="## ✨ 新功能
+          - 贴边停靠条 HUD：纯图标条常驻贴边，每个订阅额度一圈进度环，条目按订阅额度与今日用量动态显隐，支持拖拽缩放与托盘开关
+          - HUD 详情卡：独立窗口展示订阅额度与 Token 明细（全部设备口径、24h 分布图），新增 DeepSeek Harness 官方余额
+          - 总览页 Agent 筛选：指标卡、趋势图、热力图、模型表一键切换到单个 Agent 口径并自动标注
+          - 请求日志页：远端设备明细合并（全部设备口径）与设备筛选下拉，远端行显示设备名徽标，汇总行新增 Token 聚合
+          - 同步协议升级（proto 7/8）：全量 Agent 额度快照同步；请求明细携带耗时与首字（两端升级后新请求生效）
+          - iOS 端重写：多 Agent 多账号额度体系、小组件选号，修复启动白屏
+          - 面板价格设置收为主窗口入口并支持定向跳页；定价删除模型增加确认弹层；大窗下热力图与 Agent 表并排布局
 
-          - **用量总览页新增「模型用量」表** — 按模型维度统计请求数、输入 / 输出 / 总 Token、占比与花费，Token 降序排列，默认展示前 10 行、超出可一键展开；同一模型的多种写法（如带 provider 前缀与裸名）自动合并为一行，悬停可查看已合并的原始写法；花费按本机价格表估算（美元价 × 当前汇率），未覆盖的模型如实标注「未定价」
-          - **主题面板新增「壁纸背景」总开关** — 关闭后 ZCode 恢复原始外观：视频 / 图片壁纸层卸载，半透明底、文字描边等主题视觉改造一并停用，仅保留用量统计条等注入信息；壁纸指向与滤镜参数原样保留，重新开启即按原值恢复，约 1 秒热重载生效
+          ## 🐛 修复
+          - HUD 不再把 Cursor 免费档当作订阅
+          - HUD 详情卡改为独立窗口，消除首次悬浮时整条瞬移与首屏数据从少到多跳变
+          - 面板暗色主题补齐 amber-800 警示色变量
+          - 修复 codex 模型名回填修订查询的列错位（存量问题，此前修订上传通道不可用）
 
-          ## 🐛 问题修复
-
-          - **浅色主题下注入统计条文字不可读** — 状态条小字按深色壁纸背景设计（55% 透明灰字），白底下对比度最高仅约 3.6:1，必然过浅；现浅色主题下文字透明度自动提升下限，三档速度色等语义色追加浅色加深变体，深色主题外观不变
-          - **汇总页总量口径自相矛盾** — 此前关闭任一统计展示来源后，顶部总量、趋势与模型 TOP 榜会随之缩小，与保留下来的来源明细对不上；现总量类数字恒按全量来源汇总，「统计展示来源」开关只控制来源卡片等明细位的显隐
-
-          ## 📦 升级说明（v1.6.1 → 1.6.2）
-
-          - 已安装注入主题的用户升级后重启 ZCode 即可：壁纸背景开关出现在主题面板，浅色主题对比度修正自动生效，无需重新安装主题"
+          ## ⚡ 性能与服务端
+          - 用量趋势查询改为单条 SQL 聚合：90 天 hour 请求由 2160 次查询降为 1 次
+          - 服务端明细聚合与快照、参数上限防御，杜绝大窗口请求内存暴涨；切换 waitress 部署并补充接口访问日志
+          - live 额度并发拉取与 HTTP 超时分层优化"
           gh release create "v$VERSION" out/* \
             --title "AgentHUD v$VERSION" \
             --notes "$NOTES" \

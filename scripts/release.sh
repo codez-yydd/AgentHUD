@@ -10,6 +10,9 @@
 #                                            #   scripts/publish_gitee.sh 直发）
 #   scripts/release.sh 0.2.0 --notes "修复XX" # 指定更新说明（默认取参数后全部）
 #
+#   上传前会校验远程 main 的版本号已同步（创建 release 会在远程 main HEAD
+#   自动打 tag，版本号未提交推送会被拦下）：先提交并推送版本号变更再运行
+#
 # 必需环境:
 #   ~/.tauri/zbar-updater.key   更新签名私钥（首次用
 #                               `npx tauri signer generate -w ~/.tauri/zbar-updater.key`
@@ -130,6 +133,20 @@ if [[ "$UPLOAD" != "1" ]]; then
 fi
 
 # ---------- GitHub ----------
+# 前置校验：无论 gh 还是 REST 路径，创建 release 都会在远程 main 当前 HEAD
+# 自动打 tag；本地刚改的版本号若未提交推送，tag 就会落在旧版本号的提交上、
+# CI 构建出错误版本（v1.7.0 踩坑），故上传前先核对远程 main 的版本号
+git fetch origin main --quiet || { echo "错误：git fetch origin main 失败，无法校验远程版本号（检查网络与远程配置）" >&2; exit 1; }
+REMOTE_VERSION=$(git show origin/main:src-tauri/tauri.conf.json | python3 -c "import json,sys;print(json.load(sys.stdin)['version'])") \
+  || { echo "错误：读取远程 main 的 tauri.conf.json 版本号失败" >&2; exit 1; }
+if [[ "$REMOTE_VERSION" != "$VERSION" ]]; then
+  echo "错误：远程 main 上的版本号仍是 $REMOTE_VERSION，与本次发布版本 $VERSION 不一致。" >&2
+  echo "无论 gh 还是 REST 路径，创建 release 都会在远程 main 当前 HEAD 自动打 tag；" >&2
+  echo "版本号未提交推送时，tag 会落在旧版本号的提交上、CI 构建出错误版本（v1.7.0 踩坑）。" >&2
+  echo "请先提交并推送版本号变更（package.json / src-tauri/tauri.conf.json / src-tauri/Cargo.toml）再运行本脚本。" >&2
+  exit 1
+fi
+
 echo "==> 5/6 上传 GitHub Release（tag v$VERSION，自动标记 latest）"
 GH_FILES=("$BUNDLE_DIR/latest.json" "$BUNDLE_DIR/gitee-latest.json")
 [[ -n "$NSIS_EXE" ]] && GH_FILES+=("$NSIS_EXE" "$NSIS_EXE.sig")
