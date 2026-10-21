@@ -897,8 +897,12 @@
         overflow: hidden;
         border-radius: 2px 2px 0 0;
         transform-origin: bottom;
-        animation: hud-bar-grow 0.4s cubic-bezier(0.2, 0.8, 0.2, 1) both;
         transition: opacity 0.12s ease;
+      }
+      /* 只在首次有数据上屏时播一次生长动画；30s 重建 / 后台刷新直接落最终高度
+         （每个 source 的首次由 JS 的 CHART_ANIMATED 判定，见 hud-main.ts） */
+      .hud-chart.anim .hud-bar-stack {
+        animation: hud-bar-grow 0.4s cubic-bezier(0.2, 0.8, 0.2, 1) both;
       }
       @keyframes hud-bar-grow {
         from {
@@ -969,6 +973,17 @@
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
+      }
+      /* 冷缓存首次取数：占位值弱化 + 淡入真实值（缓存命中时不会进入 loading） */
+      .hud-tokens-total,
+      .hud-legend-value,
+      .hud-stat-value {
+        transition: opacity 0.18s ease;
+      }
+      .hud-tokens.loading .hud-tokens-total,
+      .hud-tokens.loading .hud-legend-value,
+      .hud-tokens.loading .hud-stat-value {
+        opacity: 0.35;
       }
       /* 底栏：窗口数/刷新说明 + 打开主窗口按钮 */
       .hud-card-foot {

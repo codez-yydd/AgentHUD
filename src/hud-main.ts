@@ -62,6 +62,8 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { APPEARANCE_CHANGED_EVENT } from "./appearance";
 import { getAgentTokenSummary, type AgentTokenSummary } from "./api";
+import { loadCache, saveCache } from "./cache";
+import { dateStr } from "./format";
 import { loadAgentVisibility } from "./agentVisibility";
 import { LOCALE_KEY } from "./i18n/locale";
 
@@ -660,9 +662,75 @@ function fmtTokensShort(n: number): string {
   return String(Math.round(v));
 }
 
-/** Token 汇总按 agent 缓存 60s：详情卡 30s 重建/反复点击不重复扫库 */
+/** Token 汇总按 agent 缓存 60s：详情卡 30s 重建/反复点击不重复扫库。
+ *  同一份缓存同步落 localStorage（仅当天有效），应用重启 / 页面热重载后
+ *  首次悬停也能直接出数，不再先显示「—」再等 0.6s 填进来（用户看到的
+ *  "数据从少到多"跳变）。 */
 const TOKEN_CACHE = new Map<string, { at: number; data: AgentTokenSummary }>();
 const TOKEN_CACHE_TTL = 60_000;
+const TOKEN_CACHE_KEY = "zbar-hud-token-cache";
+const TOKEN_CACHE_VERSION = 1;
+
+interface StoredTokenCache {
+  version: number;
+  day: string;
+  entries: Record<string, { at: number; data: AgentTokenSummary }>;
+}
+
+/** 冷启动恢复当天缓存：跨天直接丢弃（今日/24h 口径不能沿用昨天） */
+function loadStoredTokenCache(): Map<
+  string,
+  { at: number; data: AgentTokenSummary }
+> {
+  const out = new Map<string, { at: number; data: AgentTokenSummary }>();
+  try {
+    const saved = loadCache<StoredTokenCache>(TOKEN_CACHE_KEY);
+    if (
+      !saved ||
+      saved.version !== TOKEN_CACHE_VERSION ||
+      saved.day !== dateStr(Date.now()) ||
+      !saved.entries
+    ) {
+      return out;
+    }
+    for (const [source, entry] of Object.entries(saved.entries)) {
+      if (
+        entry &&
+        typeof entry.at === "number" &&
+        Number.isFinite(entry.at) &&
+        entry.data
+      ) {
+        out.set(source, entry);
+      }
+    }
+  } catch {
+    // 隐私模式 / 解析失败：按空缓存处理，等首次查询
+  }
+  return out;
+}
+
+/** 落盘当前缓存；失败静默（缓存只是首帧优化，不影响取数） */
+function persistTokenCache(): void {
+  try {
+    const entries: StoredTokenCache["entries"] = {};
+    for (const [source, entry] of TOKEN_CACHE) entries[source] = entry;
+    saveCache<StoredTokenCache>(TOKEN_CACHE_KEY, {
+      version: TOKEN_CACHE_VERSION,
+      day: dateStr(Date.now()),
+      entries,
+    });
+  } catch {
+    // 忽略：配额超限 / 隐私模式
+  }
+}
+
+for (const [source, entry] of loadStoredTokenCache()) {
+  TOKEN_CACHE.set(source, entry);
+}
+
+/** 已播过入场动画的 source：详情卡每 30s 重建时不再让柱子从 0 长一遍
+ *  （否则每次刷新都像数据"重新长出来"，正是用户感知到的跳动来源之一） */
+const CHART_ANIMATED = new Set<string>();
 /** 直方图柱数/绘图高度（逻辑 px）：固定尺寸，异步回填不改变卡片高度 */
 const CHART_BARS = 24;
 const CHART_H = 56;
@@ -756,10 +824,16 @@ function buildTokenSection(source: string): HTMLElement {
 
 /** 画直方图：每根柱按输入/输出/缓存三段堆叠；高度按三段之和归一到
  *  CHART_H。蓝天/紫/绿三色与图例一致，柱顶 tooltip 给出整点、总量与
- *  三段明细。 */
-function paintChart(sec: HTMLElement, buckets: AgentTokenSummary["buckets"]): void {
+ *  三段明细。animate = false 时直接落到最终高度（30s 重建 / 后台刷新
+ *  不会让柱子每次从 0 重新长出来）。 */
+function paintChart(
+  sec: HTMLElement,
+  buckets: AgentTokenSummary["buckets"],
+  animate = false
+): void {
   const chart = sec.querySelector<HTMLElement>(".hud-chart");
   if (!chart) return;
+  chart.classList.toggle("anim", animate);
   chart.querySelectorAll(".hud-bar").forEach((el) => el.remove());
   chart.querySelector(".hud-chart-empty")?.classList.remove("on");
   const rows = buckets.slice(-CHART_BARS);
@@ -807,7 +881,7 @@ function paintChart(sec: HTMLElement, buckets: AgentTokenSummary["buckets"]): vo
     const stack = document.createElement("span");
     stack.className = "hud-bar-stack";
     stack.style.height = `${barH}px`;
-    stack.style.animationDelay = `${i * 9}ms`;
+    if (animate) stack.style.animationDelay = `${i * 9}ms`;
     for (const [cls, v] of parts) {
       if (v <= 0) continue;
       const seg = document.createElement("span");
@@ -820,11 +894,19 @@ function paintChart(sec: HTMLElement, buckets: AgentTokenSummary["buckets"]): vo
   }
 }
 
-function paintTokenSection(sec: HTMLElement, data: AgentTokenSummary | null): void {
+function paintTokenSection(
+  sec: HTMLElement,
+  data: AgentTokenSummary | null,
+  source: string
+): void {
+  // 取数前是否处于占位态：占位态回填不播柱子生长动画（避免「数据长出来」），
+  // 有缓存直接上屏时才播一次入场动画
+  const wasLoading = sec.classList.contains("loading");
   const totalEl = sec.querySelector<HTMLElement>(".hud-tokens-total");
   const empty = sec.querySelector<HTMLElement>(".hud-chart-empty");
   const values = sec.querySelectorAll<HTMLElement>(".hud-stat-value");
   const scopeEl = sec.querySelector<HTMLElement>(".hud-scope");
+  sec.classList.remove("loading");
   if (!data) {
     if (totalEl) totalEl.textContent = "—";
     if (scopeEl) scopeEl.hidden = true;
@@ -907,25 +989,39 @@ function paintTokenSection(sec: HTMLElement, data: AgentTokenSummary | null): vo
   }
   if (buckets.length === 0) {
     empty?.classList.add("on");
+    CHART_ANIMATED.add(source);
     return;
   }
-  paintChart(sec, buckets);
+  // 每个 source 只播一次入场动画：30s 重建、后台刷新、反复悬停都直接落最终高度
+  const animate = !wasLoading && !CHART_ANIMATED.has(source);
+  CHART_ANIMATED.add(source);
+  paintChart(sec, buckets, animate);
 }
 
 function hydrateTokenSection(sec: HTMLElement, source: string): void {
-  const cached = TOKEN_CACHE.get(source);
-  if (cached && Date.now() - cached.at < TOKEN_CACHE_TTL) {
-    paintTokenSection(sec, cached.data);
-    return;
+  let cached = TOKEN_CACHE.get(source);
+  // 跨天缓存不可用（今日/24h 口径已过期）
+  if (cached && dateStr(cached.at) !== dateStr(Date.now())) {
+    TOKEN_CACHE.delete(source);
+    cached = undefined;
   }
-  sec.classList.add("loading");
+  if (cached) {
+    // 有缓存立即上屏：即使已过 60s 新鲜期也先展示旧值，再后台刷新替换，
+    // 避免卡片重建时先退回「—」再填数（用户感知的跳动）
+    paintTokenSection(sec, cached.data, source);
+    if (Date.now() - cached.at < TOKEN_CACHE_TTL) return;
+  } else {
+    sec.classList.add("loading");
+  }
   void getAgentTokenSummary(source)
     .then((data) => {
       TOKEN_CACHE.set(source, { at: Date.now(), data });
-      paintTokenSection(sec, data);
+      persistTokenCache();
+      paintTokenSection(sec, data, source);
     })
     .catch(() => {
-      paintTokenSection(sec, null);
+      // 刷新失败保留旧值；只有从未取到过数据时才显示空态
+      if (!cached) paintTokenSection(sec, null, source);
     })
     .finally(() => {
       sec.classList.remove("loading");

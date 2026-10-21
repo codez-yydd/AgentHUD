@@ -22,17 +22,18 @@
  *    范围放大），只取「当前」额度剩余，取不到则单元格回落 "--"；额度不合并
  *    远端（额度对比属于对比页的口径）。额度快照体系之外的 Agent（OpenCode
  *    Go / MiniMax Code）另走 provider quota 通道，映射为同一 QuotaInfo；
- *  - 模块级缓存：最近一次完整结果存在模块顶层变量里，再次进入页面（侧栏切页
- *    = 条件渲染 = 卸载重挂）立即用缓存渲染、不出现加载态；缓存超过 60 秒才在
- *    后台静默刷新（不阻塞界面，完成后替换数据），手动刷新按钮永远强制重取；
+ *  - 双层缓存：最近一次完整结果同时存在模块变量与 localStorage（仅当天有效，
+ *    跨天丢弃），再次进入页面（侧栏切页 / 窗口重开 / 进程重启）立即用缓存
+ *    渲染、不出现加载态；缓存超过 60 秒才在后台静默刷新（不阻塞界面，完成后
+ *    整份替换），手动刷新按钮永远强制重取；
  *  - 模型用量表的数据来源：各 Agent 日聚合的 by_model（本机 + 远端逐日已合并
  *    进 DayAgg.byModel）、Cursor 的范围内模型聚合旁路（cursorByModel，其 events
  *    无按日拆分）与本机价格表（pricing，统一折算模型成本，与远端合并共用）；
  *    时间范围切换同样是纯切片，不重新取数；
- *  - 渐进渲染：本机数据（SQLite 日桶 + 额度快照文件）就绪即发布首屏（指标卡 /
- *    趋势 / 表格立即可见），远端合并与 provider 额度随后各自就绪即二次更新
- *    （期间页头弱标记「远端合并中」）；请求序号守卫保证旧请求的结果不覆盖新
- *    数据，且各阶段都基于同一份累加状态发布，远端结果不会回退本地数据；
+ *  - 一次性发布：本机数据、provider 额度与远端合并**全部就绪后才发布**，
+ *    首屏要么骨架、要么完整数据，不再先出「仅本机」的较小数值、等远端到了
+ *    再翻倍（用户可感知的数字从少到多跳变）。有上一次完整快照时先上屏旧值、
+ *    后台静默刷新，完成后整份替换；请求序号守卫保证旧请求的结果不覆盖新数据；
  *  - 同步配置与本地取数并行发起，只有远端合并等待配置（避免「先按未启用同步
  *    的本机口径取一遍、拿到设备配置后又全量重取」的双取）；读取走两页共享
  *    缓存（../syncConfig，每次取数 refresh 强制重读），失败或超时按未启用
@@ -104,6 +105,88 @@ let overviewCache: { data: OverviewRaw; at: number } | null = null;
 
 /** 缓存新鲜期：超过则在后台静默刷新（不阻塞界面，完成后替换数据） */
 const CACHE_FRESH_MS = 60_000;
+
+// ===== 持久化快照（localStorage）=====
+// 模块变量只能活到页面重载：主窗口 WebView 冷启动、开发态热重载都会清空它，
+// 于是每次打开都要重新等「本机 1s + 远端 2s」两段数据，指标卡先小后大跳一次。
+// 这里把上一次**完整**结果落盘，重开时同步恢复、直接按完整口径上屏；后台
+// 刷新完成后整份替换。只接受同一天（windowStartMs 与今天对齐）的快照，跨天
+// 直接丢弃——「今日」卡片与 24h 趋势不能拿昨天的数据冒充。
+const OVERVIEW_CACHE_KEY = "zbar-dashboard-overview-cache";
+const OVERVIEW_CACHE_VERSION = 1;
+/** Map → 可 JSON 序列化的标记键（OverviewRaw 里 merged/quotas/byModel 都是 Map） */
+const MAP_MARK = "__zbarMap";
+
+function overviewReplacer(_key: string, value: unknown): unknown {
+  return value instanceof Map ? { [MAP_MARK]: Array.from(value.entries()) } : value;
+}
+
+function overviewReviver(_key: string, value: unknown): unknown {
+  if (
+    value &&
+    typeof value === "object" &&
+    Array.isArray((value as Record<string, unknown>)[MAP_MARK])
+  ) {
+    return new Map(
+      (value as Record<string, unknown>)[MAP_MARK] as [unknown, unknown][]
+    );
+  }
+  return value;
+}
+
+/** 读取当天持久化快照；解析失败 / 结构不符 / 跨天一律返回 null（静默降级） */
+function loadPersistedOverview(): { data: OverviewRaw; at: number } | null {
+  try {
+    const raw = localStorage.getItem(OVERVIEW_CACHE_KEY);
+    if (!raw) return null;
+    const saved = JSON.parse(raw, overviewReviver) as {
+      version?: number;
+      at?: number;
+      data?: OverviewRaw;
+    };
+    if (
+      saved?.version !== OVERVIEW_CACHE_VERSION ||
+      typeof saved.at !== "number" ||
+      !saved.data
+    ) {
+      return null;
+    }
+    const data = saved.data;
+    const expectedStart = startOfLocalDay(
+      addLocalDays(Date.now(), -(WINDOW_DAYS - 1))
+    );
+    if (
+      data.windowStartMs !== expectedStart ||
+      !Array.isArray(data.dayKeys) ||
+      !(data.merged instanceof Map) ||
+      !(data.quotas instanceof Map) ||
+      !(data.cursorByModel instanceof Map) ||
+      !Array.isArray(data.perAgent) ||
+      !Array.isArray(data.remotePerAgent) ||
+      !Array.isArray(data.failures)
+    ) {
+      return null;
+    }
+    return { data, at: saved.at };
+  } catch {
+    return null;
+  }
+}
+
+/** 落盘完整快照；配额 / 序列化失败静默（缓存只是锦上添花） */
+function savePersistedOverview(data: OverviewRaw, at: number): void {
+  try {
+    localStorage.setItem(
+      OVERVIEW_CACHE_KEY,
+      JSON.stringify(
+        { version: OVERVIEW_CACHE_VERSION, at, data },
+        overviewReplacer
+      )
+    );
+  } catch {
+    // 忽略：QuotaExceededError / 隐私模式 / 序列化失败
+  }
+}
 
 /** 5 小时窗口剩余（无该窗口的 Agent 为 null） */
 export interface Hour5Info {
@@ -185,12 +268,10 @@ export interface OverviewRaw {
   remoteDegraded: boolean;
 }
 
-/** 单次发布的载荷：阶段一（本机）与后续更新共用同一形状 */
+/** 一次完整发布的载荷：本机 + 远端 + provider 额度全部就绪后才发布 */
 interface OverviewPublish {
   data: OverviewRaw;
-  /** 本次取数是否已全部完成（写缓存 + 结束加载态） */
-  final: boolean;
-  /** 全部 Agent 失败时的错误串（随阶段一给出，否则 null） */
+  /** 全部 Agent 失败时的错误串（随唯一一次发布给出，否则 null） */
   fatalError: string | null;
 }
 
@@ -511,14 +592,15 @@ async function loadProviderQuotas(): Promise<Map<UsageAgentId, QuotaInfo>> {
 // ===== 取数主流程 =====
 
 /**
- * 拉取全部数据并按「本机 → 远端 / provider 额度」两段发布。
+ * 拉取全部数据并在**全部就绪后一次性发布**。
  *
- * - 阶段一（本机）：SQLite 日桶 + 额度快照 + 汇率并行取回，就绪即 publish
- *   （首屏不等远端）；任一 Agent 失败只登记 failures，全部失败时通过
- *   fatalError 交给页面展示错误态；
- * - 阶段二（并行两路，各自就绪即再发布）：provider 额度通道（本地库 / 官方
- *   接口，可能慢）与远端其他设备用量合并（需要同步配置，与阶段一并行发起）。
- *   各阶段都基于同一份累加状态发布，后到的结果只增补字段，不会回退本地数据。
+ * - 本机阶段：SQLite 日桶 + 额度快照 + 汇率并行取回；任一 Agent 失败只登记
+ *   failures，全部失败时通过 fatalError 交给页面展示错误态；
+ * - 并行补充：provider 额度通道（本地库 / 官方接口，可能慢）与远端其他设备
+ *   用量合并（需要同步配置）。两者都结束后才 publish 完整口径——不发布
+ *   「仅本机」中间态，避免指标卡 / 额度从少到多跳一次；
+ * - 首屏速度由调用方的持久化快照兜底：有上次完整结果时先上屏旧值，这里只做
+ *   后台刷新；没有快照时才显示骨架。
  */
 async function loadOverview(
   syncPromise: Promise<SyncConfig | null>,
@@ -606,7 +688,7 @@ async function loadOverview(
       ? firstError ?? "数据加载失败"
       : null;
 
-  // 累加状态：各阶段发布同一对象的新快照，后到阶段只增补字段
+  // 累加状态：provider / 远端两个任务各自增补字段，全部结束后只发布一次
   const state: OverviewRaw = {
     dayKeys,
     windowStartMs,
@@ -621,11 +703,13 @@ async function loadOverview(
     remoteDegraded: false,
   };
 
-  // 阶段一：本机数据就绪即发布（首屏不等远端 / provider 额度）
-  publish({ data: { ...state }, final: false, fatalError });
-  if (fatalError) return;
+  // 全部 Agent 失败：没有任何可展示数据，直接以最终错误态发布（不再等第二阶段）
+  if (fatalError) {
+    publish({ data: { ...state }, fatalError });
+    return;
+  }
 
-  // 阶段二：provider 额度与远端合并并行，各自就绪即二次发布
+  // provider 额度与远端合并并行；两者都结束后才发布完整口径
   const providerTask = (async () => {
     const providerQuotas = await providerQuotaPromise;
     if (providerQuotas.size === 0) return;
@@ -639,7 +723,6 @@ async function loadOverview(
     }
     if (!changed) return;
     state.quotas = next;
-    publish({ data: { ...state }, final: false, fatalError: null });
   })();
 
   const remoteTask = (async () => {
@@ -679,19 +762,30 @@ async function loadOverview(
     remotePerAgent.sort((a, b) => orderOf(a.id) - orderOf(b.id));
     state.remotePerAgent = remotePerAgent;
     state.remoteDegraded = remoteDegraded;
-    publish({ data: { ...state }, final: false, fatalError: null });
   })();
 
   await Promise.allSettled([providerTask, remoteTask]);
-  publish({ data: { ...state }, final: true, fatalError: null });
+  publish({ data: { ...state }, fatalError: null });
 }
 
 export function useOverviewData(): OverviewDataState {
-  const [data, setData] = useState<OverviewRaw | null>(null);
-  const [loading, setLoading] = useState(true);
+  // 持久化快照只读一次：首帧即按上次完整口径渲染（无骨架、无「先少后多」）；
+  // 模块缓存还在时直接复用、不重复解析 localStorage；跨天 / 结构不符时
+  // loadPersistedOverview 返回 null，退回正常首载流程
+  const [persisted] = useState(() => overviewCache ?? loadPersistedOverview());
+  const [data, setData] = useState<OverviewRaw | null>(
+    persisted?.data ?? null
+  );
+  const [loading, setLoading] = useState(persisted == null);
   const [error, setError] = useState<string | null>(null);
-  const [lastUpdatedAt, setLastUpdatedAt] = useState<number | null>(null);
+  const [lastUpdatedAt, setLastUpdatedAt] = useState<number | null>(
+    persisted?.at ?? null
+  );
   const [remotePending, setRemotePending] = useState(false);
+  // data 的 ref 镜像：取数 effect 只依赖 nonce，判断「当前是否已有内容可显示」
+  // 必须读最新值（手动刷新时 data 仍在，不能误判为首载而切回骨架）
+  const dataRef = useRef(data);
+  dataRef.current = data;
   // 同步配置初值取共享模块级记忆（本次会话上次读到的有效配置，两页共用）：
   // 重进页面时不闪「未启用同步」、范围控件不短暂禁用；随后仍会重读刷新
   const [syncConfig, setSyncConfig] = useState<SyncConfig | null>(
@@ -702,7 +796,7 @@ export function useOverviewData(): OverviewDataState {
   );
   const [nonce, setNonce] = useState(0);
   const [scope, setScopeState] = useState<OverviewScope>(() => loadOverviewScope());
-  // 请求序号：并发触发 / 阶段式发布时只应用最新一次请求的结果
+  // 请求序号：并发触发时只应用最新一次请求的结果
   const reqIdRef = useRef(0);
   // 手动刷新标记：手动刷新永远强制重取（跳过缓存），并让刷新按钮转圈
   const manualRef = useRef(false);
@@ -710,7 +804,7 @@ export function useOverviewData(): OverviewDataState {
   const syncEnabled = !!syncConfig?.enabled && !!syncConfig.device_token;
 
   // 取数：范围 / 数据范围切换不进入这里（纯视图切片），只有首载与手动刷新
-  // 才重新取数；命中且未过期的模块级缓存时完全不取数（同步配置仍重读一次）。
+  // 才重新取数；命中且未过期的缓存时完全不取数（同步配置仍重读一次）。
   useEffect(() => {
     const reqId = ++reqIdRef.current;
     let cancelled = false;
@@ -718,13 +812,15 @@ export function useOverviewData(): OverviewDataState {
     const manual = manualRef.current;
     manualRef.current = false;
 
-    // 缓存命中：立即用旧数据渲染（无加载态）
-    const cached = manual ? null : overviewCache;
+    // 缓存命中：立即用旧数据渲染（无加载态）。模块缓存优先，其次持久化快照
+    const cached = manual ? null : (overviewCache ?? persisted);
     if (cached) {
       setData(cached.data);
       setLastUpdatedAt(cached.at);
       setError(null);
     }
+    // 已有内容（缓存或当前 state）时刷新只静默替换，绝不退回骨架
+    const hasVisible = dataRef.current != null || cached != null;
 
     // 同步配置与本地取数并行发起：仅远端合并等待它（读取失败 / 超时在共享
     // 读取内部按「未启用同步」处理，本地文件读通常毫秒级，超时兜底不卡首屏）。
@@ -747,24 +843,28 @@ export function useOverviewData(): OverviewDataState {
       };
     }
 
-    // 首载或手动刷新才有加载态；有旧数据（缓存过期）时静默刷新，不阻塞界面
-    if (!cached || manual) setLoading(true);
+    // 无任何可显示数据时才有骨架；手动刷新要转圈，但已有内容不遮挡
+    if (!hasVisible || manual) setLoading(true);
     setRemotePending(true);
 
     (async () => {
       try {
         await loadOverview(syncRead, (payload) => {
-          // 序号守卫：旧请求（含旧请求的后续阶段）的结果一律丢弃
+          // 序号守卫：旧请求的结果一律丢弃
           if (!isCurrent()) return;
-          setData(payload.data);
           setError(payload.fatalError);
-          // 仅在有可用数据时更新「上次刷新」时刻：全失败时显示旧时刻会误导
-          if (!payload.fatalError) setLastUpdatedAt(Date.now());
-          if (payload.final) {
-            overviewCache = { data: payload.data, at: Date.now() };
-            setRemotePending(false);
-            setLoading(false);
+          // 全失败时不要用空壳覆盖已有缓存（保留上次完整数据，只挂错误提示）
+          if (payload.fatalError) {
+            if (dataRef.current == null) setData(payload.data);
+          } else {
+            setData(payload.data);
+            const at = Date.now();
+            setLastUpdatedAt(at);
+            overviewCache = { data: payload.data, at };
+            savePersistedOverview(payload.data, at);
           }
+          setRemotePending(false);
+          setLoading(false);
         });
       } catch (e) {
         if (isCurrent()) {
@@ -778,6 +878,8 @@ export function useOverviewData(): OverviewDataState {
     return () => {
       cancelled = true;
     };
+    // persisted 在组件生命周期内不变，无需列入依赖
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [nonce]);
 
   const reload = useCallback(() => {
