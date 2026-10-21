@@ -1,4 +1,4 @@
-# ZBar · iOS 版（App + 小组件）
+# AgentHUD · iOS 版（App + 小组件）
 
 桌面版 ZBar（Tauri）的 iOS 配套应用。复用同一个自托管同步服务（`server/`），把 iPhone 当作一台新设备注册，在手机上查看今日花费 / Token / 额度，并通过锁屏 & 主屏小组件快速一览。
 
@@ -10,15 +10,15 @@
 
 ```
 ios/
-├── ZBar/
-│   ├── ZBar.xcodeproj/         # Xcode 工程文件
-│   └── ZBar/                   # 主 App 源码
-│       ├── ZBarApp.swift       # @main 入口
+├── agenthud/
+│   ├── agenthud.xcodeproj/         # Xcode 工程文件
+│   └── agenthud/                   # 主 App 源码
+│       ├── AgentHUDApp.swift       # @main 入口
 │       ├── Models/             # Types.swift + PricingDefaults.json（内置价格表）
 │       ├── Core/               # API 客户端 / 计费 / 折算 / 格式化 / 配置 / 数据加载
 │       └── Views/              # 统计 / 额度 / 趋势 / 对比 / 设置 五个 Tab
-└── ZBarWidget/                 # Widget Extension 源码
-    ├── ZBarWidget.swift        # WidgetBundle（主屏 + 锁屏）
+└── agenthudWidget/                 # Widget Extension 源码
+    ├── AgentHUDWidget.swift        # WidgetBundle（主屏 + 锁屏）
     ├── WidgetViews.swift       # 小/中尺寸 + 锁屏三个 family 的视图
     └── WidgetShared.swift      # ⚠️ 只编译进 Widget target 的类型定义
 ```
@@ -36,16 +36,16 @@ ios/
 ## 方式一：直接打开工程（首选）
 
 ```bash
-open ios/ZBar/ZBar.xcodeproj
+open ios/agenthud/agenthud.xcodeproj
 ```
 
 打开后：
 
 1. 顶部选择目标设备（你的 iPhone 真机）。
-2. 左侧选 `ZBar` 项目 → **Signing & Capabilities**：
+2. 左侧选 `agenthud` 项目 → **Signing & Capabilities**：
    - `Team`：选你的 **Personal Team**（标 "Personal Team" 的那项）。
-   - `Bundle Identifier`：保持 `com.chacca.zbar`，**不要改**（改了 App Group 要跟着改）。
-3. 对 `ZBarWidget` target 做同样操作。
+   - `Bundle Identifier`：保持 `com.chacca.agenthud`，**不要改**（改了 App Group 要跟着改）。
+3. 对 `agenthudWidget` target 做同样操作。
 4. 数据线连 iPhone → 点 **Run**（▶）。
 5. 首次运行后 iPhone 会提示「不受信任的开发者」→ 去 **设置 → 通用 → VPN与设备管理** → 信任你的开发者证书。
 
@@ -61,41 +61,41 @@ open ios/ZBar/ZBar.xcodeproj
 
 1. Xcode → **File → New → Project** → **iOS / App** → Next。
 2. 填写：
-   - Product Name：`ZBar`
+   - Product Name：`agenthud`
    - Organization Identifier：`com.chacca`
    - Interface：**SwiftUI**
    - Language：**Swift**
    - 取消勾选 "Include Tests"（不需要）
-   - 保存到 `ios/` 目录下（会提示覆盖，选覆盖或新建 `ZBar2` 后把源码挪过去）
-3. 删除 Xcode 自动生成的 `ContentView.swift`、`ZBarApp.swift`、`Assets.xcassets/AccentColor` 等占位文件。
+   - 保存到 `ios/` 目录下（会提示覆盖，选覆盖或新建 `agenthud2` 后把源码挪过去）
+3. 删除 Xcode 自动生成的 `ContentView.swift`、`AgentHUDApp.swift`、`Assets.xcassets/AccentColor` 等占位文件。
 
 ### 2. 拖入主 App 源码
 
-把 `ios/ZBar/ZBar/` 下的所有文件拖进 Xcode 的 `ZBar` 组里：
+把 `ios/agenthud/agenthud/` 下的所有文件拖进 Xcode 的 `agenthud` 组里：
 
 - 勾选 **Copy items if needed** ✅
-- 勾选 **Add to targets: ZBar** ✅（不要勾 ZBarWidget）
-- 包括 `Models/`、`Core/`、`Views/` 三个文件夹，以及 `ZBarApp.swift`、`Info.plist`、`ZBar.entitlements`、`PricingDefaults.json`
+- 勾选 **Add to targets: agenthud** ✅（不要勾 agenthudWidget）
+- 包括 `Models/`、`Core/`、`Views/` 三个文件夹，以及 `AgentHUDApp.swift`、`Info.plist`、`agenthud.entitlements`、`PricingDefaults.json`
 
 ### 3. 新建 Widget Extension
 
-1. 选中 `ZBar` 项目 → **File → New → Target** → **iOS / Widget Extension** → Next。
+1. 选中 `agenthud` 项目 → **File → New → Target** → **iOS / Widget Extension** → Next。
 2. 填写：
-   - Product Name：`ZBarWidget`
+   - Product Name：`agenthudWidget`
    - 取消勾选 "Include Configuration App Intent"（不需要）
-3. 删除 Xcode 自动生成的 `ZBarWidget.swift` 等占位文件。
-4. 把 `ios/ZBarWidget/` 下的 `ZBarWidget.swift`、`WidgetViews.swift`、`WidgetShared.swift`、`ZBarWidget.entitlements` 拖进 `ZBarWidget` 组：
-   - 勾选 **Add to targets: ZBarWidget** ✅（不要勾 ZBar）
+3. 删除 Xcode 自动生成的 `AgentHUDWidget.swift` 等占位文件。
+4. 把 `ios/agenthudWidget/` 下的 `AgentHUDWidget.swift`、`WidgetViews.swift`、`WidgetShared.swift`、`agenthudWidget.entitlements` 拖进 `agenthudWidget` 组：
+   - 勾选 **Add to targets: agenthudWidget** ✅（不要勾 agenthud）
 
 ### 4. 配置 App Group（关键！）
 
 两个 target 都要配同一个 App Group，否则 Widget 读不到 App 写的数据：
 
-**对 `ZBar` target**：
+**对 `agenthud` target**：
 1. **Signing & Capabilities → + Capability → App Groups**。
-2. 点 **+**，添加：`group.com.chacca.zbar`
+2. 点 **+**，添加：`group.com.chacca.agenthud`
 
-**对 `ZBarWidget` target**：重复上面两步，加同一个 group。
+**对 `agenthudWidget` target**：重复上面两步，加同一个 group。
 
 ### 5. 配置 ATS（允许 HTTP）
 
@@ -137,18 +137,18 @@ App 装上后：
 ## 添加桌面小组件
 
 1. 在 iPhone 主屏长按空白处 → 进入编辑模式 → 点左上角 **+**。
-2. 搜索 **ZBar**。
+2. 搜索 **AgentHUD**。
 3. 选择尺寸：
    - **小**（2×2）：今日花费 + Token + 额度进度条
    - **中**（4×2）：左侧大数字 + 右侧三档额度详情 + 重置倒计时
 4. 点 **添加小组件**。
 
 锁屏小组件（iOS 17+）：
-1. 锁屏长按 → 自定义 → 添加小组件 → 找到 ZBar。
+1. 锁屏长按 → 自定义 → 添加小组件 → 找到 AgentHUD。
 2. 三种形态：
    - **长条**（Rectangular）：花费 + 周/5h 百分比
    - **圆形**（Circular）：weekly 百分比环形
-   - **顶部行**（Inline）：一行文字 "ZBar ¥12.34 · 3.7M"
+   - **顶部行**（Inline）：一行文字 "AgentHUD ¥12.34 · 3.7M"
 
 ---
 
@@ -180,7 +180,7 @@ iOS Widget **不能像桌面端那样 30 秒刷新一次**。系统限制：
 
 ```
 ┌─────────────┐   /usage /snapshots    ┌──────────────┐
-│ 你的 server  │◄──────────────────────│  ZBar iOS App │
+│ 你的 server  │◄──────────────────────│  AgentHUD iOS App │
 │  (Flask)     │   /period_detail       │  (主进程)      │
 └─────────────┘   /register /devices    └──────┬───────┘
                                                 │ 写 App Group
@@ -226,7 +226,7 @@ iOS 端复刻了桌面版的核心计算（`src/merge.ts`、`src/peak.ts`、`src
 
 **小组件显示 "—" 或空数据**
 - 确认 App 已打开并成功连上 server / 查询过额度（App 会把数据写进 App Group）。
-- 确认两个 target 都配了同一个 App Group `group.com.chacca.zbar`。
+- 确认两个 target 都配了同一个 App Group `group.com.chacca.agenthud`。
 - 删掉小组件重新添加一次。
 
 **连不上 server（连接超时）**
