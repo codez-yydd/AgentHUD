@@ -101,7 +101,10 @@ public enum Peak {
                     callConsumed = Double(r.total_tokens) * mult
                 }
                 consumed += callConsumed * zcode
-                requests += 1
+                // 聚合协议：一行 = 同 (小时桶, 模型) 的多次请求，请求数取
+                // 行内 requests（旧服务端逐行响应该字段解码为 1，同样成立）；
+                // consumed 不变——聚合行 started_at 为小时桶起点，倍率照常工作
+                requests += r.requests
             }
             return (consumed, requests)
         }

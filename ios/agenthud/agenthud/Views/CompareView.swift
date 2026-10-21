@@ -88,7 +88,9 @@ struct CompareView: View {
                 let tokenB: [WeeklyTokenBucket] = parsed.indices.map { i in
                     let rows = (i < detail.count) ? detail[i].rows : []
                     let total = rows.reduce(0) { $0 + $1.total_tokens }
-                    let reqs = rows.count
+                    // 聚合协议：一行 = 同 (小时桶, 模型) 的多次请求，请求数
+                    // 按行内 requests 求和（旧服务端逐行响应每行为 1，同样成立）
+                    let reqs = rows.reduce(0) { $0 + $1.requests }
                     return WeeklyTokenBucket(reset_at: parsed[i].reset_at,
                                               end_at: parsed[i].end_at,
                                               total_tokens: total,

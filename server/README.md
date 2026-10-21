@@ -29,11 +29,11 @@ requirements.txt
 
 ```bash
 cd /你的上传路径/zbar-sync
-pip3 install flask
+pip3 install flask waitress
 ```
 
-> 只需要 Flask 一个依赖。Python 3.8+ 即可，sqlite3 是标准库自带的。
-> 如果 `pip3` 报错，先修复：`python3 -m ensurepip --upgrade`，或用 `python3 -m pip install flask`。
+> 只需要 Flask + waitress 两个依赖。Python 3.8+ 即可，sqlite3 是标准库自带的。
+> 如果 `pip3` 报错，先修复：`python3 -m ensurepip --upgrade`，或用 `python3 -m pip install flask waitress`。
 
 ### 3. 启动
 
@@ -46,6 +46,8 @@ pip3 install flask
 ```bash
 python3 app.py
 ```
+
+> `start.sh` 通过 waitress（生产级 WSGI 服务器，固定线程池 + 60s 连接超时）对外服务，替代无超时、无并发上限的 Flask 内置 dev server；`python3 app.py` 直跑且已安装 waitress 时同样自动使用 waitress，未安装则回退 dev server（仅限调试）。
 
 首次启动会自动：
 - 创建 `zbar-data/` 目录

@@ -547,6 +547,28 @@ public struct RemoteDetailRow: Codable, Hashable {
     public var output_tokens: Int
     public var cache_read_tokens: Int
     public var total_tokens: Int
+    /// 聚合协议新增：该行代表的请求次数（服务端按 (小时桶, 模型) 聚合后
+    /// 一行 = 多次请求；started_at 为小时桶起点）。旧服务端逐行响应无此键，
+    /// 解码为 1 —— 语义仍是每行一次请求，新旧服务端口径都正确。
+    /// 合成 Codable 解码不读属性默认值（缺键直接抛错），兼容旧响应必须
+    /// 自定义 init(from:) 走 decodeIfPresent。
+    public var requests: Int = 1
+
+    private enum CodingKeys: String, CodingKey {
+        case started_at, model_id, input_tokens, output_tokens
+        case cache_read_tokens, total_tokens, requests
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        started_at = try c.decode(Int.self, forKey: .started_at)
+        model_id = try c.decode(String.self, forKey: .model_id)
+        input_tokens = try c.decode(Int.self, forKey: .input_tokens)
+        output_tokens = try c.decode(Int.self, forKey: .output_tokens)
+        cache_read_tokens = try c.decode(Int.self, forKey: .cache_read_tokens)
+        total_tokens = try c.decode(Int.self, forKey: .total_tokens)
+        requests = try c.decodeIfPresent(Int.self, forKey: .requests) ?? 1
+    }
 }
 
 public struct RemotePeriodDetail: Codable, Hashable {

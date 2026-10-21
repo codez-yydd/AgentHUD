@@ -113,7 +113,8 @@ class AgentQuotaSyncTest(unittest.TestCase):
         )
         body = response.get_json()
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(body["proto"], 7)
+        # 当前服务端全能力 = proto 8（明细带耗时/首字；该断言随 proto 演进同步更新）
+        self.assertEqual(body["proto"], 8)
         self.assertEqual(body["accepted"], 0)
         self.assertEqual(body["accepted_snapshots"], 1)
         self.assertEqual(body["max_snapshot_ts"], 100)
@@ -154,7 +155,8 @@ class AgentQuotaSyncTest(unittest.TestCase):
         )
         body = response.get_json()
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(body["proto"], 7)
+        # 同上：当前服务端全能力 = proto 8
+        self.assertEqual(body["proto"], 8)
         self.assertEqual(body["accepted_agent_quota_snapshots"], 0)
         self.assertIsNone(body["max_agent_quota_snapshot_ts"])
 

@@ -42,6 +42,9 @@ def _usage_records_schema(table):
     session_id / project_key / project_display 为 proto 5 新增的会话与
     项目维度列（全部可空，缺省 NULL）；旧库由 _migrate_usage_records_columns
     用 ALTER TABLE 原地补列，补列后列序与本定义一致（都在末尾）。
+    duration_ms / time_to_first_token_ms 为 proto 8 新增的耗时/首字列
+    （可空，缺省 NULL）：仅存储与回传，不参与聚合；旧库由
+    _migrate_usage_records_speed_columns 同款 ALTER 原地补列。
     """
     return f"""
 CREATE TABLE IF NOT EXISTS {table} (
@@ -61,6 +64,8 @@ CREATE TABLE IF NOT EXISTS {table} (
     session_id                  TEXT,
     project_key                 TEXT,
     project_display             TEXT,
+    duration_ms                 REAL,
+    time_to_first_token_ms      REAL,
     PRIMARY KEY (device_id, source, local_rowid)
 )
 """
@@ -324,13 +329,42 @@ def _migrate_agent_quota_snapshots(conn):
         conn.isolation_level = ""
 
 
+def _migrate_usage_records_speed_columns(conn):
+    """usage_records 幂等补列：duration_ms / time_to_first_token_ms（proto 8）。
+
+    proto 8 客户端上传的明细会带耗时/首字字段（请求日志页远端行的耗时/
+    首字/速度列数据源）；老库直接用 ALTER TABLE ADD COLUMN 原地补列
+    （全部可空、不改主键、不搬数据），已有行两列为 NULL——与 proto 2/3/4
+    客户端上传时的落库行为完全一致。ALTER 不会删除表上的索引，无需像
+    source/account 迁移那样重建索引。可重复调用，幂等。
+    """
+    cols = [r["name"] for r in conn.execute("PRAGMA table_info(usage_records)").fetchall()]
+    if not cols:
+        return
+    added = False
+    if "duration_ms" not in cols:
+        conn.execute("ALTER TABLE usage_records ADD COLUMN duration_ms REAL")
+        added = True
+    if "time_to_first_token_ms" not in cols:
+        conn.execute(
+            "ALTER TABLE usage_records ADD COLUMN time_to_first_token_ms REAL"
+        )
+        added = True
+    if added:
+        conn.commit()
+        print(
+            "[zbar-sync] usage_records 已补列：duration_ms / "
+            "time_to_first_token_ms（proto 8 耗时/首字维度，老记录为空）"
+        )
+
+
 def init_db():
     """初始化数据库：创建数据目录 + 自动建库建表（幂等，可重复调用）。
 
     老库（无 source 列）在此处自动迁移；迁移中 DROP TABLE 会连带删掉
     usage_records 上的两个索引，故迁移后重放一遍索引语句挂回新表。
     quota_snapshots 的 account 迁移同理（DROP 会删掉 ts 索引）。
-    proto 5 的补列迁移用 ALTER TABLE 原地完成，不影响索引。
+    proto 5 / proto 8 的补列迁移均用 ALTER TABLE 原地完成，不影响索引。
     """
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     conn = get_conn()
@@ -344,6 +378,7 @@ def init_db():
         _migrate_quota_snapshots(conn)
         _migrate_usage_records_columns(conn)
         _migrate_agent_quota_snapshots(conn)
+        _migrate_usage_records_speed_columns(conn)
         if not conn.in_transaction:
             # 迁移中的 DROP TABLE 会连带删掉索引（含 agent 快照表上的两个），
             # 这里重放一遍挂回新表
@@ -432,8 +467,11 @@ def insert_usage_records(device_id, records, uploaded_at):
     """批量插入明细记录（主键 (device_id, source, local_rowid) 去重 + 修订覆盖）。
 
     每条记录的 source 缺省为 'zcode'（旧客户端不传即 zcode，向后兼容）。
-    proto 5 起每条记录还可带 session_id / project_key / project_display
-    （均可缺省，旧客户端不传时落库为 NULL）；主键去重不受影响。
+    proto 5 起每条记录还可带 session_id / project_key / project_display，
+    proto 8 起还可带 duration_ms / time_to_first_token_ms（均可缺省，
+    旧客户端不传时落库为 NULL）；主键去重不受影响。修订覆盖分支对
+    耗时/首字用 COALESCE 非空优先：新值非空才覆盖，空值不抹掉已存值
+    ——修订重传的记录若来自无耗时列的老来源库，不得丢此前已写入的耗时。
     同主键重传且 computed_total_tokens 更大时覆盖旧值：Claude Code 会话流式
     落盘，客户端可能先上传某条消息的中间值、稍后本地修正为终值并补传
     （见客户端 claude 模块的 updated_at 修订机制）。另外允许同 Token 数的
@@ -455,8 +493,9 @@ def insert_usage_records(device_id, records, uploaded_at):
                          input_tokens, output_tokens, cache_read_input_tokens,
                          cache_creation_input_tokens, reasoning_tokens,
                          computed_total_tokens, uploaded_at,
-                         session_id, project_key, project_display)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                         session_id, project_key, project_display,
+                         duration_ms, time_to_first_token_ms)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(device_id, source, local_rowid) DO UPDATE SET
                         started_at = CASE
                             WHEN excluded.computed_total_tokens > usage_records.computed_total_tokens
@@ -509,7 +548,14 @@ def insert_usage_records(device_id, records, uploaded_at):
                         -- 不用 NULL 抹掉此前已写入的归属信息。
                         session_id = COALESCE(excluded.session_id, usage_records.session_id),
                         project_key = COALESCE(excluded.project_key, usage_records.project_key),
-                        project_display = COALESCE(excluded.project_display, usage_records.project_display)
+                        project_display = COALESCE(excluded.project_display, usage_records.project_display),
+                        -- proto 8 耗时/首字：同款非空优先，修订重传不带耗时
+                        -- （老来源库无该列）时保留已存值。
+                        duration_ms = COALESCE(excluded.duration_ms, usage_records.duration_ms),
+                        time_to_first_token_ms = COALESCE(
+                            excluded.time_to_first_token_ms,
+                            usage_records.time_to_first_token_ms
+                        )
                     WHERE excluded.computed_total_tokens > usage_records.computed_total_tokens
                        OR (
                            COALESCE(usage_records.model_id, '') = ''
@@ -533,6 +579,8 @@ def insert_usage_records(device_id, records, uploaded_at):
                         r.get("session_id"),
                         r.get("project_key"),
                         r.get("project_display"),
+                        r.get("duration_ms"),
+                        r.get("time_to_first_token_ms"),
                     ),
                 )
                 accepted += cur.rowcount
@@ -831,6 +879,29 @@ def max_snapshot_ts_of(device_id):
         conn.close()
 
 
+# /snapshots 与 /agent-quota-snapshots 的行数上限：快照约 30s 采样，90 天
+# 2 设备约 25 万行，上限取其约 2 倍余量，定位是防设备数/天数失控增长后
+# 单请求无界膨胀（而非卡当前数据量）；全局并发内存上界由 waitress 固定
+# 线程池兜底（16 线程 × 单请求峰值有限）。超限不静默截断（截断会让
+# 客户端周期解析算错），由 app.py 端点层先 COUNT 再查询，超上限直接
+# 400 提示收窄时间窗口。
+SNAPSHOT_QUERY_MAX_ROWS = 500_000
+
+
+def count_snapshots(from_ms, to_ms, device_ids):
+    """统计时间范围内的快照行数（/snapshots 端点超限前置检查用）。"""
+    dev_frag, dev_params = _build_device_filter(device_ids)
+    conn = get_conn()
+    try:
+        row = conn.execute(
+            f"SELECT COUNT(*) FROM quota_snapshots WHERE ts >= ? AND ts < ? {dev_frag}",
+            [from_ms, to_ms] + dev_params,
+        ).fetchone()
+        return row[0]
+    finally:
+        conn.close()
+
+
 def query_snapshots(from_ms, to_ms, device_ids):
     """查询时间范围内的快照（带 device_id，按 ts 升序）。
     device_ids 为空 = 全部设备；非空 = 仅这些设备。
@@ -1119,6 +1190,28 @@ def _group_agent_quota_rows(rows):
     return list(grouped.values())
 
 
+def count_agent_quota_snapshots(from_ms, to_ms, device_ids, source=None):
+    """统计时间范围内的 Agent 额度快照原始行数（端点超限前置检查用）。
+
+    以落库原始行为准——这正是 fetchall 的内存口径；分组组装后的
+    snapshot 对象数只会更少，用它判断不会漏放行大结果集。
+    """
+    dev_frag, dev_params = _build_device_filter(device_ids)
+    src_frag, src_params = _build_source_filter(source)
+    conn = get_conn()
+    try:
+        row = conn.execute(
+            f"""
+            SELECT COUNT(*) FROM agent_quota_snapshots
+            WHERE ts >= ? AND ts < ? {dev_frag} {src_frag}
+            """,
+            [from_ms, to_ms] + dev_params + src_params,
+        ).fetchone()
+        return row[0]
+    finally:
+        conn.close()
+
+
 def query_agent_quota_snapshots(from_ms, to_ms, device_ids, source=None):
     """查询 Agent 额度快照，并组装为客户端可直接解析的 snapshot 形状。
 
@@ -1148,25 +1241,58 @@ def query_agent_quota_snapshots(from_ms, to_ms, device_ids, source=None):
     return _group_agent_quota_rows(rows)
 
 
+# /period_detail 单次请求允许的最大周期数：快照周期解析以周为单位，90 天
+# 约 13 个周期，200 留足余量；超出视为异常/恶意请求，防止把一次请求拆成
+# 无限多轮聚合查询。
+PERIOD_DETAIL_MAX_PERIODS = 200
+
+
 def query_period_detail(periods, device_ids, source=None):
-    """按一组周期 [start, end) 返回远端各周期内的逐条用量明细。
-    供客户端用本地 peak 配置折算消耗（服务端无 peak 配置）。
-    每条含 started_at/model_id/各 token 字段，与本地 db::query_period_consumed 口径一致。
+    """按一组周期 [start, end) 返回各周期内的用量明细（按 (小时桶, 模型) 聚合）。
+
+    供客户端用本地 peak 配置折算消耗（服务端无 peak 配置）。每条含
+    started_at/model_id/各 token SUM 字段，与本地 db::query_period_consumed
+    口径一致；started_at 为小时桶起点（UTC 对齐，桶内明细共用同一时间戳）。
     source 为空 = 全部来源；非空 = 仅该来源。
+
+    聚合数学等价性：客户端折算公式对 token 数线性——V2 是
+    Σ(total_tokens × 倍率)，V3 是 Σ(单价 × token)/1e4 × 倍率，单价与倍率
+    都是常系数，先 SUM 后乘与逐行乘后加结果一致；倍率取小时桶起点的
+    started_at，peak 段边界落在整点时严格等价，非整点边界桶统一取桶起点
+    倍率，误差仅限边界桶（客户端时段配置以小时为主，可忽略）。行数从
+    全表逐行（90 天可达 28 万+ 行、单请求几百 MB 内存峰值）降到
+    模型数 × 24 × 周期数，内存峰值回落到 KB 级。
+
+    行协议：前六个字段与旧逐行响应同形（started_at/model_id/四个 token
+    SUM），新增第七字段 requests = 该聚合行代表的原始请求次数（COUNT）。
+    旧客户端按行计数把一行当 1 次请求，新客户端按 requests 累加，新旧
+    协议各自口径下都正确。
+    periods 数量超过 PERIOD_DETAIL_MAX_PERIODS 时抛 ValueError（端点转 400）。
     """
+    if len(periods) > PERIOD_DETAIL_MAX_PERIODS:
+        raise ValueError(
+            f"周期数 {len(periods)} 超上限 {PERIOD_DETAIL_MAX_PERIODS}"
+        )
+
     dev_frag, dev_params = _build_device_filter(device_ids)
     src_frag, src_params = _build_source_filter(source)
     conn = get_conn()
     try:
         out = []
         for start, end in periods:
+            # SQLite 整数除法：started_at / 3600000 即 UTC 小时桶号
             rows = conn.execute(
                 f"""
-                SELECT started_at, model_id,
-                       COALESCE(input_tokens,0), COALESCE(output_tokens,0),
-                       COALESCE(cache_read_input_tokens,0), COALESCE(computed_total_tokens,0)
+                SELECT (started_at / 3600000) * 3600000 AS hour_ms, model_id,
+                       COUNT(*),
+                       COALESCE(SUM(input_tokens), 0),
+                       COALESCE(SUM(output_tokens), 0),
+                       COALESCE(SUM(cache_read_input_tokens), 0),
+                       COALESCE(SUM(computed_total_tokens), 0)
                 FROM usage_records
                 WHERE started_at >= ? AND started_at < ? {dev_frag} {src_frag}
+                GROUP BY hour_ms, model_id
+                ORDER BY hour_ms, model_id
                 """,
                 [start, end] + dev_params + src_params,
             ).fetchall()
@@ -1178,10 +1304,11 @@ def query_period_detail(periods, device_ids, source=None):
                         {
                             "started_at": r[0],
                             "model_id": r[1] or "",
-                            "input_tokens": r[2],
-                            "output_tokens": r[3],
-                            "cache_read_tokens": r[4],
-                            "total_tokens": r[5],
+                            "input_tokens": r[3],
+                            "output_tokens": r[4],
+                            "cache_read_tokens": r[5],
+                            "total_tokens": r[6],
+                            "requests": r[2],
                         }
                         for r in rows
                     ],
@@ -1239,7 +1366,8 @@ def query_usage_records(
             SELECT device_id, source, local_rowid, started_at, model_id, provider_id,
                    input_tokens, output_tokens, cache_read_input_tokens,
                    cache_creation_input_tokens, reasoning_tokens,
-                   computed_total_tokens, session_id, project_key, project_display
+                   computed_total_tokens, session_id, project_key, project_display,
+                   duration_ms, time_to_first_token_ms
             FROM usage_records
             WHERE {where}
             ORDER BY started_at DESC, device_id ASC, source ASC, local_rowid ASC
@@ -1286,6 +1414,10 @@ def query_usage_records(
                 "session_id": r["session_id"],
                 "project_key": r["project_key"],
                 "project_display": r["project_display"],
+                # proto 8 耗时/首字：服务端旧数据该列为 NULL，正常返回，
+                # 客户端按缺省 None 处理（前端显示「—」）。
+                "duration_ms": r["duration_ms"],
+                "time_to_first_token_ms": r["time_to_first_token_ms"],
             }
             for r in rows
         ],

@@ -1,1 +1,5 @@
+# Flask 只是应用框架；实际对外服务由 waitress 提供（见 start.sh / app.py main()）
 Flask>=3.0
+# 生产级 WSGI 服务器：固定线程池 + channel_timeout 掐慢连接，
+# 替代 Werkzeug dev server（无超时无并发上限，慢请求线程无限堆积会压垮内存）
+waitress>=2.1

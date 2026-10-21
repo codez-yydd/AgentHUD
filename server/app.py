@@ -91,6 +91,17 @@ def _provider_quota_sync_available():
     )
 
 
+def _speed_fields_available():
+    """判断当前加载的 db.py 是否支持明细的耗时/首字列（proto 8）。
+
+    宝塔热替换场景下可能出现新 app.py + 旧 db.py：旧版 insert_usage_records
+    只按显式字段名读取 records，未知 JSON 键天然忽略（多传字段无害、只是
+    不落库）。此处与 proto 2/3/4/5/6/7 的探测方式一致，按明细表幂等补列能力
+    标记 proto 8；请求日志页远端行的耗时/首字/速度列依赖该能力。
+    """
+    return callable(getattr(db, "_migrate_usage_records_speed_columns", None))
+
+
 # ===== 鉴权辅助 =====
 
 def get_master_token():
@@ -182,8 +193,9 @@ def sync():
     body 字段（两类 snapshots 均可选，向后兼容旧客户端）：
     - records: 用量明细数组（每条可带 source='zcode'|'codex'，缺省 zcode；
       客户端保证每批 records 属同一来源，zcode 与 codex 各自独立分批上传）。
-      proto 5 起每条还可带 session_id / project_key / project_display
-      （均可选）；旧客户端不传即落库 NULL，行为不变
+      proto 5 起每条还可带 session_id / project_key / project_display，
+      proto 8 起还可带 duration_ms / time_to_first_token_ms（均可选）；
+      旧客户端不传即落库 NULL，行为不变
     - last_rowid: 本批记录游标（按本批来源的 rowid 序列计数）
     - snapshots: Z.ai 额度快照数组（可选）
     - last_snapshot_ts: Z.ai 快照游标（可选）
@@ -261,31 +273,37 @@ def sync():
         "max_snapshot_ts": max_snapshot_ts,
         "accepted_agent_quota_snapshots": accepted_agent_quota_snapshots,
         "max_agent_quota_snapshot_ts": max_agent_quota_snapshot_ts,
-        # 服务端协议版本：7 = 支持全量 provider 额度同步（agent_quota_snapshots
-        # 扩展 label/plan_name/balance/message 字段 + AGENT_QUOTA_WINDOWS 收录
-        # deepseek/moonshot/minimax/opencodego/alibaba/qoder/longcat/mimo/
-        # stepfun/grok/alibabatoken）；6 = 支持逐条明细查询（GET /usage_records，
-        # 请求日志页「全部设备」口径）；5 = 明细支持会话/项目维度（session_id /
-        # project_key / project_display）；4 = 额度快照带 account 维度（多账号
-        # 采样隔离与多端今日增量合并）；3 = 支持 Agent 额度快照同步；若当前
-        # 加载的是旧版 db.py，则降级为 6/5/4/3/2，客户端按版本探测能力。
+        # 服务端协议版本：8 = 明细带耗时/首字（duration_ms /
+        # time_to_first_token_ms，旧客户端不传落 NULL）；7 = 支持全量 provider
+        # 额度同步（agent_quota_snapshots 扩展 label/plan_name/balance/message
+        # 字段 + AGENT_QUOTA_WINDOWS 收录 deepseek/moonshot/minimax/opencodego/
+        # alibaba/qoder/longcat/mimo/stepfun/grok/alibabatoken）；6 = 支持逐条
+        # 明细查询（GET /usage_records，请求日志页「全部设备」口径）；5 = 明细
+        # 支持会话/项目维度（session_id / project_key / project_display）；
+        # 4 = 额度快照带 account 维度（多账号采样隔离与多端今日增量合并）；
+        # 3 = 支持 Agent 额度快照同步；若当前加载的是旧版 db.py，则降级为
+        # 7/6/5/4/3/2，客户端按版本探测能力。
         # proto 2 的多来源 usage_records.source 行为。
         # 客户端据此探测——旧版服务端（无 source 列）会把 codex 记录按
         # (device_id, local_rowid) 撞键静默丢弃，客户端发现 proto < 2 时
         # 不会推进 codex 游标，升级服务端后自动恢复，数据不丢。
         "proto": (
-            7
-            if _provider_quota_sync_available()
+            8
+            if _speed_fields_available()
             else (
-                6
-                if _usage_records_query_available()
+                7
+                if _provider_quota_sync_available()
                 else (
-                    5
-                    if _session_project_available()
+                    6
+                    if _usage_records_query_available()
                     else (
-                        4
-                        if _quota_account_available()
-                        else (3 if _agent_quota_storage_available() else 2)
+                        5
+                        if _session_project_available()
+                        else (
+                            4
+                            if _quota_account_available()
+                            else (3 if _agent_quota_storage_available() else 2)
+                        )
                     )
                 )
             )
@@ -310,6 +328,17 @@ def _resolve_device_filter(q_args, all_ids):
     return list(all_ids), False
 
 
+# /usage 防御常量：
+# - 缺省窗口 = 近 24 小时。原缺省 from_ms=0 会让 _query_trend 从 1970 年起
+#   逐桶循环（hour 桶约 50 万轮查询），是内存/CPU 放大器；
+# - 最大时间窗口 400 天（对比页 90 天合法上限再放余量）；
+# - 最大趋势桶数 3000：覆盖 90 天 hour 桶 = 2160 的合法最大请求，超出说明
+#   窗口与桶宽不匹配，提示改用 day 桶或收窄窗口。
+USAGE_DEFAULT_WINDOW_MS = 24 * 3_600_000
+USAGE_MAX_WINDOW_MS = 400 * 86_400_000
+USAGE_MAX_TREND_BUCKETS = 3000
+
+
 @app.get("/usage")
 def usage():
     """聚合查询：返回指定设备集合在时间范围内的 overall + by_model + trend。
@@ -321,12 +350,36 @@ def usage():
     if err:
         return err
 
-    from_ms = int(request.args.get("from_ms", "0"))
-    to_ms = int(request.args.get("to_ms", str(db.now_ms())))
+    # 缺省 from_ms = 近 24h（原缺省 0 的内存放大问题见模块常量注释）
+    try:
+        from_ms = int(
+            request.args.get("from_ms", str(db.now_ms() - USAGE_DEFAULT_WINDOW_MS))
+        )
+        to_ms = int(request.args.get("to_ms", str(db.now_ms())))
+    except ValueError:
+        # 非数字的 from_ms/to_ms（如 ?from_ms=abc）按 4xx 风格拒绝，而非 500
+        return jsonify({"error": "from_ms/to_ms 参数必须为数字"}), 400
     bucket = request.args.get("bucket", "day")
     if bucket not in ("hour", "day"):
         return jsonify({"error": "bucket 必须是 hour 或 day"}), 400
     source = (request.args.get("source") or "").strip()
+
+    # 窗口防御：超 400 天直接拒绝，避免按超长窗口逐桶扫描
+    if to_ms - from_ms > USAGE_MAX_WINDOW_MS:
+        return jsonify(
+            {
+                "error": (
+                    f"时间窗口超上限 {USAGE_MAX_WINDOW_MS // 86_400_000} 天，"
+                    "请收窄 from_ms/to_ms"
+                )
+            }
+        ), 400
+    # 桶数防御：窗口与桶宽不匹配时拒绝，避免逐桶循环上万轮
+    bucket_width = 3_600_000 if bucket == "hour" else 86_400_000
+    if (to_ms - from_ms) // bucket_width > USAGE_MAX_TREND_BUCKETS:
+        return jsonify(
+            {"error": "趋势桶数超上限 3000，请改用 day 桶或收窄时间窗口"}
+        ), 400
 
     # 取所有 device_id 作为筛选池
     all_devices = db.list_devices()
@@ -355,6 +408,24 @@ def models():
     return jsonify({"models": db.list_all_models()})
 
 
+def _snapshot_limit_response(count):
+    """快照行数超限响应：超上限返回 400（不静默截断——截断会让客户端
+    周期解析算错），未超限返回 None。"""
+    if count is None or count <= db.SNAPSHOT_QUERY_MAX_ROWS:
+        return None
+    return (
+        jsonify(
+            {
+                "error": (
+                    f"快照行数 {count} 超上限 {db.SNAPSHOT_QUERY_MAX_ROWS}，"
+                    "请收窄时间窗口"
+                )
+            }
+        ),
+        400,
+    )
+
+
 @app.get("/snapshots")
 def snapshots():
     """额度快照查询：返回指定设备集合在时间范围内的快照（带 device_id）。
@@ -375,6 +446,13 @@ def snapshots():
 
     if has_filter_param and not filter_ids:
         return jsonify({"snapshots": []})
+
+    # 行数上限前置检查：先 COUNT 再查（旧版 db.py 无 count_snapshots 时跳过，
+    # 保持宝塔热替换窗口兼容）
+    if callable(getattr(db, "count_snapshots", None)):
+        err = _snapshot_limit_response(db.count_snapshots(from_ms, to_ms, filter_ids))
+        if err:
+            return err
 
     snaps = db.query_snapshots(from_ms, to_ms, filter_ids)
     return jsonify({"snapshots": snaps})
@@ -408,6 +486,17 @@ def agent_quota_snapshots():
 
     if has_filter_param and not filter_ids:
         return jsonify({"snapshots": []})
+
+    # 行数上限前置检查：先 COUNT 原始行再查（与 /snapshots 同款；旧版 db.py
+    # 无 count_agent_quota_snapshots 时跳过，保持宝塔热替换窗口兼容）
+    if callable(getattr(db, "count_agent_quota_snapshots", None)):
+        err = _snapshot_limit_response(
+            db.count_agent_quota_snapshots(
+                from_ms, to_ms, filter_ids, source=source or None
+            )
+        )
+        if err:
+            return err
 
     snapshots = db.query_agent_quota_snapshots(
         from_ms, to_ms, filter_ids, source=source or None
@@ -494,7 +583,12 @@ def period_detail():
         return jsonify({"buckets": empty})
 
     source = (data.get("source") or "").strip()
-    buckets = db.query_period_detail(periods, filter_ids, source=source or None)
+    try:
+        buckets = db.query_period_detail(periods, filter_ids, source=source or None)
+    except (ValueError, TypeError) as e:
+        # 周期数超上限（PERIOD_DETAIL_MAX_PERIODS）等参数错误；畸形 periods
+        # 载荷（如 [1] 无法解包成 [start, end)）抛 TypeError，同样转 400
+        return jsonify({"error": str(e)}), 400
     return jsonify({"buckets": buckets})
 
 
@@ -694,8 +788,20 @@ def main():
     # 4. 启动自动清理后台线程
     _spawn_auto_cleanup()
 
-    # 5. 启动 Flask（threaded=True 支持并发请求）
-    app.run(host=HOST, port=PORT, threaded=True)
+    # 5. 启动 HTTP 服务：优先 waitress（生产级 WSGI 服务器：固定线程池 +
+    #    channel_timeout 掐慢连接；Werkzeug dev server 无超时、无并发上限，
+    #    慢请求线程会无限堆积，大窗口查询并发时曾把服务器内存打爆）。
+    #    未安装 waitress 时回退 app.run，仅限本地调试。
+    try:
+        from waitress import serve
+    except ImportError:
+        print(
+            "[zbar-sync] 未安装 waitress，回退 Flask dev server"
+            "（仅限调试；生产环境请 pip3 install waitress）"
+        )
+        app.run(host=HOST, port=PORT, threaded=True)
+        return
+    serve(app, host=HOST, port=PORT, threads=16, channel_timeout=60)
 
 
 if __name__ == "__main__":
