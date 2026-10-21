@@ -39,6 +39,7 @@ import {
   listRemoteDevices,
   remoteUsage,
   saveReport,
+  selectableRemoteDevices,
 } from "./api";
 import {
   formatCountLocale,
@@ -1863,15 +1864,17 @@ export function ReportContent({
                     ? t("stats.deviceLocalName", { name: syncConfig.device_name })
                     : t("stats.deviceLocal"),
                 },
-                ...remoteDevices
-                  .filter((device) => device.device_id !== syncConfig?.device_id)
-                  .map((device) => ({
-                    value: device.device_id,
-                    label: t("common.deviceOption", {
-                      name: device.device_name,
-                      id: device.device_id.slice(0, 6),
-                    }),
-                  })),
+                // 过滤口径见 selectableRemoteDevices：排除本机 + 零记录设备
+                ...selectableRemoteDevices(
+                  remoteDevices,
+                  syncConfig?.device_id,
+                ).map((device) => ({
+                  value: device.device_id,
+                  label: t("common.deviceOption", {
+                    name: device.device_name,
+                    id: device.device_id.slice(0, 6),
+                  }),
+                })),
               ]}
               value={deviceFilter}
               onChange={setDeviceFilter}

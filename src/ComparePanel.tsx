@@ -23,6 +23,7 @@ import {
   remoteAgentQuotaSnapshots,
   remoteSnapshots,
   remoteUsage,
+  selectableRemoteDevices,
   type CompareTokenSource,
 } from "./api";
 import { formatTokens } from "./format";
@@ -671,15 +672,16 @@ export function CompareContent({ agentVisibility }: Props) {
                   ? t("stats.deviceLocalName", { name: syncConfig.device_name })
                   : t("stats.deviceLocal"),
               },
-              ...remoteDevices
-                .filter((d) => d.device_id !== syncConfig?.device_id)
-                .map((d) => ({
+              // 过滤口径见 selectableRemoteDevices：排除本机 + 零记录设备
+              ...selectableRemoteDevices(remoteDevices, syncConfig?.device_id).map(
+                (d) => ({
                   value: d.device_id,
                   label: t("common.deviceOption", {
                     name: d.device_name,
                     id: d.device_id.slice(0, 6),
                   }),
-                })),
+                }),
+              ),
             ]}
             value={deviceFilter}
             onChange={setDeviceFilter}

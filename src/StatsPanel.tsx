@@ -3,7 +3,7 @@ import { UPDATE_READY_KEY, UPDATE_READY_EVENT } from "./updater";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import type { CredentialKind, Currency, PricingConfig, StatsTab } from "./types";
-import { fetchPin, openMainWindow, setPin } from "./api";
+import { fetchPin, openMainWindow, setPin, selectableRemoteDevices } from "./api";
 import { useDataCache } from "./DataCache";
 import { QuotaPanel } from "./QuotaPanel";
 import { RangePicker } from "./RangePicker";
@@ -637,15 +637,16 @@ export function StatsPanel({
                     ? t("stats.deviceLocalName", { name: syncConfig.device_name })
                     : t("stats.deviceLocal"),
                 },
-                ...remoteDevices
-                  .filter((d) => d.device_id !== syncConfig?.device_id)
-                  .map((d) => ({
+                // 过滤口径见 selectableRemoteDevices：排除本机 + 零记录设备
+                ...selectableRemoteDevices(remoteDevices, syncConfig?.device_id).map(
+                  (d) => ({
                     value: d.device_id,
                     label: t("common.deviceOption", {
                       name: d.device_name,
                       id: d.device_id.slice(0, 6),
                     }),
-                  })),
+                  }),
+                ),
               ]}
               value={deviceFilter}
               onChange={setDeviceFilter}

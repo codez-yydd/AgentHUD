@@ -301,6 +301,20 @@ export async function listRemoteDevices(): Promise<DeviceInfo[]> {
   return invoke<DeviceInfo[]>("list_remote_devices");
 }
 
+/** 设备筛选下拉的远端设备列表（纯函数）：排除本机 + 过滤零记录设备。
+ *  注册后从未上报用量的设备在筛选下拉里是噪音；但 SyncPanel 的设备管理
+ *  列表（撤销/改名/合并）必须能看到零记录设备才能管理它——那条路径不要
+ *  复用本函数。StatsPanel / ComparePanel / ReportPanel 三处筛选下拉共用，
+ *  保持过滤口径一致。 */
+export function selectableRemoteDevices(
+  devices: DeviceInfo[],
+  localDeviceId?: string,
+): DeviceInfo[] {
+  return devices.filter(
+    (d) => d.device_id !== localDeviceId && (d.record_count ?? 0) > 0,
+  );
+}
+
 /** 服务端出现过的 source 清单（去重）。用于「其他设备上传过某来源就显示
  *  对应 tab」——本机没装该 CLI 时也能看到别的设备的用量。
  *  未启用同步 / 服务器不可达时返回空数组（不报错）。 */
