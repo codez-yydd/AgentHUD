@@ -131,7 +131,7 @@ fi
 
 # ---------- GitHub ----------
 echo "==> 5/6 上传 GitHub Release（tag v$VERSION，自动标记 latest）"
-GH_FILES=("$BUNDLE_DIR/latest.json")
+GH_FILES=("$BUNDLE_DIR/latest.json" "$BUNDLE_DIR/gitee-latest.json")
 [[ -n "$NSIS_EXE" ]] && GH_FILES+=("$NSIS_EXE" "$NSIS_EXE.sig")
 [[ -n "$MSI" ]] && GH_FILES+=("$MSI")
 [[ -n "$MAC_TAR" ]] && GH_FILES+=("$MAC_TAR" "$MAC_TAR.sig")
