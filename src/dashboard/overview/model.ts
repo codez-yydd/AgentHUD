@@ -299,6 +299,37 @@ export function saveOverviewScope(scope: OverviewScope): void {
   }
 }
 
+/** Agent 筛选：all = 全部 Agent 合并口径（默认）；否则为单个 agent id */
+export type OverviewAgentFilter = "all" | UsageAgentId;
+
+/** Agent 筛选偏好持久化键（损坏 / 未知值回退默认 all，与范围偏好同一套范式） */
+const AGENT_FILTER_KEY = "zbar-dashboard-agent";
+
+/** 读取 Agent 筛选偏好：无值 / 损坏值 / 已不再支持的 agent id 一律回退 all */
+export function loadOverviewAgentFilter(): OverviewAgentFilter {
+  try {
+    const saved = localStorage.getItem(AGENT_FILTER_KEY);
+    if (
+      saved === "all" ||
+      (saved != null && (USAGE_AGENT_IDS as readonly string[]).includes(saved))
+    ) {
+      return saved as OverviewAgentFilter;
+    }
+  } catch {
+    /* 存储不可用：回退默认 */
+  }
+  return "all";
+}
+
+/** 写入 Agent 筛选偏好（失败静默：与范围偏好同款，筛选仅影响展示切片） */
+export function saveOverviewAgentFilter(agent: OverviewAgentFilter): void {
+  try {
+    localStorage.setItem(AGENT_FILTER_KEY, agent);
+  } catch {
+    /* 忽略：QuotaExceededError、隐私模式等 */
+  }
+}
+
 // ============================================================
 // 远端（其他设备）用量：hour 桶 → 本地自然日
 // ============================================================

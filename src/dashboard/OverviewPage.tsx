@@ -10,11 +10,15 @@
  * 顶部快捷行，点一下即生效；见 CustomRangeMenu）：自定义区间在 365 天取数
  * 窗口内按 [fromMs, toMs) 切片（derive.rangeKeys），同样不重新取数；
  * 热力图固定 52 周窗口，不受时间范围影响（保持现状）。
+ * Agent 筛选（页头下拉）同理是纯视图切片（derive.agentView）：指标卡 / 趋势
+ * 图 / 热力图 / 模型用量表收窄到所选 Agent，Agent 统计表保留跨 Agent 分解
+ * 对比口径不跟随；空态 / 硬错误判定也用未过滤口径，不受筛选影响。
  */
 import { useMemo, useState } from "react";
 import { useI18n, type MessageKey } from "../i18n";
 import { AlertBanner, EmptyState } from "../layout";
 import { RefreshIcon } from "./icons";
+import { DropdownMenu, type DropdownOption } from "../DropdownMenu";
 import {
   CustomRangeMenu,
   formatRangeSummary,
@@ -27,6 +31,7 @@ import { ModelTable } from "./overview/ModelTable";
 import { OverviewSkeleton } from "./overview/primitives";
 import { TrendCard } from "./overview/TrendCard";
 import {
+  agentView,
   buildAgentRows,
   buildModelRows,
   currencyOf,
@@ -37,9 +42,14 @@ import {
 } from "./overview/derive";
 import { useOverviewData } from "./overview/useOverviewData";
 import {
+  USAGE_AGENT_IDS,
   WINDOW_DAYS,
   addLocalDays,
+  agentLabel,
+  loadOverviewAgentFilter,
+  saveOverviewAgentFilter,
   startOfLocalDay,
+  type OverviewAgentFilter,
   type OverviewRange,
   type OverviewScope,
 } from "./overview/model";
@@ -82,6 +92,30 @@ export function OverviewPage() {
   const [range, setRange] = useState<OverviewRange>("30d");
   /** 自定义区间（非空 = 自定义模式，优先于预设档；选预设即清空） */
   const [customRange, setCustomRange] = useState<CustomRangeValue | null>(null);
+  /** Agent 筛选（"all" 或具体 agent id）：偏好持久化，切换只重新聚合 */
+  const [agentFilter, setAgentFilter] = useState<OverviewAgentFilter>(
+    () => loadOverviewAgentFilter()
+  );
+
+  /** 切换 Agent 筛选：选项值必为 "all" 或 USAGE_AGENT_IDS 内的 id（见
+      agentOptions），未知值直接忽略；与数据范围偏好同款即时持久化 */
+  function changeAgentFilter(next: string) {
+    if (next !== "all" && !(USAGE_AGENT_IDS as readonly string[]).includes(next)) {
+      return;
+    }
+    const value = next as OverviewAgentFilter;
+    setAgentFilter(value);
+    saveOverviewAgentFilter(value);
+  }
+
+  // Agent 筛选下拉：全部 + 8 个 Agent（显示名与 Agent 表同一份品牌元数据）
+  const agentOptions: DropdownOption[] = useMemo(
+    () => [
+      { value: "all", label: t("dashboard.overview.agent.all") },
+      ...USAGE_AGENT_IDS.map((id) => ({ value: id, label: agentLabel(id) })),
+    ],
+    [t]
+  );
 
   // 同步未启用时只能看本机口径（远端无从取数）：偏好仍保留，控件禁用并脚注说明
   const effectiveScope: OverviewScope = syncEnabled ? scope : "local";
@@ -91,19 +125,27 @@ export function OverviewPage() {
   const view = useMemo(() => {
     if (!data) return null;
     const scoped = scopeView(data, effectiveScope);
+    // Agent 筛选视图切片：指标卡 / 趋势 / 热力图 / 模型表跟随；Agent 表保留
+    // 跨 Agent 分解对比口径，仍取 scoped
+    const filtered = agentView(scoped, agentFilter);
     return {
-      summary: summarize(scoped, range, customRange),
-      trend: trendSeries(scoped, range, customRange),
-      heat: heatSeries(scoped),
+      summary: summarize(filtered, range, customRange),
+      trend: trendSeries(filtered, range, customRange),
+      heat: heatSeries(filtered),
       rows: buildAgentRows(scoped, range, customRange),
-      modelRows: buildModelRows(scoped, range, customRange),
+      modelRows: buildModelRows(filtered, range, customRange),
     };
-  }, [data, range, customRange, effectiveScope]);
+  }, [data, range, customRange, effectiveScope, agentFilter]);
 
   // 时间范围展示名（趋势 / 表格卡副标题共用）：自定义时显示区间摘要
   const rangeLabel = customRange
     ? formatRangeSummary(customRange.fromMs, customRange.toMs, locale)
     : t(RANGES.find((item) => item.range === range)!.labelKey);
+  // 筛选中的 Agent 品牌名（未筛选为 undefined）：只下发给跟随筛选的
+  // TrendCard / ModelTable 作副标题口径标注；MetricCards / HeatmapCard 不带
+  //（逐卡标注对它们是噪音），AgentTable 不跟随筛选也不能带
+  const agentName =
+    agentFilter === "all" ? undefined : agentLabel(agentFilter);
   // 自定义区间可选最早日期：取数窗口（365 天）起点——更早的日期没有数据，
   // 面板不放开（切范围只重新聚合，不会为此扩大取数窗口）
   const minMs = useMemo(
@@ -149,6 +191,20 @@ export function OverviewPage() {
               </button>
             ))}
           </div>
+          {/* Agent 筛选：指标卡 / 趋势 / 热力图 / 模型表切片到所选 Agent
+              （Agent 统计表保留跨 Agent 对比，不跟随）；偏好持久化，
+              切换只重新聚合、不重新取数 */}
+          <DropdownMenu
+            label={t("dashboard.overview.agentLabel")}
+            ariaLabel={t("dashboard.overview.agentLabel")}
+            options={agentOptions}
+            value={agentFilter}
+            onChange={changeAgentFilter}
+            /* 筛选生效（偏好持久化，重启即单 Agent 口径）时触发器带激活态：
+               主色描边 + 浅主色底，提示「当前不是默认的合并口径」（与自定义
+               区间生效时的 db-range-trigger--active 同一先例） */
+            active={agentFilter !== "all"}
+          />
           {/* 时间范围：单个触发按钮 + 弹出面板（预设档收进面板顶部快捷行，
               可选日期下限 = 365 天取数窗口起点） */}
           <CustomRangeMenu
@@ -271,6 +327,8 @@ export function OverviewPage() {
             series={view.trend}
             currency={currency}
             rangeLabel={rangeLabel}
+            /* Agent 筛选生效时副标题标注数据归属（合计非跨 Agent 口径） */
+            agentName={agentName}
           />
           {/* 热力图 + Agent 表：默认上下堆叠（与页面其余卡片同节奏）；仅大窗
               （≥1340px，内容区 ≥1080px）并排两列，减少大窗下的纵向滚动。
@@ -297,6 +355,9 @@ export function OverviewPage() {
             rows={view.modelRows}
             currency={currency}
             rangeLabel={customRange ? rangeLabel : undefined}
+            /* 同 TrendCard：筛选生效时副标题标注 Agent 口径（走独立 prop，
+                不拼进 rangeLabel——AgentTable 不跟随筛选但共用该参数） */
+            agentName={agentName}
           />
           {/* 口径脚注：本机成本由后端按定价表 × 汇率折算，远端成本用同一份
               价格表在前端折算（与菜单栏标题同源），非账单金额 */}

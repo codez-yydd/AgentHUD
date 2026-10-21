@@ -35,6 +35,7 @@ import {
   type DayAgg,
   type DayModelAgg,
   type HeatMonthSpan,
+  type OverviewAgentFilter,
   type OverviewRange,
   type OverviewScope,
   type UsageAgentId,
@@ -139,6 +140,43 @@ export function scopeView(raw: OverviewRaw, scope: OverviewScope): OverviewView 
     fxRate: raw.fxRate,
     pricing: raw.pricing,
     includeRemote: true,
+  };
+}
+
+// ===== Agent 筛选视图切片 =====
+
+/**
+ * 把范围视图收窄到单个 Agent（纯视图切片，不重新取数、不拷贝日聚合——
+ * merged / perAgent 直接引用该 Agent 已合并好的 days）。
+ *
+ * 跟随筛选的区块：merged（指标卡 / 趋势图 / 热力图的数据源）与 perAgent
+ * （模型用量表按 Agent 取 byModel 的数据源）；dayKeys / windowStartMs /
+ * quotas / fxRate / pricing / includeRemote 原样保留（热力图窗口、成本折算
+ * 等口径不随筛选变化）。Agent 统计表**不跟随**——它是跨 Agent 的分解对比
+ * 表，是否切片由调用方决定（OverviewPage 里 Agent 表仍取范围视图的结果）。
+ *
+ * cursorByModel 特判：Cursor 的按模型聚合是「请求范围整段」旁路数据（不随
+ * Agent 日聚合走），仅筛选 cursor 时保留原表，其余 Agent 置空 Map——否则
+ * 模型用量表会把 Cursor 整段用量混进其他 Agent 的行。
+ *
+ * 找不到该 Agent（当前数据范围下无数据，如仅本机用过的 Agent）时：merged
+ * 用空 Map、perAgent 空数组，dayKeys 仍保留——热力图照常铺满 52 周空格子、
+ * 指标卡 / 趋势 / 模型表如实显示 0，而不是误入整页空态。
+ */
+export function agentView(
+  view: OverviewView,
+  agent: OverviewAgentFilter
+): OverviewView {
+  if (agent === "all") return view;
+  const hit = view.perAgent.find((entry) => entry.id === agent);
+  return {
+    ...view,
+    merged: hit ? hit.days : new Map<string, DayAgg>(),
+    perAgent: hit ? [hit] : [],
+    cursorByModel:
+      agent === "cursor"
+        ? view.cursorByModel
+        : new Map<string, CursorModelAgg>(),
   };
 }
 

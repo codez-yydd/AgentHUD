@@ -64,12 +64,17 @@ export function ModelTable({
   rows,
   currency,
   rangeLabel,
+  agentName,
 }: {
   rows: ModelRow[];
   currency: Currency;
   /** 自定义区间摘要（MM-DD ~ MM-DD；预设档不传）：作为卡片副标题前缀，
    *  「范围内」口径由此可读（与 AgentTable 同款惯例） */
   rangeLabel?: string;
+  /** Agent 筛选生效时的品牌名（未筛选不传）：与本表的 rangeLabel 一样走
+   *  独立 prop（本表跟随筛选、AgentTable 不跟随，共用 rangeLabel 会反向
+   *  污染 Agent 表的口径说明），拼进副标题前缀链 */
+  agentName?: string;
 }) {
   const { locale, t } = useI18n();
   const intlLocale = dateLocale(locale);
@@ -80,10 +85,13 @@ export function ModelTable({
   return (
     <Card
       title={t("dashboard.overview.modelTitle")}
+      // 副标题前缀链：自定义区间摘要 · Agent 名 · 既有排序说明（各段独立
+      //  可选，" · " 分隔与本页失败名单等惯例一致；与 TrendCard 的词条分支
+      //  不同，这里末段是固定短语，直接拼接即可，无需专用词条）
       sub={
-        rangeLabel != null
-          ? `${rangeLabel} · ${t("dashboard.overview.modelSub")}`
-          : t("dashboard.overview.modelSub")
+        [rangeLabel, agentName, t("dashboard.overview.modelSub")]
+          .filter((part) => part != null)
+          .join(" · ")
       }
     >
       {rows.length === 0 ? (

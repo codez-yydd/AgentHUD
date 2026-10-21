@@ -47,6 +47,10 @@ export const dashboard = {
   "dashboard.overview.scopeLabel": "数据范围",
   "dashboard.overview.scope.local": "本机",
   "dashboard.overview.scope.all": "全部设备",
+  // Agent 筛选下拉（全部 + 各 Agent 品牌名）：指标卡 / 趋势 / 热力图 / 模型表
+  // 随之切片到所选 Agent，Agent 统计表保留跨 Agent 对比
+  "dashboard.overview.agentLabel": "Agent",
+  "dashboard.overview.agent.all": "全部 Agent",
   // 未启用多设备同步：范围控件禁用，说明为何只能看本机口径
   "dashboard.overview.syncDisabledHint":
     "未启用多设备同步，当前仅显示本机数据。开启同步后可合并其他设备（与菜单栏标题同口径）。",
@@ -93,6 +97,9 @@ export const dashboard = {
   // 指标切换分组（aria-label）：花费 / Token / 请求（与面板 TrendChart 同款语言）
   "dashboard.overview.metricLabel": "指标",
   "dashboard.overview.trendSub": "{range} · 合计 {total}",
+  // Agent 筛选生效时的趋势卡副标题：Agent 名插在范围与合计之间（标注数据
+  // 归属——合计已不是跨 Agent 口径）；未筛选用上面的 trendSub
+  "dashboard.overview.trendSubAgent": "{range} · {agent} · 合计 {total}",
   "dashboard.overview.seriesInput": "输入侧",
   "dashboard.overview.seriesOutput": "输出",
   "dashboard.overview.peak": "峰值 {value}（{date}）",

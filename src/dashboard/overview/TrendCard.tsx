@@ -43,11 +43,16 @@ export function TrendCard({
   series,
   currency,
   rangeLabel,
+  agentName,
 }: {
   series: TrendDay[];
   currency: Currency;
   /** 页头当前范围文案（"近 30 天"），用于卡片副标题 */
   rangeLabel: string;
+  /** Agent 筛选生效时的品牌名（未筛选不传）：副标题是本卡的口径说明位，
+   *  筛选后合计已不是跨 Agent 口径，须标注数据归属；Agent 名插在范围与
+   *  合计之间（语序由词条控制，中英各自组织） */
+  agentName?: string;
 }) {
   const { locale, t } = useI18n();
   const [hover, setHover] = useState<number | null>(null);
@@ -86,10 +91,20 @@ export function TrendCard({
   return (
     <Card
       title={t("dashboard.overview.trendTitle")}
-      sub={t("dashboard.overview.trendSub", {
-        range: rangeLabel,
-        total: formatMetric(rangeTotal),
-      })}
+      // 副标题 = 范围口径说明位：Agent 筛选生效时换带 {agent} 的词条
+      //（「近 30 天 · Claude Code · 合计 …」），未筛选维持原词条
+      sub={
+        agentName != null
+          ? t("dashboard.overview.trendSubAgent", {
+              range: rangeLabel,
+              agent: agentName,
+              total: formatMetric(rangeTotal),
+            })
+          : t("dashboard.overview.trendSub", {
+              range: rangeLabel,
+              total: formatMetric(rangeTotal),
+            })
+      }
       action={
         <>
           <div

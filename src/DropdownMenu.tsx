@@ -16,7 +16,11 @@
  *
  * 触发器对齐面板输入控件惯例（32px 高、1px 边框、圆角 8px、低透明度底色），
  * 主窗口沿用同一默认外观，个别上下文（面板内紧凑行）由 className 只补
- * 布局类，不改观感。
+ * 布局类，不改观感；非默认口径生效中的「激活态」观感同理必须走 active
+ * prop（主色描边 + 浅主色底 + 选中项主色文字，观感语言对齐主窗口页头时间
+ * 范围触发按钮的 .db-range-trigger--active——自定义区间生效时的先例），
+ * 不允许调用方用 className 覆盖观感类。悬停灰底照旧叠加在激活浅底之上
+ * （瞬时反馈优先，与 .db-range-trigger:hover 覆盖 --active 底色同款行为）。
  *
  * 组件只做「触发器 + 弹层」，保持通用：前置说明文字（如「设备」）由 label
  * 传入、直接渲染在触发器内；不传则只显示当前选中项。文案（含 i18n）一律由
@@ -58,6 +62,10 @@ interface DropdownMenuProps {
   disabled?: boolean;
   /** 触发器原生 title（hover 提示），沿用原 select 的 title 场景 */
   title?: string;
+  /** 激活态（非默认口径生效中）：主色描边 + 浅主色底 + 选中项主色文字
+   *  （观感对齐页头 .db-range-trigger--active，见文件头注释）；默认 false，
+   *  现有调用方不受影响 */
+  active?: boolean;
   /** 只放布局类（宽度 / flex-1 / 外边距等）；观感类由组件内置，勿覆盖 */
   className?: string;
   /** 弹层水平贴边：start（默认）左缘对齐触发器；end 右缘对齐
@@ -111,6 +119,7 @@ export function DropdownMenu({
   label,
   disabled = false,
   title,
+  active = false,
   className = "",
   align = "start",
 }: DropdownMenuProps) {
@@ -237,7 +246,15 @@ export function DropdownMenu({
         ref={triggerRef}
         type="button"
         title={title}
-        className="inline-flex w-full items-center gap-1.5 h-8 px-2.5 rounded-lg border border-slate-900/10 bg-slate-900/5 text-[11px] text-slate-900 text-left cursor-pointer select-none transition-colors hover:bg-slate-900/10 disabled:opacity-40 disabled:cursor-not-allowed focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-600"
+        // 观感类全部内置：默认 = 灰边浅底；active = 主色描边 + 浅主色底
+        // （对齐 .db-range-trigger--active 的三段色值 sky-600/55、sky-600/8，
+        //  两态类同属性互斥，必须三元切换而不能叠加）；hover 灰底在激活态
+        // 依然生效（瞬时反馈覆盖激活浅底，与 CustomRangeMenu 的 CSS 同款行为）
+        className={`inline-flex w-full items-center gap-1.5 h-8 px-2.5 rounded-lg border ${
+          active
+            ? "border-sky-600/55 bg-sky-600/8"
+            : "border-slate-900/10 bg-slate-900/5"
+        } text-[11px] text-left cursor-pointer select-none transition-colors hover:bg-slate-900/10 disabled:opacity-40 disabled:cursor-not-allowed focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-600`}
         aria-haspopup="listbox"
         aria-expanded={open}
         // 有可见 label 时由「label + 当前值」拼出可访问名（把选中项也读出来）；
@@ -251,8 +268,13 @@ export function DropdownMenu({
         {label != null && (
           <span className="shrink-0 text-[10px] text-slate-500">{label}</span>
         )}
-        {/* 当前选中项文案：设备名可能较长，单行省略（宽上限与原有下拉一致） */}
-        <span className="min-w-0 flex-1 max-w-[220px] truncate text-left">
+        {/* 当前选中项文案：设备名可能较长，单行省略（宽上限与原有下拉一致）；
+            激活态换主色文字（暗色下 --color-sky-600 翻亮蓝，与勾选/焦点同源） */}
+        <span
+          className={`min-w-0 flex-1 max-w-[220px] truncate text-left ${
+            active ? "text-sky-600" : "text-slate-900"
+          }`}
+        >
           {selectedLabel}
         </span>
         <CaretIcon open={open} />

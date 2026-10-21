@@ -1245,6 +1245,11 @@ export const en: typeof zh = {
     "dashboard.overview.scopeLabel": "Data scope",
     "dashboard.overview.scope.local": "This machine",
     "dashboard.overview.scope.all": "All devices",
+    // Agent filter (all + each agent's brand name): metric cards / trend /
+    // heatmap / model table narrow to the selected agent; the agent table
+    // stays cross-agent for comparison
+    "dashboard.overview.agentLabel": "Agent",
+    "dashboard.overview.agent.all": "All agents",
     // Multi-device sync off: scope control is disabled, explain why
     "dashboard.overview.syncDisabledHint":
       "Multi-device sync is off, so only this machine's data is shown. Turn on sync to merge other devices (same scope as the menu-bar title).",
@@ -1292,6 +1297,9 @@ export const en: typeof zh = {
     // Metric switch group (aria-label): cost / token / requests
     "dashboard.overview.metricLabel": "Metric",
     "dashboard.overview.trendSub": "{range} · {total} total",
+    // Trend card sub when the agent filter is active: the agent name goes
+    // between range and total (marks the data scope); otherwise trendSub
+    "dashboard.overview.trendSubAgent": "{range} · {agent} · {total} total",
     "dashboard.overview.seriesInput": "Input side",
     "dashboard.overview.seriesOutput": "Output",
     "dashboard.overview.peak": "Peak {value} ({date})",
