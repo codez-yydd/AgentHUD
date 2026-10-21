@@ -730,7 +730,30 @@ def _align_bucket_start_utc(ms, bucket):
 
 
 def _query_trend(conn, from_ms, to_ms, bucket, device_ids, source=None):
-    """查询分桶趋势（逐桶循环，与 Rust 版 query_trend 同思路）。
+    """查询分桶趋势（单条聚合 SQL，空桶补齐）。
+
+    原实现按桶循环：每个桶单独发一条 GROUP BY 查询，90 天 hour 请求 =
+    2160 次桶循环即 2160 次 SQL 往返，单请求耗时数十秒，曾把 waitress
+    线程池拖垮。现改为一条按桶分组的聚合 SQL（2160 次 → 1 次）。
+
+    与旧逐桶循环完全等价的保障：
+    - 桶对齐：SQL 中 (started_at/width)*width 为 SQLite 整数除法取整再
+      回乘，与 _align_bucket_start_utc 的 (ms // width) * width 一致
+      （epoch 0 即 UTC 零点/整日边界，数据中 started_at 均为正毫秒，
+      截断除法与 Python // 无差异）；
+    - 查询范围：旧循环桶序列并集为 [对齐起点, 对齐起点 + N*width)，
+      N = ceil((to_ms - 对齐起点)/width)，与逐桶 WHERE [start, start+width)
+      的并集相同——from_ms/to_ms 不落在桶边界时，旧实现同样会统计所在
+      桶的整桶数据，新实现传同一对齐范围保持一致；
+    - 空桶补齐：SQL 结果按桶起点建 dict，再按旧版同一桶序列（同
+      _align_bucket_start_utc 起点、同 width 步进）遍历填桶，缺失的桶
+      补 by_model=[]、total_tokens=0、requests=0，trend 数组长度与
+      label 序列和旧版完全一致；
+    - 桶内 by_model 顺序：usage_records 无 (source, provider_id,
+      model_id) 覆盖索引，GROUP BY 走临时 B-tree 按分组键升序输出，
+      桶内子序列按 (source, provider_id, model_id) 升序，与旧单桶
+      GROUP BY 的顺序一致。
+
     label 返回桶起始 ms 字符串，前端按本地时区格式化 + 按 ms 合并。
     source 非空时只统计该来源。
     """
@@ -739,38 +762,49 @@ def _query_trend(conn, from_ms, to_ms, bucket, device_ids, source=None):
     dev_frag, dev_params = _build_device_filter(device_ids)
     src_frag, src_params = _build_source_filter(source)
 
+    # 与旧 while start < to_ms 循环相同的桶序列：to_ms 不超过对齐起点时
+    # 循环不执行，直接返回空数组
+    if to_ms <= start:
+        return []
+
+    # 旧循环最后一次迭代 start + (N-1)*width < to_ms，桶序列并集的右边界
+    bucket_count = (to_ms - start + width - 1) // width
+    range_end = start + bucket_count * width
+
+    rows = conn.execute(
+        f"""
+        SELECT (started_at/{width})*{width} AS bucket_ms, source, model_id, provider_id, COUNT(*),
+               COALESCE(SUM(input_tokens),0),
+               COALESCE(SUM(output_tokens),0),
+               COALESCE(SUM(cache_read_input_tokens),0),
+               COALESCE(SUM(computed_total_tokens),0)
+        FROM usage_records
+        WHERE started_at >= ? AND started_at < ? {dev_frag} {src_frag}
+        GROUP BY bucket_ms, source, provider_id, model_id
+        ORDER BY bucket_ms
+        """,
+        [start, range_end] + dev_params + src_params,
+    ).fetchall()
+
+    # SQL 结果按桶起点归类（SQLite 整数除法结果即桶起点，与循环步进值相等）
+    by_bucket = {}
+    for r in rows:
+        by_bucket.setdefault(r[0], []).append(
+            {
+                "source": r[1] or "zcode",
+                "model_id": r[2] or "",
+                "provider_id": r[3] or "",
+                "requests": r[4],
+                "input_tokens": r[5],
+                "output_tokens": r[6],
+                "cache_read_tokens": r[7],
+                "total_tokens": r[8],
+            }
+        )
+
     out = []
     while start < to_ms:
-        end = start + width
-        params = [start, end] + dev_params + src_params
-        model_rows = conn.execute(
-            f"""
-            SELECT source, model_id, provider_id, COUNT(*),
-                   COALESCE(SUM(input_tokens),0),
-                   COALESCE(SUM(output_tokens),0),
-                   COALESCE(SUM(cache_read_input_tokens),0),
-                   COALESCE(SUM(computed_total_tokens),0)
-            FROM usage_records
-            WHERE started_at >= ? AND started_at < ? {dev_frag} {src_frag}
-            GROUP BY source, provider_id, model_id
-            """,
-            params,
-        ).fetchall()
-
-        by_model = [
-            {
-                "source": r[0] or "zcode",
-                "model_id": r[1] or "",
-                "provider_id": r[2] or "",
-                "requests": r[3],
-                "input_tokens": r[4],
-                "output_tokens": r[5],
-                "cache_read_tokens": r[6],
-                "total_tokens": r[7],
-            }
-            for r in model_rows
-        ]
-
+        by_model = by_bucket.get(start, [])
         total_tokens = sum(m["total_tokens"] for m in by_model)
         requests = sum(m["requests"] for m in by_model)
         out.append(
@@ -781,7 +815,7 @@ def _query_trend(conn, from_ms, to_ms, bucket, device_ids, source=None):
                 "requests": requests,
             }
         )
-        start = end
+        start += width
     return out
 
 

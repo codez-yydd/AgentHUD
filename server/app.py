@@ -7,6 +7,7 @@ Python + Flask 实现。启动自动建库、生成 master token 并打印到日
 """
 
 import json
+import logging
 import threading
 import time
 
@@ -769,6 +770,80 @@ def health():
 
 # ===== 启动入口 =====
 
+def _setup_waitress_logging():
+    """配置 waitress 日志，并返回包了访问日志中间件的 WSGI app。
+
+    waitress 3.x 实测（3.0.2 源码 utilities.py）只有两个内置 logger：
+    - "waitress"：错误日志（socket 异常、任务异常等）
+    - "waitress.queue"：线程池队列告警（propagate 到父 logger，配好
+      "waitress" 即可一并输出）
+    它没有内置访问日志（不存在 waitress.access logger，serve() 也无
+    logger=/ident= 参数），官方推荐用 WSGI 中间件补。这里给 "waitress"
+    挂 WARNING 级 StreamHandler 输出错误与队列告警，另用一个轻量中间件
+    在每请求完成后向 "waitress.access" logger 记一条访问行，格式复刻
+    Werkzeug dev server：`IP - - [21/Oct/2026 10:00:00] "GET /x HTTP/1.1" 200 123`。
+    """
+    error_log = logging.getLogger("waitress")
+    error_handler = logging.StreamHandler()
+    error_handler.setFormatter(
+        logging.Formatter("%(asctime)s [waitress] %(levelname)s %(message)s")
+    )
+    error_log.setLevel(logging.WARNING)
+    error_log.addHandler(error_handler)
+
+    access_log = logging.getLogger("waitress.access")
+    access_handler = logging.StreamHandler()
+    access_handler.setFormatter(logging.Formatter("%(message)s"))
+    access_log.setLevel(logging.INFO)
+    # 关闭向父 logger "waitress" 的传播：避免访问行再被 "waitress" 的
+    # handler 输出一次造成重复
+    access_log.propagate = False
+    access_log.addHandler(access_handler)
+
+    def access_log_middleware(environ, start_response):
+        """访问日志中间件：响应发送完毕后记录一行（含中途断连的已发送量）。"""
+        status_code = "500"
+        size = "-"
+
+        def _start_response(status, response_headers, exc_info=None):
+            nonlocal status_code, size
+            status_code = status.split(" ", 1)[0]
+            for name, value in response_headers:
+                if name.lower() == "content-length":
+                    size = str(value)
+                    break
+            return start_response(status, response_headers, exc_info)
+
+        app_iter = app.wsgi_app(environ, _start_response)
+        sent = 0
+        try:
+            for chunk in app_iter:
+                sent += len(chunk)
+                yield chunk
+        finally:
+            if hasattr(app_iter, "close"):
+                app_iter.close()
+            if size == "-" and sent:
+                # 流式响应无 Content-Length，用实际发送字节数
+                size = str(sent)
+            path = environ.get("PATH_INFO", "")
+            query = environ.get("QUERY_STRING", "")
+            if query:
+                path = f"{path}?{query}"
+            access_log.info(
+                '%s - - [%s] "%s %s %s" %s %s',
+                environ.get("REMOTE_ADDR", "-"),
+                time.strftime("%d/%b/%Y %H:%M:%S"),
+                environ.get("REQUEST_METHOD", "-"),
+                path,
+                environ.get("SERVER_PROTOCOL", "HTTP/1.1"),
+                status_code,
+                size,
+            )
+
+    return access_log_middleware
+
+
 def main():
     global MASTER_TOKEN
 
@@ -801,7 +876,15 @@ def main():
         )
         app.run(host=HOST, port=PORT, threaded=True)
         return
-    serve(app, host=HOST, port=PORT, threads=16, channel_timeout=60)
+    # waitress 无内置访问日志（详见 _setup_waitress_logging），
+    # 这里包一层访问日志中间件后启动
+    serve(
+        _setup_waitress_logging(),
+        host=HOST,
+        port=PORT,
+        threads=16,
+        channel_timeout=60,
+    )
 
 
 if __name__ == "__main__":

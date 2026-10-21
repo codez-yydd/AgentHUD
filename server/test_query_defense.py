@@ -306,5 +306,218 @@ class QueryDefenseTest(unittest.TestCase):
         self.assertEqual(len(ok.get_json()["snapshots"]), 2)
 
 
+def _legacy_query_trend(conn, from_ms, to_ms, bucket, device_ids, source=None):
+    """旧逐桶循环参考实现（_query_trend 重构为单 SQL 前的逐副本）。
+
+    仅测试用：与 db._query_trend 的输出做逐字段对比，锁定重构前后
+    行为零变化（含空桶补齐、label 序列、by_model 顺序与合计）。
+    """
+    width = 3_600_000 if bucket == "hour" else 86_400_000
+    start = db._align_bucket_start_utc(from_ms, bucket)
+    dev_frag, dev_params = db._build_device_filter(device_ids)
+    src_frag, src_params = db._build_source_filter(source)
+
+    out = []
+    while start < to_ms:
+        end = start + width
+        params = [start, end] + dev_params + src_params
+        model_rows = conn.execute(
+            f"""
+            SELECT source, model_id, provider_id, COUNT(*),
+                   COALESCE(SUM(input_tokens),0),
+                   COALESCE(SUM(output_tokens),0),
+                   COALESCE(SUM(cache_read_input_tokens),0),
+                   COALESCE(SUM(computed_total_tokens),0)
+            FROM usage_records
+            WHERE started_at >= ? AND started_at < ? {dev_frag} {src_frag}
+            GROUP BY source, provider_id, model_id
+            """,
+            params,
+        ).fetchall()
+
+        by_model = [
+            {
+                "source": r[0] or "zcode",
+                "model_id": r[1] or "",
+                "provider_id": r[2] or "",
+                "requests": r[3],
+                "input_tokens": r[4],
+                "output_tokens": r[5],
+                "cache_read_tokens": r[6],
+                "total_tokens": r[7],
+            }
+            for r in model_rows
+        ]
+
+        total_tokens = sum(m["total_tokens"] for m in by_model)
+        requests = sum(m["requests"] for m in by_model)
+        out.append(
+            {
+                "label": str(start),
+                "by_model": by_model,
+                "total_tokens": total_tokens,
+                "requests": requests,
+            }
+        )
+        start = end
+    return out
+
+
+class TrendSingleSqlEquivalenceTest(unittest.TestCase):
+    """_query_trend 单 SQL 重构的等价性与 SQL 次数回归。
+
+    原逐桶循环在 90 天 hour 请求下产生 2160 次 SQL 往返（单请求数十秒，
+    拖垮 waitress 线程池），重构为单条聚合 SQL。这里内联旧算法副本做
+    全字段对比，并用 sqlite3 trace 回调断言 SQL 次数。
+    """
+
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        data_dir = Path(self.temp_dir.name)
+        db.DATA_DIR = data_dir
+        db.DB_PATH = data_dir / "usage.db"
+        db.init_db()
+
+        db.insert_device("device-a", "设备 A", hash_token("token-a"), 1)
+        db.insert_device("device-b", "设备 B", hash_token("token-b"), 2)
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def _record(self, rowid, started_at, model_id, input_tokens, output_tokens,
+                cache_read, total, source="zcode", provider_id=""):
+        return {
+            "local_rowid": rowid,
+            "started_at": started_at,
+            "model_id": model_id,
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "cache_read_input_tokens": cache_read,
+            "computed_total_tokens": total,
+            "source": source,
+            "provider_id": provider_id,
+        }
+
+    def test_trend_output_matches_legacy_bucket_loop(self):
+        # 跨桶/多设备/多来源/多模型/桶内多行/含空桶，且 from/to 均不落在
+        # 桶边界（旧实现按整桶统计的边界行为必须原样保留）
+        base = 100_000 * 86_400_000  # 整日边界（也是整点边界）
+        hour = 3_600_000
+        day = 86_400_000
+
+        # device-a：zcode 来源两个模型；首桶含 from_ms 之前的数据
+        db.insert_usage_records(
+            "device-a",
+            [
+                self._record(1, base + 10 * 60_000, "glm-4", 100, 200, 300, 600, provider_id="bigmodel"),
+                self._record(2, base + 20 * 60_000, "glm-4", 1, 2, 3, 6, provider_id="bigmodel"),
+                self._record(3, base + 25 * 60_000, "glm-4.5", 10, 20, 30, 60, provider_id="bigmodel"),
+                self._record(4, base + hour + 1_000, "glm-4", 5, 6, 7, 18),
+                # 第三桶（base+2h..base+3h）无 device-a 数据 → 该桶仅有 codex
+                self._record(5, base + 3 * hour + 999, "glm-4", 2, 4, 6, 12),
+            ],
+            1,
+        )
+        # device-b：codex 来源 + 一条 zcode；末桶（base+4h）数据在 to_ms 前，
+        # base+5h 桶整体留空（空桶补齐场景）
+        db.insert_usage_records(
+            "device-b",
+            [
+                self._record(1, base + hour + 2_000, "gpt-5", 50, 60, 70, 180, source="codex", provider_id="openai"),
+                self._record(2, base + 2 * hour + 3_000, "gpt-5-codex", 7, 8, 9, 24, source="codex", provider_id="openai"),
+                self._record(3, base + 4 * hour + 5_000, "glm-4", 11, 22, 33, 66),
+            ],
+            1,
+        )
+
+        # 窗口：from/to 均在桶中间（桶序列 base+0h .. base+5h 共 6 桶）
+        from_ms = base + 30 * 60_000
+        to_ms = base + 5 * hour + 30 * 60_000
+
+        conn = db.get_conn()
+        try:
+            cases = [
+                ("hour", None, None),
+                ("hour", ["device-a"], None),
+                ("hour", ["device-b"], None),
+                ("hour", None, "codex"),
+                ("hour", None, "zcode"),
+                ("hour", ["device-a", "device-b"], "zcode"),
+                ("day", None, None),
+                ("day", ["device-b"], "codex"),
+            ]
+            for bucket, device_ids, source in cases:
+                with self.subTest(bucket=bucket, devices=device_ids, source=source):
+                    legacy = _legacy_query_trend(conn, from_ms, to_ms, bucket, device_ids, source)
+                    actual = db._query_trend(conn, from_ms, to_ms, bucket, device_ids, source)
+                    self.assertEqual(actual, legacy)
+
+            # day 桶跨多天（首桶有数据、后两桶全空）
+            for device_ids in (None, ["device-a"]):
+                with self.subTest(day_multi=device_ids):
+                    legacy = _legacy_query_trend(
+                        conn, base, base + 2 * day + hour, "day", device_ids, None
+                    )
+                    actual = db._query_trend(
+                        conn, base, base + 2 * day + hour, "day", device_ids, None
+                    )
+                    self.assertEqual(actual, legacy)
+                    self.assertEqual(len(actual), 3)  # 3 个 day 桶，尾部空桶也输出
+
+            # 边界：to_ms 不超过对齐起点 → 空数组（与旧循环不执行一致）
+            self.assertEqual(db._query_trend(conn, base + hour, base, "hour", None), [])
+            self.assertEqual(db._query_trend(conn, base, base, "day", None), [])
+        finally:
+            conn.close()
+
+    def test_trend_90_day_hour_uses_single_sql(self):
+        # 90 天 hour 请求 = 2160 桶：重构前每桶一条 SQL（2160 次往返），
+        # 重构后一条聚合 SQL。用 sqlite3 trace 回调计数。
+        base = 100_000 * 86_400_000
+        day = 86_400_000
+        db.insert_usage_records(
+            "device-a",
+            [self._record(i, base + i * 60_000, "glm-4", 1, 2, 3, 6) for i in range(10)],
+            1,
+        )
+
+        # 单测 _query_trend：恰好 1 条 SELECT
+        conn = db.get_conn()
+        statements = []
+        conn.set_trace_callback(lambda sql: statements.append(sql))
+        try:
+            trend = db._query_trend(conn, base, base + 90 * day, "hour", None, None)
+        finally:
+            conn.set_trace_callback(None)
+            conn.close()
+        self.assertEqual(len(trend), 2160)
+        selects = [s for s in statements if s.lstrip().upper().startswith("SELECT")]
+        self.assertEqual(len(selects), 1)
+        self.assertIn("GROUP BY bucket_ms", selects[0])
+
+        # 全链路 query_usage：overall + by_model + trend 共 3 条 SELECT
+        # （重构前为 2162 条）
+        statements = []
+        original_get_conn = db.get_conn
+
+        def traced_get_conn():
+            conn = original_get_conn()
+            conn.set_trace_callback(lambda sql: statements.append(sql))
+            return conn
+
+        db.get_conn = traced_get_conn
+        try:
+            result = db.query_usage(base, base + 90 * day, "hour", [], source=None)
+        finally:
+            db.get_conn = original_get_conn
+
+        selects = [s for s in statements if s.lstrip().upper().startswith("SELECT")]
+        self.assertEqual(len(selects), 3)
+        self.assertEqual(len(result["trend"]), 2160)
+        # 空桶也输出：仅首桶有 10 条数据，其余 2159 桶 total/requests 为 0
+        self.assertEqual(sum(1 for b in result["trend"] if b["requests"] > 0), 1)
+        self.assertEqual(result["trend"][0]["requests"], 10)
+
+
 if __name__ == "__main__":
     unittest.main()
