@@ -50,7 +50,21 @@ export default defineConfig(async () => ({
       : undefined,
     watch: {
       // 3. tell Vite to ignore watching `src-tauri`
-      ignored: ["**/src-tauri/**"],
+      //
+      // 除了 Rust 侧（Tauri 自己的 watcher 负责重编译），还要把**不参与
+      // 前端构建的目录**整体排除。否则任何写文件都会被 Vite 当成"页面
+      // 变更"给所有窗口发 full-reload：
+      // - ios/：Xcode 构建会往 ios/agenthud/build 写上千个产物文件，
+      //   逐个触发 reload，HUD 停靠条/详情卡会一直重载闪烁、dev 日志刷屏；
+      // - server/：本地同步服务的 SQLite 写入同样会触发 reload；
+      // - dist/、doc/：构建产物与文档截图，改了也不需要热更新。
+      ignored: [
+        "**/src-tauri/**",
+        "**/ios/**",
+        "**/server/**",
+        "**/dist/**",
+        "**/doc/**",
+      ],
     },
   },
 }));
