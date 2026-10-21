@@ -158,7 +158,12 @@ struct DeviceFilterBar: View {
                 FilterChip(title: "本机", selected: refresh.selectedFilter == .local) {
                     refresh.setFilter(.local)
                 }
-                ForEach(refresh.devices) { d in
+                // 排除本机（已有「本机」chip）+ 过滤零记录设备（注册后从未
+                // 上报用量的设备在筛选条里是噪音；管理入口不在此处）
+                ForEach(refresh.devices.filter {
+                    $0.device_id != settings.sync.device_id
+                        && ($0.record_count ?? 0) > 0
+                }) { d in
                     FilterChip(title: d.device_name,
                                selected: refresh.selectedFilter == .specific(d.device_id)) {
                         refresh.setFilter(.specific(d.device_id))

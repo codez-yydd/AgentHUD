@@ -18,8 +18,11 @@ struct SettingsView: View {
                 Section("同步服务") {
                     SyncConfigRow()
                 }
-                Section("Coding Plan 额度") {
-                    QuotaConfigRow()
+                Section("额度账号") {
+                    AccountsSection()
+                }
+                Section("小组件显示") {
+                    WidgetDisplayPickerRow()
                 }
                 Section("显示") {
                     CurrencyRow()
@@ -40,7 +43,7 @@ struct SettingsView: View {
                         Spacer()
                         Text("0.1.0 (iOS)").foregroundColor(.secondary)
                     }
-                    Text("桌面版 ZBar 的 iOS 配套应用。用量数据通过自托管同步服务获取，额度数据直连智谱开放平台。")
+                    Text("桌面版 ZBar 的 iOS 配套应用。用量数据通过自托管同步服务获取；额度支持 GLM / DeepSeek / Kimi / MiniMax / OpenCode / 阿里直连账号，Codex / Claude / Cursor 由桌面端同步。")
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
@@ -193,38 +196,351 @@ private struct RegisterSheet: View {
     }
 }
 
-// MARK: - 额度 Token 配置
+// MARK: - 额度账号（多 agent 多账号）
 
-private struct QuotaConfigRow: View {
+/// 额度账号区块：账号列表（agent + label + 最近校验徽章 + 掩码）、
+/// 添加/编辑/删除、「查询全部」。secret 只显示掩码，留空 = 不修改。
+private struct AccountsSection: View {
     @EnvironmentObject var settings: AppSettings
     @EnvironmentObject var refresh: RefreshService
+    @EnvironmentObject var store: AccountStore
 
-    @State private var token = ""
-    @State private var endpoint: QuotaEndpoint = .cn
+    @State private var editingAccount: AccountEntry?
+    @State private var showAdd = false
+    @State private var pendingDelete: AccountEntry?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            SecureField("Coding Plan API Token", text: $token)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-            Picker("端点", selection: $endpoint) {
-                Text("🇨🇳 国内 (open.bigmodel.cn)").tag(QuotaEndpoint.cn)
-                Text("🌐 国际 (api.z.ai)").tag(QuotaEndpoint.global)
+        // 直连账号列表（旧版单 GLM 账号已自动迁移为第一个 zai 账号）
+        ForEach(store.accounts) { account in
+            Button {
+                editingAccount = account
+            } label: {
+                AccountRow(account: account,
+                           isWidgetSelected: store.selectedWidgetAccountId == account.id.uuidString,
+                           onDelete: { pendingDelete = account },
+                           onSetWidget: {
+                               store.selectedWidgetAccountId = account.id.uuidString
+                               refresh.writeWidgetSnapshot()
+                           })
             }
-            Button("保存并查询") {
-                settings.quotaConfig.token = token
-                settings.quotaConfig.endpoint = endpoint
-                settings.saveQuotaConfig()
-                Task { await refresh.refreshQuotaOnly() }
+            .buttonStyle(.plain)
+        }
+        if store.accounts.isEmpty {
+            Text("未配置额度账号。支持 GLM / DeepSeek / Kimi / MiniMax / OpenCode / 阿里直连账号。")
+                .font(.caption)
+                .foregroundColor(.secondary)
+        }
+        Button {
+            showAdd = true
+        } label: {
+            Label("添加账号…", systemImage: "plus.circle")
+        }
+        Button {
+            Task { await refresh.refreshQuotaOnly() }
+        } label: {
+            if refresh.quotaRefreshing {
+                ProgressView().controlSize(.small)
+            } else {
+                Label("查询全部", systemImage: "arrow.clockwise")
             }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.small)
-            .disabled(token.trimmingCharacters(in: .whitespaces).isEmpty)
         }
-        .onAppear {
-            token = settings.quotaConfig.token
-            endpoint = settings.quotaConfig.endpoint
+        .disabled(!store.hasDirectAccounts || refresh.quotaRefreshing)
+        .sheet(isPresented: $showAdd) {
+            AccountEditSheet(editing: nil)
         }
+        .sheet(item: $editingAccount) { account in
+            AccountEditSheet(editing: account)
+        }
+        .confirmationDialog(
+            "删除账号「\(pendingDelete?.label ?? "")」？该操作不可撤销。",
+            isPresented: Binding(
+                get: { pendingDelete != nil },
+                set: { if !$0 { pendingDelete = nil } }),
+            titleVisibility: .visible
+        ) {
+            Button("删除", role: .destructive) {
+                if let account = pendingDelete {
+                    store.remove(id: account.id)
+                    Task { await refresh.refreshQuotaOnly() }
+                }
+                pendingDelete = nil
+            }
+        }
+    }
+}
+
+/// 单个账号行：agent 名 + 备注名 + 最近校验徽章 + secret 掩码。
+/// onDelete 由父视图承接（弹确认框后调 store.remove）；
+/// onSetWidget 把该账号设为小组件显示账号。
+private struct AccountRow: View {
+    @EnvironmentObject var store: AccountStore
+    let account: AccountEntry
+    var isWidgetSelected: Bool = false
+    let onDelete: () -> Void
+    var onSetWidget: (() -> Void)? = nil
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 8) {
+                Text(account.agent.displayName)
+                    .font(.subheadline.weight(.medium))
+                if let region = account.region {
+                    Tag(region.displayName)
+                }
+                if isWidgetSelected {
+                    // 小组件选中标记（与「小组件显示」Picker 联动）
+                    Label("小组件", systemImage: "square.grid.2x2.fill")
+                        .font(.caption2)
+                        .padding(.horizontal, 6).padding(.vertical, 2)
+                        .background(Capsule().fill(Color.blue.opacity(0.15)))
+                        .foregroundColor(.blue)
+                }
+                Spacer()
+                if let check = account.lastCheck {
+                    StatusBadge(status: check.status)
+                } else {
+                    StatusBadge(status: "pending")
+                }
+            }
+            HStack(spacing: 8) {
+                Text(account.label)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                if let masked = maskedSecret {
+                    Text(masked)
+                        .font(.caption.monospaced())
+                        .foregroundColor(.secondary)
+                }
+                Spacer()
+                if let check = account.lastCheck, let at = check.at {
+                    Text(Self.timeText(at))
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                }
+            }
+        }
+        .contentShape(Rectangle())
+        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+            Button(role: .destructive, action: onDelete) {
+                Label("删除", systemImage: "trash")
+            }
+        }
+        .contextMenu {
+            if let onSetWidget {
+                Button(action: onSetWidget) {
+                    Label(isWidgetSelected ? "正在小组件显示" : "设为小组件显示",
+                          systemImage: "square.grid.2x2")
+                }
+            }
+            Button(role: .destructive, action: onDelete) {
+                Label("删除账号", systemImage: "trash")
+            }
+        }
+    }
+
+    /// 掩码走 AccountStore 缓存（增删改时失效），body 内不逐帧查 Keychain。
+    /// 契约不变：secret 永不回显原文，掩码是设计上有意暴露的形态。
+    private var maskedSecret: String? {
+        store.cachedMask(for: account.id)
+    }
+
+    private static func timeText(_ ms: Int) -> String {
+        let f = DateFormatter()
+        f.dateFormat = "MM-dd HH:mm"
+        return f.string(from: Date(timeIntervalSince1970: TimeInterval(ms) / 1000))
+    }
+}
+
+// MARK: - 小组件显示选择（批2）
+
+/// 「小组件显示」区块：选择 Widget 展示的额度账号（跟随主账号 / 任一直连
+/// 账号 / 只读同步分组）。选中值写 App Group，与 Widget 编辑界面的
+/// AppIntent 双向联动——任一处修改，两处配置同步生效。
+private struct WidgetDisplayPickerRow: View {
+    @EnvironmentObject var refresh: RefreshService
+    @EnvironmentObject var store: AccountStore
+
+    /// Picker 绑定用非 Optional："" = 跟随主账号（nil 的展示形态）。
+    private var selection: Binding<String> {
+        Binding(
+            get: { store.selectedWidgetAccountId ?? "" },
+            set: { newValue in
+                store.selectedWidgetAccountId = newValue.isEmpty ? nil : newValue
+                // 立即按新选中重写快照（数据已在内存，无需重新查询）
+                refresh.writeWidgetSnapshot()
+            })
+    }
+
+    var body: some View {
+        Picker("显示账号", selection: selection) {
+            Text("跟随主账号").tag("")
+            ForEach(store.accounts) { account in
+                Text("\(account.agent.displayName) · \(account.label)")
+                    .tag(account.id.uuidString)
+            }
+            ForEach([AgentKind.codex, .claude, .cursor], id: \.rawValue) { agent in
+                Text("\(agent.displayName)（桌面同步）")
+                    .tag(AccountStore.syncOptionId(agent))
+            }
+        }
+        if store.accounts.isEmpty {
+            Text("未配置额度账号时小组件额度区为空。")
+                .font(.caption)
+                .foregroundColor(.secondary)
+        } else {
+            Text("也可长按桌面/锁屏小组件，在「编辑小组件」中选择账号。")
+                .font(.caption)
+                .foregroundColor(.secondary)
+        }
+    }
+}
+
+/// 添加 / 编辑账号表单。编辑时 secret 只显示掩码，输入框留空 = 不修改。
+private struct AccountEditSheet: View {
+    @EnvironmentObject var refresh: RefreshService
+    @EnvironmentObject var store: AccountStore
+    @Environment(\.dismiss) private var dismiss
+
+    /// nil = 新增
+    let editing: AccountEntry?
+
+    @State private var agent: AgentKind = .zai
+    @State private var label = ""
+    @State private var region: AccountRegion = .cn
+    @State private var token = ""
+    @State private var checkNow = true
+    @State private var checking = false
+    @State private var checkResult: String?
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    Picker("服务", selection: $agent) {
+                        ForEach(AgentKind.allCases.filter { $0.isDirect }) { kind in
+                            Text(kind.displayName).tag(kind)
+                        }
+                    }
+                    .disabled(editing != nil) // 凭证一经创建不改服务（对齐桌面）
+                    TextField("备注名（可留空）", text: $label)
+                    if agent.supportsRegion {
+                        Picker("区域", selection: $region) {
+                            ForEach(AccountRegion.allCases) { r in
+                                Text(r.displayName).tag(r)
+                            }
+                        }
+                    }
+                }
+                Section(agent.displayName + " 凭证") {
+                    if let masked = editingMaskedSecret {
+                        Text("当前：\(masked)")
+                            .font(.caption.monospaced())
+                            .foregroundColor(.secondary)
+                    }
+                    SecureField(editing == nil ? agent.tokenPlaceholder : "留空表示不修改",
+                                text: $token)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                }
+                if editing == nil {
+                    Section {
+                        Toggle("保存后立即查询验证", isOn: $checkNow)
+                    }
+                }
+                if checking {
+                    Section {
+                        HStack {
+                            ProgressView().controlSize(.small)
+                            Text("查询中…").font(.caption).foregroundColor(.secondary)
+                        }
+                    }
+                }
+                if let result = checkResult {
+                    Section {
+                        Text(result)
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                }
+            }
+            .navigationTitle(editing == nil ? "添加账号" : "编辑账号")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("取消") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(editing == nil ? "添加" : "保存") {
+                        Task { await save() }
+                    }
+                    .disabled(!canSave || checking)
+                }
+            }
+        }
+        .onAppear { loadInitial() }
+    }
+
+    private var canSave: Bool {
+        if editing == nil {
+            return !token.trimmingCharacters(in: .whitespaces).isEmpty
+        }
+        return true // 编辑至少可改 label/region（secret 留空=不修改）
+    }
+
+    /// 编辑时的掩码（走 AccountStore 缓存；原文只在缓存未命中时瞬时读取，
+    /// 不落任何 @State）。
+    private var editingMaskedSecret: String? {
+        guard let editing else { return nil }
+        return store.cachedMask(for: editing.id)
+    }
+
+    private func loadInitial() {
+        guard let editing else { return }
+        agent = editing.agent
+        label = editing.label
+        region = editing.region ?? .cn
+        checkNow = false
+    }
+
+    private func save() async {
+        let trimmedToken = token.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let editing {
+            store.update(id: editing.id,
+                         label: label,
+                         region: region,
+                         secret: trimmedToken.isEmpty ? nil : trimmedToken)
+            Task { await refresh.refreshQuotaOnly() }
+            dismiss()
+            return
+        }
+        // 新增
+        let entry = store.add(agent: agent, label: label, region: region,
+                              secret: trimmedToken)
+        guard checkNow else {
+            Task { await refresh.refreshQuotaOnly() }
+            dismiss()
+            return
+        }
+        // 立即查询单账号验证（结果回写 lastCheck，消息展示在表单内）
+        checking = true
+        let result = await AgentQuotaClients.shared.query(entry, secret: trimmedToken)
+        store.recordCheck(id: entry.id,
+                          status: result.status == "ok" ? "ok" : "error",
+                          message: result.status == "ok" ? nil : result.message)
+        checkResult = result.status == "ok"
+            ? "查询成功：\(successSummary(result))"
+            : "保存成功，但查询失败：\(result.message ?? "未知原因")"
+        checking = false
+        Task { await refresh.refreshQuotaOnly() }
+        // 展示结果后由用户手动关闭（保留 dismiss 由用户触发，能看到校验结论）
+    }
+
+    /// 成功时的简要摘要（窗口数 / 余额）。
+    private func successSummary(_ entry: QuotaEntry) -> String {
+        if let balance = entry.balance {
+            return "余额 \(balance.currency)\(String(format: "%.2f", balance.amount))"
+        }
+        return "\(entry.windows.count) 个额度窗口"
     }
 }
 

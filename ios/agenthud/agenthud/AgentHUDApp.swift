@@ -12,12 +12,14 @@ import SwiftUI
 struct AgentHUDApp: App {
     @StateObject private var settings = AppSettings.shared
     @StateObject private var refresh = RefreshService.shared
+    @StateObject private var store = AccountStore.shared
 
     var body: some Scene {
         WindowGroup {
             RootView()
                 .environmentObject(settings)
                 .environmentObject(refresh)
+                .environmentObject(store)
                 .preferredColorScheme(.dark)
                 .task {
                     // 启动即拉一次

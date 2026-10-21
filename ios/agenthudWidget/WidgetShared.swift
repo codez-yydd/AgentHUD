@@ -12,6 +12,8 @@
 import Foundation
 
 /// Widget 专用：从 App Group 读取的数据快照（字段与主 App 的 WidgetSnapshot 对齐）。
+/// 批2 扩展字段全部 Optional：Codable 合成解码对 Optional 走 decodeIfPresent，
+/// 旧版主 App 写入的 JSON 缺这些字段时解码为 nil（向后兼容）。
 public struct WidgetSnapshot: Codable, Hashable {
     public var todayCostCny: Double
     public var todayCostUsd: Double
@@ -27,6 +29,19 @@ public struct WidgetSnapshot: Codable, Hashable {
     public var level: String
     public var deviceName: String
     public var updatedAt: Double
+    // ===== 批2 新增（全部可选，旧 JSON 缺省可解）=====
+    /// 本快照额度数据所属账号 id（"primary"/UUID/"sync:<agent>"）
+    public var accountId: String?
+    /// 账号展示名（余额型/同步型卡片标题）
+    public var accountLabel: String?
+    /// AgentKind rawValue（决定渲染形态：zai=三档、余额型=余额、sync=同步百分比）
+    public var agentKind: String?
+    /// 只读同步型标记（渲染「桌面同步」小标）
+    public var isSynced: Bool?
+    public var balanceAmount: Double?
+    public var balanceCurrency: String?
+    public var balanceGranted: Double?
+    public var balanceToppedUp: Double?
 
     public static let placeholder = WidgetSnapshot(
         todayCostCny: 12.34, todayCostUsd: 1.73,
@@ -35,7 +50,11 @@ public struct WidgetSnapshot: Codable, Hashable {
         mcpUsed: nil, mcpTotal: nil,
         weeklyResetMs: Int(Date().addingTimeInterval(2*24*3600).timeIntervalSince1970 * 1000),
         hour5ResetMs: Int(Date().addingTimeInterval(3*3600).timeIntervalSince1970 * 1000),
-        level: "PRO", deviceName: "iPhone", updatedAt: Date().timeIntervalSince1970)
+        level: "PRO", deviceName: "iPhone", updatedAt: Date().timeIntervalSince1970,
+        accountId: "primary", accountLabel: "默认 GLM 账号", agentKind: "zai",
+        isSynced: nil,
+        balanceAmount: nil, balanceCurrency: nil,
+        balanceGranted: nil, balanceToppedUp: nil)
 
     public static let preview = placeholder
 
@@ -44,7 +63,10 @@ public struct WidgetSnapshot: Codable, Hashable {
         todayCostCny: 0, todayCostUsd: 0, todayTokens: 0, todayRequests: 0,
         hour5Pct: nil, weeklyPct: nil, mcpPct: nil, mcpUsed: nil, mcpTotal: nil,
         weeklyResetMs: nil, hour5ResetMs: nil, level: "", deviceName: "",
-        updatedAt: 0)
+        updatedAt: 0,
+        accountId: nil, accountLabel: nil, agentKind: nil, isSynced: nil,
+        balanceAmount: nil, balanceCurrency: nil,
+        balanceGranted: nil, balanceToppedUp: nil)
 }
 
 public enum Currency: String, Codable {

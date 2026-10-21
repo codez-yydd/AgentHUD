@@ -157,13 +157,6 @@ public struct QuotaLimit: Codable, Hashable {
     public var usageDetails: [McpUsageDetail]?
 }
 
-public struct QuotaResult: Codable, Hashable {
-    public var level: String
-    public var hour5: QuotaLimit?
-    public var weekly: QuotaLimit?
-    public var mcp: QuotaLimit?
-}
-
 public enum QuotaEndpoint: String, Codable, CaseIterable {
     case cn, global
 
@@ -184,6 +177,229 @@ public struct QuotaConfig: Codable, Hashable {
         self.token = token
         self.endpoint = endpoint
     }
+}
+
+// MARK: - 多 Agent 多账号额度体系（对齐桌面 provider_credentials + provider_quota.rs）
+
+/// 额度 agent 类型。前 6 个为直连型（本机配凭证直接查官方接口）；
+/// codex / claude / cursor 为只读同步型（凭证只在桌面端配置并上传快照，
+/// iOS 从 server 拉取展示，不可在本机配置凭证）。
+public enum AgentKind: String, Codable, CaseIterable, Identifiable {
+    case zai, deepseek, moonshot, minimax, opencodego, alibaba
+    case codex, claude, cursor
+
+    public var id: String { rawValue }
+
+    /// 直连型：可在本机配置凭证并查询。
+    public var isDirect: Bool {
+        switch self {
+        case .zai, .deepseek, .moonshot, .minimax, .opencodego, .alibaba:
+            return true
+        case .codex, .claude, .cursor:
+            return false
+        }
+    }
+
+    /// 需要国内/国际站区域选择的 agent（查询端点按 region 分流）。
+    public var supportsRegion: Bool {
+        switch self {
+        case .zai, .moonshot, .minimax, .alibaba:
+            return true
+        case .deepseek, .opencodego, .codex, .claude, .cursor:
+            return false
+        }
+    }
+
+    /// 设置页/额度页的显示名（对齐桌面端文案口径）。
+    public var displayName: String {
+        switch self {
+        case .zai: return "GLM Coding Plan"
+        case .deepseek: return "DeepSeek"
+        case .moonshot: return "Kimi 开放平台"
+        case .minimax: return "MiniMax"
+        case .opencodego: return "OpenCode Go"
+        case .alibaba: return "阿里 Coding Plan"
+        case .codex: return "Codex"
+        case .claude: return "Claude"
+        case .cursor: return "Cursor"
+        }
+    }
+
+    /// 添加账号表单里的凭证输入提示。
+    public var tokenPlaceholder: String {
+        switch self {
+        case .zai: return "Coding Plan API Key"
+        case .deepseek: return "sk-... 开放平台 API Key"
+        case .moonshot: return "sk-... 开放平台 API Key"
+        case .minimax: return "sk-cp-... Coding Plan Token"
+        case .opencodego: return "OpenCode API Key"
+        case .alibaba: return "sk-... DashScope API Key"
+        case .codex, .claude, .cursor: return ""
+        }
+    }
+}
+
+/// 账号区域（仅 supportsRegion 的 agent 使用）。
+public enum AccountRegion: String, Codable, CaseIterable, Identifiable {
+    case cn, global
+    public var id: String { rawValue }
+    public var displayName: String {
+        switch self {
+        case .cn: return "国内站"
+        case .global: return "国际站"
+        }
+    }
+}
+
+/// 账号最近一次校验结论（对齐桌面 provider_credentials 的 last_check）。
+public struct AccountLastCheck: Codable, Hashable {
+    /// "ok" | "expired" | "error" | "pending"
+    public var status: String
+    /// 校验完成时刻（ms）
+    public var at: Int?
+    /// 原因（中文，不含 secret 片段）
+    public var message: String?
+
+    public init(status: String, at: Int? = nil, message: String? = nil) {
+        self.status = status
+        self.at = at
+        self.message = message
+    }
+}
+
+/// 直连型额度账号的元数据（secret 存 Keychain，绝不落本结构）。
+public struct AccountEntry: Codable, Hashable, Identifiable {
+    public var id: UUID
+    public var agent: AgentKind
+    /// 备注名（≤32 字）
+    public var label: String
+    /// 仅 supportsRegion 的 agent 有值
+    public var region: AccountRegion?
+    public var createdAt: Int
+    public var updatedAt: Int
+    public var lastCheck: AccountLastCheck?
+
+    public init(id: UUID = UUID(),
+                agent: AgentKind,
+                label: String,
+                region: AccountRegion? = nil,
+                createdAt: Int = Int(Date().timeIntervalSince1970 * 1000),
+                updatedAt: Int = Int(Date().timeIntervalSince1970 * 1000),
+                lastCheck: AccountLastCheck? = nil) {
+        self.id = id
+        self.agent = agent
+        self.label = label
+        self.region = region
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+        self.lastCheck = lastCheck
+    }
+}
+
+/// 单个用量窗口（对齐桌面 ProviderQuotaWindow，camelCase）。
+public struct QuotaWindow: Codable, Hashable, Identifiable {
+    /// 窗口标识（"hour5" / "weekly" / "mcp" / "interval" / "monthly" / ...）
+    public var key: String
+    /// 展示标题（"5h" / "本周" / "MCP 月度" ...）
+    public var title: String
+    /// 已用百分比 0-100（缺省时只展示 used/total）
+    public var usedPercent: Double?
+    /// 已用量（配 unit 展示）
+    public var used: Double?
+    /// 总量
+    public var total: Double?
+    /// 数量单位（"次" / "token"）
+    public var unit: String?
+    /// 下次重置时间（ms 时间戳）
+    public var resetsAt: Int?
+
+    public var id: String { key }
+
+    public init(key: String, title: String, usedPercent: Double? = nil,
+                used: Double? = nil, total: Double? = nil,
+                unit: String? = nil, resetsAt: Int? = nil) {
+        self.key = key
+        self.title = title
+        self.usedPercent = usedPercent
+        self.used = used
+        self.total = total
+        self.unit = unit
+        self.resetsAt = resetsAt
+    }
+}
+
+/// 按量计费余额（对齐桌面 ProviderQuotaBalance）。
+public struct QuotaBalance: Codable, Hashable {
+    public var amount: Double
+    /// 币种符号或代码（"$" / "¥" / "CNY"）
+    public var currency: String
+    /// 累计赠送
+    public var granted: Double?
+    /// 累计充值
+    public var toppedUp: Double?
+
+    public init(amount: Double, currency: String,
+                granted: Double? = nil, toppedUp: Double? = nil) {
+        self.amount = amount
+        self.currency = currency
+        self.granted = granted
+        self.toppedUp = toppedUp
+    }
+}
+
+/// 单个账号一次额度查询的展示条目（对齐桌面 ProviderQuotaEntry）。
+/// 查询失败也产出条目（status=error/expired + message），不抛错——
+/// 与桌面"单凭证失败不阻塞其他凭证"的语义一致。
+public struct QuotaEntry: Codable, Hashable, Identifiable {
+    /// 关联账号 id（与 AccountEntry.id 对应）
+    public var accountId: String
+    public var label: String
+    public var agent: AgentKind
+    /// "ok" | "expired" | "error" | "pending"
+    public var status: String
+    public var windows: [QuotaWindow]
+    public var balance: QuotaBalance?
+    /// 套餐名（"pro" / "Coding Plan Lite" ...）
+    public var planName: String?
+    /// 失败/过期原因（中文，不含 secret）
+    public var message: String?
+    /// 查询完成时刻（ms）
+    public var updatedAt: Int
+
+    public var id: String { accountId }
+
+    public init(accountId: String, label: String, agent: AgentKind,
+                status: String, windows: [QuotaWindow] = [],
+                balance: QuotaBalance? = nil, planName: String? = nil,
+                message: String? = nil, updatedAt: Int = Int(Date().timeIntervalSince1970 * 1000)) {
+        self.accountId = accountId
+        self.label = label
+        self.agent = agent
+        self.status = status
+        self.windows = windows
+        self.balance = balance
+        self.planName = planName
+        self.message = message
+        self.updatedAt = updatedAt
+    }
+}
+
+// MARK: - 远端 Agent 额度快照（server GET /agent-quota-snapshots 的返回形状）
+
+/// 快照内单个窗口（snake_case 对齐服务端 JSON）。
+public struct RemoteAgentQuotaWindowDTO: Codable, Hashable {
+    public var key: String
+    public var used_pct: Double
+    public var reset_at: Int?
+}
+
+/// 单条远端快照（桌面已上传的 Codex / Claude / Cursor 采样）。
+public struct RemoteAgentQuotaSnapshotDTO: Codable, Hashable {
+    public var source: String
+    public var ts: Int
+    public var plan_type: String?
+    public var windows: [RemoteAgentQuotaWindowDTO]
+    public var device_id: String?
 }
 
 // MARK: - 同步配置（对应 sync.json）

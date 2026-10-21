@@ -23,7 +23,6 @@
 		AA0000000000000000000002 /* Types.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000102 /* Types.swift */; };
 		AA0000000000000000000003 /* PricingDefaults.json in Resources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000103 /* PricingDefaults.json */; };
 		AA0000000000000000000004 /* APIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000104 /* APIClient.swift */; };
-		AA0000000000000000000005 /* QuotaClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000105 /* QuotaClient.swift */; };
 		AA0000000000000000000006 /* Billing.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000106 /* Billing.swift */; };
 		AA0000000000000000000007 /* Peak.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000107 /* Peak.swift */; };
 		AA0000000000000000000008 /* Format.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000108 /* Format.swift */; };
@@ -36,10 +35,15 @@
 		AA000000000000000000000F /* CompareView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000000000000000000010F /* CompareView.swift */; };
 		AA0000000000000000000010 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000110 /* SettingsView.swift */; };
 		AA0000000000000000000011 /* SharedUI.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000111 /* SharedUI.swift */; };
+		AA0000000000000000000012 /* KeychainHelper.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000112 /* KeychainHelper.swift */; };
+		AA0000000000000000000013 /* AccountStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000113 /* AccountStore.swift */; };
+		AA0000000000000000000014 /* AgentQuotaClients.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000114 /* AgentQuotaClients.swift */; };
+		AA0000000000000000000015 /* AgentQuotaSync.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000115 /* AgentQuotaSync.swift */; };
 
 		BB0000000000000000000001 /* AgentHUDWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000101 /* AgentHUDWidget.swift */; };
 		BB0000000000000000000002 /* WidgetViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000102 /* WidgetViews.swift */; };
 		BB0000000000000000000003 /* WidgetShared.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000103 /* WidgetShared.swift */; };
+		BB0000000000000000000004 /* WidgetAccountIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000104 /* WidgetAccountIntent.swift */; };
 
 /* ===== PBXFileReference ===== */
 
@@ -47,7 +51,6 @@
 		AA0000000000000000000102 /* Types.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Types.swift; sourceTree = "<group>"; };
 		AA0000000000000000000103 /* PricingDefaults.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = PricingDefaults.json; sourceTree = "<group>"; };
 		AA0000000000000000000104 /* APIClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APIClient.swift; sourceTree = "<group>"; };
-		AA0000000000000000000105 /* QuotaClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuotaClient.swift; sourceTree = "<group>"; };
 		AA0000000000000000000106 /* Billing.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Billing.swift; sourceTree = "<group>"; };
 		AA0000000000000000000107 /* Peak.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Peak.swift; sourceTree = "<group>"; };
 		AA0000000000000000000108 /* Format.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Format.swift; sourceTree = "<group>"; };
@@ -60,6 +63,10 @@
 		AA000000000000000000010F /* CompareView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CompareView.swift; sourceTree = "<group>"; };
 		AA0000000000000000000110 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		AA0000000000000000000111 /* SharedUI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SharedUI.swift; sourceTree = "<group>"; };
+		AA0000000000000000000112 /* KeychainHelper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainHelper.swift; sourceTree = "<group>"; };
+		AA0000000000000000000113 /* AccountStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccountStore.swift; sourceTree = "<group>"; };
+		AA0000000000000000000114 /* AgentQuotaClients.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentQuotaClients.swift; sourceTree = "<group>"; };
+		AA0000000000000000000115 /* AgentQuotaSync.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentQuotaSync.swift; sourceTree = "<group>"; };
 
 		AA0000000000000000000201 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		AA0000000000000000000202 /* agenthud.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = agenthud.entitlements; sourceTree = "<group>"; };
@@ -67,6 +74,7 @@
 		BB0000000000000000000101 /* AgentHUDWidget.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentHUDWidget.swift; sourceTree = "<group>"; };
 		BB0000000000000000000102 /* WidgetViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WidgetViews.swift; sourceTree = "<group>"; };
 		BB0000000000000000000103 /* WidgetShared.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WidgetShared.swift; sourceTree = "<group>"; };
+		BB0000000000000000000104 /* WidgetAccountIntent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WidgetAccountIntent.swift; sourceTree = "<group>"; };
 		BB0000000000000000000201 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		BB0000000000000000000202 /* agenthudWidget.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = agenthudWidget.entitlements; sourceTree = "<group>"; };
 
@@ -119,13 +127,16 @@
 			isa = PBXGroup;
 			children = (
 				AA0000000000000000000104 /* APIClient.swift */,
-				AA0000000000000000000105 /* QuotaClient.swift */,
 				AA0000000000000000000106 /* Billing.swift */,
 				AA0000000000000000000107 /* Peak.swift */,
 				AA0000000000000000000108 /* Format.swift */,
 				AA0000000000000000000109 /* Settings.swift */,
 				AA000000000000000000010A /* RefreshService.swift */,
 				AA000000000000000000010B /* PeriodParser.swift */,
+				AA0000000000000000000112 /* KeychainHelper.swift */,
+				AA0000000000000000000113 /* AccountStore.swift */,
+				AA0000000000000000000114 /* AgentQuotaClients.swift */,
+				AA0000000000000000000115 /* AgentQuotaSync.swift */,
 			);
 			path = Core;
 			sourceTree = "<group>";
@@ -149,6 +160,7 @@
 				BB0000000000000000000101 /* AgentHUDWidget.swift */,
 				BB0000000000000000000102 /* WidgetViews.swift */,
 				BB0000000000000000000103 /* WidgetShared.swift */,
+				BB0000000000000000000104 /* WidgetAccountIntent.swift */,
 				BB0000000000000000000201 /* Info.plist */,
 				BB0000000000000000000202 /* agenthudWidget.entitlements */,
 			);
@@ -198,7 +210,6 @@
 				AA0000000000000000000001 /* AgentHUDApp.swift in Sources */,
 				AA0000000000000000000002 /* Types.swift in Sources */,
 				AA0000000000000000000004 /* APIClient.swift in Sources */,
-				AA0000000000000000000005 /* QuotaClient.swift in Sources */,
 				AA0000000000000000000006 /* Billing.swift in Sources */,
 				AA0000000000000000000007 /* Peak.swift in Sources */,
 				AA0000000000000000000008 /* Format.swift in Sources */,
@@ -211,6 +222,10 @@
 				AA000000000000000000000F /* CompareView.swift in Sources */,
 				AA0000000000000000000010 /* SettingsView.swift in Sources */,
 				AA0000000000000000000011 /* SharedUI.swift in Sources */,
+				AA0000000000000000000012 /* KeychainHelper.swift in Sources */,
+				AA0000000000000000000013 /* AccountStore.swift in Sources */,
+				AA0000000000000000000014 /* AgentQuotaClients.swift in Sources */,
+				AA0000000000000000000015 /* AgentQuotaSync.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -221,6 +236,7 @@
 				BB0000000000000000000001 /* AgentHUDWidget.swift in Sources */,
 				BB0000000000000000000002 /* WidgetViews.swift in Sources */,
 				BB0000000000000000000003 /* WidgetShared.swift in Sources */,
+				BB0000000000000000000004 /* WidgetAccountIntent.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

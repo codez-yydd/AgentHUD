@@ -25,9 +25,42 @@ public enum WidgetCacheKey {
     public static let snapshot = "widget.snapshot"          // WidgetSnapshot（JSON）
     public static let lastUpdate = "widget.lastUpdate"      // Double（时间戳）
     public static let currency = "widget.currency"
+    /// 批2：Widget Intent 的动态账号选项清单（[WidgetAccountOption] JSON）
+    public static let accountOptions = "widget.accountOptions"
+    /// 批2：Widget 显示的选中账号 id（"primary"/直连账号 UUID/"sync:<agent>"），
+    /// 存 App Group（主 App 设置页与 Widget Intent 双向写入，一处生效）
+    public static let selectedAccountId = "widget.selectedAccountId"
+}
+
+/// Widget Intent 的账号选项摘要（主 App 写入 App Group，Widget 进程读取；
+/// 字段与 Widget 侧 WidgetAccountIntent.swift 的同名结构保持一致）。
+public struct WidgetAccountOption: Codable, Hashable, Identifiable {
+    /// "primary"（跟随主账号，由 Intent 端固定构造，一般不落盘）/
+    /// 直连账号 UUID / "sync:codex" 等同步分组 id
+    public var id: String
+    /// AgentKind rawValue（"zai" / "codex" ...）
+    public var agent: String
+    /// 展示名（直连=备注名；同步=agent 显示名）
+    public var label: String
+    /// "direct"（直连）| "sync"（只读同步）
+    public var kind: String
+    /// 套餐名（最近一次查询得到；可为空）
+    public var planName: String?
+
+    public init(id: String, agent: String, label: String,
+                kind: String, planName: String? = nil) {
+        self.id = id
+        self.agent = agent
+        self.label = label
+        self.kind = kind
+        self.planName = planName
+    }
 }
 
 /// Widget 渲染所需的全部数据快照（App 拉好数据后写入共享容器）。
+/// 批2 扩展字段全部 Optional + Codable 合成解码走 decodeIfPresent：
+/// 旧版 JSON 缺新字段 → 解码为 nil（向后兼容）；新版 JSON 多字段对旧代码
+/// 无影响（Codable 忽略未知 key）。
 public struct WidgetSnapshot: Codable, Hashable {
     public var todayCostCny: Double
     public var todayCostUsd: Double
@@ -43,6 +76,20 @@ public struct WidgetSnapshot: Codable, Hashable {
     public var level: String
     public var deviceName: String
     public var updatedAt: Double
+    // ===== 批2 新增（全部可选，向后兼容）=====
+    /// 本快照额度数据所属账号 id（"primary"/UUID/"sync:<agent>"）
+    public var accountId: String?
+    /// 账号展示名（余额型/同步型卡片标题）
+    public var accountLabel: String?
+    /// AgentKind rawValue（决定 Widget 渲染形态）
+    public var agentKind: String?
+    /// 只读同步型标记（显示「桌面同步」小标）
+    public var isSynced: Bool?
+    /// 余额型账号的余额（deepseek/moonshot）
+    public var balanceAmount: Double?
+    public var balanceCurrency: String?
+    public var balanceGranted: Double?
+    public var balanceToppedUp: Double?
 
     public init(todayCostCny: Double = 0, todayCostUsd: Double = 0,
                 todayTokens: Int = 0, todayRequests: Int = 0,
@@ -50,7 +97,11 @@ public struct WidgetSnapshot: Codable, Hashable {
                 mcpPct: Int? = nil, mcpUsed: Int? = nil, mcpTotal: Int? = nil,
                 weeklyResetMs: Int? = nil, hour5ResetMs: Int? = nil,
                 level: String = "", deviceName: String = "",
-                updatedAt: Double = 0) {
+                updatedAt: Double = 0,
+                accountId: String? = nil, accountLabel: String? = nil,
+                agentKind: String? = nil, isSynced: Bool? = nil,
+                balanceAmount: Double? = nil, balanceCurrency: String? = nil,
+                balanceGranted: Double? = nil, balanceToppedUp: Double? = nil) {
         self.todayCostCny = todayCostCny
         self.todayCostUsd = todayCostUsd
         self.todayTokens = todayTokens
@@ -65,6 +116,14 @@ public struct WidgetSnapshot: Codable, Hashable {
         self.level = level
         self.deviceName = deviceName
         self.updatedAt = updatedAt
+        self.accountId = accountId
+        self.accountLabel = accountLabel
+        self.agentKind = agentKind
+        self.isSynced = isSynced
+        self.balanceAmount = balanceAmount
+        self.balanceCurrency = balanceCurrency
+        self.balanceGranted = balanceGranted
+        self.balanceToppedUp = balanceToppedUp
     }
 }
 
@@ -192,8 +251,11 @@ extension AppSettings {
         !sync.server_url.isEmpty && !sync.device_token.isEmpty
     }
 
-    /// 额度监控是否已配置（有 token）。
+    /// 额度监控是否已配置：以多账号仓库为准（含旧版单 GLM 账号自动迁移
+    /// 进来的第一个 zai 账号）。quotaConfig 仅作为迁移源保留，不再消费。
+    /// 计算属性在运行期访问 AccountStore，不参与 AppSettings.init（避免
+    /// 单例重入）。
     public var isQuotaConfigured: Bool {
-        !quotaConfig.token.trimmingCharacters(in: .whitespaces).isEmpty
+        AccountStore.shared.hasDirectAccounts
     }
 }

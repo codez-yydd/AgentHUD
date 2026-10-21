@@ -46,6 +46,8 @@ ios/**/*.xcuserstate
 ios/**/*.moved-aside
 ios/**/DerivedData/
 ios/**/Pods/
+# xcodebuild 的产物目录（工程把 SYMROOT 指到仓库内，单次构建 ~285MB）
+ios/**/build/
 
 # 速度折叠常驻测试的 tsc 编译产物（npm run test:speed 生成）
 .tmp-speed-test/

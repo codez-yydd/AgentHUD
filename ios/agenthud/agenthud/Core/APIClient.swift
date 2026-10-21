@@ -162,6 +162,26 @@ public actor APIClient {
         return try await request(url, deviceToken: deviceToken, decodeAs: [DeviceInfo].self)
     }
 
+    // MARK: - Agent 额度快照（对应 GET /agent-quota-snapshots）
+
+    /// 拉取桌面端上传的 Codex / Claude / Cursor 额度快照（带 device_id）。
+    /// 服务端旧版本不支持该接口时返回 404，调用方按"降级为隐藏"处理，
+    /// 不当作错误上抛到全局 UI。
+    public func agentQuotaSnapshots(serverURL: String,
+                                    deviceToken: String,
+                                    fromMs: Int,
+                                    toMs: Int) async throws -> [RemoteAgentQuotaSnapshotDTO] {
+        let base = try sanitizeBase(serverURL)
+        let comps: [URLQueryItem] = [
+            URLQueryItem(name: "from_ms", value: String(fromMs)),
+            URLQueryItem(name: "to_ms", value: String(toMs)),
+        ]
+        let url = try makeURL(base, path: "/agent-quota-snapshots", query: comps)
+        struct Wrapper: Codable { var snapshots: [RemoteAgentQuotaSnapshotDTO] }
+        let wrapped = try await request(url, deviceToken: deviceToken, decodeAs: Wrapper.self)
+        return wrapped.snapshots
+    }
+
     // MARK: - 清理状态（对应 GET /cleanup/status）
 
     public func cleanupStatus(serverURL: String,
