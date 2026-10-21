@@ -14,10 +14,10 @@
  *   本轮没取到额度的 Agent 也保留弱化条目（单圈底轨），不再整条消失；
  * - 布局流：监听 zbar://hud-bar-layout（payload = { orientation, edge }，
  *   贴边吸附换边后 Rust 推送）切换竖排 flex column（贴左/右）与横排
- *   flex row（贴顶），并记住停靠边（.edge-right 类让面板贴窗口右缘，
- *   卡片按边定位方向）；启动时按窗口横竖比自判兜底（窗口尺寸由 Rust
- *   bar_metrics 按停靠边预置：竖排恒 68 逻辑宽、横排恒 70 逻辑高，条长
- *   下限 96 保证两者可分；layout 事件在页面未就绪时丢失也不怕）；
+ *   flex row（贴顶），并记住停靠边（.edge-right 类让卡片按边定位方向）；
+ *   启动时先 invoke hud_bar_metrics 拉一次布局/缩放快照，再从窗口横竖比
+ *   自判兜底（layout 事件在页面未就绪时会丢失；窗口尺寸由 Rust
+ *   bar_metrics 按下发栅格维护，页面只负责让内容落在同一栅格上）；
  * - 悬浮详情卡：pointerenter 条 → 70ms 后给 #hud-root 加 .hud-open
  *   （只驱动悬停高亮，两种朝向都不做抽屉展开——窗口宽度按收起态收死），
  *   悬浮到某个条目就直接显示该 Agent 的详情卡，不用先点击。
@@ -46,6 +46,12 @@
  *   指针逻辑坐标发给 Rust（hud_bar_drag_move）：远离屏幕边缘时跟手，
  *   靠近左/右/上边 ≤26px 时吸附成该边并切换横竖排（拖到顶部变横排），
  *   松手时必定吸附落盘；拖完吞掉一次 click，并暂停悬停 600ms；
+ * - 尺寸调整：hud.html 预置 inner/start/end 及两个角的隐形热区，
+ *   pointerdown 后开 Rust hud_bar_resize_* 会话（系统光标 16ms 一拍：
+ *   内侧边改厚度 scale，两端改长度 stretch，角同时改两者），回执里的
+ *   scale 写回 --hud-scale，环/图标/内边距即时自适应；松手落盘并推布局
+ *   事件，下次启动沿用。Tauri 在 Windows 无边框窗上没有系统边缘热区，
+ *   所以必须自绘；
  * - 语言：文案为轻量双语词典（zh/en），语言偏好读主面板写入的
  *   localStorage 键（同源 WebView 共享；缺失/异常回退 zh）。主题不跟随
  *   ——停靠条恒定深色（hud.html 无亮色分支与 .dark 切换），外观监听只
@@ -129,10 +135,25 @@ interface HudBarUsage {
   agents: HudBarAgent[];
 }
 
-/** 布局事件 payload（吸附换边后推送；edge 供卡片按边定位方向） */
+/** 布局事件 payload（吸附/调整尺寸后推送；edge 供卡片按边定位方向，
+ *  scale/stretch 是用户拖拽调整后的尺寸倍率，前端据此同步 CSS 栅格） */
 interface HudBarLayout {
   orientation: "vertical" | "horizontal";
   edge: "left" | "right" | "top";
+  scale: number;
+  stretch: number;
+}
+
+/** hud_bar_resize_* 命令回执（逻辑 px + 当前倍率） */
+interface HudResizeState {
+  edge: "left" | "right" | "top";
+  orientation: "vertical" | "horizontal";
+  scale: number;
+  stretch: number;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
 }
 
 /** 卡片在屏幕上的矩形（**物理 px**，与光标同口径）：Rust 摆好卡片窗口后
@@ -922,6 +943,8 @@ let orientation: "vertical" | "horizontal" =
   window.innerWidth > window.innerHeight ? "horizontal" : "vertical";
 /** 当前停靠边（layout 事件携带；初始按 orientation 推断，事件到达后校正） */
 let barEdge: HudBarLayout["edge"] = orientation === "horizontal" ? "top" : "left";
+/** 当前用户缩放（CSS 变量 --hud-scale 的 JS 镜像；仅调试与去重用） */
+let barScale = 1;
 /** 详情卡打开的 source（null = 无详情）。卡片本体在**另一个窗口**，这里
  *  只保留"哪一条开着"用于高亮与收卡判定 */
 let detailSource: string | null = null;
@@ -964,6 +987,16 @@ let dragInflight = false;
  *  指针离开条或 600ms 后恢复 */
 let hoverSuspended = false;
 let hoverResumeTimer: ReturnType<typeof setTimeout> | null = null;
+/** 尺寸调整进行中：与 dragging 同款让位（悬停/卡片/指针守护全部暂停） */
+let resizing = false;
+/** 调整轮询定时器（16ms 一拍，Rust 侧按系统光标改窗口宽高） */
+let resizeTimer: ReturnType<typeof setInterval> | null = null;
+/** 上一次 resize_move 还没回来（丢弃重复帧） */
+let resizeInflight = false;
+/** begin 回执还在路上（此时 pointerup 只能先记下来，等回执落地再收尾） */
+let resizeStarting = false;
+/** 松手发生在 begin 回执之前：等回执落地后立刻收尾，避免 Rust 会话悬挂 */
+let resizeEndedEarly = false;
 
 const rootEl = document.getElementById("hud-root")!;
 const stripEl = document.getElementById("hud-strip")!;
@@ -980,6 +1013,37 @@ function applyOrientation(next: "vertical" | "horizontal"): void {
 function applyEdge(next: HudBarLayout["edge"]): void {
   barEdge = next;
   rootEl.classList.toggle("edge-right", next === "right");
+}
+
+/** 用户缩放 → CSS 栅格：环/条目/内边距/圆角/字号全部由 --hud-scale
+ *  派生（见 hud.html），窗口尺寸由 Rust 同步改好。非有限值回 1，范围与
+ *  Rust MIN_SCALE/MAX_SCALE 一致。 */
+function applyScale(next: number): void {
+  const scale = Number.isFinite(next)
+    ? Math.min(1.3, Math.max(0.55, next))
+    : 1;
+  if (Math.abs(scale - barScale) < 0.0005) return;
+  barScale = scale;
+  rootEl.style.setProperty("--hud-scale", String(scale));
+}
+
+/** 布局快照落地（layout 事件与启动时 hud_bar_metrics 共用）：方向/停靠边
+ *  变了才 renderItems（条目 DOM 的宽高由 CSS 变量驱动，缩放本身无需重建） */
+function applyLayoutSnapshot(next: HudBarLayout): void {
+  const nextOrientation: "vertical" | "horizontal" =
+    next.orientation === "horizontal" ? "horizontal" : "vertical";
+  const nextEdge =
+    next.edge === "right" ? "right" : next.edge === "top" ? "top" : "left";
+  const changed = nextOrientation !== orientation || nextEdge !== barEdge;
+  applyOrientation(nextOrientation);
+  applyEdge(nextEdge);
+  applyScale(next.scale);
+  if (changed) renderItems();
+}
+
+/** 调整回执落地：方向不变，只需同步缩放（窗口已由 Rust 改好） */
+function applyResizeState(st: HudResizeState): void {
+  applyScale(st.scale);
 }
 
 /** 多窗口同心环的几何档位：[窗口数 − 1] → 半径（外→内）/ 统一描边 /
@@ -1032,8 +1096,11 @@ function ringSvg(
           `stroke-linecap="round" stroke-dasharray="${(used / 100) * c} ${c}" transform="rotate(-90 21 21)"/>`
         : "");
   });
+  // 图标尺寸用「环尺寸 × 档位比例」表达（见 hud.html 的 CSS）：用户拖拽
+  // 缩放时只改变 --hud-scale，条目 DOM 不需要重建
+  const iconRatio = layout.icon / 32;
   return (
-    `<div class="hud-ring" style="--hud-icon-size:${layout.icon}px">` +
+    `<div class="hud-ring" style="--hud-icon-ratio:${iconRatio}">` +
     `<svg viewBox="0 0 42 42" aria-hidden="true">${arcs}</svg>` +
     `<span class="hud-agent-icon">${iconSvg(source)}</span>` +
     `</div>`
@@ -1093,12 +1160,9 @@ function renderItems(): void {
     stripEl.appendChild(item);
     shown++;
   }
-  // 面板宽度：**两种朝向都不展开**（横排按条目数撑开、竖排恒 56），
-  // 窗口尺寸由 Rust bar_metrics 维护，这里只把宽度写进 CSS 变量。
-  const count = Math.max(1, shown);
-  const gaps = (count - 1) * 2;
-  const collapsedW = orientation === "horizontal" ? 16 + count * 40 + gaps : 56;
-  stripEl.style.setProperty("--hud-w-collapsed", `${collapsedW}px`);
+  // 面板宽高由 CSS 填满窗口内容盒（窗口尺寸由 Rust bar_metrics 按
+  // 条目数/缩放/拉伸维护）；这里只标记单条目，让 space-between 改居中。
+  stripEl.classList.toggle("single", shown <= 1);
   stripEl.appendChild(emptyEl);
   emptyEl.textContent = msg.empty;
   emptyEl.classList.toggle("on", shown === 0);
@@ -1340,8 +1404,9 @@ function stopPointerWatch(): void {
  * 影响，是"移出去不折叠/移上去不误收"的统一兜底。
  */
 async function checkPointer(): Promise<void> {
-  // 拖拽中：指针被窗口带着走，任何"离开条/卡"的判定都不成立，直接让位
-  if (dragging) return;
+  // 拖拽/调整尺寸中：指针被窗口带着走，任何"离开条/卡"的判定都不成立，
+  // 直接让位
+  if (dragging || resizing) return;
   const dockOpen = rootEl.classList.contains("hud-open");
   if (!detailSource && !dockOpen) {
     // 抽屉/卡片还在排队（hover 70ms 防扫过、条目切换 60ms 防抖）时别停
@@ -1440,7 +1505,7 @@ function scheduleCardClose(waitMs = 260): void {
  *  条上"的状态位给收起逻辑与调试用。hover 给 70ms 防扫过误触；点击详情
  *  立即置位 */
 function openDock(immediate = false): void {
-  if (dragging) return; // 拖拽中保持默认的收起态
+  if (dragging || resizing) return; // 拖拽/调整中保持默认的收起态
   clearCollapseTimer();
   ensurePointerWatch();
   if (rootEl.classList.contains("hud-open")) return;
@@ -1610,6 +1675,7 @@ function applyDragState(st: HudDragState): void {
  *  需要"先缩回画布"）。指针位置不再从前端事件取——跨屏时各屏缩放比不同，
  *  只有 GetCursorPos 是全局一致的；前端只负责"开始/结束"两个时机。 */
 async function beginDrag(): Promise<void> {
+  if (resizing) return;
   dragging = true;
   hoverSuspended = true;
   suppressClick = true;
@@ -1672,6 +1738,111 @@ async function endDrag(): Promise<void> {
   }, 350);
 }
 
+// ---- 尺寸调整（隐形热区 → Rust 16ms 会话）----
+// 与拖拽同款：不依赖 pointermove 的坐标（跨屏 DPI 下前端 screenX 口径
+// 不一致），前端只负责"按下/松开"两个时机，Rust 每帧读系统光标反解
+// scale/stretch 并改窗口；回执里的 scale 写回 CSS 变量，环/图标即时缩放。
+/** 安装热区监听（幂等：hud.html 里已有静态节点；热重载重复调用不叠监听） */
+function installResizeHotzones(): void {
+  if (rootEl.dataset.hudResizeInstalled === "1") return;
+  rootEl.dataset.hudResizeInstalled = "1";
+  document.querySelectorAll<HTMLElement>("[data-hud-resize]").forEach((zone) => {
+    zone.addEventListener("pointerdown", (e) => {
+      if (e.button !== 0 || CARD_MODE) return;
+      e.preventDefault();
+      e.stopPropagation();
+      // 捕获指针：拖到窗口外/快速甩动时 pointerup 仍能回到本窗口，
+      // 与 16ms 系统光标轮询互补（捕获失败不影响，轮询照常收尾）
+      try {
+        zone.setPointerCapture(e.pointerId);
+      } catch {
+        /* 事件流已结束/不支持捕获：静默 */
+      }
+      const handle = zone.dataset.hudResize;
+      if (handle) void beginResize(handle);
+    });
+  });
+}
+
+/** 开始调整：先收起卡片/悬停，再开 Rust 会话并 16ms 轮询 */
+async function beginResize(handle: string): Promise<void> {
+  if (CARD_MODE || dragging || resizing) return;
+  resizing = true;
+  resizeStarting = true;
+  resizeEndedEarly = false;
+  hoverSuspended = true;
+  suppressClick = true;
+  collapseForDrag();
+  try {
+    const st = await invoke<HudResizeState>("hud_bar_resize_begin", { handle });
+    resizeStarting = false;
+    if (resizeEndedEarly) {
+      // 松手发生在 begin 回执之前：会话已建立，立即按收尾流程清掉
+      resizeEndedEarly = false;
+      resizing = false;
+      await finalizeResize();
+      return;
+    }
+    applyResizeState(st);
+    if (resizeTimer !== null) clearInterval(resizeTimer);
+    resizeTimer = setInterval(() => {
+      void pollResize();
+    }, 16);
+  } catch {
+    // 失败（无窗口/已有会话）：复位状态，顺手收敛 Rust 侧
+    resizeStarting = false;
+    resizing = false;
+    resizeEndedEarly = false;
+    hoverSuspended = false;
+    suppressClick = false;
+    void invoke("hud_bar_resize_end").catch(() => {});
+  }
+}
+
+/** 轮询一帧：同一时刻只允许一个在途请求（16ms 节拍自然重发） */
+async function pollResize(): Promise<void> {
+  if (!resizing || resizeInflight) return;
+  resizeInflight = true;
+  try {
+    const st = await invoke<HudResizeState>("hud_bar_resize_move");
+    if (resizing) applyResizeState(st);
+  } catch {
+    /* 单帧失败静默：下一帧重试 */
+  }
+  resizeInflight = false;
+}
+
+/** 松手入口：begin 还没回执时只记账，等回执落地后再收尾 */
+async function endResize(): Promise<void> {
+  if (!resizing) return;
+  if (resizeStarting) {
+    resizeEndedEarly = true;
+    return;
+  }
+  resizing = false;
+  if (resizeTimer !== null) {
+    clearInterval(resizeTimer);
+    resizeTimer = null;
+  }
+  await finalizeResize();
+}
+
+/** 真正的收尾：Rust 按最后光标位置落盘并推布局，恢复悬停 */
+async function finalizeResize(): Promise<void> {
+  try {
+    const st = await invoke<HudResizeState>("hud_bar_resize_end");
+    applyResizeState(st);
+  } catch {
+    /* 静默：尺寸已由最后一帧落地，落盘失败下次调整再写 */
+  }
+  suppressClick = false;
+  if (hoverResumeTimer) clearTimeout(hoverResumeTimer);
+  hoverResumeTimer = setTimeout(() => {
+    hoverResumeTimer = null;
+    hoverSuspended = false;
+  }, 350);
+}
+
 stripEl.addEventListener("pointerdown", (e) => {
   if (e.button !== 0) return;
   const item = hitItem(e);
@@ -1696,15 +1867,18 @@ document.addEventListener("pointermove", (e) => {
 document.addEventListener("pointerup", () => {
   drag = null;
   void endDrag();
+  void endResize();
 });
-// 指针被系统收走 / 窗口失焦：兜底结束拖拽，避免卡在拖拽态
+// 指针被系统收走 / 窗口失焦：兜底结束拖拽/调整，避免卡在会话态
 document.addEventListener("pointercancel", () => {
   drag = null;
   void endDrag();
+  void endResize();
 });
 window.addEventListener("blur", () => {
   drag = null;
   void endDrag();
+  void endResize();
 });
 
 stripEl.addEventListener("click", (e) => {
@@ -1729,8 +1903,8 @@ stripEl.addEventListener("pointerover", (e) => {
   const item = hitItem(e);
   if (!item) return;
   if (drag && !drag.started) return; // 按下未超阈值：让位给点击/拖拽判定
-  // 拖拽中/刚松手：不展开、不换卡（松手 600ms 后或指针离开再恢复）
-  if (dragging || hoverSuspended) return;
+  // 拖拽/调整中/刚松手：不展开、不换卡（松手 600ms 后或指针离开再恢复）
+  if (dragging || resizing || hoverSuspended) return;
   const source = item.dataset.source ?? "";
   if (!source) return;
   // 同一条目：已在显示或正在展开 → 直接返回。条目内部子元素（环/SVG/
@@ -1806,7 +1980,15 @@ setInterval(() => {
 const mainBar = async (): Promise<void> => {
   applyOrientation(orientation);
   applyEdge(barEdge);
+  // 启动先主动拉一次布局/尺寸快照：建窗时 push_layout 的事件大概率早于
+  // listen 注册而丢失，若不拉就会先按 1.0 渲染一帧再被纠正（尺寸跳一下）
+  try {
+    applyLayoutSnapshot(await invoke<HudBarLayout>("hud_bar_metrics"));
+  } catch {
+    /* 纯浏览器/命令失败：按窗口横竖比自判的默认布局渲染 */
+  }
   renderItems();
+  installResizeHotzones();
 
   // 数据流：数据线程推送的额度（内容变化才推，事件停流保持最后内容）
   try {
@@ -1818,18 +2000,11 @@ const mainBar = async (): Promise<void> => {
     /* 监听失败保持空态（与 pet/session-hud 同款降级） */
   }
 
-  // 布局流：贴边吸附换边后的横竖排切换 + 停靠边（卡片定向依据）
+  // 布局流：吸附换边/调整尺寸后推送方向 + 停靠边 + 缩放快照。方向变了
+  // 才重渲染条目；缩放只需同步 CSS 变量（条目 DOM/环尺寸都由它派生）
   try {
     await listen<HudBarLayout>("zbar://hud-bar-layout", (e) => {
-      const { orientation: nextOrientation, edge } = e.payload;
-      if (nextOrientation === "vertical" || nextOrientation === "horizontal") {
-        applyOrientation(nextOrientation);
-        if (edge === "left" || edge === "right" || edge === "top") {
-          applyEdge(edge);
-        }
-        // 布局翻转后条目几何/抽屉宽度变量都变了：重渲染并重锚详情卡
-        renderItems();
-      }
+      applyLayoutSnapshot(e.payload);
     });
   } catch {
     /* 静默：保持启动时按窗口横竖比自判的布局 */
@@ -2057,6 +2232,8 @@ if (import.meta.env.DEV) {
     showSeq,
     cardSeq,
     lastMount,
+    barScale,
+    resizing,
     usageAgents: usage?.agents.length ?? -1,
     t: Math.round(performance.now()),
   });

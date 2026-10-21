@@ -114,6 +114,9 @@ export const en: typeof zh = {
     "stats.pin": "Always on top",
     "stats.unpin": "Disable always on top",
     "stats.github": "GitHub repository",
+    "stats.hudBar": "HUD dock bar",
+    "stats.hudBarOn": "HUD dock bar is on (click to hide)",
+    "stats.hudBarOff": "HUD dock bar is off (click to show)",
     "stats.priceSettings": "Pricing",
     // Title/aria for the "Pricing" footer button: pricing now lives in the main window
     "stats.priceSettingsHint": "Pricing (opens in main window)",

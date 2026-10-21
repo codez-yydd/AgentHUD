@@ -3,6 +3,7 @@ import { UPDATE_READY_KEY, UPDATE_READY_EVENT } from "./updater";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import type { CredentialKind, Currency, PricingConfig, StatsTab } from "./types";
+import { getHudBarState, onHudBarState, setHudBarEnabled } from "./hudBar";
 import { fetchPin, openMainWindow, setPin, selectableRemoteDevices } from "./api";
 import { useDataCache } from "./DataCache";
 import { QuotaPanel } from "./QuotaPanel";
@@ -382,6 +383,43 @@ export function StatsPanel({
     /windows/i.test(navigator.userAgent);
   const [pinned, setPinned] = useState(false);
 
+  // ===== HUD 停靠条开关（顶部工具栏图标按钮）=====
+  // 状态真相在 Rust（hud-bar.json）：启动拉一次，之后托盘菜单/本按钮/异常
+  // 销毁都通过 zbar://hud-bar-state 广播同步，面板不维护第二份开关。
+  const [hudEnabled, setHudEnabled] = useState(false);
+  const [hudBusy, setHudBusy] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    getHudBarState()
+      .then((state) => {
+        if (alive) setHudEnabled(state.enabled);
+      })
+      .catch(() => {
+        /* 读取失败按关闭态显示；点击时以命令回执为准 */
+      });
+    const unlisten = onHudBarState((enabled) => {
+      if (alive) setHudEnabled(enabled);
+    });
+    return () => {
+      alive = false;
+      void unlisten.then((fn) => fn()).catch(() => {
+        /* 窗口卸载/ACL 拒绝：无副作用 */
+      });
+    };
+  }, []);
+
+  const toggleHudBar = useCallback(() => {
+    if (hudBusy) return;
+    const next = !hudEnabled;
+    // 乐观更新：建窗/隐藏需要主线程往返，先让按钮立刻响应；失败回滚
+    setHudEnabled(next);
+    setHudBusy(true);
+    setHudBarEnabled(next)
+      .then((actual) => setHudEnabled(actual))
+      .catch(() => setHudEnabled(!next))
+      .finally(() => setHudBusy(false));
+  }, [hudBusy, hudEnabled]);
+
   // 标题栏「主窗口」图标按钮打开失败的轻提示（建窗失败此前是纯静默：点了
   // 没反应，用户只会以为按钮坏了）。提示胶囊展示在底部信息行（工具条内没有
   // 放文字的位置），2.4s 后自动消失，不新增常驻 UI。
@@ -490,9 +528,10 @@ export function StatsPanel({
             </h1>
           </div>
           {/* shrink-0：窗口压到 300px 时标题先让位（truncate），按钮组不压缩。
-              含主窗口入口共 10 个 button（Windows 下；非 Windows 无置顶按钮为 9 个）：
-              10×22px + 9×2px 间距 = 238px ≤ 300 − 24(px-3) = 276px 可用宽度，
-              按钮不换行也不裁切；标题挤到约 38px 由 truncate 收尾 */}
+              含主窗口入口/HUD 开关共 11 个 button（Windows 下；非 Windows 无
+              置顶按钮为 10 个）：11×22px + 10×2px 间距 = 262px ≤ 300 −
+              24(px-3) = 276px 可用宽度，按钮不换行也不裁切；标题压到约
+              14px 由 truncate 收尾 */}
           <div className="flex items-center gap-0.5 shrink-0">
             <button
               onClick={onGoReports}
@@ -532,6 +571,35 @@ export function StatsPanel({
                 <rect x="2" y="3" width="20" height="14" rx="2" />
                 <path d="M8 21h8" />
                 <path d="M12 17v4" />
+              </svg>
+            </button>
+            {/* HUD 停靠条开关：与主窗口入口同组（都是"另一个常驻视图"）。
+                开启时高亮为翠绿，悬停 title 说明当前状态与点击动作；托盘
+                右键菜单仍保留同一开关，两处状态经 zbar://hud-bar-state 同步 */}
+            <button
+              onClick={toggleHudBar}
+              disabled={hudBusy}
+              className={`toolbar-btn ${
+                hudEnabled ? "text-emerald-600!" : ""
+              } ${hudBusy ? "opacity-40" : ""}`}
+              title={
+                hudEnabled ? t("stats.hudBarOn") : t("stats.hudBarOff")
+              }
+              aria-label={t("stats.hudBar")}
+              aria-pressed={hudEnabled}
+            >
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                className="h-3.5 w-3.5"
+                aria-hidden
+              >
+                <rect x="5" y="3" width="14" height="18" rx="3.5" />
+                <path d="M9 8h.01M9 12h.01M9 16h.01" />
               </svg>
             </button>
             <ThemeToggle />

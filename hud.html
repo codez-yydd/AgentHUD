@@ -15,17 +15,17 @@
         深色，参照 jazzenchen/agent-hud-open Simple 模式的审美锚点）。
       - 视觉：每 Agent 一个条目 "语义环 + 品牌图标"，**条上不出数字**（环
          的比例与颜色就是健康度，按已用 <70 绿 / <90 黄 / ≥90 红分档）；
-         停靠条为近纯黑圆角面板。两种朝向都只露出 32px 环（面板 56 宽），
-         悬浮时直接浮出该 Agent 的额度与 Token 明细卡；移入卡片可继续
-         操作。余额型条目（dsh = DeepSeek 官方余额）环内不画进度弧，金额
-         在详情卡的余额行里给。
+         停靠条为近纯黑圆角面板。两种朝向都只露出语义环（基准 32px，
+         随用户缩放倍率变化），悬浮时直接浮出该 Agent 的额度与 Token 明细
+         卡；移入卡片可继续操作。余额型条目（dsh = DeepSeek 官方余额）环内
+         不画进度弧，金额在详情卡的余额行里给。
          详情卡为 304px 宽：品牌头像 + 套餐徽标 + 健康状态、逐窗口两行式
          额度行（状态点/已用%/进度轨/剩余与倒计时）或余额行、24h 输入/输出/
          缓存堆叠直方图 + 今日/请求/峰值，底栏为窗口数与「打开主窗口」入口。
       - 布局：#hud-root 竖排 flex column / 横排 flex row（.horizontal
-         类切换）。**胶囊面板固定尺寸**（竖排 56×N、横排 N×58，不写
-         width/height:100%），停靠边经 .edge-right 类控制横向贴右（贴右时
-         面板钉住窗口右缘）；贴左/贴顶默认 flex-start。
+         类切换），胶囊面板 #hud-strip 填满窗口去掉 6px 屏缘留白后的内容盒；
+         停靠边经 .edge-right 类控制卡片/热区方向。条目沿长轴用
+         space-between 分布，拉伸倍率 >1 时多出的空间变成条目间空隙。
       - 拖拽热区分层（Tauri 2 的 data-tauri-drag-region 只认 mousedown
         目标元素自身带属性）：#hud-root（背景留白壳，含 6px padding 区）
         与 #hud-empty 直接带属性；#hud-strip 胶囊底带属性；条目 .hud-item
@@ -34,13 +34,19 @@
         的"阈值拖拽"：pointerdown 记录起点、位移超 4px 才手动
         startDragging（拖拽已启动则跳过随后派发的 click），未超阈值松手
         = 纯点击开详情卡。
-      - 尺寸栅格：窗口 68 宽（竖排）/ 70 高（横排），透明屏缘间隙 6
-        （#hud-root padding）；胶囊面板 56×条长（竖排）/ 条长×58（横排），
-        面板内边距 8、条目 40×42、条目间距 2、环 32。与 Rust 侧
-        hud_bar.rs 的 bar_metrics 常量（BAR_THICK/BAR_THICK_TOP/ITEM_LEN/
-        ITEM_W_COLLAPSED/BAR_PAD/PANEL_PAD/ITEM_GAP）一一对应，窗口尺寸
-        由 Rust 按条目数与停靠边维护，页面内容必须落在同样的栅格上，
-        否则出现裁切或空白。
+      - 尺寸栅格（基准 = 缩放 1）：窗口 68 宽（竖排）/ 70 高（横排），
+         透明屏缘间隙固定 6（不随缩放变）
+        （#hud-root padding，保证投影不被裁切）；面板内边距 8×s、条目
+        40×42×s、条目间距 2×s、环 32×s。与 Rust 侧
+        hud_bar.rs 的 bar_metrics/length_parts 一一对应：窗口尺寸由 Rust
+        按条目数、停靠边、scale（拖内侧边/角）与 stretch（拖两端/角）维护，
+        页面内容必须落在同样的栅格上，否则出现裁切或空白。图标尺寸用
+        --hud-icon-ratio × --hud-ring-size 派生，缩放时无需重建条目 DOM。
+      - 尺寸调整热区：#hud-resize-layer 的隐形边/角（inner/start/end/
+        inner-start/inner-end）只盖在面板内边距与屏缘留白上，不挡条目
+        点击；pointerdown 交给 hud-main.ts 开 Rust hud_bar_resize_* 会话，
+        由系统光标逐帧改窗口宽高。Tauri 在 Windows 无边框窗上的系统边缘
+        热区不可用，所以必须自绘。
       - 弹出画布：详情卡是**独立窗口**（label = hud-card），条窗口全程
         不改几何；#hud-pop 只在卡片窗口自己的页面里铺满视口（data-mode=
         card），条窗口里保持 display:none。
@@ -71,16 +77,22 @@
         --hud-warn: #fbbf24; /* 已用 70–89% 黄 */
         --hud-low: #f87171; /* 已用 ≥90% 红 */
         --hud-ring-track: #2b2e33; /* 环底轨 */
+        /* 用户缩放（Rust hud_bar 的 scale）：hud-main.ts 在布局/调整事件里
+           写这个变量，下面所有面板尺寸都乘它；屏缘 6px 留白不参与缩放
+           （投影必须永远落在窗口留白内，见 #hud-strip 的 box-shadow） */
+        --hud-scale: 1;
+        --hud-ring-size: calc(32px * var(--hud-scale));
         box-sizing: border-box;
+        position: relative; /* 自绘调整热区层的定位基准 */
         width: 100%;
         height: 100%;
-        padding: 6px; /* BAR_PAD（与 Rust bar_metrics 同步） */
-        /* 尺寸由 Rust bar_metrics 按停靠边下发，窗口就是条本身（不再为
-           卡片扩窗——卡片是独立的 hud-card 窗口，见 Rust hud_bar 模块
-           doc）。这里只管把面板摆在窗口的对应边缘。 */
+        padding: 6px; /* BAR_PAD（与 Rust bar_metrics 同步，固定不缩放） */
+        /* 尺寸由 Rust bar_metrics 按停靠边/缩放/拉伸下发，窗口就是条本身
+           （不再为卡片扩窗——卡片是独立的 hud-card 窗口，见 Rust hud_bar
+           模块 doc）。 */
         display: flex;
         flex-direction: column;
-        align-items: flex-start;
+        align-items: stretch;
         justify-content: center;
         gap: 0;
         font-family:
@@ -102,12 +114,13 @@
       #hud-root.edge-right {
         align-items: flex-end;
       }
-      /* 胶囊面板：固定厚度 56（竖排）/ 固定高度 58（横排），长度由条目数
-         决定（Rust 同步窗口尺寸）——不写 100%，否则被窗口裁切/拉长。
-         近纯黑半透明 + 1px 内描边 + 深投影，浅色壁纸上也立得住。圆角 24
-         （56 宽面板上接近半圆端，胶囊感）。**描边用 inset box-shadow 而非
-         border**：border 会占用 box-sizing 宽高，条目就放不进 Rust
-         bar_metrics 的 68/70 栅格 */
+      /* 胶囊面板：填满窗口去掉 6px 屏缘留白后的内容盒（窗口尺寸由 Rust
+         按停靠边/缩放/拉伸下发，面板内容与窗口栅格一一对应）。条目沿长轴
+         用 space-between 分布：拉伸倍率 >1 时多出来的空间变成条目间空隙。
+         近纯黑半透明 + 1px 内描边 + 深投影，浅色壁纸上也立得住。圆角
+         24×s（56×s 宽面板上接近半圆端，胶囊感）。**描边用 inset
+         box-shadow 而非 border**：border 会占用 box-sizing 宽高，条目就
+         放不进 Rust bar_metrics 的栅格 */
       #hud-strip {
         flex: none;
         box-sizing: border-box;
@@ -116,14 +129,14 @@
         display: flex;
         flex-direction: column;
         align-items: center;
-        gap: 2px; /* ITEM_GAP（与 Rust bar_metrics 同步） */
-        /* 竖排固定 56 = 面板内边距 8×2 + 条目 40；横排由 hud-main.ts 按
-           条目数写入（--hud-w-collapsed）。两种朝向都不展开抽屉 */
-        width: var(--hud-w-collapsed, 56px);
-        padding: 8px; /* PANEL_PAD（与 Rust bar_metrics 同步） */
+        justify-content: space-between;
+        gap: calc(2px * var(--hud-scale)); /* ITEM_GAP */
+        width: 100%;
+        height: 100%;
+        padding: calc(8px * var(--hud-scale)); /* PANEL_PAD */
         overflow: hidden;
         background: rgba(9, 10, 13, 0.97);
-        border-radius: 24px;
+        border-radius: calc(24px * var(--hud-scale));
         /* 外阴影必须落在窗口 6px 留白内（blur + offset ≤ 6）：越界的那
            部分会被窗口边缘硬裁成一条可见的深色直边，看起来就像面板外面
            多套了一圈"透明边框" */
@@ -132,11 +145,12 @@
           inset 0 1px 0 rgba(255, 255, 255, 0.06),
           0 2px 5px -1px rgba(0, 0, 0, 0.45);
       }
+      /* 单条目：space-between 会把唯一子项顶到起点，改为居中 */
+      #hud-strip.single {
+        justify-content: center;
+      }
       #hud-root.horizontal #hud-strip {
         flex-direction: row;
-        width: var(--hud-w-collapsed, 56px);
-        height: 58px; /* PANEL_PAD×2 + ITEM_LEN(42) */
-        padding: 8px;
       }
       /* 单条目：语义环 + 品牌图标（数字全进详情卡，条上不出文字）。竖排
          纵向排、横排横向排；不带 data-tauri-drag-region——条目可点/可悬浮，
@@ -145,17 +159,22 @@
         position: relative;
         flex: none;
         box-sizing: border-box;
-        /* 只露出 32px 环：32 + 条目内边距 4×2 = 40（横竖排同宽） */
-        width: 40px;
-        height: 42px; /* ITEM_LEN（竖排 = 条目高 / 横排 = 条目高） */
+        /* 竖排：宽度填满面板内容盒（40×s），高度 42×s；
+           横排：宽度 40×s，高度填满内容盒（42×s） */
+        width: 100%;
+        height: calc(42px * var(--hud-scale)); /* ITEM_LEN */
         display: flex;
         align-items: center;
         gap: 0;
-        padding: 0 4px;
-        border-radius: 13px;
+        padding: 0 calc(4px * var(--hud-scale));
+        border-radius: calc(13px * var(--hud-scale));
         cursor: pointer;
         overflow: hidden;
         transition: background-color 120ms ease;
+      }
+      #hud-root.horizontal .hud-item {
+        width: calc(40px * var(--hud-scale)); /* ITEM_W_COLLAPSED */
+        height: 100%;
       }
       /* 贴右停靠：环的排列镜像（与贴左保持同一条屏缘轴线） */
       #hud-root.edge-right .hud-item {
@@ -191,16 +210,16 @@
       .hud-ring {
         position: relative;
         flex: none;
-        width: 32px;
-        height: 32px;
+        width: var(--hud-ring-size);
+        height: var(--hud-ring-size);
       }
       .hud-ring svg {
         display: block;
-        width: 32px;
-        height: 32px;
+        width: var(--hud-ring-size);
+        height: var(--hud-ring-size);
       }
       /* 环心 agent 图标：单环 15px（环内径的 ~54%）；双环/三环时由
-         hud-main.ts 写入 --hud-icon-size 收小（11.5 / 10），避免压住内环。
+         hud-main.ts 写入 --hud-icon-ratio 收小（11.5/32、10/32），避免压住内环。
          品牌单色 currentColor 白（minimax 多段轮廓在小尺寸下糊成色块，已
          降级为深底白首字母徽标，见 hud-main.ts） */
       .hud-ring .hud-agent-icon {
@@ -212,9 +231,12 @@
         color: #fff;
         pointer-events: none;
       }
+      /* 图标尺寸 = 环尺寸 × 档位比例（单圈 15/32、双圈 11.5/32、三圈
+         10/32；比例由 hud-main.ts 按窗口数写 --hud-icon-ratio）。用比例
+         而不是写死 px，拖拽缩放时无需重建条目 DOM */
       .hud-ring .hud-agent-icon svg {
-        width: var(--hud-icon-size, 15px);
-        height: var(--hud-icon-size, 15px);
+        width: calc(var(--hud-ring-size) * var(--hud-icon-ratio, 0.46875));
+        height: calc(var(--hud-ring-size) * var(--hud-icon-ratio, 0.46875));
       }
       /* 条上不出数字（两种朝向统一）：百分比/余额只在悬浮详情卡里给，
          条目 = 环 + 品牌图标，视觉上就是一条安静的图标带 */
@@ -241,12 +263,12 @@
       #hud-empty {
         box-sizing: border-box;
         width: 100%;
-        height: 42px;
+        height: calc(42px * var(--hud-scale));
         display: none;
         align-items: center;
         justify-content: center;
-        padding: 0 2px;
-        font-size: 10.5px;
+        padding: 0 calc(2px * var(--hud-scale));
+        font-size: calc(10.5px * var(--hud-scale));
         line-height: 1.15;
         text-align: center;
         color: #6b7280;
@@ -260,8 +282,147 @@
       /* 横排空态：面板宽度由条目宽撑起，空态占位给固定宽（与条目宽 40
          同步），否则 width:100% 在 auto 宽的面板里塌成文字宽 */
       #hud-root.horizontal #hud-empty {
-        width: 40px;
-        height: 42px;
+        width: calc(40px * var(--hud-scale));
+        height: 100%;
+      }
+      /* ===== 自绘调整热区层 =====
+         条窗口是 undecorated 且 resizable(false)（Tauri/tao 在 Windows
+         无边框窗上的系统边缘热区不生效），所以尺寸调整由这一层隐形热区 +
+         Rust hud_bar_resize_* 会话完成：
+         - inner：内侧边（竖排右/贴右左/横排下），拖它改厚度 scale；
+         - start/end：条长的两端，拖它改长度 stretch（条目间空隙变大）；
+         - inner-start/inner-end：角上同时改两者。
+         热区只盖在面板内边距/屏缘留白上，不挡条目点击与悬浮；cursor 直接
+         用系统缩放光标提示可拖拽。层本身 pointer-events:none。 */
+      #hud-resize-layer {
+        position: absolute;
+        inset: 0;
+        z-index: 20;
+        pointer-events: none;
+      }
+      .hud-rz {
+        position: absolute;
+        pointer-events: auto;
+        touch-action: none;
+      }
+      .hud-rz-inner {
+        top: 0;
+        bottom: 0;
+        right: 0;
+        width: 12px;
+        cursor: ew-resize;
+      }
+      #hud-root.edge-right .hud-rz-inner {
+        right: auto;
+        left: 0;
+      }
+      #hud-root.horizontal .hud-rz-inner {
+        top: auto;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        width: auto;
+        height: 12px;
+        cursor: ns-resize;
+      }
+      .hud-rz-start,
+      .hud-rz-end {
+        left: 0;
+        right: 0;
+        height: 12px;
+        cursor: ns-resize;
+      }
+      .hud-rz-start {
+        top: 0;
+      }
+      .hud-rz-end {
+        bottom: 0;
+      }
+      #hud-root.horizontal .hud-rz-start,
+      #hud-root.horizontal .hud-rz-end {
+        top: 0;
+        bottom: 0;
+        width: 12px;
+        height: auto;
+        cursor: ew-resize;
+      }
+      #hud-root.horizontal .hud-rz-start {
+        left: 0;
+        right: auto;
+      }
+      #hud-root.horizontal .hud-rz-end {
+        left: auto;
+        right: 0;
+      }
+      /* 角热区：默认竖排贴左（内边 = 右、start = 上、end = 下） */
+      .hud-rz-inner-start,
+      .hud-rz-inner-end {
+        right: 0;
+        width: 16px;
+        height: 16px;
+      }
+      .hud-rz-inner-start {
+        top: 0;
+        cursor: nesw-resize;
+      }
+      .hud-rz-inner-end {
+        bottom: 0;
+        cursor: nwse-resize;
+      }
+      #hud-root.edge-right:not(.horizontal) .hud-rz-inner-start,
+      #hud-root.edge-right:not(.horizontal) .hud-rz-inner-end {
+        right: auto;
+        left: 0;
+      }
+      #hud-root.edge-right:not(.horizontal) .hud-rz-inner-start {
+        cursor: nwse-resize;
+      }
+      #hud-root.edge-right:not(.horizontal) .hud-rz-inner-end {
+        cursor: nesw-resize;
+      }
+      #hud-root.horizontal .hud-rz-inner-start,
+      #hud-root.horizontal .hud-rz-inner-end {
+        top: auto;
+        bottom: 0;
+      }
+      #hud-root.horizontal .hud-rz-inner-start {
+        left: 0;
+        right: auto;
+        cursor: nesw-resize;
+      }
+      #hud-root.horizontal .hud-rz-inner-end {
+        left: auto;
+        right: 0;
+        cursor: nwse-resize;
+      }
+      /* 内侧边中间的细握把：常态很淡，悬停变亮（只做发现性提示，不占点击） */
+      .hud-rz-inner::after {
+        content: "";
+        position: absolute;
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.16);
+        transition: background-color 140ms ease;
+      }
+      #hud-root:not(.horizontal) .hud-rz-inner::after {
+        top: 50%;
+        right: 5px;
+        width: 2px;
+        height: 28px;
+        transform: translateY(-50%);
+      }
+      #hud-root.edge-right:not(.horizontal) .hud-rz-inner::after {
+        right: auto;
+        left: 5px;
+      }
+      #hud-root.horizontal .hud-rz-inner::after {
+        left: 50%;
+        bottom: 5px;
+        width: 28px;
+        height: 2px;
+        transform: translateX(-50%);
+      }
+      .hud-rz-inner:hover::after {
+        background: rgba(255, 255, 255, 0.5);
       }
       /* 弹出层：详情卡的宿主。只在卡片窗口的页面里铺满视口
          （html[data-mode="card"] 打开，见下），条窗口里恒 display:none，
@@ -287,7 +448,8 @@
         overflow: visible;
       }
       html[data-mode="card"] #hud-strip,
-      html[data-mode="card"] #hud-empty {
+      html[data-mode="card"] #hud-empty,
+      html[data-mode="card"] #hud-resize-layer {
         display: none;
       }
       html[data-mode="card"] #hud-pop {
@@ -862,6 +1024,18 @@
            （防吞点击），由 hud-main.ts 阈值拖拽接管 -->
       <div id="hud-strip" data-tauri-drag-region="">
         <div id="hud-empty" data-tauri-drag-region=""></div>
+      </div>
+      <!-- 隐形调整热区（几何/光标见样式区注释）：pointerdown 交给
+           hud-main.ts 开 Rust 会话，轮询系统光标改窗口宽高 -->
+      <div id="hud-resize-layer" aria-hidden="true">
+        <div class="hud-rz hud-rz-inner" data-hud-resize="inner"></div>
+        <div class="hud-rz hud-rz-start" data-hud-resize="start"></div>
+        <div class="hud-rz hud-rz-end" data-hud-resize="end"></div>
+        <div
+          class="hud-rz hud-rz-inner-start"
+          data-hud-resize="inner-start"
+        ></div>
+        <div class="hud-rz hud-rz-inner-end" data-hud-resize="inner-end"></div>
       </div>
     </div>
     <div id="hud-pop"></div>

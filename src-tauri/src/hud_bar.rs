@@ -23,8 +23,10 @@
 //! 某源查询失败 → 该源本轮跳过（不阻塞其他源）；全部失败 → 空态占位。
 //!
 //! 窗口形态与铁律（照搬 session_hud.rs / pet.rs）：
-//! - 透明、无边框、置顶、skipTaskbar、shadow 关闭、不可 resize、
-//!   focusable(false)+focused(false)（不抢编辑器焦点，鼠标交互不受影响）；
+//! - 透明、无边框、置顶、skipTaskbar、shadow 关闭、focusable(false)+
+//!   focused(false)（不抢编辑器焦点，鼠标交互不受影响）；窗口本身保持
+//!   resizable(false)，用户改宽高走自绘热区 + hud_bar_resize_* 会话
+//!   （Windows 无边框窗没有可用的系统边缘热区）；
 //! - Windows 隐藏建窗 → set_size → show 的钳宽顺序（68 逻辑宽远小于
 //!   WM_GETMINMAXINFO 默认最小跟踪宽度，min_inner_size(1,1) 覆盖，
 //!   见 pet.rs 的事故记载）；
@@ -47,8 +49,8 @@
 //! 回声由 SNAP_POS 位置比对拦截（吸附/扩窗闭包末尾写入，闭包在事件循环
 //! 线程同步执行完毕后回声才分发，时序安全）。
 //!
-//! 详情卡：条窗口厚度只有 68 逻辑 px（贴顶 70），卡片画不下也不能溢出
-//! 窗口边界——所以卡片有**自己的窗口**（"hud-card"，透明置顶、不抢焦点、
+//! 详情卡：条基准厚度只有 68 逻辑 px（贴顶 70，用户可缩放），卡片画不下
+//! 也不能溢出窗口边界——所以卡片有**自己的窗口**（"hud-card"，透明置顶、不抢焦点、
 //! 常驻隐藏预热）。条前端 hover 条目时只 invoke hud_card_open（带 hover
 //! 条目中心的物理坐标），Rust 记下锚点通知卡片页；卡片页按自身实测高度
 //! 回报尺寸，Rust 算屏幕落点（贴着条的展开面板、纵向上对条目中心、钳进
@@ -73,8 +75,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 use tauri::utils::config::BackgroundThrottlingPolicy;
 use tauri::{
-    AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, PhysicalSize,
-    WebviewUrl, WebviewWindow, WebviewWindowBuilder,
+    AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, PhysicalSize, WebviewUrl,
+    WebviewWindow, WebviewWindowBuilder,
 };
 
 use crate::claude::ClaudeRateLimits;
@@ -92,35 +94,50 @@ use crate::quota::QuotaResult;
 pub const HUD_BAR_WINDOW_LABEL: &str = "hud-bar";
 /// 额度数据事件（前端 listen，payload = HudBarUsage，内容变化才推）
 pub const HUD_BAR_USAGE_EVENT: &str = "zbar://hud-bar-usage";
-/// 布局切换事件（吸附换边后推送，payload = { orientation, edge }）
+/// 布局/尺寸事件（吸附换边、调整尺寸落定后推送，payload =
+/// { orientation, edge, scale, stretch }）
 pub const HUD_BAR_LAYOUT_EVENT: &str = "zbar://hud-bar-layout";
 /// 详情态单方面变更通知（Rust 侧吸附强制回位 / 托盘关闭后已隐藏卡片
 /// 窗口并广播 { open: false }，条前端据此收敛本地详情态，防两端失步）
 pub const HUD_BAR_POPOVER_EVENT: &str = "zbar://hud-bar-popover";
 
-/// 条厚度（逻辑 px）：竖排 = 窗口宽（贴左/右）。几何分解与 hud.html
-/// 栅格一一对应：透明屏缘间隙 6×2（#hud-root 的 padding）+ 面板内边距
-/// 8×2 + 条目宽 40（环 32 + 条目内边距 4×2）= 68。两种朝向都**不做抽屉
-/// 展开**（条上只有环与图标，百分比/金额全进详情卡），所以窗口可以贴着
-/// 面板收死，不留透明画布。改任一侧必须同步另一侧，否则出现裁切或空白
+/// 条厚度基准（逻辑 px，缩放 = 1 时）：竖排 = 窗口宽（贴左/右）。几何
+/// 分解与 hud.html 栅格一一对应：透明屏缘间隙 6×2（#hud-root 的 padding，
+/// **不随缩放变化**，保证投影永远落在窗口留白内）+ 面板内边距 8×2×s +
+/// 条目宽 40×s = 68。两种朝向都**不做抽屉展开**（条上只有环与图标，
+/// 百分比/金额全进详情卡），所以窗口可以贴着面板收死，不留透明画布。
+/// 改任一侧必须同步另一侧，否则出现裁切或空白
 const BAR_THICK: f64 = 68.0;
-/// 横排（贴顶）窗口高：屏缘间隙 6×2 + 面板内边距 8×2 + 条目高 42 = 70
+/// 横排（贴顶）窗口高基准（缩放 = 1）：屏缘间隙 6×2 + 面板内边距 8×2 +
+/// 条目高 42 = 70
 const BAR_THICK_TOP: f64 = 70.0;
-/// 竖排单条目长度（逻辑 px）：条目盒高 42（环 32 上下各 5），与 hud.html
-/// .hud-item 尺寸同步
+/// 竖排单条目长度基准（逻辑 px）：条目盒高 42（环 32 上下各 5），与
+/// hud.html .hud-item 尺寸同步；实际值再乘用户缩放 s
 const ITEM_LEN: f64 = 42.0;
-/// 单条目宽度（逻辑 px）：只露环 + 内边距（hud.html .hud-item width 40
-/// 同步）。横竖排共用同一宽度——没有展开态
+/// 单条目宽度基准（逻辑 px）：只露环 + 内边距（hud.html .hud-item width
+/// 40 同步）。横竖排共用同一宽度——没有展开态
 const ITEM_W_COLLAPSED: f64 = 40.0;
-/// 条目间距（逻辑 px）：hud.html #hud-strip 的 gap 同步
+/// 条目间距基准（逻辑 px）：hud.html #hud-strip 的 gap 同步；实际值乘 s
 const ITEM_GAP: f64 = 2.0;
 /// 条与屏缘的视觉间隙（逻辑 px）：hud.html #hud-root padding 同步；吸附
-/// 把窗口贴到屏幕边 x=0/y=0，面板离缘全靠它
+/// 把窗口贴到屏幕边 x=0/y=0，面板离缘全靠它。**固定不缩放**：面板投影
+/// 的 blur + offset ≤ 6，缩放会把留白压小、投影被窗口边缘裁成硬描边
 const BAR_PAD: f64 = 6.0;
-/// 面板内边距（逻辑 px）：hud.html #hud-strip padding 同步
+/// 面板内边距基准（逻辑 px）：hud.html #hud-strip padding 同步，实际值乘 s
 const PANEL_PAD: f64 = 8.0;
-/// 条长度下限（逻辑 px）：单条目时也保持该长度
+/// 条长度下限基准（逻辑 px）：单条目时也保持该长度；实际下限 =
+/// BAR_PAD×2 + (BAR_MIN_LEN − BAR_PAD×2)×s
 const BAR_MIN_LEN: f64 = 96.0;
+/// 用户缩放范围（逻辑尺寸倍率）：拖内侧边/角改变的就是它。下限保证环
+/// 仍可辨认；上限**刻意收紧到 1.3**——HUD 是贴着屏幕边缘的常驻小条，
+/// 放大到 2× 以上会变成一条很宽的色块，既不克制也挡桌面内容（实际还会按
+/// 屏幕工作区再钳一次）。想要更大的图标应优先调系统缩放/分辨率。
+const MIN_SCALE: f64 = 0.55;
+const MAX_SCALE: f64 = 1.3;
+/// 长度拉伸倍率范围（只拉伸条目区，两端留白与面板内边距不参与）：1 = 内容
+/// 刚好放下，>1 = 条目间空隙变大（拖条的两端/角改变的就是它）
+const MIN_STRETCH: f64 = 1.0;
+const MAX_STRETCH: f64 = 2.0;
 /// 详情卡窗口 label（独立窗口，见 hud_card 段）与事件名
 pub const HUD_CARD_WINDOW_LABEL: &str = "hud-card";
 /// 打开一张卡（payload = { source, edge, animate }）
@@ -219,36 +236,115 @@ impl BarEdge {
     }
 }
 
-/// 条窗口尺寸（宽, 高）：竖排 = 68 × 条长，横排 = 条长 ×
-/// 70。条长 = 两端留白 + 面板内边距 + 条目数 × 条目长 + 条目间距，下限
-/// BAR_MIN_LEN（单条目也给悬浮卡留纵向空间）。返回**逻辑 px**（建窗
-/// builder.position / inner_size 走逻辑坐标）。吸附/拖拽闭包与建窗共
-/// 包与建窗共用。
-fn bar_metrics(edge: BarEdge, items: usize) -> (f64, f64) {
-    let n = items.max(1) as f64;
-    let gaps = (n - 1.0).max(0.0) * ITEM_GAP;
-    match edge {
-        BarEdge::Left | BarEdge::Right => {
-            let len = (BAR_PAD * 2.0 + PANEL_PAD * 2.0 + n * ITEM_LEN + gaps)
-                .max(BAR_MIN_LEN);
-            (BAR_THICK, len)
-        }
-        BarEdge::Top => {
-            // 条目只有 40 宽（两种朝向都不出抽屉，数字全进详情卡）：
-            // 窗口必须与可见面板等宽，否则条两侧挂着一圈透明画布
-            // （挡点击，拖拽时指针与条目也对不上）
-            let len = (BAR_PAD * 2.0 + PANEL_PAD * 2.0 + n * ITEM_W_COLLAPSED + gaps)
-                .max(BAR_MIN_LEN);
-            (len, BAR_THICK_TOP)
-        }
+/// 用户缩放收敛：非有限值回 1，再钳进 [MIN_SCALE, MAX_SCALE]。
+fn clamp_scale(scale: f64) -> f64 {
+    if scale.is_finite() {
+        scale.clamp(MIN_SCALE, MAX_SCALE)
+    } else {
+        1.0
     }
 }
 
-/// 收缩态窗口尺寸的物理像素版（吸附/拖拽闭包的 set_size 走物理坐标，
+/// 长度拉伸收敛：非有限值回 1，再钳进 [MIN_STRETCH, MAX_STRETCH]。
+fn clamp_stretch(stretch: f64) -> f64 {
+    if stretch.is_finite() {
+        stretch.clamp(MIN_STRETCH, MAX_STRETCH)
+    } else {
+        1.0
+    }
+}
+
+/// 长度方向的两段几何（逻辑 px）：返回 (固定段, 条目区)。
+/// - 固定段 = 两端屏缘留白（不缩放）+ 面板内边距×2×s；
+/// - 条目区 = n×条目长×s + (n−1)×间距×s。
+/// 条长 = 固定段 + 条目区×stretch：拉伸只放大条目之间的空隙，不把面板
+/// 内边距一起拉宽（否则面板两端会出现一圈很厚的黑边）。
+fn length_parts(edge: BarEdge, items: usize, scale: f64) -> (f64, f64) {
+    let s = clamp_scale(scale);
+    let n = items.max(1) as f64;
+    let item = match edge {
+        BarEdge::Left | BarEdge::Right => ITEM_LEN,
+        BarEdge::Top => ITEM_W_COLLAPSED,
+    } * s;
+    let gaps = (n - 1.0).max(0.0) * ITEM_GAP * s;
+    (BAR_PAD * 2.0 + PANEL_PAD * 2.0 * s, n * item + gaps)
+}
+
+/// 条窗口尺寸（宽, 高）：竖排 = 条厚 × 条长，横排 = 条长 × 条厚。
+/// 条厚 = 屏缘留白×2 + (面板内边距×2 + 条目宽/高)×s；条长 =
+/// 固定段 + 条目区×stretch，下限按缩放同步收敛。返回**逻辑 px**（建窗
+/// builder.position / inner_size 走逻辑坐标）。
+fn bar_metrics(edge: BarEdge, items: usize, scale: f64, stretch: f64) -> (f64, f64) {
+    let s = clamp_scale(scale);
+    let stretch = clamp_stretch(stretch);
+    let (fixed, region) = length_parts(edge, items, s);
+    let min_len = BAR_PAD * 2.0 + (BAR_MIN_LEN - BAR_PAD * 2.0) * s;
+    let len = (fixed + region * stretch).max(min_len);
+    // 条厚与条长使用同一套 s：竖排的条目宽 40、横排的条目高 42
+    let thick = match edge {
+        BarEdge::Left | BarEdge::Right => BAR_PAD * 2.0 + (PANEL_PAD * 2.0 + ITEM_W_COLLAPSED) * s,
+        BarEdge::Top => BAR_PAD * 2.0 + (PANEL_PAD * 2.0 + ITEM_LEN) * s,
+    };
+    match edge {
+        BarEdge::Left | BarEdge::Right => (thick, len),
+        BarEdge::Top => (len, thick),
+    }
+}
+
+/// 窗口尺寸的物理像素版（吸附/拖拽/调整闭包的 set_size 走物理坐标，
 /// 与 outer_size 同口径可直接比对）
-fn bar_metrics_physical(edge: BarEdge, items: usize, scale: f64) -> (f64, f64) {
-    let (w, h) = bar_metrics(edge, items);
-    (w * scale, h * scale)
+fn bar_metrics_physical(
+    edge: BarEdge,
+    items: usize,
+    scale: f64,
+    stretch: f64,
+    dp: f64,
+) -> (f64, f64) {
+    let (w, h) = bar_metrics(edge, items, scale, stretch);
+    let dp = if dp > 0.0 { dp } else { 1.0 };
+    (w * dp, h * dp)
+}
+
+/// 当前缩放下厚度方向的基准内容尺寸（不含屏缘留白），用于把拖拽距离换算
+/// 成 scale：竖排是「面板内边距×2 + 条目宽」，横排是「面板内边距×2 + 条目高」。
+fn thickness_base(edge: BarEdge) -> f64 {
+    // 与 BAR_THICK/BAR_THICK_TOP 的基准分解一致：条厚 − 两端屏缘留白
+    match edge {
+        BarEdge::Left | BarEdge::Right => BAR_THICK - BAR_PAD * 2.0,
+        BarEdge::Top => BAR_THICK_TOP - BAR_PAD * 2.0,
+    }
+}
+
+/// 长度方向的条目区基准尺寸（缩放 = 1、拉伸 = 1），用于求屏幕能容纳的
+/// 最大缩放：与 [`length_parts`] 的条目区一致，但不乘 s。
+fn length_region_base(edge: BarEdge, items: usize) -> f64 {
+    let n = items.max(1) as f64;
+    let item = match edge {
+        BarEdge::Left | BarEdge::Right => ITEM_LEN,
+        BarEdge::Top => ITEM_W_COLLAPSED,
+    };
+    n * item + (n - 1.0).max(0.0) * ITEM_GAP
+}
+
+/// 屏幕工作区能容纳的最大缩放（逻辑倍率）：厚度方向与长度方向各算一次，
+/// 取较小值。手指拖到屏幕边界后不再继续长，避免窗口越过工作区。
+fn max_scale_for_area(edge: BarEdge, items: usize, area: (f64, f64, f64, f64), dp: f64) -> f64 {
+    let dp = if dp > 0.0 { dp } else { 1.0 };
+    let (aw, ah) = (area.2.max(1.0), area.3.max(1.0));
+    let cross_avail = (match edge {
+        BarEdge::Left | BarEdge::Right => aw,
+        BarEdge::Top => ah,
+    } - BAR_PAD * 2.0)
+        .max(1.0);
+    let cross_scale = cross_avail / (thickness_base(edge) * dp);
+    let len_avail = (match edge {
+        BarEdge::Left | BarEdge::Right => ah,
+        BarEdge::Top => aw,
+    } - BAR_PAD * 2.0)
+        .max(1.0);
+    // 条长 = 屏缘留白×2 + (面板内边距×2 + 条目区)×s；面板内边距也乘 s
+    let len_scale = len_avail / ((PANEL_PAD * 2.0 + length_region_base(edge, items)) * dp);
+    clamp_scale(cross_scale.min(len_scale).min(MAX_SCALE))
 }
 
 /// 卡片在屏幕上的落点（**物理 px，全局虚拟桌面坐标**）：纯函数，便于单测。
@@ -266,24 +362,31 @@ fn card_placement(
     card_w: f64,
     card_h: f64,
     area: (f64, f64, f64, f64),
-    scale: f64,
+    dp: f64,
+    ui_scale: f64,
 ) -> (f64, f64) {
-    let (bx, by, _bw, _bh) = bar;
-    let gap = CARD_GAP * scale;
+    let (bx, by, bw, bh) = bar;
+    let dp = if dp > 0.0 { dp } else { 1.0 };
+    let ui = clamp_scale(ui_scale);
+    let gap = CARD_GAP * dp;
+    // 屏缘留白固定不缩放（BAR_PAD），面板宽度/内边距按用户缩放；条窗口
+    // 实际尺寸（bw/bh）是唯一权威，避免调整过程中常量与窗口短暂不同步
+    let bar_pad = BAR_PAD * dp;
+    let panel_w = PANEL_W * ui * dp;
     let x = match edge {
         // 贴右：面板钉在窗口右缘，卡片在面板左侧（窗口整体左侧延展）
-        BarEdge::Right => bx + (BAR_THICK - BAR_PAD - PANEL_W) * scale - gap - card_w,
+        BarEdge::Right => bx + bw - bar_pad - panel_w - gap - card_w,
         // 贴左：卡片在面板右侧
-        BarEdge::Left => bx + (BAR_PAD + PANEL_W) * scale + gap,
+        BarEdge::Left => bx + bar_pad + panel_w + gap,
         // 贴顶：水平跟随条目中心
         BarEdge::Top => anchor_center_x - card_w / 2.0,
     };
     let y = match edge {
         BarEdge::Left | BarEdge::Right => anchor_center_y - card_h / 2.0,
-        BarEdge::Top => by + (BAR_THICK_TOP - BAR_PAD) * scale + gap,
+        BarEdge::Top => by + bh - bar_pad + gap,
     };
     let (ax, ay, aw, ah) = area;
-    let margin = 4.0 * scale;
+    let margin = 4.0 * dp;
     let x = x.clamp(ax + margin, (ax + aw - card_w - margin).max(ax + margin));
     let y = y.clamp(ay + margin, (ay + ah - card_h - margin).max(ay + margin));
     (x, y)
@@ -295,15 +398,16 @@ fn card_placement(
 /// 直接用"到各边距离取最近"会让顶边吃掉大半个屏幕，所以改成：
 /// - 指针进顶部吸附带（工作区顶部 ~14%，56–150px，并留 40px 迟滞）→ 顶；
 /// - 否则按水平中线分左右（带 45%/55% 迟滞，中线附近来回移动不抖）。
-fn drag_edge(
-    pointer: (f64, f64),
-    area: (f64, f64, f64, f64),
-    current: BarEdge,
-) -> BarEdge {
+fn drag_edge(pointer: (f64, f64), area: (f64, f64, f64, f64), current: BarEdge) -> BarEdge {
     let (ax, ay, aw, ah) = area;
     let top_zone = (ah * 0.14).clamp(56.0, 150.0);
     // 迟滞：已经在顶部时多留 40px 才离开，避免贴边抖动
-    let top_limit = ay + if current == BarEdge::Top { top_zone + 40.0 } else { top_zone };
+    let top_limit = ay
+        + if current == BarEdge::Top {
+            top_zone + 40.0
+        } else {
+            top_zone
+        };
     if pointer.1 <= top_limit {
         return BarEdge::Top;
     }
@@ -347,13 +451,15 @@ fn drag_geometry(
     pointer: (f64, f64),
     grab_frac: f64,
     area: (f64, f64, f64, f64),
-    scale: f64,
+    ui_scale: f64,
+    stretch: f64,
+    dp: f64,
 ) -> (BarEdge, f64, f64, f64, f64) {
     let (ax, ay, aw, ah) = area;
-    let scale = if scale > 0.0 { scale } else { 1.0 };
+    let dp = if dp > 0.0 { dp } else { 1.0 };
     let next = drag_edge(pointer, area, edge);
-    let (lw, lh) = bar_metrics(next, items);
-    let (nw, nh) = (lw * scale, lh * scale);
+    let (lw, lh) = bar_metrics(next, items, ui_scale, stretch);
+    let (nw, nh) = (lw * dp, lh * dp);
     let new_run = if next == BarEdge::Top { nw } else { nh };
     let area_len = if next == BarEdge::Top { aw } else { ah };
     let pointer_along = if next == BarEdge::Top {
@@ -368,11 +474,7 @@ fn drag_geometry(
         BarEdge::Right => ax + aw - nw,
         BarEdge::Top => ax + along,
     };
-    let y = if next == BarEdge::Top {
-        ay
-    } else {
-        ay + along
-    };
+    let y = if next == BarEdge::Top { ay } else { ay + along };
     (next, x, y, nw, nh)
 }
 
@@ -413,12 +515,14 @@ fn snap_target(
     cur_x: f64,
     cur_y: f64,
     items: usize,
-    scale: f64,
+    ui_scale: f64,
+    stretch: f64,
+    dp: f64,
 ) -> (f64, f64, f64, f64) {
-    let (w, h) = bar_metrics_physical(edge, items, scale);
+    let (w, h) = bar_metrics_physical(edge, items, ui_scale, stretch, dp);
     match edge {
         BarEdge::Left => (w, h, 0.0, cur_y),
-        BarEdge::Right => (w, h, (mon_w - BAR_THICK * scale).max(0.0), cur_y),
+        BarEdge::Right => (w, h, (mon_w - w).max(0.0), cur_y),
         BarEdge::Top => (w, h, cur_x, 0.0),
     }
 }
@@ -428,7 +532,8 @@ fn snap_target(
 // ============================================================
 
 /// 停靠条配置。enabled 默认 false（首开零开销）；edge 默认贴左；pos 为
-/// 收缩态吸附落点（逻辑坐标）。
+/// 收缩态吸附落点（逻辑坐标）；scale/stretch 为用户拖拽调整后的尺寸倍率
+///（见 bar_metrics，旧配置文件缺这两个字段时按 1.0 处理）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HudBarConfig {
@@ -438,10 +543,22 @@ pub struct HudBarConfig {
     pub edge: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pos: Option<(f64, f64)>,
+    #[serde(default = "default_scale")]
+    pub scale: f64,
+    #[serde(default = "default_stretch")]
+    pub stretch: f64,
 }
 
 fn default_edge() -> String {
     BarEdge::Left.key().to_string()
+}
+
+fn default_scale() -> f64 {
+    1.0
+}
+
+fn default_stretch() -> f64 {
+    1.0
 }
 
 impl Default for HudBarConfig {
@@ -450,12 +567,15 @@ impl Default for HudBarConfig {
             enabled: false,
             edge: default_edge(),
             pos: None,
+            scale: 1.0,
+            stretch: 1.0,
         }
     }
 }
 
 impl HudBarConfig {
-    /// 脏值收敛：edge 非法回 left；pos 非有限值丢弃
+    /// 脏值收敛：edge 非法回 left；pos 非有限值丢弃；scale/stretch 钳进
+    /// 允许范围（防止手改配置或历史脏值把窗口拉成 0 宽/越屏）
     fn clamped(mut self) -> Self {
         if BarEdge::parse(&self.edge).is_none() {
             self.edge = default_edge();
@@ -465,6 +585,8 @@ impl HudBarConfig {
                 self.pos = None;
             }
         }
+        self.scale = clamp_scale(self.scale);
+        self.stretch = clamp_stretch(self.stretch);
         self
     }
 
@@ -939,6 +1061,11 @@ static SNAP_POS: OnceLock<Mutex<Option<(f64, f64)>>> = OnceLock::new();
 /// 当前停靠边（AtomicUsize 存 BarEdge::index）：吸附闭包更新，扩窗与
 /// 尺寸自适应读取
 static CURRENT_EDGE: AtomicUsize = AtomicUsize::new(0);
+/// 用户缩放（f64 bits，默认 1.0）：建窗/吸附/拖拽/调整/卡片锚点共用；
+/// 仅在主线程或调整命令内写，读侧无锁
+static CURRENT_SCALE: AtomicU64 = AtomicU64::new(0x3ff0_0000_0000_0000);
+/// 长度拉伸倍率（f64 bits，默认 1.0）：含义见 length_parts
+static CURRENT_STRETCH: AtomicU64 = AtomicU64::new(0x3ff0_0000_0000_0000);
 /// 当前条目数（含空态占位 1）：数据线程更新，建窗/吸附/扩窗算尺寸用
 static ITEM_COUNT: AtomicUsize = AtomicUsize::new(1);
 /// 详情卡窗口当前是否可见（true = 已按卡片尺寸落位并 show）
@@ -979,8 +1106,13 @@ static FORCE_PUSH: AtomicBool = AtomicBool::new(false);
 /// 自定义拖拽进行中：Moved 挂点与吸附守护全部让位（拖拽位置由前端
 /// 16ms 一拍驱动，程序侧 set_position 的 Moved 回声不能触发吸附）
 static DRAGGING: AtomicBool = AtomicBool::new(false);
+/// 边缘/角调整尺寸进行中：吸附、条目数自适应与 Moved 挂点全部让位，
+/// 窗口几何由 hud_bar_resize_move 每帧接管
+static RESIZING: AtomicBool = AtomicBool::new(false);
 /// 拖拽会话（begin 登记抓取偏移与抓取比例；move/end 只读）
 static DRAG_SESSION: OnceLock<Mutex<Option<HudDragSession>>> = OnceLock::new();
+/// 调整尺寸会话（begin 登记初始几何；move/end 只读）
+static RESIZE_SESSION: OnceLock<Mutex<Option<HudResizeSession>>> = OnceLock::new();
 
 /// 拖拽会话：指针在条长方向的比例位置（换边换横竖排时保持同一条目停在
 /// 指针下）
@@ -991,6 +1123,74 @@ struct HudDragSession {
 
 fn drag_session_slot() -> &'static Mutex<Option<HudDragSession>> {
     DRAG_SESSION.get_or_init(|| Mutex::new(None))
+}
+
+/// 调整尺寸热区：inner = 只改厚度/缩放；start/end = 只改长度/拉伸；
+/// inner-start / inner-end = 角上同时改两者（方向以「内边 + 条的一端」
+/// 命名）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ResizeHandle {
+    Inner,
+    Start,
+    End,
+    InnerStart,
+    InnerEnd,
+}
+
+impl ResizeHandle {
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "inner" => Some(Self::Inner),
+            "start" => Some(Self::Start),
+            "end" => Some(Self::End),
+            "inner-start" => Some(Self::InnerStart),
+            "inner-end" => Some(Self::InnerEnd),
+            _ => None,
+        }
+    }
+
+    /// 是否改厚度（缩放图标/环/内边距）
+    fn adjusts_scale(self) -> bool {
+        matches!(self, Self::Inner | Self::InnerStart | Self::InnerEnd)
+    }
+
+    /// 是否改长度（拉伸条目间距）；返回拖动的是条长方向的哪一端
+    fn length_end(self) -> Option<LengthEnd> {
+        match self {
+            Self::Start | Self::InnerStart => Some(LengthEnd::Start),
+            Self::End | Self::InnerEnd => Some(LengthEnd::End),
+            Self::Inner => None,
+        }
+    }
+}
+
+/// 条长方向的端点：Start = 竖排上端/横排左端，End = 竖排下端/横排右端
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LengthEnd {
+    Start,
+    End,
+}
+
+/// 调整尺寸会话：全部几何为**物理 px / 全局屏幕坐标**，缩放/拉伸为用户
+/// 逻辑倍率（配置值）。`thickness_offset` 记录按下点距内侧边的偏移，避免
+/// 一开始拖动时厚度瞬间跳到指针位置。
+#[derive(Debug, Clone, Copy)]
+struct HudResizeSession {
+    handle: ResizeHandle,
+    edge: BarEdge,
+    items: usize,
+    start_scale: f64,
+    start_stretch: f64,
+    start_pos: (f64, f64),
+    start_size: (f64, f64),
+    start_pointer: (f64, f64),
+    thickness_offset: f64,
+    area: (f64, f64, f64, f64),
+    dp: f64,
+}
+
+fn resize_session_slot() -> &'static Mutex<Option<HudResizeSession>> {
+    RESIZE_SESSION.get_or_init(|| Mutex::new(None))
 }
 
 fn last_pos_slot() -> &'static Mutex<Option<(f64, f64)>> {
@@ -1007,6 +1207,20 @@ fn now_ms() -> u64 {
 
 fn current_edge() -> BarEdge {
     BarEdge::from_index(CURRENT_EDGE.load(Ordering::Relaxed))
+}
+
+fn current_scale() -> f64 {
+    clamp_scale(f64::from_bits(CURRENT_SCALE.load(Ordering::Relaxed)))
+}
+
+fn current_stretch() -> f64 {
+    clamp_stretch(f64::from_bits(CURRENT_STRETCH.load(Ordering::Relaxed)))
+}
+
+/// 写回运行期缩放/拉伸（读配置、调整落定、建窗三处共用）。
+fn set_current_metrics(scale: f64, stretch: f64) {
+    CURRENT_SCALE.store(clamp_scale(scale).to_bits(), Ordering::Relaxed);
+    CURRENT_STRETCH.store(clamp_stretch(stretch).to_bits(), Ordering::Relaxed);
 }
 
 fn item_count() -> usize {
@@ -1040,6 +1254,10 @@ fn snap_handle() -> &'static Mutex<Option<thread::JoinHandle<()>>> {
 /// 启动数据线程与吸附守护线程（托盘开启/启动恢复挂点调用）。已在运行时
 /// 幂等 no-op（各自独立判定）。
 pub fn start_feed(app: AppHandle) {
+    // 托盘/面板关闭只置停止标志；重新开启必须清零，否则新线程会立刻退出
+    // （旧线程若尚未退出，下面的 is_finished 判定会复用它，同样需要标志
+    // 已复位才能继续跑）
+    FEED_STOP.store(false, Ordering::Relaxed);
     // 吸附线程投递主线程闭包用的 AppHandle 槽（先于两个线程存入）
     if let Ok(mut slot) = snap_app_slot().lock() {
         *slot = Some(app.clone());
@@ -1225,24 +1443,46 @@ fn feed_loop(app: AppHandle) {
             last_tick = Instant::now();
             // 各源独立容错：失败源缓存 60s（防重试风暴），本轮跳过
             if !zai_cache.as_ref().is_some_and(|c| c.fresh()) {
-                zai_cache = crate::quota::query_quota().ok().map(|v| QueryCache {
-                    at: Instant::now(),
-                    value: Some(v),
-                }).or_else(|| Some(QueryCache { at: Instant::now(), value: None }));
+                zai_cache = crate::quota::query_quota()
+                    .ok()
+                    .map(|v| QueryCache {
+                        at: Instant::now(),
+                        value: Some(v),
+                    })
+                    .or_else(|| {
+                        Some(QueryCache {
+                            at: Instant::now(),
+                            value: None,
+                        })
+                    });
             }
             if !ocg_cache.as_ref().is_some_and(|c| c.fresh()) {
-                ocg_cache =
-                    crate::provider_quota::query_provider_quota("opencodego")
-                        .ok()
-                        .map(|v| QueryCache { at: Instant::now(), value: Some(v) })
-                        .or_else(|| Some(QueryCache { at: Instant::now(), value: None }));
+                ocg_cache = crate::provider_quota::query_provider_quota("opencodego")
+                    .ok()
+                    .map(|v| QueryCache {
+                        at: Instant::now(),
+                        value: Some(v),
+                    })
+                    .or_else(|| {
+                        Some(QueryCache {
+                            at: Instant::now(),
+                            value: None,
+                        })
+                    });
             }
             if !mmx_cache.as_ref().is_some_and(|c| c.fresh()) {
-                mmx_cache =
-                    crate::provider_quota::query_provider_quota("minimax")
-                        .ok()
-                        .map(|v| QueryCache { at: Instant::now(), value: Some(v) })
-                        .or_else(|| Some(QueryCache { at: Instant::now(), value: None }));
+                mmx_cache = crate::provider_quota::query_provider_quota("minimax")
+                    .ok()
+                    .map(|v| QueryCache {
+                        at: Instant::now(),
+                        value: Some(v),
+                    })
+                    .or_else(|| {
+                        Some(QueryCache {
+                            at: Instant::now(),
+                            value: None,
+                        })
+                    });
             }
             // dsh：DeepSeek 平台余额（provider id 仍是 deepseek，与主面板
             // DSH 面板底部的余额区同一通道）。未录 Key 时 query 返回空数组，
@@ -1288,9 +1528,8 @@ fn feed_loop(app: AppHandle) {
             // 渲染的条目数一致——否则隐藏一个有额度的 agent 会让条多出一格
             // 空位）。可见性镜像一次读文件，本拍内反复用。
             let visibility = crate::agent_visibility::load();
-            agents.retain(|agent| {
-                crate::agent_visibility::is_visible_in(&visibility, &agent.source)
-            });
+            agents
+                .retain(|agent| crate::agent_visibility::is_visible_in(&visibility, &agent.source));
             let visible_sources: BTreeSet<String> = HUD_SOURCES
                 .iter()
                 .filter(|source| crate::agent_visibility::is_visible_in(&visibility, source))
@@ -1316,7 +1555,10 @@ fn feed_loop(app: AppHandle) {
                 // 只发给条的 payload，卡里就会是空数据）
                 let _ = app.emit(
                     HUD_BAR_USAGE_EVENT,
-                    HudBarUsage { ts, agents: agents.clone() },
+                    HudBarUsage {
+                        ts,
+                        agents: agents.clone(),
+                    },
                 );
             }
             // 条目数变化 → 窗口尺寸自适应（拖拽中由 drag_geometry 接管，
@@ -1335,23 +1577,72 @@ fn feed_loop(app: AppHandle) {
 }
 
 /// 把窗口尺寸同步到当前条目数（主线程闭包体，**物理坐标**——set_size 与
-/// outer_size 同口径）。位置不动（左上角锚定：贴左/贴顶时贴边坐标不变，
-/// 贴右时条厚不变 x 仍贴右缘——set_size 保持左上角，右缘会暂时内缩，下一
-/// 次吸附/拖放会重新贴齐，可接受的一期简化）。
+/// outer_size 同口径）。条目数变化时条长会变，位置按「沿边方向保持中心 +
+/// 贴边轴重新贴屏幕缘」重算：贴右/贴顶时不会因为左上角锚定而离开屏缘，
+/// 条靠近屏幕底部时也不会长出工作区。调整/拖拽期间由各自会话接管，这里
+/// 不插手。
 fn sync_bar_size(app: &AppHandle) {
     let Some(win) = app.get_webview_window(HUD_BAR_WINDOW_LABEL) else {
         return;
     };
-    let Ok(scale) = win.scale_factor() else { return };
-    if scale <= 0.0 {
+    let Ok(dp) = win.scale_factor() else { return };
+    if dp <= 0.0 {
         return;
     }
-    if DRAGGING.load(Ordering::Relaxed) {
-        // 拖拽中条的形状由 drag_geometry 每帧接管，这里别插手
+    if DRAGGING.load(Ordering::Relaxed) || RESIZING.load(Ordering::Relaxed) {
+        // 拖拽/调整中条的形状由对应会话每帧接管，这里别插手
         return;
     }
-    let (w, h) = bar_metrics_physical(current_edge(), item_count(), scale);
-    let _ = win.set_size(PhysicalSize::new(w.round().max(1.0) as u32, h.round().max(1.0) as u32));
+    let edge = current_edge();
+    let (w, h) = bar_metrics_physical(edge, item_count(), current_scale(), current_stretch(), dp);
+    let w = w.round().max(1.0) as u32;
+    let h = h.round().max(1.0) as u32;
+    let Ok(pos) = win.outer_position() else {
+        let _ = win.set_size(PhysicalSize::new(w, h));
+        return;
+    };
+    if win.outer_size().is_err() {
+        let _ = win.set_size(PhysicalSize::new(w, h));
+        return;
+    }
+    let Some(mon) = win.current_monitor().ok().flatten() else {
+        let _ = win.set_size(PhysicalSize::new(w, h));
+        return;
+    };
+    let area = mon.work_area();
+    let (ax, ay) = (area.position.x as f64, area.position.y as f64);
+    let (aw, ah) = (area.size.width as f64, area.size.height as f64);
+    let (old_x, old_y) = (pos.x as f64, pos.y as f64);
+    // 沿边轴保持原 top/left（保存的 pos 语义就是窗口左上角），只把贴边轴
+    // 重新对齐屏幕缘；条变长顶到工作区边界时再向上/向左钳。
+    let (mut x, mut y) = (old_x, old_y);
+    match edge {
+        BarEdge::Left => x = ax,
+        BarEdge::Right => x = ax + aw - w as f64,
+        BarEdge::Top => y = ay,
+    }
+    match edge {
+        BarEdge::Top => {
+            x = x.clamp(ax, (ax + aw - w as f64).max(ax));
+        }
+        _ => {
+            y = y.clamp(ay, (ay + ah - h as f64).max(ay));
+        }
+    }
+    let _ = win.set_size(PhysicalSize::new(w, h));
+    let _ = win.set_position(PhysicalPosition::new(x.round() as i32, y.round() as i32));
+    let logical = (x / dp, y / dp);
+    if let Ok(mut guard) = snap_pos_slot().lock() {
+        *guard = Some(logical);
+    }
+    // 条目数变化导致的尺寸/位置修正写回配置：下次启动按新左上角恢复，
+    // 不会因为「启动时只有 1 条、数据回来后变高」而每次漂移
+    let mut cfg = load_hud_bar_config();
+    if cfg.pos != Some(logical) {
+        cfg.pos = Some(logical);
+        let _ = save_hud_bar_config(&cfg);
+    }
+    LAST_MOVED_AT.store(0, Ordering::Relaxed);
 }
 
 /// 贴边吸附（主线程闭包体，**全程物理坐标**）：扩窗态先缩回（保条可见
@@ -1361,23 +1652,29 @@ fn sync_bar_size(app: &AppHandle) {
 /// 落盘 {edge,pos}（逻辑坐标）并推布局事件。任何一步失败静默（下次拖放
 /// 重试）。
 fn snap_to_edge(app: &AppHandle) {
-    // 自定义拖拽进行中：落点由 hud_bar_drag_end 负责，静默吸附不插手
-    if DRAGGING.load(Ordering::Relaxed) {
+    // 自定义拖拽/调整进行中：落点由对应会话负责，静默吸附不插手
+    if DRAGGING.load(Ordering::Relaxed) || RESIZING.load(Ordering::Relaxed) {
         return;
     }
     let Some(win) = app.get_webview_window(HUD_BAR_WINDOW_LABEL) else {
         return;
     };
-    let Ok(scale) = win.scale_factor() else { return };
+    let Ok(scale) = win.scale_factor() else {
+        return;
+    };
     if scale <= 0.0 {
         return;
     }
     // 收起态的卡片先收掉：吸附几何按条自身的矩形计算（卡片是独立窗口，
     // 不影响几何判定，但程序侧回位后卡片位置就过期了）
     force_close_card(app);
-    let Ok(pos) = win.outer_position() else { return };
+    let Ok(pos) = win.outer_position() else {
+        return;
+    };
     let Ok(size) = win.outer_size() else { return };
-    let Ok(mon) = win.current_monitor() else { return };
+    let Ok(mon) = win.current_monitor() else {
+        return;
+    };
     let Some(mon) = mon else { return };
     // 本屏局部物理坐标（全局 − 本屏原点）：nearest_edge / snap_target 的
     // 输入契约
@@ -1388,13 +1685,30 @@ fn snap_to_edge(app: &AppHandle) {
     let y_local = (pos.y - m_pos.y) as f64;
     let w_px = size.width as f64;
     let h_px = size.height as f64;
-    let edge = nearest_edge(mon_w_px, mon_h_px, x_local + w_px / 2.0, y_local + h_px / 2.0);
-    let (tw, th, tx_local, ty_local) =
-        snap_target(edge, mon_w_px, mon_h_px, x_local, y_local, item_count(), scale);
+    let edge = nearest_edge(
+        mon_w_px,
+        mon_h_px,
+        x_local + w_px / 2.0,
+        y_local + h_px / 2.0,
+    );
+    let (tw, th, tx_local, ty_local) = snap_target(
+        edge,
+        mon_w_px,
+        mon_h_px,
+        x_local,
+        y_local,
+        item_count(),
+        current_scale(),
+        current_stretch(),
+        scale,
+    );
     // 本屏局部 → 全局物理坐标（加回本屏原点）
     let tx_global = m_pos.x as f64 + tx_local;
     let ty_global = m_pos.y as f64 + ty_local;
-    let _ = win.set_size(PhysicalSize::new(tw.round().max(1.0) as u32, th.round().max(1.0) as u32));
+    let _ = win.set_size(PhysicalSize::new(
+        tw.round().max(1.0) as u32,
+        th.round().max(1.0) as u32,
+    ));
     let _ = win.set_position(PhysicalPosition::new(
         tx_global.round() as i32,
         ty_global.round() as i32,
@@ -1429,9 +1743,9 @@ fn snap_to_edge(app: &AppHandle) {
 /// Moved 挂点：物理坐标转逻辑写内存并刷新静默判定锚点。程序侧落点回声
 /// （吸附/扩窗自身的 set_position 触发）被 SNAP_POS 比对拦截。
 pub fn handle_hud_bar_window_moved(win: &tauri::Window, pos: tauri::PhysicalPosition<i32>) {
-    // 自定义拖拽期间的位置全由前端 16ms 一拍下发，Moved 是程序侧回声：
+    // 自定义拖拽/调整期间的位置全由前端 16ms 一拍下发，Moved 是程序侧回声：
     // 不刷新静默锚点，避免松手瞬间被吸附守护二次挪动
-    if DRAGGING.load(Ordering::Relaxed) {
+    if DRAGGING.load(Ordering::Relaxed) || RESIZING.load(Ordering::Relaxed) {
         return;
     }
     let scale = win.scale_factor().unwrap_or(1.0);
@@ -1453,6 +1767,14 @@ pub fn handle_hud_bar_window_moved(win: &tauri::Window, pos: tauri::PhysicalPosi
 /// 语义；勾选刷新是 P2-8：落盘后菜单若不重建会残留开启勾）。
 pub fn handle_hud_bar_window_destroyed(app: &AppHandle) {
     stop_feed();
+    RESIZING.store(false, Ordering::Relaxed);
+    *resize_session_slot()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner()) = None;
+    DRAGGING.store(false, Ordering::Relaxed);
+    *drag_session_slot()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner()) = None;
     // 卡片是独立窗口，条销毁后它必须一起销毁（否则留一块点不到的透明窗）
     if let Some(card) = app.get_webview_window(HUD_CARD_WINDOW_LABEL) {
         let _ = card.destroy();
@@ -1466,6 +1788,7 @@ pub fn handle_hud_bar_window_destroyed(app: &AppHandle) {
         cfg.enabled = false;
         let _ = save_hud_bar_config(&cfg);
         crate::refresh_tray_menu(app);
+        emit_state(app, false);
     }
     LAST_MOVED_AT.store(0, Ordering::Relaxed);
 }
@@ -1474,12 +1797,76 @@ pub fn handle_hud_bar_window_destroyed(app: &AppHandle) {
 // 窗口管理
 // ============================================================
 
+/// 显示器工作区的逻辑矩形（全局坐标 / 该屏缩放比）：用于恢复落点校验。
+fn monitor_work_area_logical(mon: &tauri::Monitor) -> (f64, f64, f64, f64) {
+    let sf = mon.scale_factor();
+    let sf = if sf > 0.0 { sf } else { 1.0 };
+    let area = mon.work_area();
+    (
+        area.position.x as f64 / sf,
+        area.position.y as f64 / sf,
+        area.size.width as f64 / sf,
+        area.size.height as f64 / sf,
+    )
+}
+
+/// 恢复 HUD 落点：持久化坐标仍与任一块屏的工作区相交时钳进该屏；否则
+/// （显示器拔插/分辨率变化后旧坐标在桌面外）退回主显示器对应边缘居中。
+/// 这是「窗口在屏幕外消失、用户无法拖回」的兜底——HUD 的 pos 是逻辑坐标，
+/// 跨屏/改分辨率后可能完全失效。
+fn restored_bar_position(
+    app: &AppHandle,
+    stored: Option<(f64, f64)>,
+    edge: BarEdge,
+    w: f64,
+    h: f64,
+) -> (f64, f64) {
+    if let Some((sx, sy)) = stored {
+        if sx.is_finite() && sy.is_finite() {
+            for mon in app.available_monitors().unwrap_or_default() {
+                // 存的是「保存时窗口所在屏缩放比下的逻辑坐标」：对每块屏
+                // 按它自己的缩放比还原成物理坐标，再与工作区做包含判定。
+                // 直接拿逻辑坐标和每屏逻辑工作区比较会在混合 DPI 多屏下
+                // 误判（各屏逻辑原点不共享同一坐标系）。
+                let sf = mon.scale_factor();
+                let sf = if sf > 0.0 { sf } else { 1.0 };
+                let area = mon.work_area();
+                let (ax, ay) = (area.position.x as f64, area.position.y as f64);
+                let (aw, ah) = (area.size.width as f64, area.size.height as f64);
+                let (px, py) = (sx * sf, sy * sf);
+                let (pw, ph) = (w * sf, h * sf);
+                if px + pw > ax && px < ax + aw && py + ph > ay && py < ay + ah {
+                    let x = px.clamp(ax, (ax + aw - pw).max(ax));
+                    let y = py.clamp(ay, (ay + ah - ph).max(ay));
+                    return (x / sf, y / sf);
+                }
+            }
+        }
+    }
+    let (mx, my, mw, mh) = app
+        .primary_monitor()
+        .ok()
+        .flatten()
+        .map(|m| monitor_work_area_logical(&m))
+        .unwrap_or((0.0, 0.0, 1920.0, 1080.0));
+    let x = match edge {
+        BarEdge::Right => (mx + mw - w).max(mx),
+        _ => mx,
+    };
+    let y = match edge {
+        BarEdge::Top => my,
+        _ => (my + (mh - h) / 2.0).max(my),
+    };
+    (x, y)
+}
+
 /// 确保 "hud-bar" 窗口存在并显示（托盘开启 / 启动恢复共用）；已存在时仅
 /// show + 推一次布局事件。必须在主线程事件循环上下文调用（setup 阶段的
 /// start_if_enabled 与托盘菜单回调，建窗铁律见模块 doc）。
 pub fn ensure_hud_bar_window(app: &AppHandle) -> Result<(), String> {
     let cfg = load_hud_bar_config();
     let edge = cfg.edge_of();
+    set_current_metrics(cfg.scale, cfg.stretch);
     if let Some(win) = app.get_webview_window(HUD_BAR_WINDOW_LABEL) {
         let _ = win.show();
         push_layout(app, edge);
@@ -1487,7 +1874,7 @@ pub fn ensure_hud_bar_window(app: &AppHandle) -> Result<(), String> {
         return Ok(());
     }
     CURRENT_EDGE.store(edge.index(), Ordering::Relaxed);
-    let (w, h) = bar_metrics(edge, item_count());
+    let (w, h) = bar_metrics(edge, item_count(), cfg.scale, cfg.stretch);
     let mut builder = WebviewWindowBuilder::new(
         app,
         HUD_BAR_WINDOW_LABEL,
@@ -1519,29 +1906,16 @@ pub fn ensure_hud_bar_window(app: &AppHandle) -> Result<(), String> {
     .focusable(false)
     .focused(false);
 
-    // 位置：持久化吸附落点优先；无记录默认贴主显示器对应边缘垂直居中
-    // （贴右时 x = 屏宽 − 条厚，否则左边缘 x=0；不再一律按贴左落点）
-    let mon = app.primary_monitor().ok().flatten();
-    let (x, y) = match cfg.pos {
-        Some(p) => p,
-        None => {
-            let scale = mon.as_ref().map(|m| m.scale_factor()).unwrap_or(1.0);
-            let mon_w = mon
-                .as_ref()
-                .map(|m| m.size().width as f64 / scale)
-                .unwrap_or(1920.0);
-            let mon_h = mon
-                .as_ref()
-                .map(|m| m.size().height as f64 / scale)
-                .unwrap_or(1080.0);
-            let x = if edge == BarEdge::Right {
-                (mon_w - BAR_THICK).max(0.0)
-            } else {
-                0.0
-            };
-            (x, ((mon_h - h) / 2.0).max(0.0))
-        }
-    };
+    // 位置：持久化吸附落点优先，但必须先验证它仍落在某块屏的工作区内——
+    // 显示器拔插/分辨率变化后旧坐标可能完全在桌面外，窗口会「消失」且
+    // 用户无法拖回。无记录/不可达时退回主显示器对应边缘居中。
+    let (x, y) = restored_bar_position(app, cfg.pos, edge, w, h);
+    // 旧坐标在屏幕外时把修正后的落点写回，避免每次启动都要重新兜底
+    if cfg.pos != Some((x, y)) {
+        let mut fixed = cfg.clone();
+        fixed.pos = Some((x, y));
+        let _ = save_hud_bar_config(&fixed);
+    }
     builder = builder.position(x, y);
 
     // 平台差异（照搬 session_hud.rs）：macOS 显式清空背景防白底；
@@ -1573,17 +1947,42 @@ pub fn ensure_hud_bar_window(app: &AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-/// 推布局方向事件（payload 含 orientation + edge：orientation 切横竖
-/// 排，edge 供前端卡片按边定位方向——贴左卡在条右侧、贴右卡在条左侧）
+/// 布局快照（zbar://hud-bar-layout 事件与 hud_bar_metrics 命令共用）：
+/// orientation 切横竖排，edge 供前端卡片按边定位方向；scale/stretch 是
+/// 用户拖拽调整后的尺寸倍率，前端据此同步 CSS 缩放（窗口本身已由 Rust
+/// 改好，这里只负责让内容栅格与窗口一致）。
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HudBarLayout {
+    pub orientation: &'static str,
+    pub edge: &'static str,
+    pub scale: f64,
+    pub stretch: f64,
+}
+
+fn layout_payload(edge: BarEdge) -> HudBarLayout {
+    HudBarLayout {
+        orientation: edge.orientation(),
+        edge: edge.key(),
+        scale: current_scale(),
+        stretch: current_stretch(),
+    }
+}
+
+/// 推布局方向事件（payload 含 orientation + edge + scale/stretch）
 fn push_layout(app: &AppHandle, edge: BarEdge) {
     let _ = app.emit_to(
         HUD_BAR_WINDOW_LABEL,
         HUD_BAR_LAYOUT_EVENT,
-        serde_json::json!({
-            "orientation": edge.orientation(),
-            "edge": edge.key(),
-        }),
+        layout_payload(edge),
     );
+}
+
+/// 当前布局/尺寸快照（页面启动时主动拉一次，避免首帧按 1.0 渲染后再被
+/// 布局事件纠正而产生一次缩放跳动）。
+#[tauri::command]
+pub fn hud_bar_metrics() -> HudBarLayout {
+    layout_payload(current_edge())
 }
 
 /// 应用启动挂点：开关开启时恢复窗口与数据线程（未开启零开销，照
@@ -1602,15 +2001,58 @@ pub fn start_if_enabled(app: &AppHandle) {
     FORCE_PUSH.store(true, Ordering::Relaxed);
 }
 
-/// 托盘开关切换（on_menu_event 主线程回调内直接调用，建窗合法上下文）。
-/// 返回切换后的开启态（托盘侧据此更新菜单勾选）。开：落盘 + 建窗/显示 +
-/// 启线程 + 强推首帧；关：隐藏窗口（保留隐藏态不销毁，页面状态原样保留
-/// 秒开）+ 停线程 + 落盘。
-pub fn toggle_from_tray(app: &AppHandle) -> Result<bool, String> {
+/// HUD 开关状态事件（托盘菜单 / 面板顶部按钮 / 异常销毁都会广播）：
+/// payload = { enabled }。面板据此同步按钮高亮，避免两个入口各存一份状态。
+pub const HUD_BAR_STATE_EVENT: &str = "zbar://hud-bar-state";
+
+/// HUD 开关快照（面板启动时主动拉一次；scale/stretch 目前面板不用，
+/// 但一并返回便于诊断/后续设置页）。
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HudBarState {
+    pub enabled: bool,
+    pub scale: f64,
+    pub stretch: f64,
+}
+
+fn state_of(cfg: &HudBarConfig) -> HudBarState {
+    HudBarState {
+        enabled: cfg.enabled,
+        scale: clamp_scale(cfg.scale),
+        stretch: clamp_stretch(cfg.stretch),
+    }
+}
+
+fn emit_state(app: &AppHandle, enabled: bool) {
+    let _ = app.emit(
+        HUD_BAR_STATE_EVENT,
+        serde_json::json!({ "enabled": enabled }),
+    );
+}
+
+/// 开关落盘 + 建窗/隐藏（**必须在主线程调用**：建窗/窗口操作的事件循环
+/// 上下文铁律；托盘菜单回调与 `hud_bar_set_enabled` 的 main-thread 闭包
+/// 都满足）。切换结束广播状态事件，面板与托盘菜单各取所需。
+fn set_enabled_on_main(app: &AppHandle, enabled: bool) -> Result<bool, String> {
     let mut cfg = load_hud_bar_config();
-    if cfg.enabled {
-        cfg.enabled = false;
-        save_hud_bar_config(&cfg)?;
+    cfg.enabled = enabled;
+    save_hud_bar_config(&cfg)?;
+    set_current_metrics(cfg.scale, cfg.stretch);
+    if enabled {
+        ensure_hud_bar_window(app)?;
+        ensure_hud_card_window(app)?;
+        start_feed(app.clone());
+        FORCE_PUSH.store(true, Ordering::Relaxed);
+    } else {
+        // 调整/拖拽会话一并作废：隐藏期间到达的旧指针事件不能继续改窗口
+        RESIZING.store(false, Ordering::Relaxed);
+        *resize_session_slot()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) = None;
+        DRAGGING.store(false, Ordering::Relaxed);
+        *drag_session_slot()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) = None;
         if let Some(win) = app.get_webview_window(HUD_BAR_WINDOW_LABEL) {
             // 隐藏条之前先把卡片收掉（卡片是独立窗口，不跟着条一起隐藏会
             // 留一块悬浮在黑边上的卡）；广播 popover 事件让条前端收敛状态
@@ -1619,16 +2061,35 @@ pub fn toggle_from_tray(app: &AppHandle) -> Result<bool, String> {
         }
         hide_card_window(app);
         stop_feed();
-        Ok(false)
-    } else {
-        cfg.enabled = true;
-        save_hud_bar_config(&cfg)?;
-        ensure_hud_bar_window(app)?;
-        ensure_hud_card_window(app)?;
-        start_feed(app.clone());
-        FORCE_PUSH.store(true, Ordering::Relaxed);
-        Ok(true)
+        LAST_MOVED_AT.store(0, Ordering::Relaxed);
     }
+    emit_state(app, enabled);
+    Ok(enabled)
+}
+
+/// 托盘开关切换（on_menu_event 主线程回调内直接调用，建窗合法上下文）。
+/// 返回切换后的开启态（托盘侧据此更新菜单勾选/面板同步按钮）。
+pub fn toggle_from_tray(app: &AppHandle) -> Result<bool, String> {
+    let enabled = !load_hud_bar_config().enabled;
+    set_enabled_on_main(app, enabled)
+}
+
+/// HUD 开关快照（面板顶部按钮启动时调用）。
+#[tauri::command]
+pub fn hud_bar_state() -> Result<HudBarState, String> {
+    Ok(state_of(&load_hud_bar_config()))
+}
+
+/// 面板顶部按钮开关 HUD（异步命令：建窗必须投递回主线程；同步命令在主
+/// 线程执行会自等待死锁，同 hud_card_open 的建窗铁律）。
+#[tauri::command]
+pub async fn hud_bar_set_enabled(enabled: bool, app: AppHandle) -> Result<bool, String> {
+    let app_main = app.clone();
+    on_main_thread(&app, move || {
+        let next = set_enabled_on_main(&app_main, enabled)?;
+        crate::refresh_tray_menu(&app_main);
+        Ok(next)
+    })
 }
 
 // ============================================================
@@ -1747,10 +2208,7 @@ pub async fn hud_card_open(
     on_main_thread(&app, move || {
         ensure_hud_card_window(&app_main)?;
         if let Ok(mut guard) = card_anchor_slot().lock() {
-            *guard = Some(CardAnchor {
-                center_x,
-                center_y,
-            });
+            *guard = Some(CardAnchor { center_x, center_y });
         }
         CARD_VISIBLE.store(true, Ordering::Relaxed);
         app_main
@@ -1799,7 +2257,11 @@ pub async fn hud_card_measure(
         let bar_pos = bar_win
             .outer_position()
             .map_err(|e| format!("读取停靠条位置失败: {e}"))?;
-        let (bw, bh) = bar_metrics_physical(current_edge(), item_count(), scale);
+        // 条窗口实际尺寸是权威：用户缩放/拉伸后不再从常量反推
+        let bar_size = bar_win
+            .outer_size()
+            .map_err(|e| format!("读取停靠条尺寸失败: {e}"))?;
+        let (bw, bh) = (bar_size.width as f64, bar_size.height as f64);
         // 工作区按**条所在的屏**取（卡片永远跟着条；指针可能已经飘到别的屏）
         let (area, _) = monitor_area_under(
             &bar_win,
@@ -1816,6 +2278,7 @@ pub async fn hud_card_measure(
             ch,
             area,
             scale,
+            current_scale(),
         );
         let pad = CARD_PAD * scale;
         win.set_size(PhysicalSize::new(
@@ -1828,8 +2291,7 @@ pub async fn hud_card_measure(
             (cy - pad).round() as i32,
         ))
         .map_err(|e| format!("卡片窗口定位失败: {e}"))?;
-        win.show()
-            .map_err(|e| format!("显示卡片窗口失败: {e}"))?;
+        win.show().map_err(|e| format!("显示卡片窗口失败: {e}"))?;
         CARD_VISIBLE.store(true, Ordering::Relaxed);
         if let Ok(mut guard) = card_rect_slot().lock() {
             *guard = Some(HudCardRect {
@@ -1882,7 +2344,6 @@ pub struct HudCardViewport {
     pub width: f64,
     pub height: f64,
 }
-
 
 /// 前端悬浮守护用的光标/窗口几何（**物理像素**，与 cursor_position /
 /// outer_position 同口径）。DOM 的 pointerleave 只在指针真的离开窗口时可靠，
@@ -1975,7 +2436,11 @@ fn monitor_index_at(monitors: &[(f64, f64, f64, f64)], point: (f64, f64)) -> Opt
     monitors
         .iter()
         .enumerate()
-        .min_by(|(_, a), (_, b)| dist(a).partial_cmp(&dist(b)).unwrap_or(std::cmp::Ordering::Equal))
+        .min_by(|(_, a), (_, b)| {
+            dist(a)
+                .partial_cmp(&dist(b))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
         .map(|(i, _)| i)
 }
 
@@ -2050,6 +2515,9 @@ pub async fn hud_bar_drag_begin(
     pointer_y: Option<f64>,
     app: AppHandle,
 ) -> Result<HudDragState, String> {
+    if RESIZING.load(Ordering::Relaxed) {
+        return Err("正在调整尺寸，不能同时拖动".into());
+    }
     let win = app
         .get_webview_window(HUD_BAR_WINDOW_LABEL)
         .ok_or_else(|| "停靠条窗口不存在".to_string())?;
@@ -2064,9 +2532,7 @@ pub async fn hud_bar_drag_begin(
     let edge = current_edge();
     // 指针在条长方向的比例位置（换边后同一条目仍停在指针下）
     let frac = match edge {
-        BarEdge::Top if size.width > 0 => {
-            ((px - pos.x as f64) / size.width as f64).clamp(0.0, 1.0)
-        }
+        BarEdge::Top if size.width > 0 => ((px - pos.x as f64) / size.width as f64).clamp(0.0, 1.0),
         BarEdge::Top => 0.5,
         _ if size.height > 0 => ((py - pos.y as f64) / size.height as f64).clamp(0.0, 1.0),
         _ => 0.5,
@@ -2114,10 +2580,18 @@ pub async fn hud_bar_drag_move(
     let size = win
         .outer_size()
         .map_err(|e| format!("读取停靠条尺寸失败: {e}"))?;
-    let (area, scale) = monitor_area_under(&win, (px, py));
+    let (area, dp) = monitor_area_under(&win, (px, py));
     let edge = current_edge();
-    let (next_edge, x, y, w, h) =
-        drag_geometry(edge, item_count(), (px, py), session.frac, area, scale);
+    let (next_edge, x, y, w, h) = drag_geometry(
+        edge,
+        item_count(),
+        (px, py),
+        session.frac,
+        area,
+        current_scale(),
+        current_stretch(),
+        dp,
+    );
     let moved = (x - pos.x as f64).abs() > 0.5 || (y - pos.y as f64).abs() > 0.5;
     let resized = (w - size.width as f64).abs() > 0.5 || (h - size.height as f64).abs() > 0.5;
     if resized {
@@ -2135,7 +2609,7 @@ pub async fn hud_bar_drag_move(
     }
     Ok(drag_state_of(
         next_edge,
-        (x / scale, y / scale, w / scale, h / scale),
+        (x / dp, y / dp, w / dp, h / dp),
         true,
     ))
 }
@@ -2163,12 +2637,21 @@ pub async fn hud_bar_drag_end(
     let size = win
         .outer_size()
         .map_err(|e| format!("读取停靠条尺寸失败: {e}"))?;
-    let (area, scale) = monitor_area_under(&win, (px, py));
+    let (area, dp) = monitor_area_under(&win, (px, py));
     let edge = current_edge();
     // 结束按最后一次光标位置再算一遍并落盘（拖动中每一步已经贴边，这里
     // 主要是把最终几何与配置对齐）
     let (next_edge, x, y, w, h) = match session {
-        Some(s) => drag_geometry(edge, item_count(), (px, py), s.frac, area, scale),
+        Some(s) => drag_geometry(
+            edge,
+            item_count(),
+            (px, py),
+            s.frac,
+            area,
+            current_scale(),
+            current_stretch(),
+            dp,
+        ),
         None => {
             // 无会话（异常路径）：按当前几何落盘
             (
@@ -2188,18 +2671,372 @@ pub async fn hud_bar_drag_end(
     CURRENT_EDGE.store(next_edge.index(), Ordering::Relaxed);
     // 程序侧落点登记（逻辑坐标，与 Moved 挂点同口径）：Moved 回声不触发吸附
     if let Ok(mut guard) = snap_pos_slot().lock() {
-        *guard = Some((x / scale, y / scale));
+        *guard = Some((x / dp, y / dp));
     }
     let mut cfg = load_hud_bar_config();
     cfg.edge = next_edge.key().to_string();
     // 配置里的 pos 是逻辑坐标（建窗 builder.position 同口径）
-    cfg.pos = Some((x / scale, y / scale));
+    cfg.pos = Some((x / dp, y / dp));
     let _ = save_hud_bar_config(&cfg);
     push_layout(&app, next_edge);
     Ok(drag_state_of(
         next_edge,
-        (x / scale, y / scale, w / scale, h / scale),
+        (x / dp, y / dp, w / dp, h / dp),
         true,
+    ))
+}
+
+/// 调整尺寸回执（逻辑 px，屏幕坐标 + 用户倍率）。前端据此同步 CSS
+/// 缩放（窗口已由 Rust 改好）；orientation/edge 在调整期间不会变，
+/// 一并返回供通用布局收敛。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HudResizeState {
+    pub edge: &'static str,
+    pub orientation: &'static str,
+    pub scale: f64,
+    pub stretch: f64,
+    pub x: f64,
+    pub y: f64,
+    pub w: f64,
+    pub h: f64,
+}
+
+fn resize_state_of(
+    edge: BarEdge,
+    scale: f64,
+    stretch: f64,
+    geo: (f64, f64, f64, f64),
+    dp: f64,
+) -> HudResizeState {
+    let dp = if dp > 0.0 { dp } else { 1.0 };
+    HudResizeState {
+        edge: edge.key(),
+        orientation: edge.orientation(),
+        scale,
+        stretch,
+        x: geo.0 / dp,
+        y: geo.1 / dp,
+        w: geo.2 / dp,
+        h: geo.3 / dp,
+    }
+}
+
+/// 调整一步的几何计算（纯函数，物理 px）：返回
+/// (scale, stretch, x, y, w, h)。
+///
+/// - 内侧边/角：厚度 = 屏缘到指针的距离 + 按下时的偏移，反解 scale；
+///   屏幕工作区能容纳的最大缩放同时生效，条不会长出屏幕；
+/// - 两端/角：按指针在条长方向的位移改长度，**另一端保持不动**
+///   （End 锚 start、Start 锚 end），再反解 stretch；下限是当前缩放下
+///   内容刚好放下的长度（不能把条目压扁），上限由工作区决定；
+/// - 只改厚度时沿边方向保持中心，条向两侧均匀长高/变矮；
+/// - 贴边轴始终重新贴屏幕缘（Left x=area.x、Right 右缘对齐、Top y=area.y）。
+#[allow(clippy::too_many_arguments)]
+fn resize_geometry(
+    edge: BarEdge,
+    handle: ResizeHandle,
+    items: usize,
+    start_scale: f64,
+    start_stretch: f64,
+    start_pos: (f64, f64),
+    start_size: (f64, f64),
+    start_pointer: (f64, f64),
+    thickness_offset: f64,
+    pointer: (f64, f64),
+    area: (f64, f64, f64, f64),
+    dp: f64,
+) -> (f64, f64, f64, f64, f64, f64) {
+    let dp = if dp > 0.0 { dp } else { 1.0 };
+    let items = items.max(1);
+    let area_len = if edge == BarEdge::Top { area.2 } else { area.3 };
+    let mut max_scale = max_scale_for_area(edge, items, area, dp);
+    // 只改厚度时拉伸倍率不变：已有 stretch 会放大条目区，最大缩放要按
+    // 实际 stretch 再钳一次，否则放大图标会把条长顶出工作区。
+    // （拖两端的路径会按指针把长度钳进工作区，不需要这层）
+    if handle.length_end().is_none() {
+        let avail_len = (area_len - BAR_PAD * 2.0 * dp).max(1.0);
+        let len_denom =
+            (PANEL_PAD * 2.0 + length_region_base(edge, items) * clamp_stretch(start_stretch)) * dp;
+        max_scale = max_scale.min(clamp_scale(avail_len / len_denom));
+    }
+    let mut scale = clamp_scale(start_scale).min(max_scale);
+    if handle.adjusts_scale() {
+        // 指针到内边所在屏缘的距离；offset 让第一帧厚度不跳变
+        let dist = match edge {
+            BarEdge::Left => pointer.0 - area.0,
+            BarEdge::Right => area.0 + area.2 - pointer.0,
+            BarEdge::Top => pointer.1 - area.1,
+        };
+        let thickness = (dist + thickness_offset).max(1.0);
+        // 物理厚度 = (BAR_PAD×2 + 厚度基准×s) × dp；BAR_PAD 与厚度基准都是
+        // 逻辑常量，换算成物理时都要乘 dp（125% 屏上少乘会把条截短）
+        let raw = (thickness - BAR_PAD * 2.0 * dp) / (thickness_base(edge) * dp);
+        scale = clamp_scale(raw).min(max_scale);
+    }
+
+    // 当前缩放下内容刚好放下的长度（stretch = 1）
+    let (mw, mh) = bar_metrics(edge, items, scale, MIN_STRETCH);
+    let min_len = if edge == BarEdge::Top { mw } else { mh };
+    let max_len = (area_len / dp).max(min_len);
+    let (fixed, region) = length_parts(edge, items, scale);
+
+    let stretch = match handle.length_end() {
+        Some(end) => {
+            let start_len = if edge == BarEdge::Top {
+                start_size.0
+            } else {
+                start_size.1
+            } / dp;
+            let delta = if edge == BarEdge::Top {
+                pointer.0 - start_pointer.0
+            } else {
+                pointer.1 - start_pointer.1
+            } / dp;
+            let sign = if end == LengthEnd::End { 1.0 } else { -1.0 };
+            let requested = (start_len + sign * delta).clamp(min_len, max_len);
+            if region > 0.0 {
+                ((requested - fixed) / region).clamp(MIN_STRETCH, MAX_STRETCH)
+            } else {
+                MIN_STRETCH
+            }
+        }
+        None => clamp_stretch(start_stretch),
+    };
+
+    // bar_metrics 返回逻辑尺寸；窗口/位置计算全程物理
+    let (w_logical, h_logical) = bar_metrics(edge, items, scale, stretch);
+    let (w, h) = (w_logical * dp, h_logical * dp);
+    let (aw, ah) = (area.2, area.3);
+    let mut x = start_pos.0;
+    let mut y = start_pos.1;
+    // 贴边轴永远贴屏幕工作区缘
+    match edge {
+        BarEdge::Left => x = area.0,
+        BarEdge::Right => x = area.0 + aw - w,
+        BarEdge::Top => y = area.1,
+    }
+    // 沿边轴：拖两端/角时锚住另一端；只改厚度时保持中心
+    match (edge, handle.length_end()) {
+        (BarEdge::Top, Some(LengthEnd::End)) => x = start_pos.0,
+        (BarEdge::Top, Some(LengthEnd::Start)) => x = start_pos.0 + start_size.0 - w,
+        (BarEdge::Top, None) => x = start_pos.0 + start_size.0 / 2.0 - w / 2.0,
+        (_, Some(LengthEnd::End)) => y = start_pos.1,
+        (_, Some(LengthEnd::Start)) => y = start_pos.1 + start_size.1 - h,
+        (_, None) => y = start_pos.1 + start_size.1 / 2.0 - h / 2.0,
+    }
+    match edge {
+        BarEdge::Top => x = x.clamp(area.0, (area.0 + aw - w).max(area.0)),
+        _ => y = y.clamp(area.1, (area.1 + ah - h).max(area.1)),
+    }
+    (scale, stretch, x, y, w, h)
+}
+
+/// 调整尺寸开始：登记初始几何、指针、工作区与当前倍率。必须与
+/// hud_bar_resize_move/end 成对调用（前端 pointerdown → up）。
+#[tauri::command]
+pub async fn hud_bar_resize_begin(
+    handle: String,
+    pointer_x: Option<f64>,
+    pointer_y: Option<f64>,
+    app: AppHandle,
+) -> Result<HudResizeState, String> {
+    let handle = ResizeHandle::parse(&handle).ok_or_else(|| "未知的调整方向".to_string())?;
+    if DRAGGING.load(Ordering::Relaxed) || RESIZING.load(Ordering::Relaxed) {
+        return Err("已有拖拽/调整会话".into());
+    }
+    let win = app
+        .get_webview_window(HUD_BAR_WINDOW_LABEL)
+        .ok_or_else(|| "停靠条窗口不存在".to_string())?;
+    let (px, py) = drag_pointer(&win, opt_point(pointer_x, pointer_y))?;
+    let pos = win
+        .outer_position()
+        .map_err(|e| format!("读取停靠条位置失败: {e}"))?;
+    let size = win
+        .outer_size()
+        .map_err(|e| format!("读取停靠条尺寸失败: {e}"))?;
+    let dp = win.scale_factor().unwrap_or(1.0).max(0.001);
+    let (area, _) = monitor_area_under(&win, (px, py));
+    let cfg = load_hud_bar_config();
+    let edge = current_edge();
+    let scale = clamp_scale(cfg.scale);
+    let stretch = clamp_stretch(cfg.stretch);
+    set_current_metrics(scale, stretch);
+    let thickness = if edge == BarEdge::Top {
+        size.height as f64
+    } else {
+        size.width as f64
+    };
+    let dist = match edge {
+        BarEdge::Left => px - area.0,
+        BarEdge::Right => area.0 + area.2 - px,
+        BarEdge::Top => py - area.1,
+    };
+    *resize_session_slot()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner()) = Some(HudResizeSession {
+        handle,
+        edge,
+        items: item_count(),
+        start_scale: scale,
+        start_stretch: stretch,
+        start_pos: (pos.x as f64, pos.y as f64),
+        start_size: (size.width as f64, size.height as f64),
+        start_pointer: (px, py),
+        thickness_offset: thickness - dist,
+        area,
+        dp,
+    });
+    RESIZING.store(true, Ordering::Relaxed);
+    LAST_MOVED_AT.store(0, Ordering::Relaxed);
+    Ok(resize_state_of(
+        edge,
+        scale,
+        stretch,
+        (
+            pos.x as f64,
+            pos.y as f64,
+            size.width as f64,
+            size.height as f64,
+        ),
+        dp,
+    ))
+}
+
+/// 调整尺寸一步：读系统光标 → 反解缩放/拉伸 → set_size + set_position。
+/// 只在几何变化时下发窗口操作，16ms 一拍也不会引发无谓重排。
+#[tauri::command]
+pub async fn hud_bar_resize_move(
+    pointer_x: Option<f64>,
+    pointer_y: Option<f64>,
+    app: AppHandle,
+) -> Result<HudResizeState, String> {
+    let session = *resize_session_slot()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .as_ref()
+        .ok_or_else(|| "没有进行中的尺寸调整".to_string())?;
+    if !RESIZING.load(Ordering::Relaxed) {
+        return Err("没有进行中的尺寸调整".into());
+    }
+    let win = app
+        .get_webview_window(HUD_BAR_WINDOW_LABEL)
+        .ok_or_else(|| "停靠条窗口不存在".to_string())?;
+    let (px, py) = drag_pointer(&win, opt_point(pointer_x, pointer_y))?;
+    let (scale, stretch, x, y, w, h) = resize_geometry(
+        session.edge,
+        session.handle,
+        session.items,
+        session.start_scale,
+        session.start_stretch,
+        session.start_pos,
+        session.start_size,
+        session.start_pointer,
+        session.thickness_offset,
+        (px, py),
+        session.area,
+        session.dp,
+    );
+    let _ = win.set_size(PhysicalSize::new(
+        w.round().max(1.0) as u32,
+        h.round().max(1.0) as u32,
+    ));
+    let _ = win.set_position(PhysicalPosition::new(x.round() as i32, y.round() as i32));
+    set_current_metrics(scale, stretch);
+    Ok(resize_state_of(
+        session.edge,
+        scale,
+        stretch,
+        (x, y, w, h),
+        session.dp,
+    ))
+}
+
+/// 调整尺寸结束：按最后光标位置再算一遍并落盘（edge/pos/scale/stretch），
+/// 推布局事件让前端把 CSS 变量收敛到最终值；程序侧落点登记拦截随后到达的
+/// Moved 回声，避免被静默吸附二次挪动。
+#[tauri::command]
+pub async fn hud_bar_resize_end(
+    pointer_x: Option<f64>,
+    pointer_y: Option<f64>,
+    app: AppHandle,
+) -> Result<HudResizeState, String> {
+    let session = resize_session_slot()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .take();
+    let Some(win) = app.get_webview_window(HUD_BAR_WINDOW_LABEL) else {
+        RESIZING.store(false, Ordering::Relaxed);
+        return Err("停靠条窗口不存在".into());
+    };
+    let Some(session) = session else {
+        // 异常路径（会话已丢）：按当前窗口几何返回
+        RESIZING.store(false, Ordering::Relaxed);
+        LAST_MOVED_AT.store(0, Ordering::Relaxed);
+        let pos = win
+            .outer_position()
+            .map_err(|e| format!("读取停靠条位置失败: {e}"))?;
+        let size = win
+            .outer_size()
+            .map_err(|e| format!("读取停靠条尺寸失败: {e}"))?;
+        let dp = win.scale_factor().unwrap_or(1.0).max(0.001);
+        return Ok(resize_state_of(
+            current_edge(),
+            current_scale(),
+            current_stretch(),
+            (
+                pos.x as f64,
+                pos.y as f64,
+                size.width as f64,
+                size.height as f64,
+            ),
+            dp,
+        ));
+    };
+    let (px, py) =
+        drag_pointer(&win, opt_point(pointer_x, pointer_y)).unwrap_or(session.start_pointer);
+    let (scale, stretch, x, y, w, h) = resize_geometry(
+        session.edge,
+        session.handle,
+        session.items,
+        session.start_scale,
+        session.start_stretch,
+        session.start_pos,
+        session.start_size,
+        session.start_pointer,
+        session.thickness_offset,
+        (px, py),
+        session.area,
+        session.dp,
+    );
+    let _ = win.set_size(PhysicalSize::new(
+        w.round().max(1.0) as u32,
+        h.round().max(1.0) as u32,
+    ));
+    let _ = win.set_position(PhysicalPosition::new(x.round() as i32, y.round() as i32));
+    CURRENT_EDGE.store(session.edge.index(), Ordering::Relaxed);
+    set_current_metrics(scale, stretch);
+    let logical = (x / session.dp, y / session.dp);
+    if let Ok(mut guard) = snap_pos_slot().lock() {
+        *guard = Some(logical);
+    }
+    let mut cfg = load_hud_bar_config();
+    cfg.edge = session.edge.key().to_string();
+    cfg.pos = Some(logical);
+    cfg.scale = scale;
+    cfg.stretch = stretch;
+    let _ = save_hud_bar_config(&cfg);
+    push_layout(&app, session.edge);
+    // 落盘/推事件都结束后才清 RESIZING：期间到达的 Moved 回声与条目数
+    // 自适应 set_size 全部让位，不会把刚落盘的尺寸覆盖掉
+    RESIZING.store(false, Ordering::Relaxed);
+    LAST_MOVED_AT.store(0, Ordering::Relaxed);
+    Ok(resize_state_of(
+        session.edge,
+        scale,
+        stretch,
+        (x, y, w, h),
+        session.dp,
     ))
 }
 
@@ -2265,10 +3102,7 @@ mod tests {
     fn nearest_edge_底部不参与() {
         // 中心贴屏幕底缘（cy=1070）：底部（距离 10）即使最近也不吸——
         // 枚举里没有底边，按左/右/顶三边中最近者（左 500 < 顶 1070）贴左
-        assert_eq!(
-            nearest_edge(1920.0, 1080.0, 500.0, 1070.0),
-            BarEdge::Left
-        );
+        assert_eq!(nearest_edge(1920.0, 1080.0, 500.0, 1070.0), BarEdge::Left);
     }
 
     #[test]
@@ -2289,27 +3123,41 @@ mod tests {
     fn snap_target_左右贴边竖排顶贴边横排() {
         // scale=1 时物理 == 逻辑。贴左：x=0、竖排尺寸（宽 = 条厚）；
         // 1 条目长度 12+16+42 = 70 < 下限 96 取下限
-        let (w, h, x, y) =
-            snap_target(BarEdge::Left, 1920.0, 1080.0, 333.0, 222.0, 1, 1.0);
+        let (w, h, x, y) = snap_target(
+            BarEdge::Left,
+            1920.0,
+            1080.0,
+            333.0,
+            222.0,
+            1,
+            1.0,
+            1.0,
+            1.0,
+        );
         assert_eq!((x, y), (0.0, 222.0)); // 垂直位置保持拖放落点
         assert_eq!(w, BAR_THICK);
         assert_eq!(h, BAR_MIN_LEN);
         // 3 条目长度 158 > 下限：留白 12 + 面板内边距 16 + 3×42 + 2×2
-        let (_, h3, _, _) = snap_target(BarEdge::Left, 1920.0, 1080.0, 0.0, 0.0, 3, 1.0);
-        let h3_expect =
-            BAR_PAD * 2.0 + PANEL_PAD * 2.0 + 3.0 * ITEM_LEN + 2.0 * ITEM_GAP;
+        let (_, h3, _, _) = snap_target(BarEdge::Left, 1920.0, 1080.0, 0.0, 0.0, 3, 1.0, 1.0, 1.0);
+        let h3_expect = BAR_PAD * 2.0 + PANEL_PAD * 2.0 + 3.0 * ITEM_LEN + 2.0 * ITEM_GAP;
         assert!((h3 - h3_expect).abs() < f64::EPSILON);
         // 贴右：x = 屏宽 − 条厚
-        let (_, _, x, _) =
-            snap_target(BarEdge::Right, 1920.0, 1080.0, 1500.0, 222.0, 2, 1.0);
+        let (_, _, x, _) = snap_target(
+            BarEdge::Right,
+            1920.0,
+            1080.0,
+            1500.0,
+            222.0,
+            2,
+            1.0,
+            1.0,
+            1.0,
+        );
         assert_eq!(x, 1920.0 - BAR_THICK);
         // 贴顶：y=0、横排高 = BAR_THICK_TOP；宽按收起态条目宽（40）计算
-        let (w, h, x, y) = snap_target(BarEdge::Top, 1920.0, 1080.0, 333.0, 5.0, 3, 1.0);
+        let (w, h, x, y) = snap_target(BarEdge::Top, 1920.0, 1080.0, 333.0, 5.0, 3, 1.0, 1.0, 1.0);
         assert_eq!((y, h), (0.0, BAR_THICK_TOP));
-        let w_expect = BAR_PAD * 2.0
-            + PANEL_PAD * 2.0
-            + 3.0 * ITEM_W_COLLAPSED
-            + 2.0 * ITEM_GAP;
+        let w_expect = BAR_PAD * 2.0 + PANEL_PAD * 2.0 + 3.0 * ITEM_W_COLLAPSED + 2.0 * ITEM_GAP;
         assert!((w - w_expect).abs() < f64::EPSILON);
         assert_eq!(x, 333.0); // 水平位置保持拖放落点
     }
@@ -2317,10 +3165,18 @@ mod tests {
     #[test]
     fn snap_target_高dpi按scale换算物理尺寸() {
         // 150% DPI：条厚/条长 ×1.5，贴右 x = 屏宽物理 − 条厚物理
-        let (w, h, x, _) =
-            snap_target(BarEdge::Right, 1920.0, 1080.0, 1500.0, 222.0, 3, 1.5);
-        let h_expect =
-            BAR_PAD * 2.0 + PANEL_PAD * 2.0 + 3.0 * ITEM_LEN + 2.0 * ITEM_GAP;
+        let (w, h, x, _) = snap_target(
+            BarEdge::Right,
+            1920.0,
+            1080.0,
+            1500.0,
+            222.0,
+            3,
+            1.0,
+            1.0,
+            1.5,
+        );
+        let h_expect = BAR_PAD * 2.0 + PANEL_PAD * 2.0 + 3.0 * ITEM_LEN + 2.0 * ITEM_GAP;
         assert_eq!(w, BAR_THICK * 1.5);
         assert_eq!(h, h_expect * 1.5);
         assert_eq!(x, 1920.0 - BAR_THICK * 1.5);
@@ -2340,9 +3196,9 @@ mod tests {
         let cx_local = 2500.0 - mon_x; // 580
         let edge = nearest_edge(mon_w, mon_h, cx_local, 150.0);
         assert_eq!(edge, BarEdge::Top);
-        let (_tw, th, tx, ty) = snap_target(edge, mon_w, mon_h, cx_local, 300.0, 2, 1.0);
+        let (_tw, th, tx, ty) = snap_target(edge, mon_w, mon_h, cx_local, 300.0, 2, 1.0, 1.0, 1.0);
         assert_eq!((tx, ty), (cx_local, 0.0)); // 水平保持落点、贴本屏顶
-        // 落点加回副屏 origin：仍在副屏范围内（不弹回主屏）
+                                               // 落点加回副屏 origin：仍在副屏范围内（不弹回主屏）
         let gx = tx + mon_x;
         assert!((mon_x..mon_x + mon_w).contains(&gx));
         assert_eq!(th, BAR_THICK_TOP);
@@ -2350,13 +3206,13 @@ mod tests {
         // 右缘，全局落点 = 1920 + (1280 − 100)，不会落在主屏
         let edge = nearest_edge(mon_w, mon_h, 1200.0, 400.0);
         assert_eq!(edge, BarEdge::Right);
-        let (_, _, tx, _) = snap_target(edge, mon_w, mon_h, 1200.0, 400.0, 2, 1.0);
+        let (_, _, tx, _) = snap_target(edge, mon_w, mon_h, 1200.0, 400.0, 2, 1.0, 1.0, 1.0);
         assert_eq!(tx + mon_x, mon_x + mon_w - BAR_THICK);
         // 用例 3：窗口中心在副屏左缘附近（局部 cx=60）→ 贴副屏左缘（全局
         // x = 1920，即两屏交界处，副屏自己的左缘）
         let edge = nearest_edge(mon_w, mon_h, 60.0, 400.0);
         assert_eq!(edge, BarEdge::Left);
-        let (tw, _, tx, _) = snap_target(edge, mon_w, mon_h, 60.0, 400.0, 2, 1.0);
+        let (tw, _, tx, _) = snap_target(edge, mon_w, mon_h, 60.0, 400.0, 2, 1.0, 1.0, 1.0);
         assert_eq!(tx, 0.0);
         assert_eq!(tx + mon_x, mon_x);
         assert_eq!(tw, BAR_THICK);
@@ -2365,18 +3221,39 @@ mod tests {
     #[test]
     fn bar_metrics_单条目取下限与横竖排栅格() {
         // 单条目长度 12+16+42 = 70 < 下限 96：竖排取 96 高
-        let (w, h) = bar_metrics(BarEdge::Left, 1);
+        let (w, h) = bar_metrics(BarEdge::Left, 1, 1.0, 1.0);
         assert_eq!((w, h), (BAR_THICK, BAR_MIN_LEN));
         // 零条目按 1 条（空态占位）处理
-        let (_, h0) = bar_metrics(BarEdge::Left, 0);
+        let (_, h0) = bar_metrics(BarEdge::Left, 0, 1.0, 1.0);
         assert_eq!(h0, BAR_MIN_LEN);
         // 4 条目：留白 12 + 内边距 16 + 4×42 + 3×2 = 202
-        let (_, h4) = bar_metrics(BarEdge::Left, 4);
+        let (_, h4) = bar_metrics(BarEdge::Left, 4, 1.0, 1.0);
         assert!((h4 - 202.0).abs() < f64::EPSILON);
         // 横排收起态 3 条目：留白 12 + 内边距 16 + 3×40 + 2×2 = 152，高 70
-        let (wt, ht) = bar_metrics(BarEdge::Top, 3);
+        let (wt, ht) = bar_metrics(BarEdge::Top, 3, 1.0, 1.0);
         assert!((wt - 152.0).abs() < f64::EPSILON);
         assert_eq!(ht, BAR_THICK_TOP);
+    }
+
+    #[test]
+    fn bar_metrics_缩放与拉伸只放大内容区() {
+        // 1.25 倍：屏缘留白固定 12，厚度 = 12 + (16+40)×1.25 = 82；
+        // 4 条长度 = 12 + (16 + 4×42 + 3×2)×1.25 = 12 + 190×1.25 = 249.5
+        let (w, h) = bar_metrics(BarEdge::Left, 4, 1.25, 1.0);
+        assert!((w - 82.0).abs() < 1e-9);
+        assert!((h - 249.5).abs() < 1e-9);
+        // 拉伸 2 倍：固定段 12+16=28 不变，条目区（4×42 + 3×2 = 174）×2
+        let (_, h2) = bar_metrics(BarEdge::Left, 4, 1.0, 2.0);
+        assert!((h2 - (28.0 + 174.0 * 2.0)).abs() < 1e-9);
+        // 横排同款：1.25 倍厚度 = 12 + (16+42)×1.25 = 84.5
+        let (_, ht) = bar_metrics(BarEdge::Top, 4, 1.25, 1.0);
+        assert!((ht - 84.5).abs() < 1e-9);
+        // 越界倍率被收敛（0 → MIN_SCALE，NaN → 1）
+        assert!(bar_metrics(BarEdge::Left, 4, 0.0, 1.0).0 >= BAR_PAD * 2.0);
+        assert_eq!(
+            bar_metrics(BarEdge::Left, 4, f64::NAN, 1.0),
+            bar_metrics(BarEdge::Left, 4, 1.0, 1.0)
+        );
     }
 
     #[test]
@@ -2386,24 +3263,55 @@ mod tests {
         let bar = (1000.0, 300.0, 68.0, 334.0);
         // 贴右：卡片在面板左侧，右缘贴条窗口左缘（与面板留 8 间隙）
         assert_eq!(
-            card_placement(BarEdge::Right, bar, 0.0, 500.0, 304.0, 300.0, area, 1.0),
+            card_placement(
+                BarEdge::Right,
+                bar,
+                0.0,
+                500.0,
+                304.0,
+                300.0,
+                area,
+                1.0,
+                1.0
+            ),
             (694.0, 350.0)
         );
         // 贴左：卡片在面板右侧 = 窗口右缘外 8px
         assert_eq!(
-            card_placement(BarEdge::Left, bar, 0.0, 500.0, 304.0, 300.0, area, 1.0),
+            card_placement(BarEdge::Left, bar, 0.0, 500.0, 304.0, 300.0, area, 1.0, 1.0),
             (1070.0, 350.0)
         );
         // 贴顶：卡片挂在条下方，水平跟随 hover 条目中心（400 → 卡片居中）
         let top_bar = (100.0, 0.0, 320.0, 70.0);
         assert_eq!(
-            card_placement(BarEdge::Top, top_bar, 400.0, 40.0, 304.0, 300.0, area, 1.0),
+            card_placement(
+                BarEdge::Top,
+                top_bar,
+                400.0,
+                40.0,
+                304.0,
+                300.0,
+                area,
+                1.0,
+                1.0
+            ),
             (248.0, 72.0)
         );
         // 纵向钳位：条目贴底时卡片不出工作区（1080 − 300 − 4 = 776）
         let low_bar = (1000.0, 900.0, 68.0, 334.0);
         assert_eq!(
-            card_placement(BarEdge::Right, low_bar, 0.0, 1105.0, 304.0, 300.0, area, 1.0).1,
+            card_placement(
+                BarEdge::Right,
+                low_bar,
+                0.0,
+                1105.0,
+                304.0,
+                300.0,
+                area,
+                1.0,
+                1.0
+            )
+            .1,
             776.0
         );
         // 跨屏（工作区原点为负）+ 125% 缩放：贴右时卡片落在副屏内
@@ -2418,6 +3326,7 @@ mod tests {
             400.0,
             sub,
             1.25,
+            1.0,
         );
         assert!((cx - (-467.5)).abs() < 0.01);
         assert!((cy - 656.0).abs() < 0.01);
@@ -2430,45 +3339,45 @@ mod tests {
         let area = (0.0, 0.0, 1920.0, 1080.0);
         // 左半边中部：贴左，沿边按抓取比例 0.5 停放
         assert_eq!(
-            drag_geometry(BarEdge::Left, 7, (300.0, 500.0), 0.5, area, 1.0),
+            drag_geometry(BarEdge::Left, 7, (300.0, 500.0), 0.5, area, 1.0, 1.0, 1.0),
             (BarEdge::Left, 0.0, 333.0, 68.0, 334.0)
         );
         // 同一次拖动（不松手）到右半边：立刻变右边布局
         assert_eq!(
-            drag_geometry(BarEdge::Left, 7, (1500.0, 500.0), 0.5, area, 1.0),
+            drag_geometry(BarEdge::Left, 7, (1500.0, 500.0), 0.5, area, 1.0, 1.0, 1.0),
             (BarEdge::Right, 1852.0, 333.0, 68.0, 334.0)
         );
         // 继续拖到顶部：变横排贴顶，沿 x 按比例停放
         assert_eq!(
-            drag_geometry(BarEdge::Left, 7, (900.0, 40.0), 0.5, area, 1.0),
+            drag_geometry(BarEdge::Left, 7, (900.0, 40.0), 0.5, area, 1.0, 1.0, 1.0),
             (BarEdge::Top, 740.0, 0.0, 320.0, 70.0)
         );
         // 从顶部拖下来（离开迟滞带）：按中线落左/落右
         assert_eq!(
-            drag_geometry(BarEdge::Top, 7, (800.0, 300.0), 0.5, area, 1.0),
+            drag_geometry(BarEdge::Top, 7, (800.0, 300.0), 0.5, area, 1.0, 1.0, 1.0),
             (BarEdge::Left, 0.0, 133.0, 68.0, 334.0)
         );
         assert_eq!(
-            drag_geometry(BarEdge::Top, 7, (1200.0, 300.0), 0.5, area, 1.0),
+            drag_geometry(BarEdge::Top, 7, (1200.0, 300.0), 0.5, area, 1.0, 1.0, 1.0),
             (BarEdge::Right, 1852.0, 133.0, 68.0, 334.0)
         );
         // 左右迟滞：左在 55% 内保持，越过才换右
         assert_eq!(
-            drag_geometry(BarEdge::Left, 7, (1000.0, 500.0), 0.5, area, 1.0).0,
+            drag_geometry(BarEdge::Left, 7, (1000.0, 500.0), 0.5, area, 1.0, 1.0, 1.0).0,
             BarEdge::Left
         );
         assert_eq!(
-            drag_geometry(BarEdge::Left, 7, (1100.0, 500.0), 0.5, area, 1.0).0,
+            drag_geometry(BarEdge::Left, 7, (1100.0, 500.0), 0.5, area, 1.0, 1.0, 1.0).0,
             BarEdge::Right
         );
         // 顶部迟滞：已在顶部时 150+40=190 内不离开
         assert_eq!(
-            drag_geometry(BarEdge::Top, 7, (900.0, 180.0), 0.5, area, 1.0).0,
+            drag_geometry(BarEdge::Top, 7, (900.0, 180.0), 0.5, area, 1.0, 1.0, 1.0).0,
             BarEdge::Top
         );
         // 沿边钳位：指针远在右侧时条尾贴工作区右缘（1920−320=1600）
         assert_eq!(
-            drag_geometry(BarEdge::Top, 7, (1900.0, 10.0), 0.5, area, 1.0),
+            drag_geometry(BarEdge::Top, 7, (1900.0, 10.0), 0.5, area, 1.0, 1.0, 1.0),
             (BarEdge::Top, 1600.0, 0.0, 320.0, 70.0)
         );
     }
@@ -2497,17 +3406,215 @@ mod tests {
         let area = (-3200.0, -103.0, 3200.0, 1720.0);
         // 7 条目 ×1.25：竖排 85×417.5、横排 400×87.5
         // 指针在副屏右半边 → 贴副屏右边（x = -3200+3200-85）
-        let (e, x, y, w, h) = drag_geometry(BarEdge::Left, 7, (-1000.0, 500.0), 0.5, area, 1.25);
+        let (e, x, y, w, h) = drag_geometry(
+            BarEdge::Left,
+            7,
+            (-1000.0, 500.0),
+            0.5,
+            area,
+            1.0,
+            1.0,
+            1.25,
+        );
         assert_eq!(e, BarEdge::Right);
         assert_eq!((w, h), (85.0, 417.5));
         assert_eq!(x, -85.0);
         assert!((y - 291.25).abs() < 1e-9);
         // 指针在副屏顶部 → 横排贴副屏上沿
-        let (e2, x2, y2, w2, h2) =
-            drag_geometry(BarEdge::Left, 7, (-1600.0, -80.0), 0.5, area, 1.25);
+        let (e2, x2, y2, w2, h2) = drag_geometry(
+            BarEdge::Left,
+            7,
+            (-1600.0, -80.0),
+            0.5,
+            area,
+            1.0,
+            1.0,
+            1.25,
+        );
         assert_eq!(e2, BarEdge::Top);
         assert_eq!((y2, w2, h2), (-103.0, 400.0, 87.5));
         assert_eq!(x2, -3200.0 + 1600.0 - 200.0);
+    }
+
+    // ---- 尺寸调整几何 ----
+
+    #[test]
+    fn resize_geometry_内侧边拖动缩放并保持贴边与中心() {
+        // 贴左、8 条目、scale=1：窗口 68×378 在 (0,400)，指针压在内侧边
+        // 内侧 2px 处（x=66）；向右拖到 x=77.2 → 厚度 = 77.2 + 2 = 79.2
+        // = 12 + 56×1.2
+        let (scale, stretch, x, y, w, h) = resize_geometry(
+            BarEdge::Left,
+            ResizeHandle::Inner,
+            8,
+            1.0,
+            1.0,
+            (0.0, 400.0),
+            (68.0, 378.0),
+            (66.0, 300.0),
+            2.0,
+            (77.2, 300.0),
+            (0.0, 0.0, 1920.0, 1080.0),
+            1.0,
+        );
+        assert!((scale - 1.2).abs() < 1e-9);
+        assert_eq!(stretch, 1.0);
+        assert_eq!(x, 0.0); // 贴边轴始终贴工作区左缘
+        assert!((w - 79.2).abs() < 1e-9); // 厚度 = 12 + 56s
+        let expect_h = 12.0 + (16.0 + 350.0) * scale;
+        assert!((h - expect_h).abs() < 1e-9);
+        // 沿边中心保持：400 + 378/2 − h/2
+        assert!((y - (589.0 - expect_h / 2.0)).abs() < 1e-9);
+        // 拖到极小：scale 收敛到 MIN_SCALE，不会出负尺寸
+        let (small, _, _, _, w_small, _) = resize_geometry(
+            BarEdge::Left,
+            ResizeHandle::Inner,
+            8,
+            1.0,
+            1.0,
+            (0.0, 400.0),
+            (68.0, 378.0),
+            (66.0, 300.0),
+            2.0,
+            (0.0, 300.0),
+            (0.0, 0.0, 1920.0, 1080.0),
+            1.0,
+        );
+        assert!((small - MIN_SCALE).abs() < 1e-9);
+        assert!((w_small - (12.0 + 56.0 * MIN_SCALE)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn resize_geometry_横排贴顶_厚度与长度方向() {
+        let area = (0.0, 0.0, 1920.0, 1080.0);
+        // 4 条目横排：宽 12+16+4×40+3×2 = 194，高 70；窗口在 (500,0)
+        // 内侧边（下沿）从 y=67 拖到 78.6：物理厚度 78.6+3=81.6
+        // → scale = (81.6−12)/58 = 1.2
+        let (scale, stretch, x, y, w, h) = resize_geometry(
+            BarEdge::Top,
+            ResizeHandle::Inner,
+            4,
+            1.0,
+            1.0,
+            (500.0, 0.0),
+            (194.0, 70.0),
+            (600.0, 67.0),
+            3.0,
+            (600.0, 78.6),
+            area,
+            1.0,
+        );
+        let expect_scale = 1.2;
+        assert!((scale - expect_scale).abs() < 1e-9);
+        assert_eq!(stretch, 1.0);
+        assert_eq!(y, 0.0);
+        assert!((w - (12.0 + (16.0 + 160.0 + 6.0) * expect_scale)).abs() < 1e-9);
+        // 沿 x 保持中心
+        assert!((x - (500.0 + 194.0 / 2.0 - w / 2.0)).abs() < 1e-9);
+        // End（右端）拖 +20：左端固定，宽度 214，stretch = (214−28)/166
+        let (_, stretch, x, _, w, _) = resize_geometry(
+            BarEdge::Top,
+            ResizeHandle::End,
+            4,
+            1.0,
+            1.0,
+            (500.0, 0.0),
+            (194.0, 70.0),
+            (600.0, 35.0),
+            0.0,
+            (620.0, 35.0),
+            area,
+            1.0,
+        );
+        assert!((w - 214.0).abs() < 1e-9);
+        assert!((stretch - (214.0 - 28.0) / 166.0).abs() < 1e-9);
+        assert_eq!(x, 500.0);
+    }
+
+    #[test]
+    fn resize_geometry_高dpi物理尺寸换算() {
+        // 125% 屏：68 逻辑宽 = 85 物理。内侧边拖到 x=99 → 物理厚度 99
+        // → 逻辑 79.2（12 + 56×1.2）；窗口尺寸/位置都必须用物理值
+        let (scale, stretch, x, y, w, h) = resize_geometry(
+            BarEdge::Left,
+            ResizeHandle::Inner,
+            4,
+            1.0,
+            1.0,
+            (0.0, 100.0),
+            (85.0, 252.5), // 4 条 × 42 + 间距 + 留白，再 ×1.25
+            (85.0, 200.0),
+            0.0,
+            (99.0, 200.0),
+            (0.0, 0.0, 3440.0, 1440.0),
+            1.25,
+        );
+        assert!((scale - 1.2).abs() < 1e-9);
+        assert_eq!(stretch, 1.0);
+        assert_eq!(x, 0.0);
+        assert!((w - 99.0).abs() < 1e-9);
+        assert!((h - 300.0).abs() < 1e-9);
+        assert!((y - 76.25).abs() < 1e-9);
+    }
+
+    #[test]
+    fn resize_geometry_两端拖动拉伸且锚住另一端() {
+        let area = (0.0, 0.0, 1920.0, 1080.0);
+        // End（下端）：向下拖 100 → 长度 478，上端 y 不动
+        let (_, stretch, _, y, _, h) = resize_geometry(
+            BarEdge::Left,
+            ResizeHandle::End,
+            8,
+            1.0,
+            1.0,
+            (0.0, 100.0),
+            (68.0, 378.0),
+            (0.0, 475.0),
+            0.0,
+            (0.0, 575.0),
+            area,
+            1.0,
+        );
+        assert!((h - 478.0).abs() < 1e-9);
+        assert!((stretch - (478.0 - 28.0) / 350.0).abs() < 1e-9);
+        assert_eq!(y, 100.0);
+        // Start（上端）：向上拖 20 → 长度 398，下端保持（y = 100+378−398）
+        let (_, stretch, _, y, _, h) = resize_geometry(
+            BarEdge::Left,
+            ResizeHandle::Start,
+            8,
+            1.0,
+            1.0,
+            (0.0, 100.0),
+            (68.0, 378.0),
+            (0.0, 103.0),
+            0.0,
+            (0.0, 83.0),
+            area,
+            1.0,
+        );
+        assert!((h - 398.0).abs() < 1e-9);
+        assert!((stretch - (398.0 - 28.0) / 350.0).abs() < 1e-9);
+        assert!((y - 80.0).abs() < 1e-9);
+        // 往回拖到比内容还短：长度钉在当前缩放的 378（stretch 下限 1），
+        // 不能用负空隙压扁条目
+        let (_, stretch, _, y, _, h) = resize_geometry(
+            BarEdge::Left,
+            ResizeHandle::End,
+            8,
+            1.0,
+            1.0,
+            (0.0, 100.0),
+            (68.0, 378.0),
+            (0.0, 475.0),
+            0.0,
+            (0.0, 200.0),
+            area,
+            1.0,
+        );
+        assert!((h - 378.0).abs() < 1e-9);
+        assert_eq!(stretch, 1.0);
+        assert_eq!(y, 100.0);
     }
 
     // ---- payload 组装 ----
@@ -2552,13 +3659,7 @@ mod tests {
             vec!["hour5", "weekly"]
         );
         // kimi：月窗口存在时附加在最后
-        let ws = rate_limit_windows(
-            Some(10.0),
-            None,
-            Some(93.0),
-            None,
-            Some((40.0, Some(456))),
-        );
+        let ws = rate_limit_windows(Some(10.0), None, Some(93.0), None, Some((40.0, Some(456))));
         assert_eq!(
             ws.iter().map(|w| w.key.as_str()).collect::<Vec<_>>(),
             vec!["hour5", "weekly", "monthly"]
@@ -2616,7 +3717,10 @@ mod tests {
         );
         assert_eq!(ws[1].label_zh, "5h");
         // 全部条目无可用窗口：None（该源本轮不出现）
-        let bad = vec![provider_entry("expired", vec![provider_window("weekly", Some(1.0))])];
+        let bad = vec![provider_entry(
+            "expired",
+            vec![provider_window("weekly", Some(1.0))],
+        )];
         assert!(provider_windows(&bad).is_none());
     }
 
@@ -2646,7 +3750,7 @@ mod tests {
             vec!["zai", "kimi"]
         );
         assert_eq!(agents[1].quotas.len(), 2); // kimi 月窗口未填：仅 5h + 周
-        // 全部失败：空列表（前端空态占位）
+                                               // 全部失败：空列表（前端空态占位）
         assert!(build_usage(None, None, None, None, None, None, None).is_empty());
     }
 
@@ -2696,20 +3800,37 @@ mod tests {
             enabled: true,
             edge: "bottom".into(),
             pos: Some((f64::NAN, 3.0)),
+            scale: f64::NAN,
+            stretch: 0.0,
         }
         .clamped();
         assert_eq!(cfg.edge, "left");
         assert!(cfg.pos.is_none());
         assert!(cfg.enabled);
+        assert_eq!(cfg.scale, 1.0);
+        assert_eq!(cfg.stretch, MIN_STRETCH);
         // 合法值原样保留
         let cfg = HudBarConfig {
             enabled: false,
             edge: "top".into(),
             pos: Some((10.0, 20.0)),
+            scale: 1.25,
+            stretch: 1.8,
         }
         .clamped();
         assert_eq!(cfg.edge, "top");
         assert_eq!(cfg.pos, Some((10.0, 20.0)));
+        assert_eq!(cfg.scale, 1.25);
+        assert_eq!(cfg.stretch, 1.8);
+        // 越界倍率收敛
+        let cfg = HudBarConfig {
+            scale: 99.0,
+            stretch: 99.0,
+            ..HudBarConfig::default()
+        }
+        .clamped();
+        assert_eq!(cfg.scale, MAX_SCALE);
+        assert_eq!(cfg.stretch, MAX_STRETCH);
     }
 
     #[test]
@@ -2847,11 +3968,8 @@ mod tests {
     /// （占位不能全被追加到末尾）。
     #[test]
     fn 占位与真条目不重复且按固定顺序排() {
-        let visible = BTreeSet::from([
-            "zai".to_string(),
-            "codex".to_string(),
-            "cursor".to_string(),
-        ]);
+        let visible =
+            BTreeSet::from(["zai".to_string(), "codex".to_string(), "cursor".to_string()]);
         let subscribed = HashSet::new();
         let today = today_usage_with(&[("zai", 5)]);
         let mut agents = vec![quota_agent("cursor")];
@@ -2863,6 +3981,4 @@ mod tests {
         fill_placeholders(&mut agents, &evidence);
         assert_eq!(names(&agents), vec!["zai", "cursor"]);
     }
-
-
 }

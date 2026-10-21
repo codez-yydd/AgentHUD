@@ -14,6 +14,10 @@ export const stats = {
   "stats.pin": "常驻置顶",
   "stats.unpin": "取消常驻",
   "stats.github": "GitHub 仓库",
+  // HUD 停靠条开关按钮（点击托盘图标弹出的悬浮面板顶部）
+  "stats.hudBar": "HUD 停靠条",
+  "stats.hudBarOn": "HUD 停靠条已开启（点击关闭）",
+  "stats.hudBarOff": "HUD 停靠条已关闭（点击开启）",
   "stats.priceSettings": "价格设置",
   // 底部「价格设置」按钮的 title/aria：窄窗二期减负后价格页移到主窗口
   "stats.priceSettingsHint": "价格设置（将在主窗口打开）",

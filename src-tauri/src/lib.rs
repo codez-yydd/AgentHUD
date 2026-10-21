@@ -3101,6 +3101,15 @@ pub fn run() {
             hud_bar::hud_bar_drag_begin,
             hud_bar::hud_bar_drag_move,
             hud_bar::hud_bar_drag_end,
+            // 停靠条尺寸调整（拖内侧边/两端/角）：begin 登记初始几何、
+            // move 逐帧反解 scale/stretch 并改窗口、end 落盘 + 推布局
+            hud_bar::hud_bar_resize_begin,
+            hud_bar::hud_bar_resize_move,
+            hud_bar::hud_bar_resize_end,
+            // 布局/尺寸快照 + 面板顶部 HUD 开关（托盘右键菜单之外的第二入口）
+            hud_bar::hud_bar_metrics,
+            hud_bar::hud_bar_state,
+            hud_bar::hud_bar_set_enabled,
             // 主窗口（Dashboard）：托盘菜单与悬浮窗统计页按钮共用的打开入口
             main_window::open_main_window,
             model_speed::get_model_speed,
