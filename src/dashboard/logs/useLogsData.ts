@@ -25,6 +25,10 @@
  *    设备」即重新取数（后端并入远端其他设备明细），远端不可达 / 未启用同步 /
  *    旧服务端 404 由后端降级为纯本机口径（failedSources 里给 "remote"），
  *    这里照常渲染数据，不清空表格；
+ *  - device（具体远端设备 id，空串 = 不按设备筛）：参与请求键与 effect 依赖，
+ *    非空时后端跳过本机来源、远端只查该设备（行与汇总同口径）；远端失败
+ *    同样给 "remote"——该口径下它是唯一来源，total 为 0 时也是空表的唯一
+ *    解释，页面据此提示；模型清单请求不带该参数（清单语义仍是全范围）；
  *  - 首发请求挂起在同步配置就绪（ready）之后：scope 偏好缺省「全部设备」，
  *    配置未读到时无法确定实际口径，先按本机查再全量重取会双取（总览页
  *    useOverviewData 的反 pattern 注记），等待期骨架本就在展示。
@@ -53,6 +57,10 @@ export interface LogsQuery {
   /** 数据范围：local = 仅本机；all = 本机 + 其他设备（后端合并远端明细，
    *  远端不可达自动降级为本机口径并在 failedSources 里给 "remote"） */
   scope: RequestLogScope;
+  /** 具体远端设备 id（设备下拉选中某台远端设备时下发）；空串 = 不按设备筛。
+   *  非空时后端跳过本机来源、远端只查该设备（scope 应传 "all"，本机一路
+   *  不参与），远端失败给 "remote"（该口径下唯一来源，空表也要有提示） */
+  device: string;
   /** 同步配置是否就绪：未就绪时挂起首发请求（明细 + 清单都不发）。scope
    *  偏好可能是「全部设备」且缺省即为 all——配置到位前无法确定实际口径，
    *  先按本机查一遍、配置到达后再按全部设备全量重取会双取 7 库并闪一次
@@ -97,6 +105,7 @@ export function useLogsData({
   source,
   model,
   scope,
+  device,
   ready,
   page,
 }: LogsQuery): LogsDataState {
@@ -139,6 +148,7 @@ export function useLogsData({
       agent: source ? (source as RequestLogSource) : undefined,
       model: model || undefined,
       scope,
+      device: device || undefined,
     })
       .then((result) => {
         if (!isCurrent()) return;
@@ -167,7 +177,7 @@ export function useLogsData({
         setFailedSources([]);
         setError(shortError(e));
       });
-  }, [custom, range, source, model, scope, ready, page, nonce]);
+  }, [custom, range, source, model, scope, device, ready, page, nonce]);
 
   // 模型清单：只随来源 / 范围 / 数据范围（与手动刷新）重取；成功才发布（失败
   // 保持 null，页面不做失效校正，下拉退化为「全部模型」而不是给出错误清单）。

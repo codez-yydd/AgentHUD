@@ -602,7 +602,9 @@ export async function fetchKimiUsage(
  *  options.model 传模型 id 精确筛选（不传 = 不筛）；
  *  options.scope 传数据范围（缺省 local；"all" 时后端并入远端其他设备明细，
  *  远端不可达 / 未启用同步 / 旧服务端 404 时降级为纯本机并在 failed_sources
- *  里给 "remote" 弱提示，不报错）。
+ *  里给 "remote" 弱提示，不报错）；
+ *  options.device 传具体远端设备 id（非空时优先于本机一路：后端跳过本机
+ *  来源、远端只查该设备，行与汇总都只来自它；远端失败同样给 "remote"）。
  *  导入库不存在（未安装 / 未用过）按 0 条返回，不报错。 */
 export async function getRequestLogs(
   fromMs: number,
@@ -613,6 +615,7 @@ export async function getRequestLogs(
     agent?: RequestLogSource;
     model?: string;
     scope?: RequestLogScope;
+    device?: string;
   } = {}
 ): Promise<RequestLogsPage> {
   return invoke<RequestLogsPage>("get_request_logs", {
@@ -623,6 +626,7 @@ export async function getRequestLogs(
     page,
     pageSize,
     scope: options.scope ?? null,
+    device: options.device ?? null,
   });
 }
 

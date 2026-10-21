@@ -9,7 +9,9 @@
  *
  * 单元格口径：
  *  - 时间：今天 "HH:mm:ss"，其余 "MM-DD HH:mm"（跨年补年份），完整时间在 title 里
- *    （详情抽屉也有）；来源列显示短名，title 给与下拉一致的全名；
+ *    （详情抽屉也有）；来源列显示短名，title 给与下拉一致的全名；远端行
+ *    （带 device 字段）在来源下加设备名小徽标（title 给设备名 + 完整 id，
+ *    本机行不标——默认口径下本机是主体，逐行全标只是噪音）；
  *  - token 用项目现成的 locale 感知紧凑格式化（中文 万/亿、英文 K/M/B），
  *    缓存列两项并列；
  *  - 花费：按展示币种取一列；有 token 但折算为 0 → 「未定价」（与总览页 Agent 表
@@ -93,6 +95,8 @@ export function LogTable({
   nowMs,
   currency,
   busy,
+  deviceLabel,
+  selectedDevice,
   onOpen,
 }: {
   rows: RequestLogRow[];
@@ -101,6 +105,12 @@ export function LogTable({
   currency: Currency;
   /** 正在取数且表内仍是旧行：压暗 + aria-busy + 不可点开详情 */
   busy: boolean;
+  /** 设备 id → 展示名（页面统一维护：本机带「（本机）」后缀、远端取清单
+   *  设备名、缺名回退 id 前 8 位）；远端行徽标用 */
+  deviceLabel: (deviceId: string) => string;
+  /** 当前选中的具体设备 id（可选）：整表已筛到该设备时逐行徽标无信息量，
+   *  与之相同的行不再渲染设备徽标；undefined = 未筛设备，逐行照常标记 */
+  selectedDevice?: string;
   onOpen: (row: RequestLogRow) => void;
 }) {
   const { locale, t } = useI18n();
@@ -142,9 +152,25 @@ export function LogTable({
                   {logTimeShort(row.started_at, nowMs)}
                 </td>
                 {/* 短名 + 全名 title：下拉叫 Z.ai / DeepSeek Harness，表里叫
-                    ZCode / DSH，hover 可对上 */}
+                    ZCode / DSH，hover 可对上；远端行（带 device）在来源下加
+                    设备名小徽标，title 给「设备名 + 完整 id」；本机行不标，
+                    已筛到该设备（selectedDevice）的行同样不标——整表同一
+                    设备时逐行徽标只是噪音 */}
                 <td className="db-logs__col-source" title={sourceLabel(row.source)}>
                   {sourceShortLabel(row.source)}
+                  {row.device != null &&
+                    row.device !== "" &&
+                    row.device !== selectedDevice && (
+                    <span
+                      className="db-logs__device"
+                      title={t("common.deviceOption", {
+                        name: deviceLabel(row.device),
+                        id: row.device,
+                      })}
+                    >
+                      {deviceLabel(row.device)}
+                    </span>
+                  )}
                 </td>
                 <td className="db-logs__col-model">
                   <span className="db-logs__model" title={row.model_id}>

@@ -60,10 +60,13 @@ function Kv({
 export function RequestDetailDrawer({
   row,
   currency,
+  deviceLabel,
   onClose,
 }: {
   row: RequestLogRow;
   currency: Currency;
+  /** 设备 id → 展示名（页面统一维护）：设备行显示「设备名 + 完整 id」 */
+  deviceLabel: (deviceId: string) => string;
   onClose: () => void;
 }) {
   const { locale, t } = useI18n();
@@ -136,10 +139,17 @@ export function RequestDetailDrawer({
               {t("dashboard.logs.detailBasic")}
             </h3>
             <Kv label={t("dashboard.logs.detailSource")} value={sourceLabel(row.source)} />
-            {/* 设备归属：仅远端行有（「全部设备」口径从服务端明细带回，响应
-                只有 device_id，直接显示）；本机行不显示该行 */}
+            {/* 设备归属：仅远端行有（远端口径从服务端明细带回 device_id，
+                名称由页面的设备映射补上——「设备名（完整 id）」同行展示，
+                超长截断、title 给全文）；本机行不显示该行 */}
             {row.device != null && row.device !== "" && (
-              <Kv label={t("dashboard.logs.detailDevice")} value={row.device} mono />
+              <Kv
+                label={t("dashboard.logs.detailDevice")}
+                value={t("common.deviceOption", {
+                  name: deviceLabel(row.device),
+                  id: row.device,
+                })}
+              />
             )}
             <Kv label={t("dashboard.logs.detailModel")} value={row.model_id || "—"} />
             <Kv

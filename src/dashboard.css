@@ -2902,6 +2902,20 @@ body {
   white-space: nowrap;
 }
 
+/* 远端行的设备徽标：来源列内第二行小字，观感对齐速度单位的弱化层级
+   （本机行不标——默认口径下本机是主体，逐行全标只是噪音）；名称超宽
+   省略，完整「设备名（完整 id）」在 title */
+.db-logs__device {
+  display: block;
+  max-width: 96px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10px;
+  line-height: 1.3;
+  color: var(--db-text-dim);
+}
+
 /* 取数中（表内仍是旧行）：整体压暗且不可交互（旧行不能点开抽屉）；
    aria-busy 由组件侧同步设置 */
 .db-table-wrap--busy {

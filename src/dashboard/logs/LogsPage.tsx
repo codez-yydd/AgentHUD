@@ -3,7 +3,7 @@
  * 数据范围「全部设备」时后端再并入同步服务端上其他设备的明细（远端行带
  * device 字段，耗时 / 首字 / 速度恒为「—」）。
  *
- * 结构：页头（数据范围分段 + 时间范围触发按钮 + 自动刷新间隔 + 刷新）→ 筛选行
+ * 结构：页头（设备下拉 + 时间范围触发按钮 + 自动刷新间隔 + 刷新）→ 筛选行
  * （来源 / 模型下拉，模型选项带请求条数）→ 汇总指标行（总请求数 / Token 总量 /
  * 输入 / 输出 / 总成本 / 缓存命中率，当前筛选条件下的**全范围**聚合）→
  * 明细表（10 列）→ 分页条 → 详情抽屉。
@@ -13,13 +13,15 @@
  * ——长列表不会把分页条推出屏幕（900×640 最小窗口同样可用）。
  *
  * 数据事实：Cursor 没有本地逐条库（只有远端接口的日粒度汇总），本页不含它
- * （「全部设备」口径下远端 cursor 明细同样不进表格，与本地口径一致）；数据
- * 范围分段与总览页共用同一份偏好（localStorage 键 zbar-dashboard-scope），
- * 未启用多设备同步时控件禁用、固定本机口径；未安装 / 未用过的来源由后端按
- * 0 条返回，页面静默显示空态，不报错。
+ * （「全部设备」口径下远端 cursor 明细同样不进表格，与本地口径一致）；页头
+ * 「设备」下拉支持全部设备 / 本机 / 各远端设备（选具体设备时后端只查该设备、
+ * 跳过本机来源，远端行带设备名徽标，见 LogTable），偏好独立存 localStorage
+ * 键 zbar-logs-device——**不读写总览页的 zbar-dashboard-scope**，两页口径
+ * 互不影响；未启用多设备同步时下拉禁用、固定本机口径；未安装 / 未用过的来源
+ * 由后端按 0 条返回，页面静默显示空态，不报错。
  *
  * 交互约定：
- *  - 筛选（数据范围 / 来源 / 模型 / 范围）变化即回到第 1 页——否则会停在
+ *  - 筛选（设备 / 来源 / 模型 / 范围）变化即回到第 1 页——否则会停在
  *    「第 3 页但只有 1 页数据」的空结果上；
  *  - 首发射数与同步配置读取并行：配置读毕（成功或失败）才发首个请求，避免
  *    「先按本机查、配置到达后又按全部设备全量重取」的双取（与总览页同款
@@ -42,10 +44,11 @@
  *    纯本机口径（failed_sources 里给 "remote"），有数据才用一行 .db-hintbar
  *    弱提示，不清空表格、不打断。
  */
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useI18n, type MessageKey } from "../../i18n";
 import { EmptyState } from "../../layout";
 import { DropdownMenu, type DropdownOption } from "../../DropdownMenu";
+import { listRemoteDevices, selectableRemoteDevices } from "../../api";
 import type { SyncConfig } from "../../types";
 import {
   formatCost,
@@ -62,14 +65,16 @@ import {
 } from "../CustomRangeMenu";
 import { currencyOf, costOf } from "../overview/derive";
 import {
-  loadOverviewScope,
-  saveOverviewScope,
-  type OverviewScope,
-} from "../overview/model";
-import {
   peekSyncConfigCached,
   readSyncConfigCached,
 } from "../syncConfig";
+import type {
+  Currency,
+  DeviceInfo,
+  RequestLogRow,
+  RequestLogScope,
+  RequestLogSummary,
+} from "../../types";
 import { LogTable, LogTableSkeleton } from "./LogTable";
 import { RequestDetailDrawer } from "./RequestDetailDrawer";
 import { useLogsData } from "./useLogsData";
@@ -81,7 +86,6 @@ import {
   sourceLabel,
   type LogsRange,
 } from "./model";
-import type { Currency, RequestLogRow, RequestLogSummary } from "../../types";
 
 /** 刷新时刻（本地时区 HH:mm:ss；与总览页页头同款） */
 function timeText(ms: number): string {
@@ -91,15 +95,37 @@ function timeText(ms: number): string {
 }
 
 /**
- * 页头数据范围分段（顺序即展示顺序）：本机 / 全部设备。与总览页共用同一份
- * 偏好（loadOverviewScope / saveOverviewScope，localStorage 键
- * zbar-dashboard-scope）：任一页切换，另一页下次进入即生效；词条复用
- * dashboard.overview.scope.*（同款分段控件文案必须一致）。
+ * 设备筛选偏好持久化键（zbar-logs-device）：与总览页的数据范围键
+ * （zbar-dashboard-scope）**独立**——本页选设备不影响总览页口径，反之亦然。
+ * 取值：all（全部设备，缺省）/ local（仅本机）/ 具体远端设备 id。
  */
-const SCOPES: { scope: OverviewScope; labelKey: MessageKey }[] = [
-  { scope: "local", labelKey: "dashboard.overview.scope.local" },
-  { scope: "all", labelKey: "dashboard.overview.scope.all" },
-];
+const DEVICE_KEY = "zbar-logs-device";
+
+/** 读取设备偏好：无值 / 空串回退 all（存量兼容：首次无键即全部设备）；
+ *  具体设备 id 原样保留——是否仍存在于服务端由清单到位后的兜底 effect 校正 */
+function loadLogsDevice(): string {
+  try {
+    const saved = localStorage.getItem(DEVICE_KEY);
+    if (saved) return saved;
+  } catch {
+    /* 存储不可用：回退默认设备口径 */
+  }
+  return "all";
+}
+
+/** 写入设备偏好（失败静默：记忆仅锦上添花，不影响取数） */
+function saveLogsDevice(value: string): void {
+  try {
+    localStorage.setItem(DEVICE_KEY, value);
+  } catch {
+    /* 忽略：QuotaExceededError、隐私模式等 */
+  }
+}
+
+/** 远端设备清单的模块级缓存（复用对比页 useCompareData 的做法：切页重进
+ *  不重复请求，新鲜期内直接命中；只存在本窗口内存，不落盘） */
+let deviceListCache: { list: DeviceInfo[]; at: number } | null = null;
+const DEVICE_LIST_FRESH_MS = 60_000;
 
 /**
  * 自动刷新间隔档位（页头下拉）：关闭 / 5 / 10 / 30 / 60 秒。取值即毫秒数
@@ -259,9 +285,17 @@ export function LogsPage() {
   const [source, setSource] = useState("");
   /** 模型 id；空串 = 不筛（换来源 / 范围不自动清空，失效时由空态提示处理） */
   const [model, setModel] = useState("");
-  /** 数据范围偏好（与总览页共用 zbar-dashboard-scope）；懒初始化只读一次，
-   *  变更即时写入（与总览页 loadOverviewScope / saveOverviewScope 同一套） */
-  const [scope, setScope] = useState<OverviewScope>(() => loadOverviewScope());
+  /** 设备筛选（all = 全部设备合并 / local = 仅本机 / 具体 id = 只查该远端
+   *  设备）：独立偏好（zbar-logs-device），懒初始化只读一次、变更即时写入 */
+  const [device, setDevice] = useState<string>(() => loadLogsDevice());
+  /** 远端设备清单（同步启用后拉取；初值取模块缓存，命中时下拉首帧即就绪）。
+   *  加载失败保持空：下拉只留「全部设备 / 本机」两项，不阻塞页面 */
+  const [devices, setDevices] = useState<DeviceInfo[]>(
+    () => deviceListCache?.list ?? []
+  );
+  /** 清单是否成功取到（存量未知设备 id 的回退校正只在成功后判定——
+   *  失败时无从区分「已删除」与「没读到」，保持原选择不误伤） */
+  const [devicesReady, setDevicesReady] = useState(deviceListCache != null);
   /** 同步配置（null = 尚未读到；读到前范围控件短暂禁用，与总览页同款）。
    *  初值取两页共享的模块级缓存：总览页已读过时本页首帧即为就绪态，
    *  不再多等一次 IPC */
@@ -299,8 +333,57 @@ export function LogsPage() {
     };
   }, []);
   const syncEnabled = !!syncConfig?.enabled && !!syncConfig.device_token;
-  // 同步未启用时只能看本机口径（远端无从取数）：偏好仍保留，控件禁用并提示
-  const effectiveScope: OverviewScope = syncEnabled ? scope : "local";
+  // 同步未启用时只能看本机口径（远端无从取数）：偏好仍保留，下拉禁用并提示
+  const effectiveDevice = syncEnabled ? device : "local";
+  /** 具体远端设备筛选（null = 全部设备 / 本机口径）；device 参数只在选了
+   *  具体设备时下发——后端该口径下跳过本机拉取、只查该设备 */
+  const selectedDevice =
+    effectiveDevice !== "all" && effectiveDevice !== "local"
+      ? effectiveDevice
+      : null;
+  const scope: RequestLogScope =
+    selectedDevice != null || effectiveDevice === "all" ? "all" : "local";
+
+  // 远端设备清单：同步启用后取一次（模块缓存新鲜期内直接命中、不发请求；
+  // 失败静默不置 ready——下拉只留前两项，也不触发未知 id 回退）。本页不
+  // 订阅实时变化，60 秒新鲜期后重进页面会自动重取
+  useEffect(() => {
+    if (!syncEnabled) return;
+    if (
+      deviceListCache &&
+      Date.now() - deviceListCache.at < DEVICE_LIST_FRESH_MS
+    ) {
+      setDevices(deviceListCache.list);
+      setDevicesReady(true);
+      return;
+    }
+    let cancelled = false;
+    listRemoteDevices()
+      .then((list) => {
+        if (cancelled) return;
+        deviceListCache = { list, at: Date.now() };
+        setDevices(list);
+        setDevicesReady(true);
+      })
+      .catch(() => {
+        /* 静默：清单读不到不阻塞页面（下拉只留 全部设备 / 本机 两项） */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [syncEnabled]);
+
+  // 存量偏好里的设备 id 已不在服务端（设备被删除 / 服务器重置）：回退
+  // 「全部设备」，避免停在永远查不到数据的选项上；清单未成功取到时不校正
+  // （选择保持原样，下拉触发器用 id 前 8 位兜底显示）
+  useEffect(() => {
+    if (!devicesReady) return;
+    if (device === "all" || device === "local") return;
+    if (!devices.some((item) => item.device_id === device)) {
+      setDevice("all");
+      saveLogsDevice("all");
+    }
+  }, [devicesReady, devices, device]);
 
   const {
     rows,
@@ -318,7 +401,8 @@ export function LogsPage() {
     custom: customRange,
     source,
     model,
-    scope: effectiveScope,
+    scope,
+    device: selectedDevice ?? "",
     ready: syncReady,
     page,
   });
@@ -351,10 +435,10 @@ export function LogsPage() {
     setModel(next);
     setPage(1);
   }
-  /** 切换数据范围：与总览页共用同一份偏好（即时持久化），并回第 1 页 */
-  function changeScope(next: OverviewScope) {
-    setScope(next);
-    saveOverviewScope(next);
+  /** 切换设备筛选：独立偏好（即时持久化），并回第 1 页 */
+  function changeDevice(next: string) {
+    setDevice(next);
+    saveLogsDevice(next);
     setPage(1);
   }
   function clearModel() {
@@ -409,6 +493,55 @@ export function LogsPage() {
     refreshOptions.find((option) => option.value === String(refreshMs))?.label ??
     "";
 
+  /**
+   * 设备 id → 展示名（下拉选项 / 表格徽标 / 详情抽屉共用）：
+   * - 本机（id === 同步配置的 device_id）：设备名 +「（本机）」后缀，缺名
+   *   回退纯「本机」；
+   * - 远端：设备清单里的 device_name，缺名 / 清单未就绪时回退 id 前 8 位。
+   */
+  const deviceLabel = useCallback(
+    (deviceId: string): string => {
+      if (deviceId === syncConfig?.device_id) {
+        return syncConfig.device_name
+          ? t("dashboard.logs.deviceLocalName", { name: syncConfig.device_name })
+          : t("dashboard.overview.scope.local");
+      }
+      const info = devices.find((item) => item.device_id === deviceId);
+      return info?.device_name || deviceId.slice(0, 8);
+    },
+    [syncConfig, devices, t]
+  );
+
+  // 设备下拉：全部设备 / 本机（带设备名）/ 各远端设备（排除本机与零记录
+  // 设备——过滤口径与统计 / 对比 / 报表页的筛选下拉一致，见
+  // selectableRemoteDevices）。选中的具体设备若尚未进清单（清单在取 / 已被
+  // 删除但清单未刷新），先补进选项保证触发器不显示空串（与模型下拉同款先例）
+  const deviceOptions: DropdownOption[] = useMemo(() => {
+    const options: DropdownOption[] = [
+      { value: "all", label: t("dashboard.overview.scope.all") },
+      {
+        value: "local",
+        label: syncConfig?.device_id
+          ? deviceLabel(syncConfig.device_id)
+          : t("dashboard.overview.scope.local"),
+      },
+      ...selectableRemoteDevices(devices, syncConfig?.device_id).map(
+        (item) => ({
+          value: item.device_id,
+          label: deviceLabel(item.device_id),
+        })
+      ),
+    ];
+    if (
+      device !== "all" &&
+      device !== "local" &&
+      !options.some((option) => option.value === device)
+    ) {
+      options.push({ value: device, label: deviceLabel(device) });
+    }
+    return options;
+  }, [devices, device, syncConfig, deviceLabel, t]);
+
   // 来源下拉：全部 + 7 个来源（显示名与总览页 agentLabel 同一份品牌元数据）
   const sourceOptions: DropdownOption[] = useMemo(
     () => [
@@ -440,23 +573,32 @@ export function LogsPage() {
     ? formatRangeSummary(customRange.fromMs, customRange.toMs, locale)
     : t(LOGS_RANGES.find((item) => item.range === range)!.labelKey);
 
-  // 卡片副标题：当前条件摘要（数据范围文案随口径变化 + 点击行的说明，
+  // 卡片副标题：当前条件摘要（设备口径文案随筛选变化 + 点击行的说明，
   // 行内不再逐行提示）
   const cardSub = [
     rangeLabel,
     source ? sourceLabel(source) : t("dashboard.logs.sourceAll"),
     model || t("dashboard.logs.modelAll"),
-    effectiveScope === "all"
-      ? t("dashboard.overview.scope.all")
-      : t("dashboard.logs.localOnly"),
+    selectedDevice != null
+      ? deviceLabel(selectedDevice)
+      : scope === "all"
+        ? t("dashboard.overview.scope.all")
+        : t("dashboard.logs.localOnly"),
     t("dashboard.logs.rowHint"),
   ].join(" · ");
 
   const isEmpty = !loading && error == null && total === 0;
   const filteredByModel = model !== "";
-  // 部分来源取数失败（库读失败 / 表缺失）但仍有数据：弱提示，不清空、不报错
+  // 远端一路失败（不可达 / 未启用同步 / 旧服务端 404）从来源名清单里拆出，
+  // 单独成条把后果说清；具体设备口径下它是唯一来源——total 为 0 也要提示
+  //（否则空表无解释），合并口径下已有本机数据、降级展示照常
+  const remoteFailed = failedSources.includes("remote");
+  const otherFailedSources = failedSources.filter((item) => item !== "remote");
+  // 其余单源取数失败（库读失败 / 表缺失）但仍有数据：弱提示，不清空、不报错
   const showFailedHint =
-    error == null && total > 0 && failedSources.length > 0;
+    error == null && total > 0 && otherFailedSources.length > 0;
+  const showRemoteHint =
+    error == null && remoteFailed && (total > 0 || selectedDevice != null);
 
   /** 分页条：页码文案 / 按钮均以「已生效页码」为准（翻页等待期不领先数据） */
   const pager = (
@@ -496,33 +638,34 @@ export function LogsPage() {
           <p className="db-page__desc">{t("dashboard.logs.desc")}</p>
         </div>
         <div className="db-page__actions">
-          {/* 数据范围：本机 / 全部设备（与总览页同一套分段控件与偏好键；
-              未启用多设备同步时禁用并提示原因） */}
-          <div
-            className="db-seg"
-            role="group"
-            aria-label={t("dashboard.overview.scopeLabel")}
-          >
-            {SCOPES.map(({ scope: value, labelKey }) => (
-              <button
-                key={value}
-                type="button"
-                onClick={() => changeScope(value)}
-                disabled={!syncEnabled}
-                title={
-                  syncEnabled
-                    ? undefined
-                    : t("dashboard.overview.syncDisabledHint")
-                }
-                className={`db-seg__btn ${
-                  effectiveScope === value ? "db-seg__btn--active" : ""
-                }`}
-                aria-pressed={effectiveScope === value}
-              >
-                {t(labelKey)}
-              </button>
-            ))}
-          </div>
+          {/* 设备筛选：全部设备 / 本机 / 各远端设备（对比页同款下拉；偏好独立
+              存 zbar-logs-device，不影响总览页口径）。未启用多设备同步时禁用
+              并固定本机口径（触发器仍显示当前生效项） */}
+          <DropdownMenu
+            label={t("dashboard.logs.deviceLabel")}
+            ariaLabel={t("dashboard.logs.deviceLabel")}
+            options={deviceOptions}
+            value={effectiveDevice}
+            onChange={changeDevice}
+            disabled={!syncEnabled}
+            /* 筛选生效（非默认「全部设备」口径——含「本机」）时触发器带激活态：
+               主色描边 + 浅主色底，提示当前不是默认的合并口径（与总览页
+               Agent 筛选、自定义区间生效时同一先例） */
+            active={effectiveDevice !== "all"}
+            /* 启用态 title 给当前选中项的完整设备名（触发器可能截断，
+               与自动刷新下拉「完整语义放 title」同一先例）；禁用态说明
+               为何固定本机口径 */
+            title={
+              syncEnabled
+                ? t("dashboard.logs.deviceHint", {
+                    value:
+                      deviceOptions.find(
+                        (option) => option.value === effectiveDevice
+                      )?.label ?? "",
+                  })
+                : t("dashboard.overview.syncDisabledHint")
+            }
+          />
           {/* 时间范围：单个触发按钮 + 弹出面板（五档预设收进面板顶部快捷行；
               本页不限制最早日期——后端存有全部历史请求记录） */}
           <CustomRangeMenu
@@ -584,20 +727,30 @@ export function LogsPage() {
       {/* 汇总指标行：当前筛选条件下的全范围聚合（与表格同一次请求返回） */}
       <LogsMetrics summary={summary} loading={loading} currency={currency} />
 
-      {/* 单源 / 远端取数失败弱提示（对齐总览页 partialFailures 惯例：有数据才
-          提示，不打断；"remote" = 「全部设备」口径下远端一路未取到，已降级为
-          纯本机口径展示） */}
+      {/* 取数失败弱提示（对齐总览页 partialFailures 惯例：弱提示条，不清空、
+          不打断）。"remote" 单独成条说清后果：合并口径已降级为纯本机展示；
+          具体设备口径下它是唯一来源（total 0 时空表的唯一解释）；其余单源
+          失败仍有数据时才提示「数据可能不完整」 */}
+      {/* 同步未启用：说明为何设备筛选固定在「本机」（与总览页同款弱提示条；
+          等同步配置读毕再显示，读配置期间不闪提示）。远端取数失败的降级
+          提示见下方两条，互不覆盖 */}
+      {syncReady && !syncEnabled && (
+        <div className="db-hintbar">
+          {t("dashboard.overview.syncDisabledHint")}
+        </div>
+      )}
       {showFailedHint && (
         <div className="db-hintbar">
           {t("dashboard.logs.partialFailures", {
-            names: failedSources
-              .map((item) =>
-                item === "remote"
-                  ? t("dashboard.logs.remoteSourceName")
-                  : sourceLabel(item)
-              )
-              .join(" · "),
+            names: otherFailedSources.map((item) => sourceLabel(item)).join(" · "),
           })}
+        </div>
+      )}
+      {showRemoteHint && (
+        <div className="db-hintbar">
+          {selectedDevice != null && total === 0
+            ? t("dashboard.logs.remoteUnreachableDevice")
+            : t("dashboard.logs.remoteDegraded")}
         </div>
       )}
 
@@ -632,7 +785,10 @@ export function LogsPage() {
         </Card>
       ) : isEmpty ? (
         /* 空态与总览页同款：作为页面的直接子元素（大窗字号覆盖只作用于
-           .db-page 的直接子元素），不套卡片 */
+           .db-page 的直接子元素），不套卡片。模型 / 设备筛选各自有专属空态
+           （专属标题 + 一键清除动作，照模型空态先例）；设备空态与远端不可达
+           的提示条互不覆盖——不可达的后果走上方 db-hintbar，这里只说「该设备
+           在此范围内无记录」并给一键切回全部设备 */
         filteredByModel ? (
           <EmptyState
             title={t("dashboard.logs.emptyModelTitle")}
@@ -640,6 +796,22 @@ export function LogsPage() {
             action={
               <button type="button" className="db-btn mt-1" onClick={clearModel}>
                 {t("dashboard.logs.clearModel")}
+              </button>
+            }
+          />
+        ) : selectedDevice != null ? (
+          <EmptyState
+            title={t("dashboard.logs.emptyDeviceTitle", {
+              name: deviceLabel(selectedDevice),
+            })}
+            hint={t("dashboard.logs.emptyDeviceHint")}
+            action={
+              <button
+                type="button"
+                className="db-btn mt-1"
+                onClick={() => changeDevice("all")}
+              >
+                {t("dashboard.logs.viewAllDevices")}
               </button>
             }
           />
@@ -680,6 +852,10 @@ export function LogsPage() {
             nowMs={nowMs}
             currency={currency}
             busy={busy}
+            deviceLabel={deviceLabel}
+            /* 筛选到具体设备时整表同一设备，逐行设备徽标无信息量——传入选中
+               id 供表格抑制该设备行的徽标（见 LogTable selectedDevice） */
+            selectedDevice={selectedDevice ?? undefined}
             onOpen={setActive}
           />
           {pager}
@@ -690,6 +866,7 @@ export function LogsPage() {
         <RequestDetailDrawer
           row={active}
           currency={currency}
+          deviceLabel={deviceLabel}
           onClose={() => setActive(null)}
         />
       )}

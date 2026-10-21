@@ -69,6 +69,12 @@
 //! 同步未启用 / 旧服务端 404 一律计入 `failed_sources`（统一标识 "remote"），
 //! 本机数据照常展示，绝不清空表格。服务端无该接口的旧版本走同一降级路径。
 //!
+//! 具体设备筛选（`device` 非空，前端设备下拉选中某台远端设备时下发）：
+//! 跳过全部本机来源拉取，远端请求改带 `devices=<该设备>`（服务端 devices
+//! 参数优先于 exclude_device，只查该设备）——行与汇总都只来自该设备（口径
+//! 一致）；远端失败照样计入 `failed_sources`（该口径下它是唯一来源，
+//! total 为 0 时空表需要提示）。
+//!
 //! ## 汇总指标
 //!
 //! `summary`：当前筛选条件（agent + model + 时间范围）下**全范围**聚合
@@ -752,21 +758,57 @@ fn merge_remote_lanes(
     }
 }
 
-/// 远端一路的取数（scope = "all" 时）：同步未启用 / 未注册设备直接 Err
-///（调用方把 "remote" 计入 failed_sources 弱提示，本机数据照常展示）。
-/// 行数上限：单来源筛选与本地单源一致（服务端按该 source 过滤）；全部来源
-/// 时一次请求拉 limit×源数 行——服务端全局排序后客户端按真实 source 分桶，
-/// 可证明每源仍能取足自身的前 limit 名，归并切页正确：任一行若属于归并后
-/// 前 limit 名，则新于它的行不足 limit；若它不在全局前 limit×N 名内，则新于
-/// 它的行 ≥ limit×N，其中同源至多 limit−1，其余 ≥ limit×(N−1)+1 来自其他源，
-/// 合计 ≥ limit，矛盾。上限同样夹到 MAX_FETCH_ROWS（与服务端 5000 夹紧一致，
-/// 深页行为对齐本地单源的既有折衷）。
+/// 构造远端 /usage_records 请求（纯函数，可测接缝）：
+/// - `device = None`（全部设备口径）：`exclude_device` = 本机（本机记录本地
+///   直读，必须排除，否则与本机直读数据重复）；
+/// - `device = Some(id)`（具体设备筛选）：改带 `devices = <id>`、不再 exclude
+///   本机——服务端 devices 参数优先级高于 exclude_device，传了就按它查。
+fn remote_records_request(
+    sources: &[&'static str],
+    from_ms: i64,
+    to_ms: i64,
+    model: Option<&str>,
+    limit: i64,
+    device: Option<&str>,
+    local_device_id: &str,
+) -> crate::sync::RemoteUsageRecordsRequest {
+    let single = sources.len() == 1;
+    crate::sync::RemoteUsageRecordsRequest {
+        from_ms,
+        to_ms,
+        source: if single {
+            sources[0].to_string()
+        } else {
+            String::new()
+        },
+        model_id: model.unwrap_or("").to_string(),
+        devices: device.unwrap_or("").to_string(),
+        exclude_device: if device.is_some() {
+            String::new()
+        } else {
+            local_device_id.to_string()
+        },
+        limit,
+        offset: 0,
+    }
+}
+
+/// 远端一路的取数（scope = "all" 或具体设备筛选时）：同步未启用 / 未注册
+/// 设备直接 Err（调用方把 "remote" 计入 failed_sources 弱提示，本机数据照常
+/// 展示）。行数上限：单来源筛选与本地单源一致（服务端按该 source 过滤）；
+/// 全部来源时一次请求拉 limit×源数 行——服务端全局排序后客户端按真实
+/// source 分桶，可证明每源仍能取足自身的前 limit 名，归并切页正确：任一行
+/// 若属于归并后前 limit 名，则新于它的行不足 limit；若它不在全局前
+/// limit×N 名内，则新于它的行 ≥ limit×N，其中同源至多 limit−1，其余 ≥
+/// limit×(N−1)+1 来自其他源，合计 ≥ limit，矛盾。上限同样夹到
+/// MAX_FETCH_ROWS（与服务端 5000 夹紧一致，深页行为对齐本地单源的既有折衷）。
 fn fetch_remote_lane(
     sources: &[&'static str],
     from_ms: i64,
     to_ms: i64,
     model: Option<&str>,
     limit: i64,
+    device: Option<&str>,
 ) -> Result<crate::sync::RemoteUsageRecords, String> {
     let cfg = crate::sync::load_sync_config()?;
     if !cfg.enabled || cfg.device_token.is_empty() || cfg.device_id.is_empty() {
@@ -780,22 +822,8 @@ fn fetch_remote_lane(
             .saturating_mul(sources.len() as i64)
             .min(MAX_FETCH_ROWS)
     };
-    let req = crate::sync::RemoteUsageRecordsRequest {
-        from_ms,
-        to_ms,
-        source: if single {
-            sources[0].to_string()
-        } else {
-            String::new()
-        },
-        model_id: model.unwrap_or("").to_string(),
-        // 本机记录会上传到服务端本机 device_id 名下，必须排除，否则与本机
-        // 直读数据重复
-        exclude_device: cfg.device_id.clone(),
-        devices: String::new(),
-        limit: remote_limit,
-        offset: 0,
-    };
+    let req =
+        remote_records_request(sources, from_ms, to_ms, model, remote_limit, device, &cfg.device_id);
     crate::sync::fetch_remote_usage_records(req)
 }
 
@@ -868,14 +896,66 @@ where
     (totals, rows, failed)
 }
 
+/// 明细取数编排（可测接缝）：本机各来源路 + 远端一路的取数与归并。
+/// - `device = None`：本机全部来源各拉一路；仅 `all_devices`（scope = "all"）
+///   时再拉远端一路（exclude 本机）；
+/// - `device = Some(id)`（具体设备筛选）：**跳过全部本机来源拉取**——结果
+///   只含该远端设备的行，summary 同口径只聚合远端该设备；远端一路必拉。
+/// 远端失败 / 未启用同步 / 旧服务端 404 一律把 "remote" 计入 failed_sources
+/// （具体设备口径下它是唯一来源，total 为 0 时空表也要有提示），本机数据
+/// 照常返回。local_fetch / remote_fetch 由调用方注入：真实实现走 SQLite /
+/// 同步 HTTP，测试用假 fetch 验证编排（具体设备筛选时 local_fetch 不被调用）。
+fn collect_log_lanes<F, R>(
+    sources: &[&'static str],
+    all_devices: bool,
+    device: Option<&str>,
+    local_fetch: F,
+    remote_fetch: R,
+) -> (
+    Vec<(&'static str, SourceTotals)>,
+    Vec<RequestLogRow>,
+    Vec<String>,
+)
+where
+    F: Fn(&str) -> Result<(SourceTotals, Vec<RequestLogRow>), String>,
+    R: FnOnce() -> Result<crate::sync::RemoteUsageRecords, String>,
+{
+    let mut failed_sources: Vec<String> = Vec::new();
+    // 具体设备筛选：跳过全部本机来源拉取（行与汇总都只来自该远端设备）
+    let (mut totals, mut merged) = if device.is_some() {
+        (Vec::new(), Vec::new())
+    } else {
+        let (totals, rows, failed) = collect_sources(sources, local_fetch);
+        failed_sources.extend(failed);
+        (totals, rows)
+    };
+    // 远端第 8 路：「全部设备」口径或具体设备筛选时接入
+    if all_devices || device.is_some() {
+        match remote_fetch() {
+            Ok(resp) => {
+                let lanes = split_remote_records(resp, sources);
+                merge_remote_lanes(&mut totals, &mut merged, lanes);
+            }
+            Err(e) => {
+                eprintln!("[zbar-request-logs] 远端请求明细查询失败，已跳过: {e}");
+                failed_sources.push("remote".to_string());
+            }
+        }
+    }
+    (totals, merged, failed_sources)
+}
+
 /// 请求日志分页的同步实现：7 个本地来源合并后按时间倒序；scope = "all" 时
-/// 并入同步服务端上其他设备的明细（见模块头「全部设备口径」）。lib.rs 注册的
+/// 并入同步服务端上其他设备的明细（见模块头「全部设备口径」）；device 非空
+/// 时只查该远端设备（见模块头「具体设备筛选」）。lib.rs 注册的
 /// async 命令把它卸载到阻塞线程池（本地是多库 SQLite 查询、scope=all 时还有
 /// 同步 HTTP，不能跑在主线程）；单测直接构造调用。
 ///
 /// - `agent`：来源筛选（None / 空串 = 全部 7 源；只认 SOURCES 里的来源名）；
 /// - `model`：模型 id 精确筛选（None = 不筛）；
 /// - `scope`：数据口径（None / "local" = 仅本机；"all" = 本机 + 其他设备）；
+/// - `device`：具体远端设备筛选（None / 空串 / 纯空白 = 不按设备筛；非空时
+///   优先于 scope 的本机一路——跳过本机拉取、远端只查该设备）；
 /// - 单源最多 (page+1)×page_size 行（上限 MAX_FETCH_ROWS）。
 pub fn collect_request_logs(
     agent: Option<String>,
@@ -885,6 +965,7 @@ pub fn collect_request_logs(
     page: i64,
     page_size: i64,
     scope: Option<String>,
+    device: Option<String>,
 ) -> Result<RequestLogsPage, String> {
     let sources = select_sources(agent.as_deref())?;
     let (page, page_size) = normalize_paging(page, page_size);
@@ -893,32 +974,21 @@ pub fn collect_request_logs(
         _ => None,
     };
     let all_devices = scope_all(scope.as_deref());
+    // 具体设备筛选归一：None / 空串 / 纯空白 = 不按设备筛（走既有口径）
+    let device_id = device.as_deref().map(str::trim).filter(|d| !d.is_empty());
     // 单源取足「到当前页为止」的行数，归并后再全局切片（见模块头）
     let limit = page
         .saturating_add(1)
         .saturating_mul(page_size)
         .min(MAX_FETCH_ROWS);
 
-    let (mut totals, mut merged, mut failed_sources) =
-        collect_sources(&sources, |source| {
-            query_source(source, from_ms, to_ms, model, limit)
-        });
-
-    // 远端第 8 路（仅「全部设备」口径）：失败 / 未启用同步 / 旧服务端 404
-    // 一律只弱提示（failed_sources 里统一标识 "remote"），本机数据照常返回
-    if all_devices {
-        let outcome = fetch_remote_lane(&sources, from_ms, to_ms, model, limit);
-        match outcome {
-            Ok(resp) => {
-                let lanes = split_remote_records(resp, &sources);
-                merge_remote_lanes(&mut totals, &mut merged, lanes);
-            }
-            Err(e) => {
-                eprintln!("[zbar-request-logs] 远端请求明细查询失败，已跳过: {e}");
-                failed_sources.push("remote".to_string());
-            }
-        }
-    }
+    let (totals, mut merged, failed_sources) = collect_log_lanes(
+        &sources,
+        all_devices,
+        device_id,
+        |source| query_source(source, from_ms, to_ms, model, limit),
+        || fetch_remote_lane(&sources, from_ms, to_ms, model, limit, device_id),
+    );
     let total: i64 = totals.iter().map(|(_, item)| item.requests).sum();
 
     // 时间倒序；同毫秒先按 device（None = 本机恒在前，远端行按设备 id 稳定序），
@@ -1013,7 +1083,8 @@ pub fn collect_request_log_models(
 // 模式）；包装器保持命令名不变，前端 invoke 契约不受影响。同步实现是上面
 // 的 collect_request_logs / collect_request_log_models（单测直接构造）。
 
-/// 请求日志分页查询（scope = "all" 时并入远端其他设备明细）。
+/// 请求日志分页查询（scope = "all" 时并入远端其他设备明细；device 非空时
+/// 只查该远端设备、跳过本机来源）。
 #[tauri::command]
 pub async fn get_request_logs(
     agent: Option<String>,
@@ -1023,9 +1094,10 @@ pub async fn get_request_logs(
     page: i64,
     page_size: i64,
     scope: Option<String>,
+    device: Option<String>,
 ) -> Result<RequestLogsPage, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        collect_request_logs(agent, model, from_ms, to_ms, page, page_size, scope)
+        collect_request_logs(agent, model, from_ms, to_ms, page, page_size, scope, device)
     })
     .await
     .map_err(|e| format!("请求日志任务失败: {e}"))?
@@ -1505,6 +1577,106 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].source, "codex");
         assert_eq!(failed, vec!["kimi".to_string()]);
+    }
+
+    /// 具体设备筛选（device 非空）：远端请求改带 devices（不再 exclude 本机，
+    /// 服务端 devices 优先级更高），且跳过全部本机来源拉取（行与聚合都只来自
+    /// 该远端设备）；远端失败照常把 "remote" 计入 failed_sources（该口径下
+    /// 唯一来源，total 为 0 时空表也要有提示）。
+    #[test]
+    fn device_filter_targets_remote_and_skips_local() {
+        // 请求构造：devices / exclude_device 随筛选口径互换；单来源与模型透传
+        let req = remote_records_request(
+            &["codex"],
+            0,
+            1000,
+            Some("glm-5"),
+            20,
+            Some("dev-x"),
+            "dev-local",
+        );
+        assert_eq!(req.devices, "dev-x");
+        assert_eq!(req.exclude_device, "");
+        assert_eq!(req.source, "codex");
+        assert_eq!(req.model_id, "glm-5");
+        let req = remote_records_request(
+            &["codex", "claude"],
+            0,
+            1000,
+            None,
+            40,
+            None,
+            "dev-local",
+        );
+        assert_eq!(req.exclude_device, "dev-local");
+        assert_eq!(req.devices, "");
+        assert_eq!(req.source, "");
+
+        // 编排：具体设备筛选时 local_fetch 不被调用（scope 即使是 local，
+        // 远端一路也必拉）；远端行 / 聚合照常归并。计数用 Cell：collect_sources
+        // 的接缝是 Fn（&self 计数不改捕获，Fn 闭包内可自增）
+        let local_calls = std::cell::Cell::new(0);
+        let make_resp = || crate::sync::RemoteUsageRecords {
+            total: 1,
+            rows: vec![crate::sync::RemoteUsageRecord {
+                device_id: "dev-x".into(),
+                source: "codex".into(),
+                local_rowid: 1,
+                started_at: 1000,
+                model_id: "m".into(),
+                provider_id: "p".into(),
+                input_tokens: 1,
+                output_tokens: 2,
+                cache_read_input_tokens: 0,
+                cache_creation_input_tokens: 0,
+                reasoning_tokens: 0,
+                computed_total_tokens: 3,
+                session_id: None,
+                project_key: None,
+                project_display: None,
+                duration_ms: None,
+                time_to_first_token_ms: None,
+            }],
+            by_model: vec![crate::sync::RemoteUsageModelGroup {
+                source: "codex".into(),
+                model_id: "m".into(),
+                provider_id: "p".into(),
+                requests: 1,
+                input_tokens: 1,
+                output_tokens: 2,
+                cache_read_tokens: 0,
+                cache_write_tokens: 0,
+                reasoning_tokens: 0,
+                total_tokens: 3,
+            }],
+        };
+        let (totals, rows, failed) = collect_log_lanes(
+            &["codex", "claude"],
+            false,
+            Some("dev-x"),
+            |_| {
+                local_calls.set(local_calls.get() + 1);
+                Ok((SourceTotals::default(), Vec::new()))
+            },
+            || Ok(make_resp()),
+        );
+        assert_eq!(local_calls.get(), 0, "具体设备筛选跳过全部本机来源拉取");
+        assert!(failed.is_empty());
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].device.as_deref(), Some("dev-x"));
+        let total: i64 = totals.iter().map(|(_, item)| item.requests).sum();
+        assert_eq!(total, 1, "汇总同口径只聚合远端该设备");
+
+        // 远端失败：唯一来源失败 → "remote" 计入 failed_sources（空表有提示）
+        let (_, rows, failed) = collect_log_lanes(
+            &["codex"],
+            false,
+            Some("dev-x"),
+            |_| Err("具体设备筛选不应拉本机来源".to_string()),
+            || Err("远端不可达".to_string()),
+        );
+        assert_eq!(failed, vec!["remote".to_string()]);
+        assert!(rows.is_empty());
     }
 
     /// 会话元表相关子查询：有表才拼、无表降级为 NULL

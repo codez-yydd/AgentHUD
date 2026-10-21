@@ -1223,7 +1223,7 @@ export const en: typeof zh = {
     "dashboard.overview.desc":
       "Aggregated usage, cost and trends across services.",
     "dashboard.logs.desc":
-      "Per-request details: time, model, token breakdown, cost and duration; filterable by source and data scope (this machine / all devices).",
+      "Per-request details: time, model, token breakdown, cost and duration; filterable by device, source and model.",
     "dashboard.compare.desc":
       "Weekly quota left per subscription, used-% trends over the selected range, and local vs. other-device token comparison.",
     "dashboard.pricing.desc":
@@ -1529,6 +1529,11 @@ export const en: typeof zh = {
     "dashboard.logs.sourceAll": "All sources",
     "dashboard.logs.modelLabel": "Model",
     "dashboard.logs.modelAll": "All models",
+    // Header device dropdown (all / local / each remote device; own preference
+    // zbar-logs-device). "All" and bare "local" reuse dashboard.overview.scope.*
+    "dashboard.logs.deviceLabel": "Device",
+    "dashboard.logs.deviceLocalName": "{name} (this device)",
+    "dashboard.logs.deviceHint": "Device filter: {value}",
     "dashboard.logs.metricsRequests": "Total requests",
     "dashboard.logs.metricsCost": "Total cost",
     "dashboard.logs.metricsCostHint":
@@ -1593,6 +1598,13 @@ export const en: typeof zh = {
     "dashboard.logs.emptyModelHint":
       "No requests for \"{model}\" in the current source / time range. Clear the model filter to see all models.",
     "dashboard.logs.clearModel": "Clear model filter",
+    // Device-filter empty state (specific-device scope, table empty): dedicated
+    // title naming the device + one-click back to all devices; does not replace
+    // the unreachable hint bar above (that one explains the fetch failure)
+    "dashboard.logs.emptyDeviceTitle": "No requests from {name} in this range",
+    "dashboard.logs.emptyDeviceHint":
+      "No records from this device in the current source / time range. View all devices to see every device's records.",
+    "dashboard.logs.viewAllDevices": "View all devices",
     "dashboard.logs.pageEmptyHint":
       "No data on this page — it may be beyond the record range; go back a page.",
     "dashboard.logs.errorTitle": "Failed to load",
@@ -1600,9 +1612,12 @@ export const en: typeof zh = {
     "dashboard.logs.retry": "Reload",
     "dashboard.logs.partialFailures":
       "Some sources could not be read this time, so data may be incomplete: {names}",
-    // failed_sources entry "remote" (remote lane failed / sync off / legacy
-    // server 404) is shown under this label
-    "dashboard.logs.remoteSourceName": "Remote devices",
+    // Remote lane failure (unreachable / sync off / legacy server 404) gets its
+    // own bar spelling out the consequence instead of joining the names above
+    "dashboard.logs.remoteDegraded":
+      "Remote data is unreachable; only this machine's records are shown",
+    "dashboard.logs.remoteUnreachableDevice":
+      "Remote device data is unreachable; no records were fetched for this device",
     "dashboard.logs.pagePrev": "Prev",
     "dashboard.logs.pageNext": "Next",
     "dashboard.logs.pageInfo": "Page {page} / {total}",

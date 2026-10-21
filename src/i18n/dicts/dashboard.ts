@@ -26,7 +26,7 @@ export const dashboard = {
   // 页面说明
   "dashboard.overview.desc": "跨服务用量、花费与趋势的汇总视图。",
   "dashboard.logs.desc":
-    "逐个请求的明细：时间、模型、Token 构成、花费与耗时；可按来源与数据范围（本机 / 全部设备）筛选。",
+    "逐个请求的明细：时间、模型、Token 构成、花费与耗时；可按设备、来源与模型筛选。",
   "dashboard.compare.desc":
     "各订阅当前额度剩余、近 N 天已用比例趋势，以及本机与其他设备的 Token 对比。",
   "dashboard.pricing.desc": "模型单价维护与价格表更新。",
@@ -326,6 +326,14 @@ export const dashboard = {
   "dashboard.logs.sourceAll": "全部来源",
   "dashboard.logs.modelLabel": "模型",
   "dashboard.logs.modelAll": "全部模型",
+  // 页头设备下拉（全部设备 / 本机 / 各远端设备；独立偏好 zbar-logs-device，
+  // 不读写总览页的 zbar-dashboard-scope）。全部 / 本机文案复用
+  // dashboard.overview.scope.*，本机带设备名时用 deviceLocalName
+  "dashboard.logs.deviceLabel": "设备",
+  "dashboard.logs.deviceLocalName": "{name}（本机）",
+  // 设备下拉 title（启用态）：完整语义「设备筛选 + 当前选中项」，触发器
+  // 可能截断长设备名（与自动刷新下拉「完整语义放 title」同一先例）
+  "dashboard.logs.deviceHint": "设备筛选：{value}",
   // 汇总指标行（当前筛选条件下的全范围聚合，不是当前页）
   "dashboard.logs.metricsRequests": "总请求数",
   "dashboard.logs.metricsCost": "总成本",
@@ -387,6 +395,13 @@ export const dashboard = {
   "dashboard.logs.emptyModelHint":
     "当前来源 / 时间范围下没有「{model}」的请求记录；可清除模型筛选查看全部模型。",
   "dashboard.logs.clearModel": "清除模型筛选",
+  // 设备筛选无结果（具体设备口径下空表）：与模型空态同款——专属标题点明
+  // 设备名 + 一键切回全部设备；与远端不可达的提示条（remoteUnreachableDevice）
+  // 互不覆盖：不可达的后果走提示条，这里只说「该设备无记录」
+  "dashboard.logs.emptyDeviceTitle": "{name} 在此范围内暂无请求记录",
+  "dashboard.logs.emptyDeviceHint":
+    "当前来源 / 时间范围下没有来自该设备的请求记录；可查看全部设备。",
+  "dashboard.logs.viewAllDevices": "查看全部设备",
   // total > 0 但当前页没有行（深页 / 页码越界回收帧）
   "dashboard.logs.pageEmptyHint":
     "当前页没有数据，可能已超出记录范围，请返回上一页。",
@@ -394,10 +409,14 @@ export const dashboard = {
   "dashboard.logs.errorReason": "原因：{error}",
   "dashboard.logs.retry": "重新加载",
   // 单源取数失败（有数据时的弱提示，对齐总览页 partialFailures 惯例）；
-  // "remote"（远端一路失败 / 未启用同步 / 旧服务端 404）显示为「远端设备」
+  // "remote"（远端一路失败 / 未启用同步 / 旧服务端 404）不再混进来源名清单，
+  // 单独成条说清后果（下方两条：合并口径降级为纯本机展示 / 具体设备口径下
+  // 唯一来源失败、空表的解释）
   "dashboard.logs.partialFailures":
     "部分来源本次未取到，数据可能不完整：{names}",
-  "dashboard.logs.remoteSourceName": "远端设备",
+  "dashboard.logs.remoteDegraded": "远端数据不可达，当前仅显示本机记录",
+  "dashboard.logs.remoteUnreachableDevice":
+    "远端设备数据不可达，未获取到该设备的记录",
   "dashboard.logs.pagePrev": "上一页",
   "dashboard.logs.pageNext": "下一页",
   "dashboard.logs.pageInfo": "第 {page} / {total} 页",
