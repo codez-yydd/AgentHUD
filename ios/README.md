@@ -246,9 +246,21 @@ iOS 端复刻了桌面版的核心计算（`src/merge.ts`、`src/peak.ts`、`src
 | `Core/Peak.swift` | `peak.ts` | V2/V3 高峰期倍率折算 + ZCode 0.67 优惠 |
 | `Core/Format.swift` | `format.ts` | Token/金额/百分比/倒计时格式化 |
 | `Core/PeriodParser.swift` | `quota_history.rs` | 按 `weekly_reset` 跳变切分重置周期 |
-| `Models/PricingDefaults.json` | `public/pricing-defaults.json` | 内置参考价格表 |
+| `Models/PricingDefaults.json` | `public/pricing-defaults.json` | 内置参考价格表（仅在桌面端价格未同步时兜底） |
 
-价格表默认从 bundle 内置的 `PricingDefaults.json` 加载，可在 App 内编辑（设置 → 价格配置），编辑后存 UserDefaults。
+### 价格来源：桌面端统一维护，手机端只读
+
+手机端不再提供模型价格编辑，价格以**服务端全局表**为准：任意桌面端保存后按模型增量推送（带 `base_revision`），服务端合并并递增 revision，其他桌面端下一轮同步拉取整表，手机端每次刷新通过 `GET /pricing` 拉取缓存。
+
+- 不同桌面端改不同模型互不覆盖；同一模型以服务端最后接收的写入为准，客户端会提示已与其他设备合并；
+- App 用 `usd × fx_rate` 实时折算 CNY，汇率也随价格表下发，保证各端花费口径一致；
+- **未使用服务端时**：桌面端只读写本机 `pricing.json`，价格编辑/计费完全本地，不产生网络请求；iOS 不显示远端价格，也不会因此报错；
+- 服务端不可达/未升级（无 `/pricing`）或桌面端尚未同步时，App 自动回退上次缓存或 `PricingDefaults.json` 本地参考价；
+- 设置 → 模型价格 只展示模型单价、汇率、同步时间，并提供「立即同步」；不支持新增/编辑/删除。
+
+部署顺序：先更新服务端（`server/app.py`，无表结构迁移）→ 桌面端新版并完成一次同步 → iOS 端。服务端未升级时 iOS 会提示「同步服务尚未升级」，继续使用本地价格表，不影响用量/额度。
+
+![模型价格只读页](<../doc/img/ios-pricing.webp>)
 
 ---
 

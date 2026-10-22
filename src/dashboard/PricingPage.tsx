@@ -29,6 +29,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { listen } from "@tauri-apps/api/event";
 import type {
   ApplyPriceItem,
   Currency,
@@ -143,6 +144,9 @@ export function PricingPage() {
   // 用户勾选的模型 id 集合（差异条目为模型级）
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [applying, setApplying] = useState(false);
+  // 后台价格同步发现其他设备更新时置位；有未保存草稿则只提示、不覆盖
+  const [remoteUpdate, setRemoteUpdate] = useState(false);
+  const dirtyRef = useRef(false);
 
   useEffect(() => {
     Promise.all([fetchPricing(), fetchModels()])
@@ -374,6 +378,7 @@ export function PricingPage() {
       setPricing(merged);
       setSavedJson(JSON.stringify(merged));
       setDraft({});
+      setRemoteUpdate(false);
       setSavedFlash(true);
       setTimeout(() => setSavedFlash(false), 1500);
     } catch (e) {
@@ -480,8 +485,44 @@ export function PricingPage() {
   const pricingChanged =
     savedJson != null && pricingJson != null && pricingJson !== savedJson;
   const dirty = draftCount > 0 || pricingChanged;
+  dirtyRef.current = dirty;
   // 未保存处数：以草稿条数为准；仅配置差异（如新增模型）时至少报 1 处
   const dirtyCount = draftCount > 0 ? draftCount : pricingChanged ? 1 : 0;
+
+  // 服务端价格被其他桌面端更新：无草稿时直接重载；有草稿时只提示，
+  // 避免后台事件覆盖正在编辑的内容。保存后下一轮同步会按模型合并。
+  useEffect(() => {
+    let dispose: (() => void) | undefined;
+    let cancelled = false;
+    listen<{ concurrent?: boolean; local?: boolean }>("zbar://pricing-updated", (event) => {
+      // 本窗刚保存的本地事件：state 已是最新，无需重读/提示
+      if (event.payload?.local) return;
+      const concurrent = event.payload?.concurrent === true;
+      if (dirtyRef.current) {
+        setRemoteUpdate(true);
+        return;
+      }
+      Promise.all([fetchPricing(), getCursorConfig().catch(() => null)])
+        .then(([next, cfg]) => {
+          setPricing(next);
+          setSavedJson(JSON.stringify(next));
+          // 同模型被其他设备同时修改时服务端已按最后写入合并，这里保留
+          // 一条提示，避免用户误以为所有模型都按自己的版本保存。
+          setRemoteUpdate(concurrent);
+          if (cfg && cfg.usd_cny_rate > 0) setFxRate(cfg.usd_cny_rate);
+        })
+        .catch(() => {});
+    })
+      .then((unlisten) => {
+        if (cancelled) unlisten();
+        else dispose = unlisten;
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+      dispose?.();
+    };
+  }, []);
 
   // 新增模型定价：写入内存配置（与行内编辑一样等「保存」统一落盘）；
   // 若该 id 在隐藏名单里（曾被删除）则一并恢复，避免「加了却看不到」
@@ -663,6 +704,11 @@ export function PricingPage() {
         </span>
       </div>
 
+      {remoteUpdate && (
+        <AlertBanner type="warning">
+          {t("dashboard.pricing.remoteUpdated")}
+        </AlertBanner>
+      )}
       {error && <AlertBanner type="error">{error}</AlertBanner>}
 
       {diffPanel && diff && (

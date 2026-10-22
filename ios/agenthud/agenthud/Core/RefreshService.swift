@@ -29,6 +29,10 @@ public final class RefreshService: ObservableObject {
     @Published public var lastError: String?
     /// 额度查询进行中（额度页 spinner / 按钮禁用用）
     @Published public var quotaRefreshing = false
+    /// 价格同步进行中（设置 → 模型价格页的同步按钮用）
+    @Published public var pricingRefreshing = false
+    /// 最近一次价格同步的错误/未同步提示（只影响价格页，不进全局错误条）
+    @Published public var pricingError: String?
     /// 最近一次成功刷新的时刻（页头「更新于」文案用）
     @Published public var lastRefreshedAt: Date?
 
@@ -67,6 +71,56 @@ public final class RefreshService: ObservableObject {
                                                    syncedGroups: syncedQuotaGroups)
         writeWidgetSnapshot()
         lastRefreshedAt = Date()
+    }
+
+    /// 手动同步桌面端价格（设置 → 模型价格 → 立即同步）。
+    public func refreshPricing() async {
+        guard settings.isSyncConfigured else {
+            pricingError = "尚未配置同步服务，先在设置中注册设备"
+            return
+        }
+        pricingRefreshing = true
+        defer { pricingRefreshing = false }
+        await syncPricingFromServer()
+    }
+
+    /// 从服务端拉取桌面端发布的价格表并应用；失败保留现有缓存/内置参考价。
+    /// 不抛错：价格同步失败不应打断用量/额度刷新。
+    private func syncPricingFromServer() async {
+        guard settings.isSyncConfigured else { return }
+        applyPricingOutcome(await fetchPricingOutcome())
+    }
+
+    /// 价格拉取结果（不抛错，交由 applyPricingOutcome 统一处理 UI 状态）。
+    /// 与用量并发请求，服务端不可达时不额外阻塞用量刷新。
+    private func fetchPricingOutcome() async -> Result<RemotePricing, Error> {
+        do {
+            let remote = try await APIClient.shared.pricing(
+                serverURL: settings.sync.server_url,
+                deviceToken: settings.sync.device_token)
+            return .success(remote)
+        } catch {
+            return .failure(error)
+        }
+    }
+
+    private func applyPricingOutcome(_ result: Result<RemotePricing, Error>) {
+        switch result {
+        case .success(let remote):
+            if settings.applyRemotePricing(remote) {
+                pricingError = nil
+            } else {
+                pricingError = "桌面端尚未同步价格，当前使用本地参考价"
+            }
+        case .failure(APIError.http(let status, _)) where status == 404 || status == 405:
+            pricingError = settings.pricingMeta.isRemote
+                ? "同步服务尚未升级，继续使用上次同步的价格"
+                : "同步服务尚未升级，当前使用本地参考价"
+        case .failure(let error) where (error as? URLError)?.code == .cancelled:
+            break
+        case .failure(let error):
+            pricingError = error.localizedDescription
+        }
     }
 
     // MARK: - 直连账号查询（TaskGroup 并发，互不阻塞）
@@ -270,6 +324,9 @@ public final class RefreshService: ObservableObject {
 
         async let devicesResult: [DeviceInfo]? = try? await APIClient.shared.devices(
             serverURL: server, deviceToken: token)
+        // 价格与用量并发拉取；应用价格前不阻塞用量请求（服务端不可达时
+        // 不会把两次 15s 超时串行叠加）
+        async let pricingOutcome = fetchPricingOutcome()
 
         // 2. 今日用量
         let now = Date()
@@ -278,11 +335,15 @@ public final class RefreshService: ObservableObject {
         let fromMs = Int(startOfToday.timeIntervalSince1970 * 1000)
         let toMs = Int(now.timeIntervalSince1970 * 1000)
 
+        async let usageResult = APIClient.shared.usage(
+            serverURL: server, deviceToken: token,
+            fromMs: fromMs, toMs: toMs,
+            bucket: .hour, filter: selectedFilter, localDeviceId: localId)
+
+        // 花费必须用桌面端最新价格表计算：先应用价格，再消费用量结果
+        applyPricingOutcome(await pricingOutcome)
         do {
-            let usage = try await APIClient.shared.usage(
-                serverURL: server, deviceToken: token,
-                fromMs: fromMs, toMs: toMs,
-                bucket: .hour, filter: selectedFilter, localDeviceId: localId)
+            let usage = try await usageResult
             self.todayUsage = usage
             self.todayCost = Billing.computeRemoteCost(usage, pricing: settings.pricing)
         } catch {

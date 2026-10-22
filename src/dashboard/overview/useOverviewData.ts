@@ -43,6 +43,7 @@
  *    出现）。
  */
 import { useCallback, useEffect, useRef, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
 import type {
   AgentQuotaSource,
   AgentQuotaWindowKey,
@@ -802,6 +803,23 @@ export function useOverviewData(): OverviewDataState {
   const manualRef = useRef(false);
 
   const syncEnabled = !!syncConfig?.enabled && !!syncConfig.device_token;
+
+  // 其他桌面端更新价格表后，后端会写回本地并广播；这里递增 nonce 触发
+  // 重新取数（概览的花费/趋势依赖 pricing/fxRate 快照）。
+  useEffect(() => {
+    let dispose: (() => void) | undefined;
+    let cancelled = false;
+    listen("zbar://pricing-updated", () => setNonce((n) => n + 1))
+      .then((unlisten) => {
+        if (cancelled) unlisten();
+        else dispose = unlisten;
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+      dispose?.();
+    };
+  }, []);
 
   // 取数：范围 / 数据范围切换不进入这里（纯视图切片），只有首载与手动刷新
   // 才重新取数；命中且未过期的缓存时完全不取数（同步配置仍重读一次）。

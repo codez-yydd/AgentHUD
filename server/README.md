@@ -129,6 +129,8 @@ PORT=8080 python3 app.py
 | `GET /usage` | Device Token | 聚合查询（overall + by_model + trend，可选 source 过滤） |
 | `GET /usage_records` | Device Token | 逐条明细查询（total + rows + by_model，请求日志页「全部设备」口径用） |
 | `GET /models` | Device Token | 全部设备 × 全部来源的模型清单（distinct，价格配置用） |
+| `POST /pricing` | Device Token | 桌面端发布价格变更（按模型增量合并，带 revision） |
+| `GET /pricing` | Device Token | 桌面端/手机端读取全局价格表（含 revision） |
 | `GET /snapshots` | Device Token | Z.ai 额度快照查询 |
 | `GET /agent-quota-snapshots` | Device Token | Codex / Claude / Cursor 额度快照查询 |
 | `POST /period_detail` | Device Token | 按周期返回逐条用量明细 |
@@ -169,6 +171,39 @@ PORT=8080 python3 app.py
 ## proto 6：逐条明细查询（GET /usage_records）
 
 新增只读查询接口，不涉及表结构变化：请求日志页「全部设备」口径用它拉取其他设备的逐条请求明细。query 参数 `from_ms` / `to_ms`（必填，半开区间）、`source` / `model_id`（可选过滤）、`devices` / `exclude_device`（设备集合，语义与 `/usage` 一致）、`limit` / `offset`（行分页，limit 夹紧上限 5000）。响应 `{total, rows, by_model}`：rows 按 `started_at DESC`（同毫秒 `device_id/source/local_rowid` 稳定序）返回逐条全字段（带 `device_id`）；`by_model` 按 `(source, provider_id, model_id)` 分组供客户端按真实来源折算成本。客户端远端查询恒带 `exclude_device=<本机>`，与本机直读数据不相交，拼接即免去重。旧版服务端无此接口（404）或宝塔热替换窗口（新 app.py + 旧 db.py，返回空结果）时，客户端自动降级为纯本机口径，不报错。
+
+---
+
+## 定价同步（POST / GET /pricing）
+
+手机端不再编辑模型价格，桌面端是唯一编辑入口；服务端保存**全局唯一**价格表，桌面端和手机端都以它为准。桌面端把本地改动按模型增量推送（带 `base_revision`），服务端合并后 revision+1；所有桌面端下一轮同步拉取整表，手机端只读。
+
+```http
+POST /pricing
+Authorization: Bearer <device_token>
+{
+  "base_revision": 3,
+  "changes": {
+    "glm-4.6": {"input":1.39,"output":4.17,"cache_read":0.14},
+    "old-model": null
+  },
+  "hidden": ["old-model"],
+  "fx_rate": 7.2
+}
+→ {"revision":4,"updated_at":...,"updated_by":"device-a","usd":{...},"hidden":[...],"fx_rate":7.2,"synced":true,"applied":2,"concurrent":false}
+
+GET /pricing
+Authorization: Bearer <device_token>
+→ 同一张表（含 revision / usd / hidden / fx_rate）
+```
+
+- **按模型合并**：不同设备改不同模型互不覆盖；同一模型以服务端最后接收的写入为准，响应里的 `concurrent` 供客户端提示“已与其他设备合并”；
+- **首次/空服务端**：桌面端把本机整表作为初始版本发布；已有服务端表时以服务端为准对齐；
+- **无服务端也能用**：未配置同步服务时桌面端只读写本机 `pricing.json`，不产生任何网络请求，价格编辑/计费完全本地；
+- **离线编辑**：推送失败时 pending 保留在 `pricing_sync.json`，本地照常计费，下一轮同步重试；
+- **版本与校验**：`revision` 由服务端递增，`updated_at` 用服务端时钟；非法价格/汇率返回 400；允许删光所有模型（空表 = 费用归零）；
+- **无表结构变化**：价格 JSON 存 `config` 表（key=`pricing`），升级只需替换 `app.py` 并重启；
+- **兼容**：旧协议直接传整表 `usd` 仍按整表替换处理；旧服务端无 `/pricing` 时桌面端静默重试（不阻断用量同步），手机端回退上次缓存或本地参考表；旧客户端不调用该接口。
 
 ---
 

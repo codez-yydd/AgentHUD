@@ -242,6 +242,8 @@ export const dashboard = {
     "仅本页查看口径，不修改全局币种（全局币种跟随界面语言：中文 ¥ / 英文 $）",
   // 未保存改动提示与保存按钮 dirty 文案
   "dashboard.pricing.dirtyHint": "{count} 处未保存",
+  "dashboard.pricing.remoteUpdated":
+    "服务端价格已被其他设备更新；不同模型会自动合并，同一模型以最后写入为准。",
   "dashboard.pricing.saveDirty": "保存 *",
   // 应用价格更新成功后的轻提示
   "dashboard.pricing.appliedCount": "已应用 {count} 项",

@@ -95,6 +95,9 @@ struct OverviewView: View {
         }
         .onAppear { load() }
         .onChange(of: refresh.selectedFilter) { _, _ in load() }
+        // 远端价格表应用后重算本页花费（启动时价格与用量并发，先到的一轮
+        // 可能用本地参考价算过）
+        .onChange(of: settings.pricingMeta) { _, _ in load() }
     }
 
     // MARK: - 筛选文案

@@ -95,6 +95,17 @@ public actor APIClient {
         return try await request(url, method: "POST", body: body, decodeAs: RegisterResponse.self)
     }
 
+    // MARK: - 定价（对应 GET /pricing，桌面端发布、手机端只读）
+
+    /// 拉取桌面端最近一次发布的价格表 + USD→CNY 汇率。
+    /// 旧服务端无此接口时抛 404，调用方保留本地缓存/内置参考价。
+    public func pricing(serverURL: String,
+                        deviceToken: String) async throws -> RemotePricing {
+        let base = try sanitizeBase(serverURL)
+        let url = try makeURL(base, path: "/pricing")
+        return try await request(url, deviceToken: deviceToken, decodeAs: RemotePricing.self)
+    }
+
     // MARK: - 聚合查询（对应 GET /usage）
 
     /// 查询指定设备集合在时间范围内的 overall + by_model + trend。

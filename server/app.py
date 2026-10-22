@@ -8,6 +8,7 @@ Python + Flask 实现。启动自动建库、生成 master token 并打印到日
 
 import json
 import logging
+import math
 import threading
 import time
 
@@ -30,6 +31,15 @@ MASTER_TOKEN = None
 
 # 自动清理配置 key
 CLEANUP_CONFIG_KEY = "cleanup_config"
+
+# 桌面端发布的价格表（手机端只读）。整表存 config 表，后写覆盖。
+PRICING_CONFIG_KEY = "pricing"
+# 价格表的「读-改-写」必须串行化：多台设备同时推送不同模型时，若各自
+# 先读同一 revision 再写，后写者会覆盖前者的变更（lost update）。
+PRICING_LOCK = threading.Lock()
+MAX_PRICING_MODELS = 2000
+MAX_PRICE_VALUE = 1_000_000.0
+MAX_FX_RATE = 1000.0
 
 
 def _agent_quota_storage_available():
@@ -310,6 +320,274 @@ def sync():
             )
         ),
     })
+
+
+# ===== 定价同步（服务端为全局唯一价，桌面端可编辑，手机端只读） =====
+
+def _empty_pricing_table():
+    return {
+        "revision": 0,
+        "updated_at": 0,
+        "updated_by": "",
+        "usd": {},
+        "hidden": [],
+        "fx_rate": 0,
+    }
+
+
+def _normalize_pricing_table(stored):
+    """把历史/当前存储格式归一化为统一表结构。
+
+    兼容旧格式：此前版本用 device_id 记录发布者、没有 revision；读取时
+    按 revision=0 处理，下一次增量写入会自然升级。
+    """
+    if not isinstance(stored, dict):
+        raise ValueError("pricing config 不是 JSON 对象")
+    usd = stored.get("usd")
+    usd = usd if isinstance(usd, dict) else {}
+    hidden = stored.get("hidden")
+    hidden = [h for h in hidden if isinstance(h, str)] if isinstance(hidden, list) else []
+    revision = stored.get("revision", 0)
+    if isinstance(revision, bool) or not isinstance(revision, int) or revision < 0:
+        revision = 0
+    updated_at = stored.get("updated_at", 0)
+    if isinstance(updated_at, bool) or not isinstance(updated_at, int):
+        updated_at = 0
+    updated_by = stored.get("updated_by") or stored.get("device_id") or ""
+    if not isinstance(updated_by, str):
+        updated_by = ""
+    fx_rate = stored.get("fx_rate", 0)
+    if isinstance(fx_rate, bool) or not isinstance(fx_rate, (int, float)):
+        fx_rate = 0
+    fx_rate = float(fx_rate)
+    if not math.isfinite(fx_rate) or fx_rate < 0:
+        fx_rate = 0
+    return {
+        "revision": revision,
+        "updated_at": updated_at,
+        "updated_by": updated_by,
+        "usd": usd,
+        "hidden": hidden,
+        "fx_rate": fx_rate,
+    }
+
+
+def _load_pricing_table():
+    """读取价格表；无表返回 None，损坏抛 ValueError。"""
+    raw = db.get_config(PRICING_CONFIG_KEY)
+    if not raw:
+        return None
+    return _normalize_pricing_table(json.loads(raw))
+
+
+def _pricing_response(table, *, synced=True, applied=0, concurrent=False):
+    table = _normalize_pricing_table(table)
+    return jsonify({
+        "revision": table["revision"],
+        "updated_at": table["updated_at"],
+        "updated_by": table["updated_by"],
+        "usd": table["usd"],
+        "hidden": table["hidden"],
+        "fx_rate": table["fx_rate"],
+        "model_count": len(table["usd"]),
+        "synced": synced,
+        "applied": applied,
+        "concurrent": concurrent,
+    })
+
+
+def _validate_model_price(model_id, raw_price):
+    """校验单个模型价格，返回 (price, error)。"""
+    if not isinstance(raw_price, dict):
+        return None, f"模型 {model_id} 的价格必须是对象或 null"
+    price = {}
+    for key in ("input", "output", "cache_read"):
+        value = raw_price.get(key)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None, f"模型 {model_id} 缺少有效的 {key}"
+        number = float(value)
+        if not math.isfinite(number) or number < 0 or number > MAX_PRICE_VALUE:
+            return None, f"模型 {model_id} 的 {key} 超出有效范围"
+        price[key] = number
+    return price, None
+
+
+def _validate_price_changes(changes):
+    """校验 changes：{model_id: price|null}，null 表示删除。"""
+    if not isinstance(changes, dict):
+        return None, "changes 必须是对象"
+    if len(changes) > MAX_PRICING_MODELS:
+        return None, f"单次变更模型数超过上限（{MAX_PRICING_MODELS}）"
+    clean = {}
+    for raw_id, raw_price in changes.items():
+        if not isinstance(raw_id, str):
+            return None, "模型 id 必须是字符串"
+        model_id = raw_id.strip()
+        if not model_id or len(model_id) > 200:
+            return None, "模型 id 为空或过长"
+        if raw_price is None:
+            clean[model_id] = None
+            continue
+        price, message = _validate_model_price(model_id, raw_price)
+        if message:
+            return None, message
+        clean[model_id] = price
+    return clean, None
+
+
+def _validate_hidden(hidden):
+    if not isinstance(hidden, list):
+        return None, "hidden 必须是字符串数组"
+    if len(hidden) > MAX_PRICING_MODELS:
+        return None, f"隐藏模型数超过上限（{MAX_PRICING_MODELS}）"
+    clean = []
+    seen = set()
+    for raw in hidden:
+        if not isinstance(raw, str):
+            return None, "hidden 只能包含字符串"
+        item = raw.strip()
+        if not item or len(item) > 200:
+            return None, "hidden 中存在空值或过长的模型 id"
+        if item not in seen:
+            seen.add(item)
+            clean.append(item)
+    return clean, None
+
+
+def _validate_fx_rate(value):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None, "fx_rate 必须是数字"
+    number = float(value)
+    if not math.isfinite(number) or not (0 < number <= MAX_FX_RATE):
+        return None, f"fx_rate 超出有效范围（0, {MAX_FX_RATE}]"
+    return number, None
+
+
+@app.post("/pricing")
+def publish_pricing():
+    """桌面端按模型增量发布价格（服务端全局唯一价）。
+
+    读-改-写全程持有 PRICING_LOCK，保证并发推送不同模型时不会互相覆盖。
+    """
+    with PRICING_LOCK:
+        return _publish_pricing_locked()
+
+
+def _publish_pricing_locked():
+    """publish_pricing 的实现；调用方必须持有 PRICING_LOCK。
+
+    body（新协议）：
+    - changes: {model_id: {input, output, cache_read} | null}，null=删除
+    - base_revision: 客户端基于的服务端版本（可选，缺省视为当前版本）
+    - hidden / fx_rate: 可选，整表隐藏名单与汇率
+
+    兼容旧协议：直接传 usd（整表）时按整表替换处理，revision 正常递增。
+    服务端按模型合并：不同设备改不同模型互不覆盖；同一模型以最后到达
+    的写入为准，并在响应里返回 concurrent 标记供客户端提示。
+    """
+    err, device_id = require_device_token()
+    if err:
+        return err
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"error": "请求体必须是 JSON 对象"}), 400
+
+    try:
+        current = _load_pricing_table()
+    except (TypeError, ValueError):
+        logging.exception("pricing config 解析失败")
+        return jsonify({"error": "服务端价格配置损坏"}), 500
+    if current is None:
+        current = _empty_pricing_table()
+
+    base_revision = data.get("base_revision", current["revision"])
+    if isinstance(base_revision, bool) or not isinstance(base_revision, int) or base_revision < 0:
+        return jsonify({"error": "base_revision 必须是非负整数"}), 400
+    concurrent = current["revision"] > 0 and base_revision != current["revision"]
+
+    changes = data.get("changes")
+    legacy_usd = data.get("usd")
+    if changes is not None and legacy_usd is not None:
+        return jsonify({"error": "changes 与 usd 不能同时提交"}), 400
+
+    new_usd = dict(current["usd"])
+    applied = 0
+    if changes is not None:
+        clean_changes, message = _validate_price_changes(changes)
+        if message:
+            return jsonify({"error": message}), 400
+        for model_id, price in clean_changes.items():
+            if price is None:
+                if model_id in new_usd:
+                    del new_usd[model_id]
+                    applied += 1
+            elif new_usd.get(model_id) != price:
+                new_usd[model_id] = price
+                applied += 1
+    elif legacy_usd is not None:
+        clean_changes, message = _validate_price_changes(
+            {k: v for k, v in legacy_usd.items()} if isinstance(legacy_usd, dict) else None
+        )
+        if message:
+            return jsonify({"error": message}), 400
+        if not clean_changes or any(v is None for v in clean_changes.values()):
+            return jsonify({"error": "usd 必须是非空价格对象"}), 400
+        if new_usd != clean_changes:
+            applied = len(set(new_usd) ^ set(clean_changes)) + sum(
+                1 for k, v in clean_changes.items() if new_usd.get(k) != v
+            )
+            new_usd = clean_changes
+    else:
+        return jsonify({"error": "缺少 changes（或旧协议 usd）"}), 400
+
+    changed_meta = False
+    new_hidden = current["hidden"]
+    if "hidden" in data:
+        clean_hidden, message = _validate_hidden(data.get("hidden"))
+        if message:
+            return jsonify({"error": message}), 400
+        if clean_hidden != new_hidden:
+            new_hidden = clean_hidden
+            changed_meta = True
+
+    new_fx = current["fx_rate"]
+    if "fx_rate" in data:
+        clean_fx, message = _validate_fx_rate(data.get("fx_rate"))
+        if message:
+            return jsonify({"error": message}), 400
+        if clean_fx != new_fx:
+            new_fx = clean_fx
+            changed_meta = True
+
+    if applied == 0 and not changed_meta:
+        return _pricing_response(current, applied=0, concurrent=concurrent)
+
+    table = {
+        "revision": current["revision"] + 1,
+        "updated_at": db.now_ms(),
+        "updated_by": device_id,
+        "usd": new_usd,
+        "hidden": new_hidden,
+        "fx_rate": new_fx,
+    }
+    db.set_config(PRICING_CONFIG_KEY, json.dumps(table, ensure_ascii=False))
+    return _pricing_response(table, applied=applied, concurrent=concurrent)
+
+
+@app.get("/pricing")
+def get_pricing():
+    """读取服务端全局价格表（桌面端合并 + 手机端只读共用）。"""
+    err, _device_id = require_device_token()
+    if err:
+        return err
+    try:
+        table = _load_pricing_table()
+    except (TypeError, ValueError):
+        logging.exception("pricing config 解析失败")
+        return jsonify({"error": "服务端价格配置损坏"}), 500
+    if table is None:
+        return _pricing_response(_empty_pricing_table(), synced=False)
+    return _pricing_response(table)
 
 
 def _resolve_device_filter(q_args, all_ids):

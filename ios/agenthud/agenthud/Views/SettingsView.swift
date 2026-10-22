@@ -58,9 +58,15 @@ struct SettingsView: View {
 
                         Section {
                             NavigationLink {
-                                PricingEditView()
+                                PricingInfoView()
                             } label: {
-                                Label("价格配置", systemImage: "tag")
+                                HStack(spacing: 8) {
+                                    Label("模型价格", systemImage: "tag")
+                                    Spacer()
+                                    Text(settings.pricingMeta.isRemote ? "跟随桌面端" : "本地参考价")
+                                        .font(.system(size: 11))
+                                        .foregroundStyle(Theme.textTertiary)
+                                }
                             }
                             NavigationLink {
                                 PeakEditView()
@@ -69,6 +75,10 @@ struct SettingsView: View {
                             }
                         } header: {
                             sectionHeader("计费", icon: "yensign.circle")
+                        } footer: {
+                            Text("价格由桌面端统一维护，手机端只读；连接同步服务后自动下发。")
+                                .font(.system(size: 10))
+                                .foregroundStyle(Theme.textTertiary)
                         }
                         .listRowBackground(Color.white.opacity(0.045))
 
@@ -261,6 +271,12 @@ private struct SyncConfigRow: View {
                 settings.sync.device_token = ""
                 settings.sync.device_id = ""
                 settings.saveSync()
+                // 断开后不再有远端来源：保留缓存价，但状态切回本地
+                var meta = settings.pricingMeta
+                meta.isRemote = false
+                settings.pricingMeta = meta
+                settings.savePricing()
+                refresh.pricingError = nil
             }
         }
     }
@@ -417,135 +433,225 @@ private struct CurrencyRow: View {
     }
 }
 
-// MARK: - 价格编辑
+// MARK: - 模型价格（只读）
 
-private struct PricingEditView: View {
+/// 手机端不再编辑价格：展示桌面端发布到同步服务的价格表。
+/// CNY 由 USD × 桌面端汇率实时折算，与桌面端花费口径一致。
+private struct PricingInfoView: View {
     @EnvironmentObject var settings: AppSettings
+    @EnvironmentObject var refresh: RefreshService
+
+    @State private var query = ""
     @State private var currency: Currency = .cny
-    @State private var newModel = ""
-    @State private var newInput = ""
-    @State private var newOutput = ""
-    @State private var newCacheRead = ""
+
+    private var meta: PricingSyncMeta { settings.pricingMeta }
+    private var fxRate: Double { meta.fxRate > 0 ? meta.fxRate : 7.2 }
+    private var usdMap: [String: ModelPrice] { settings.pricing.usd }
+    private var modelIds: [String] {
+        let all = usdMap.keys.sorted()
+        let q = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !q.isEmpty else { return all }
+        return all.filter { $0.lowercased().contains(q) }
+    }
 
     var body: some View {
-        Form {
-            Picker("货币", selection: $currency) {
-                Text("¥ CNY").tag(Currency.cny)
-                Text("$ USD").tag(Currency.usd)
-            }
-            .pickerStyle(.segmented)
-
-            Section("已配置模型") {
-                let map = (currency == .cny) ? settings.pricing.cny : settings.pricing.usd
-                if map.isEmpty {
-                    Text("尚无配置，下方添加").foregroundColor(.secondary)
+        ZStack {
+            AppBackground()
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    sourceCard
+                    controls
+                    priceList
+                    Text("价格由桌面端「设置 → 价格」统一维护；手机端仅展示，不能编辑或新增模型。")
+                        .font(.system(size: 10))
+                        .foregroundStyle(Theme.textTertiary)
+                        .padding(.horizontal, 2)
                 }
-                ForEach(map.keys.sorted(), id: \.self) { id in
-                    PricingRow(currency: currency, modelId: id) { newPrice in
-                        if currency == .cny { settings.pricing.cny[id] = newPrice }
-                        else { settings.pricing.usd[id] = newPrice }
-                        settings.savePricing()
-                    } onDelete: {
-                        if currency == .cny { settings.pricing.cny.removeValue(forKey: id) }
-                        else { settings.pricing.usd.removeValue(forKey: id) }
-                        settings.savePricing()
+                .padding(.horizontal, Theme.pagePadding)
+                .padding(.top, 10)
+                .padding(.bottom, 90)
+            }
+            .scrollIndicators(.hidden)
+        }
+        .navigationTitle("模型价格")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar(.visible, for: .navigationBar)
+        .onAppear { currency = settings.currency }
+    }
+
+    private var sourceCard: some View {
+        GlassCard(tint: meta.isRemote ? Theme.accent : nil, elevated: meta.isRemote) {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(spacing: 10) {
+                    ZStack {
+                        Circle().fill((meta.isRemote ? Theme.accent : Theme.textTertiary).opacity(0.16))
+                        Image(systemName: meta.isRemote ? "desktopcomputer" : "shippingbox")
+                            .font(.system(size: 15, weight: .medium))
+                            .foregroundStyle(meta.isRemote ? Theme.accent : Theme.textSecondary)
+                    }
+                    .frame(width: 34, height: 34)
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(meta.isRemote ? "跟随桌面端" : "本地参考价")
+                            .font(.system(size: 14, weight: .semibold))
+                        Text(sourceSubtitle)
+                            .font(.system(size: 11))
+                            .foregroundStyle(Theme.textSecondary)
+                    }
+                    Spacer(minLength: 6)
+                    refreshButton
+                }
+
+                if meta.isRemote {
+                    HStack(spacing: 16) {
+                        miniStat("模型", "\(meta.modelCount)")
+                        miniStat("汇率", String(format: "%.2f", fxRate))
+                        miniStat("更新", shortTime)
+                    }
+                } else {
+                    Text("桌面端保存价格后，会在下一次同步时自动下发。")
+                        .font(.system(size: 11))
+                        .foregroundStyle(Theme.textSecondary)
+                }
+
+                if let err = refresh.pricingError {
+                    HStack(alignment: .top, spacing: 5) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                        Text(err).lineLimit(3)
+                    }
+                    .font(.system(size: 10))
+                    .foregroundStyle(Theme.amber)
+                }
+            }
+        }
+    }
+
+    private var sourceSubtitle: String {
+        if !settings.isSyncConfigured { return "尚未配置同步服务" }
+        if meta.isRemote { return "由桌面端统一维护，手机端只读" }
+        return "尚未同步，当前使用本地价格表"
+    }
+
+    private var shortTime: String {
+        guard meta.updatedAt > 0 else { return "—" }
+        let f = DateFormatter()
+        f.dateFormat = "MM-dd HH:mm"
+        f.timeZone = .current
+        return f.string(from: Date(timeIntervalSince1970: TimeInterval(meta.updatedAt) / 1000))
+    }
+
+    private var refreshButton: some View {
+        Button {
+            Task { await refresh.refreshPricing() }
+        } label: {
+            if refresh.pricingRefreshing {
+                ProgressView().controlSize(.small)
+            } else {
+                Image(systemName: "arrow.triangle.2.circlepath")
+                    .font(.system(size: 13, weight: .semibold))
+            }
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(Theme.accent)
+        .frame(width: 30, height: 30)
+        .background(Circle().fill(Color.white.opacity(0.06)))
+        .disabled(refresh.pricingRefreshing || !settings.isSyncConfigured)
+        .opacity(settings.isSyncConfigured ? 1 : 0.4)
+    }
+
+    private func miniStat(_ label: String, _ value: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(label).font(.system(size: 9)).foregroundStyle(Theme.textTertiary)
+            Text(value).font(.system(size: 12, weight: .medium, design: .monospaced))
+                .foregroundStyle(Theme.textSecondary)
+        }
+    }
+
+    private var controls: some View {
+        VStack(spacing: 10) {
+            HStack {
+                Picker("", selection: $currency) {
+                    Text("¥ CNY").tag(Currency.cny)
+                    Text("$ USD").tag(Currency.usd)
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 160)
+                Spacer()
+                Text("\(currency == .cny ? "¥" : "$") / 百万 Token")
+                    .font(.system(size: 10))
+                    .foregroundStyle(Theme.textTertiary)
+            }
+
+            HStack(spacing: 6) {
+                Image(systemName: "magnifyingglass")
+                    .font(.system(size: 12))
+                    .foregroundStyle(Theme.textTertiary)
+                TextField("搜索模型", text: $query)
+                    .font(.system(size: 13))
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                if !query.isEmpty {
+                    Button { query = "" } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(Theme.textTertiary)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 9)
+            .background(RoundedRectangle(cornerRadius: 11, style: .continuous)
+                .fill(Color.white.opacity(0.05)))
+            .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous)
+                .strokeBorder(Color.white.opacity(0.07), lineWidth: 1))
+        }
+    }
+
+    @ViewBuilder
+    private var priceList: some View {
+        if modelIds.isEmpty {
+            EmptyState(icon: "tag.slash",
+                       title: query.isEmpty ? "暂无价格数据" : "没有匹配的模型",
+                       message: query.isEmpty ? "在桌面端保存价格并同步一次" : nil)
+                .padding(.vertical, 10)
+        } else {
+            GlassCard(padding: 0) {
+                LazyVStack(spacing: 0) {
+                    ForEach(Array(modelIds.enumerated()), id: \.element) { index, id in
+                        if index > 0 {
+                            Rectangle().fill(Color.white.opacity(0.05)).frame(height: 0.5)
+                                .padding(.leading, 16)
+                        }
+                        priceRow(id)
                     }
                 }
             }
-
-            Section("新增模型") {
-                TextField("model_id（如 glm-4.6）", text: $newModel)
-                    .textInputAutocapitalization(.never)
-                HStack {
-                    numField("入", $newInput)
-                    numField("出", $newOutput)
-                    numField("缓存", $newCacheRead)
-                }
-                Button("添加") {
-                    guard let i = Double(newInput), let o = Double(newOutput),
-                          let c = Double(newCacheRead), !newModel.isEmpty else { return }
-                    let price = ModelPrice(input: i, output: o, cache_read: c)
-                    if currency == .cny { settings.pricing.cny[newModel] = price }
-                    else { settings.pricing.usd[newModel] = price }
-                    settings.savePricing()
-                    newModel = ""; newInput = ""; newOutput = ""; newCacheRead = ""
-                }
-                .disabled(newModel.isEmpty)
-            }
-
-            Section {
-                Button("重置为内置默认表") {
-                    settings.pricing = AppSettings.loadBuiltinPricingDefaults()
-                    settings.savePricing()
-                }
-                .foregroundColor(.orange)
-            }
-        }
-        .navigationTitle("价格配置")
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar(.visible, for: .navigationBar)
-        .safeAreaInset(edge: .bottom) { Color.clear.frame(height: 78) }
-    }
-
-    private func numField(_ label: String, _ text: Binding<String>) -> some View {
-        VStack(alignment: .leading) {
-            Text(label).font(.caption).foregroundColor(.secondary)
-            TextField("0", text: text)
-                .keyboardType(.decimalPad)
-        }
-    }
-}
-
-private struct PricingRow: View {
-    let currency: Currency
-    let modelId: String
-    let onSave: (ModelPrice) -> Void
-    let onDelete: () -> Void
-
-    @State private var input = ""
-    @State private var output = ""
-    @State private var cacheRead = ""
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Text(modelId).font(.subheadline.weight(.semibold))
-                Spacer()
-                Button(role: .destructive, action: onDelete) {
-                    Image(systemName: "trash")
-                }
-                .buttonStyle(.borderless)
-            }
-            HStack {
-                numField("入", $input)
-                numField("出", $output)
-                numField("缓存", $cacheRead)
-                Button("存") {
-                    guard let i = Double(input), let o = Double(output), let c = Double(cacheRead) else { return }
-                    onSave(ModelPrice(input: i, output: o, cache_read: c))
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-            }
-        }
-        .onAppear {
-            let map = (currency == .cny)
-                ? AppSettings.shared.pricing.cny : AppSettings.shared.pricing.usd
-            if let p = map[modelId] {
-                input = String(p.input)
-                output = String(p.output)
-                cacheRead = String(p.cache_read)
-            }
         }
     }
 
-    private func numField(_ label: String, _ text: Binding<String>) -> some View {
-        VStack(alignment: .leading) {
-            Text(label).font(.caption2).foregroundColor(.secondary)
-            TextField("0", text: text)
-                .keyboardType(.decimalPad)
-                .font(.caption.monospacedDigit())
+    private func priceRow(_ id: String) -> some View {
+        let price = usdMap[id] ?? ModelPrice()
+        let scale = currency == .cny ? fxRate : 1
+        return HStack(alignment: .center, spacing: 10) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(id)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(Color.white.opacity(0.92))
+                    .lineLimit(1)
+                Text("入 \(fmt(price.input * scale))  ·  出 \(fmt(price.output * scale))  ·  缓存 \(fmt(price.cache_read * scale))")
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(Theme.textSecondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+            }
+            Spacer(minLength: 0)
         }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+    }
+
+    private func fmt(_ n: Double) -> String {
+        String(format: "%.6g", n)
     }
 }
 

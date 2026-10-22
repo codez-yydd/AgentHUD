@@ -18,9 +18,28 @@ use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
+use tauri::{AppHandle, Emitter};
+
 use crate::agent_quota_history::{self, AgentQuotaSnapshot};
 use crate::db::{self, default_source, UsageRow};
 use crate::pricing::config_dir;
+
+/// 桌面端价格表同步完成后通知前端重读本地 pricing.json。
+/// 未初始化（单测/无窗口）时 emit 为 no-op。
+static APP_HANDLE: OnceLock<AppHandle> = OnceLock::new();
+
+pub fn set_app_handle(handle: AppHandle) {
+    let _ = APP_HANDLE.set(handle);
+}
+
+pub(crate) fn emit_pricing_updated(concurrent: bool, local: bool) {
+    if let Some(app) = APP_HANDLE.get() {
+        let _ = app.emit(
+            "zbar://pricing-updated",
+            serde_json::json!({ "concurrent": concurrent, "local": local }),
+        );
+    }
+}
 
 // ===== 配置（~/.agenthud/sync.json）=====
 
@@ -383,6 +402,7 @@ pub fn register_device(req: RegisterRequest) -> Result<SyncConfig, String> {
 
     // 读取现有配置，保留游标等字段
     let mut cfg = load_sync_config()?;
+    let server_changed = cfg.server_url != base;
     cfg.enabled = true;
     cfg.server_url = base;
     cfg.device_id = resp.device_id;
@@ -390,6 +410,10 @@ pub fn register_device(req: RegisterRequest) -> Result<SyncConfig, String> {
     cfg.device_token = resp.device_token;
     // 注册不重置游标，沿用已有值（首次为 0，会全量上传）
     save_sync_config(&cfg)?;
+    if server_changed {
+        // 换服务端后 revision/pending 不能复用，重新从新服务端对齐
+        crate::pricing_sync::reset_state();
+    }
     Ok(cfg)
 }
 
@@ -703,6 +727,10 @@ pub fn upload_incremental() -> Result<SyncOutcome, String> {
     cfg.last_uploaded_rowid = since;
     cfg.last_sync_at = now;
     save_sync_config(&cfg)?;
+    // 价格表同步失败不影响用量上传；pending 保留，下一轮重试
+    if let Err(e) = crate::pricing_sync::sync_with_server(&base, &token) {
+        eprintln!("[zbar-sync] 价格表同步失败（下一轮重试）: {e}");
+    }
 
     Ok(SyncOutcome {
         uploaded: total_uploaded
@@ -1951,6 +1979,8 @@ pub fn disconnect() -> Result<(), String> {
     cfg.device_name.clear();
     cfg.device_token.clear();
     reset_source_cursors(&mut cfg);
+    // 重连可能换服务端，价格同步状态（revision/pending）一并复位
+    crate::pricing_sync::reset_state();
     // 保留 server_url + mode + interval，方便下次重连
     save_sync_config(&cfg)
 }
@@ -2004,7 +2034,7 @@ fn normalize_url(raw: &str) -> Result<String, String> {
 ///   + 总 15s（上传体大、批量大，保留原总超时余量）；
 /// - 用户主动操作（注册/清理/合并/改名等）：connect 3s + 总超时保持原值
 ///   （用户在等待结果，只收紧连接期，不缩短等待上限）。
-fn agent_with_timeouts(connect_secs: u64, total_secs: u64) -> ureq::Agent {
+pub(crate) fn agent_with_timeouts(connect_secs: u64, total_secs: u64) -> ureq::Agent {
     ureq::AgentBuilder::new()
         .timeout_connect(Duration::from_secs(connect_secs))
         .timeout(Duration::from_secs(total_secs))
@@ -2012,7 +2042,7 @@ fn agent_with_timeouts(connect_secs: u64, total_secs: u64) -> ureq::Agent {
 }
 
 /// 把 ureq::Error 转为可读中文错误。
-fn map_http_err(op: &str) -> impl Fn(ureq::Error) -> String + '_ {
+pub(crate) fn map_http_err(op: &str) -> impl Fn(ureq::Error) -> String + '_ {
     let op = op.to_string();
     move |e: ureq::Error| {
         let detail = match e {

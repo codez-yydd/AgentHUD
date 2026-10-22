@@ -79,6 +79,8 @@ struct StatsView: View {
         }
         .onAppear { loadRange() }
         .onChange(of: refresh.selectedFilter) { _, _ in loadRange() }
+        // 远端价格表应用后重算 Token 构成/花费
+        .onChange(of: settings.pricingMeta) { _, _ in loadRange() }
     }
 
     // MARK: - 辅助文案

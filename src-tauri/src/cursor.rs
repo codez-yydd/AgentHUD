@@ -107,6 +107,21 @@ fn cursor_write_lock() -> &'static Mutex<()> {
     CURSOR_WRITE_LOCK.get_or_init(|| Mutex::new(()))
 }
 
+/// 同步服务下发全局价格表时，把 USD→CNY 汇率写回本机配置（价格表是
+/// 全局唯一的，汇率也应一致）。返回是否实际发生变化。
+pub fn set_usd_cny_rate(rate: f64) -> Result<bool, String> {
+    if !rate.is_finite() || rate <= 0.0 {
+        return Err("汇率为非法值".into());
+    }
+    let mut cfg = load_cursor_config()?;
+    if (cfg.usd_cny_rate - rate).abs() < 1e-9 {
+        return Ok(false);
+    }
+    cfg.usd_cny_rate = rate;
+    save_cursor_config(&cfg)?;
+    Ok(true)
+}
+
 pub fn save_cursor_config(cfg: &CursorConfig) -> Result<(), String> {
     let _guard = cursor_write_lock()
         .lock()

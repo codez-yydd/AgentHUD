@@ -285,6 +285,31 @@ export default function App() {
       .catch(() => {});
   }, []);
 
+  // 服务端价格表被其他桌面端更新后，后端会写回本地 pricing.json 并广播；
+  // 这里重读以触发 DataProvider/成本重算（无服务端时事件永不触发）。
+  useEffect(() => {
+    let dispose: (() => void) | undefined;
+    let cancelled = false;
+    listen("zbar://pricing-updated", () => {
+      fetchPricing()
+        .then((p) =>
+          setPricing((prev) =>
+            JSON.stringify(prev) === JSON.stringify(p) ? prev : p
+          )
+        )
+        .catch(() => {});
+    })
+      .then((unlisten) => {
+        if (cancelled) unlisten();
+        else dispose = unlisten;
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+      dispose?.();
+    };
+  }, []);
+
   // 启动更新调度：延迟 10s 首次检查，之后每 1h 后台检查并下载；
   // 下载完成后写 localStorage 供设置入口红点展示，失败静默不打扰
   useEffect(() => startUpdateScheduler(), []);

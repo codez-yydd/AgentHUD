@@ -142,6 +142,8 @@ PORT=8080 python3 app.py
 | `GET /usage` | Device Token | Aggregated query (overall + by_model + trend, optional source filter) |
 | `GET /usage_records` | Device Token | Per-record usage query (total + rows + by_model; powers the request-logs page "all devices" scope) |
 | `GET /models` | Device Token | Distinct model list across all devices × sources (for pricing setup) |
+| `POST /pricing` | Device Token | Desktop publishes per-model price changes (merged by revision) |
+| `GET /pricing` | Device Token | Desktops/mobile read the global price table (with revision) |
 | `GET /devices` | Device Token | Device list |
 | `POST /device/revoke` | Master Token | Revoke a device |
 | `POST /cleanup` | Master Token | Data cleanup (by device / by time / all / reset) |
@@ -173,6 +175,39 @@ Newer clients also upload usage records for Codex CLI, Claude Code, Kimi Code, C
 ## proto 6: per-record usage query (GET /usage_records)
 
 New read-only endpoint, no schema changes involved: the request-logs page's "all devices" scope uses it to fetch per-request usage details from other devices. Query parameters: `from_ms` / `to_ms` (required, half-open interval), `source` / `model_id` (optional filters), `devices` / `exclude_device` (device-set filter, same semantics as `/usage`), `limit` / `offset` (row pagination, limit clamped to 5000). Response `{total, rows, by_model}`: `rows` returns full per-record fields (with `device_id`) ordered by `started_at DESC` (stable tie-break on `device_id/source/local_rowid` within the same millisecond); `by_model` is grouped by `(source, provider_id, model_id)` so the client can fold remote totals into the matching source lane for cost conversion. Remote queries always carry `exclude_device=<this device>`, so the remote set is disjoint from locally read data and concatenation needs no dedup. Against an old server without this endpoint (404) or during a hot-swap window (new `app.py` + old `db.py`, empty result), the client automatically degrades to local-only scope without errors.
+
+---
+
+## Pricing Sync (POST / GET /pricing)
+
+Mobile no longer edits model prices; the desktop is the only editor. The server stores the **single global** price table, and both desktops and mobile treat it as the source of truth. Desktops push per-model deltas with `base_revision`; the server merges and increments revision; every desktop pulls the full table on its next sync, while mobile stays read-only.
+
+```http
+POST /pricing
+Authorization: Bearer <device_token>
+{
+  "base_revision": 3,
+  "changes": {
+    "glm-4.6": {"input":1.39,"output":4.17,"cache_read":0.14},
+    "old-model": null
+  },
+  "hidden": ["old-model"],
+  "fx_rate": 7.2
+}
+→ {"revision":4,"updated_at":...,"updated_by":"device-a","usd":{...},"hidden":[...],"fx_rate":7.2,"synced":true,"applied":2,"concurrent":false}
+
+GET /pricing
+Authorization: Bearer <device_token>
+→ the same table (revision / usd / hidden / fx_rate)
+```
+
+- **Per-model merge**: different devices editing different models never overwrite each other; for the same model the last write accepted by the server wins, and `concurrent` lets the client surface a "merged with another device" notice;
+- **First run / empty server**: the desktop publishes its full local table as the initial version; if the server already has a table, the server table wins and the desktop aligns to it;
+- **Works without a server**: when sync is not configured the desktop only reads/writes local `pricing.json` and makes no network calls;
+- **Offline edits**: pending changes stay in `pricing_sync.json` and retry on the next sync; local billing is unaffected;
+- **Revision & validation**: `revision` increments server-side and `updated_at` uses the server clock; invalid prices/rates are rejected with 400. Deleting every model is allowed (an empty table means zero cost);
+- **No schema change**: the JSON lives in the `config` table (`key=pricing`); upgrade by replacing `app.py` and restarting;
+- **Compatibility**: the legacy full-table `usd` payload is still accepted as a full replace; against an older server without `/pricing`, the desktop retries silently (usage sync is unaffected) and mobile falls back to its cached table or local reference prices. Old clients never call this endpoint.
 
 ---
 

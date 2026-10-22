@@ -32,6 +32,7 @@ mod opencodego;
 mod pet;
 mod pets;
 mod pricing;
+mod pricing_sync;
 mod projects;
 mod provider_credentials;
 mod provider_quota;
@@ -224,7 +225,13 @@ fn get_pricing() -> Result<PricingConfig, String> {
 /// set_pricing：保存价格配置
 #[tauri::command]
 fn set_pricing(config: PricingConfig) -> Result<(), String> {
-    save_pricing(&config)
+    let old = load_pricing().unwrap_or_default();
+    save_pricing(&config)?;
+    // 未配置同步服务时只记内存/落盘，不产生任何网络请求
+    pricing_sync::record_local_change(&old, &config);
+    // 通知主面板/大窗重读本地价格（无服务端时也生效）
+    sync::emit_pricing_updated(false, true);
+    Ok(())
 }
 
 /// set_currency：保存货币偏好。前端切换货币时同步给后端，菜单栏标题据此显示。
@@ -321,7 +328,12 @@ fn apply_pricing_updates(items: Vec<ApplyPriceItem>) -> Result<PricingConfig, St
         .into_iter()
         .map(|i| (i.model_id, i.currency, i.price))
         .collect();
-    pricing::apply_updates(&tuples)
+    let old = load_pricing().unwrap_or_default();
+    let updated = pricing::apply_updates(&tuples)?;
+    // 与 set_pricing 同一路径：同步服务可用时记 pending，下一轮按模型下发
+    pricing_sync::record_local_change(&old, &updated);
+    sync::emit_pricing_updated(false, true);
+    Ok(updated)
 }
 
 /// get_shortcut_config：读取全局快捷键配置
@@ -2946,6 +2958,7 @@ pub fn run() {
                 }
             }
 
+            sync::set_app_handle(app.handle().clone());
             sync::spawn_sync_worker();
             // 对话页用量统计条数据源：皮肤已安装时启动后台导出
             // （未安装不启动；安装成功/卸载的启停在 agent_theme 流程挂点）

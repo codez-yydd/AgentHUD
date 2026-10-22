@@ -179,6 +179,7 @@ Both repositories have exactly the same content — the latest version can be ob
 **🔄 Sync & update**
 
 - **🔄 Multi-device sync** — self-hosted sync server (`server/`) to aggregate usage across machines (office / home). Incremental detail upload + `(device, rowid)` dedup, with **device filtering** (all / local / specific device) and **data cleanup** (by device / by time / all + configurable auto cleanup). Every uploaded source (ZCode / Codex / Claude / Kimi Code / DeepSeek Harness / OpenCode / MiniMax Code) is merged across devices on the summary, compare and report pages under the same device-filter semantics; when another machine uses an agent but this one has no CLI installed, its card and tab still appear. See [server/README.md](./server/README.md).
+- **🏷️ Desktop-managed model pricing** — prices edited on desktop are published through the sync server; all desktops converge on one per-model-merged table and the iOS app consumes it read-only (USD prices + FX rate), so mobile never needs manual per-model entry.
 - **⬆️ In-app auto update** — Settings → "About & update" to check / download / silently install new versions; endpoints fall back between **GitHub and Gitee** automatically, packages are signature-verified, and a silent startup check lights a red dot on the settings entry when a new version is available.
 
 ---

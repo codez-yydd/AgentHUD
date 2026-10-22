@@ -75,6 +75,40 @@ public struct PricingDefaults: Codable {
     public var usd: [String: ModelPrice]
 }
 
+// MARK: - 桌面端下发价格（GET /pricing）
+
+/// 桌面端发布的价格表（USD / 百万 token）+ USD→CNY 汇率。
+/// 手机端只读：CNY 价格由 usd × fx_rate 实时折算，与桌面端口径一致。
+public struct RemotePricing: Codable, Hashable {
+    public var usd: [String: ModelPrice]
+    public var fx_rate: Double
+    public var updated_at: Int
+    public var revision: Int?
+    public var model_count: Int?
+    public var synced: Bool?
+}
+
+/// 本地价格同步状态（设置页展示 + 判断当前是远端价还是内置参考价）。
+public struct PricingSyncMeta: Codable, Hashable {
+    public var fxRate: Double
+    public var updatedAt: Int
+    public var revision: Int?
+    public var modelCount: Int
+    public var isRemote: Bool
+
+    public init(fxRate: Double = 7.2,
+                updatedAt: Int = 0,
+                revision: Int? = nil,
+                modelCount: Int = 0,
+                isRemote: Bool = false) {
+        self.fxRate = fxRate
+        self.updatedAt = updatedAt
+        self.revision = revision
+        self.modelCount = modelCount
+        self.isRemote = isRemote
+    }
+}
+
 public enum Currency: String, Codable, CaseIterable {
     case cny, usd
 }

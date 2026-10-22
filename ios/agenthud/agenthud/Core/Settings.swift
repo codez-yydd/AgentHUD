@@ -135,6 +135,8 @@ public final class AppSettings: ObservableObject {
     // 用户配置（UserDefaults 标准域）
     @Published public var sync: SyncConfig
     @Published public var pricing: PricingConfig
+    /// 价格来源元信息（远端更新时间/汇率/模型数；内置参考价时 isRemote=false）
+    @Published public var pricingMeta: PricingSyncMeta
     @Published public var quotaConfig: QuotaConfig
     @Published public var currency: Currency
     @Published public var peak: PeakConfig
@@ -146,6 +148,7 @@ public final class AppSettings: ObservableObject {
         let d = UserDefaults.standard
         self.sync = Self.loadSync(d)
         self.pricing = Self.loadPricing(d)
+        self.pricingMeta = Self.loadPricingMeta(d)
         self.quotaConfig = Self.loadQuota(d)
         self.currency = Self.loadCurrency(d)
         self.peak = Self.loadPeak(d)
@@ -159,6 +162,32 @@ public final class AppSettings: ObservableObject {
     }
     public func savePricing() {
         save("pricing", pricing)
+        save("pricingMeta", pricingMeta)
+    }
+
+    /// 应用桌面端下发的价格表：USD 原样保存，CNY 按同一汇率实时折算，
+    /// 保证手机端花费与桌面端逐模型一致。空表/未同步状态直接忽略，
+    /// 保留现有缓存或内置参考价。
+    @discardableResult
+    public func applyRemotePricing(_ remote: RemotePricing) -> Bool {
+        // 服务端有表时允许空表（用户删光模型是合法状态，费用归零）；
+        // 无表（synced=false / updated_at=0）时保留本地参考价。
+        guard (remote.synced ?? true) else { return false }
+        guard !remote.usd.isEmpty || remote.updated_at > 0 else { return false }
+        let rate = (remote.fx_rate.isFinite && remote.fx_rate > 0) ? remote.fx_rate : 7.2
+        let cny = remote.usd.mapValues { p in
+            ModelPrice(input: p.input * rate,
+                       output: p.output * rate,
+                       cache_read: p.cache_read * rate)
+        }
+        pricing = PricingConfig(cny: cny, usd: remote.usd)
+        pricingMeta = PricingSyncMeta(fxRate: rate,
+                                      updatedAt: remote.updated_at,
+                                      revision: remote.revision,
+                                      modelCount: remote.model_count ?? remote.usd.count,
+                                      isRemote: true)
+        savePricing()
+        return true
     }
     public func saveQuotaConfig() {
         save("quotaConfig", quotaConfig)
@@ -208,6 +237,11 @@ public final class AppSettings: ObservableObject {
         if let p = decode(PricingConfig.self, d, "pricing") { return p }
         // 首次启动用内置默认表
         return loadBuiltinPricingDefaults()
+    }
+
+    private static func loadPricingMeta(_ d: UserDefaults) -> PricingSyncMeta {
+        if let m = decode(PricingSyncMeta.self, d, "pricingMeta") { return m }
+        return PricingSyncMeta()
     }
 
     private static func loadQuota(_ d: UserDefaults) -> QuotaConfig {

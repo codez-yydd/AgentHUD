@@ -1447,6 +1447,8 @@ export const en: typeof zh = {
       "View-only for this page; does not change the global currency (the global currency follows the interface language: Chinese ¥ / English $).",
     // Unsaved-changes hint + Save button dirty label
     "dashboard.pricing.dirtyHint": "{count} unsaved",
+    "dashboard.pricing.remoteUpdated":
+      "Prices were updated on another device. Different models are merged; for the same model the last write wins.",
     "dashboard.pricing.saveDirty": "Save *",
     // Light confirmation after applying price updates
     "dashboard.pricing.appliedCount": "Applied {count}",

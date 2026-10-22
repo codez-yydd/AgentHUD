@@ -1,6 +1,6 @@
 {
   "version": "2026-08-05",
-  "note": "AgentHUD 内置的官方参考价格表（每百万 Token）。仅用于「检查更新」时与用户本地 pricing.json 对比并提示差异，绝不自动覆盖用户配置。维护者可随官方调价更新此文件并重新发布。",
+  "note": "AgentHUD 内置的参考价格表（每百万 Token）。iOS 端仅在桌面端价格尚未同步时兜底；实际计费以桌面端下发为准。维护者可随官方调价更新此文件并重新发布。",
   "cny": {
     "glm-4.6": { "input": 10, "output": 30, "cache_read": 1 },
     "glm-4.6v": { "input": 2, "output": 8, "cache_read": 0.2 },

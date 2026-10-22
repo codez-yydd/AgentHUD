@@ -8,6 +8,7 @@ import {
   useState,
 } from "react";
 import type { ReactNode } from "react";
+import { listen } from "@tauri-apps/api/event";
 import type {
   AgentQuotaDeltaMap,
   AccountQuotaEntry,
@@ -922,6 +923,29 @@ export function DataProvider({ pricing, credentialPresence, children }: Provider
   const [fxRate, setFxRate] = useState<number>(
     () => loadCache<number>("zbar-fxrate") ?? 7.2
   );
+
+  // 服务端价格表同步可能同时带回新的 USD→CNY 汇率；收到广播立即重读，
+  // 避免等下一个 180s 定时刷新。无服务端时事件不会触发。
+  useEffect(() => {
+    let dispose: (() => void) | undefined;
+    let cancelled = false;
+    listen("zbar://pricing-updated", () => {
+      getCursorConfig()
+        .then((cfg) => {
+          if (cfg.usd_cny_rate > 0) setFxRate(cfg.usd_cny_rate);
+        })
+        .catch(() => {});
+    })
+      .then((unlisten) => {
+        if (cancelled) unlisten();
+        else dispose = unlisten;
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+      dispose?.();
+    };
+  }, []);
   const [quota, setQuota] = useState<QuotaResult | null>(
     () => loadCache<QuotaResult>("zbar-quota")
   );
