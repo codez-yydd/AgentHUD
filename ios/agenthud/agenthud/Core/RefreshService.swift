@@ -401,6 +401,89 @@ public final class RefreshService: ObservableObject {
             accountId = AccountStore.syncOptionId(firstSync.agent)
         }
 
+        // —— 全部账号/服务商的额度（主屏小组件展示全部）——
+        // 旧快照没有 quotaItems，Widget 会回退到上面的单账号字段；新版
+        // 同时写数组，小/中/大尺寸都按数组渲染圆环。
+        func widgetPct(_ w: QuotaWindow) -> Int? {
+            if let p = w.usedPercent {
+                return Int(p.rounded())
+            }
+            if let used = w.used, let total = w.total, total > 0 {
+                return Int((used / total * 100).rounded())
+            }
+            return nil
+        }
+        func widgetWindows(_ windows: [QuotaWindow]) -> [WidgetQuotaWindow] {
+            windows.map { w in
+                WidgetQuotaWindow(key: w.key, title: w.title,
+                                  pct: widgetPct(w),
+                                  used: w.used, total: w.total,
+                                  unit: w.unit, resetsAt: w.resetsAt)
+            }
+        }
+
+        var quotaItems: [WidgetQuotaItem] = []
+        var itemIds = Set<String>()
+        for g in syncedQuotaGroups {
+            guard !g.windows.isEmpty || g.balance != nil || g.message != nil else { continue }
+            let id = "sync:\(g.agent.rawValue)|\(g.label)"
+            guard itemIds.insert(id).inserted else { continue }
+            quotaItems.append(WidgetQuotaItem(
+                id: id,
+                label: g.agent.displayName,
+                detail: g.planBadge,
+                account: g.label.isEmpty ? nil : g.label,
+                agent: g.agent.rawValue,
+                planName: g.planBadge,
+                isSynced: true,
+                status: g.isError ? "error" : "ok",
+                message: g.message,
+                windows: widgetWindows(g.windows),
+                balanceAmount: g.balance?.amount,
+                balanceCurrency: g.balance?.currency,
+                balanceGranted: g.balance?.granted,
+                balanceToppedUp: g.balance?.toppedUp,
+                updatedAt: Double(g.updatedAtMs) / 1000))
+        }
+        for q in quotaEntries {
+            guard !q.windows.isEmpty || q.balance != nil
+                    || q.status == "error" || q.status == "expired" else { continue }
+            let id = "direct:\(q.accountId)"
+            guard itemIds.insert(id).inserted else { continue }
+            quotaItems.append(WidgetQuotaItem(
+                id: id,
+                label: q.agent.displayName,
+                detail: q.planName,
+                account: q.label.isEmpty ? nil : q.label,
+                agent: q.agent.rawValue,
+                planName: q.planName,
+                isSynced: false,
+                status: q.status,
+                message: q.message,
+                windows: widgetWindows(q.windows),
+                balanceAmount: q.balance?.amount,
+                balanceCurrency: q.balance?.currency,
+                balanceGranted: q.balance?.granted,
+                balanceToppedUp: q.balance?.toppedUp,
+                updatedAt: Double(q.updatedAt) / 1000))
+        }
+
+        // 服务名统一用短品牌名；账号/档案由 account + planName 单独展示，
+        // 不再用「GLM 1 / GLM 2」这种无法对应真实账号的编号。
+        func shortAgentName(_ name: String) -> String {
+            switch name {
+            case "GLM Coding Plan": return "GLM"
+            case "OpenCode Go": return "OpenCode"
+            case "Kimi Code": return "Kimi"
+            case "阿里 Coding Plan": return "阿里"
+            case "百炼Token包": return "百炼"
+            default: return name
+            }
+        }
+        for i in quotaItems.indices {
+            quotaItems[i].label = shortAgentName(quotaItems[i].label)
+        }
+
         var hour5Pct: Int?
         var weeklyPct: Int?
         var mcpPct: Int?
@@ -474,7 +557,8 @@ public final class RefreshService: ObservableObject {
             balanceAmount: balance?.amount,
             balanceCurrency: balance?.currency,
             balanceGranted: balance?.granted,
-            balanceToppedUp: balance?.toppedUp)
+            balanceToppedUp: balance?.toppedUp,
+            quotaItems: quotaItems)
 
         settings.writeWidgetSnapshot(snap)
         // 主 App 写完后立刻让系统重绘小组件；否则只能等系统的下一次

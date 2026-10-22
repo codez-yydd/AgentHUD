@@ -57,6 +57,79 @@ public struct WidgetAccountOption: Codable, Hashable, Identifiable {
     }
 }
 
+/// Widget 内单个额度窗口（从主 App 的 QuotaWindow 精简，供轮播/圆环渲染）。
+public struct WidgetQuotaWindow: Codable, Hashable, Identifiable {
+    public var key: String
+    public var title: String
+    public var pct: Int?
+    public var used: Double?
+    public var total: Double?
+    public var unit: String?
+    public var resetsAt: Int?
+
+    public var id: String { key }
+
+    public init(key: String, title: String, pct: Int? = nil,
+                used: Double? = nil, total: Double? = nil,
+                unit: String? = nil, resetsAt: Int? = nil) {
+        self.key = key
+        self.title = title
+        self.pct = pct
+        self.used = used
+        self.total = total
+        self.unit = unit
+        self.resetsAt = resetsAt
+    }
+}
+
+/// Widget 内一个账号/服务商的额度（主屏小组件展示全部账号）。
+public struct WidgetQuotaItem: Codable, Hashable, Identifiable {
+    public var id: String
+    /// 服务简称（Codex / Claude / GLM Coding Plan ...）
+    public var label: String
+    /// 账号/套餐补充说明（可空）
+    public var detail: String?
+    /// 原始账号/凭证备注名（区分同服务的多账号/多档案；空=默认账号）
+    public var account: String?
+    public var agent: String
+    public var planName: String?
+    public var isSynced: Bool
+    /// "ok" / "error" / "expired" / "pending"
+    public var status: String?
+    public var message: String?
+    public var windows: [WidgetQuotaWindow]
+    public var balanceAmount: Double?
+    public var balanceCurrency: String?
+    public var balanceGranted: Double?
+    public var balanceToppedUp: Double?
+    public var updatedAt: Double
+
+    public init(id: String, label: String, detail: String? = nil,
+                account: String? = nil,
+                agent: String, planName: String? = nil,
+                isSynced: Bool, status: String? = nil, message: String? = nil,
+                windows: [WidgetQuotaWindow] = [],
+                balanceAmount: Double? = nil, balanceCurrency: String? = nil,
+                balanceGranted: Double? = nil, balanceToppedUp: Double? = nil,
+                updatedAt: Double = 0) {
+        self.id = id
+        self.label = label
+        self.detail = detail
+        self.account = account
+        self.agent = agent
+        self.planName = planName
+        self.isSynced = isSynced
+        self.status = status
+        self.message = message
+        self.windows = windows
+        self.balanceAmount = balanceAmount
+        self.balanceCurrency = balanceCurrency
+        self.balanceGranted = balanceGranted
+        self.balanceToppedUp = balanceToppedUp
+        self.updatedAt = updatedAt
+    }
+}
+
 /// Widget 渲染所需的全部数据快照（App 拉好数据后写入共享容器）。
 /// 批2 扩展字段全部 Optional + Codable 合成解码走 decodeIfPresent：
 /// 旧版 JSON 缺新字段 → 解码为 nil（向后兼容）；新版 JSON 多字段对旧代码
@@ -90,6 +163,8 @@ public struct WidgetSnapshot: Codable, Hashable {
     public var balanceCurrency: String?
     public var balanceGranted: Double?
     public var balanceToppedUp: Double?
+    /// 全部账号/服务商的额度；主屏中/大尺寸展示，旧快照为 nil 时回退单账号
+    public var quotaItems: [WidgetQuotaItem]?
 
     public init(todayCostCny: Double = 0, todayCostUsd: Double = 0,
                 todayTokens: Int = 0, todayRequests: Int = 0,
@@ -101,7 +176,8 @@ public struct WidgetSnapshot: Codable, Hashable {
                 accountId: String? = nil, accountLabel: String? = nil,
                 agentKind: String? = nil, isSynced: Bool? = nil,
                 balanceAmount: Double? = nil, balanceCurrency: String? = nil,
-                balanceGranted: Double? = nil, balanceToppedUp: Double? = nil) {
+                balanceGranted: Double? = nil, balanceToppedUp: Double? = nil,
+                quotaItems: [WidgetQuotaItem]? = nil) {
         self.todayCostCny = todayCostCny
         self.todayCostUsd = todayCostUsd
         self.todayTokens = todayTokens
@@ -124,6 +200,7 @@ public struct WidgetSnapshot: Codable, Hashable {
         self.balanceCurrency = balanceCurrency
         self.balanceGranted = balanceGranted
         self.balanceToppedUp = balanceToppedUp
+        self.quotaItems = quotaItems
     }
 }
 

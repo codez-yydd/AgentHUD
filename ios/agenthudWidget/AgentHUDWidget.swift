@@ -3,7 +3,7 @@
 //  agenthudWidget
 //
 //  WidgetKit 小组件入口。支持锁屏（accessoryRectangular/Circular/Inline）
-//  和主屏（systemSmall/Medium）。数据从 App Group 共享容器读取。
+//  和主屏（systemSmall/Medium/Large）。数据从 App Group 共享容器读取。
 //
 //  ⚠️ 使用 StaticConfiguration 而不是 AppIntentConfiguration：
 //  小组件的账号选择统一放到 App「设置 → 小组件显示」里（写 App Group），
@@ -22,7 +22,7 @@ struct AgentHUDWidgetBundle: WidgetBundle {
     }
 }
 
-// MARK: - 主屏 Widget（systemSmall / systemMedium）
+// MARK: - 主屏 Widget（systemSmall / systemMedium / systemLarge）
 
 struct AgentHUDHomeWidget: Widget {
     let kind = "AgentHUDHomeWidget"
@@ -32,9 +32,9 @@ struct AgentHUDHomeWidget: Widget {
             AgentHUDHomeWidgetView(entry: entry)
                 .homeWidgetBackground()
         }
-        .configurationDisplayName("AgentHUD 用量")
-        .description("今日花费、Token 与额度进度（可选显示账号）")
-        .supportedFamilies([.systemSmall, .systemMedium])
+        .configurationDisplayName("AgentHUD 用量与额度")
+        .description("今日花费、Token 与全部账号额度（HUD 圆环）")
+        .supportedFamilies([.systemSmall, .systemMedium, .systemLarge])
     }
 }
 
@@ -167,9 +167,20 @@ extension View {
     }
 }
 
+/// Widget 端与 App 一致的视觉 token（App 的 Theme 在另一个 target，不能直接引用）。
+enum WidgetTheme {
+    static let mint = Color(red: 0.30, green: 0.88, blue: 0.68)
+    static let amber = Color(red: 1.00, green: 0.76, blue: 0.35)
+    static let coral = Color(red: 1.00, green: 0.45, blue: 0.51)
+    static let secondary = Color.white.opacity(0.62)
+    static let tertiary = Color.white.opacity(0.50)
+    static let track = Color.white.opacity(0.09)
+    static let card = Color.white.opacity(0.045)
+}
+
 /// 按百分比选颜色（与 App 端一致）
 func widgetQuotaColor(_ pct: Int) -> Color {
-    if pct >= 85 { return .red }
-    if pct >= 60 { return .orange }
-    return .green
+    if pct >= 85 { return WidgetTheme.coral }
+    if pct >= 60 { return WidgetTheme.amber }
+    return WidgetTheme.mint
 }

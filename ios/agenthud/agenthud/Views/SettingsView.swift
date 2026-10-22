@@ -376,7 +376,7 @@ private struct WidgetDisplayPickerRow: View {
     }
 
     var body: some View {
-        Picker("显示账号", selection: selection) {
+        Picker("锁屏账号", selection: selection) {
             Text("自动选择（优先主账号）").tag("")
             ForEach(store.accounts) { account in
                 Text("\(account.agent.displayName) · \(account.label)")
@@ -387,7 +387,7 @@ private struct WidgetDisplayPickerRow: View {
                     .tag(AccountStore.syncOptionId(agent))
             }
         }
-        Text("小组件跟随桌面端同步的额度数据；在这里切换后回到桌面等待刷新即可，App 内刷新也会立即触发重绘。")
+        Text("主屏中/大尺寸展示全部账号的 5h / 周 / 月额度，并标注套餐与账号尾号；没有的窗口显示 —（例如 GLM 的 MCP 月度次数不算订阅月额度）；小尺寸显示占用最高的账号。这里只选择锁屏使用哪个账号。App 内刷新会立即触发重绘。")
             .font(.caption)
             .foregroundColor(.secondary)
     }
