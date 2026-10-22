@@ -199,12 +199,13 @@ struct CompareView: View {
         requestEpoch += 1
         let epoch = requestEpoch
 
-        // 账号过滤规则（照抄桌面 filter_for_current）：
-        // account == nil 的快照保留（旧数据无法分辨归属）；
-        // 带指纹的只保留 == 选中值的
+        // 账号过滤规则（与桌面「当前账号视角」同口径，但无归属采样直接丢弃）：
+        // account == nil 的采样不可归属：同期存在带指纹采样时整体丢弃
+        // （否则会冒充选中账号的历史）；全部无指纹的纯旧版客户端才保留。
         let parsed: [WeeklyPeriod] = await MainActor.run {
+            let hasFingerprint = self.allSnaps.contains { $0.account != nil }
             let filtered = self.allSnaps.filter { snap in
-                guard let acc = snap.account else { return true }
+                guard let acc = snap.account else { return !hasFingerprint }
                 return acc == self.selectedAccount
             }
             var result = PeriodParser.splitPeriods(filtered.map { $0.toLocal() })

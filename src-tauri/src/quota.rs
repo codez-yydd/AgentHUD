@@ -472,8 +472,10 @@ pub(crate) fn snapshot_of(
 
 /// 查询额度并写一条历史快照（供前端 fetch_quota 命令调用）。
 /// 快照带当前登录账号指纹：quota_history 的账号敏感读路径（今日增量等）
-/// 按指纹过滤，切换账号后互不污染。指纹解密失败时写 None（宁缺毋错，
-/// 该条不参与任何账号的增量计算）。
+/// 按指纹过滤，切换账号后互不污染。取不到指纹（切号窗口内 credentials.json
+/// 正被替换/解密失败等）时这一轮**不写采样**——数值无法归属，写下去只会在
+/// 服务端长出一个无账号的幽灵分组（iOS 里表现为同名账号重复、对比页表现为
+/// "旧快照"系列）。至多丢一条 30s 采样，下一轮自动补上。
 pub fn fetch_quota() -> Result<QuotaResult, String> {
     // 指纹必须在查询前取：额度查询本身要读 config.json 选凭证并发起 HTTP
     // （连接期最长 3s、总超时最长 8s），若等查询结束才取指纹，切换事务可能已把
@@ -494,8 +496,14 @@ pub fn fetch_quota() -> Result<QuotaResult, String> {
 
     // 采样：每次成功查询追加一条快照（静默失败，不影响额度查询本身）。
     // 用本地时间作为采样 ts，与 model_usage.started_at (UTC) 保持同口径。
-    let snap = snapshot_of(&result, account.as_deref());
-    crate::quota_history::append_snapshot(&snap);
+    // 只写带指纹的采样：无指纹采样不可归属，本地清理会删、服务端也会清，
+    // 提前在这里拦住，避免每次切号都产生一条幽灵数据。
+    if let Some(acc) = account.as_deref() {
+        if !acc.is_empty() {
+            let snap = snapshot_of(&result, Some(acc));
+            crate::quota_history::append_snapshot(&snap);
+        }
+    }
 
     Ok(result)
 }

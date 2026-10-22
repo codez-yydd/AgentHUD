@@ -946,9 +946,13 @@ pub fn account_quotas() -> Result<Vec<AccountQuotaEntry>, String> {
                         match crate::quota::query_quota_with(&token, &base_url) {
                             Ok(q) => {
                                 // 写带指纹采样（静默失败，不影响额度查询本身）；
-                                // 与 fetch_quota 的 30s 采样经 (ts, account) 防抖去重
-                                let snap = crate::quota::snapshot_of(&q, Some(&fingerprint));
-                                crate::quota_history::append_snapshot(&snap);
+                                // 与 fetch_quota 的 30s 采样经 (ts, account) 防抖去重。
+                                // 指纹为空说明快照本身没有身份，同样不写（不可归属
+                                // 的采样只会在服务端变成幽灵分组）。
+                                if !fingerprint.is_empty() {
+                                    let snap = crate::quota::snapshot_of(&q, Some(&fingerprint));
+                                    crate::quota_history::append_snapshot(&snap);
+                                }
                                 (Some(q), None)
                             }
                             // 失败原样透传（query_quota_with 的错误串不含 token）

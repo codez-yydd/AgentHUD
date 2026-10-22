@@ -146,7 +146,7 @@ PORT=8080 python3 app.py
 | `GET /pricing` | Device Token | Desktops/mobile read the global price table (with revision) |
 | `GET /devices` | Device Token | Device list |
 | `POST /device/revoke` | Master Token | Revoke a device |
-| `POST /cleanup` | Master Token | Data cleanup (by device / by time / all / reset) |
+| `POST /cleanup` | Master Token | Data cleanup (by device / by time / all / unattributed snapshots / reset) |
 | `GET /cleanup/status` | Device Token | Data volume + auto-cleanup config |
 | `POST /cleanup/config` | Master Token | Configure scheduled auto-cleanup |
 | `GET /health` | None | Health check |

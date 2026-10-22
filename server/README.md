@@ -136,7 +136,7 @@ PORT=8080 python3 app.py
 | `POST /period_detail` | Device Token | 按周期返回逐条用量明细 |
 | `GET /devices` | Device Token | 设备列表 |
 | `POST /device/revoke` | Master Token | 撤销设备 |
-| `POST /cleanup` | Master Token | 数据清理（按设备/按时间/全清/reset） |
+| `POST /cleanup` | Master Token | 数据清理（按设备/按时间/全清/无归属快照/reset） |
 | `GET /cleanup/status` | Device Token | 数据量 + 自动清理配置 |
 | `POST /cleanup/config` | Master Token | 配置自动定时清理 |
 | `GET /health` | 无 | 健康检查 |

@@ -952,11 +952,30 @@ def _save_cleanup_config(cfg):
     db.set_config(CLEANUP_CONFIG_KEY, json.dumps(cfg))
 
 
+def _purge_unattributed_snapshots():
+    """删除无账号指纹的 Z.ai 额度快照，返回删除条数。
+
+    account 为空串 = 旧客户端不传该字段，或切号瞬间客户端取不到指纹的采样。
+    两类都无法归属、不参与统计，只会在对比页多出一条"旧快照"系列。清理幂等；
+    旧版 db.py 没有该函数时静默跳过（宝塔热替换窗口兼容）。
+    """
+    fn = getattr(db, "delete_unattributed_snapshots", None)
+    if not callable(fn):
+        return 0
+    n = fn()
+    if n > 0:
+        print(f"[zbar-sync] 清理无归属额度快照：删除 {n} 条")
+    return n
+
+
 def _spawn_auto_cleanup():
     """启动自动清理后台线程：每 24 小时检查一次。"""
 
     def worker():
         while True:
+            # 无归属快照不属于保留期策略：每次启动/每日都清一遍（幂等）。
+            # 新客户端已不再产生这类采样，这里只清历史存量与旧客户端上传。
+            _purge_unattributed_snapshots()
             cfg = _load_cleanup_config()
             if cfg["auto_enabled"] and cfg["auto_days"] > 0:
                 cutoff = db.now_ms() - cfg["auto_days"] * 86_400_000
@@ -999,12 +1018,20 @@ def cleanup():
         n = db.delete_all_usage()
         return jsonify({"action": "all", "records_deleted": n, "devices_deleted": None})
 
+    if action == "unattributed":
+        n = _purge_unattributed_snapshots()
+        return jsonify(
+            {"action": "unattributed", "records_deleted": n, "devices_deleted": None}
+        )
+
     if action == "reset":
         u, d = db.reset_all()
         return jsonify({"action": "reset", "records_deleted": u, "devices_deleted": d})
 
     return (
-        jsonify({"error": f"未知 action: {action}（应为 device/before/all/reset）"}),
+        jsonify(
+            {"error": f"未知 action: {action}（应为 device/before/all/unattributed/reset）"}
+        ),
         400,
     )
 

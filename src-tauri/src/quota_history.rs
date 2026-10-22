@@ -278,8 +278,13 @@ fn maybe_cleanup(path: &PathBuf) {
     }
 }
 
-/// 清理实现：过滤掉 ts 早于保留边界的行，写临时文件后 rename 原子替换。
-/// 损坏的行原样保留（不丢数据，与 load_all 的跳过策略对齐）。
+/// 清理实现：过滤掉 ts 早于保留边界的行与无账号归属的行，写临时文件后
+/// rename 原子替换。损坏的行原样保留（不丢数据，与 load_all 的跳过策略对齐）。
+///
+/// 无归属行（account 缺失/为空）一律删除：它们不参与任何账号统计（今日增量
+/// 等读路径本就跳过），只会在"当前账号视角"里冒充本账号的历史，上传后还会在
+/// 服务端长出一个无账号的幽灵分组。旧版客户端写入的这类历史没有保留价值，
+/// 随滚动清理一并清掉。
 ///
 /// 已知取舍：rename 与并发 try_append 之间存在毫秒级窗口——若恰在此刻有写入
 /// 落到旧 inode，rename 后那一条快照会丢失（文件本身不会损坏）。考虑到清理
@@ -299,6 +304,7 @@ fn try_cleanup(path: &std::path::Path) -> Result<(), String> {
 
     let mut kept: Vec<String> = Vec::new();
     let mut removed = 0usize;
+    let mut unattributed = 0usize;
     for line in reader.lines() {
         let line = match line {
             Ok(l) => l,
@@ -307,17 +313,28 @@ fn try_cleanup(path: &std::path::Path) -> Result<(), String> {
         if line.trim().is_empty() {
             continue;
         }
-        // 只取 ts 字段判断是否过期，避免严格反序列化其他字段格式变化导致误删
-        let ts = serde_json::from_str::<serde_json::Value>(&line)
-            .ok()
-            .and_then(|v| v.get("ts").and_then(|t| t.as_i64()));
+        // 只取 ts / account 字段判断，避免严格反序列化其他字段格式变化导致误删
+        let parsed = serde_json::from_str::<serde_json::Value>(&line).ok();
+        if let Some(v) = &parsed {
+            let account = v.get("account").and_then(|a| a.as_str()).unwrap_or("");
+            // 无归属行无法参与任何账号统计，留着只会被误当成当前账号的历史
+            if account.is_empty() {
+                removed += 1;
+                unattributed += 1;
+                continue;
+            }
+        }
+        let ts = parsed
+            .as_ref()
+            .and_then(|v| v.get("ts"))
+            .and_then(|t| t.as_i64());
         match ts {
             Some(t) if t < cutoff => removed += 1,
             _ => kept.push(line), // 无 ts 的损坏行按保留处理，不丢数据
         }
     }
     if removed == 0 {
-        return Ok(()); // 无过期行，不必重写
+        return Ok(()); // 无需清理，不必重写
     }
 
     // 临时文件与目标同目录，rename 在同一文件系统上保证原子性
@@ -338,6 +355,9 @@ fn try_cleanup(path: &std::path::Path) -> Result<(), String> {
     // 必须显式作废而不是依赖后续 append 的 cache_after_append——那个函数只会
     // 在旧缓存基础上 push 增量，会把已被清理的过期行继续留在内存里。
     cache_invalidate();
+    if unattributed > 0 {
+        eprintln!("[zbar-history] 清理无账号归属的快照 {unattributed} 条");
+    }
     Ok(())
 }
 
@@ -990,9 +1010,9 @@ mod tests {
         let old_ts = now - RETENTION_MS - 86_400_000; // 超过保留期一天
         let content = format!(
             "{}\n{}\n{}\n",
-            serde_json::to_string(&snap(old_ts, "old")).unwrap(),
-            serde_json::to_string(&snap(now - 1000, "keep1")).unwrap(),
-            serde_json::to_string(&snap(now, "keep2")).unwrap()
+            serde_json::to_string(&snap_of(old_ts, "acct-a", 10)).unwrap(),
+            serde_json::to_string(&snap_of(now - 1000, "acct-a", 20)).unwrap(),
+            serde_json::to_string(&snap_of(now, "acct-a", 30)).unwrap()
         );
         std::fs::write(&path, &content).unwrap();
 
@@ -1002,9 +1022,37 @@ mod tests {
         try_cleanup(&path).unwrap();
 
         let cleaned = std::fs::read_to_string(&path).unwrap();
-        assert!(!cleaned.contains("old"), "过期行应被删除");
-        assert_eq!(cleaned.lines().count(), 2, "保留行应原样保留");
+        assert_eq!(cleaned.lines().count(), 2, "过期行应删除、其余原样保留");
+        assert!(
+            !cleaned.contains("\"weekly_pct\":10"),
+            "超过保留期的行应被删除"
+        );
         assert_eq!(read_recent_entries(&path).unwrap().last().unwrap().ts, now);
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// 滚动清理：无账号归属的行一并清掉（它们不参与任何账号统计，留着只会
+    /// 被当成当前账号的历史），损坏行仍按原策略保留
+    #[test]
+    fn cleanup_removes_unattributed_lines() {
+        let path = temp_jsonl("cleanup-unattributed");
+        let now = chrono::Local::now().timestamp_millis();
+        // snap() 的 account 为 None：模拟旧客户端写入的无归属采样
+        let legacy = serde_json::to_string(&snap(now, "legacy")).unwrap();
+        let kept = serde_json::to_string(&snap_of(now, "16361781344907127", 30)).unwrap();
+        std::fs::write(&path, format!("{legacy}\n{kept}\nnot-json\n")).unwrap();
+
+        let _serial = CACHE_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        try_cleanup(&path).unwrap();
+
+        let cleaned = std::fs::read_to_string(&path).unwrap();
+        let lines: Vec<&str> = cleaned.lines().collect();
+        assert_eq!(lines.len(), 2, "无归属行应删除，损坏行保留");
+        assert!(
+            lines[0].contains("16361781344907127"),
+            "带指纹行应原样保留"
+        );
+        assert_eq!(lines[1], "not-json", "损坏行不应被顺手删掉");
         std::fs::remove_file(&path).ok();
     }
 

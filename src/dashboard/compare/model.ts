@@ -20,7 +20,6 @@ import type { AgentId } from "../../agentVisibility";
 import { AGENT_COLOR, AGENT_COLOR_SCALE } from "../../agentVisibility";
 import type { BrandIconName } from "../../BrandIcon";
 import type { CompareTokenSource } from "../../api";
-import type { MessageKey, Vars } from "../../i18n";
 
 /** 对比页参与的 Agent（与窄窗版 COMPARE_AGENTS 同集同序）。
  *  kimi/dsh/opencodego/minimax 为本地采集型：纳入 Token 用量对比；因无订阅
@@ -232,11 +231,9 @@ export function disjointSegments(windows: CompareWindow[]): CompareWindow[] {
 export interface QuotaSeries {
   id: string;
   agent: AgentId;
-  /** Z.ai 账号指纹（旧快照无指纹时为 null） */
+  /** Z.ai 账号指纹（纯旧版客户端的历史采样为 null） */
   account: string | null;
   label: string;
-  /** 无账号指纹的历史采样组（与真实账号系列并存时） */
-  legacy?: boolean;
 }
 
 /** 单个额度采样点（窄窗只取「周内峰值」，大窗保留完整时间线画折线） */
@@ -311,26 +308,28 @@ function clampUsedPct(value: number | null | undefined): number | null {
   return Math.min(100, Math.max(0, value));
 }
 
-type TFn = (key: MessageKey, vars?: Vars) => string;
-
 /**
  * 从合并后的额度快照构建各系列的时间线。
  * Z.ai 按账号指纹分组（每账号一个系列）；Codex/Claude/Cursor/Kimi 各一个系列。
- * 旧快照 account 为 null 的归入一个 "Z.ai" 系列；若同时存在带指纹系列则
- * 标记为 "Z.ai·历史"，避免与真实账号系列混淆（标签规则与窄窗逐条对齐）。
+ * 无账号指纹的旧快照无法归属，只要同期存在带指纹的采样就整体丢弃（否则会
+ * 在对比页多出一条"旧快照"系列）；全部都是无指纹的纯旧版客户端才保留一条
+ * 不区分账号的 "Z.ai" 系列，避免曲线整个消失。
  */
 export function buildQuotaTimelines(
   zaiSnapshots: QuotaSnapshot[],
   agentSnapshots: AgentQuotaSnapshot[],
   enabledAgents: CompareAgent[],
-  accounts: AccountMeta[] | null,
-  t: TFn
+  accounts: AccountMeta[] | null
 ): QuotaTimeline[] {
   const timelines: QuotaTimeline[] = [];
 
   if (enabledAgents.includes("zai")) {
+    const hasFingerprint = zaiSnapshots.some((snapshot) => snapshot.account);
+    const usable = hasFingerprint
+      ? zaiSnapshots.filter((snapshot) => snapshot.account)
+      : zaiSnapshots;
     const groups = new Map<string, QuotaSnapshot[]>();
-    for (const snapshot of zaiSnapshots) {
+    for (const snapshot of usable) {
       if (!Number.isFinite(snapshot.ts)) continue;
       const key = snapshot.account ?? "";
       const list = groups.get(key) ?? [];
@@ -339,8 +338,7 @@ export function buildQuotaTimelines(
     }
     const keys = [...groups.keys()];
     const single = keys.length <= 1;
-    const hasFingerprint = keys.some((key) => key !== "");
-    // 指纹组在前（按指纹排序），无指纹的历史组最后
+    // 指纹组在前（按指纹排序），（纯旧版客户端时的）无指纹组最后
     keys.sort((a, b) => {
       if (a === "") return 1;
       if (b === "") return -1;
@@ -349,12 +347,8 @@ export function buildQuotaTimelines(
     for (const key of keys) {
       const id = `zai:${key || "history"}`;
       let label: string;
-      const legacy = key === "" && !single && hasFingerprint;
       if (key === "") {
-        label =
-          single || !hasFingerprint
-            ? AGENT_META.zai.label
-            : `${AGENT_META.zai.label}·${t("compare.legacyAccount")}`;
+        label = AGENT_META.zai.label;
       } else if (single) {
         label = AGENT_META.zai.label;
       } else {
@@ -364,7 +358,7 @@ export function buildQuotaTimelines(
         label = `${AGENT_META.zai.label}·${name || key.slice(0, 6)}`;
       }
       const timeline: QuotaTimeline = {
-        series: { id, agent: "zai", account: key || null, label, legacy },
+        series: { id, agent: "zai", account: key || null, label },
         samples: [],
       };
       for (const snapshot of groups.get(key) ?? []) {
@@ -424,7 +418,6 @@ export function buildQuotaTimelines(
 export interface MatrixCell {
   id: string;
   label: string;
-  legacy?: boolean;
   /** 系列颜色（同一 Agent 多账号取色阶档位） */
   color: string;
   /** 周额度剩余 %（= 100 − 已用），来自最近一次采样 */
@@ -468,7 +461,6 @@ export function buildQuotaMatrix(
       cells.push({
         id: timeline.series.id,
         label: timeline.series.label,
-        legacy: timeline.series.legacy,
         color: seriesColorOf(seriesList, timeline.series.id, dark),
         remainingPct: 100 - latest.usedPct,
         resetAt: latest.resetAt,

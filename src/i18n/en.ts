@@ -416,9 +416,6 @@ export const en: typeof zh = {
     "compare.noDataShort": "No data",
     "compare.peakUsedPct": "peak {pct}% in week",
     "compare.noSample": "no samples this week",
-    "compare.legacyAccount": "legacy data",
-    "compare.legacyAccountHint":
-      "Snapshots recorded before per-account tracking; cannot be attributed to a specific account",
     "compare.samples": "{count} samples",
     "compare.tokensOfAgents": "Agent actual token count (not a quota percentage)",
     "compare.tokenShort": "tokens",

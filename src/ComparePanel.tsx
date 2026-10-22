@@ -175,11 +175,9 @@ interface WeekSlot {
 interface QuotaSeries {
   id: string;
   agent: AgentId;
-  /** Z.ai 账号指纹（旧快照无指纹时为 null） */
+  /** Z.ai 账号指纹（纯旧版客户端的历史采样为 null） */
   account: string | null;
   label: string;
-  /** 无账号指纹的历史采样组（与真实账号系列并存时）：明细行悬停解释归属 */
-  legacy?: boolean;
 }
 
 interface CompareCacheEntry {
@@ -490,8 +488,7 @@ export function CompareContent({ agentVisibility }: Props) {
         snapshots,
         mergedAgentSnapshots,
         enabledAgents,
-        accounts,
-        t
+        accounts
       );
 
       // 系列过多（Z.ai 多账号）时每根柱会过细，周数降档到 8；
@@ -791,15 +788,14 @@ interface QuotaSeriesData {
 
 /** 从额度快照构建"每系列每周已用峰值"数据。
  *  Z.ai 按账号指纹分组（每账号一个系列）；Codex/Claude/Cursor 各一个系列。
- *  旧快照 account 为 null 的归入一个"Z.ai"系列；若同时存在带指纹系列则
- *  标记为"Z.ai·历史"，避免与真实账号系列混淆。 */
+ *  无账号指纹的旧快照不可归属：同期存在带指纹采样时整体丢弃，纯旧版客户端
+ *  （全无指纹）才归入一条不区分账号的"Z.ai"系列。 */
 function buildQuotaSeries(
   slots: WeekSlot[],
   zaiSnapshots: QuotaSnapshot[],
   agentSnapshots: AgentQuotaSnapshot[],
   enabledAgents: CompareAgent[],
-  accounts: AccountMeta[] | null,
-  t: ReturnType<typeof useI18n>["t"]
+  accounts: AccountMeta[] | null
 ): QuotaSeriesData {
   const series: QuotaSeries[] = [];
   const peaks: Record<string, (number | null)[]> = {};
@@ -820,8 +816,14 @@ function buildQuotaSeries(
   };
 
   if (enabledAgents.includes("zai")) {
+    // 无账号指纹的旧快照不可归属：只要同期存在带指纹的采样就整体丢弃，
+    // 避免对比页多出一条"旧快照"系列；纯旧版客户端（全无指纹）才保留。
+    const hasFingerprint = zaiSnapshots.some((snapshot) => snapshot.account);
+    const usable = hasFingerprint
+      ? zaiSnapshots.filter((snapshot) => snapshot.account)
+      : zaiSnapshots;
     const groups = new Map<string, QuotaSnapshot[]>();
-    for (const snapshot of zaiSnapshots) {
+    for (const snapshot of usable) {
       if (!Number.isFinite(snapshot.ts)) continue;
       const key = snapshot.account ?? "";
       const list = groups.get(key) ?? [];
@@ -830,8 +832,7 @@ function buildQuotaSeries(
     }
     const keys = [...groups.keys()];
     const single = keys.length <= 1;
-    const hasFingerprint = keys.some((key) => key !== "");
-    // 指纹组在前（按指纹排序），无指纹的历史组最后
+    // 指纹组在前（按指纹排序），（纯旧版客户端时的）无指纹组最后
     keys.sort((a, b) => {
       if (a === "") return 1;
       if (b === "") return -1;
@@ -840,13 +841,8 @@ function buildQuotaSeries(
     for (const key of keys) {
       const id = `zai:${key || "history"}`;
       let label: string;
-      // 与真实账号系列并存的无指纹历史组，标记 legacy 供明细行悬停解释
-      const legacy = key === "" && !single && hasFingerprint;
       if (key === "") {
-        label =
-          single || !hasFingerprint
-            ? AGENT_META.zai.label
-            : `${AGENT_META.zai.label}·${t("compare.legacyAccount")}`;
+        label = AGENT_META.zai.label;
       } else if (single) {
         label = AGENT_META.zai.label;
       } else {
@@ -855,7 +851,7 @@ function buildQuotaSeries(
           ?.display_name?.trim();
         label = `${AGENT_META.zai.label}·${name || key.slice(0, 6)}`;
       }
-      initSeries({ id, agent: "zai", account: key || null, label, legacy });
+      initSeries({ id, agent: "zai", account: key || null, label });
       for (const snapshot of groups.get(key) ?? []) {
         applyPeak(id, snapshot.ts, clampUsedPct(snapshot.weekly_pct));
       }
@@ -1070,7 +1066,7 @@ function WeekDetail({
                 />
                 <span
                   className="text-[10px] text-slate-800/80 truncate"
-                  title={item.legacy ? t("compare.legacyAccountHint") : undefined}
+                  title={item.label}
                 >
                   {item.label}
                 </span>

@@ -1549,6 +1549,26 @@ def delete_device_records(device_id):
             conn.close()
 
 
+def delete_unattributed_snapshots():
+    """删除无账号指纹的 Z.ai 额度快照，返回删除条数。
+
+    account 为空串有两种来源：旧客户端不传该字段（多账号区分上线前的历史
+    采样），以及切号瞬间客户端取不到指纹的那一条。两类都无法归属到具体
+    账号、不参与任何账号统计，只会在对比页多出一条"旧快照"系列，统一清掉。
+    只影响 quota_snapshots，不触碰明细用量。
+    """
+    with _db_lock:
+        conn = get_conn()
+        try:
+            n = conn.execute(
+                "DELETE FROM quota_snapshots WHERE account IS NULL OR account = ''"
+            ).rowcount
+            conn.commit()
+            return n
+        finally:
+            conn.close()
+
+
 def delete_all_usage():
     """全部清空三类用量数据，保留设备注册；返回删除的明细条数。"""
     with _db_lock:

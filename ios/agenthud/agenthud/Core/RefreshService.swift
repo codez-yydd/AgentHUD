@@ -242,13 +242,19 @@ public final class RefreshService: ObservableObject {
 
     /// GLM（Z.ai）额度快照 → 同步分组：按 account 指纹分组、同秒去重取高、
     /// 每账号取最新一条（窗口映射对齐桌面 quota_history 的三档口径）。
-    /// account 为 nil（旧客户端数据）归入无 label 的单卡。
+    /// account 为 nil 的采样不可归属：只要同期存在带指纹的采样就整体丢弃
+    /// （否则会对同一个账号渲染出第二张卡，看起来像重复订阅）；24 小时内
+    /// 全部无指纹的纯旧版客户端才保留无 label 的单卡。
     static func buildGlmSyncGroups(from snaps: [RemoteSnapshot]) -> [SyncedAgentQuotaGroup] {
         struct Key: Hashable { let account: String; let second: Int }
 
+        let hasFingerprint = snaps.contains {
+            !($0.account ?? "").trimmingCharacters(in: .whitespaces).isEmpty
+        }
         var byKey: [Key: (snap: RemoteSnapshot, windows: [QuotaWindow])] = [:]
         for snap in snaps {
             let account = snap.account?.trimmingCharacters(in: .whitespaces) ?? ""
+            if hasFingerprint && account.isEmpty { continue }
             var windows: [QuotaWindow] = []
             if snap.hour5_pct > 0 || snap.weekly_pct > 0 || snap.mcp_pct > 0 {
                 windows.append(QuotaWindow(key: "hour5", title: "5h",

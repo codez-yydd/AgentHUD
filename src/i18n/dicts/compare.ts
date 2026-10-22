@@ -20,8 +20,6 @@ export const compare = {
   "compare.noDataShort": "无数据",
   "compare.peakUsedPct": "周内已用峰值 {pct}%",
   "compare.noSample": "该周无采样",
-  "compare.legacyAccount": "旧快照",
-  "compare.legacyAccountHint": "多账号区分上线前记录的历史采样，无法归属到具体账号",
   "compare.samples": "采样 {count} 条",
   "compare.tokensOfAgents": "Agent 实际 Token 数量（不是额度百分比）",
   "compare.tokenShort": "Token",

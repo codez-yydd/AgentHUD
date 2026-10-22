@@ -162,15 +162,8 @@ function QuotaCellView({
         <span className="db-agent__icon" style={{ color: cell.color }}>
           <BrandIcon brand={brand} className="h-4 w-4" />
         </span>
-        {/* 恒设全名悬停：长名截断后仍有查看途径；legacy 账户追加旧提示 */}
-        <span
-          className="db-qcell__label"
-          title={
-            cell.legacy
-              ? `${cell.label} · ${t("compare.legacyAccountHint")}`
-              : cell.label
-          }
-        >
+        {/* 恒设全名悬停：长名截断后仍有查看途径 */}
+        <span className="db-qcell__label" title={cell.label}>
           {cell.label}
         </span>
         {/* 周窗口不再渲染「周剩」小字（卡片标题已表意）；出现小字即非周

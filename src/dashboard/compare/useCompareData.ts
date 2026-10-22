@@ -305,8 +305,7 @@ export function useCompareData(
         mergedZai,
         mergedAgent,
         g.enabledAgents,
-        g.accounts,
-        t
+        g.accounts
       );
 
       // Token 口径沿用「按 Agent 实际用量」：本机按来源名聚合窗口，
