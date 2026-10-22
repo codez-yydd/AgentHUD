@@ -18,6 +18,7 @@
 
 import Foundation
 import Combine
+import WidgetKit
 
 @MainActor
 public final class RefreshService: ObservableObject {
@@ -28,6 +29,8 @@ public final class RefreshService: ObservableObject {
     @Published public var lastError: String?
     /// 额度查询进行中（额度页 spinner / 按钮禁用用）
     @Published public var quotaRefreshing = false
+    /// 最近一次成功刷新的时刻（页头「更新于」文案用）
+    @Published public var lastRefreshedAt: Date?
 
     // 数据
     @Published public var todayUsage: RemoteUsage?
@@ -63,6 +66,7 @@ public final class RefreshService: ObservableObject {
         AccountStore.shared.refreshOptionPlanNames(directEntries: quotaEntries,
                                                    syncedGroups: syncedQuotaGroups)
         writeWidgetSnapshot()
+        lastRefreshedAt = Date()
     }
 
     // MARK: - 直连账号查询（TaskGroup 并发，互不阻塞）
@@ -164,7 +168,22 @@ public final class RefreshService: ObservableObject {
             groups.append(contentsOf: Self.buildGlmSyncGroups(from: zaiSnaps))
         }
 
-        self.syncedQuotaGroups = groups
+        // 免费版 Cursor 且所有窗口都是 0% 时没有任何信息量，直接隐藏
+        // （错误态/有余额的卡片仍保留，避免把失败误判为"没在用"）。
+        self.syncedQuotaGroups = groups.filter { !Self.isIdleFreeCursor($0) }
+    }
+
+    /// Cursor 免费版且零使用：不展示。plan 兼容 free / hobby 两种官方命名。
+    static func isIdleFreeCursor(_ group: SyncedAgentQuotaGroup) -> Bool {
+        guard group.agent == .cursor, !group.isError, group.balance == nil else {
+            return false
+        }
+        let plan = (group.planBadge ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        let isFree = plan.contains("free") || plan.contains("hobby")
+        guard isFree else { return false }
+        return group.windows.allSatisfy { ($0.usedPercent ?? 0) <= 0.0001 }
     }
 
     /// GLM（Z.ai）额度快照 → 同步分组：按 account 指纹分组、同秒去重取高、
@@ -277,6 +296,7 @@ public final class RefreshService: ObservableObject {
 
         // 4. 额度（直连 + 同步）
         await refreshQuotaOnly()
+        lastRefreshedAt = Date()
     }
 
     // MARK: - Widget 缓存
@@ -312,6 +332,12 @@ public final class RefreshService: ObservableObject {
            let matched = quotaEntries.first(where: { $0.accountId == primaryId }) {
             entry = matched
             accountId = primaryId
+        }
+        // 没有直连主账号（新版 iOS 已不提供手动添加）时，自动回退到第一个
+        // 桌面同步分组，避免小组件右侧额度区整块空白。
+        if group == nil && entry == nil, let firstSync = syncedQuotaGroups.first {
+            group = firstSync
+            accountId = AccountStore.syncOptionId(firstSync.agent)
         }
 
         var hour5Pct: Int?
@@ -390,6 +416,9 @@ public final class RefreshService: ObservableObject {
             balanceToppedUp: balance?.toppedUp)
 
         settings.writeWidgetSnapshot(snap)
+        // 主 App 写完后立刻让系统重绘小组件；否则只能等系统的下一次
+        // 30 分钟调度，用户会以为小组件"不显示/不更新"。
+        WidgetCenter.shared.reloadAllTimelines()
     }
 
     // MARK: - 设备筛选切换

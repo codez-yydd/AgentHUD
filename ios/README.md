@@ -2,7 +2,7 @@
 
 桌面版 ZBar（Tauri）的 iOS 配套应用。复用同一个自托管同步服务（`server/`），把 iPhone 当作一台新设备注册，在手机上查看今日花费 / Token / 额度，并通过锁屏 & 主屏小组件快速一览。
 
-> **零后端改动**：iOS 端不新增任何服务端接口，直接调用 `server/app.py` 现有的 `/register`、`/usage`、`/snapshots`、`/period_detail`、`/devices`。额度数据则直连智谱开放平台。
+> **零后端改动**：iOS 端不新增任何服务端接口，直接调用 `server/app.py` 现有的 `/register`、`/usage`、`/snapshots`、`/period_detail`、`/devices`。用量与额度都由桌面端同步上传，iOS 只读展示。
 
 ---
 
@@ -13,15 +13,51 @@ ios/
 ├── agenthud/
 │   ├── agenthud.xcodeproj/         # Xcode 工程文件
 │   └── agenthud/                   # 主 App 源码
-│       ├── AgentHUDApp.swift       # @main 入口
+│       ├── AgentHUDApp.swift       # @main 入口 / 自绘悬浮 Tab 栏
+│       ├── Assets.xcassets     # AppIcon（桌面端 logo）+ 各 Agent 品牌图标
 │       ├── Models/             # Types.swift + PricingDefaults.json（内置价格表）
 │       ├── Core/               # API 客户端 / 计费 / 折算 / 格式化 / 配置 / 数据加载
-│       └── Views/              # 统计 / 额度 / 趋势 / 对比 / 设置 五个 Tab
+│       └── Views/              # 总览 / 统计 / 额度 / 日志 / 设置 五个 Tab
+│           ├── DesignSystem.swift  # 配色 / 背景 / 玻璃卡片 / 页头 / 进度环等
+│           ├── OverviewView.swift  # 总览（范围汇总 + 趋势 + Agent + 活跃度日历）
+│           ├── StatsView.swift     # 统计（Token 构成 + 明细 + 按模型）
+│           ├── QuotaView.swift     # 额度（按 Agent 分组的账号卡 + 进度环）
+│           ├── LogsView.swift      # 请求日志（分页 + 速度/首字 + 详情 sheet）
+│           └── SettingsView.swift  # 设置 / 小组件 / 计费 / 关于
 └── agenthudWidget/                 # Widget Extension 源码
     ├── AgentHUDWidget.swift        # WidgetBundle（主屏 + 锁屏）
     ├── WidgetViews.swift       # 小/中尺寸 + 锁屏三个 family 的视图
     └── WidgetShared.swift      # ⚠️ 只编译进 Widget target 的类型定义
 ```
+
+---
+
+## 界面与视觉
+
+- 统一视觉体系在 `Views/DesignSystem.swift`：深空渐变背景 + 玻璃卡片 + 青蓝主色；
+  金额用 mint、缓存 / 次级数据用 violet、额度超限用 coral。
+- 根容器使用自绘悬浮 Tab 栏（`HUDFloatingTabBar`），与卡片风格一致，并带
+  iOS 26/27 玻璃材质。Tab 首次点开才创建，切回时保留各页滚动位置与数据。
+- 各 Tab 首页统一用 `PageHeader`（品牌小标 + 大标题 + 副标题 + 圆形刷新按钮），
+  替代系统导航栏标题；日志 / 额度 / 统计页的筛选与范围选择也复用了胶囊 chip。
+- 趋势与额度对比图统一为无网格干扰的「面积 + 折线 / 圆角柱」；X 轴最多 5 个
+  刻度，长区间不会出现日期叠字。
+- 总览默认「今日」（与小组件口径一致），「活跃度」改成近 5 周日历：格子内直接显示日期数字，今天/选中日有描边，
+  点任意一天在底部查看当天 Token；不再用 13 周密集小格。
+- App Icon 复用桌面端 `src-tauri/icons/ios/AppIcon-512@2x.png`；额度 / 日志 /
+  统计里的 Agent 图标复用桌面端同款品牌 mark（OpenAI / Anthropic / Cursor /
+  Kimi / DeepSeek / OpenCode / MiniMax / GLM 等），见 `Assets.xcassets`。
+- 请求日志改为每页 50 条的分页（上一页 / 下一页），不再无限追加；行内补上
+  输出速度（无首字时用 ≈ 标注整请求平均）与首字延迟，数据缺失显示「—」。
+- 免费版 Cursor 且所有窗口均为 0% 时不出卡（错误态/有余额的仍保留）。
+
+![iOS 总览页](../doc/img/ios-overview.webp)
+
+![App Icon（复用桌面端）](../doc/img/ios-appicon.webp)
+
+![近 5 周活跃度日历](../doc/img/ios-heatmap.webp)
+
+![iOS 五个 Tab 界面预览](../doc/img/ios-ui-tabs.webp)
 
 ---
 
@@ -127,8 +163,9 @@ App 装上后：
    - **Master Token**：`server/` 启动时打印的 Master Token（或 `cat zbar-data/master.token`）
    - **设备名**：填 `iPhone` 或任意名字
    - 点 **连接并注册**
-3. **Coding Plan 额度** 区块：填智谱开放平台的 Coding Plan Token，选端点（国内 / 国际），点 **保存并查询**。
-4. 回到 **统计** / **额度** / **趋势** Tab 即可看到数据。
+3. 回到 **统计** / **额度** / **日志** Tab 即可看到数据。
+
+> 额度账号不需要在 iOS 手动添加：在桌面端登录 / 切换账号，桌面端会通过同一个同步服务上传额度快照，iOS 额度页自动展示。
 
 > 注册成功后，iPhone 会作为一台新设备出现在桌面版 ZBar 的「设备筛选器」里，多设备汇总自动生效。
 
@@ -142,6 +179,7 @@ App 装上后：
    - **小**（2×2）：今日花费 + Token + 额度进度条
    - **中**（4×2）：左侧大数字 + 右侧三档额度详情 + 重置倒计时
 4. 点 **添加小组件**。
+5. 想切换小组件展示的账号：App → **设置 → 小组件显示 → 显示账号**；切换后回桌面即可（App 内刷新会主动重绘 Widget）。
 
 锁屏小组件（iOS 17+）：
 1. 锁屏长按 → 自定义 → 添加小组件 → 找到 AgentHUD。
@@ -156,10 +194,11 @@ App 装上后：
 
 iOS Widget **不能像桌面端那样 30 秒刷新一次**。系统限制：
 
-- 由系统调度，通常 **15~40 分钟** 刷新一次，且系统会根据电量、使用频率降频。
-- App 打开时会主动拉数据并写入共享容器，Widget 下次刷新时拿到最新数据。
+- 后台由系统调度，通常 **15~40 分钟** 刷新一次，且系统会根据电量、使用频率降频。
+- App 每次刷新会写入 App Group，并调用 `WidgetCenter.reloadAllTimelines()` 主动重绘，所以前台刷新后回桌面通常能立刻看到新数据。
+- 小组件使用 `StaticConfiguration`（不再依赖 AppIntent 配置），账号切换统一在 App 设置里完成，避免部分真机上小组件只显示占位图的问题。
 
-**想更快看到最新数据**：打开 App 让它刷新一次，然后回桌面，Widget 会在下一个系统刷新窗口更新。
+![主屏中型小组件（真实数据）](../doc/img/ios-widget.webp)
 
 ---
 
@@ -185,15 +224,15 @@ iOS Widget **不能像桌面端那样 30 秒刷新一次**。系统限制：
 └─────────────┘   /register /devices    └──────┬───────┘
                                                 │ 写 App Group
                                                 ▼
-┌─────────────┐   GET /quota/limit    ┌──────────────┐
-│ 智谱开放平台  │◄─────────────────────│ Widget 读取    │
-│ (直连)       │                       │ (独立进程)     │
+┌─────────────┐   /snapshots           ┌──────────────┐
+│ 你的 server  │◄──────────────────────│ Widget 读取    │
+│ (额度快照)    │                       │ (只读 App Group)│
 └─────────────┘                       └──────────────┘
 ```
 
 - **用量统计**：iOS App → 你的 server（Device Token 鉴权）
-- **额度监控**：iOS App → 智谱开放平台（用户 Token，不经过 server）
-- **Widget**：不联网，只读 App 写入的 App Group 缓存
+- **额度监控**：桌面端 → 你的 server（额度快照）；iOS App → 你的 server 拉取快照
+- **Widget**：不联网，只读 App 写入的 App Group 缓存（`StaticConfiguration`）
 
 ---
 
@@ -216,7 +255,7 @@ iOS 端复刻了桌面版的核心计算（`src/merge.ts`、`src/peak.ts`、`src
 ## 已知限制 / TODO
 
 - [ ] 高峰期时段（Peak Segment）目前 iOS 端只支持开关和订阅类型切换，不支持可视化编辑时段（沿用默认或桌面端配置）。如需自定义时段，建议在桌面端配好后保持默认。
-- [ ] 小组件无主动刷新，依赖系统调度 + App 前台预拉。
+- [ ] 小组件后台无主动拉数据，后台刷新仍由系统调度；App 前台刷新会立即重绘。
 - [ ] 未实现 Background Tasks（`BGAppRefreshTask`）后台预拉——可作为后续优化，提升 Widget 数据新鲜度。
 - [ ] 暂无独立的"用量报告"页面（桌面版的 ReportPanel），统计 Tab 已覆盖主要信息。
 
@@ -224,10 +263,11 @@ iOS 端复刻了桌面版的核心计算（`src/merge.ts`、`src/peak.ts`、`src
 
 ## 故障排查
 
-**小组件显示 "—" 或空数据**
-- 确认 App 已打开并成功连上 server / 查询过额度（App 会把数据写进 App Group）。
-- 确认两个 target 都配了同一个 App Group `group.com.chacca.agenthud`。
-- 删掉小组件重新添加一次。
+**小组件显示"待同步 / 空数据"**
+- 小组件现在会在没有快照时显示「打开 App 同步数据」，这是正常提示，不是加载失败。
+- 打开 App 成功连上 server 后，点一次「立即刷新全部数据」，App 会写入 App Group 并主动重绘 Widget。
+- 确认 **agenthud** 和 **agenthudWidget** 两个 target 的 Signing & Capabilities 都启用了同一个 App Group `group.com.chacca.agenthud`。
+- 如果之前加过旧版小组件，删掉重新添加一次（旧配置可能还停留在 AppIntent 版本）。
 
 **连不上 server（连接超时）**
 - 确认 iPhone 和 server 在同一网络，或 server 有公网 IP。
@@ -235,9 +275,10 @@ iOS 端复刻了桌面版的核心计算（`src/merge.ts`、`src/peak.ts`、`src
 - 确认 ATS 已允许 HTTP（见上文）。
 - 在 iPhone Safari 访问 `http://你的IP:3838/health`，应返回 `ok`。
 
-**额度查询失败**
-- 确认 Coding Plan Token 正确（不是 ZCode CLI 的 key，是智谱开放平台的 Token）。
-- 端点选对：国内用户选 🇨🇳，海外选 🌐。
+**额度页没有数据**
+- 确认桌面端已登录额度账号，并且和 iPhone 指向同一个同步服务。
+- 在桌面端额度页手动刷新一次，等待快照上传；iOS 额度页下拉刷新。
+- 本版本不再在 iOS 设置里手动添加额度账号。
 
 **签名 7 天后失效**
 - 重新用数据线连 Mac，在 Xcode 点 Run 即可续签（数据保留）。

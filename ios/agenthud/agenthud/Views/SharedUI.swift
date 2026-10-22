@@ -2,56 +2,23 @@
 //  SharedUI.swift
 //  agenthud
 //
-//  跨视图复用的小组件：三色进度条、卡片、状态指示。
+//  跨视图共用的数据口径（来源显示名 / 用量聚合）与旧版 Card 兼容包装。
+//  视觉组件（卡片、指标、chip、进度环等）统一在 DesignSystem.swift。
 //
 
 import SwiftUI
 
-// MARK: - 额度三色进度条（绿→琥珀→红）
+// MARK: - 额度百分比颜色
 
-/// 按百分比选颜色：< 60 绿色，60-80 琥珀，> 80 红色。
+/// 按百分比选颜色：< 60 mint，60-85 amber，> 85 coral。
+/// 保留旧函数名，避免引用点改动；实际色值由 Theme 统一维护。
 public func quotaColor(_ pct: Int) -> Color {
-    if pct >= 85 { return .red }
-    if pct >= 60 { return .orange }
-    return .green
+    Theme.quota(pct)
 }
 
-struct ProgressBar: View {
-    let pct: Int
-    let label: String
-    let resetMs: Int?
+// MARK: - 旧版卡片包装
 
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Text(label)
-                    .font(.subheadline.weight(.medium))
-                Spacer()
-                Text("\(pct)%")
-                    .font(.subheadline.monospacedDigit().weight(.semibold))
-                    .foregroundColor(quotaColor(pct))
-            }
-            GeometryReader { geo in
-                ZStack(alignment: .leading) {
-                    RoundedRectangle(cornerRadius: 4)
-                        .fill(Color.white.opacity(0.1))
-                    RoundedRectangle(cornerRadius: 4)
-                        .fill(quotaColor(pct))
-                        .frame(width: geo.size.width * CGFloat(min(max(Double(pct) / 100, 0), 1)))
-                }
-            }
-            .frame(height: 8)
-            if let r = resetMs {
-                Text("重置：" + Format.countdown(to: r))
-                    .font(.caption2)
-                    .foregroundColor(.secondary)
-            }
-        }
-    }
-}
-
-// MARK: - 通用卡片
-
+/// 兼容旧调用点的卡片（标题 + 内容）。新代码直接用 GlassCard + CardHeader。
 struct Card<Content: View>: View {
     let title: String?
     let content: Content
@@ -62,111 +29,65 @@ struct Card<Content: View>: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            if let t = title {
-                Text(t)
-                    .font(.headline)
+        GlassCard {
+            VStack(alignment: .leading, spacing: 14) {
+                if let t = title {
+                    CardHeader(title: t)
+                }
+                content
             }
-            content
         }
-        .padding(16)
-        .background(
-            RoundedRectangle(cornerRadius: 14)
-                .fill(.ultraThinMaterial)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 14)
-                .stroke(Color.white.opacity(0.08), lineWidth: 1)
-        )
     }
 }
 
-// MARK: - 指标格
+// MARK: - 用量来源显示名（总览页 / 日志页共用）
 
-struct MetricCell: View {
-    let title: String
-    let value: String
-    var subtitle: String? = nil
-    var color: Color = .primary
+/// 用量明细 source → 显示名。文案对齐桌面请求日志页 sourceLabel 的最终
+/// 口径（经 agentLabel 的品牌元数据），未知来源原样回显。
+/// 注意与额度 provider 源是两套命名（如 DeepSeek 明细源是 dsh，额度
+/// provider 源是 deepseek），不要混用。
+enum UsageSourceLabels {
+    /// 展示顺序与桌面 LOG_SOURCES 一致
+    static let all: [String] = [
+        "zcode", "codex", "claude", "kimi", "dsh", "opencode", "minimaxcode",
+    ]
 
-    var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(title)
-                .font(.caption)
-                .foregroundColor(.secondary)
-            Text(value)
-                .font(.title3.monospacedDigit().weight(.semibold))
-                .foregroundColor(color)
-            if let s = subtitle {
-                Text(s)
-                    .font(.caption2)
-                    .foregroundColor(.secondary)
-            }
+    static func label(_ source: String) -> String {
+        switch source {
+        case "zcode": return "Z.ai"
+        case "codex": return "Codex"
+        case "claude": return "Claude"
+        case "kimi": return "Kimi Code"
+        case "dsh": return "DeepSeek Harness"
+        case "opencode": return "OpenCode"
+        case "minimaxcode": return "MiniMax Code"
+        default: return source
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
-// MARK: - 空配置引导
+// MARK: - 用量聚合小工具（总览页 / 日志页共用）
 
-struct NotConfiguredBanner: View {
-    let message: String
-    var actionTitle: String? = nil
-    var action: (() -> Void)? = nil
-
-    var body: some View {
-        VStack(spacing: 12) {
-            Image(systemName: "exclamationmark.triangle.fill")
-                .font(.largeTitle)
-                .foregroundColor(.orange)
-            Text(message)
-                .multilineTextAlignment(.center)
-                .foregroundColor(.secondary)
-            if let act = action, let title = actionTitle {
-                Button(title, action: act)
-                    .buttonStyle(.borderedProminent)
+enum UsageAggregate {
+    /// 缓存命中率（分源口径，对齐桌面 request_logs 的 cache_denominator：
+    /// claude / kimi 的 input_tokens 不含缓存读写，分母补回缓存读 + 缓存写；
+    /// 其余来源 input 已含缓存读，分母就是 input。分母为 0 → nil）。
+    static func cacheHitRate(_ stats: [UsageRecordsModelStat]) -> Double? {
+        var numerator = 0
+        var denominator = 0
+        for s in stats {
+            numerator += s.cache_read_tokens
+            if s.source == "claude" || s.source == "kimi" {
+                denominator += s.input_tokens + s.cache_read_tokens + s.cache_write_tokens
+            } else {
+                denominator += s.input_tokens
             }
         }
-        .padding(24)
-        .frame(maxWidth: .infinity)
+        return denominator > 0 ? Double(numerator) / Double(denominator) : nil
     }
-}
 
-// MARK: - 胶囊小标签（原 StatsView 私有组件，CompareView 等跨视图复用）
-
-struct Tag: View {
-    let text: String
-    init(_ text: String) { self.text = text }
-    var body: some View {
-        Text(text)
-            .padding(.horizontal, 6).padding(.vertical, 2)
-            .background(Capsule().fill(Color.white.opacity(0.06)))
-    }
-}
-
-// MARK: - 加载/错误条
-
-struct LoadingBar: View {
-    let loading: Bool
-    let error: String?
-
-    var body: some View {
-        VStack(spacing: 0) {
-            if loading {
-                ProgressView()
-                    .controlSize(.small)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 4)
-            }
-            if let err = error, !err.isEmpty {
-                Text(err)
-                    .font(.caption2)
-                    .foregroundColor(.red)
-                    .lineLimit(2)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal)
-                    .padding(.bottom, 4)
-            }
-        }
+    /// by_model 分组的 token 总量。
+    static func totalTokens(_ stats: [UsageRecordsModelStat]) -> Int {
+        stats.reduce(0) { $0 + $1.total_tokens }
     }
 }

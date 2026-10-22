@@ -59,6 +59,8 @@ private struct SmallHomeView: View {
     let currency: Currency
     let stale: Bool
 
+    private var hasData: Bool { snap.updatedAt > 0 }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
@@ -68,6 +70,10 @@ private struct SmallHomeView: View {
                 Spacer()
                 if stale {
                     Text("待刷新")
+                        .font(.system(size: 8))
+                        .foregroundColor(.orange)
+                } else if !hasData {
+                    Text("待同步")
                         .font(.system(size: 8))
                         .foregroundColor(.orange)
                 } else {
@@ -84,8 +90,17 @@ private struct SmallHomeView: View {
                 .foregroundColor(.secondary)
 
             Divider()
-            if snap.isBalanceStyle {
+            if !hasData {
+                Text("打开 App 同步数据")
+                    .font(.system(size: 9, weight: .medium))
+                    .foregroundColor(.orange)
+            } else if snap.isBalanceStyle {
                 smallBalanceArea
+            } else if snap.hour5Pct == nil && snap.weeklyPct == nil
+                        && snap.mcpPct == nil {
+                Text("额度未同步")
+                    .font(.system(size: 9))
+                    .foregroundColor(.secondary)
             } else {
                 smallQuotaArea
             }
@@ -180,11 +195,17 @@ private struct MediumHomeView: View {
     let currency: Currency
     let stale: Bool
 
+    private var hasData: Bool { snap.updatedAt > 0 }
+
     var body: some View {
         HStack(spacing: 12) {
             VStack(alignment: .leading, spacing: 4) {
                 if stale {
                     Text("已切换账号，打开 App 刷新")
+                        .font(.system(size: 9))
+                        .foregroundColor(.orange)
+                } else if !hasData {
+                    Text("打开 App 同步数据")
                         .font(.system(size: 9))
                         .foregroundColor(.orange)
                 }
@@ -201,8 +222,34 @@ private struct MediumHomeView: View {
                 Spacer()
             }
             Divider()
-            if snap.isBalanceStyle {
+            if !hasData {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("额度待同步")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    Text("打开 AgentHUD")
+                        .font(.system(size: 10))
+                        .foregroundColor(.orange)
+                    Text("刷新一次数据")
+                        .font(.system(size: 10))
+                        .foregroundColor(.orange)
+                    Spacer()
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            } else if snap.isBalanceStyle {
                 mediumBalanceArea
+            } else if snap.hour5Pct == nil && snap.weeklyPct == nil
+                        && snap.mcpPct == nil {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("额度未同步")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    Text("桌面端刷新后自动更新")
+                        .font(.system(size: 9))
+                        .foregroundColor(.secondary)
+                    Spacer()
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
             } else {
                 mediumQuotaArea
             }
@@ -330,6 +377,10 @@ private struct RectangularView: View {
             if stale {
                 Text("已切换账号 · 打开 App 刷新")
                     .font(.caption2)
+                    .foregroundColor(.orange)
+            } else if snap.updatedAt <= 0 {
+                Text("AgentHUD · 待同步")
+                    .font(.caption2.weight(.semibold))
                     .foregroundColor(.orange)
             } else {
                 Text("AgentHUD")

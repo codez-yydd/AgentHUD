@@ -2,8 +2,10 @@
 //  WidgetAccountIntent.swift
 //  agenthudWidget
 //
-//  批2：Widget 可选账号。长按小组件→「编辑小组件」里选择要显示的额度账号
-//  （跟随主账号 / 任一直连账号 / 只读同步分组），主屏与锁屏共用同一 Intent。
+//  ⚠️ 小组件已改为 StaticConfiguration（见 AgentHUDWidget.swift），不再读取
+//  下面的 SelectAccountIntent。账号选择统一在 App「设置 → 小组件显示」完成。
+//  本文件保留 WidgetSharedStore（App Group 读写工具）与旧 Intent 定义，
+//  避免和主 App 共享模块；Intent 本身不参与 Widget 配置。
 //
 //  数据流（与主 App Settings.swift / AccountStore.swift / RefreshService.swift
 //  约定的 App Group key 保持一致；两 target 不共享模块，常量各自维护同值）：

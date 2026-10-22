@@ -14,42 +14,130 @@ struct SettingsView: View {
 
     var body: some View {
         NavigationStack {
-            Form {
-                Section("同步服务") {
-                    SyncConfigRow()
-                }
-                Section("额度账号") {
-                    AccountsSection()
-                }
-                Section("小组件显示") {
-                    WidgetDisplayPickerRow()
-                }
-                Section("显示") {
-                    CurrencyRow()
-                }
-                Section {
-                    NavigationLink("价格配置") { PricingEditView() }
-                    NavigationLink("高峰期折算") { PeakEditView() }
-                }
-                Section {
-                    Button("立即刷新全部数据") {
-                        refresh.refreshAll()
+            ZStack {
+                AppBackground()
+
+                VStack(spacing: 0) {
+                    PageHeader(title: "设置",
+                               subtitle: "同步服务 · 小组件 · 显示",
+                               isLoading: refresh.loading,
+                               onRefresh: { refresh.refreshAll() })
+                        .padding(.horizontal, Theme.pagePadding)
+                        .padding(.top, 4)
+                        .padding(.bottom, 8)
+
+                    Form {
+                        Section {
+                            SyncConfigRow()
+                            // 已连接时提供同步数据诊断（哪些来源实际上传了快照）
+                            if settings.isSyncConfigured {
+                                NavigationLink {
+                                    SyncDiagnosticsView()
+                                } label: {
+                                    Label("同步数据诊断", systemImage: "stethoscope")
+                                }
+                            }
+                        } header: {
+                            sectionHeader("同步服务", icon: "antenna.radiowaves.left.and.right")
+                        }
+                        .listRowBackground(Color.white.opacity(0.045))
+
+                        Section {
+                            WidgetDisplayPickerRow()
+                        } header: {
+                            sectionHeader("小组件显示", icon: "square.grid.2x2")
+                        }
+                        .listRowBackground(Color.white.opacity(0.045))
+
+                        Section {
+                            CurrencyRow()
+                        } header: {
+                            sectionHeader("显示", icon: "circle.lefthalf.filled")
+                        }
+                        .listRowBackground(Color.white.opacity(0.045))
+
+                        Section {
+                            NavigationLink {
+                                PricingEditView()
+                            } label: {
+                                Label("价格配置", systemImage: "tag")
+                            }
+                            NavigationLink {
+                                PeakEditView()
+                            } label: {
+                                Label("高峰期折算", systemImage: "clock.arrow.circlepath")
+                            }
+                        } header: {
+                            sectionHeader("计费", icon: "yensign.circle")
+                        }
+                        .listRowBackground(Color.white.opacity(0.045))
+
+                        Section {
+                            Button {
+                                refresh.refreshAll()
+                            } label: {
+                                Label("立即刷新全部数据", systemImage: "arrow.clockwise")
+                            }
+                        }
+                        .listRowBackground(Color.white.opacity(0.045))
+
+                        Section {
+                            aboutCard
+                        } header: {
+                            sectionHeader("关于", icon: "info.circle")
+                        }
+                        .listRowBackground(Color.white.opacity(0.045))
                     }
-                    .foregroundColor(.accentColor)
-                }
-                Section("关于") {
-                    HStack {
-                        Text("版本")
-                        Spacer()
-                        Text("0.1.0 (iOS)").foregroundColor(.secondary)
-                    }
-                    Text("桌面版 ZBar 的 iOS 配套应用。用量数据通过自托管同步服务获取；额度支持 GLM / DeepSeek / Kimi / MiniMax / OpenCode / 阿里直连账号，Codex / Claude / Cursor 由桌面端同步。")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
+                    .scrollContentBackground(.hidden)
+                    .tint(Theme.accent)
+                    .environment(\.defaultMinListRowHeight, 38)
+                    .listSectionSpacing(16)
+                    .padding(.bottom, 74)
                 }
             }
-            .navigationTitle("设置")
+            .toolbar(.hidden, for: .navigationBar)
         }
+    }
+
+    /// 设置页分组标题（图标 + 中文小标，替代系统大写英文样式）。
+    private func sectionHeader(_ title: String, icon: String) -> some View {
+        HStack(spacing: 5) {
+            Image(systemName: icon)
+                .font(.system(size: 9, weight: .semibold))
+            Text(title)
+                .font(.system(size: 11, weight: .semibold))
+        }
+        .foregroundStyle(Theme.textSecondary)
+        .textCase(nil)
+    }
+
+    private var aboutCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
+                Image("AppLogo")
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: 38, height: 38)
+                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .strokeBorder(Color.white.opacity(0.12), lineWidth: 1)
+                    }
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("AgentHUD")
+                        .font(.system(size: 15, weight: .semibold, design: .rounded))
+                    Text("iOS 版 · 0.1.0")
+                        .font(.system(size: 10))
+                        .foregroundStyle(Theme.textTertiary)
+                }
+                Spacer()
+            }
+            Text("桌面版 ZBar 的 iOS 配套应用。用量与额度统一由桌面端通过自托管同步服务上传，iOS 只读展示。")
+                .font(.system(size: 11))
+                .foregroundStyle(Theme.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.vertical, 4)
     }
 }
 
@@ -68,34 +156,89 @@ private struct SyncConfigRow: View {
     @State private var showDisconnect = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            if settings.isSyncConfigured {
-                HStack {
-                    Image(systemName: "checkmark.circle.fill").foregroundColor(.green)
-                    Text("已连接").font(.subheadline.weight(.medium))
-                    Spacer()
-                    Text(settings.sync.device_name).foregroundColor(.secondary).font(.caption)
-                }
-                Text(settings.sync.server_url)
-                    .font(.caption.monospaced())
-                    .foregroundColor(.secondary)
-                    .lineLimit(1)
-                Text("设备 ID：\(settings.sync.device_id.prefix(8))…")
-                    .font(.caption2).foregroundColor(.secondary)
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 10) {
+                AgentTile(icon: "antenna.radiowaves.left.and.right",
+                          tint: settings.isSyncConfigured ? Theme.mint : Theme.amber,
+                          size: 36)
 
-                HStack {
-                    Button("重新注册…") { editing = true }
-                    Spacer()
-                    Button("断开连接", role: .destructive) { showDisconnect = true }
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 6) {
+                        Text(settings.isSyncConfigured ? "已连接" : "未连接")
+                            .font(.system(size: 14, weight: .semibold))
+                        if settings.isSyncConfigured {
+                            Text("在线")
+                                .font(.system(size: 9, weight: .medium))
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(Capsule().fill(Theme.mint.opacity(0.13)))
+                                .foregroundStyle(Theme.mint)
+                        }
+                    }
+                    Text(settings.isSyncConfigured
+                         ? settings.sync.device_name
+                         : "连接自托管同步服务后开始拉取用量")
+                        .font(.system(size: 10))
+                        .foregroundStyle(Theme.textSecondary)
+                        .lineLimit(1)
                 }
-                .font(.caption)
+                Spacer(minLength: 4)
+            }
+
+            if settings.isSyncConfigured {
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 5) {
+                        Image(systemName: "server.rack")
+                            .font(.system(size: 9))
+                        Text(settings.sync.server_url)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                    HStack(spacing: 5) {
+                        Image(systemName: "iphone")
+                            .font(.system(size: 9))
+                        Text("设备 ID \(settings.sync.device_id.prefix(8))…")
+                    }
+                }
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundStyle(Theme.textTertiary)
+
+                HStack(spacing: 8) {
+                    Button {
+                        editing = true
+                    } label: {
+                        Label("重新注册", systemImage: "arrow.triangle.2.circlepath")
+                            .font(.system(size: 11, weight: .medium))
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .tint(Theme.accent)
+
+                    Button(role: .destructive) {
+                        showDisconnect = true
+                    } label: {
+                        Text("断开连接")
+                            .font(.system(size: 11, weight: .medium))
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .tint(Theme.coral)
+
+                    Spacer()
+                }
             } else {
-                Text("未连接")
-                    .font(.subheadline)
-                    .foregroundColor(.orange)
-                Button("连接同步服务…") { editing = true }
+                Button {
+                    editing = true
+                } label: {
+                    Label("连接同步服务…", systemImage: "link")
+                        .font(.system(size: 12, weight: .medium))
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .tint(Theme.accent)
             }
         }
+        .padding(.vertical, 2)
         .sheet(isPresented: $editing) {
             RegisterSheet(serverURL: $serverURL,
                           masterToken: $masterToken,
@@ -196,166 +339,11 @@ private struct RegisterSheet: View {
     }
 }
 
-// MARK: - 额度账号（多 agent 多账号）
-
-/// 额度账号区块：账号列表（agent + label + 最近校验徽章 + 掩码）、
-/// 添加/编辑/删除、「查询全部」。secret 只显示掩码，留空 = 不修改。
-private struct AccountsSection: View {
-    @EnvironmentObject var settings: AppSettings
-    @EnvironmentObject var refresh: RefreshService
-    @EnvironmentObject var store: AccountStore
-
-    @State private var editingAccount: AccountEntry?
-    @State private var showAdd = false
-    @State private var pendingDelete: AccountEntry?
-
-    var body: some View {
-        // 直连账号列表（旧版单 GLM 账号已自动迁移为第一个 zai 账号）
-        ForEach(store.accounts) { account in
-            Button {
-                editingAccount = account
-            } label: {
-                AccountRow(account: account,
-                           isWidgetSelected: store.selectedWidgetAccountId == account.id.uuidString,
-                           onDelete: { pendingDelete = account },
-                           onSetWidget: {
-                               store.selectedWidgetAccountId = account.id.uuidString
-                               refresh.writeWidgetSnapshot()
-                           })
-            }
-            .buttonStyle(.plain)
-        }
-        if store.accounts.isEmpty {
-            Text("未配置额度账号。支持 GLM / DeepSeek / Kimi / MiniMax / OpenCode / 阿里直连账号。")
-                .font(.caption)
-                .foregroundColor(.secondary)
-        }
-        Button {
-            showAdd = true
-        } label: {
-            Label("添加账号…", systemImage: "plus.circle")
-        }
-        Button {
-            Task { await refresh.refreshQuotaOnly() }
-        } label: {
-            if refresh.quotaRefreshing {
-                ProgressView().controlSize(.small)
-            } else {
-                Label("查询全部", systemImage: "arrow.clockwise")
-            }
-        }
-        .disabled(!store.hasDirectAccounts || refresh.quotaRefreshing)
-        .sheet(isPresented: $showAdd) {
-            AccountEditSheet(editing: nil)
-        }
-        .sheet(item: $editingAccount) { account in
-            AccountEditSheet(editing: account)
-        }
-        .confirmationDialog(
-            "删除账号「\(pendingDelete?.label ?? "")」？该操作不可撤销。",
-            isPresented: Binding(
-                get: { pendingDelete != nil },
-                set: { if !$0 { pendingDelete = nil } }),
-            titleVisibility: .visible
-        ) {
-            Button("删除", role: .destructive) {
-                if let account = pendingDelete {
-                    store.remove(id: account.id)
-                    Task { await refresh.refreshQuotaOnly() }
-                }
-                pendingDelete = nil
-            }
-        }
-    }
-}
-
-/// 单个账号行：agent 名 + 备注名 + 最近校验徽章 + secret 掩码。
-/// onDelete 由父视图承接（弹确认框后调 store.remove）；
-/// onSetWidget 把该账号设为小组件显示账号。
-private struct AccountRow: View {
-    @EnvironmentObject var store: AccountStore
-    let account: AccountEntry
-    var isWidgetSelected: Bool = false
-    let onDelete: () -> Void
-    var onSetWidget: (() -> Void)? = nil
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 8) {
-                Text(account.agent.displayName)
-                    .font(.subheadline.weight(.medium))
-                if let region = account.region {
-                    Tag(region.displayName)
-                }
-                if isWidgetSelected {
-                    // 小组件选中标记（与「小组件显示」Picker 联动）
-                    Label("小组件", systemImage: "square.grid.2x2.fill")
-                        .font(.caption2)
-                        .padding(.horizontal, 6).padding(.vertical, 2)
-                        .background(Capsule().fill(Color.blue.opacity(0.15)))
-                        .foregroundColor(.blue)
-                }
-                Spacer()
-                if let check = account.lastCheck {
-                    StatusBadge(status: check.status)
-                } else {
-                    StatusBadge(status: "pending")
-                }
-            }
-            HStack(spacing: 8) {
-                Text(account.label)
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                if let masked = maskedSecret {
-                    Text(masked)
-                        .font(.caption.monospaced())
-                        .foregroundColor(.secondary)
-                }
-                Spacer()
-                if let check = account.lastCheck, let at = check.at {
-                    Text(Self.timeText(at))
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
-                }
-            }
-        }
-        .contentShape(Rectangle())
-        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-            Button(role: .destructive, action: onDelete) {
-                Label("删除", systemImage: "trash")
-            }
-        }
-        .contextMenu {
-            if let onSetWidget {
-                Button(action: onSetWidget) {
-                    Label(isWidgetSelected ? "正在小组件显示" : "设为小组件显示",
-                          systemImage: "square.grid.2x2")
-                }
-            }
-            Button(role: .destructive, action: onDelete) {
-                Label("删除账号", systemImage: "trash")
-            }
-        }
-    }
-
-    /// 掩码走 AccountStore 缓存（增删改时失效），body 内不逐帧查 Keychain。
-    /// 契约不变：secret 永不回显原文，掩码是设计上有意暴露的形态。
-    private var maskedSecret: String? {
-        store.cachedMask(for: account.id)
-    }
-
-    private static func timeText(_ ms: Int) -> String {
-        let f = DateFormatter()
-        f.dateFormat = "MM-dd HH:mm"
-        return f.string(from: Date(timeIntervalSince1970: TimeInterval(ms) / 1000))
-    }
-}
-
 // MARK: - 小组件显示选择（批2）
 
-/// 「小组件显示」区块：选择 Widget 展示的额度账号（跟随主账号 / 任一直连
-/// 账号 / 只读同步分组）。选中值写 App Group，与 Widget 编辑界面的
-/// AppIntent 双向联动——任一处修改，两处配置同步生效。
+/// 「小组件显示」区块：选择 Widget 展示的额度账号（跟随主账号 / 现有直连
+/// 账号 / 只读同步分组）。选中值写 App Group，主 App 每次刷新后按它重写快照
+/// 并 reload Timeline；Widget 本身不再提供编辑配置。
 private struct WidgetDisplayPickerRow: View {
     @EnvironmentObject var refresh: RefreshService
     @EnvironmentObject var store: AccountStore
@@ -373,7 +361,7 @@ private struct WidgetDisplayPickerRow: View {
 
     var body: some View {
         Picker("显示账号", selection: selection) {
-            Text("跟随主账号").tag("")
+            Text("自动选择（优先主账号）").tag("")
             ForEach(store.accounts) { account in
                 Text("\(account.agent.displayName) · \(account.label)")
                     .tag(account.id.uuidString)
@@ -383,183 +371,49 @@ private struct WidgetDisplayPickerRow: View {
                     .tag(AccountStore.syncOptionId(agent))
             }
         }
-        if store.accounts.isEmpty {
-            Text("未配置额度账号时小组件额度区为空。")
-                .font(.caption)
-                .foregroundColor(.secondary)
-        } else {
-            Text("也可长按桌面/锁屏小组件，在「编辑小组件」中选择账号。")
-                .font(.caption)
-                .foregroundColor(.secondary)
-        }
+        Text("小组件跟随桌面端同步的额度数据；在这里切换后回到桌面等待刷新即可，App 内刷新也会立即触发重绘。")
+            .font(.caption)
+            .foregroundColor(.secondary)
     }
 }
 
 /// 添加 / 编辑账号表单。编辑时 secret 只显示掩码，输入框留空 = 不修改。
-private struct AccountEditSheet: View {
-    @EnvironmentObject var refresh: RefreshService
-    @EnvironmentObject var store: AccountStore
-    @Environment(\.dismiss) private var dismiss
-
-    /// nil = 新增
-    let editing: AccountEntry?
-
-    @State private var agent: AgentKind = .zai
-    @State private var label = ""
-    @State private var region: AccountRegion = .cn
-    @State private var token = ""
-    @State private var checkNow = true
-    @State private var checking = false
-    @State private var checkResult: String?
-
-    var body: some View {
-        NavigationStack {
-            Form {
-                Section {
-                    Picker("服务", selection: $agent) {
-                        ForEach(AgentKind.allCases.filter { $0.isDirect }) { kind in
-                            Text(kind.displayName).tag(kind)
-                        }
-                    }
-                    .disabled(editing != nil) // 凭证一经创建不改服务（对齐桌面）
-                    TextField("备注名（可留空）", text: $label)
-                    if agent.supportsRegion {
-                        Picker("区域", selection: $region) {
-                            ForEach(AccountRegion.allCases) { r in
-                                Text(r.displayName).tag(r)
-                            }
-                        }
-                    }
-                }
-                Section(agent.displayName + " 凭证") {
-                    if let masked = editingMaskedSecret {
-                        Text("当前：\(masked)")
-                            .font(.caption.monospaced())
-                            .foregroundColor(.secondary)
-                    }
-                    SecureField(editing == nil ? agent.tokenPlaceholder : "留空表示不修改",
-                                text: $token)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                }
-                if editing == nil {
-                    Section {
-                        Toggle("保存后立即查询验证", isOn: $checkNow)
-                    }
-                }
-                if checking {
-                    Section {
-                        HStack {
-                            ProgressView().controlSize(.small)
-                            Text("查询中…").font(.caption).foregroundColor(.secondary)
-                        }
-                    }
-                }
-                if let result = checkResult {
-                    Section {
-                        Text(result)
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    }
-                }
-            }
-            .navigationTitle(editing == nil ? "添加账号" : "编辑账号")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("取消") { dismiss() }
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button(editing == nil ? "添加" : "保存") {
-                        Task { await save() }
-                    }
-                    .disabled(!canSave || checking)
-                }
-            }
-        }
-        .onAppear { loadInitial() }
-    }
-
-    private var canSave: Bool {
-        if editing == nil {
-            return !token.trimmingCharacters(in: .whitespaces).isEmpty
-        }
-        return true // 编辑至少可改 label/region（secret 留空=不修改）
-    }
-
-    /// 编辑时的掩码（走 AccountStore 缓存；原文只在缓存未命中时瞬时读取，
-    /// 不落任何 @State）。
-    private var editingMaskedSecret: String? {
-        guard let editing else { return nil }
-        return store.cachedMask(for: editing.id)
-    }
-
-    private func loadInitial() {
-        guard let editing else { return }
-        agent = editing.agent
-        label = editing.label
-        region = editing.region ?? .cn
-        checkNow = false
-    }
-
-    private func save() async {
-        let trimmedToken = token.trimmingCharacters(in: .whitespacesAndNewlines)
-        if let editing {
-            store.update(id: editing.id,
-                         label: label,
-                         region: region,
-                         secret: trimmedToken.isEmpty ? nil : trimmedToken)
-            Task { await refresh.refreshQuotaOnly() }
-            dismiss()
-            return
-        }
-        // 新增
-        let entry = store.add(agent: agent, label: label, region: region,
-                              secret: trimmedToken)
-        guard checkNow else {
-            Task { await refresh.refreshQuotaOnly() }
-            dismiss()
-            return
-        }
-        // 立即查询单账号验证（结果回写 lastCheck，消息展示在表单内）
-        checking = true
-        let result = await AgentQuotaClients.shared.query(entry, secret: trimmedToken)
-        store.recordCheck(id: entry.id,
-                          status: result.status == "ok" ? "ok" : "error",
-                          message: result.status == "ok" ? nil : result.message)
-        checkResult = result.status == "ok"
-            ? "查询成功：\(successSummary(result))"
-            : "保存成功，但查询失败：\(result.message ?? "未知原因")"
-        checking = false
-        Task { await refresh.refreshQuotaOnly() }
-        // 展示结果后由用户手动关闭（保留 dismiss 由用户触发，能看到校验结论）
-    }
-
-    /// 成功时的简要摘要（窗口数 / 余额）。
-    private func successSummary(_ entry: QuotaEntry) -> String {
-        if let balance = entry.balance {
-            return "余额 \(balance.currency)\(String(format: "%.2f", balance.amount))"
-        }
-        return "\(entry.windows.count) 个额度窗口"
-    }
-}
-
 // MARK: - 货币切换
 
 private struct CurrencyRow: View {
     @EnvironmentObject var settings: AppSettings
 
     var body: some View {
-        Picker("显示货币", selection: Binding(
-            get: { settings.currency },
-            set: {
-                settings.currency = $0
-                settings.saveCurrency()
-            })) {
-            Text("人民币 ¥").tag(Currency.cny)
-            Text("美元 $").tag(Currency.usd)
+        HStack(spacing: 8) {
+            currencyButton(.cny, title: "人民币 ¥")
+            currencyButton(.usd, title: "美元 $")
         }
-        .pickerStyle(.segmented)
+        .padding(.vertical, 2)
+    }
+
+    private func currencyButton(_ currency: Currency, title: String) -> some View {
+        let selected = settings.currency == currency
+        return Button {
+            settings.currency = currency
+            settings.saveCurrency()
+        } label: {
+            Text(title)
+                .font(.system(size: 12.5, weight: selected ? .semibold : .regular))
+                .foregroundStyle(selected ? Theme.accent : Theme.textSecondary)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 9)
+                .background {
+                    RoundedRectangle(cornerRadius: 11, style: .continuous)
+                        .fill(selected ? Theme.accent.opacity(0.14)
+                                       : Color.white.opacity(0.04))
+                }
+                .overlay {
+                    RoundedRectangle(cornerRadius: 11, style: .continuous)
+                        .strokeBorder(selected ? Theme.accent.opacity(0.38)
+                                              : Color.white.opacity(0.06), lineWidth: 1)
+                }
+        }
+        .buttonStyle(.plain)
     }
 }
 
@@ -629,6 +483,8 @@ private struct PricingEditView: View {
         }
         .navigationTitle("价格配置")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar(.visible, for: .navigationBar)
+        .safeAreaInset(edge: .bottom) { Color.clear.frame(height: 78) }
     }
 
     private func numField(_ label: String, _ text: Binding<String>) -> some View {
@@ -693,6 +549,218 @@ private struct PricingRow: View {
     }
 }
 
+// MARK: - 同步数据诊断
+
+/// 同步数据诊断：并发拉近 7 天的两路快照（/agent-quota-snapshots 与
+/// /snapshots），逐行展示各来源的最新快照时间与条数，让用户能自己看出
+/// 哪些来源有数据上传。两路各自独立成败，互不阻塞。
+private struct SyncDiagnosticsView: View {
+    @EnvironmentObject var settings: AppSettings
+
+    /// 单个来源的诊断行
+    struct DiagRow: Identifiable {
+        /// 原始 source（GLM 账号行为 nil；provider 缺失判定用）
+        let source: String?
+        /// 显示名（AgentKind.displayName 或「账号 xxxxxxxx」）
+        let title: String
+        let latestMs: Int?
+        let count: Int
+        var id: String { title }
+    }
+
+    @State private var agentRows: [DiagRow] = []
+    @State private var glmRows: [DiagRow] = []
+    @State private var agentError: String?
+    @State private var glmError: String?
+    @State private var loading = false
+
+    /// provider 类额度来源（proto 7 全量 provider 通道；与明细源命名不同，
+    /// 如这里是 deepseek 而明细源是 dsh）
+    private static let providerSources: Set<String> = [
+        "deepseek", "moonshot", "minimax", "opencodego", "alibaba",
+        "qoder", "longcat", "mimo", "stepfun", "grok", "alibabatoken",
+    ]
+
+    /// 诊断行展示顺序（CLI 同步型 → 双形态 provider → 纯同步 provider）
+    private static let sourceOrder: [String] = [
+        "codex", "claude", "cursor", "kimi",
+        "deepseek", "moonshot", "minimax", "opencodego", "alibaba",
+        "qoder", "longcat", "mimo", "stepfun", "grok", "alibabatoken",
+    ]
+
+    var body: some View {
+        List {
+            if loading {
+                Section {
+                    HStack(spacing: 8) {
+                        ProgressView().controlSize(.small)
+                        Text("加载中…")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                }
+            }
+            if let err = agentError {
+                Section {
+                    Text("额度快照（Agent 通道）加载失败：\(err)")
+                        .font(.caption)
+                        .foregroundColor(.red)
+                }
+            }
+            if let err = glmError {
+                Section {
+                    Text("GLM 快照加载失败：\(err)")
+                        .font(.caption)
+                        .foregroundColor(.red)
+                }
+            }
+
+            Section("Agent 额度快照（近 7 天）") {
+                if agentRows.isEmpty && !loading && agentError == nil {
+                    Text("未收到任何快照")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+                ForEach(agentRows) { row in
+                    diagRow(row)
+                }
+            }
+
+            Section("GLM 额度快照（近 7 天）") {
+                if glmRows.isEmpty && !loading && glmError == nil {
+                    Text("未收到任何快照")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+                ForEach(glmRows) { row in
+                    diagRow(row)
+                }
+            }
+
+            // provider 通道整段缺失时的提示（通道加载失败时无法判定，不提示）
+            if showProviderHint {
+                Section {
+                    Text("未收到 provider 额度快照：请确认自建服务端已更新到最新版本并重启（proto≥7），桌面端为 v1.7.0 及以上且正在运行（升级后约 30 分钟内开始上传）；claude/kimi 需要桌面机对应 CLI 处于登录状态。")
+                        .font(.caption)
+                        .foregroundColor(.orange)
+                }
+            }
+        }
+        .navigationTitle("同步数据诊断")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar(.visible, for: .navigationBar)
+        .safeAreaInset(edge: .bottom) { Color.clear.frame(height: 78) }
+        .refreshable { await performLoad() }
+        .onAppear { load() }
+    }
+
+    private func diagRow(_ row: DiagRow) -> some View {
+        HStack {
+            Text(row.title)
+                .font(.subheadline)
+            Spacer()
+            VStack(alignment: .trailing, spacing: 2) {
+                Text(relativeTime(row.latestMs))
+                    .font(.caption)
+                    // 最新快照超过 6 小时视为可能停报，橙色提示
+                    .foregroundColor(isStale(row.latestMs) ? .orange : .secondary)
+                Text("7 天 \(row.count) 条")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+            }
+        }
+    }
+
+    /// 相对时间（如「3 分钟前」）；无快照 → 「—」。
+    private func relativeTime(_ ms: Int?) -> String {
+        guard let ms = ms else { return "—" }
+        let diff = Int(Date().timeIntervalSince1970) - ms / 1000
+        if diff < 60 { return "\(max(diff, 0)) 秒前" }
+        if diff < 3_600 { return "\(diff / 60) 分钟前" }
+        if diff < 86_400 { return "\(diff / 3_600) 小时前" }
+        return "\(diff / 86_400) 天前"
+    }
+
+    /// 最新快照是否超过 6 小时（无快照不算停报——由条数与提示文案覆盖）。
+    private func isStale(_ ms: Int?) -> Bool {
+        guard let ms = ms else { return false }
+        return Date().timeIntervalSince1970 - TimeInterval(ms) / 1000 > 6 * 3_600
+    }
+
+    /// provider 缺失判定：Agent 通道加载成功且 7 天内没有任何 provider 来源。
+    private var showProviderHint: Bool {
+        guard !loading, agentError == nil else { return false }
+        let sources = Set(agentRows.compactMap { $0.source })
+        return sources.isDisjoint(with: Self.providerSources)
+    }
+
+    private func load() {
+        Task { await performLoad() }
+    }
+
+    /// 拉两路快照并聚合（异步可等待版，refreshable 共用）。
+    /// 不做 !loading 拦截：下拉刷新与 onAppear 都允许重复触发，后发覆盖先发。
+    private func performLoad() async {
+        guard settings.isSyncConfigured else { return }
+        loading = true
+        agentError = nil
+        glmError = nil
+        let server = settings.sync.server_url
+        let token = settings.sync.device_token
+        let nowMs = Int(Date().timeIntervalSince1970 * 1000)
+        let fromMs = nowMs - 7 * 86_400_000
+
+        // 两路并发；各自独立 do/catch，单路失败不阻塞另一路
+        async let agentTask = APIClient.shared.agentQuotaSnapshots(
+            serverURL: server, deviceToken: token,
+            fromMs: fromMs, toMs: nowMs)
+        async let glmTask = APIClient.shared.snapshots(
+            serverURL: server, deviceToken: token,
+            fromMs: fromMs, toMs: nowMs)
+
+        do {
+            let snaps = try await agentTask
+            let grouped = Dictionary(grouping: snaps, by: { $0.source })
+            var rows: [DiagRow] = grouped.map { src, items in
+                DiagRow(source: src,
+                        title: AgentQuotaSync.syncAgents[src]?.displayName ?? src,
+                        latestMs: items.map { $0.ts }.max(),
+                        count: items.count)
+            }
+            rows.sort {
+                let a = Self.sourceOrder.firstIndex(of: $0.source ?? "") ?? .max
+                let b = Self.sourceOrder.firstIndex(of: $1.source ?? "") ?? .max
+                return a < b
+            }
+            await MainActor.run { self.agentRows = rows }
+        } catch {
+            await MainActor.run { self.agentError = error.localizedDescription }
+        }
+
+        do {
+            let snaps = try await glmTask
+            // 按 account 指纹分组（nil/空 = 旧客户端无指纹）
+            let grouped = Dictionary(grouping: snaps) { snap in
+                snap.account?.trimmingCharacters(in: .whitespaces) ?? ""
+            }
+            var rows: [DiagRow] = grouped.map { account, items in
+                DiagRow(source: nil,
+                        title: account.isEmpty
+                            ? "无账号指纹（旧客户端）"
+                            : "账号 \(account.prefix(8))",
+                        latestMs: items.map { $0.ts }.max(),
+                        count: items.count)
+            }
+            rows.sort { $0.title < $1.title }
+            await MainActor.run { self.glmRows = rows }
+        } catch {
+            await MainActor.run { self.glmError = error.localizedDescription }
+        }
+
+        await MainActor.run { self.loading = false }
+    }
+}
+
 // MARK: - 高峰期配置
 
 private struct PeakEditView: View {
@@ -728,5 +796,7 @@ private struct PeakEditView: View {
         }
         .navigationTitle("高峰期折算")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar(.visible, for: .navigationBar)
+        .safeAreaInset(edge: .bottom) { Color.clear.frame(height: 78) }
     }
 }

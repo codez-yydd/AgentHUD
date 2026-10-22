@@ -62,7 +62,10 @@ public actor APIClient {
                 throw APIError.network("非 HTTP 响应")
             }
             if !(200...299).contains(http.statusCode) {
-                let body = String(data: data, encoding: .utf8) ?? ""
+                // 错误文案可读化：优先按 {"error": "..."} JSON 解码（自动还原
+                // Python json 的 \uXXXX 转义），失败再退回响应体原文
+                let raw = String(data: data, encoding: .utf8) ?? ""
+                let body = readableErrorBody(data: data, fallback: raw)
                 throw APIError.http(status: http.statusCode, body: body)
             }
             do {
@@ -153,6 +156,65 @@ public actor APIClient {
         return wrapped.buckets
     }
 
+    // MARK: - 请求明细（对应 GET /usage_records）
+
+    /// 逐条请求明细查询（proto 6 起支持；旧服务端回空结果而非报错）。
+    /// by_model 按 (source, provider_id, model_id) 分组、无分页、覆盖全
+    /// 时间窗——limit 传 0 可只拿 total + by_model 汇总（rows 为空）。
+    public func usageRecords(serverURL: String,
+                             deviceToken: String,
+                             fromMs: Int,
+                             toMs: Int,
+                             source: String? = nil,
+                             modelId: String? = nil,
+                             filter: DeviceFilter = .all,
+                             localDeviceId: String = "",
+                             limit: Int = 100,
+                             offset: Int = 0) async throws -> UsageRecordsResult {
+        let base = try sanitizeBase(serverURL)
+        var comps: [URLQueryItem] = [
+            URLQueryItem(name: "from_ms", value: String(fromMs)),
+            URLQueryItem(name: "to_ms", value: String(toMs)),
+            URLQueryItem(name: "limit", value: String(limit)),
+            URLQueryItem(name: "offset", value: String(offset)),
+        ]
+        if let src = source, !src.isEmpty {
+            comps.append(URLQueryItem(name: "source", value: src))
+        }
+        if let model = modelId, !model.isEmpty {
+            comps.append(URLQueryItem(name: "model_id", value: model))
+        }
+        applyFilter(filter, localDeviceId: localDeviceId, into: &comps)
+        let url = try makeURL(base, path: "/usage_records", query: comps)
+        return try await request(url, deviceToken: deviceToken,
+                                 decodeAs: UsageRecordsResult.self)
+    }
+
+    // MARK: - 模型清单（对应 GET /models）
+
+    /// 全部设备、全部来源出现过的模型 id 清单（日志页模型筛选用）。
+    /// 服务端返回 [{source, provider_id, model_id}, ...] 对象数组
+    /// （db.list_all_models），这里解码后取 model_id 去重排序；字段全
+    /// Optional 防御，缺失行跳过。
+    public func models(serverURL: String,
+                       deviceToken: String) async throws -> [String] {
+        let base = try sanitizeBase(serverURL)
+        let url = try makeURL(base, path: "/models")
+        struct ModelEntry: Decodable {
+            var source: String?
+            var provider_id: String?
+            var model_id: String?
+        }
+        struct Wrapper: Decodable { var models: [ModelEntry] }
+        let wrapped = try await request(url, deviceToken: deviceToken,
+                                        decodeAs: Wrapper.self)
+        var seen = Set<String>()
+        return wrapped.models
+            .compactMap { $0.model_id }
+            .filter { !$0.isEmpty && seen.insert($0).inserted }
+            .sorted()
+    }
+
     // MARK: - 设备列表（对应 GET /devices）
 
     public func devices(serverURL: String,
@@ -208,6 +270,20 @@ public actor APIClient {
     }
 
     // MARK: - 辅助
+
+    /// 非 2xx 响应体 → 用户可读的错误文案。
+    /// 服务端错误统一是 {"error": "中文文案"} 形态（Flask jsonify 默认对非
+    /// ASCII 做 \uXXXX 转义，直接展示原文会看到乱码）——JSONDecoder 解码
+    /// 时会自动还原转义；解码失败（非 JSON / 结构不同）退回原文，超 200
+    /// 字符截断加省略号。
+    private func readableErrorBody(data: Data, fallback raw: String) -> String {
+        struct ErrorEnvelope: Decodable { var error: String }
+        if let envelope = try? JSONDecoder().decode(ErrorEnvelope.self, from: data),
+           !envelope.error.isEmpty {
+            return envelope.error
+        }
+        return raw.count > 200 ? String(raw.prefix(200)) + "…" : raw
+    }
 
     /// 去除末尾斜杠，保留 scheme。
     /// 用户可能填 "http://192.168.1.100:3838" 或 "http://192.168.1.100:3838/"

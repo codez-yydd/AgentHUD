@@ -138,6 +138,65 @@ public struct RemoteUsage: Codable, Hashable {
     public var trend: [RemoteTrendBucket]
 }
 
+// MARK: - 请求明细（server GET /usage_records 的返回形状）
+
+/// 单条请求明细行。duration_ms / time_to_first_token_ms 为 proto 8 起的
+/// 扩展字段，旧服务端为 null（Optional 解码）；session_id / project_key /
+/// project_display 同样可空。
+public struct UsageRecordRow: Codable, Hashable, Identifiable {
+    public var device_id: String
+    public var source: String
+    /// 服务端行号（同设备同来源内递增）；稳定 id 的一部分
+    public var local_rowid: Int?
+    public var started_at: Int
+    public var model_id: String
+    public var provider_id: String
+    public var input_tokens: Int
+    public var output_tokens: Int
+    public var cache_read_input_tokens: Int
+    public var cache_creation_input_tokens: Int
+    public var reasoning_tokens: Int
+    public var computed_total_tokens: Int
+    public var session_id: String?
+    public var project_key: String?
+    public var project_display: String?
+    /// 请求耗时（毫秒，proto 8 起；旧服务端为 null）
+    public var duration_ms: Int?
+    /// 首字延迟（毫秒，proto 8 起；旧服务端为 null）
+    public var time_to_first_token_ms: Int?
+
+    /// ForEach / sheet(item:) 用的稳定 id：服务端行的业务主键是
+    /// device_id + source + local_rowid（并入 id 消除同毫秒同模型同
+    /// token 行的碰撞）；local_rowid 缺失时回退全字段拼接。
+    public var id: String {
+        if let rid = local_rowid {
+            return "\(device_id)|\(source)|\(rid)"
+        }
+        return "\(device_id)|\(source)|\(started_at)|\(model_id)|\(computed_total_tokens)|\(session_id ?? "")"
+    }
+}
+
+/// usage_records 的按模型分组行（按 (source, provider_id, model_id) 分组，
+/// 与 /usage 的 by_model 同款命名 + source 维度；无分页、覆盖全时间窗）。
+public struct UsageRecordsModelStat: Codable, Hashable {
+    public var source: String
+    public var model_id: String
+    public var provider_id: String
+    public var requests: Int
+    public var input_tokens: Int
+    public var output_tokens: Int
+    public var cache_read_tokens: Int
+    public var cache_write_tokens: Int
+    public var reasoning_tokens: Int
+    public var total_tokens: Int
+}
+
+public struct UsageRecordsResult: Codable, Hashable {
+    public var total: Int
+    public var rows: [UsageRecordRow]
+    public var by_model: [UsageRecordsModelStat]
+}
+
 // MARK: - 额度（对应 QuotaResult / QuotaLimit，字段驼峰对齐智谱接口）
 
 public struct McpUsageDetail: Codable, Hashable {

@@ -4,8 +4,11 @@
 //
 //  WidgetKit 小组件入口。支持锁屏（accessoryRectangular/Circular/Inline）
 //  和主屏（systemSmall/Medium）。数据从 App Group 共享容器读取。
-//  批2：两个 Widget 均改 AppIntentConfiguration，共用 SelectAccountIntent
-//  （长按→编辑小组件 可选显示账号），配置一处生效两处。
+//
+//  ⚠️ 使用 StaticConfiguration 而不是 AppIntentConfiguration：
+//  小组件的账号选择统一放到 App「设置 → 小组件显示」里（写 App Group），
+//  这里只按快照渲染。AppIntent 配置在部分真机/系统版本上会出现扩展无法
+//  生成 timeline、桌面只显示占位图的问题；静态配置更稳，也少一层配置状态。
 //
 
 import WidgetKit
@@ -25,11 +28,9 @@ struct AgentHUDHomeWidget: Widget {
     let kind = "AgentHUDHomeWidget"
 
     var body: some WidgetConfiguration {
-        AppIntentConfiguration(kind: kind,
-                               intent: SelectAccountIntent.self,
-                               provider: AgentHUDProvider()) { entry in
+        StaticConfiguration(kind: kind, provider: AgentHUDProvider()) { entry in
             AgentHUDHomeWidgetView(entry: entry)
-                .containerBackgroundForWidget()
+                .homeWidgetBackground()
         }
         .configurationDisplayName("AgentHUD 用量")
         .description("今日花费、Token 与额度进度（可选显示账号）")
@@ -43,13 +44,11 @@ struct AgentHUDLockScreenWidget: Widget {
     let kind = "AgentHUDLockWidget"
 
     var body: some WidgetConfiguration {
-        AppIntentConfiguration(kind: kind,
-                               intent: SelectAccountIntent.self,
-                               provider: AgentHUDProvider()) { entry in
+        StaticConfiguration(kind: kind, provider: AgentHUDProvider()) { entry in
             // 锁屏 accessory family 也必须用 containerBackground，
             // 否则 iOS 17+ 会有运行时警告；系统会自动渲染成单色/透明。
             AgentHUDLockScreenView(entry: entry)
-                .containerBackgroundForWidget()
+                .lockScreenWidgetBackground()
         }
         .configurationDisplayName("AgentHUD 额度")
         .description("锁屏快速查看额度与花费（可选显示账号）")
@@ -57,36 +56,46 @@ struct AgentHUDLockScreenWidget: Widget {
     }
 }
 
-// MARK: - Provider（AppIntentTimelineProvider：配置随 Intent 传入，
-// 数据仍统一读 App Group 快照，配置本身已由 Intent.perform 持久化）
+// MARK: - Provider（静态配置：账号由主 App 设置页写 App Group，Provider
+// 只读快照与选中账号；不再依赖 AppIntent 配置）
 
-struct AgentHUDProvider: AppIntentTimelineProvider {
+struct AgentHUDProvider: TimelineProvider {
     func placeholder(in context: Context) -> AgentHUDEntry {
         AgentHUDEntry(date: Date(), snapshot: .preview, currency: .cny, stale: false)
     }
 
-    func snapshot(for configuration: SelectAccountIntent,
-                  in context: Context) async -> AgentHUDEntry {
-        currentEntry()
+    func getSnapshot(in context: Context,
+                     completion: @escaping (AgentHUDEntry) -> Void) {
+        completion(currentEntry())
     }
 
-    func timeline(for configuration: SelectAccountIntent,
-                  in context: Context) async -> Timeline<AgentHUDEntry> {
+    func getTimeline(in context: Context,
+                     completion: @escaping (Timeline<AgentHUDEntry>) -> Void) {
         let entry = currentEntry()
-        // 每 30 分钟由系统调度一次刷新机会（实际频率由系统决定）
+        // 每 30 分钟由系统调度一次刷新机会（实际频率由系统决定）。
+        // 主 App 每次刷新后会主动 WidgetCenter.reloadAllTimelines()，
+        // 所以这里只是兜底。
         let next = Date().addingTimeInterval(30 * 60)
-        return Timeline(entries: [entry], policy: .after(next))
+        completion(Timeline(entries: [entry], policy: .after(next)))
     }
 
     private func currentEntry() -> AgentHUDEntry {
-        let snap = SharedReader.readSnapshot() ?? WidgetSnapshot.placeholder
+        // 读不到 App Group 快照时退回空数据（而不是示例价格），
+        // 视图会提示「打开 App 同步」，避免把 12.34 之类的演示值当真。
+        let snap = SharedReader.readSnapshot() ?? WidgetSnapshot.empty
         let currency = SharedReader.readCurrency()
         // 选中账号与快照数据不一致（Intent 刚切换、主 App 尚未重写快照）：
         // 标记 stale，视图层提示「打开 App 刷新」。Widget 进程无法自行查询
         // 额度（查询代码在主 App target），等待主 App 下一次写入。
         let selected = WidgetSharedStore.readSelectedAccountId()
-        let snapshotAccount = (snap.accountId == "primary") ? nil : snap.accountId
-        let stale = snap.accountId != nil && snapshotAccount != selected
+        // 未显式选账号（跟随主账号/自动回退到第一个同步分组）时不算 stale；
+        // 只有用户选了 A、快照还是 B 时才提示打开 App 刷新。
+        let stale: Bool
+        if let selected, !selected.isEmpty, selected != "primary" {
+            stale = snap.accountId != selected
+        } else {
+            stale = false
+        }
         return AgentHUDEntry(date: Date(), snapshot: snap, currency: currency, stale: stale)
     }
 }
@@ -121,18 +130,39 @@ enum SharedReader {
 // MARK: - 小工具扩展
 
 extension View {
+    /// 主屏小组件：与 App 一致的深空底 + 青蓝/紫色极光，强制深色文字。
     @ViewBuilder
-    func containerBackgroundForWidget() -> some View {
+    func homeWidgetBackground() -> some View {
         if #available(iOS 17.0, *) {
-            self.containerBackground(for: .widget) {
-                LinearGradient(colors: [Color.blue.opacity(0.25), Color.purple.opacity(0.15)],
-                               startPoint: .topLeading, endPoint: .bottomTrailing)
-            }
+            self.environment(\.colorScheme, .dark)
+                .containerBackground(for: .widget) {
+                    ZStack {
+                        Color(red: 0.035, green: 0.055, blue: 0.086)
+                        LinearGradient(
+                            colors: [Color(red: 0.29, green: 0.78, blue: 1.0).opacity(0.20),
+                                     Color(red: 0.66, green: 0.58, blue: 1.0).opacity(0.10)],
+                            startPoint: .topLeading, endPoint: .bottomTrailing)
+                    }
+                }
         } else {
             self.background(
-                LinearGradient(colors: [Color.blue.opacity(0.25), Color.purple.opacity(0.15)],
-                               startPoint: .topLeading, endPoint: .bottomTrailing)
-            )
+                ZStack {
+                    Color(red: 0.035, green: 0.055, blue: 0.086)
+                    LinearGradient(
+                        colors: [Color(red: 0.29, green: 0.78, blue: 1.0).opacity(0.20),
+                                 Color(red: 0.66, green: 0.58, blue: 1.0).opacity(0.10)],
+                        startPoint: .topLeading, endPoint: .bottomTrailing)
+                })
+        }
+    }
+
+    /// 锁屏 accessory 家族：交给系统渲染，容器保持透明（不要深色底板）。
+    @ViewBuilder
+    func lockScreenWidgetBackground() -> some View {
+        if #available(iOS 17.0, *) {
+            self.containerBackground(for: .widget) { Color.clear }
+        } else {
+            self
         }
     }
 }
