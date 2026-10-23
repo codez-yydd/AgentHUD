@@ -804,9 +804,34 @@ pub const EFFECTS_JS: &str = r#"// =============================================
 /// 与 effects.js 同款：自愈、静默失败、空值防御；DOM 选择器集中在头部
 /// 常量，便于实机比对调整。
 pub const USAGE_JS: &str = r#"// ============================================================
-// ZBAR-THEME-V43
+// ZBAR-THEME-V44
 // ZBar Agent 对话页用量统计条（由 ZBar 落盘并随版本升级覆盖）
 // ============================================================
+// V44 变更（底部状态条溢出适配机制退役重做——实机反馈：分段串长随对话
+//   天然变化（工具/子代理/缓存段条件性出现、token 数字随会话增长变
+//   宽），且右侧计划列表/子代理面板/浏览器等侧面板压缩对话区宽度，
+//   V34 优先级整段隐藏导致今日/缓存段频繁被整段隐藏、缓存段在临界宽
+//   度下随数据每拍隐藏↔恢复闪烁。改为横向滚动 + 滚轮，隐藏机制整体退
+//   役、闪烁随之根治；单行保持不变，不做字号自适应。只动渲染端，数据
+//   契约零改动）：
+//   a) .zbar-usage-qb-line overflow:hidden → overflow-x:auto
+//      （::-webkit-scrollbar 隐藏保持胶囊视觉干净），justify-content:
+//      center → flex-start + .zbar-usage-qfull 补 margin:0 auto——
+//      flex 容器溢出时居中对齐会让 scrollLeft=0 左端内容不可达（经典
+//      冲突），auto margin 溢出时归零、内容锚左可完整滚到两端，不溢出
+//      时仍视觉居中；
+//   b) 普通滚轮直接横向滚动：qb-line 挂非 passive wheel 监听
+//      （deltaX/deltaY 累加进 scrollLeft，触控板 deltaX 天然支持），仅
+//      存在横向溢出且未滚到对应边界时 preventDefault，滚到头放行不吞
+//      页面纵向滚动；监听随 qb-line 元素创建挂载、随条移除一并销毁
+//      （元素即生命周期），不重复挂载；
+//   c) 左右缘渐隐提示：syncQuotaFade 按滚动状态在 qb-line 上切
+//      qfade-l/qfade-r class，mask 渐隐挂本体（纯绘制层不拦指针、不裁
+//      可滚动内容，随胶囊透明度/主题色自动一致）——未滚动右缘提示还
+//      有内容、滚动位置>0 加左缘、滚到最右右缘消失，无溢出两侧全无；
+//   d) fitQuotaSegments/quotaFitHidden/seg.h/qseg-off/data-prio 全部
+//      退役删除，签名（quotaSigOf）保留但不再含隐藏位（内容不变零
+//      DOM 语义不变）。
 // V43 变更（实机反馈 V42 条仍略高，再收一档；只动渲染端几何）：
 //   a) 条高 max(36px, 字号×2.6) → max(32px, 字号×2.3)，圆角 12 → 10；
 //   b) 留白带 31 → 27px，输入框再回落 4px；条底仍 −13、顶距 8px、
@@ -2072,25 +2097,31 @@ pub const USAGE_JS: &str = r#"// ===============================================
       "font-variant-numeric:tabular-nums;" +
       "user-select:none;-webkit-user-select:none;" +
       "pointer-events:none;}" +
-      /* V41 胶囊本体：占满容器（容器已与输入框卡片同宽），固定
-       * max(46px, 字号×3.2) 高；完整分段居中排布，超宽由
-       * fitQuotaSegments 按优先级隐藏 */
+      /* V44 胶囊本体：占满容器（容器已与输入框卡片同宽），固定
+       * max(32px, 字号×2.3) 高；溢出适配由 V34 优先级整段隐藏改为横向
+       * 滚动——qb-line 自身成为滚动容器（overflow-x:auto），居中让位
+       * 给 qfull 的 margin:0 auto（justify-content:center 在溢出时
+       * scrollLeft=0 左端内容不可达，flex-start + 子项 auto margin 溢
+       * 出时归零、内容锚左可完整滚到两端）。滚动条经 ::-webkit-
+       * scrollbar 隐藏保持胶囊视觉干净（ZCode 为 Electron/Chromium） */
       "[" + ATTR_QUOTA_BAR + "] .zbar-usage-qb-line{" +
-      "position:relative;display:flex;align-items:center;justify-content:center;" +
+      "position:relative;display:flex;align-items:center;justify-content:flex-start;" +
       "box-sizing:border-box;width:100%;max-width:100%;" +
       "height:max(32px, calc(var(--zbar-usage-font-size,10px) * 2.3));" +
       "padding:0 calc(var(--zbar-usage-font-size,10px) * .9);" +
-      "white-space:nowrap;overflow:hidden;pointer-events:auto;" +
+      "white-space:nowrap;overflow-x:auto;overflow-y:hidden;pointer-events:auto;" +
       "background:var(--color-card, rgba(28,30,36,.92));" +
       "border:1px solid var(--color-border, rgba(127,127,127,.22));" +
       "border-radius:10px;" +
       "box-shadow:inset 0 1px 0 rgba(255,255,255,.05), 0 8px 22px rgba(0,0,0,.26), 0 1px 3px rgba(0,0,0,.18);" +
       "-webkit-backdrop-filter:blur(12px) saturate(1.2);backdrop-filter:blur(12px) saturate(1.2);" +
       "opacity:var(--zbar-usage-opacity,.55);}" +
-      /* 完整分段容器：flex:none 保证内容不被压扁，超宽由
-       * fitQuotaSegments 按优先级隐藏 */
+      "[" + ATTR_QUOTA_BAR + "] .zbar-usage-qb-line::-webkit-scrollbar{display:none;}" +
+      /* 完整分段容器：flex:none 保证内容不被压扁不换行；margin:0 auto
+       * 在 flex 容器里吸收剩余空间——不溢出时视觉居中，溢出时归零锚左
+       * 交给滚动（V44 居中与滚动的两全解） */
       "[" + ATTR_QUOTA_BAR + "] .zbar-usage-qfull{" +
-      "display:flex;align-items:center;flex:none;" +
+      "display:flex;align-items:center;flex:none;margin:0 auto;" +
       "gap:calc(var(--zbar-usage-font-size,10px) * .55);" +
       "white-space:nowrap;pointer-events:auto;}" +
       /* V41 分段：弹性盒项；容器 pointer-events:none、分段 auto——只有
@@ -2103,9 +2134,23 @@ pub const USAGE_JS: &str = r#"// ===============================================
       "gap:calc(var(--zbar-usage-font-size,10px) * .34);white-space:nowrap;" +
       "padding:0 calc(var(--zbar-usage-font-size,10px) * .36);" +
       "pointer-events:auto;cursor:default;border-radius:8px;}" +
-      /* V34 溢出适配隐藏态（fitQuotaSegments 按 data-prio 升序整段隐
-       * 藏/贪心恢复；DOM 常驻，恢复零重建） */
-      "[" + ATTR_QUOTA_BAR + "] .zbar-usage-qseg-off{display:none;}" +
+      /* V44 左右缘渐隐提示：mask 挂 qb-line 本体（滚动容器）——mask 只
+       * 作用于绘制层，不拦截指针（分段 title/悬停照常）、不裁掉可滚
+       * 动内容（滚动可达范围不变，渐隐纯视觉），且随胶囊自身透明度与
+       * 主题色自动一致（对比覆盖层方案无需浅色主题配套规则）。状态
+       * class 由 syncQuotaFade 按滚动位置切换：未滚动仅右缘提示还有
+       * 内容、滚动位置>0 加左缘、滚到最右右缘消失，无溢出两侧全无。
+       * 双侧同时命中走单独的四停靠渐变规则——两条单侧 mask 若同时生
+       * 效会以后者覆盖前者（同属性层叠，非合成），不能叠用 */
+      "[" + ATTR_QUOTA_BAR + "] .zbar-usage-qb-line.zbar-usage-qfade-r{" +
+      "-webkit-mask-image:linear-gradient(to left, transparent, #000 calc(var(--zbar-usage-font-size,10px) * 1.4));" +
+      "mask-image:linear-gradient(to left, transparent, #000 calc(var(--zbar-usage-font-size,10px) * 1.4));}" +
+      "[" + ATTR_QUOTA_BAR + "] .zbar-usage-qb-line.zbar-usage-qfade-l{" +
+      "-webkit-mask-image:linear-gradient(to right, transparent, #000 calc(var(--zbar-usage-font-size,10px) * 1.4));" +
+      "mask-image:linear-gradient(to right, transparent, #000 calc(var(--zbar-usage-font-size,10px) * 1.4));}" +
+      "[" + ATTR_QUOTA_BAR + "] .zbar-usage-qb-line.zbar-usage-qfade-l.zbar-usage-qfade-r{" +
+      "-webkit-mask-image:linear-gradient(to right, transparent, #000 calc(var(--zbar-usage-font-size,10px) * 1.4), #000 calc(100% - var(--zbar-usage-font-size,10px) * 1.4), transparent);" +
+      "mask-image:linear-gradient(to right, transparent, #000 calc(var(--zbar-usage-font-size,10px) * 1.4), #000 calc(100% - var(--zbar-usage-font-size,10px) * 1.4), transparent);}" +
       "[" + ATTR_QUOTA_BAR + "] .zbar-usage-qseg + .zbar-usage-qseg::before{" +
       "content:\"\";position:absolute;left:0;top:20%;bottom:20%;width:1px;" +
       "background:var(--color-border, rgba(127,127,127,.22));}" +
@@ -3347,7 +3392,7 @@ pub const USAGE_JS: &str = r#"// ===============================================
    * width）。每渲染拍重算、值变才写 style（沿用文件既有低写入纪律）。
    * 未命中（含几何越界的坐标系防御）返回 false，调用方 clearCardAlign
    * 回退现状。窗口缩放不触发渲染拍：由下一渲染拍/15s 兜底拍自愈修正
-   * （同 fitQuotaSegments 的溢出适配节奏，不做 resize 监听——V13 起
+   * （同底部条横向滚动/渐隐状态的自愈节奏，不做 resize 监听——V13 起
    * 既有哲学） */
   function applyCardAlign(bar, region, withWidth) {
     var card = locateComposerCard(region);
@@ -3814,10 +3859,6 @@ pub const USAGE_JS: &str = r#"// ===============================================
   var quotaBar = null; /* 已挂载的额度行元素（跨渲染复用，幂等更新） */
   var quotaMountWarned = false; /* 挂载异常一次性告警标志（同会话条
     mountWarned 的 V14 模式：此前类问题曾被 catch 静默吞掉无从发现） */
-  /* V34 溢出适配状态：当前被隐藏分段的 prio 列表（fitQuotaSegments 修
-   * 正时同步）——renderQuotaBar 构建分段时据此带 h 位，使"构建态/签名/
-   * DOM"三角一致，适配完成后下一拍签名命中零 DOM */
-  var quotaFitHidden = [];
 
   function quotaBarEnabled() {
     try {
@@ -3981,22 +4022,19 @@ pub const USAGE_JS: &str = r#"// ===============================================
       ? sv.cr || 0
       : (totals ? totals.tcr : 0) + (runTotals ? runTotals.tcr : 0);
     var tin = useSess ? (sv.up || 0) : (totals ? totals.tin : 0) + (runTotals ? runTotals.tin : 0);
-    /* V33/V34 分段容器：{prio: 溢出适配优先级（0=永不隐藏，数值越小
-     * 越先被隐藏）, ico: 图标, title: 原生提示, c: 段级配色 class,
-     * dot: 呼吸蓝点, h: 隐藏态（计入签名）, parts: [{t: 文本, c: 段内
-     * 层级 class}]}——缺数据的分段整段省略（push 侧过滤），发丝分隔线
-     * 由 CSS 相邻兄弟选择器承担、无空分隔残留；段内间距由 flex gap 承
-     * 担，文本不带语义间距空格（P2-5） */
+    /* V33 分段容器：{ico: 图标, title: 原生提示, c: 段级配色 class,
+     * dot: 呼吸蓝点, parts: [{t: 文本, c: 段内层级 class}]}——缺数据的
+     * 分段整段省略（push 侧过滤；条宽不足由 V44 横向滚动承担，不再隐
+     * 藏分段），发丝分隔线由 CSS 相邻兄弟选择器承担、无空分隔残留；
+     * 段内间距由 flex gap 承担，文本不带语义间距空格（P2-5） */
     var segs = [];
     var nowMs = Date.now();
     /* ① ⚡ 速度：最近生成速度（latestSpeedOf：活动轮 runs 行 1s 旁路
      * 实时值优先，空闲回退该会话最新完成轮稳定速度）；数值三档色 +
-     * "t/s" 弱色单位，request_average 的 ≈ 前缀保留（近似质量不丢）。
-     * prio 0：永不隐藏（V34） */
+     * "t/s" 弱色单位，request_average 的 ≈ 前缀保留（近似质量不丢） */
     var spd = latestSpeedOf(sessId, activeMap);
     if (spd) {
       segs.push({
-        prio: 0,
         ico: "bolt",
         title: W.speedTitle,
         parts: [
@@ -4011,8 +4049,7 @@ pub const USAGE_JS: &str = r#"// ===============================================
     /* ② 本轮：↑非缓存输入+↓输出合计（fmtTokensShort，去等宽补位）+
      * "N req"——活动轮 runs 行（含并入 sub，liveLineOf 同口径）优先，
      * 无则该会话最新完成 turn 行（turns 行数值已并入子代理聚合）；
-     * title 带输入/输出/缓存读/缓存写明细（原始数值非缩写）。
-     * prio 4：溢出时第五顺位隐藏（V34） */
+     * title 带输入/输出/缓存读/缓存写明细（原始数值非缩写） */
     var tr = activeRunOf(sessId, activeMap);
     var tt = tr ? null : (sessId ? latestTurnOf(sessId) : null);
     if (tr || tt) {
@@ -4034,7 +4071,6 @@ pub const USAGE_JS: &str = r#"// ===============================================
         tReq2 = tt.req || 0;
       }
       segs.push({
-        prio: 4,
         ico: "hourglass",
         title:
           W.turn + " · " + W.tIn + " " + tIn2 + " · " + W.tOut + " " + tOut2 +
@@ -4048,8 +4084,7 @@ pub const USAGE_JS: &str = r#"// ===============================================
       });
     }
     /* ③ 会话 Σ：当前会话 tt（sess 行 tt 或 totals+runTotals 同口径合
-     * 计 = ↑+↓+⟲，即会话条 Σ 口径）+ "N req"（rq/rreq 同口径）。
-     * prio 6：溢出时最后顺位隐藏（信息密度最高，V34） */
+     * 计 = ↑+↓+⟲，即会话条 Σ 口径）+ "N req"（rq/rreq 同口径） */
     if (sessId) {
       var sTt = useSess
         ? sv.tt || 0
@@ -4059,7 +4094,6 @@ pub const USAGE_JS: &str = r#"// ===============================================
         ? sv.rq || 0
         : (totals ? totals.treq : 0) + (runTotals ? runTotals.treq : 0);
       segs.push({
-        prio: 6,
         ico: "bubble",
         title: W.sessTitle,
         parts: [
@@ -4070,10 +4104,9 @@ pub const USAGE_JS: &str = r#"// ===============================================
       });
     }
     /* ④ 工具：sess[].tl（V33 新消费字段，会话树工具调用数；字段缺失
-     * ——旧数据文件/查询降级——整段隐藏）。prio 3（V34） */
+     * ——旧数据文件/查询降级——整段隐藏） */
     if (sv && typeof sv.tl === "number" && isFinite(sv.tl)) {
       segs.push({
-        prio: 3,
         ico: "wrench",
         title: W.toolsTitle,
         parts: [
@@ -4083,10 +4116,9 @@ pub const USAGE_JS: &str = r#"// ===============================================
       });
     }
     /* ⑤ 今日：顶层 today.tt + "N req"（today.rq；V33 新消费字段，本
-     * 地自然日全库合计——整键缺失/非法隐藏本段）。prio 2（V34） */
+     * 地自然日全库合计——整键缺失/非法隐藏本段） */
     if (lastToday && typeof lastToday.tt === "number" && isFinite(lastToday.tt)) {
       segs.push({
-        prio: 2,
         ico: "calendar",
         title: W.todayTitle,
         parts: [
@@ -4098,7 +4130,7 @@ pub const USAGE_JS: &str = r#"// ===============================================
     }
     /* ⑥ 子代理：Σ 当前会话 turns[].sub.n（并入主轮的子代理轮数）；
      * 任一 runs 行 psess 命中当前会话 → 图标旁呼吸蓝点（子代理运行中
-     * 信号，轻量 opacity 脉动）；无子代理隐藏本段。prio 5（V34） */
+     * 信号，轻量 opacity 脉动）；无子代理隐藏本段 */
     if (sessId) {
       var subN = 0;
       for (var si = 0; si < lastTurns.length; si++) {
@@ -4115,7 +4147,6 @@ pub const USAGE_JS: &str = r#"// ===============================================
           }
         }
         segs.push({
-          prio: 5,
           ico: "branch",
           title: W.subsTitle,
           dot: subRunning,
@@ -4129,15 +4160,14 @@ pub const USAGE_JS: &str = r#"// ===============================================
     /* ⑦ 额度（V32 原样迁入 + V34 补 title）：h5/wk 缺失只隐对应段；三
      * 档变色挂段级 class（主数值部分继承变色）；倒计时段由
      * quotaCountdownOf 生成（rs 缺失/非法/已过期 → 无倒计时段），qfaint
-     * 显式回灰——阈变色仍只属于剩余百分比（V31 界线不变）。prio 0：两
-     * 段均永不隐藏（V34——相比 V32 纯额度行永远可见，额度是底线信息） */
+     * 显式回灰——阈变色仍只属于剩余百分比（V31 界线不变） */
     if (qd && typeof qd.h5 === "number" && isFinite(qd.h5)) {
       var h5cd = quotaCountdownOf(qd.h5rs, nowMs);
       var h5Parts = [
         { t: W.quotaLead + " " + W.quota5h + Math.round(qd.h5) + "%", c: quotaClassOf(qd.h5) }
       ];
       if (h5cd) h5Parts.push({ t: h5cd, c: "zbar-usage-qfaint" });
-      segs.push({ prio: 0, title: W.quota5hTitle, parts: h5Parts });
+      segs.push({ title: W.quota5hTitle, parts: h5Parts });
     }
     if (qd && typeof qd.wk === "number" && isFinite(qd.wk)) {
       var wkcd = quotaCountdownOf(qd.wkrs, nowMs);
@@ -4145,15 +4175,14 @@ pub const USAGE_JS: &str = r#"// ===============================================
         { t: W.quotaWk + Math.round(qd.wk) + "%", c: quotaClassOf(qd.wk) }
       ];
       if (wkcd) wkParts.push({ t: wkcd, c: "zbar-usage-qfaint" });
-      segs.push({ prio: 0, title: W.quotaWkTitle, parts: wkParts });
+      segs.push({ title: W.quotaWkTitle, parts: wkParts });
     }
     /* ⑧ 缓存（V30 逻辑原样迁入 + V33 仪表图标 + V34 title）：当前会话
      * 命中率 cr / (cr + 非缓存输入)，分母 0（cacheHitText 返回 "—"）
-     * 不入段不留残留。prio 1：溢出时最先隐藏（V34） */
+     * 不入段不留残留 */
     var hit = cacheHitText(tcr, tin);
     if (hit !== "—") {
       segs.push({
-        prio: 1,
         ico: "gauge",
         title: W.cacheTitle,
         parts: [{ t: W.cachePct + " " + hit, c: "" }]
@@ -4162,12 +4191,6 @@ pub const USAGE_JS: &str = r#"// ===============================================
     if (!segs.length) {
       removeQuotaBar();
       return;
-    }
-    /* V34：隐藏态计入构建与签名——quotaFitHidden 为上次适配结果，构建
-     * 时直接带 h 位（速度/额度 prio 0 永不隐藏，indexOf 恒 -1）；溢出
-     * 适配由渲染后 fitQuotaSegments 兜底执行并同步本数组与签名 */
-    for (var hqi = 0; hqi < segs.length; hqi++) {
-      segs[hqi].h = quotaFitHidden.indexOf(segs[hqi].prio) >= 0;
     }
     var bar = ensureQuotaBar();
     /* V37R：挂载成功的 region 提升到外层——渲染尾部 syncQuotaBand 要
@@ -4188,8 +4211,8 @@ pub const USAGE_JS: &str = r#"// ===============================================
         }
         /* V41：恢复按输入框卡片对齐——left = card.offsetLeft、width =
          * card.offsetWidth，条与对话框严格同宽同起点；未命中回退整条
-         * 占满 region（left/right:0），溢出优先级隐藏照常由
-         * fitQuotaSegments 按卡片宽度处理 */
+         * 占满 region（left/right:0），条宽不足由 V44 横向滚动适配
+         * （qb-line 即滚动容器，宽度变化随下一渲染拍自愈） */
         if (!applyCardAlign(bar, region, true)) clearCardAlign(bar);
       } else {
         if (bar.parentElement !== document.body) {
@@ -4210,15 +4233,15 @@ pub const USAGE_JS: &str = r#"// ===============================================
     }
     /* V33 签名比对（renderModelRows 同款「元素即状态」策略）：分段携
      * 带行内 SVG 图标无法进 textContent 比对，改以全部分段数据（段级
-     * class/图标/标题/蓝点/隐藏态/各段文本）拼接签名存于容器
+     * class/图标/标题/蓝点/各段文本）拼接签名存于容器
      * data-zbar-usage-qsig——无变化零 DOM 操作，倒计时分钟级变化之间
      * 仍零开销；行/容器被重建时属性缺失 → 自动全量重渲（自愈语义不
-     * 变）。V34：签名经 quotaSigOf 统一构建（含 seg.h 隐藏位），渲染
-     * 后由 fitQuotaSegments 做溢出适配（必要时修正 DOM 并同步签名） */
+     * 变）。V44：签名经 quotaSigOf 统一构建（隐藏机制退役后不含隐藏
+     * 位），渲染后由 syncQuotaFade 同步左右缘渐隐状态 class */
     renderQuotaLine(bar, quotaSigOf(segs), segs);
-    fitQuotaSegments(bar, segs);
-    /* V37R：渲染/溢出适配完成后实测行高、同步底部留白带（行高含分段
-     * 隐藏态的最终布局；fixed 兜底路径 quotaRegion 为 null 不施加） */
+    syncQuotaFade(bar);
+    /* V37R：渲染完成后实测行高、同步底部留白带（fixed 兜底路径
+     * quotaRegion 为 null 不施加） */
     syncQuotaBand(bar, quotaRegion);
   }
 
@@ -4246,23 +4269,23 @@ pub const USAGE_JS: &str = r#"// ===============================================
     if (!line) {
       line = document.createElement("div");
       line.className = "zbar-usage-qb-line";
+      /* V44 滚动交互监听随行元素创建挂载一次（wheel 非 passive 才能
+       * preventDefault，scroll 同步渐隐 class）：行元素与条同生共死
+       * （removeQuotaBar 卸条时监听随元素一并释放，无全局引用可泄
+       * 漏），断连重建时走本分支自然重挂，不会重复挂载 */
+      line.addEventListener("wheel", onQuotaWheel, { passive: false });
+      line.addEventListener("scroll", onQuotaFadeScroll, false);
       bar.appendChild(line);
     }
     while (line.firstChild) line.removeChild(line.firstChild);
-    /* V41 完整分段容器：条与输入框卡片同宽，内容居中；超宽由
-     * fitQuotaSegments 按优先级隐藏 */
+    /* V41 完整分段容器：条与输入框卡片同宽；不溢出时 margin:0 auto 视
+     * 觉居中，溢出时锚左交给 qb-line 横向滚动（V44 滚动适配） */
     var full = document.createElement("span");
     full.className = "zbar-usage-qfull";
     for (var qj = 0; qj < segs.length; qj++) {
       var seg = segs[qj];
       var sp = document.createElement("span");
-      /* V34：隐藏态经 .zbar-usage-qseg-off class（display:none，DOM 常
-       * 驻，fit 恢复零重建）+ data-prio 自描述（实机 DevTools 可查，
-       * 优先级语义见 fitQuotaSegments） */
-      sp.className =
-        "zbar-usage-qseg" + (seg.c ? " " + seg.c : "") +
-        (seg.h ? " zbar-usage-qseg-off" : "");
-      sp.setAttribute("data-prio", String(seg.prio || 0));
+      sp.className = "zbar-usage-qseg" + (seg.c ? " " + seg.c : "");
       if (seg.title) sp.title = seg.title;
       var ico = seg.ico ? makeIcon(seg.ico) : null;
       if (ico) sp.appendChild(ico);
@@ -4283,16 +4306,17 @@ pub const USAGE_JS: &str = r#"// ===============================================
     bar.setAttribute("data-zbar-usage-qsig", sig);
   }
 
-  /* V34 签名构建（renderQuotaBar 与 fitQuotaSegments 共用）：隐藏态
-   * （seg.h）计入签名——内容不变而隐藏集合变化时签名随之变化；fit 修
-   * 正后重写签名，保证"构建态/签名/DOM"三角一致与零 DOM */
+  /* V33 签名构建（renderQuotaBar 渲染前统一拼装）：全部分段渲染语义
+   * 位（段级 class/图标/标题/蓝点/各段文本）计入签名——内容不变签名
+   * 不变、零 DOM；V44 起不再含隐藏位（优先级隐藏机制整体退役，滚动
+   * 态/渐隐态属滚动容器自身状态、不进内容签名） */
   function quotaSigOf(segs) {
     var sig = "";
     for (var qi = 0; qi < segs.length; qi++) {
       sig +=
         (segs[qi].c || "") + "\u0000" + (segs[qi].ico || "") + "\u0000" +
         (segs[qi].title || "") + "\u0000" + (segs[qi].dot ? "1" : "0") +
-        "\u0000" + (segs[qi].h ? "H" : "V");
+        "\u0000";
       for (var qpi = 0; qpi < segs[qi].parts.length; qpi++) {
         sig += "<" + (segs[qi].parts[qpi].c || "") + "\u0001" + segs[qi].parts[qpi].t;
       }
@@ -4300,86 +4324,62 @@ pub const USAGE_JS: &str = r#"// ===============================================
     return sig;
   }
 
-  /* ---- V34 溢出适配（V41 以卡片宽度为准）----
-   * 规则：以**条的实际可用宽度**（bar 宽度 − 胶囊左右 padding/边框）为
-   * 准，完整分段容器 scrollWidth 超出时按优先级从低到高整段隐藏——缓存
-   * (1) → 今日(2) → 工具(3) → 本轮(4) → 子代理(5) → 会话(6)，每步复测、
-   * 不再溢出即停；速度与额度 prio 0 永不隐藏。无溢
-   * 出但存在隐藏段时按优先级降序贪心恢复（优先恢复重要段），恢复即溢出
-   * 则回退该段并停。每次修正同步 quotaFitHidden 并重写签名（隐藏态计入）
-   * ——下一拍构建态与 DOM 一致，签名命中零 DOM；常规拍只做布局读取、
-   * 零 DOM 写。隐藏经 .zbar-usage-qseg-off class（DOM 常驻，恢复零重建）。
-   * 窗口宽度变化不触发渲染拍，由下一个数据拍/15s 兜底拍自愈修正。 */
-  function fitQuotaSegments(bar, segs) {
+  /* ---- V44 溢出适配：横向滚动 + 滚轮（取代 V34 优先级整段隐藏）----
+   * 动机（实机反馈）：分段串长随对话天然变化（工具/子代理/缓存段条件
+   * 性出现、token 数字随会话增长变宽），且右侧计划列表/子代理面板/浏
+   * 览器等侧面板会压缩对话区宽度——整段隐藏导致今日/缓存段频繁消失，
+   * 缓存段在临界宽度下随数据每拍隐藏↔恢复闪烁。滚动适配内容恒全量在
+   * 场、无临界翻转，闪烁随隐藏机制退役根治。宽度变化不触发渲染拍：
+   * 渐隐/居中随下一渲染拍自愈（同 applyCardAlign 节奏，不做 resize
+   * 监听）。 */
+
+  /* 滚轮横向滚动：触控板 deltaX（天然横滚）优先，普通滚轮取 deltaY
+   * 转横向；仅存在横向溢出且未滚到对应边界时 preventDefault（监听非
+   * passive 的意义所在）——滚到头或本无溢出即放行，不吞页面纵向滚
+   * 动。deltaMode 不归一化：Chromium 鼠标/触控板均像素模式 */
+  function onQuotaWheel(e) {
+    var line = e.currentTarget;
+    var max = line.scrollWidth - line.clientWidth;
+    if (!(max > 0)) return;
+    var d = Math.abs(e.deltaX) >= Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
+    if (!d) return;
+    var to = Math.max(0, Math.min(max, line.scrollLeft + d));
+    if (to === line.scrollLeft) return;
+    e.preventDefault();
+    line.scrollLeft = to;
+  }
+
+  /* scroll 事件入口（监听挂在 qb-line 上，经 currentTarget 取行） */
+  function onQuotaFadeScroll(e) {
+    syncQuotaFadeLine(e.currentTarget);
+  }
+
+  /* 左右缘渐隐状态同步（每次渲染拍后 + 每次 scroll）：无溢出双侧全
+   * 无；有溢出时未滚到左缘亮左渐隐、未滚到右缘亮右渐隐（1px 容差防
+   * 亚像素悬崖）。class 全量重建、值变才写（沿用文件低写入纪律）；
+   * 内容重渲后 scrollLeft 由浏览器自动收敛到合法区间，本函数随后把
+   * 渐隐态收敛到一致 */
+  function syncQuotaFade(bar) {
     var line = bar.querySelector(":scope > .zbar-usage-qb-line");
     if (!line) return;
-    var full = line.querySelector(":scope > .zbar-usage-qfull");
-    if (!full || full.children.length !== segs.length) return;
-    var cs = getComputedStyle(line);
-    var pad = (parseFloat(cs.paddingLeft) || 0) + (parseFloat(cs.paddingRight) || 0);
-    var border =
-      (parseFloat(cs.borderLeftWidth) || 0) +
-      (parseFloat(cs.borderRightWidth) || 0);
-    var avail = Math.max(0, bar.clientWidth - pad - border);
-    if (!(avail > 0)) return;
-    var changed = false;
-    function isOff(i) {
-      var el = full.children[i];
-      if (!el) return false;
-      return (" " + el.className + " ").indexOf(" zbar-usage-qseg-off ") >= 0;
+    syncQuotaFadeLine(line);
+  }
+
+  function syncQuotaFadeLine(line) {
+    var max = line.scrollWidth - line.clientWidth;
+    var wl = max > 0 && line.scrollLeft > 0;
+    var wr = max > 0 && line.scrollLeft < max - 1;
+    var has = " " + line.className + " ";
+    if (
+      wl === (has.indexOf(" zbar-usage-qfade-l ") >= 0) &&
+      wr === (has.indexOf(" zbar-usage-qfade-r ") >= 0)
+    ) {
+      return;
     }
-    function setOff(i, off) {
-      var el = full.children[i];
-      if (!el) return;
-      if (off) {
-        if (!isOff(i)) {
-          el.className = el.className + " zbar-usage-qseg-off";
-          changed = true;
-        }
-      } else if (isOff(i)) {
-        el.className = el.className
-          .replace(" zbar-usage-qseg-off", "")
-          .replace("zbar-usage-qseg-off", "")
-          .replace(/\s+/g, " ");
-        changed = true;
-      }
-    }
-    function overflows() {
-      return full.scrollWidth > avail;
-    }
-    if (overflows()) {
-      var hideOrder = [];
-      for (var oi = 0; oi < segs.length; oi++) {
-        if (segs[oi].prio > 0) hideOrder.push({ p: segs[oi].prio, i: oi });
-      }
-      hideOrder.sort(function (a, b) { return a.p - b.p; });
-      for (var hi = 0; hi < hideOrder.length; hi++) {
-        setOff(hideOrder[hi].i, true);
-        if (!overflows()) break;
-      }
-    } else {
-      var showOrder = [];
-      for (var ri = 0; ri < segs.length; ri++) {
-        if (segs[ri].prio > 0) showOrder.push({ p: segs[ri].prio, i: ri });
-      }
-      showOrder.sort(function (a, b) { return b.p - a.p; });
-      for (var sj = 0; sj < showOrder.length; sj++) {
-        if (!isOff(showOrder[sj].i)) continue;
-        setOff(showOrder[sj].i, false);
-        if (overflows()) {
-          setOff(showOrder[sj].i, true);
-          break;
-        }
-      }
-    }
-    if (changed) {
-      quotaFitHidden = [];
-      for (var fi = 0; fi < segs.length; fi++) {
-        segs[fi].h = isOff(fi);
-        if (segs[fi].h) quotaFitHidden.push(segs[fi].prio);
-      }
-      bar.setAttribute("data-zbar-usage-qsig", quotaSigOf(segs));
-    }
+    line.className =
+      "zbar-usage-qb-line" +
+      (wl ? " zbar-usage-qfade-l" : "") +
+      (wr ? " zbar-usage-qfade-r" : "");
   }
 
   function renderAll() {
@@ -6112,9 +6112,9 @@ mod tests {
 
     #[test]
     fn usage_js_v34_分段状态条与设计语言() {
-        // ---- 版本标记（V35 起头部升级，V34 特征全部保留）----
-        assert!(USAGE_JS.contains("ZBAR-THEME-V43"));
-        assert!(!USAGE_JS.contains("ZBAR-THEME-V42"), "版本头应已升到 V43");
+        // ---- 版本标记（V44 起头部升级，V34 特征除溢出隐藏外保留）----
+        assert!(USAGE_JS.contains("ZBAR-THEME-V44"));
+        assert!(!USAGE_JS.contains("ZBAR-THEME-V43"), "版本头应已升到 V44");
         // ---- 字体跟随客户端（任务红线：--font-mono 引用）：四个注入层
         // （每轮条/会话条/模型底板/底部条）各一条 font-family 声明，缺失
         // 回退既有等宽栈
@@ -6140,7 +6140,7 @@ mod tests {
             "底板配色改由客户端语义变量接管，V26 亮色媒体查询应删除"
         );
         // ---- 胶囊容器（任务红线：backdrop-filter 存在）：blur+saturate
-        // 带前缀、内高光+双层投影、圆角、右缘 mask 渐隐截断兜底 ----
+        // 带前缀、内高光+双层投影、圆角、V44 横向滚动容器 + 隐藏滚动条 ----
         assert!(
             USAGE_JS
                 .contains("-webkit-backdrop-filter:blur(12px) saturate(1.2);backdrop-filter:blur(12px) saturate(1.2);"),
@@ -6153,9 +6153,12 @@ mod tests {
             "胶囊应有内高光 + 双层投影"
         );
         assert!(
-            USAGE_JS.contains("white-space:nowrap;overflow:hidden;")
-                && USAGE_JS.contains("function fitQuotaSegments(bar, segs)"),
-            "胶囊应 overflow:hidden 并由 fitQuotaSegments 按优先级隐藏分段（不再用右缘 mask 压暗末段文字）"
+            USAGE_JS.contains("white-space:nowrap;overflow-x:auto;overflow-y:hidden;pointer-events:auto;")
+                && USAGE_JS
+                    .contains(".zbar-usage-qb-line::-webkit-scrollbar{display:none;}")
+                && USAGE_JS.contains("justify-content:flex-start;")
+                && USAGE_JS.contains("flex:none;margin:0 auto;"),
+            "V44 胶囊应改横向滚动容器（overflow-x:auto + 隐藏滚动条；flex-start + qfull margin:0 auto 兼顾不溢出时居中与溢出时可完整滚动）"
         );
         assert!(USAGE_JS.contains("border-radius:10px;"), "状态条圆角 10px");
         assert!(
@@ -6298,39 +6301,41 @@ mod tests {
                 && USAGE_JS.contains("if (!sessHasData || !quotaBarEnabled()) {"),
             "空会话会话级闸 + 开关闸（整条开关语义）零改动"
         );
-        // ---- V34 P1-1：分段优先级隐藏（溢出治理）----
+        // ---- V44：溢出适配改横向滚动 + 滚轮（V34 优先级整段隐藏退役）----
+        // 退役负向断言：隐藏机制的代码形态全部消失（头部 V34 变更注释
+        // 是历史记录保留，故只断言代码级特征串）
         assert!(
-            USAGE_JS.contains("var quotaFitHidden = [];")
-                && USAGE_JS.contains("function quotaSigOf(segs)")
-                && USAGE_JS.contains("function fitQuotaSegments(bar, segs)")
-                && USAGE_JS.contains("return full.scrollWidth > avail;")
-                && USAGE_JS.contains(".zbar-usage-qseg-off{display:none;}"),
-            "V34 应有溢出适配机制（fitQuotaSegments 逐级隐藏/贪心恢复 + qseg-off class + 隐藏态计入签名）"
+            !USAGE_JS.contains("function fitQuotaSegments")
+                && !USAGE_JS.contains("var quotaFitHidden")
+                && !USAGE_JS.contains("segs[hqi].h = ")
+                && !USAGE_JS.contains("qseg-off{display:none;}")
+                && !USAGE_JS.contains("setAttribute(\"data-prio\"")
+                && !USAGE_JS.contains("prio: "),
+            "V34 优先级隐藏机制应整体退役（fitQuotaSegments 函数/quotaFitHidden 状态/seg.h 隐藏位/qseg-off 规则/data-prio 标记/prio 字段）"
         );
         assert!(
-            USAGE_JS.contains("segs[hqi].h = quotaFitHidden.indexOf(segs[hqi].prio) >= 0;")
-                && USAGE_JS.contains("bar.setAttribute(\"data-zbar-usage-qsig\", quotaSigOf(segs));"),
-            "fit 修正后应同步 quotaFitHidden 并重写签名（下一拍构建态与 DOM 一致，签名命中零 DOM）"
+            USAGE_JS.contains("function onQuotaWheel(e)")
+                && USAGE_JS.contains("if (to === line.scrollLeft) return;")
+                && USAGE_JS.contains("e.preventDefault();")
+                && USAGE_JS.contains("var d = Math.abs(e.deltaX) >= Math.abs(e.deltaY) ? e.deltaX : e.deltaY;"),
+            "V44 滚轮横向滚动：deltaX/deltaY 转横向，仅在存在溢出且未到边界时 preventDefault（滚到头放行页面纵向滚动）"
         );
         assert!(
-            USAGE_JS.contains(
-                "renderQuotaLine(bar, quotaSigOf(segs), segs);\n    fitQuotaSegments(bar, segs);"
-            ),
-            "renderQuotaBar 渲染后应执行溢出适配（每拍复测，常规拍零 DOM 写）"
+            USAGE_JS.contains("function syncQuotaFade(bar)")
+                && USAGE_JS.contains("function syncQuotaFadeLine(line)")
+                && USAGE_JS.contains("zbar-usage-qfade-l")
+                && USAGE_JS.contains("zbar-usage-qfade-r")
+                && USAGE_JS.contains("-webkit-mask-image:linear-gradient(to left, transparent, #000")
+                && USAGE_JS.contains("mask-image:linear-gradient(to right, transparent, #000"),
+            "V44 左右缘渐隐：滚动状态 class 切换 + mask 渐隐挂 qb-line 本体（不拦指针、不裁可滚动内容）"
         );
-        // prio 编号：速度/额度 0 永不隐藏；缓存 1 → 今日 2 → 工具 3 →
-        // 本轮 4 → 子代理 5 → 会话 6（低到高逐级隐藏）
         assert!(
-            USAGE_JS.contains("prio: 0,\n        ico: \"bolt\"")
-                && USAGE_JS.contains("prio: 0, title: W.quota5hTitle, parts: h5Parts")
-                && USAGE_JS.contains("prio: 0, title: W.quotaWkTitle, parts: wkParts")
-                && USAGE_JS.contains("prio: 1,\n        ico: \"gauge\"")
-                && USAGE_JS.contains("prio: 2,\n        ico: \"calendar\"")
-                && USAGE_JS.contains("prio: 3,\n        ico: \"wrench\"")
-                && USAGE_JS.contains("prio: 4,\n        ico: \"hourglass\"")
-                && USAGE_JS.contains("prio: 5,\n          ico: \"branch\"")
-                && USAGE_JS.contains("prio: 6,\n        ico: \"bubble\""),
-            "分段 prio 编号应为 速度/额度0（永不隐藏）、缓存1、今日2、工具3、本轮4、子代理5、会话6"
+            USAGE_JS.contains("function quotaSigOf(segs)")
+                && USAGE_JS.contains(
+                    "renderQuotaLine(bar, quotaSigOf(segs), segs);\n    syncQuotaFade(bar);"
+                )
+                && !USAGE_JS.contains("? \"H\" : \"V\""),
+            "签名机制保留（内容不变零 DOM），但不再含隐藏位；渲染拍后同步渐隐状态（每拍复测，值变才写）"
         );
         // ---- V34 P1-2：模型行浅色对比度（客户端前景变量 + 中灰兜底）----
         assert!(
@@ -6389,8 +6394,8 @@ mod tests {
     #[test]
     fn usage_js_v35_卡片对齐与缓存率() {
         // ---- 版本标记 ----
-        assert!(USAGE_JS.contains("ZBAR-THEME-V43"));
-        assert!(!USAGE_JS.contains("ZBAR-THEME-V42"), "版本头应已升到 V43");
+        assert!(USAGE_JS.contains("ZBAR-THEME-V44"));
+        assert!(!USAGE_JS.contains("ZBAR-THEME-V43"), "版本头应已升到 V44");
         // ---- 任务 A：输入框卡片定位（零选择器假设 + V37R 语义锚点）----
         assert!(
             USAGE_JS.contains("function locateComposerCard(region)")
@@ -6513,8 +6518,8 @@ mod tests {
     #[test]
     fn usage_js_v36_浅色主题可读性() {
         // ---- 版本标记 ----
-        assert!(USAGE_JS.contains("ZBAR-THEME-V43"));
-        assert!(!USAGE_JS.contains("ZBAR-THEME-V42"), "版本头应已升到 V43");
+        assert!(USAGE_JS.contains("ZBAR-THEME-V44"));
+        assert!(!USAGE_JS.contains("ZBAR-THEME-V43"), "版本头应已升到 V44");
         // ---- a) 透明度下限：三处行透明消费点（每轮条容器/会话条行/
         // 底部条行）以 max() 兜 .82 底（用户调高 >.82 仍取用户值），
         // dim/qfaint 弱色同步提亮；规则全部带 html:not(.dark) 前缀 ----
@@ -6707,8 +6712,8 @@ mod tests {
         // 存」段并存）；d) ✚ 缓存写段 cw 0 整段隐藏（含启动窗口占位
         // 态）、>0 带 title（词表新增 cwTitle 双语条目，
         // renderRowParts/renderBarLine 补 title 通道））
-        assert!(USAGE_JS.contains("ZBAR-THEME-V43"));
-        assert!(!USAGE_JS.contains("ZBAR-THEME-V42"), "版本头应已升到 V43");
+        assert!(USAGE_JS.contains("ZBAR-THEME-V44"));
+        assert!(!USAGE_JS.contains("ZBAR-THEME-V43"), "版本头应已升到 V44");
         assert!(!USAGE_JS.contains("ZBAR-THEME-V33"), "版本头不应回退");
         assert!(!USAGE_JS.contains("ZBAR-THEME-V31"), "版本头不应回退");
         assert!(!USAGE_JS.contains("ZBAR-THEME-V30"), "版本头不应回退");
@@ -6964,8 +6969,8 @@ mod tests {
             quota_body.contains("var hit = cacheHitText(tcr, tin);")
                 && quota_body.contains("if (hit !== \"—\") {")
                 && quota_body
-                    .contains("segs.push({\n        prio: 1,\n        ico: \"gauge\",\n        title: W.cacheTitle,\n        parts: [{ t: W.cachePct + \" \" + hit, c: \"\" }]\n      });"),
-            "额度行应在每周段后追加「缓存」段（仪表图标 + 口径 title，prio 1 溢出时最先隐藏），分母为 0 时不入段: {quota_body}"
+                    .contains("segs.push({\n        ico: \"gauge\",\n        title: W.cacheTitle,\n        parts: [{ t: W.cachePct + \" \" + hit, c: \"\" }]\n      });"),
+            "额度行应在每周段后追加「缓存」段（仪表图标 + 口径 title，分母为 0 时不入段）: {quota_body}"
         );
         // V31/V32 窗口重置倒计时：a) 新增格式化与倒计时段函数（rs 缺失/
         // 非法/已过期 <= now 返回空串 → 该窗口不加段；时长阶梯 <1h "35m"
@@ -7023,14 +7028,22 @@ mod tests {
         );
         assert!(
             ql_body.contains("var ico = seg.ico ? makeIcon(seg.ico) : null;")
-                && ql_body.contains(
-                    "sp.className =\n        \"zbar-usage-qseg\" + (seg.c ? \" \" + seg.c : \"\") +\n        (seg.h ? \" zbar-usage-qseg-off\" : \"\");"
-                )
-                && ql_body.contains("sp.setAttribute(\"data-prio\", String(seg.prio || 0));")
+                && ql_body
+                    .contains("sp.className = \"zbar-usage-qseg\" + (seg.c ? \" \" + seg.c : \"\");")
+                && !ql_body.contains("data-prio")
+                && !ql_body.contains("qseg-off")
                 && ql_body.contains("if (seg.title) sp.title = seg.title;")
                 && ql_body.contains("dot.className = \"zbar-usage-qdot\";")
                 && !ql_body.contains("innerHTML"),
-            "分段应由 qseg span（段级配色 + 隐藏态 class + data-prio + 原生 title + makeIcon SVG 图标 + parts 层级 span + 可选蓝点）构成: {ql_body}"
+            "分段应由 qseg span（段级配色 + 原生 title + makeIcon SVG 图标 + parts 层级 span + 可选蓝点）构成，V44 起不带隐藏态 class/data-prio: {ql_body}"
+        );
+        // V44 滚动交互监听：随 qb-line 行元素创建挂载一次（wheel 非
+        // passive 才能 preventDefault；scroll 同步渐隐 class）；行元素
+        // 与条同生共死，断连重建走创建分支自然重挂
+        assert!(
+            ql_body.contains("line.addEventListener(\"wheel\", onQuotaWheel, { passive: false });")
+                && ql_body.contains("line.addEventListener(\"scroll\", onQuotaFadeScroll, false);"),
+            "滚轮/滚动监听应随 qb-line 创建挂载（元素即生命周期，不重复挂载）: {ql_body}"
         );
         assert!(
             quota_body.contains("if (!segs.length) {"),

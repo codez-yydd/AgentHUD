@@ -1291,7 +1291,10 @@ pub const EFFECTS_JS_VERSION: u32 = 6;
 /// V42：条高 46 → 36、圆角 14 → 12；条底伸到 region 外 13px，条顶距卡片
 /// 8px，留白带 66 → 31px（输入框回落，条底离软件底部约 14px）。
 /// V43：条高 36 → 32、圆角 12 → 10；留白带 31 → 27px（输入框再回落 4px）。
-pub const USAGE_JS_VERSION: u32 = 43;
+/// V44：底部状态条溢出适配由优先级整段隐藏改为横向滚动 + 滚轮（居中改
+/// qfull margin:0 auto、prio/qseg-off/quotaFitHidden 退役，缓存段临界
+/// 闪烁随之根治；数据契约零改动）。
+pub const USAGE_JS_VERSION: u32 = 44;
 
 /// 桌面像素宠物脚本 pet.js 的版本化落盘标记。
 /// 版本头写在模板首行注释（ZBAR-THEME-V 标记，提取器与
