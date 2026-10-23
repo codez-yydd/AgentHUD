@@ -639,77 +639,60 @@ private struct MediumCostBar: View {
     }
 }
 
-/// 中尺寸：一张小表 —— 一列一个账号、一行一个窗口。
+/// 中尺寸：一行一个账号，右侧三列是 5h / 周 / 月。
 ///
-/// 改版口径（2026-10）：
-/// - 账号的 5h / 周 / 月 三个数必须都在（额度组件的主要用途）；
-/// - 列头写清「服务 · 套餐」（GLM · Max / GLM · Pro）+「尾号 07127 /
-///   默认账号」，不能只留一串看不懂的数字；
-/// - 窗口标签只在最左边写一次，不再每列重复五遍；
-/// - 顶部一条细进度条表示该账号最紧急窗口的占用，替代原来占地方的
-///   大圆环（环里的数字还会和下面某一行重复）。
-private struct MediumColumnHeader: View {
+/// 账号名占左侧整行宽度，所以「GLM · Max · 尾号 07127」可以完整显示；
+/// 三个窗口的数值在右侧对齐成三列，表头只写一次。
+private struct MediumQuotaRow: View {
     let item: WidgetQuotaItem
     let needsDefault: Bool
+    let slots: [QuotaSlot]
+    let nameWidth: CGFloat
+    let cellWidth: CGFloat
 
-    private var planText: String {
+    private var name: String {
         var parts: [String] = [item.label]
         if let plan = item.planText { parts.append(plan) }
+        if let raw = item.accountText {
+            parts.append(WidgetQuotaItem.shortenAccount(raw))
+        } else if needsDefault {
+            parts.append("默认账号")
+        }
         return parts.joined(separator: " · ")
-    }
-
-    /// 账号：数字指纹写「尾号 07127」，人类备注名原样。
-    private var accountText: String? {
-        guard let raw = item.accountText else { return nil }
-        return WidgetQuotaItem.shortenAccount(raw)
     }
 
     private var maxPct: Int? { item.primaryWindow?.pct }
 
-    private var barColor: Color {
+    private var dotColor: Color {
         if item.isError { return WidgetTheme.amber }
         if item.isBalance { return WidgetTheme.mint }
         return maxPct.map(widgetQuotaColor) ?? WidgetTheme.tertiary
     }
 
     var body: some View {
-        VStack(spacing: 3) {
-            GeometryReader { geo in
-                ZStack(alignment: .leading) {
-                    Capsule().fill(WidgetTheme.track)
-                    if let p = maxPct, !item.isError {
-                        Capsule()
-                            .fill(barColor)
-                            .frame(width: max(2, geo.size.width
-                                              * CGFloat(min(max(Double(p) / 100, 0), 1))))
-                    }
-                }
-            }
-            .frame(height: 4)
+        HStack(spacing: 6) {
+            Circle()
+                .fill(dotColor)
+                .frame(width: 6, height: 6)
 
-            Text(planText)
-                .font(.system(size: 9.5, weight: .semibold))
+            Text(name)
+                .font(.system(size: 10, weight: .semibold))
                 .foregroundStyle(item.isError ? WidgetTheme.amber
-                                              : Color.white.opacity(0.95))
+                                              : Color.white.opacity(0.93))
                 .lineLimit(1)
                 .minimumScaleFactor(0.7)
+                .frame(width: nameWidth, alignment: .leading)
 
-            if let accountText {
-                Text(accountText)
-                    .font(.system(size: 8, weight: .medium))
-                    .foregroundStyle(WidgetTheme.tertiary)
+            ForEach(slots) { slot in
+                let w = item.window(for: slot)
+                Text(w?.pct.map { "\($0)%" } ?? "—")
+                    .font(.system(size: 11.5, weight: .semibold, design: .rounded))
+                    .monospacedDigit()
+                    .foregroundStyle((w?.pct).map(widgetQuotaColor) ?? WidgetTheme.tertiary)
                     .lineLimit(1)
-                    .minimumScaleFactor(0.75)
-            } else if needsDefault {
-                Text("默认账号")
-                    .font(.system(size: 8, weight: .medium))
-                    .foregroundStyle(WidgetTheme.tertiary)
-                    .lineLimit(1)
-            } else {
-                Color.clear.frame(height: 9.5)
+                    .frame(width: cellWidth, alignment: .trailing)
             }
         }
-        .frame(maxWidth: .infinity)
     }
 }
 
@@ -717,7 +700,6 @@ struct MediumHomeView: View {
     let snap: WidgetSnapshot
     let currency: Currency
     let stale: Bool
-    /// 账号超过一页时，系统按时间轮换展示的页码（0 基）
     var page: Int = 0
     var pageCount: Int = 1
 
@@ -731,7 +713,6 @@ struct MediumHomeView: View {
         return Set(grouped.filter { $0.value.count > 1 }.keys)
     }
 
-    /// 展示顺序：查询失败的排最前（需要处理），其余按占用最高的窗口降序。
     private var ordered: [WidgetQuotaItem] {
         items.sorted { a, b in
             if a.isError != b.isError { return a.isError }
@@ -754,7 +735,7 @@ struct MediumHomeView: View {
 
             WidgetDivider()
                 .padding(.top, 5)
-                .padding(.bottom, 6)
+                .padding(.bottom, 5)
 
             if !hasData {
                 HomePlaceholder(hasData: false)
@@ -762,56 +743,53 @@ struct MediumHomeView: View {
                 HomePlaceholder(hasData: true)
             } else {
                 table
-                if pageCount > 1 {
-                    pageDots
-                }
-                Spacer(minLength: 0)
+                if pageCount > 1 { pageDots }
             }
         }
+    }
+
+    /// 三档窗口固定展示（5h / 周 / 月），没有数据的显示「—」，
+    /// 让「这个账号没有月度额度」这件事本身也是可见信息。
+    private var slots: [QuotaSlot] { QuotaSlot.allCases }
+
+    private var cellWidth: CGFloat { 44 }
+    private var nameWidth: CGFloat {
+        332 - 6 - 6 - 6 - cellWidth * CGFloat(slots.count) - 6
     }
 
     private var table: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 0) {
-                Color.clear.frame(width: 18)
-                ForEach(shown) { item in
-                    MediumColumnHeader(item: item,
-                                       needsDefault: duplicateLabels.contains(item.label))
+            // 表头：右侧三列只标一次
+            HStack(spacing: 6) {
+                Color.clear.frame(width: 5)
+                Color.clear.frame(width: nameWidth)
+                ForEach(slots) { slot in
+                    Text(slot.title)
+                        .font(.system(size: 8, weight: .medium))
+                        .foregroundStyle(WidgetTheme.tertiary)
+                        .frame(width: cellWidth, alignment: .trailing)
                 }
             }
-            .padding(.bottom, 6)
+            .frame(height: 12)
 
-            ForEach(QuotaSlot.allCases) { slot in
-                HStack(spacing: 0) {
-                    Text(slot.title)
-                        .font(.system(size: 9, weight: .medium))
-                        .foregroundStyle(WidgetTheme.tertiary)
-                        .frame(width: 18, alignment: .leading)
-                    ForEach(shown) { item in
-                        let w = item.window(for: slot)
-                        Text(w?.pct.map { "\($0)%" } ?? "—")
-                            .font(.system(size: 12, weight: .semibold, design: .rounded))
-                            .monospacedDigit()
-                            .foregroundStyle((w?.pct).map(widgetQuotaColor) ?? WidgetTheme.tertiary)
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.8)
-                            .frame(maxWidth: .infinity)
-                    }
-                }
-                .frame(height: 19)
+            ForEach(shown) { item in
+                MediumQuotaRow(item: item,
+                               needsDefault: duplicateLabels.contains(item.label),
+                               slots: slots,
+                               nameWidth: nameWidth,
+                               cellWidth: cellWidth)
+                    .frame(maxHeight: .infinity)
             }
         }
     }
 
-    /// 多页时的小圆点：让「还有账号没显示」这件事可见，而不是悄悄省略。
     private var pageDots: some View {
         HStack(spacing: 4) {
             Spacer(minLength: 0)
             ForEach(0..<max(1, pageCount), id: \.self) { i in
                 Circle()
                     .fill(i == min(max(page, 0), pageCount - 1)
-                          ? WidgetTheme.secondary
-                          : WidgetTheme.track)
+                          ? WidgetTheme.secondary : WidgetTheme.track)
                     .frame(width: 4, height: 4)
             }
             Spacer(minLength: 0)
