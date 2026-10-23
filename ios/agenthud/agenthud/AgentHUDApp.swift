@@ -83,13 +83,13 @@ struct RootView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-            // 底部渐隐：让滚动内容贴近悬浮 Tab 栏时自然淡出，
+            // 底部渐隐：让滚动内容贴近悬浮 Tab 栏时淡出到背景色，
             // 避免玻璃胶囊里透出半截卡片文字。
-            LinearGradient(colors: [Theme.bgBottom.opacity(0.0),
-                                    Theme.bgBottom.opacity(0.86),
+            LinearGradient(colors: [Theme.bgBottom.opacity(0),
+                                    Theme.bgBottom.opacity(0.9),
                                     Theme.bgBottom],
                            startPoint: .top, endPoint: .bottom)
-                .frame(height: 132)
+                .frame(height: 124)
                 .allowsHitTesting(false)
                 .ignoresSafeArea(edges: .bottom)
                 .zIndex(1)

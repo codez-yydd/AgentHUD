@@ -22,9 +22,8 @@ struct QuotaView: View {
                 AppBackground()
 
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 16) {
+                    VStack(alignment: .leading, spacing: 14) {
                         PageHeader(title: "额度",
-                                   subtitle: subtitle,
                                    isLoading: refresh.quotaRefreshing,
                                    onRefresh: { Task { await refresh.refreshQuotaOnly() } })
 
@@ -36,42 +35,66 @@ struct QuotaView: View {
                                 actionTitle: "去设置",
                                 action: { tabRouter.selected = .settings })
                         } else {
-                            if settings.isSyncConfigured {
-                                compareEntry
-                            }
+                            headline
 
                             if refresh.quotaRefreshing && refresh.quotaEntries.isEmpty {
                                 LoadingPlaceholder()
                             }
 
-                            // 直连账号：按 agent 分组（保持 AgentKind 声明顺序）
+                            // 直连账号：按 agent 分组。单账号 → 独立卡片；
+                            // 多账号 → 一张卡里排成紧凑行，避免同类账号
+                            // 各占一张大卡把页面拉成好几屏。
                             ForEach(directAgentOrder, id: \.rawValue) { agent in
                                 let entries = refresh.quotaEntries.filter { $0.agent == agent }
-                                if !entries.isEmpty {
-                                    if entries.count > 1 {
-                                        GroupHeader(title: agent.displayName,
-                                                    icon: AgentVisual.forAgent(agent).icon,
-                                                    image: AgentVisual.forAgent(agent).image,
-                                                    tint: AgentVisual.forAgent(agent).tint,
-                                                    detail: "\(entries.count) 个账号 · 直连")
-                                    }
-                                    ForEach(entries) { entry in
-                                        AccountQuotaCard(entry: entry)
+                                if entries.count == 1 {
+                                    AccountQuotaCard(entry: entries[0])
+                                } else if !entries.isEmpty {
+                                    SectionLabel(title: agent.displayName,
+                                                 detail: "\(entries.count) 个账号 · 直连")
+                                    GlassCard(padding: 15) {
+                                        VStack(spacing: 0) {
+                                            ForEach(Array(entries.enumerated()), id: \.element.id) { idx, entry in
+                                                QuotaCompactRow(
+                                                    title: QuotaView.shortAccountLabel(entry.label.isEmpty ? entry.agent.displayName : entry.label),
+                                                    plan: entry.planName,
+                                                    windows: entry.windows,
+                                                    balance: entry.balance,
+                                                    message: entry.message,
+                                                    isError: entry.status != "ok",
+                                                    updatedText: "直连 · 更新于 " + Self.msText(entry.updatedAt))
+                                                if idx < entries.count - 1 {
+                                                    HUDDivider().padding(.vertical, 13)
+                                                }
+                                            }
+                                        }
                                     }
                                 }
                             }
 
                             // 只读同步型：桌面已上传的快照，按 agent 分组
                             ForEach(syncedGroups) { section in
-                                if section.groups.count > 1 {
-                                    GroupHeader(title: section.agent.displayName,
-                                                icon: AgentVisual.forAgent(section.agent).icon,
-                                                image: AgentVisual.forAgent(section.agent).image,
-                                                tint: AgentVisual.forAgent(section.agent).tint,
-                                                detail: "\(section.groups.count) 个账号 · 桌面同步")
-                                }
-                                ForEach(section.groups) { group in
+                                if section.groups.count == 1, let group = section.groups.first {
                                     SyncedQuotaCard(group: group)
+                                } else {
+                                    SectionLabel(title: section.agent.displayName,
+                                                 detail: "\(section.groups.count) 个账号 · 桌面同步")
+                                    GlassCard(padding: 15) {
+                                        VStack(spacing: 0) {
+                                            ForEach(Array(section.groups.enumerated()), id: \.element.id) { idx, group in
+                                                QuotaCompactRow(
+                                                    title: QuotaView.shortAccountLabel(group.label.isEmpty ? group.agent.displayName : group.label),
+                                                    plan: group.planBadge,
+                                                    windows: group.windows,
+                                                    balance: group.balance,
+                                                    message: group.message,
+                                                    isError: group.isError,
+                                                    updatedText: "桌面同步 · 更新于 " + Self.msText(group.updatedAtMs))
+                                                if idx < section.groups.count - 1 {
+                                                    HUDDivider().padding(.vertical, 13)
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
                             }
 
@@ -88,7 +111,7 @@ struct QuotaView: View {
                     }
                     .padding(.horizontal, Theme.pagePadding)
                     .padding(.top, 4)
-                    .padding(.bottom, 110)
+                    .padding(.bottom, 96)
                     .hudContentWidth()
                 }
                 .scrollIndicators(.hidden)
@@ -98,23 +121,47 @@ struct QuotaView: View {
         }
     }
 
-    // MARK: - 页头摘要
+    // MARK: - 顶部摘要（账号数 / 需关注窗口 / 周对比入口）
 
-    private var subtitle: String {
-        let count = refresh.quotaEntries.count + refresh.syncedQuotaGroups.count
-        guard count > 0 else { return "暂无额度账号" }
+    private var headline: some View {
+        HStack(spacing: 10) {
+            HStack(spacing: 6) {
+                Text("\(accountCount)")
+                    .font(.system(size: 15, weight: .bold, design: .rounded))
+                    .monospacedDigit()
+                    .foregroundStyle(.white.opacity(0.95))
+                Text("个账号")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Theme.textTertiary)
+            }
+            if alertCount > 0 {
+                HStack(spacing: 4) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 9, weight: .semibold))
+                    Text("\(alertCount) 个窗口需关注")
+                        .font(.system(size: 11, weight: .medium))
+                }
+                .foregroundStyle(Theme.amber)
+            } else {
+                Text("额度正常")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Theme.textTertiary)
+            }
+            Spacer(minLength: 6)
+            if settings.isSyncConfigured {
+                compareEntry
+            }
+        }
+    }
 
-        let allWindows = refresh.quotaEntries.flatMap { $0.windows }
+    private var accountCount: Int {
+        refresh.quotaEntries.count + refresh.syncedQuotaGroups.count
+    }
+
+    private var alertCount: Int {
+        let all = refresh.quotaEntries.flatMap { $0.windows }
             + refresh.syncedQuotaGroups.flatMap { $0.windows }
-        let alerts = allWindows.filter { ($0.usedPercent ?? 0) >= 85 }.count
-
-        if alerts > 0 {
-            return "\(count) 个账号 · \(alerts) 个窗口需关注"
-        }
-        if let at = refresh.lastRefreshedAt {
-            return "\(count) 个账号 · 更新于 \(Self.timeText(at))"
-        }
-        return "\(count) 个账号 · 状态正常"
+        return all.filter { ($0.usedPercent ?? 0) >= 85 }.count
     }
 
     /// 出现了账号的直连 agent 顺序（对齐 AgentKind.allCases 声明序）。
@@ -134,35 +181,44 @@ struct QuotaView: View {
         return order.map { SyncedGroupSection(agent: $0, groups: map[$0] ?? []) }
     }
 
-    private static func timeText(_ date: Date) -> String {
-        let f = DateFormatter()
-        f.dateFormat = "HH:mm"
-        return f.string(from: date)
+    /// 账号标签收敛：17 位纯数字账号只留后 4 位（"账号 …7127"），
+    /// 避免长数字把标题挤成两行、把卡片撑高。
+    static func shortAccountLabel(_ raw: String) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespaces)
+        let tail = String(trimmed.reversed().prefix { $0.isNumber }.reversed())
+        guard tail.count >= 12 else { return trimmed }
+        let head = String(trimmed.dropLast(tail.count))
+        return head + "…" + tail.suffix(4)
     }
 
-    // MARK: - 周额度对比入口
+    /// 毫秒时间戳 → "MM-dd HH:mm"（额度卡的更新时间口径）。
+    private static func msText(_ ms: Int) -> String {
+        let f = DateFormatter()
+        f.dateFormat = "MM-dd HH:mm"
+        return f.string(from: Date(timeIntervalSince1970: TimeInterval(ms) / 1000))
+    }
+
+    // MARK: - 周额度对比入口（收敛成摘要行右侧的小胶囊）
 
     private var compareEntry: some View {
         NavigationLink {
             CompareView()
         } label: {
-            GlassCard(padding: 14, radius: 18, tint: Theme.violet) {
-                HStack(spacing: 12) {
-                    AgentTile(icon: "chart.bar.xaxis", tint: Theme.violet, size: 36)
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text("周额度对比")
-                            .font(.system(size: 14, weight: .semibold))
-                            .foregroundStyle(.white.opacity(0.92))
-                        Text("按重置周期查看峰值与折算消耗")
-                            .font(.system(size: 10))
-                            .foregroundStyle(Theme.textTertiary)
-                    }
-                    Spacer()
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(Theme.textTertiary)
-                }
+            HStack(spacing: 6) {
+                Image(systemName: "chart.bar.xaxis")
+                    .font(.system(size: 10, weight: .semibold))
+                Text("周对比")
+                    .font(.system(size: 11.5, weight: .medium))
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 8, weight: .bold))
+                    .opacity(0.6)
             }
+            .foregroundStyle(Theme.violet)
+            .padding(.horizontal, 11)
+            .padding(.vertical, 6)
+            .background(Capsule().fill(Theme.violet.opacity(0.13)))
+            .overlay(Capsule().strokeBorder(Theme.violet.opacity(0.28), lineWidth: 1))
+            .contentShape(Capsule())
         }
         .buttonStyle(.plain)
     }
@@ -175,91 +231,192 @@ private struct SyncedGroupSection: Identifiable {
     var id: String { agent.rawValue }
 }
 
-// MARK: - 直连账号卡片
+// MARK: - 账号卡（单账号 / 分组行共用一套紧凑排版）
 
+/// 直连账号卡：头部 + 窗口行 +（可选）余额 / 错误原因。
+/// 更新时间和来源并进副标题，省掉原来「分隔线 + 页脚」两层结构。
 private struct AccountQuotaCard: View {
     let entry: QuotaEntry
-
-    private var visual: AgentVisual { AgentVisual.forAgent(entry.agent) }
 
     private var isHealthy: Bool { entry.status == "ok" }
 
     var body: some View {
-        GlassCard(tint: isHealthy ? nil : Theme.coral) {
-            VStack(alignment: .leading, spacing: 14) {
-                header
+        GlassCard(padding: 15, tint: isHealthy ? nil : Theme.coral) {
+            VStack(alignment: .leading, spacing: 12) {
+                QuotaAccountHeader(
+                    visual: AgentVisual.forAgent(entry.agent),
+                    title: QuotaView.shortAccountLabel(entry.label.isEmpty ? entry.agent.displayName : entry.label),
+                    subtitle: "\(entry.agent.displayName) · 直连 · 更新于 " + Self.timeText(entry.updatedAt),
+                    subtitleIcon: "bolt.horizontal.circle",
+                    status: entry.status,
+                    plan: entry.planName)
 
-                if entry.windows.isEmpty && entry.balance == nil {
-                    Text(entry.message ?? "暂无额度数据")
-                        .font(.system(size: 11))
-                        .foregroundStyle(Theme.textTertiary)
-                } else {
-                    QuotaWindowsView(windows: entry.windows)
-                }
-
-                if let balance = entry.balance {
-                    BalanceSection(balance: balance, insetTop: !entry.windows.isEmpty)
-                }
-
-                if let message = entry.message, !message.isEmpty,
-                   entry.status != "ok" {
-                    messageRow(message)
-                }
-
-                footer
+                QuotaAccountBody(windows: entry.windows,
+                                 balance: entry.balance,
+                                 message: entry.message,
+                                 isError: !isHealthy,
+                                 emptyText: entry.message ?? "暂无额度数据")
             }
         }
     }
 
-    private var header: some View {
-        HStack(spacing: 11) {
-            AgentTile(visual: visual, size: 38)
+    private static func timeText(_ ms: Int) -> String {
+        let f = DateFormatter()
+        f.dateFormat = "MM-dd HH:mm"
+        return f.string(from: Date(timeIntervalSince1970: TimeInterval(ms) / 1000))
+    }
+}
+
+/// 只读同步（桌面同步）账号卡。
+private struct SyncedQuotaCard: View {
+    let group: SyncedAgentQuotaGroup
+
+    var body: some View {
+        GlassCard(padding: 15, tint: group.isError ? Theme.coral : nil) {
+            VStack(alignment: .leading, spacing: 12) {
+                QuotaAccountHeader(
+                    visual: AgentVisual.forAgent(group.agent),
+                    title: QuotaView.shortAccountLabel(group.displayTitle),
+                    subtitle: "桌面同步 · 更新于 " + Self.timeText(group.updatedAtMs),
+                    subtitleIcon: "icloud.and.arrow.down",
+                    status: group.isError ? "error" : nil,
+                    plan: group.planBadge)
+
+                QuotaAccountBody(windows: group.windows,
+                                 balance: group.balance,
+                                 message: group.message,
+                                 isError: group.isError,
+                                 emptyText: "暂无额度数据")
+            }
+        }
+    }
+
+    private static func timeText(_ ms: Int) -> String {
+        let f = DateFormatter()
+        f.dateFormat = "MM-dd HH:mm"
+        return f.string(from: Date(timeIntervalSince1970: TimeInterval(ms) / 1000))
+    }
+}
+
+/// 同 agent 多账号时，卡内的一行账号（无图标，靠分组标题定位）。
+private struct QuotaCompactRow: View {
+    let title: String
+    var plan: String? = nil
+    let windows: [QuotaWindow]
+    var balance: QuotaBalance? = nil
+    var message: String? = nil
+    var isError: Bool = false
+    var updatedText: String? = nil
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 11) {
+            HStack(spacing: 6) {
+                Text(title)
+                    .font(.system(size: 13.5, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.92))
+                    .lineLimit(1)
+                if isError { StatusBadge(status: "error") }
+                Spacer(minLength: 6)
+                if let plan, !plan.isEmpty { PlanBadge(text: plan) }
+            }
+
+            QuotaAccountBody(windows: windows,
+                             balance: balance,
+                             message: message,
+                             isError: isError,
+                             emptyText: "暂无额度数据")
+
+            if let updatedText {
+                Text(updatedText)
+                    .font(.system(size: 9.5))
+                    .foregroundStyle(Theme.textTertiary.opacity(0.9))
+            }
+        }
+    }
+}
+
+/// 账号卡头部：图标 + 账号名 + 副标题 + 右侧套餐徽章。
+private struct QuotaAccountHeader: View {
+    let visual: AgentVisual
+    let title: String
+    var subtitle: String? = nil
+    var subtitleIcon: String? = nil
+    var status: String? = nil
+    var plan: String? = nil
+
+    var body: some View {
+        HStack(spacing: 10) {
+            AgentTile(visual: visual, size: 32)
 
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 6) {
-                    Text(entry.label.isEmpty ? entry.agent.displayName : entry.label)
-                        .font(.system(size: 15, weight: .semibold))
-                        .foregroundStyle(.white.opacity(0.92))
+                    Text(title)
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.93))
                         .lineLimit(1)
-                    if entry.status != "ok" {
-                        StatusBadge(status: entry.status)
-                    }
+                    if let status, status != "ok" { StatusBadge(status: status) }
                 }
-                HStack(spacing: 5) {
-                    Circle()
-                        .fill(isHealthy ? Theme.mint : Theme.quota(100))
-                        .frame(width: 5, height: 5)
-                    Text(entry.agent.displayName)
-                        .font(.system(size: 10))
-                        .foregroundStyle(Theme.textTertiary)
+                if let subtitle {
+                    HStack(spacing: 4) {
+                        if let subtitleIcon {
+                            Image(systemName: subtitleIcon)
+                                .font(.system(size: 8, weight: .semibold))
+                                .foregroundStyle(Theme.accent.opacity(0.85))
+                        }
+                        Text(subtitle)
+                            .font(.system(size: 10))
+                            .foregroundStyle(Theme.textTertiary)
+                            .lineLimit(1)
+                    }
                 }
             }
 
             Spacer(minLength: 6)
 
-            if let plan = entry.planName, !plan.isEmpty {
-                PlanBadge(text: plan)
+            if let plan, !plan.isEmpty { PlanBadge(text: plan) }
+        }
+    }
+}
+
+/// 账号正文：窗口紧凑行 / 余额 / 错误原因。
+private struct QuotaAccountBody: View {
+    let windows: [QuotaWindow]
+    var balance: QuotaBalance? = nil
+    var message: String? = nil
+    var isError: Bool = false
+    var emptyText: String = "暂无额度数据"
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 11) {
+            if isError, let message {
+                errorRow(message)
+            } else {
+                if !windows.isEmpty {
+                    VStack(spacing: 10) {
+                        ForEach(windows) { w in
+                            QuotaWindowRow(window: w)
+                        }
+                    }
+                }
+                if let balance {
+                    BalanceSection(balance: balance, insetTop: !windows.isEmpty)
+                }
+                if windows.isEmpty && balance == nil {
+                    Text(message ?? emptyText)
+                        .font(.system(size: 11))
+                        .foregroundStyle(Theme.textTertiary)
+                }
+                if let message, !message.isEmpty, !windows.isEmpty {
+                    Text(message)
+                        .font(.system(size: 10))
+                        .foregroundStyle(Theme.amber.opacity(0.9))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
         }
     }
 
-    private var footer: some View {
-        HStack(spacing: 5) {
-            Image(systemName: "clock")
-                .font(.system(size: 8, weight: .medium))
-            Text("更新于 " + Self.timeText(entry.updatedAt))
-                .font(.system(size: 9))
-            Spacer()
-            if isHealthy {
-                Text("直连查询")
-                    .font(.system(size: 9))
-                    .foregroundStyle(Theme.textTertiary)
-            }
-        }
-        .foregroundStyle(Theme.textTertiary)
-    }
-
-    private func messageRow(_ message: String) -> some View {
+    private func errorRow(_ message: String) -> some View {
         HStack(alignment: .top, spacing: 6) {
             Image(systemName: "exclamationmark.circle.fill")
                 .font(.system(size: 10, weight: .semibold))
@@ -276,155 +433,6 @@ private struct AccountQuotaCard: View {
                 .fill(Theme.coral.opacity(0.08))
         }
     }
-
-    private static func timeText(_ ms: Int) -> String {
-        let f = DateFormatter()
-        f.dateFormat = "MM-dd HH:mm"
-        return f.string(from: Date(timeIntervalSince1970: TimeInterval(ms) / 1000))
-    }
-}
-
-// MARK: - 只读同步型卡片（桌面同步）
-
-private struct SyncedQuotaCard: View {
-    let group: SyncedAgentQuotaGroup
-
-    private var visual: AgentVisual { AgentVisual.forAgent(group.agent) }
-
-    var body: some View {
-        GlassCard(tint: group.isError ? Theme.coral : nil) {
-            VStack(alignment: .leading, spacing: 14) {
-                header
-
-                if group.isError {
-                    HStack(alignment: .top, spacing: 6) {
-                        Image(systemName: "exclamationmark.circle.fill")
-                            .font(.system(size: 10, weight: .semibold))
-                            .foregroundStyle(Theme.coral)
-                        Text(group.message ?? "查询失败")
-                            .font(.system(size: 10))
-                            .foregroundStyle(Theme.coral.opacity(0.9))
-                            .lineLimit(3)
-                        Spacer(minLength: 0)
-                    }
-                    .padding(9)
-                    .background {
-                        RoundedRectangle(cornerRadius: 10, style: .continuous)
-                            .fill(Theme.coral.opacity(0.08))
-                    }
-                } else {
-                    if !group.windows.isEmpty {
-                        QuotaWindowsView(windows: group.windows)
-                    }
-                    if let balance = group.balance {
-                        BalanceSection(balance: balance, insetTop: !group.windows.isEmpty)
-                    }
-                    if group.windows.isEmpty && group.balance == nil {
-                        Text("暂无额度数据")
-                            .font(.system(size: 11))
-                            .foregroundStyle(Theme.textTertiary)
-                    }
-                }
-
-                footer
-            }
-        }
-    }
-
-    private var header: some View {
-        HStack(spacing: 11) {
-            AgentTile(visual: visual, size: 38)
-
-            VStack(alignment: .leading, spacing: 3) {
-                Text(group.displayTitle)
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundStyle(.white.opacity(0.92))
-                    .lineLimit(1)
-                HStack(spacing: 5) {
-                    Image(systemName: "icloud.and.arrow.down")
-                        .font(.system(size: 8, weight: .semibold))
-                        .foregroundStyle(Theme.accent)
-                    Text("桌面同步")
-                        .font(.system(size: 10))
-                        .foregroundStyle(Theme.textTertiary)
-                }
-            }
-
-            Spacer(minLength: 6)
-
-            if let plan = group.planBadge {
-                PlanBadge(text: plan)
-            }
-        }
-    }
-
-    private var footer: some View {
-        HStack(spacing: 5) {
-            Image(systemName: "clock")
-                .font(.system(size: 8, weight: .medium))
-            Text("更新于 " + Self.timeText(group.updatedAtMs))
-                .font(.system(size: 9))
-            Spacer()
-        }
-        .foregroundStyle(Theme.textTertiary)
-    }
-
-    private static func timeText(_ ms: Int) -> String {
-        let f = DateFormatter()
-        f.dateFormat = "MM-dd HH:mm"
-        return f.string(from: Date(timeIntervalSince1970: TimeInterval(ms) / 1000))
-    }
-}
-
-// MARK: - 窗口内容（环 / 条自适应）
-
-private struct QuotaWindowsView: View {
-    let windows: [QuotaWindow]
-
-    private var canUseRings: Bool {
-        !windows.isEmpty
-            && windows.count <= 3
-            && windows.allSatisfy { $0.usedPercent != nil }
-    }
-
-    var body: some View {
-        if canUseRings {
-            HStack(alignment: .top, spacing: 4) {
-                ForEach(windows) { w in
-                    QuotaRing(pct: Int((w.usedPercent ?? 0).rounded()),
-                              title: w.title,
-                              resetMs: w.resetsAt,
-                              detail: QuotaText.usage(w))
-                }
-            }
-            .padding(.vertical, 2)
-        } else {
-            VStack(spacing: 13) {
-                ForEach(windows) { w in
-                    if let pct = w.usedPercent {
-                        ProgressBar(pct: Int(pct.rounded()),
-                                    label: w.title,
-                                    resetMs: w.resetsAt)
-                        if let text = QuotaText.usage(w) {
-                            Text(text)
-                                .font(.system(size: 10).monospacedDigit())
-                                .foregroundStyle(Theme.textTertiary)
-                        }
-                    } else {
-                        HStack {
-                            Text(w.title)
-                                .font(.system(size: 13, weight: .medium))
-                                .foregroundStyle(.white.opacity(0.88))
-                            Spacer()
-                            Text(QuotaText.usage(w) ?? "—")
-                                .font(.system(size: 11).monospacedDigit())
-                                .foregroundStyle(Theme.textSecondary)
-                        }
-                    }
-                }
-            }
-        }
-    }
 }
 
 // MARK: - 余额行
@@ -434,7 +442,7 @@ private struct BalanceSection: View {
     var insetTop: Bool
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 8) {
             if insetTop { HUDDivider() }
 
             HStack(alignment: .firstTextBaseline) {
@@ -443,7 +451,7 @@ private struct BalanceSection: View {
                     .foregroundStyle(Theme.textTertiary)
                 Spacer()
                 Text("\(QuotaText.symbol(balance.currency))\(String(format: "%.2f", balance.amount))")
-                    .font(.system(size: 26, weight: .bold, design: .rounded))
+                    .font(.system(size: 20, weight: .bold, design: .rounded))
                     .monospacedDigit()
                     .foregroundStyle(Theme.mint)
                     .lineLimit(1)

@@ -43,9 +43,8 @@ struct OverviewView: View {
                 AppBackground()
 
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 16) {
+                    VStack(alignment: .leading, spacing: 14) {
                         PageHeader(title: "总览",
-                                   subtitle: "\(preset.displayName) · \(filterLabel)",
                                    isLoading: loading,
                                    onRefresh: load)
 
@@ -55,10 +54,9 @@ struct OverviewView: View {
                                 actionTitle: "去设置",
                                 action: { tabRouter.selected = .settings })
                         } else {
-                            DeviceFilterBar()
-
-                            RangePicker(preset: $preset,
-                                        customFrom: $customFrom, customTo: $customTo) {
+                            HUDControlBar(preset: $preset,
+                                          customFrom: $customFrom,
+                                          customTo: $customTo) {
                                 load()
                             }
 
@@ -85,7 +83,7 @@ struct OverviewView: View {
                     }
                     .padding(.horizontal, Theme.pagePadding)
                     .padding(.top, 4)
-                    .padding(.bottom, 110)
+                    .padding(.bottom, 96)
                     .hudContentWidth()
                 }
                 .scrollIndicators(.hidden)
@@ -249,31 +247,26 @@ private struct RangeSummaryCard: View {
     }
 
     var body: some View {
-        GlassCard(tint: Theme.accent, elevated: true) {
-            VStack(alignment: .leading, spacing: 16) {
+        GlassCard(padding: 16, tint: Theme.accent, elevated: true) {
+            VStack(alignment: .leading, spacing: 14) {
                 HStack(alignment: .top, spacing: 14) {
-                    VStack(alignment: .leading, spacing: 8) {
+                    VStack(alignment: .leading, spacing: 6) {
                         Text("范围内花费")
                             .font(.system(size: 11, weight: .medium))
                             .foregroundStyle(Theme.textTertiary)
                         Text(costText)
-                            .font(.system(size: 40, weight: .bold, design: .rounded))
+                            .font(.system(size: 34, weight: .bold, design: .rounded))
                             .monospacedDigit()
                             .foregroundStyle(
                                 LinearGradient(colors: [Theme.mint, Theme.accent],
                                                startPoint: .leading, endPoint: .trailing))
                             .lineLimit(1)
                             .minimumScaleFactor(0.55)
-                        HStack(spacing: 6) {
-                            miniChip(rangeLabel, icon: "calendar")
-                            miniChip(deviceLabel, icon: "desktopcomputer")
-                        }
                     }
                     Spacer(minLength: 4)
 
                     if let rate = hitRate {
                         CacheRing(rate: rate)
-                            .padding(.top, 2)
                     }
                 }
 
@@ -289,22 +282,9 @@ private struct RangeSummaryCard: View {
                                tint: Theme.violet)
                 }
             }
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("\(rangeLabel) · \(deviceLabel)")
         }
-    }
-
-    private func miniChip(_ text: String, icon: String) -> some View {
-        HStack(spacing: 4) {
-            Image(systemName: icon)
-                .font(.system(size: 8, weight: .semibold))
-            Text(text)
-                .font(.system(size: 10, weight: .medium))
-                .lineLimit(1)
-        }
-        .foregroundStyle(Theme.textSecondary)
-        .padding(.horizontal, 8)
-        .padding(.vertical, 4)
-        .background(Capsule().fill(Color.white.opacity(0.055)))
-        .overlay(Capsule().strokeBorder(Color.white.opacity(0.05), lineWidth: 1))
     }
 }
 

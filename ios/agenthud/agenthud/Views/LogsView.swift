@@ -30,6 +30,7 @@ struct LogsView: View {
     @State private var loading = false
     @State private var error: String?
     @State private var selectedRow: UsageRecordRow?
+    @State private var showFilters = false
 
     /// 当前页码（1-based）。每次只保留本页 rows，不无限追加，
     /// 避免长时间翻页后 SwiftUI 需要维护成千上万个行视图。
@@ -50,9 +51,8 @@ struct LogsView: View {
 
                 ScrollViewReader { proxy in
                     ScrollView {
-                        VStack(alignment: .leading, spacing: 16) {
+                        VStack(alignment: .leading, spacing: 14) {
                             PageHeader(title: "请求日志",
-                                       subtitle: "\(preset.displayName) · \(filterLabel)",
                                        isLoading: loading,
                                        onRefresh: reload)
 
@@ -62,25 +62,18 @@ struct LogsView: View {
                                     actionTitle: "去设置",
                                     action: { tabRouter.selected = .settings })
                             } else {
-                                DeviceFilterBar()
-
-                                RangePicker(preset: $preset,
-                                            customFrom: $customFrom, customTo: $customTo) {
-                                    reload()
+                                HUDControlBar(preset: $preset,
+                                              customFrom: $customFrom,
+                                              customTo: $customTo,
+                                              onApply: reload) {
+                                    filterButton
                                 }
-
-                                HStack(spacing: 8) {
-                                    sourceMenu
-                                    modelMenu
-                                    Spacer(minLength: 0)
-                                }
-                                .frame(maxWidth: .infinity, alignment: .leading)
 
                                 LoadingBar(loading: loading, error: error)
 
                                 summaryCard
 
-                                if total > Self.pageSize {
+                                if total > Self.pageSize && !rows.isEmpty {
                                     paginationBar(scrollProxy: proxy)
                                         .id("logs-pagebar")
                                 }
@@ -94,10 +87,8 @@ struct LogsView: View {
                                 }
 
                                 ForEach(daySections) { section in
-                                    GroupHeader(title: section.title,
-                                                icon: "calendar",
-                                                tint: Theme.accent,
-                                                detail: "\(section.rows.count) 条")
+                                    SectionLabel(title: section.title,
+                                                 detail: "\(section.rows.count) 条")
                                     dayCard(section)
                                 }
 
@@ -112,7 +103,7 @@ struct LogsView: View {
                         }
                         .padding(.horizontal, Theme.pagePadding)
                         .padding(.top, 4)
-                        .padding(.bottom, 110)
+                        .padding(.bottom, 96)
                         .hudContentWidth()
                     }
                     .scrollIndicators(.hidden)
@@ -132,17 +123,6 @@ struct LogsView: View {
     }
 
     // MARK: - 页头 / 分组
-
-    private var filterLabel: String {
-        switch refresh.selectedFilter {
-        case .all:
-            return "全部设备"
-        case .local:
-            return settings.sync.device_name.isEmpty ? "本机" : settings.sync.device_name
-        case .specific(let id):
-            return refresh.devices.first { $0.device_id == id }?.device_name ?? "指定设备"
-        }
-    }
 
     private var daySections: [LogDaySection] {
         let cal = Calendar.current
@@ -190,97 +170,144 @@ struct LogsView: View {
         }
     }
 
-    // MARK: - 来源 / 模型筛选
+    // MARK: - 来源 / 模型筛选（收进一个筛选按钮 + sheet）
 
-    private var sourceMenu: some View {
-        Menu {
-            Button {
-                source = nil
-                reload()
-            } label: {
-                if source == nil {
-                    Label("全部来源", systemImage: "checkmark")
-                } else {
-                    Text("全部来源")
-                }
-            }
-            ForEach(UsageSourceLabels.all, id: \.self) { src in
-                Button {
-                    source = src
-                    reload()
-                } label: {
-                    if source == src {
-                        Label(UsageSourceLabels.label(src), systemImage: "checkmark")
-                    } else {
-                        Text(UsageSourceLabels.label(src))
-                    }
-                }
-            }
+    private var activeFilterCount: Int {
+        (source == nil ? 0 : 1) + (modelId == nil ? 0 : 1)
+    }
+
+    private var filterButton: some View {
+        Button {
+            showFilters = true
         } label: {
-            menuLabel(title: source.map { UsageSourceLabels.label($0) } ?? "全部来源",
-                      icon: "line.3.horizontal.decrease",
-                      active: source != nil)
-        }
-    }
-
-    private var modelMenu: some View {
-        Menu {
-            Button {
-                modelId = nil
-                reload()
-            } label: {
-                if modelId == nil {
-                    Label("全部模型", systemImage: "checkmark")
-                } else {
-                    Text("全部模型")
+            ZStack(alignment: .topTrailing) {
+                Image(systemName: "line.3.horizontal.decrease")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(activeFilterCount > 0 ? Theme.accent : Theme.textSecondary)
+                    .frame(width: 34, height: 30)
+                    .background(Circle().fill(activeFilterCount > 0
+                                              ? Theme.accent.opacity(0.16)
+                                              : Color.white.opacity(0.05)))
+                    .overlay(Circle().strokeBorder(activeFilterCount > 0
+                                                   ? Theme.accent.opacity(0.35)
+                                                   : Theme.stroke,
+                                                   lineWidth: 1))
+                if activeFilterCount > 0 {
+                    Text("\(activeFilterCount)")
+                        .font(.system(size: 8, weight: .bold, design: .rounded))
+                        .foregroundStyle(Color.black.opacity(0.85))
+                        .frame(width: 13, height: 13)
+                        .background(Circle().fill(Theme.accent))
+                        .offset(x: 4, y: -3)
                 }
             }
-            ForEach(availableModels, id: \.self) { model in
-                Button {
-                    modelId = model
-                    reload()
-                } label: {
-                    if modelId == model {
-                        Label(model, systemImage: "checkmark")
-                    } else {
-                        Text(model)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("筛选")
+        .sheet(isPresented: $showFilters) { filterSheet }
+    }
+
+    private var filterSheet: some View {
+        NavigationStack {
+            ZStack {
+                AppBackground()
+
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 14) {
+                        SectionLabel(title: "来源")
+                        GlassCard(padding: 6, radius: 16) {
+                            VStack(spacing: 0) {
+                                filterOption(title: "全部来源", selected: source == nil,
+                                             tint: Theme.accent) {
+                                    source = nil
+                                }
+                                HUDDivider().padding(.horizontal, 10)
+                                ForEach(UsageSourceLabels.all, id: \.self) { src in
+                                    filterOption(title: UsageSourceLabels.label(src),
+                                                 selected: source == src,
+                                                 tint: AgentVisual.forSource(src).tint) {
+                                        source = src
+                                    }
+                                }
+                            }
+                        }
+
+                        SectionLabel(title: "模型")
+                        GlassCard(padding: 6, radius: 16) {
+                            VStack(spacing: 0) {
+                                filterOption(title: "全部模型", selected: modelId == nil,
+                                             tint: Theme.accent) {
+                                    modelId = nil
+                                }
+                                ForEach(availableModels, id: \.self) { model in
+                                    HUDDivider().padding(.horizontal, 10)
+                                    filterOption(title: model, selected: modelId == model,
+                                                 tint: Theme.violet) {
+                                        modelId = model
+                                    }
+                                }
+                            }
+                        }
                     }
+                    .padding(.horizontal, Theme.pagePadding)
+                    .padding(.vertical, 12)
+                }
+                .scrollIndicators(.hidden)
+            }
+            .navigationTitle("筛选")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("重置") {
+                        source = nil
+                        modelId = nil
+                        showFilters = false
+                        reload()
+                    }
+                    .disabled(activeFilterCount == 0)
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("完成") {
+                        showFilters = false
+                        reload()
+                    }
+                    .fontWeight(.semibold)
                 }
             }
+        }
+        .presentationDetents([.medium, .large])
+        .presentationBackground(Theme.bgTop)
+        .tint(Theme.accent)
+    }
+
+    private func filterOption(title: String, selected: Bool,
+                              tint: Color, action: @escaping () -> Void) -> some View {
+        Button {
+            action()
+            showFilters = false
+            reload()
         } label: {
-            menuLabel(title: modelId.map { truncatedModel($0) } ?? "全部模型",
-                      icon: "cube",
-                      active: modelId != nil)
+            HStack(spacing: 10) {
+                if selected {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundStyle(tint)
+                        .frame(width: 16)
+                } else {
+                    Color.clear.frame(width: 16, height: 1)
+                }
+                Text(title)
+                    .font(.system(size: 13, weight: selected ? .semibold : .regular))
+                    .foregroundStyle(selected ? .white.opacity(0.95) : Theme.textSecondary)
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 11)
+            .contentShape(Rectangle())
         }
-    }
-
-    /// 筛选菜单的胶囊触发器（选中非默认值时高亮）。
-    private func menuLabel(title: String, icon: String, active: Bool) -> some View {
-        HStack(spacing: 5) {
-            Image(systemName: icon)
-                .font(.system(size: 9, weight: .semibold))
-            Text(title)
-                .font(.system(size: 11.5, weight: active ? .semibold : .regular))
-                .lineLimit(1)
-            Image(systemName: "chevron.down")
-                .font(.system(size: 8, weight: .bold))
-                .opacity(0.7)
-        }
-        .padding(.horizontal, 11)
-        .padding(.vertical, 7)
-        .background {
-            Capsule().fill(active ? Theme.accent.opacity(0.14) : Color.white.opacity(0.05))
-        }
-        .overlay {
-            Capsule().strokeBorder(active ? Theme.accent.opacity(0.35)
-                                          : Color.white.opacity(0.06), lineWidth: 1)
-        }
-        .foregroundStyle(active ? Theme.accent : Theme.textSecondary)
-    }
-
-    /// 长 model id 截断（菜单触发器宽度有限；完整名在菜单列表里可见）。
-    private func truncatedModel(_ model: String) -> String {
-        model.count > 14 ? String(model.prefix(14)) + "…" : model
+        .buttonStyle(.plain)
     }
 
     // MARK: - 汇总卡
@@ -304,40 +331,45 @@ struct LogsView: View {
         max(1, Int(ceil(Double(total) / Double(Self.pageSize))))
     }
 
+    /// 分页条：左边一行说明，右边 ‹ 页码 › 胶囊。
+    /// 比整条胶囊更轻，和摘要卡之间不再有两个同等重量的横条。
     private func paginationBar(scrollProxy: ScrollViewProxy) -> some View {
         HStack(spacing: 8) {
-            pageArrow(systemImage: "chevron.left",
-                      enabled: page > 1 && !loading) {
-                changePage(page - 1, proxy: scrollProxy)
-            }
+            Text("共 \(total) 条 · 每页 \(Self.pageSize)")
+                .font(.system(size: 10))
+                .foregroundStyle(Theme.textTertiary)
+                .monospacedDigit()
 
-            VStack(spacing: 2) {
-                HStack(spacing: 5) {
-                    Text("第 \(page) / \(pageCount) 页")
-                        .font(.system(size: 11.5, weight: .semibold, design: .rounded))
+            Spacer(minLength: 6)
+
+            HStack(spacing: 2) {
+                pageArrow(systemImage: "chevron.left",
+                          enabled: page > 1 && !loading) {
+                    changePage(page - 1, proxy: scrollProxy)
+                }
+                HStack(spacing: 4) {
+                    Text("\(page) / \(pageCount)")
+                        .font(.system(size: 11, weight: .semibold, design: .rounded))
                         .monospacedDigit()
+                        .foregroundStyle(.white.opacity(0.88))
                     if loading {
                         ProgressView()
                             .controlSize(.mini)
                             .tint(Theme.accent)
                     }
                 }
-                .foregroundStyle(.white.opacity(0.88))
-                Text("每页 \(Self.pageSize) 条 · 共 \(total) 条")
-                    .font(.system(size: 9))
-                    .foregroundStyle(Theme.textTertiary)
-                    .monospacedDigit()
+                .frame(minWidth: 46)
+                pageArrow(systemImage: "chevron.right",
+                          enabled: page < pageCount && !loading) {
+                    changePage(page + 1, proxy: scrollProxy)
+                }
             }
-            .frame(maxWidth: .infinity)
-
-            pageArrow(systemImage: "chevron.right",
-                      enabled: page < pageCount && !loading) {
-                changePage(page + 1, proxy: scrollProxy)
-            }
+            .padding(.horizontal, 4)
+            .padding(.vertical, 2)
+            .background(Capsule().fill(Color.white.opacity(0.045)))
+            .overlay(Capsule().strokeBorder(Theme.stroke, lineWidth: 1))
         }
-        .padding(8)
-        .background(Capsule().fill(Color.white.opacity(0.04)))
-        .overlay(Capsule().strokeBorder(Theme.stroke, lineWidth: 1))
+        .padding(.top, 2)
     }
 
     private func pageArrow(systemImage: String,
@@ -345,12 +377,12 @@ struct LogsView: View {
                            action: @escaping () -> Void) -> some View {
         Button(action: action) {
             ZStack {
-                Circle().fill(Color.white.opacity(enabled ? 0.07 : 0.025))
+                Circle().fill(Color.white.opacity(enabled ? 0.07 : 0.02))
                 Image(systemName: systemImage)
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(enabled ? Theme.accent : Theme.textTertiary.opacity(0.5))
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(enabled ? Theme.accent : Theme.textTertiary.opacity(0.45))
             }
-            .frame(width: 34, height: 34)
+            .frame(width: 30, height: 30)
             .contentShape(Circle())
         }
         .buttonStyle(.plain)
@@ -505,88 +537,71 @@ private struct LogRowView: View {
     private var visual: AgentVisual { AgentVisual.forSource(row.source) }
 
     var body: some View {
-        HStack(alignment: .top, spacing: 10) {
-            AgentTile(visual: visual, size: 30)
-                .padding(.top, 1)
+        HStack(alignment: .center, spacing: 10) {
+            AgentTile(visual: visual, size: 28)
 
-            VStack(alignment: .leading, spacing: 5) {
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
+            VStack(alignment: .leading, spacing: 4) {
+                // 第一行：模型 + 时间。模型名过长时中间截断，保证时间永远
+                // 靠右对齐成一列。
+                HStack(spacing: 8) {
                     Text(row.model_id.isEmpty ? "未知模型" : row.model_id)
                         .font(.system(size: 13, weight: .semibold))
                         .foregroundStyle(.white.opacity(0.90))
                         .lineLimit(1)
                         .truncationMode(.middle)
-                    Spacer(minLength: 4)
+                    Spacer(minLength: 6)
                     Text(Self.timeText(row.started_at))
                         .font(.system(size: 10, weight: .medium, design: .rounded))
                         .monospacedDigit()
                         .foregroundStyle(Theme.textTertiary)
+                        .layoutPriority(1)
                 }
 
+                // 第二行：来源 · 设备 · 输入/输出 · 耗时。全部单行，
+                // 来源与设备允许收缩省略，token / 耗时保持完整。
                 HStack(spacing: 5) {
                     Text(UsageSourceLabels.label(row.source))
                         .font(.system(size: 10, weight: .semibold))
                         .foregroundStyle(visual.tint)
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
                     Text("·")
+                        .font(.system(size: 10))
                         .foregroundStyle(Theme.textTertiary)
                     Text(deviceName)
                         .font(.system(size: 10))
                         .foregroundStyle(Theme.textSecondary)
                         .lineLimit(1)
+                        .truncationMode(.tail)
+                        .layoutPriority(-1)
                     Spacer(minLength: 4)
-                    Text("↓\(Format.tokens(row.input_tokens))")
-                        .font(.system(size: 10).monospacedDigit())
-                        .foregroundStyle(Theme.textSecondary)
-                    Text("↑\(Format.tokens(row.output_tokens))")
-                        .font(.system(size: 10).monospacedDigit())
-                        .foregroundStyle(Theme.textSecondary)
-                    if let duration = LogMetrics.durationText(row.duration_ms) {
-                        Text("·")
-                            .font(.system(size: 10))
-                            .foregroundStyle(Theme.textTertiary)
-                        Text(duration)
+                    // token / 耗时固定整块，优先压缩来源与设备名，
+                    // 避免 "126.0K" 被折成两行。
+                    HStack(spacing: 4) {
+                        Text("↓\(Format.tokens(row.input_tokens))")
                             .font(.system(size: 10).monospacedDigit())
-                            .foregroundStyle(Theme.textTertiary)
-                            .frame(minWidth: 30, alignment: .trailing)
+                            .foregroundStyle(Theme.textSecondary)
+                        Text("↑\(Format.tokens(row.output_tokens))")
+                            .font(.system(size: 10).monospacedDigit())
+                            .foregroundStyle(Theme.textSecondary)
+                        if let duration = LogMetrics.durationText(row.duration_ms) {
+                            Text("·")
+                                .font(.system(size: 10))
+                                .foregroundStyle(Theme.textTertiary)
+                            Text(duration)
+                                .font(.system(size: 10).monospacedDigit())
+                                .foregroundStyle(Theme.textTertiary)
+                        }
                     }
-                }
-
-                // 第三行：输出速度 + 首字延迟。数据缺失时显示「—」，
-                // 让用户能明确区分“来源没上报”而不是没有这一列。
-                HStack(spacing: 7) {
-                    Image(systemName: "speedometer")
-                        .font(.system(size: 8.5, weight: .medium))
-                        .foregroundStyle(speed != nil ? Theme.accent : Theme.textTertiary)
-                    Text("速度")
-                        .font(.system(size: 9.5))
-                        .foregroundStyle(Theme.textTertiary)
-                    Text(LogMetrics.tpsText(speed) ?? "—")
-                        .font(.system(size: 9.5, weight: .medium, design: .rounded))
-                        .monospacedDigit()
-                        .foregroundStyle(speed != nil ? Theme.accent : Theme.textTertiary)
-
-                    Text("·")
-                        .font(.system(size: 9.5))
-                        .foregroundStyle(Theme.textTertiary)
-
-                    Image(systemName: "timer")
-                        .font(.system(size: 8.5, weight: .medium))
-                        .foregroundStyle(ttftText != nil ? Theme.violet : Theme.textTertiary)
-                    Text("首字")
-                        .font(.system(size: 9.5))
-                        .foregroundStyle(Theme.textTertiary)
-                    Text(ttftText ?? "—")
-                        .font(.system(size: 9.5, weight: .medium, design: .rounded))
-                        .monospacedDigit()
-                        .foregroundStyle(ttftText != nil ? Theme.violet : Theme.textTertiary)
-                    Spacer(minLength: 0)
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
+                    .layoutPriority(1)
                 }
             }
 
             Image(systemName: "chevron.right")
                 .font(.system(size: 9, weight: .semibold))
                 .foregroundStyle(Theme.textTertiary.opacity(0.7))
-                .padding(.top, 4)
         }
         .contentShape(Rectangle())
     }
@@ -606,15 +621,6 @@ private struct LogRowView: View {
         return f.string(from: Date(timeIntervalSince1970: TimeInterval(ms) / 1000))
     }
 
-    private var speed: (tps: Double, approximate: Bool)? {
-        LogMetrics.speed(outputTokens: row.output_tokens,
-                         durationMs: row.duration_ms,
-                         ttftMs: row.time_to_first_token_ms)
-    }
-
-    private var ttftText: String? {
-        LogMetrics.ttftText(row.time_to_first_token_ms)
-    }
 }
 
 // MARK: - 详情 sheet（全字段）

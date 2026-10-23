@@ -19,12 +19,11 @@ struct SettingsView: View {
 
                 VStack(spacing: 0) {
                     PageHeader(title: "设置",
-                               subtitle: "同步服务 · 小组件 · 显示",
                                isLoading: refresh.loading,
                                onRefresh: { refresh.refreshAll() })
                         .padding(.horizontal, Theme.pagePadding)
                         .padding(.top, 4)
-                        .padding(.bottom, 8)
+                        .padding(.bottom, 6)
 
                     Form {
                         Section {
@@ -34,7 +33,7 @@ struct SettingsView: View {
                                 NavigationLink {
                                     SyncDiagnosticsView()
                                 } label: {
-                                    Label("同步数据诊断", systemImage: "stethoscope")
+                                    rowLabel("同步数据诊断", icon: "stethoscope")
                                 }
                             }
                         } header: {
@@ -61,7 +60,7 @@ struct SettingsView: View {
                                 PricingInfoView()
                             } label: {
                                 HStack(spacing: 8) {
-                                    Label("模型价格", systemImage: "tag")
+                                    rowLabel("模型价格", icon: "tag")
                                     Spacer()
                                     Text(settings.pricingMeta.isRemote ? "跟随桌面端" : "本地参考价")
                                         .font(.system(size: 11))
@@ -71,7 +70,7 @@ struct SettingsView: View {
                             NavigationLink {
                                 PeakEditView()
                             } label: {
-                                Label("高峰期折算", systemImage: "clock.arrow.circlepath")
+                                rowLabel("高峰期折算", icon: "clock.arrow.circlepath")
                             }
                         } header: {
                             sectionHeader("计费", icon: "yensign.circle")
@@ -86,7 +85,7 @@ struct SettingsView: View {
                             Button {
                                 refresh.refreshAll()
                             } label: {
-                                Label("立即刷新全部数据", systemImage: "arrow.clockwise")
+                                rowLabel("立即刷新全部数据", icon: "arrow.clockwise")
                             }
                         }
                         .listRowBackground(Color.white.opacity(0.045))
@@ -102,10 +101,23 @@ struct SettingsView: View {
                     .tint(Theme.accent)
                     .environment(\.defaultMinListRowHeight, 38)
                     .listSectionSpacing(16)
-                    .padding(.bottom, 74)
+                    .padding(.bottom, 8)
                 }
             }
             .toolbar(.hidden, for: .navigationBar)
+        }
+    }
+
+    /// 设置页行标题：统一 14.5pt + 小图标，避免 Form 默认 17pt 与
+    /// 自绘卡片（14/10pt）的字号断层。
+    private func rowLabel(_ title: String, icon: String) -> some View {
+        Label {
+            Text(title)
+                .font(.system(size: 14.5))
+        } icon: {
+            Image(systemName: icon)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(Theme.accent)
         }
     }
 
@@ -387,9 +399,15 @@ private struct WidgetDisplayPickerRow: View {
                     .tag(AccountStore.syncOptionId(agent))
             }
         }
-        Text("主屏中/大尺寸展示全部账号的 5h / 周 / 月额度，并标注套餐与账号尾号；没有的窗口显示 —（例如 GLM 的 MCP 月度次数不算订阅月额度）；小尺寸显示占用最高的账号。这里只选择锁屏使用哪个账号。App 内刷新会立即触发重绘。")
-            .font(.caption)
-            .foregroundColor(.secondary)
+        HStack(spacing: 6) {
+            Image(systemName: "info.circle")
+                .font(.system(size: 10, weight: .semibold))
+            Text("主屏中 / 大尺寸展示全部账号；这里只选择锁屏显示的账号")
+                .font(.system(size: 10.5))
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+        .foregroundStyle(Theme.textTertiary)
     }
 }
 

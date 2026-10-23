@@ -45,9 +45,9 @@ enum Theme {
     static let textTertiary = Color.white.opacity(0.44)
 
     // 圆角 / 间距
-    static let cardRadius: CGFloat = 22
+    static let cardRadius: CGFloat = 20
     static let tileRadius: CGFloat = 14
-    static let pagePadding: CGFloat = 18
+    static let pagePadding: CGFloat = 16
 
     /// 额度百分比语义色：越高越危险。
     static func quota(_ pct: Int) -> Color {
@@ -146,44 +146,45 @@ struct GlassCard<Content: View>: View {
 
 // MARK: - 页头
 
-/// 各 Tab 首页统一页头：品牌点 + 大标题 + 副标题 + 右侧刷新按钮。
+/// 各 Tab 首页统一页头：品牌小字 + 标题 + 右侧刷新按钮。
 /// 所有页面隐藏系统导航栏后用它承担标题层级。
+///
+/// 收敛口径（2026-10 改版）：
+///  - 标题从 31pt 降到 25pt，去掉页头副标题 —— 时间范围与设备筛选
+///    已经在下方控制条里常驻，标题区再复述一遍只会让顶部堆积三行文字；
+///  - 品牌行压到 9pt，只做身份标识，不再抢标题层级。
 struct PageHeader: View {
     let title: String
-    var subtitle: String? = nil
+    var eyebrow: String? = "AGENTHUD"
     var isLoading: Bool = false
     var onRefresh: (() -> Void)? = nil
 
     var body: some View {
-        HStack(alignment: .top, spacing: 12) {
-            VStack(alignment: .leading, spacing: 6) {
-                HStack(spacing: 6) {
-                    Circle()
-                        .fill(Theme.accent)
-                        .frame(width: 5, height: 5)
-                    Text("AGENTHUD")
-                        .font(.system(size: 10, weight: .bold))
-                        .tracking(1.8)
-                        .foregroundStyle(Theme.textTertiary)
+        HStack(alignment: .center, spacing: 12) {
+            VStack(alignment: .leading, spacing: 2) {
+                if let eyebrow {
+                    HStack(spacing: 5) {
+                        Circle()
+                            .fill(Theme.accent)
+                            .frame(width: 4, height: 4)
+                        Text(eyebrow)
+                            .font(.system(size: 9, weight: .bold))
+                            .tracking(1.7)
+                            .foregroundStyle(Theme.textTertiary.opacity(0.9))
+                    }
                 }
                 Text(title)
-                    .font(.system(size: 31, weight: .bold, design: .rounded))
+                    .font(.system(size: 25, weight: .bold, design: .rounded))
                     .foregroundStyle(.white)
                     .lineLimit(1)
                     .minimumScaleFactor(0.8)
-                if let subtitle {
-                    Text(subtitle)
-                        .font(.footnote)
-                        .foregroundStyle(Theme.textSecondary)
-                        .lineLimit(2)
-                }
             }
             Spacer(minLength: 8)
             if let onRefresh {
                 RefreshButton(isLoading: isLoading, action: onRefresh)
             }
         }
-        .padding(.top, 8)
+        .padding(.top, 4)
     }
 }
 
@@ -203,11 +204,11 @@ struct RefreshButton: View {
                         .tint(Theme.accent)
                 } else {
                     Image(systemName: "arrow.clockwise")
-                        .font(.system(size: 15, weight: .semibold))
+                        .font(.system(size: 14, weight: .semibold))
                         .foregroundStyle(Theme.accent)
                 }
             }
-            .frame(width: 44, height: 44)
+            .frame(width: 38, height: 38)
             .contentShape(Circle())
         }
         .buttonStyle(.plain)
@@ -245,74 +246,7 @@ struct CardHeader: View {
     }
 }
 
-/// 页内分组标题（额度页按 agent 分组、日志页按日期分组等）。
-struct GroupHeader: View {
-    let title: String
-    var icon: String? = nil
-    var image: String? = nil
-    var tint: Color = Theme.accent
-    var detail: String? = nil
-
-    var body: some View {
-        HStack(spacing: 8) {
-            if let image {
-                AgentTile(icon: icon ?? "cpu", image: image, tint: tint, size: 24)
-            } else if let icon {
-                AgentTile(icon: icon, tint: tint, size: 24)
-            }
-            Text(title)
-                .font(.system(size: 13, weight: .semibold, design: .rounded))
-                .foregroundStyle(Theme.textSecondary)
-            Spacer(minLength: 8)
-            if let detail {
-                Text(detail)
-                    .font(.caption2)
-                    .foregroundStyle(Theme.textTertiary)
-            }
-        }
-        .padding(.top, 2)
-    }
-}
-
 // MARK: - 指标块
-
-/// 指标格：上方标签、下方大数字，可选图标与副标题。
-struct MetricCell: View {
-    let title: String
-    let value: String
-    var subtitle: String? = nil
-    var color: Color = .white.opacity(0.92)
-    var icon: String? = nil
-    var tint: Color = Theme.accent
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 5) {
-                if let icon {
-                    Image(systemName: icon)
-                        .font(.system(size: 9, weight: .semibold))
-                        .foregroundStyle(tint)
-                }
-                Text(title)
-                    .font(.caption2)
-                    .foregroundStyle(Theme.textTertiary)
-            }
-            Text(value)
-                .font(.system(size: 20, weight: .semibold, design: .rounded))
-                .monospacedDigit()
-                .foregroundStyle(color)
-                .lineLimit(1)
-                .minimumScaleFactor(0.65)
-            if let subtitle {
-                Text(subtitle)
-                    .font(.system(size: 10))
-                    .foregroundStyle(Theme.textTertiary)
-                    .lineLimit(1)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-}
 
 /// 小号指标（页面顶部三栏：请求数 / Token / 命中率）。
 struct HeroMetric: View {
@@ -373,9 +307,291 @@ struct FilterChip: View {
     }
 }
 
+// MARK: - 控制条（设备 / 时间范围 / 附加筛选）
+
+/// 页面控制条：一屏只留一行筛选，替代原先「设备胶囊一整行 + 时间范围
+/// 一整行」的堆叠布局。左侧设备菜单、右侧范围分段，附加筛选（日志的
+/// 来源 / 模型）作为 extra 挂在右边。
+struct HUDControlBar<Extra: View>: View {
+    @Binding var preset: RangePreset
+    @Binding var customFrom: String
+    @Binding var customTo: String
+    let onApply: () -> Void
+    @ViewBuilder var extra: () -> Extra
+
+    var body: some View {
+        HStack(spacing: 8) {
+            DeviceMenu()
+            Spacer(minLength: 4)
+            RangeControl(preset: $preset,
+                         customFrom: $customFrom,
+                         customTo: $customTo,
+                         onApply: onApply)
+            extra()
+        }
+    }
+}
+
+extension HUDControlBar where Extra == EmptyView {
+    init(preset: Binding<RangePreset>,
+         customFrom: Binding<String>,
+         customTo: Binding<String>,
+         onApply: @escaping () -> Void) {
+        self.init(preset: preset,
+                  customFrom: customFrom,
+                  customTo: customTo,
+                  onApply: onApply,
+                  extra: { EmptyView() })
+    }
+}
+
+/// 设备筛选：收成单个下拉菜单，不再横向铺一排胶囊。
+/// 设备多时菜单可滚动，页面宽度不再被设备数量撑长。
+struct DeviceMenu: View {
+    @EnvironmentObject var settings: AppSettings
+    @EnvironmentObject var refresh: RefreshService
+
+    private var currentName: String {
+        switch refresh.selectedFilter {
+        case .all:
+            return "全部设备"
+        case .local:
+            return settings.sync.device_name.isEmpty ? "本机" : settings.sync.device_name
+        case .specific(let id):
+            return refresh.devices.first { $0.device_id == id }?.device_name ?? "指定设备"
+        }
+    }
+
+    private var otherDevices: [DeviceInfo] {
+        refresh.devices.filter {
+            $0.device_id != settings.sync.device_id && ($0.record_count ?? 0) > 0
+        }
+    }
+
+    var body: some View {
+        Menu {
+            Button {
+                refresh.setFilter(.all)
+            } label: {
+                Label("全部设备",
+                      systemImage: refresh.selectedFilter == .all
+                        ? "checkmark" : "square.stack.3d.up")
+            }
+            Button {
+                refresh.setFilter(.local)
+            } label: {
+                Label(settings.sync.device_name.isEmpty ? "本机" : settings.sync.device_name,
+                      systemImage: refresh.selectedFilter == .local
+                        ? "checkmark" : "iphone")
+            }
+            if !otherDevices.isEmpty {
+                Divider()
+                ForEach(otherDevices) { d in
+                    Button {
+                        refresh.setFilter(.specific(d.device_id))
+                    } label: {
+                        Label(d.device_name,
+                              systemImage: refresh.selectedFilter == .specific(d.device_id)
+                                ? "checkmark" : "desktopcomputer")
+                    }
+                }
+            }
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: "server.rack")
+                    .font(.system(size: 9, weight: .semibold))
+                Text(currentName)
+                    .font(.system(size: 12, weight: .medium))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 8, weight: .bold))
+                    .opacity(0.55)
+            }
+            .foregroundStyle(Theme.textSecondary)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .background(Capsule().fill(Color.white.opacity(0.05)))
+            .overlay(Capsule().strokeBorder(Theme.stroke, lineWidth: 1))
+            .contentShape(Capsule())
+        }
+        .fixedSize(horizontal: true, vertical: false)
+    }
+}
+
+/// 时间范围：紧凑分段控件 + 日历按钮（自定义区间走 sheet，
+/// 不再把两个 DatePicker 常驻在页面顶部）。
+struct RangeControl: View {
+    @Binding var preset: RangePreset
+    @Binding var customFrom: String
+    @Binding var customTo: String
+    let onApply: () -> Void
+
+    @State private var showCustom = false
+
+    private let quick: [RangePreset] = [.today, .d1, .d7, .d30]
+
+    private static func shortLabel(_ p: RangePreset) -> String {
+        switch p {
+        case .today: return "今日"
+        case .d1: return "24时"
+        case .d7: return "7天"
+        case .d30: return "30天"
+        case .custom: return "自定义"
+        }
+    }
+
+    var body: some View {
+        HStack(spacing: 1) {
+            ForEach(quick, id: \.self) { p in
+                Button {
+                    guard preset != p else { return }
+                    preset = p
+                    onApply()
+                } label: {
+                    Text(Self.shortLabel(p))
+                        .font(.system(size: 11.5,
+                                      weight: preset == p ? .semibold : .regular))
+                        .foregroundStyle(preset == p ? Theme.accent : Theme.textSecondary)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 6)
+                        .background {
+                            if preset == p {
+                                Capsule().fill(Theme.accent.opacity(0.16))
+                            }
+                        }
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+            Button {
+                showCustom = true
+            } label: {
+                Image(systemName: "calendar")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(preset == .custom ? Theme.accent : Theme.textSecondary)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 6)
+                    .background {
+                        if preset == .custom {
+                            Capsule().fill(Theme.accent.opacity(0.16))
+                        }
+                    }
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(3)
+        .background(Capsule().fill(Color.white.opacity(0.04)))
+        .overlay(Capsule().strokeBorder(Theme.stroke, lineWidth: 1))
+        .fixedSize(horizontal: true, vertical: false)
+        .sheet(isPresented: $showCustom) { customSheet }
+    }
+
+    private var customSheet: some View {
+        VStack(spacing: 18) {
+            HStack {
+                Text("自定义区间")
+                    .font(.system(size: 16, weight: .semibold, design: .rounded))
+                Spacer()
+                Button("取消") { showCustom = false }
+                    .font(.system(size: 13))
+                    .foregroundStyle(Theme.textSecondary)
+            }
+
+            HStack(spacing: 10) {
+                dateField("起", text: $customFrom)
+                Text("—")
+                    .font(.caption)
+                    .foregroundStyle(Theme.textTertiary)
+                dateField("止", text: $customTo)
+            }
+
+            Button {
+                preset = .custom
+                showCustom = false
+                onApply()
+            } label: {
+                Text("应用")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(Color.black.opacity(0.85))
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 11)
+                    .background(
+                        Capsule().fill(LinearGradient(
+                            colors: [Theme.accent, Theme.accentDeep],
+                            startPoint: .leading, endPoint: .trailing)))
+            }
+            .buttonStyle(.plain)
+            .disabled(!customReady)
+            .opacity(customReady ? 1 : 0.45)
+        }
+        .padding(18)
+        .frame(maxHeight: .infinity, alignment: .top)
+        .background(AppBackground())
+        .presentationDetents([.height(250)])
+        .presentationDragIndicator(.visible)
+        .presentationBackground(Theme.bgTop)
+        .tint(Theme.accent)
+        .onAppear(perform: prefillCustom)
+    }
+
+    private var customReady: Bool {
+        Format.dateFromYMD(customFrom) != nil && Format.dateFromYMD(customTo) != nil
+    }
+
+    /// 首次打开自定义区间时给一个合理的默认值（近 7 天），
+    /// 避免空值直接应用后静默退化成「最近 24 小时」。
+    private func prefillCustom() {
+        guard customFrom.isEmpty || customTo.isEmpty else { return }
+        let cal = Calendar.current
+        let now = Date()
+        let start = cal.date(byAdding: .day, value: -6, to: cal.startOfDay(for: now)) ?? now
+        customFrom = Format.dateStr(Int(start.timeIntervalSince1970 * 1000))
+        customTo = Format.dateStr(Int(now.timeIntervalSince1970 * 1000))
+    }
+
+    private func dateField(_ title: String, text: Binding<String>) -> some View {
+        HStack(spacing: 4) {
+            Text(title)
+                .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(Theme.textTertiary)
+            DatePicker("", selection: Binding(
+                get: { Format.dateFromYMD(text.wrappedValue) ?? Date() },
+                set: { text.wrappedValue = Format.dateStr(Int($0.timeIntervalSince1970 * 1000)) }),
+                displayedComponents: .date)
+                .labelsHidden()
+                .datePickerStyle(.compact)
+                .environment(\.locale, Locale(identifier: "zh_CN"))
+        }
+    }
+}
+
+/// 页内分组小标题（替代原先「每个分组一张卡片头」的写法）：
+/// 只留一行 11pt 灰字，让内容本身承担视觉重量。
+struct SectionLabel: View {
+    let title: String
+    var detail: String? = nil
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Text(title)
+                .font(.system(size: 11, weight: .semibold))
+                .tracking(0.8)
+                .foregroundStyle(Theme.textTertiary)
+            Spacer(minLength: 6)
+            if let detail {
+                Text(detail)
+                    .font(.system(size: 10))
+                    .foregroundStyle(Theme.textTertiary.opacity(0.75))
+            }
+        }
+        .padding(.horizontal, 2)
+    }
+}
+
 // MARK: - 小标签
 
-/// 胶囊小标签（统计 / 日志 / 额度卡片内复用）。
 struct Tag: View {
     let text: String
     init(_ text: String) { self.text = text }
@@ -565,102 +781,62 @@ struct AgentTile: View {
 
 // MARK: - 进度
 
-/// 通用细进度条（额度窗口 / 占比条）。
-struct ProgressBar: View {
-    let pct: Int
-    let label: String
-    let resetMs: Int?
-    var tint: Color? = nil
+/// 额度窗口紧凑行（账号卡内使用）：标题 + 重置倒计时 + 百分比 + 细进度条。
+/// 相比 76pt 进度环，一行只占 30pt，多账号多窗口时不必翻好几屏。
+struct QuotaWindowRow: View {
+    let window: QuotaWindow
 
-    var body: some View {
-        VStack(alignment: .leading, spacing: 7) {
-            HStack(spacing: 6) {
-                Text(label)
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(.white.opacity(0.88))
-                Spacer()
-                Text("\(pct)%")
-                    .font(.system(size: 13, weight: .semibold, design: .rounded))
-                    .monospacedDigit()
-                    .foregroundStyle(tint ?? Theme.quota(pct))
-            }
-            GeometryReader { geo in
-                ZStack(alignment: .leading) {
-                    Capsule().fill(Color.white.opacity(0.07))
-                    Capsule()
-                        .fill(LinearGradient(
-                            colors: [(tint ?? Theme.quota(pct)).opacity(0.65),
-                                     (tint ?? Theme.quota(pct))],
-                            startPoint: .leading, endPoint: .trailing))
-                        .frame(width: max(6, geo.size.width * CGFloat(min(max(Double(pct) / 100, 0), 1))))
-                }
-            }
-            .frame(height: 7)
-            if let r = resetMs {
-                Text("重置 · " + Format.countdown(to: r))
-                    .font(.system(size: 10))
-                    .foregroundStyle(Theme.textTertiary)
-            }
-        }
+    private var pct: Int? {
+        window.usedPercent.map { Int($0.rounded()) }
     }
-}
-
-/// 额度进度环（账号卡主窗口用）。
-struct QuotaRing: View {
-    let pct: Int
-    let title: String
-    var resetMs: Int? = nil
-    var detail: String? = nil
-    var size: CGFloat = 76
 
     var body: some View {
-        VStack(spacing: 8) {
-            ZStack {
-                Circle()
-                    .stroke(Color.white.opacity(0.07), lineWidth: 7)
-                Circle()
-                    .trim(from: 0, to: CGFloat(min(max(Double(pct) / 100, 0), 1)))
-                    .stroke(
-                        AngularGradient(
-                            colors: [Theme.quota(pct).opacity(0.45), Theme.quota(pct)],
-                            center: .center,
-                            startAngle: .degrees(0),
-                            endAngle: .degrees(360)),
-                        style: StrokeStyle(lineWidth: 7, lineCap: .round))
-                    .rotationEffect(.degrees(-90))
-                VStack(spacing: -1) {
-                    Text("\(pct)")
-                        .font(.system(size: size * 0.27, weight: .bold, design: .rounded))
-                        .monospacedDigit()
-                        .foregroundStyle(.white.opacity(0.95))
-                    Text("%")
-                        .font(.system(size: size * 0.12, weight: .semibold))
+        VStack(spacing: 6) {
+            HStack(spacing: 8) {
+                Text(window.title)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.86))
+                    .lineLimit(1)
+                Spacer(minLength: 6)
+                if let r = window.resetsAt {
+                    Text(Format.countdown(to: r))
+                        .font(.system(size: 9.5))
                         .foregroundStyle(Theme.textTertiary)
+                        .lineLimit(1)
+                }
+                if let p = pct {
+                    Text("\(p)%")
+                        .font(.system(size: 12, weight: .semibold, design: .rounded))
+                        .monospacedDigit()
+                        .foregroundStyle(Theme.quota(p))
+                        .frame(minWidth: 34, alignment: .trailing)
+                } else if let usage = QuotaText.usage(window) {
+                    Text(usage)
+                        .font(.system(size: 11, weight: .medium, design: .rounded))
+                        .monospacedDigit()
+                        .foregroundStyle(Theme.textSecondary)
                 }
             }
-            .frame(width: size, height: size)
 
-            Text(title)
-                .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(Theme.textSecondary)
-                .lineLimit(1)
-            if let detail {
-                Text(detail)
-                    .font(.system(size: 9))
-                    .monospacedDigit()
-                    .foregroundStyle(Theme.textTertiary)
-                    .lineLimit(1)
-            }
-            if let r = resetMs {
-                Text(Format.countdown(to: r))
-                    .font(.system(size: 9))
-                    .foregroundStyle(Theme.textTertiary)
-                    .lineLimit(1)
+            if let p = pct {
+                GeometryReader { geo in
+                    ZStack(alignment: .leading) {
+                        Capsule().fill(Color.white.opacity(0.07))
+                        if p > 0 {
+                            Capsule()
+                                .fill(LinearGradient(
+                                    colors: [Theme.quota(p).opacity(0.62), Theme.quota(p)],
+                                    startPoint: .leading, endPoint: .trailing))
+                                .frame(width: max(5, geo.size.width * CGFloat(min(Double(p) / 100, 1))))
+                        }
+                    }
+                }
+                .frame(height: 5)
             }
         }
-        .frame(maxWidth: .infinity)
     }
 }
+
 
 /// 分段占比条（深浅一致的彩色分段，统计页 token 构成用）。
 struct SegmentedBar: View {

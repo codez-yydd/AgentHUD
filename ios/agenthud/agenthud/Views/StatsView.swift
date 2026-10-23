@@ -29,9 +29,8 @@ struct StatsView: View {
                 AppBackground()
 
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 16) {
+                    VStack(alignment: .leading, spacing: 14) {
                         PageHeader(title: "统计",
-                                   subtitle: "\(preset.displayName) · \(filterLabel)",
                                    isLoading: rangeLoading,
                                    onRefresh: loadRange)
 
@@ -39,11 +38,9 @@ struct StatsView: View {
                             NotConfiguredBanner(
                                 message: "尚未连接同步服务，统计需要先注册设备。")
                         } else {
-                            DeviceFilterBar()
-
-                            RangePicker(preset: $preset,
-                                        customFrom: $customFrom,
-                                        customTo: $customTo) {
+                            HUDControlBar(preset: $preset,
+                                          customFrom: $customFrom,
+                                          customTo: $customTo) {
                                 loadRange()
                             }
 
@@ -54,7 +51,6 @@ struct StatsView: View {
                                 TokenCompositionCard(usage: usage,
                                                      cost: rangeCost,
                                                      hitRate: cacheHitRate(usage))
-                                OverallCard(usage: usage, cost: rangeCost)
                                 ModelBreakdownCard(usage: usage, cost: rangeCost)
                             } else if rangeLoading {
                                 LoadingPlaceholder()
@@ -69,7 +65,7 @@ struct StatsView: View {
                     }
                     .padding(.horizontal, Theme.pagePadding)
                     .padding(.top, 4)
-                    .padding(.bottom, 110)
+                    .padding(.bottom, 96)
                     .hudContentWidth()
                 }
                 .scrollIndicators(.hidden)
@@ -85,18 +81,6 @@ struct StatsView: View {
 
     // MARK: - 辅助文案
 
-    private var filterLabel: String {
-        switch refresh.selectedFilter {
-        case .all:
-            return "全部设备"
-        case .local:
-            return settings.sync.device_name.isEmpty ? "本机" : settings.sync.device_name
-        case .specific(let id):
-            return refresh.devices.first { $0.device_id == id }?.device_name ?? "指定设备"
-        }
-    }
-
-    /// 总缓存命中率：缓存读 / 输入（输入已含缓存读，与桌面口径一致）。
     private func cacheHitRate(_ usage: RemoteUsage) -> Double? {
         let input = usage.overall.input_tokens
         guard input > 0 else { return nil }
@@ -150,140 +134,6 @@ struct StatsView: View {
 // MARK: - 范围选择器
 
 /// internal：除 StatsView 外，总览页 / 日志页复用同一套范围选择交互。
-struct RangePicker: View {
-    @Binding var preset: RangePreset
-    @Binding var customFrom: String
-    @Binding var customTo: String
-    let onApply: () -> Void
-
-    @Namespace private var selection
-
-    var body: some View {
-        VStack(spacing: 10) {
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 2) {
-                    ForEach(RangePreset.allCases) { p in
-                        Button {
-                            withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) {
-                                preset = p
-                            }
-                            if p != .custom { onApply() }
-                        } label: {
-                            Text(p.displayName)
-                                .font(.system(size: 12.5,
-                                              weight: preset == p ? .semibold : .regular))
-                                .foregroundStyle(preset == p ? Theme.accent : Theme.textSecondary)
-                                .padding(.horizontal, 14)
-                                .padding(.vertical, 8)
-                                .background {
-                                    if preset == p {
-                                        Capsule()
-                                            .fill(Theme.accent.opacity(0.15))
-                                            .overlay(
-                                                Capsule()
-                                                    .strokeBorder(Theme.accent.opacity(0.35),
-                                                                  lineWidth: 1))
-                                            .matchedGeometryEffect(id: "range", in: selection)
-                                    }
-                                }
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-                .padding(3)
-                .background {
-                    Capsule()
-                        .fill(Color.white.opacity(0.035))
-                        .overlay(Capsule().strokeBorder(Theme.stroke, lineWidth: 1))
-                }
-            }
-            .scrollClipDisabled()
-
-            if preset == .custom {
-                HStack(spacing: 10) {
-                    customDateField("起", text: $customFrom)
-                    Text("—")
-                        .font(.caption)
-                        .foregroundStyle(Theme.textTertiary)
-                    customDateField("止", text: $customTo)
-                    Button("应用", action: onApply)
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(Color.black.opacity(0.85))
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 8)
-                        .background(
-                            Capsule().fill(
-                                LinearGradient(colors: [Theme.accent, Theme.accentDeep],
-                                               startPoint: .leading, endPoint: .trailing)))
-                        .buttonStyle(.plain)
-                }
-                .padding(10)
-                .background {
-                    RoundedRectangle(cornerRadius: 16, style: .continuous)
-                        .fill(Color.white.opacity(0.04))
-                }
-                .overlay {
-                    RoundedRectangle(cornerRadius: 16, style: .continuous)
-                        .strokeBorder(Theme.stroke, lineWidth: 1)
-                }
-            }
-        }
-    }
-
-    private func customDateField(_ title: String, text: Binding<String>) -> some View {
-        HStack(spacing: 4) {
-            Text(title)
-                .font(.system(size: 10, weight: .medium))
-                .foregroundStyle(Theme.textTertiary)
-            DatePicker("", selection: Binding(
-                get: { Format.dateFromYMD(text.wrappedValue) ?? Date() },
-                set: { text.wrappedValue = Format.dateStr(Int($0.timeIntervalSince1970 * 1000)) }),
-                displayedComponents: .date)
-                .labelsHidden()
-                .datePickerStyle(.compact)
-                .environment(\.locale, Locale(identifier: "zh_CN"))
-        }
-    }
-}
-
-// MARK: - 设备筛选条
-
-struct DeviceFilterBar: View {
-    @EnvironmentObject var settings: AppSettings
-    @EnvironmentObject var refresh: RefreshService
-
-    var body: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 7) {
-                FilterChip(title: "全部",
-                           selected: refresh.selectedFilter == .all,
-                           icon: "square.stack.3d.up") {
-                    refresh.setFilter(.all)
-                }
-                FilterChip(title: "本机",
-                           selected: refresh.selectedFilter == .local,
-                           icon: "iphone") {
-                    refresh.setFilter(.local)
-                }
-                // 排除本机（已有「本机」chip）+ 过滤零记录设备（注册后从未
-                // 上报用量的设备在筛选条里是噪音；管理入口不在此处）
-                ForEach(refresh.devices.filter {
-                    $0.device_id != settings.sync.device_id
-                        && ($0.record_count ?? 0) > 0
-                }) { d in
-                    FilterChip(title: d.device_name,
-                               selected: refresh.selectedFilter == .specific(d.device_id),
-                               icon: "desktopcomputer") {
-                        refresh.setFilter(.specific(d.device_id))
-                    }
-                }
-            }
-            .padding(.vertical, 1)
-        }
-        .scrollClipDisabled()
-    }
-}
-
 // MARK: - Token 构成（主卡）
 
 private struct TokenCompositionCard: View {
@@ -397,51 +247,6 @@ private struct TokenCompositionCard: View {
                 .foregroundStyle(Theme.textTertiary)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-    }
-}
-
-// MARK: - 明细指标
-
-private struct OverallCard: View {
-    let usage: RemoteUsage
-    let cost: CostResult?
-    @EnvironmentObject var settings: AppSettings
-
-    var body: some View {
-        GlassCard {
-            VStack(alignment: .leading, spacing: 15) {
-                CardHeader(title: "明细",
-                           icon: "list.bullet.rectangle.portrait",
-                           tint: Theme.accent,
-                           detail: "服务端聚合")
-
-                LazyVGrid(columns: [GridItem(.flexible(), spacing: 14),
-                                    GridItem(.flexible(), spacing: 14)],
-                          alignment: .leading, spacing: 16) {
-                    MetricCell(title: "请求数",
-                               value: String(usage.overall.requests),
-                               icon: "arrow.up.arrow.down")
-                    MetricCell(title: "总 Token",
-                               value: Format.tokens(usage.overall.total_tokens),
-                               icon: "sum")
-                    MetricCell(title: "输入",
-                               value: Format.tokens(usage.overall.input_tokens),
-                               subtitle: "含缓存读",
-                               icon: "arrow.down.to.line")
-                    MetricCell(title: "输出",
-                               value: Format.tokens(usage.overall.output_tokens),
-                               icon: "arrow.up.from.line")
-                    MetricCell(title: "花费 ¥",
-                               value: cost.map { Format.cost($0.total_cny, .cny) } ?? "—",
-                               color: Theme.mint,
-                               icon: "yensign.circle")
-                    MetricCell(title: "花费 $",
-                               value: cost.map { Format.cost($0.total_usd, .usd) } ?? "—",
-                               color: Theme.mint,
-                               icon: "dollarsign.circle")
-                }
-            }
-        }
     }
 }
 
