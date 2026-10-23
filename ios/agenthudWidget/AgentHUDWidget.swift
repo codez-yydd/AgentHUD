@@ -136,23 +136,10 @@ extension View {
         if #available(iOS 17.0, *) {
             self.environment(\.colorScheme, .dark)
                 .containerBackground(for: .widget) {
-                    ZStack {
-                        Color(red: 0.035, green: 0.055, blue: 0.086)
-                        LinearGradient(
-                            colors: [Color(red: 0.29, green: 0.78, blue: 1.0).opacity(0.20),
-                                     Color(red: 0.66, green: 0.58, blue: 1.0).opacity(0.10)],
-                            startPoint: .topLeading, endPoint: .bottomTrailing)
-                    }
+                    WidgetBackdrop()
                 }
         } else {
-            self.background(
-                ZStack {
-                    Color(red: 0.035, green: 0.055, blue: 0.086)
-                    LinearGradient(
-                        colors: [Color(red: 0.29, green: 0.78, blue: 1.0).opacity(0.20),
-                                 Color(red: 0.66, green: 0.58, blue: 1.0).opacity(0.10)],
-                        startPoint: .topLeading, endPoint: .bottomTrailing)
-                })
+            self.background(WidgetBackdrop())
         }
     }
 
@@ -168,6 +155,37 @@ extension View {
 }
 
 /// Widget 端与 App 一致的视觉 token（App 的 Theme 在另一个 target，不能直接引用）。
+/// 小组件底色：深空底 + 两团相对尺寸的极光（青蓝偏左上、紫色偏右下），
+/// 和 App 的 AppBackground 同源，又不会在小尺寸上糊成一片亮色。
+struct WidgetBackdrop: View {
+    var body: some View {
+        GeometryReader { geo in
+            let w = geo.size.width
+            let h = geo.size.height
+            let reach = max(w, h)
+
+            ZStack {
+                Color(red: 0.035, green: 0.055, blue: 0.086)
+
+                RadialGradient(
+                    colors: [Color(red: 0.29, green: 0.78, blue: 1.0).opacity(0.28),
+                             Color(red: 0.29, green: 0.78, blue: 1.0).opacity(0)],
+                    center: UnitPoint(x: 0.12, y: 0.02),
+                    startRadius: 0,
+                    endRadius: reach * 0.85)
+
+                RadialGradient(
+                    colors: [Color(red: 0.66, green: 0.58, blue: 1.0).opacity(0.20),
+                             Color(red: 0.66, green: 0.58, blue: 1.0).opacity(0)],
+                    center: UnitPoint(x: 1.0, y: 1.0),
+                    startRadius: 0,
+                    endRadius: reach * 0.75)
+            }
+            .frame(width: w, height: h)
+        }
+    }
+}
+
 enum WidgetTheme {
     static let mint = Color(red: 0.30, green: 0.88, blue: 0.68)
     static let amber = Color(red: 1.00, green: 0.76, blue: 0.35)
