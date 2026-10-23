@@ -23,7 +23,8 @@ import type {
   MergeResult,
   MinimaxcodeSnapshot,
   ModelInfo,
-  ModelSpeedStat,
+  ModelSpeedResponse,
+  ModelSpeedScope,
   ModelsdevSyncResult,
   OpencodeSnapshot,
   PricingConfig,
@@ -867,8 +868,11 @@ export async function setSessionHudFontScale(
  * 查询模型速度统计（按 model_id 分组聚合主库 model_usage）。
  * days：滚动窗口天数；0 = 今日（本地时区自然日零点起）。
  */
-export async function getModelSpeed(days: number): Promise<ModelSpeedStat[]> {
-  return invoke<ModelSpeedStat[]>("get_model_speed", { days });
+export async function getModelSpeed(
+  days: number,
+  scope?: ModelSpeedScope,
+): Promise<ModelSpeedResponse> {
+  return invoke<ModelSpeedResponse>("get_model_speed", { days, scope });
 }
 
 // ===== 自定义宠物（第三阶段：Petdex 格式导入，Rust pets 模块契约）=====

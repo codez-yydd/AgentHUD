@@ -205,18 +205,35 @@ export const en: typeof zh = {
     "speed.rangeToday": "Today",
     "speed.range7d": "7 days",
     "speed.rangeLabel": "Speed range",
+    // Data scope toggle (local / all devices, scope parameter)
+    "speed.scopeLocal": "Local",
+    "speed.scopeAll": "All",
+    "speed.scopeLabel": "Data scope",
+    "speed.scopeAllTitle":
+      "All devices: merges records synced from other devices (approximate speed)",
+    // Weak hint when the remote fetch fails in all-devices scope (local data still shown)
+    "speed.remoteUnavailable": "Remote data unavailable, showing local only",
     "speed.fastest": "Fastest average speed",
     "speed.fastestHint": "in selected range",
     "speed.autoRefresh": "Auto-refreshes every 30s",
     "speed.overviewModels": "Models",
     "speed.overviewRequests": "Requests",
     "speed.overviewMean": "Average speed",
+    // Mean-cell title: in all-devices scope the per-group P50 may mix exact
+    // (generation) and approximate (request_average) scopes; simple mean gets
+    // an explanation only, no ≈ prefix
+    "speed.overviewMeanHint":
+      "Simple mean across groups, mixing exact and approximate scopes (approximate includes TTFT)",
     "speed.overviewSuccess": "Success",
     "speed.ranking": "Model ranking",
     "speed.modelCount": "{n} models",
     "speed.speedSamples": "{n} speed samples",
     "speed.samplesNone": "No speed samples",
-    "speed.providerUnknown": "Unknown source",
+    // Approximate-speed quality hint (title on values when speedQuality is
+    // request_average: imported stores lack event timestamps)
+    "speed.approxHint":
+      "Approximate request-average speed: this source lacks event timestamps, computed from total request duration (includes TTFT)",
+    "speed.sourceUnknown": "Unknown source",
     "speed.relativeSpeed": "{pct}% of fastest model",
     "speed.relativeLabel": "Relative to fastest model",
     "speed.averagePeak": "Average {avg} · peak {max}",
@@ -236,7 +253,7 @@ export const en: typeof zh = {
     "speed.loadFailed": "Could not load speed data",
     "speed.retry": "Retry",
     "speed.empty": "No model requests in the selected range",
-    "speed.emptyHint": "Stats appear automatically once you chat in ZCode",
+    "speed.emptyHint": "Stats appear automatically after you chat in ZCode, Codex, Claude, etc.",
     "speed.fail": "Failed to load model speed stats: {msg}",
     // 数据截至标识（每次查询成功后更新，Ns 随时间自走）
     "speed.updatedAt": "As of {time} · {ago}s ago",

@@ -94,8 +94,9 @@ use serde::Serialize;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-/// 全部来源（顺序即默认归并的稳定次序，同毫秒按此升序）
-const SOURCES: [&str; 7] = [
+/// 全部来源（顺序即默认归并的稳定次序，同毫秒按此升序）。pub(crate)：
+/// model_speed（速度页多源聚合）与本模块共用同一份来源清单。
+pub(crate) const SOURCES: [&str; 7] = [
     "zcode",
     "codex",
     "claude",
@@ -290,7 +291,10 @@ fn select_sources(agent: Option<&str>) -> Result<Vec<&'static str>, String> {
 /// 打开来源库（只做 SELECT，绝不建表 / 迁移）：
 /// - 库文件不存在（未安装 / 未用过）→ `Ok(None)`，按 0 条处理而不是错误；
 /// - 其余打开失败按错误上报（调用方记日志并跳过该源）。
-fn open_source(source: &str) -> Result<Option<Connection>, String> {
+///
+/// pub(crate)：model_speed 复用本函数打开导入库（zcode 分支它不用——那边
+/// 沿用 open_main_db_readonly_uri 的 URI 只读打开，见 model_speed 模块头）。
+pub(crate) fn open_source(source: &str) -> Result<Option<Connection>, String> {
     if source == "zcode" {
         // 主库路径解析失败（未找到 ZCode 数据库）按 0 条：未安装场景
         let Ok(path) = crate::db::db_path() else {

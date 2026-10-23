@@ -113,18 +113,33 @@ export const speed = {
   "speed.rangeToday": "今日",
   "speed.range7d": "7天",
   "speed.rangeLabel": "速度统计范围",
+  // 数据口径切换（本机 / 全部设备，scope 参数）
+  "speed.scopeLocal": "本机",
+  "speed.scopeAll": "全部",
+  "speed.scopeLabel": "数据范围",
+  "speed.scopeAllTitle": "全部设备：并入同步服务端上其他设备的明细（近似口径）",
+  // 全部设备口径下远端拉取失败的弱提示（本机数据照常）
+  "speed.remoteUnavailable": "远端数据不可用，当前仅显示本机",
   "speed.fastest": "最快平均速度",
   "speed.fastestHint": "当前范围内",
   "speed.autoRefresh": "每 30 秒自动更新",
   "speed.overviewModels": "模型",
   "speed.overviewRequests": "请求",
   "speed.overviewMean": "平均速度",
+  // 均值格 title：全部设备口径下各分组的 P50 可能混合精确（generation）
+  // 与近似（request_average）两种口径，简单平均无单一口径归属，故只加
+  // 说明不加 ≈ 前缀
+  "speed.overviewMeanHint": "各组速度的简单平均，混合精确与近似口径（近似含首字延迟）",
   "speed.overviewSuccess": "成功率",
   "speed.ranking": "模型排行",
   "speed.modelCount": "{n} 个模型",
   "speed.speedSamples": "速度样本 {n}",
   "speed.samplesNone": "暂无速度样本",
-  "speed.providerUnknown": "未标注来源",
+  // 近似速度口径提示（speedQuality = request_average 时挂在数值 title 上：
+  // 导入库缺事件时刻，按请求总耗时折算）
+  "speed.approxHint": "请求平均近似速度：该来源缺事件时刻，按请求总耗时折算（含首字延迟）",
+  // 未知来源兜底标签（后端新增来源未及更新 SOURCE_META 时显示）
+  "speed.sourceUnknown": "未知来源",
   "speed.relativeSpeed": "相对最快模型 {pct}%",
   "speed.relativeLabel": "相对最快模型",
   "speed.averagePeak": "平均 {avg} · 峰值 {max}",
@@ -144,7 +159,7 @@ export const speed = {
   "speed.loadFailed": "速度数据加载失败",
   "speed.retry": "重试",
   "speed.empty": "所选时间范围内暂无模型请求",
-  "speed.emptyHint": "在 ZCode 中发起对话后自动统计",
+  "speed.emptyHint": "在 ZCode、Codex、Claude 等 Agent 中发起对话后自动统计",
   "speed.fail": "模型速度统计查询失败：{msg}",
   // 数据截至标识（每次查询成功后更新，Ns 随时间自走）
   "speed.updatedAt": "数据截至 {time} · {ago}s 前",

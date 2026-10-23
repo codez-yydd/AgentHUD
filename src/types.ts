@@ -590,15 +590,33 @@ export type StatsTab =
 
 // ===== 模型速度统计（model_speed.rs get_model_speed 契约）=====
 
-/** 单模型速度统计（近段窗口聚合；速度 = output ÷ 生成毫秒口径，
+/** 速度口径（后端 token_speed::SpeedQuality 契约）：generation = 精确生成
+ *  窗口（zcode 事件时刻）；request_average = 请求平均近似（导入库 / 远端
+ *  行按总耗时折算、含首字延迟，界面加 ≈ 前缀） */
+export type ModelSpeedQuality = "generation" | "request_average";
+
+/** 速度页数据口径："local" = 仅本机；"all" = 全部设备（并入同步服务端上
+ *  其他设备的明细，远端行只进近似口径样本池） */
+export type ModelSpeedScope = "local" | "all";
+
+/** 单组模型速度统计（近段窗口聚合；分组键 = source + provider + modelId，
+ *  同名模型跨来源 / 跨渠道不合并；速度 = output ÷ 窗口毫秒口径，
  *  null = 对应统计无可信样本/老库降级） */
 export interface ModelSpeedStat {
   modelId: string;
+  /** 来源名（后端 7 路："zcode"|"codex"|"claude"|"kimi"|"dsh"|"opencode"|
+   *  "minimaxcode"；分组键之一） */
+  source: string;
   provider: string;
   requests: number;
+  /** 本机行数（纯本机计数；全部设备口径下 requests 含远端行——成功率
+   *  聚合的权重口径，本机模式下两者相等） */
+  localRequests: number;
   /** 速度合格样本数（通过行级判定的请求数；与 requests 总数口径不同，
    *  无可信样本为 null） */
   speedSampleCount: number | null;
+  /** 组级速度口径（null = 该组无速度样本，如 codex 无耗时列） */
+  speedQuality: ModelSpeedQuality | null;
   /** 成功率（completed 行占比，0–1；status 列缺失的老库为 null） */
   successRate: number | null;
   avgTps: number | null;
@@ -615,6 +633,14 @@ export interface ModelSpeedStat {
   inMax: number;
   outAvg: number;
   outMax: number;
+}
+
+/** get_model_speed 的返回：统计分组 + 远端拉取是否失败（scope="all" 时
+ *  同步未启用 / 未注册设备 / 网络失败 / 旧服务端等为 true，本机数据照常；
+ *  本机模式恒 false） */
+export interface ModelSpeedResponse {
+  stats: ModelSpeedStat[];
+  remoteFailed: boolean;
 }
 
 // ===== 通用凭证体系（与 Rust provider_credentials 模块结构一一对应）=====
