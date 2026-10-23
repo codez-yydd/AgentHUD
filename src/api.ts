@@ -25,6 +25,7 @@ import type {
   ModelInfo,
   ModelSpeedResponse,
   ModelSpeedScope,
+  ModelSpeedWindow,
   ModelsdevSyncResult,
   OpencodeSnapshot,
   PricingConfig,
@@ -871,8 +872,16 @@ export async function setSessionHudFontScale(
 export async function getModelSpeed(
   days: number,
   scope?: ModelSpeedScope,
+  window?: ModelSpeedWindow,
 ): Promise<ModelSpeedResponse> {
-  return invoke<ModelSpeedResponse>("get_model_speed", { days, scope });
+  // 区间参数可选：窄窗 ModelSpeedPanel 只传 (days, scope) 不受影响；
+  // window 给出时后端按 [fromMs, toMs) 区间查询并忽略 days
+  return invoke<ModelSpeedResponse>("get_model_speed", {
+    days,
+    scope,
+    fromMs: window?.fromMs,
+    toMs: window?.toMs,
+  });
 }
 
 // ===== 自定义宠物（第三阶段：Petdex 格式导入，Rust pets 模块契约）=====

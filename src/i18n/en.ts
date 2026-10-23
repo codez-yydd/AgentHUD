@@ -1234,6 +1234,7 @@ export const en: typeof zh = {
 
     "dashboard.overview": "Overview",
     "dashboard.logs": "Request logs",
+    "dashboard.speed": "Model speed",
     "dashboard.compare": "Weekly compare",
     "dashboard.pricing": "Pricing",
 
@@ -1241,6 +1242,8 @@ export const en: typeof zh = {
       "Aggregated usage, cost and trends across services.",
     "dashboard.logs.desc":
       "Per-request details: time, model, token breakdown, cost and duration; filterable by device, source and model.",
+    "dashboard.speed.desc":
+      "Streaming output speed by model across sources and channels; the same model ranks separately per source/channel, approximate scopes carry a ≈ mark.",
     "dashboard.compare.desc":
       "Weekly quota left per subscription, used-% trends over the selected range, and local vs. other-device token comparison.",
     "dashboard.pricing.desc":
@@ -1591,6 +1594,34 @@ export const en: typeof zh = {
     "dashboard.logs.colDuration": "Duration",
     "dashboard.logs.colTtft": "TTFT",
     "dashboard.logs.colSpeed": "Speed",
+    // Model-speed page table columns (speed percentiles / TTFT / duration /
+    // input-output / success reuse the speed.* keys from the stats dict)
+    "dashboard.speed.colRank": "Rank",
+    "dashboard.speed.colProvider": "Channel",
+    "dashboard.speed.colSamples": "Samples",
+    // Rank column always shows the speed rank (independent of sort column)
+    "dashboard.speed.rankHint":
+      "Ranked by P50 output speed within the current source filter (independent of the sort column; rows without speed samples are unranked)",
+    // Percentile semantics on the sortable speed column headers (title)
+    "dashboard.speed.p10Hint": "P10 of output speed (boundary of the slowest 10%), tok/s",
+    "dashboard.speed.p50Hint": "P50 median of output speed (half of requests are faster), tok/s",
+    "dashboard.speed.p90Hint": "P90 of output speed (90% of requests are faster), tok/s",
+    // Summary metric row scope hints (titles)
+    "dashboard.speed.metricRequestsHint":
+      "Total requests across groups in the window (all-devices scope includes other devices)",
+    "dashboard.speed.metricSuccessHint":
+      "Group success rates weighted by local requests (remote rows carry no status and are excluded)",
+    // Source-filtered empty state (LogsPage model-empty precedent)
+    "dashboard.speed.emptySourceTitle":
+      "No model requests for this source in the range",
+    "dashboard.speed.emptySourceHint":
+      "Source {source} has no requests in the selected time range",
+    "dashboard.speed.clearSource": "Clear source filter",
+    // Input/output columns: total-scope hints (header title) + per-request avg
+    "dashboard.speed.inTotalHint":
+      "Total input tokens in the window (input includes cache reads)",
+    "dashboard.speed.outTotalHint": "Total output tokens in the window",
+    "dashboard.speed.avgPerRequest": "avg {v}/request",
     "dashboard.logs.rowHint": "Click a row for details",
     "dashboard.logs.cellNoData": "No data",
     // Remote-suffixed entries are for remote rows (all-devices scope): their

@@ -17,9 +17,10 @@ export const dashboard = {
   "dashboard.titlebar.restore": "还原",
   "dashboard.titlebar.close": "关闭",
 
-  // 侧栏导航项（同时用作页面标题）：用量总览 / 请求日志 / 周额度对比 / 价格设置
+  // 侧栏导航项（同时用作页面标题）：用量总览 / 请求日志 / 模型速度 / 周额度对比 / 价格设置
   "dashboard.overview": "用量总览",
   "dashboard.logs": "请求日志",
+  "dashboard.speed": "模型速度",
   "dashboard.compare": "周额度对比",
   "dashboard.pricing": "价格设置",
 
@@ -27,6 +28,8 @@ export const dashboard = {
   "dashboard.overview.desc": "跨服务用量、花费与趋势的汇总视图。",
   "dashboard.logs.desc":
     "逐个请求的明细：时间、模型、Token 构成、花费与耗时；可按设备、来源与模型筛选。",
+  "dashboard.speed.desc":
+    "跨来源、跨渠道对比各模型的流式输出速度；同名模型在不同来源或渠道独立成行，近似口径带 ≈ 标记。",
   "dashboard.compare.desc":
     "各订阅当前额度剩余、近 N 天已用比例趋势，以及本机与其他设备的 Token 对比。",
   "dashboard.pricing.desc": "模型单价维护与价格表更新。",
@@ -375,6 +378,31 @@ export const dashboard = {
   "dashboard.logs.colTtft": "首字",
   // 速度列：数值 + 小号 t/s 单位；≈ 表示按总耗时估算的近似速度
   "dashboard.logs.colSpeed": "速度",
+  // 模型速度页的表列（速度三列 / 首字 / 耗时 / 输入输出 / 成功率等复用
+  // stats dict 的 speed.* 键，见 SpeedPage 表头）
+  "dashboard.speed.colRank": "排名",
+  "dashboard.speed.colProvider": "渠道",
+  "dashboard.speed.colSamples": "速度样本",
+  // 排名列恒显速度名次（与当前排序列无关）
+  "dashboard.speed.rankHint":
+    "按 P50 输出速度的名次（当前来源筛选范围内，与当前排序列无关；无速度样本的行无名次）",
+  // 速度分位列头的百分位语义（title 挂在可排序按钮上）
+  "dashboard.speed.p10Hint": "输出速度 P10 分位（慢速端 10% 请求的界值），tok/s",
+  "dashboard.speed.p50Hint": "输出速度 P50 中位数（一半请求快于此值），tok/s",
+  "dashboard.speed.p90Hint": "输出速度 P90 分位（90% 请求快于此值），tok/s",
+  // 汇总指标行的口径说明（title）
+  "dashboard.speed.metricRequestsHint":
+    "窗口内全部分组的请求总数（全部设备口径含其他设备的请求）",
+  "dashboard.speed.metricSuccessHint":
+    "按本机请求加权的各组成功率（远端行无状态、不参与）",
+  // 来源筛选后无数据的专属空态（LogsPage 模型空态同款先例）
+  "dashboard.speed.emptySourceTitle": "该来源在此范围内无模型请求",
+  "dashboard.speed.emptySourceHint": "来源「{source}」在所选时间范围内没有请求数据",
+  "dashboard.speed.clearSource": "清除来源筛选",
+  // 输入 / 输出列的总量口径（列头 title）与均值说明（数值格 title 拼接用）
+  "dashboard.speed.inTotalHint": "窗口内累计输入 token（输入含缓存读）",
+  "dashboard.speed.outTotalHint": "窗口内累计输出 token",
+  "dashboard.speed.avgPerRequest": "均值 {v}/请求",
   "dashboard.logs.rowHint": "点击行查看详情",
   "dashboard.logs.cellNoData": "无数据",
   // 耗时 / 首字 / 速度缺失说明：讲清是数据源不落盘（而不是加载失败），

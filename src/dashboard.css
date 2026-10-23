@@ -3418,3 +3418,132 @@ body {
   --db-cal-today-ring: rgba(56, 189, 248, 0.8);
   --db-cal-field-bg: rgba(226, 232, 240, 0.05);
 }
+
+/* ---- 模型速度页（SpeedPage）：列宽 / 排序表头 / 第一名标识 ----
+   版面复用 db-logs-page / db-logs-card / db-logs-filters / db-logs-metrics
+   （只含 flex 列 + 表体内滚 + sticky 表头的通用规则）。
+
+   布局纪律：**auto 布局 + border-box 宽度 + 关键文本列内容自适应**。
+   沿革：最初 auto + content-box 预算漏算 padding（td 10px×2 × 14 列 =
+   280px）被撑出横滚；改 fixed 后渠道列被硬截断成 "GLM Codin…"。现方案
+   回到 auto（列宽随内容计算），但保留 border-box（width 即真实列宽）与
+   4px×2 的水平 padding 压缩：**渠道列不声明宽度**（内容全显：
+   "GLM Coding Plan" ≈ 99 / "deepseek-account" ≈ 112 / 极端
+   "opencode-go-messages" 类压到 max-width 140 兜底），**模型列是唯一弹性
+   列**（min-width 90 保底短名完整 "GLM-5.3"，max-width 280 上限 + 既有
+   ellipsis/title，渠道变宽时它让位）。
+
+   列宽预算（可用表宽 = 窗口 − 298；1100 默认窗 802px）。固定 12 列：
+   34(排名) + 72(来源) + 44(慢) + 56(平均) + 44(快) + 48(首字) + 50(耗时) +
+   54(输入) + 54(输出) + 54(请求) + 54(样本) + 48(成功率) = **612**；
+   - 渠道 "GLM Coding Plan" 档（≈99）：612 + 99 + 模型 90 = **801 ≤ 802**，
+     默认窗零横滚 ✓（数字内容最宽 "20.96亿" 53 ≤ 54 均已验证）；
+   - 渠道 "deepseek-account" 档（≈112）：814，约 12px 横滚；
+   - 渠道极端档（max-width 140 兜底）：842，约 40px 横滚——由
+     .db-table-wrap 横向滚动兜底，总好过硬截断渠道名；
+   - 模型列 min 90 / max 280 之间随剩余空间弹性，宽窗时吸收富余。
+   900×640 最小窗（可用 602）约 200px 横向滚动（日志页同款先例）。 */
+.db-speed-table {
+  min-width: 796px;
+}
+
+/* border-box：width 含 padding（列宽声明即真实列宽）；水平 padding 压到
+   4px×2，垂直 padding 沿用基础规则（沿革见上方注释块） */
+.db-speed-table th,
+.db-speed-table td {
+  box-sizing: border-box;
+  padding-left: 4px;
+  padding-right: 4px;
+}
+
+/* 全列单行（auto 布局下列宽随内容计算的前提；模型 / 渠道列 span 另有
+   ellipsis + title 收尾） */
+.db-speed-table th,
+.db-speed-table td {
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.db-speed__col-rank { width: 34px; text-align: right; }
+.db-speed__col-source { width: 72px; }
+/* 渠道列：不声明宽度，内容自适应全显（"GLM Coding Plan" 档零横滚见预算）；
+   max-width 兜底防极端渠道名撑爆，超出由 span ellipsis + title 收尾 */
+.db-speed__col-provider { max-width: 140px; }
+/* 模型列：唯一弹性列——min 保底短名完整，max 上限 + ellipsis/title，
+   渠道列变宽时由它让位 */
+.db-speed__col-model { min-width: 90px; max-width: 280px; }
+.db-speed__col-p10, .db-speed__col-p90 { width: 44px; }
+.db-speed__col-p50 { width: 56px; }
+.db-speed__col-ttft { width: 48px; }
+.db-speed__col-dur { width: 50px; }
+.db-speed__col-in, .db-speed__col-out { width: 54px; }
+.db-speed__col-requests { width: 54px; }
+.db-speed__col-samples { width: 54px; }
+.db-speed__col-success { width: 48px; }
+
+/* 可排序表头：按钮占满 th（继承 th 的对齐与字号——button 默认居中对齐会
+   与 db-table__num 的右对齐表头错位，故显式 text-align: inherit），激活列
+   主色高亮 + 方向箭头；hover 主色提示可点（--db-seg-active-text 亮暗两套
+   变量自动翻转） */
+.db-speed__th-sort {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: inherit;
+  cursor: pointer;
+}
+
+.db-speed__th-sort:hover {
+  color: var(--db-seg-active-text);
+}
+
+.db-speed__th-sort--active {
+  color: var(--db-seg-active-text);
+  font-weight: 600;
+}
+
+/* 方向箭头绝对定位：**不占布局宽度**——固定布局下列宽预算按无箭头的表头
+   文字计算（箭头只在激活列出现一枚），若参与布局会把 "Requests"+▼ 类
+   组合顶出列宽。zh 表头短（≤44px）不与箭头相遇；en 个别贴满列宽的表头
+   （Requests/Success）激活时箭头轻微叠在末字符上，属可接受的取舍 */
+.db-speed__th-arrow {
+  position: absolute;
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 8px;
+  line-height: 1;
+}
+
+/* 排行第一的行：排名数字主色加粗（无整行底色强调的既有先例，保持克制） */
+.db-speed__rank--top {
+  color: var(--db-seg-active-text);
+  font-weight: 700;
+}
+
+/* 来源列：品牌小图标 + 短名（图标 currentColor 跟随文字色） */
+.db-speed__source {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+
+.db-speed__source-icon {
+  flex: none;
+}
+
+/* 模型 / 渠道列文本截断（title 给全量） */
+.db-speed__model,
+.db-speed__provider {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

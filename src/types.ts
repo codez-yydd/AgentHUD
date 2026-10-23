@@ -599,6 +599,14 @@ export type ModelSpeedQuality = "generation" | "request_average";
  *  其他设备的明细，远端行只进近似口径样本池） */
 export type ModelSpeedScope = "local" | "all";
 
+/** 自定义查询区间（半开 [fromMs, toMs)，含上界 started_at < toMs；from
+ *  与 to 同时下发时后端忽略 days 走区间模式，to 可在过去——历史区间固定
+ *  不按此刻推算） */
+export interface ModelSpeedWindow {
+  fromMs: number;
+  toMs: number;
+}
+
 /** 单组模型速度统计（近段窗口聚合；分组键 = source + provider + modelId，
  *  同名模型跨来源 / 跨渠道不合并；速度 = output ÷ 窗口毫秒口径，
  *  null = 对应统计无可信样本/老库降级） */
@@ -631,8 +639,12 @@ export interface ModelSpeedStat {
   /** 输入 token 均值（input_tokens 原值，含缓存读） */
   inAvg: number;
   inMax: number;
+  /** 窗口内累计输入 token（含缓存读；大窗速度页展示总量、均值进 title） */
+  inTotal: number;
   outAvg: number;
   outMax: number;
+  /** 窗口内累计输出 token */
+  outTotal: number;
 }
 
 /** get_model_speed 的返回：统计分组 + 远端拉取是否失败（scope="all" 时

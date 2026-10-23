@@ -34,8 +34,10 @@ export const LOG_SOURCES: RequestLogSource[] = [
   "minimaxcode",
 ];
 
-/** 来源 → UI 侧 AgentId：显示名与品牌元数据复用总览页同一份 */
-const SOURCE_AGENT: Record<RequestLogSource, UsageAgentId> = {
+/** 来源 → UI 侧 AgentId：显示名与品牌元数据复用总览页同一份（速度页
+ *  SpeedPage 也复用本映射渲染来源列 BrandIcon——Agent id 即品牌名，
+ *  见 overview/AgentTable 的同款约定） */
+export const SOURCE_AGENT: Record<RequestLogSource, UsageAgentId> = {
   zcode: "zai",
   codex: "codex",
   claude: "claude",

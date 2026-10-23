@@ -1,10 +1,11 @@
 /**
  * 主窗口（Dashboard）应用壳：顶部自绘标题栏（品牌标识 + 窗口控制，替代
- * decorations: false 后的系统标题栏）+ 左侧固定侧栏（四项导航 + 底部
+ * decorations: false 后的系统标题栏）+ 左侧固定侧栏（五项导航 + 底部
  * 语言/主题快捷切换）+ 右侧主区。
  *
  * 视图切换用组件内 state（对齐面板 App.tsx 的 view 模式，不引路由库）：
- * 用量总览 / 请求日志 / 周额度对比 / 价格设置 四个页面各自独立取数渲染。
+ * 用量总览 / 请求日志 / 模型速度 / 周额度对比 / 价格设置 五个页面各自独立
+ * 取数渲染。
  */
 import { useEffect, useRef, useState } from "react";
 import type { ComponentType } from "react";
@@ -14,15 +15,22 @@ import { APPEARANCE_CHANGED_EVENT, loadTheme, type Theme } from "../appearance";
 import { loadLocale } from "../i18n/locale";
 import { useI18n, type MessageKey } from "../i18n";
 import type { IconProps } from "./icons";
-import { CompareIcon, LogsIcon, OverviewIcon, PricingIcon } from "./icons";
+import {
+  CompareIcon,
+  LogsIcon,
+  OverviewIcon,
+  PricingIcon,
+  SpeedIcon,
+} from "./icons";
 import { TitleBar } from "./TitleBar";
 import { OverviewPage } from "./OverviewPage";
 import { LogsPage } from "./logs/LogsPage";
+import { SpeedPage } from "./SpeedPage";
 import { ComparePage } from "./ComparePage";
 import { PricingPage } from "./PricingPage";
 
 /** 主区视图（新增页面时在此扩展） */
-type View = "overview" | "logs" | "compare" | "pricing";
+type View = "overview" | "logs" | "speed" | "compare" | "pricing";
 
 /** 面板 → 主窗口跳页事件（Rust 侧 open_main_window(page) 在开窗/聚焦后
  *  emit_to 本窗，见 main_window.rs；事件名风格沿 zbar://appearance-changed，
@@ -34,6 +42,7 @@ const DASHBOARD_NAVIGATE_EVENT = "zbar://dashboard-navigate";
 const NAVIGATABLE_VIEWS: readonly string[] = [
   "overview",
   "logs",
+  "speed",
   "compare",
   "pricing",
 ];
@@ -46,6 +55,7 @@ const NAV_ITEMS: {
 }[] = [
   { view: "overview", labelKey: "dashboard.overview", Icon: OverviewIcon },
   { view: "logs", labelKey: "dashboard.logs", Icon: LogsIcon },
+  { view: "speed", labelKey: "dashboard.speed", Icon: SpeedIcon },
   { view: "compare", labelKey: "dashboard.compare", Icon: CompareIcon },
   { view: "pricing", labelKey: "dashboard.pricing", Icon: PricingIcon },
 ];
@@ -172,6 +182,8 @@ export function DashboardApp() {
             <OverviewPage />
           ) : view === "logs" ? (
             <LogsPage />
+          ) : view === "speed" ? (
+            <SpeedPage />
           ) : view === "compare" ? (
             <ComparePage />
           ) : (

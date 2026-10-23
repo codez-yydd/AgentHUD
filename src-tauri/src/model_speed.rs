@@ -6,6 +6,16 @@
 //! 两组，GLM-5.3 在不同中转站也各自独立——速度是"渠道体验"指标，合并统计
 //! 会把快慢渠道互相平均掉。
 //!
+//! ## 查询窗口（两模式）
+//!
+//! - **days 模式**（窄窗速度页 / 缺省）：days > 0 = 滚动窗口 now − N×24h、
+//!   days = 0 = 本地时区自然日零点起（`range_start_ms`），**无上界**；
+//! - **自定义区间模式**（大窗速度页 CustomRangeMenu）：`from_ms` 与 `to_ms`
+//!   同时给时按半开区间 `[from_ms, to_ms)` 查询（含上界
+//!   `started_at < to_ms`，to 可以在过去——历史区间固定，不按此刻推算），
+//!   忽略 days。本地行 SQL 上界、远端行窗口过滤、远端请求的 to 参数
+//!   三处同一口径。
+//!
 //! ## 来源与打开方式（对齐 request_logs 的 7 路）
 //!
 //! - `zcode`：ZCode 主库，沿用 `zcode_sessions::open_main_db_readonly_uri`
@@ -107,9 +117,10 @@ pub struct ModelSpeedStat {
     /// 来源名："zcode" | "codex" | "claude" | "kimi" | "dsh" | "opencode" |
     /// "minimaxcode"（分组键之一——同名模型跨来源绝不合并）
     pub source: String,
-    /// provider 简名（分组键之一）：zcode 取 "account:" 后部分（过长截断）；
-    /// 导入库原样——opencode 的 providerID 是用户自配渠道名（如
-    /// opencode-go / deepseek），与 account: 前缀语义不同，不做剥离
+    /// provider 简名（分组键之一）：zcode 取 "account:" 后部分（完整值，
+    /// **不截断**——截断由前端 CSS 承担，见 provider_short）；导入库原样
+    /// ——opencode 的 providerID 是用户自配渠道名（如 opencode-go /
+    /// deepseek），与 account: 前缀语义不同，不做剥离
     pub provider: String,
     /// 请求数（窗口内行数；全部设备口径下含远端行）
     pub requests: i64,
@@ -150,10 +161,15 @@ pub struct ModelSpeedStat {
     pub in_avg: i64,
     /// 输入 token 最大值
     pub in_max: i64,
+    /// 窗口内累计输入 token（= Σinput_tokens 原值，含缓存读；速度页大窗
+    /// 展示总量、均值进数值格 title）
+    pub in_total: i64,
     /// 输出 token 均值
     pub out_avg: i64,
     /// 输出 token 最大值
     pub out_max: i64,
+    /// 窗口内累计输出 token（= Σoutput_tokens）
+    pub out_total: i64,
 }
 
 /// get_model_speed 的返回（serde camelCase 与前端契约一致）：
@@ -193,21 +209,28 @@ fn range_start_ms(days: i64, now_ms: i64) -> i64 {
         .unwrap_or(now_ms - 86_400_000)
 }
 
-/// Tauri command：查询模型速度统计。days 缺省 7（近 7 天滚动）；0 = 今日
-/// （本地零点起）。scope：None / "local" = 仅本机；"all" = 全部设备（并入
-/// 远端其他设备的同步明细，见模块头「全部设备口径」）。遍历 7 个本地来源
-/// （zcode 主库 + 6 个导入库）按 (source, provider, model_id) 分组聚合。
-/// 多库 SQLite 查询 + scope=all 时的同步 HTTP 统一 async + spawn_blocking
-/// 卸载到阻塞线程池（与 request_logs 同款，不跑主线程）；单测直接构造
-/// 同步实现 collect_model_speed。
+/// Tauri command：查询模型速度统计。窗口两模式（见模块头「查询窗口」）：
+/// - days：缺省 7（近 7 天滚动）；0 = 今日（本地零点起）；无上界；
+/// - from_ms + to_ms 同时给（自定义区间）：按半开区间 [from_ms, to_ms)
+///   查询（含上界 started_at < to_ms，to 可在过去），忽略 days——窄窗
+///   ModelSpeedPanel 只传 days 不受影响（区间参数可选）。
+/// scope：None / "local" = 仅本机；"all" = 全部设备（并入远端其他设备的
+/// 同步明细，见模块头「全部设备口径」）。遍历 7 个本地来源按
+/// (source, provider, model_id) 分组聚合。多库 SQLite 查询 + scope=all 时
+/// 的同步 HTTP 统一 async + spawn_blocking 卸载到阻塞线程池（与
+/// request_logs 同款，不跑主线程）；单测直接构造同步实现。
 #[tauri::command]
 pub async fn get_model_speed(
     days: Option<i64>,
     scope: Option<String>,
+    from_ms: Option<i64>,
+    to_ms: Option<i64>,
 ) -> Result<ModelSpeedResponse, String> {
-    tauri::async_runtime::spawn_blocking(move || collect_model_speed(days, scope))
-        .await
-        .map_err(|e| format!("模型速度统计任务失败: {e}"))?
+    tauri::async_runtime::spawn_blocking(move || {
+        collect_model_speed(days, scope, from_ms, to_ms)
+    })
+    .await
+    .map_err(|e| format!("模型速度统计任务失败: {e}"))?
 }
 
 /// scope 入参归一：`"all"` = 全部设备（并入远端其他设备明细）；None /
@@ -315,30 +338,42 @@ fn open_speed_source(source: &str) -> Result<Option<Connection>, String> {
     crate::request_logs::open_source(source)
 }
 
-/// 命令的同步实现：算窗口起点后逐源「打开 + 聚合」。本地库不存在的来源
-/// （未安装 / 未用过）在无远端行时按 0 条跳过；有远端行时用空内存库走
-/// 同一条聚合管线（无本地表即 0 本地行，只吃远端行）。
-fn collect_model_speed(days: Option<i64>, scope: Option<String>) -> Result<ModelSpeedResponse, String> {
-    let days = days.unwrap_or(7).max(0);
+/// 命令的同步实现：窗口两模式（见模块头「查询窗口」）——自定义区间
+/// （from/to 同时给，含上界）优先，否则 days 滚动窗口 / 今日零点（无上界）。
+/// 算出窗口后逐源「打开 + 聚合」。本地库不存在的来源在无远端行时按 0 条
+/// 跳过；有远端行时用空内存库走同一条聚合管线（无本地表即 0 本地行，只吃
+/// 远端行）。
+fn collect_model_speed(
+    days: Option<i64>,
+    scope: Option<String>,
+    from_ms: Option<i64>,
+    to_ms: Option<i64>,
+) -> Result<ModelSpeedResponse, String> {
     let now_ms = chrono::Utc::now().timestamp_millis();
-    let from_ms = range_start_ms(days, now_ms);
+    let (win_from, win_to) = match (from_ms, to_ms) {
+        (Some(from), Some(to)) => (from, Some(to)),
+        _ => (range_start_ms(days.unwrap_or(7).max(0), now_ms), None),
+    };
     let all = scope_all(scope.as_deref());
-    // 远端取数只在 scope="all" 时发生（惰性：本机模式不触网络）
+    // 远端取数只在 scope="all" 时发生（惰性：本机模式不触网络）；自定义
+    // 模式 to 传自定义上界（可在过去），days 模式维持 now
     let remote = if all {
-        Some(fetch_remote_speed_records(from_ms, now_ms))
+        Some(fetch_remote_speed_records(win_from, win_to.unwrap_or(now_ms)))
     } else {
         None
     };
     let (stats, remote_failed) = collect_all_speeds(remote, |source, rows| {
         match open_speed_source(source)? {
-            Some(conn) => collect_source_speed_with_remote(&conn, source, from_ms, now_ms, rows),
+            Some(conn) => {
+                collect_source_speed_with_remote(&conn, source, win_from, win_to, now_ms, rows)
+            }
             None if rows.is_empty() => Ok(Vec::new()),
             None => {
                 // 本地库不存在（未安装 / 未用过）但其他设备有该来源的同步
                 // 行：空内存库无 model_usage 表 → 0 本地行，只聚合远端行
                 let mem = Connection::open_in_memory()
                     .map_err(|e| format!("打开内存库失败: {e}"))?;
-                collect_source_speed_with_remote(&mem, source, from_ms, now_ms, rows)
+                collect_source_speed_with_remote(&mem, source, win_from, win_to, now_ms, rows)
             }
         }
     });
@@ -395,22 +430,24 @@ fn avg_i64(vals: &[i64]) -> Option<i64> {
     Some((sum + n / 2) / n)
 }
 
-/// provider_id 简名：取 "account:" 后部分（无前缀原样），超过 20 字符
-/// 截断为前 18 + "…"（面板标签位有限，title 由前端给全量）
+/// provider_id 简名：只取 "account:" 后部分（无前缀原样），**不做长度
+/// 截断**——截断职责移交前端 CSS（窄窗渠道位 max-width + ellipsis、大窗
+/// 渠道列同款，两处 title 都挂完整值，后端截断纯多余）。2026-10-24 教训：
+/// 这里曾按「>20 字符取前 18 + "…"」截断，真实 slug
+/// `bigmodel-individual-coding-plan`（30 字符）被截成 `bigmodel-individua…`，
+/// 前端渠道友好名映射的 startsWith 在第 19 字符处撞上 '…' 永远失配——
+/// 后端截断破坏了前缀可匹配性，是映射死锁的元凶，故整体移除。
 fn provider_short(raw: &str) -> String {
-    let name = raw.split_once("account:").map(|(_, rest)| rest).unwrap_or(raw);
-    if name.chars().count() > 20 {
-        let head: String = name.chars().take(18).collect();
-        format!("{head}…")
-    } else {
-        name.to_string()
-    }
+    raw.split_once("account:")
+        .map(|(_, rest)| rest)
+        .unwrap_or(raw)
+        .to_string()
 }
 
 /// 单源聚合（本机库行为不变的可测入口）：collect_source_speed_with_remote
-/// 的 remote_rows 传空包装——本机模式每源天然只有一池，行为与既有版本一致
-/// （生产路径统一走 with_remote，空 remote_rows 即本机形态；此包装仅供
-/// 既有单测保持原签名）
+/// 的 to_ms 传 None + remote_rows 传空包装——本机模式每源天然只有一池，
+/// 行为与既有版本一致（生产路径统一走 with_remote，空 remote_rows 即本机
+/// 形态；此包装仅供既有单测保持原签名）
 #[cfg(test)]
 pub(crate) fn collect_source_speed(
     conn: &Connection,
@@ -418,23 +455,25 @@ pub(crate) fn collect_source_speed(
     from_ms: i64,
     observed_at_ms: i64,
 ) -> Result<Vec<ModelSpeedStat>, String> {
-    collect_source_speed_with_remote(conn, source, from_ms, observed_at_ms, &[])
+    collect_source_speed_with_remote(conn, source, from_ms, None, observed_at_ms, &[])
 }
 
 /// 单源纯聚合逻辑（不依赖真实 ~/.zcode，供单元测试）：读该来源窗口内
 /// model_usage 行 + 并入该来源的远端明细行（scope = "all"，见模块头「全部
 /// 设备口径」），按 (model_id, provider_id) 分组组装统计（来源名写进 DTO
-/// 的 source 字段，跨源合并在 collect_all_speeds）。老版本库核心列缺失时
-/// 本地行按 0 条降级（远端行照常并入——本地未安装的来源在全部设备模式下
-/// 仍有数据）；非核心列缺失按 NULL 降级（对应统计为 null）。速度口径按池
-/// 分层（见模块头）：zcode 走 token_speed::generation_sample 共享行级判定
-/// （B1，缺事件时刻的行不产速度样本、不降级 duration_ms）；导入库与远端
-/// 行走 request_speed_at 请求平均近似（duration_ms > 0 才有样本，codex
-/// 本地无该列恒无本地样本）。
+/// 的 source 字段，跨源合并在 collect_all_speeds）。窗口两模式（见模块头
+/// 「查询窗口」）：to_ms = Some 时自定义区间上界（半开含上界），None 时
+/// days 模式无上界。老版本库核心列缺失时本地行按 0 条降级（远端行照常
+/// 并入——本地未安装的来源在全部设备模式下仍有数据）；非核心列缺失按
+/// NULL 降级（对应统计为 null）。速度口径按池分层（见模块头）：zcode 走
+/// token_speed::generation_sample 共享行级判定（B1，缺事件时刻的行不产
+/// 速度样本、不降级 duration_ms）；导入库与远端行走 request_speed_at
+/// 请求平均近似（duration_ms > 0 才有样本，codex 本地无该列恒无本地样本）。
 pub(crate) fn collect_source_speed_with_remote(
     conn: &Connection,
     source: &str,
     from_ms: i64,
+    to_ms: Option<i64>,
     observed_at_ms: i64,
     remote_rows: &[crate::sync::RemoteUsageRecord],
 ) -> Result<Vec<ModelSpeedStat>, String> {
@@ -479,17 +518,30 @@ pub(crate) fn collect_source_speed_with_remote(
         // 导入库的近似速度窗口原料（zcode 主库也可能有该列但速度不使用——
         // 精确口径只认事件时刻；codex 无该列按 NULL → 恒无速度样本）
         let duration = opt("duration_ms");
+        // 自定义区间上界（半开区间含上界 started_at < to；days 模式无上界
+        // 保持既有行为——未来时刻由 zcode 的 observed 拒绝兜底）
+        let upper_bound = if to_ms.is_some() {
+            " AND started_at < ?2"
+        } else {
+            ""
+        };
         let sql = format!(
             "SELECT COALESCE(model_id, ''), COALESCE({provider}, ''), {status}, \
                     started_at, {first}, {completed}, {inp}, {out}, {ttft}, {reasoning}, {duration} \
              FROM model_usage \
-             WHERE started_at >= ?1 AND model_id IS NOT NULL AND model_id != ''"
+             WHERE started_at >= ?1 AND model_id IS NOT NULL AND model_id != ''{upper_bound}"
         );
+        // 绑定参数随模式伸缩（days 模式 1 个、自定义模式 2 个），
+        // params_from_iter 统一传递
+        let mut binds: Vec<i64> = vec![from_ms];
+        if let Some(to) = to_ms {
+            binds.push(to);
+        }
         let mut stmt = conn
             .prepare(&sql)
             .map_err(|e| format!("准备模型速度查询失败: {e}"))?;
         let rows = stmt
-            .query_map([from_ms], |row| {
+            .query_map(rusqlite::params_from_iter(binds), |row| {
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, String>(1)?,
@@ -632,7 +684,7 @@ pub(crate) fn collect_source_speed_with_remote(
         }
     }
     // 远端行并入（scope = "all" 的第 8 路，见 merge_remote_speed_rows）
-    merge_remote_speed_rows(source, remote_rows, from_ms, &mut groups);
+    merge_remote_speed_rows(source, remote_rows, from_ms, to_ms, &mut groups);
 
     let mut out: Vec<ModelSpeedStat> = Vec::with_capacity(groups.len());
     for ((model, provider_raw), g) in groups {
@@ -686,8 +738,9 @@ pub(crate) fn collect_source_speed_with_remote(
         out.push(ModelSpeedStat {
             model_id: model,
             source: source.to_string(),
-            // zcode 渠道剥 "account:" 前缀截断展示（既有行为）；导入库渠道
-            // 原样（opencode 等渠道名本身是用户可读的语义，截断丢信息）
+            // zcode 渠道剥 "account:" 前缀（完整值不截断，前端 CSS 负责收
+            // 尾）；导入库渠道原样（opencode 等渠道名本身是用户可读的
+            // 语义，截断丢信息）
             provider: if is_zcode {
                 provider_short(&provider_raw)
             } else {
@@ -709,8 +762,10 @@ pub(crate) fn collect_source_speed_with_remote(
             dur_p90_ms: percentile(&dur_f64, 90.0).map(|v| v as i64),
             in_avg: (g.in_sum + req_n / 2) / req_n,
             in_max: g.in_max,
+            in_total: g.in_sum,
             out_avg: (g.out_sum + req_n / 2) / req_n,
             out_max: g.out_max,
+            out_total: g.out_sum,
         });
     }
     // 组内排序：请求数降序（高频分组在前），同数按（模型名, 渠道）稳定排序
@@ -726,7 +781,8 @@ pub(crate) fn collect_source_speed_with_remote(
 
 /// 远端明细行并入单源分组（scope = "all" 的第 8 路，见模块头「全部设备
 /// 口径」）。调用方已按真实 source 分桶（未知来源在 collect_all_speeds
-/// 丢弃），这里再防御性卡一遍 source 与窗口：
+/// 丢弃），这里再防御性卡一遍 source 与窗口（自定义模式含上界，与本地
+/// 行同一窗口口径）：
 /// - 行进 requests / 输入输出 token / TTFT / 耗时 / average 速度池；
 /// - **不进 completed / 成功率统计**（远端行无 status 列，分子分母都只算
 ///   本机行，避免远端行把本机成功率稀释失真）；
@@ -740,10 +796,15 @@ fn merge_remote_speed_rows(
     source: &str,
     rows: &[crate::sync::RemoteUsageRecord],
     from_ms: i64,
+    to_ms: Option<i64>,
     groups: &mut BTreeMap<(String, String), ModelAgg>,
 ) {
     for row in rows {
         if row.source != source || row.model_id.is_empty() || row.started_at < from_ms {
+            continue;
+        }
+        // 自定义区间上界（半开含上界 started_at < to，与本地行同口径）
+        if to_ms.is_some_and(|to| row.started_at >= to) {
             continue;
         }
         let input = row.input_tokens.max(0);
@@ -901,16 +962,20 @@ mod tests {
     }
 
     #[test]
-    fn provider简名_account前缀剥离与截断() {
+    fn provider简名_account前缀剥离不截断() {
         assert_eq!(provider_short("account:bigmodel-individual"), "bigmodel-individual");
         assert_eq!(provider_short("doubao"), "doubao");
-        // 21 字符截断为 18 + "…"
-        let long = "a".repeat(21);
-        let short = provider_short(&long);
-        assert_eq!(short.chars().count(), 19);
-        assert!(short.ends_with('…'));
-        // 恰 20 字符不截断
-        assert_eq!(provider_short(&"b".repeat(20)), "b".repeat(20));
+        // 长 slug 不截断（完整值返回）：截断职责在前端 CSS——后端截断曾把
+        // bigmodel-individual-coding-plan 截成 bigmodel-individua…，破坏前端
+        // 友好名映射的前缀可匹配性（2026-10-24 映射死锁教训，见
+        // provider_short 注释）
+        assert_eq!(
+            provider_short("account:bigmodel-individual-coding-plan"),
+            "bigmodel-individual-coding-plan"
+        );
+        assert_eq!(provider_short("opencode-go"), "opencode-go");
+        // 无前缀超长值原样返回
+        assert_eq!(provider_short(&"a".repeat(64)), "a".repeat(64));
     }
 
     #[test]
@@ -1352,6 +1417,70 @@ mod tests {
     }
 
     #[test]
+    fn 聚合_自定义区间上下界过滤() {
+        // 自定义区间模式（from/to 同时给，见模块头「查询窗口」）：按半开
+        // 区间 [from, to) 过滤——早于 from 与晚于 to（含恰好等于 to）的本
+        // 地行都被排除；远端行同样卡上下界。速度样本 / requests / token
+        // 只含区间内行
+        let (conn, path) = speed_db("custom-range");
+        let t0 = 12_000_000_000_i64;
+        conn.execute_batch(&format!(
+            "INSERT INTO model_usage (session_id, turn_id, started_at, first_token_at,
+                completed_at, model_id, provider_id, status, input_tokens, output_tokens) VALUES
+              -- 区间内（from ≤ t < to）：参与全部统计
+              ('s1', 't1', {t0}, {f1}, {c1}, 'M1', 'account:p', 'completed', 100, 100),
+              -- 晚于 to（含恰好等于 to，半开区间含上界）：排除
+              ('s1', 't2', {to_exact}, {f2}, {c2}, 'M1', 'account:p', 'completed', 100, 100),
+              ('s1', 't3', {t3}, {f3}, {c3}, 'M1', 'account:p', 'completed', 100, 100),
+              -- 早于 from：排除
+              ('s1', 't4', {before}, {f4}, {c4}, 'M1', 'account:p', 'completed', 100, 100);",
+            t0 = t0,
+            f1 = t0 + 500,
+            c1 = t0 + 1500,
+            to_exact = t0 + 20_000,
+            f2 = t0 + 20_500,
+            c2 = t0 + 21_500,
+            t3 = t0 + 30_000,
+            f3 = t0 + 30_500,
+            c3 = t0 + 31_500,
+            before = t0 - 10_000,
+            f4 = t0 - 9_500,
+            c4 = t0 - 8_500,
+        ))
+        .unwrap();
+        // 区间 [t0, t0+20_000)：本地只有 t1 在内
+        let remote = vec![
+            // 区间内：并入
+            remote_record("zcode", "M1", "account:p", t0 + 5_000, 100, Some(2000.0), None),
+            // 晚于 to：被上界排除（不进 requests / token）
+            remote_record("zcode", "M1", "account:p", t0 + 25_000, 999, Some(1000.0), None),
+        ];
+        let stats = collect_source_speed_with_remote(
+            &conn,
+            "zcode",
+            t0,
+            Some(t0 + 20_000),
+            t0 + 1_000_000,
+            &remote,
+        )
+        .unwrap();
+        assert_eq!(stats.len(), 1, "{stats:?}");
+        let m = &stats[0];
+        // 本地 t1 + 远端区间内一行；恰等于 to 的 t2、晚于 to 的 t3 与远端
+        // 晚于 to 的行全部排除
+        assert_eq!(m.requests, 2);
+        // 速度分层：本地 t1 是 generation 样本（100 tok / 1s = 100 t/s），
+        // 远端行只进 average 池不掺入 → 精确口径仍 generation
+        assert_eq!(m.speed_sample_count, Some(1));
+        assert_eq!(m.speed_quality, Some(SpeedQuality::Generation));
+        assert!((m.avg_tps.unwrap() - 100.0).abs() < 1e-6);
+        // token：只有区间内两行（100 + 100）
+        assert_eq!(m.in_total, 200);
+        drop(conn);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
     fn 聚合_同名模型跨来源独立分组() {
         // 同一模型在 zcode 主库与 opencode 导入库各自独立成组：口径分别为
         // generation / request_average，绝不合并统计；collect_all_speeds 的
@@ -1434,8 +1563,10 @@ mod tests {
             dur_p90_ms: Some(1),
             in_avg: 1,
             in_max: 1,
+            in_total: 1,
             out_avg: 1,
             out_max: 1,
+            out_total: 1,
         };
         let (out, remote_failed) = collect_all_speeds(None, |source, _rows| match source {
             "zcode" => Ok(vec![make("zcode")]),
@@ -1476,7 +1607,7 @@ mod tests {
             Some(200.0),
         )];
         let stats =
-            collect_source_speed_with_remote(&conn, "zcode", t0, t0 + 1_000_000, &remote).unwrap();
+            collect_source_speed_with_remote(&conn, "zcode", t0, None, t0 + 1_000_000, &remote).unwrap();
         assert_eq!(stats.len(), 1, "{stats:?}");
         let m = &stats[0];
         assert_eq!(m.requests, 2, "远端行计入请求数");
@@ -1492,9 +1623,10 @@ mod tests {
         // TTFT：本机 500 + 远端 200 → min 200、avg 350
         assert_eq!(m.ttft_min_ms, Some(200));
         assert_eq!(m.ttft_avg_ms, Some(350));
-        // token：全部行计入（本机 100 + 远端 100 → avg 100）
+        // token：全部行计入（本机 100 + 远端 100 → avg 100；总量 = 200）
         assert_eq!(m.in_avg, 100);
-        assert_eq!(m.out_max, 999);
+        assert_eq!(m.in_total, 200);
+        assert_eq!(m.out_total, 1099, "输出总量含远端行（100 + 999）");
         // 成功率：本机 1/1 = 100%（不被远端行稀释成 1/2）
         assert_eq!(m.success_rate, Some(1.0));
         drop(conn);
@@ -1522,7 +1654,7 @@ mod tests {
             remote_record("zcode", "GLM-5.3", "account:p", t0 + 6_000, 50, None, None),
         ];
         let stats =
-            collect_source_speed_with_remote(&conn, "zcode", t0, t0 + 1_000_000, &remote).unwrap();
+            collect_source_speed_with_remote(&conn, "zcode", t0, None, t0 + 1_000_000, &remote).unwrap();
         assert_eq!(stats.len(), 1, "{stats:?}");
         let m = &stats[0];
         assert_eq!(m.requests, 3);
@@ -1533,8 +1665,9 @@ mod tests {
         assert_eq!(m.dur_avg_ms, Some(2000));
         // TTFT：本机 first NULL、两笔远端均无 → null
         assert_eq!(m.ttft_avg_ms, None);
-        // token：三行 input 各 100 → avg 100
+        // token：三行 input 各 100 → avg 100；总量 = 300
         assert_eq!(m.in_avg, 100);
+        assert_eq!(m.in_total, 300);
         assert_eq!(m.out_max, 100);
         // 成功率：本机 1 行 error → 0/1 = 0.0（远端行不进分子分母）
         assert_eq!(m.success_rate, Some(0.0));
@@ -1567,8 +1700,10 @@ mod tests {
             dur_p90_ms: None,
             in_avg: 1,
             in_max: 1,
+            in_total: 1,
             out_avg: 1,
             out_max: 1,
+            out_total: 1,
         };
         // Ok 路径：opencode 一条 + cursor 一条 → cursor 被丢弃，只有
         // opencode 一路收到行并产出分组
@@ -1615,7 +1750,7 @@ mod tests {
             Some(2000.0),
             None,
         )];
-        let stats = collect_source_speed_with_remote(&mem, "zcode", 0, 1_000_000, &remote).unwrap();
+        let stats = collect_source_speed_with_remote(&mem, "zcode", 0, None, 1_000_000, &remote).unwrap();
         assert_eq!(stats.len(), 1, "{stats:?}");
         let m = &stats[0];
         assert_eq!(m.source, "zcode");

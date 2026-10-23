@@ -112,6 +112,26 @@ export function RefreshIcon({ className }: IconProps) {
   );
 }
 
+/** 模型速度：折线上升 + 箭头（窄浮窗速度页 SpeedGlyph 同一形态，输出
+    速度/排行的语义；图形与窄窗一致，两处入口可对应认知） */
+export function SpeedIcon({ className }: IconProps) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden
+    >
+      <path d="M4 17.5 9.2 12l3.2 3.1L20 7.5" />
+      <path d="M15.5 7.5H20V12" />
+    </svg>
+  );
+}
+
 /* ---- 自绘标题栏的窗口控制图标（最小化 / 最大化 / 还原 / 关闭） ----
    沿用上方 IconProps 模式，几何铺满 24 视口（描边外沿留约 1.5 安全边，
    strokeWidth 2 不裁切），12px 渲染尺寸下（TitleBar 用 h-3 w-3）字形约
