@@ -653,80 +653,110 @@ private struct MediumCostBar: View {
     }
 }
 
-/// 中尺寸：一个账号一个 HUD 圆球，三档窗口在圆球下方对齐成一行。
+/// 中尺寸一个账号一列：一个常规圆环（环内写「占用最高的那档 + 档位名」），
+/// 下面「服务 · 套餐」，再下面补另外两档。
 ///
-/// 圆球外圈切成三段弧（5h / 周 / 月，12 点方向顺时针），中心是服务商自家
-/// 图标：一眼能看出「哪个服务、哪一档快满了」，下面的数字给出准确值。
-/// 账号名只保留「服务 · 套餐」，不再挂「尾号 07127 / 凭证 1」这类在平台
-/// 上根本看不到的编号。
-private struct QuotaOrb: View {
-    let item: WidgetQuotaItem
+/// 上一版把圆环切成三段弧、每段对应一档，用户根本分不清哪段是哪档；
+/// 现在回到最朴素的「一个环 = 一个百分比」，环里直接标清楚是哪一档，
+/// 剩下两档用文字补在旁边，一眼就能对上。
+private struct QuotaGauge: View {
+    let pct: Int?
+    let caption: String
     let size: CGFloat
-
-    /// 三段弧的起始角（12 点 → 4 点 → 8 点），与下方数字顺序一致。
-    private static let starts: [Double] = [-90, 30, 150]
-    /// 每段 110°，留 10° 缺口，缺口本身就把三段分开了。
-    private static let sweep: Double = 110.0 / 360.0
-
-    private var line: CGFloat { max(2.6, size * 0.072) }
-
-    private var accent: Color {
-        if item.isError { return WidgetTheme.amber }
-        if item.isBalance { return WidgetTheme.mint }
-        return item.primaryWindow?.pct.map(widgetQuotaColor) ?? WidgetTheme.tertiary
-    }
+    let color: Color
+    var failed: Bool = false
+    /// 余额型账号：环里直接写金额，而不是百分比。
+    var text: String? = nil
 
     var body: some View {
+        let line = max(3, size * 0.085)
         ZStack {
-            // 球面：中心一点冷光，向外压暗，让圆环读起来是个球而不是缺口
             Circle()
-                .fill(RadialGradient(
-                    colors: [Color.white.opacity(0.05), Color.white.opacity(0.012)],
-                    center: .center, startRadius: 0, endRadius: size * 0.5))
-            Circle()
-                .fill(RadialGradient(colors: [accent.opacity(0.18), accent.opacity(0)],
-                                     center: .center,
-                                     startRadius: 0, endRadius: size * 0.55))
+                .fill(Color.white.opacity(0.03))
 
-            ForEach(Array(QuotaSlot.allCases.enumerated()), id: \.offset) { index, slot in
-                arc(slot: slot, start: Self.starts[index])
+            Circle()
+                .stroke(failed ? WidgetTheme.amber.opacity(0.25) : WidgetTheme.track,
+                        lineWidth: line)
+
+            if failed {
+                VStack(spacing: -1) {
+                    Text("!")
+                        .font(.system(size: size * 0.32, weight: .bold, design: .rounded))
+                        .foregroundStyle(WidgetTheme.amber)
+                    Text(caption)
+                        .font(.system(size: max(7, size * 0.145), weight: .medium))
+                        .foregroundStyle(WidgetTheme.amber.opacity(0.85))
+                }
+            } else {
+                if let pct {
+                    Circle()
+                        .trim(from: 0, to: CGFloat(min(max(Double(pct) / 100, 0), 1)))
+                        .stroke(AngularGradient(colors: [color.opacity(0.45), color],
+                                                center: .center),
+                                style: StrokeStyle(lineWidth: line, lineCap: .round))
+                        .rotationEffect(.degrees(-90))
+                        .shadow(color: color.opacity(0.40), radius: 2.5)
+                }
+                VStack(spacing: -1) {
+                    Text(text ?? pct.map { "\($0)%" } ?? "—")
+                        .font(.system(size: size * (text == nil ? 0.27 : 0.21),
+                                      weight: .bold, design: .rounded))
+                        .monospacedDigit()
+                        .foregroundStyle(pct == nil && text == nil
+                                         ? WidgetTheme.tertiary
+                                         : (text == nil ? Color.white.opacity(0.96) : color))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.5)
+                    Text(caption)
+                        .font(.system(size: max(7, size * 0.145), weight: .medium))
+                        .foregroundStyle(WidgetTheme.tertiary)
+                }
             }
-
-            ProviderMark(item: item, size: size * 0.38,
-                         color: item.isError ? WidgetTheme.amber : .white.opacity(0.93))
         }
         .frame(width: size, height: size)
     }
-
-    private func arc(slot: QuotaSlot, start: Double) -> some View {
-        let pct = item.window(for: slot)?.pct
-        let frac = min(max(Double(pct ?? 0) / 100, 0), 1)
-        let color = pct.map(widgetQuotaColor) ?? WidgetTheme.tertiary
-        return ZStack {
-            Circle()
-                .trim(from: 0, to: Self.sweep)
-                .stroke(WidgetTheme.track,
-                        style: StrokeStyle(lineWidth: line, lineCap: .round))
-            if let pct, pct > 0 {
-                Circle()
-                    .trim(from: 0, to: Self.sweep * frac)
-                    .stroke(color, style: StrokeStyle(lineWidth: line, lineCap: .round))
-                    .shadow(color: color.opacity(0.5), radius: line * 1.3)
-            }
-        }
-        .rotationEffect(.degrees(start))
-    }
 }
 
-/// 中尺寸一列：圆球 + 名字 + 「5h 65% 周 54% 月 —」。
+/// 中尺寸一列：圆环 + 服务/套餐 + 其余两档。
 private struct MediumAccountColumn: View {
     let item: WidgetQuotaItem
-    /// 同服务同套餐重名时才给序号（①②），正常情况为 nil。
+    /// 同服务同套餐重名时才给序号（①②）。
     let ordinal: Int?
-    let orbSize: CGFloat
+    let gaugeSize: CGFloat
+    /// 一页 5 个账号时每列只有 66pt，套餐名单独占一行才不会被截成省略号。
+    var compactName: Bool = false
 
-    /// 第一行只放服务名，套餐单独一行：列宽只有 60~80pt，挤成
-    /// 「Claude Code · Max 20x」一定被截成省略号，两行反而每个字都看得见。
+    private var primary: WidgetQuotaWindow? { item.primaryWindow }
+
+    /// 主环对应的档位（5h / 周 / 月），找不到就退回窗口自带的标题。
+    private var primarySlot: QuotaSlot? {
+        guard let key = primary?.key else { return nil }
+        return QuotaSlot.allCases.first { item.window(for: $0)?.key == key }
+    }
+
+    private var primaryCaption: String {
+        if item.isError && item.windows.isEmpty { return "失败" }
+        return primarySlot?.title ?? primary?.title ?? "额度"
+    }
+
+    private var restSlots: [QuotaSlot] {
+        QuotaSlot.allCases.filter { $0 != primarySlot }
+    }
+
+    private var gaugeColor: Color {
+        if item.isBalance { return WidgetTheme.mint }
+        return (primary?.pct).map(widgetQuotaColor) ?? WidgetTheme.tertiary
+    }
+
+    private var title: String {
+        var parts = [item.label]
+        if !compactName, let plan = item.planText { parts.append(plan) }
+        var text = parts.joined(separator: " · ")
+        if let ordinal, !compactName { text += " " + circledIndex(ordinal) }
+        return text
+    }
+
+    /// 窄列时套餐（和序号）单独一行。
     private var planLine: String {
         var text = item.planText ?? ""
         if let ordinal {
@@ -735,55 +765,62 @@ private struct MediumAccountColumn: View {
         return text
     }
 
-
     var body: some View {
-        VStack(spacing: 4) {
-            QuotaOrb(item: item, size: orbSize)
+        VStack(spacing: 5) {
+            QuotaGauge(pct: item.isBalance ? nil : primary?.pct,
+                       caption: item.isBalance ? "余额" : primaryCaption,
+                       size: gaugeSize,
+                       color: gaugeColor,
+                       failed: item.isError && item.windows.isEmpty,
+                       text: item.isBalance ? item.balanceCompact : nil)
+
             VStack(spacing: 1) {
-                Text(item.label)
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(item.isError ? WidgetTheme.amber : Color.white.opacity(0.93))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.7)
-                // 固定占位：有套餐和没套餐的账号，下面的数字要能对齐
-                Text(planLine)
-                    .font(.system(size: 8.5, weight: .medium))
-                    .foregroundStyle(WidgetTheme.tertiary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.7)
-                    .frame(height: 10)
+                HStack(spacing: 3) {
+                    ProviderMark(item: item, size: 11,
+                                 color: item.isError ? WidgetTheme.amber : .white.opacity(0.85))
+                    Text(title)
+                        .font(.system(size: 9.5, weight: .semibold))
+                        .foregroundStyle(item.isError ? WidgetTheme.amber : Color.white.opacity(0.93))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.72)
+                }
+                if compactName {
+                    // 固定占位，保证各列的数字行仍然对齐
+                    Text(planLine)
+                        .font(.system(size: 8, weight: .medium))
+                        .foregroundStyle(WidgetTheme.tertiary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.7)
+                        .frame(height: 9)
+                }
             }
-            readouts
+
+            restReadout
         }
         .frame(maxWidth: .infinity)
     }
 
     @ViewBuilder
-    private var readouts: some View {
+    private var restReadout: some View {
         if item.isBalance {
-            Text(item.balanceCompact)
-                .font(.system(size: 10, weight: .semibold, design: .rounded))
-                .monospacedDigit()
-                .foregroundStyle(WidgetTheme.mint)
-                .lineLimit(1)
-        } else {
-            HStack(alignment: .top, spacing: 4) {
-                ForEach(QuotaSlot.allCases) { slot in
+            EmptyView()
+        } else if !(item.isError && item.windows.isEmpty) {
+            HStack(spacing: 7) {
+                ForEach(restSlots) { slot in
                     let w = item.window(for: slot)
-                    VStack(spacing: 0) {
+                    HStack(spacing: 2) {
                         Text(slot.title)
-                            .font(.system(size: 7, weight: .medium))
+                            .font(.system(size: 8, weight: .medium))
                             .foregroundStyle(WidgetTheme.tertiary)
                         Text(w?.pct.map { "\($0)%" } ?? "—")
-                            .font(.system(size: 10, weight: .semibold, design: .rounded))
+                            .font(.system(size: 9.5, weight: .semibold, design: .rounded))
                             .monospacedDigit()
                             .foregroundStyle((w?.pct).map(widgetQuotaColor) ?? WidgetTheme.tertiary)
                     }
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.7)
-                    .frame(maxWidth: .infinity)
                 }
             }
+            .lineLimit(1)
+            .minimumScaleFactor(0.7)
         }
     }
 }
@@ -795,7 +832,7 @@ struct MediumHomeView: View {
     var page: Int = 0
     var pageCount: Int = 1
 
-    /// 一页最多几个账号：5 列时每列 66pt，圆球 + 名字 + 数字仍放得下。
+    /// 一页最多几个账号：5 列时每列 66pt，圆环 + 名字 + 两档数字仍放得下。
     static let pageSize = 5
 
     private var hasData: Bool { snap.updatedAt > 0 }
@@ -827,13 +864,13 @@ struct MediumHomeView: View {
         return Array(ordered[start..<end])
     }
 
-    /// 圆球大小跟着列数走：账号少就画大点，一列圆球占满高度。
-    private var orbSize: CGFloat {
+    /// 圆环大小跟着列数走：账号少就画大点。
+    private var gaugeSize: CGFloat {
         switch shown.count {
-        case 0, 1, 2: return 58
-        case 3: return 52
-        case 4: return 48
-        default: return 42
+        case 0, 1, 2: return 62
+        case 3: return 56
+        case 4: return 52
+        default: return 40
         }
     }
 
@@ -854,10 +891,13 @@ struct MediumHomeView: View {
                     ForEach(Array(shown.enumerated()), id: \.element.id) { _, item in
                         MediumAccountColumn(item: item,
                                             ordinal: ordinal(for: item),
-                                            orbSize: orbSize)
+                                            gaugeSize: gaugeSize,
+                                            compactName: shown.count > 4)
                     }
                 }
-                .frame(maxHeight: .infinity)
+                // 账号少时别把圆环拉得太开：每列最多 120pt，整体居中
+                .frame(maxWidth: CGFloat(max(shown.count, 1)) * 120)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
 
                 if pageCount > 1 { pageDots }
             }
