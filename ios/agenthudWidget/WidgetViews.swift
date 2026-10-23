@@ -389,25 +389,6 @@ private struct QuotaRingView: View {
     }
 }
 
-/// 中尺寸超过 6 个账号时，第五列后折叠为「+N 更多」。
-private struct MoreQuotaCell: View {
-    let count: Int
-    let ringSize: CGFloat
-    let labelSize: CGFloat
-
-    var body: some View {
-        VStack(spacing: 6) {
-            QuotaRingView(pct: nil, amount: "+\(count)",
-                          size: ringSize, color: WidgetTheme.secondary)
-            Text("更多")
-                .font(.system(size: labelSize, weight: .semibold))
-                .foregroundStyle(WidgetTheme.secondary)
-                .lineLimit(1)
-        }
-        .frame(maxWidth: .infinity)
-    }
-}
-
 /// 空数据 / 额度未同步提示。
 private struct HomePlaceholder: View {
     let hasData: Bool
@@ -503,21 +484,26 @@ private struct SmallHomeView: View {
                         if hero.isBalance {
                             windowCell(title: "余额", pct: nil,
                                        amount: hero.balanceCompact,
-                                       color: WidgetTheme.mint)
+                                       color: WidgetTheme.mint,
+                                       size: 48)
                         } else {
-                            ForEach(QuotaSlot.allCases) { slot in
+                            // 只画有数据的槽位：GLM 没有月度订阅额度时，
+                            // 原来那个「月 —」空环纯属占位噪音。
+                            let slots = hero.availableSlots
+                            ForEach(slots) { slot in
                                 let w = hero.window(for: slot)
                                 windowCell(title: slot.title,
                                            pct: w?.pct,
                                            amount: nil,
-                                           color: (w?.pct).map(widgetQuotaColor) ?? WidgetTheme.tertiary)
+                                           color: (w?.pct).map(widgetQuotaColor) ?? WidgetTheme.tertiary,
+                                           size: slots.count >= 3 ? 38 : 48)
                             }
                         }
                     }
                     .padding(.top, 6)
                 }
 
-                Spacer(minLength: 0)
+                Spacer(minLength: 6)
 
                 Text(footerText)
                     .font(.system(size: 8, weight: .medium))
@@ -530,12 +516,12 @@ private struct SmallHomeView: View {
     }
 
     private func windowCell(title: String, pct: Int?, amount: String?,
-                            color: Color) -> some View {
+                            color: Color, size: CGFloat) -> some View {
         VStack(spacing: 3) {
             if let pct {
-                QuotaRingView(pct: pct, size: 42, color: color)
+                QuotaRingView(pct: pct, size: size, color: color)
             } else {
-                QuotaRingView(pct: nil, amount: amount, size: 42, color: color)
+                QuotaRingView(pct: nil, amount: amount, size: size, color: color)
             }
             Text(title)
                 .font(.system(size: 9, weight: .medium))
@@ -592,6 +578,13 @@ private extension WidgetQuotaItem {
             }
         }
     }
+
+    /// 该账号实际有数据的槽位；没有任何槽位（积分/Token 配额等）时
+    /// 回退到全部槽位，保持旧行为而不是空白。
+    var availableSlots: [QuotaSlot] {
+        let filled = QuotaSlot.allCases.filter { window(for: $0)?.pct != nil }
+        return filled.isEmpty ? QuotaSlot.allCases : filled
+    }
 }
 
 /// 中尺寸顶部一行：花费在左，Token/请求/更新在右，给额度腾出高度。
@@ -601,7 +594,7 @@ private struct MediumCostBar: View {
     let stale: Bool
 
     var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 6) {
+        HStack(alignment: .firstTextBaseline, spacing: 5) {
             Text(stale ? "待刷新" : "今日花费")
                 .font(.system(size: 9, weight: .medium))
                 .foregroundStyle(stale ? WidgetTheme.amber : WidgetTheme.secondary)
@@ -619,14 +612,11 @@ private struct MediumCostBar: View {
                 .font(.system(size: 8.5, weight: .semibold, design: .rounded))
                 .monospacedDigit()
                 .foregroundStyle(WidgetTheme.secondary)
-            Text("·")
-                .font(.system(size: 8, weight: .medium))
-                .foregroundStyle(WidgetTheme.tertiary)
-            Text("\(snap.todayRequests) 次")
+            Text("· \(snap.todayRequests) 次")
                 .font(.system(size: 8.5, weight: .medium))
                 .foregroundStyle(WidgetTheme.secondary)
             Text("· \(snap.timeAgoText)")
-                .font(.system(size: 8, weight: .medium))
+                .font(.system(size: 8.5, weight: .medium))
                 .foregroundStyle(WidgetTheme.tertiary)
         }
     }
@@ -637,93 +627,113 @@ private struct MediumCostBar: View {
     }
 }
 
-/// 一个账号一列：主环 + 服务/套餐 + 账号 + 全部窗口百分比。
-private struct MediumAccountColumn: View {
-    let item: WidgetQuotaItem
-    let needsDefault: Bool
-    let compact: Bool
-    let ringSize: CGFloat
-    let labelSize: CGFloat
-    let identitySize: CGFloat
-    let windowSize: CGFloat
+/// 行首的小型圆环（只有进度弧，不写数字）：中/大尺寸的列表行共用。
+private struct MiniRing: View {
+    let pct: Int?
+    var color: Color = WidgetTheme.tertiary
+    var size: CGFloat = 16
+    var lineWidth: CGFloat = 3
+    var isError: Bool = false
 
     var body: some View {
-        VStack(spacing: 3) {
+        ZStack {
+            Circle().stroke(WidgetTheme.track, lineWidth: lineWidth)
+            if let p = pct, !isError {
+                Circle()
+                    .trim(from: 0, to: CGFloat(min(max(Double(p) / 100, 0), 1)))
+                    .stroke(color, style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
+                    .rotationEffect(.degrees(-90))
+            }
+            if isError {
+                Text("!")
+                    .font(.system(size: size * 0.5, weight: .bold, design: .rounded))
+                    .foregroundStyle(WidgetTheme.amber)
+            }
+        }
+        .frame(width: size, height: size)
+    }
+}
+
+/// 中尺寸：一行一个账号。
+///
+/// 改版口径（2026-10）：原来每个账号一列、下面固定挂 5h/周/月 三行
+/// 百分比，5 个账号就是 15 个 9pt 小数字 + 5 个圆环，圆环里的数字还和
+/// 5h 那行重复。现在每行只保留「一个最紧急窗口 + 一个数字」：
+/// 左侧 16pt 小圆环表示占用进度，中间账号名，右侧「窗口标签 + 百分比」。
+/// 完整的三档窗口留给大尺寸和 App。
+private struct MediumQuotaRow: View {
+    let item: WidgetQuotaItem
+    let needsDefault: Bool
+
+    private var name: String {
+        var text = item.label
+        if let plan = item.planText { text += " · " + plan }
+        if needsDefault {
+            if let acct = item.accountText {
+                text += " · " + WidgetQuotaItem.accountSuffix(acct)
+            } else {
+                text += " · 默认"
+            }
+        }
+        return text
+    }
+
+    var body: some View {
+        HStack(spacing: 8) {
             ring
 
-            VStack(spacing: 1) {
-                Text(compact ? item.label : item.serviceTitle)
-                    .font(.system(size: labelSize, weight: .semibold))
-                    .foregroundStyle(.white.opacity(0.94))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.75)
-                if compact {
-                    Text(item.compactIdentity(needsDefault: needsDefault))
-                        .font(.system(size: identitySize, weight: .medium))
-                        .foregroundStyle(WidgetTheme.tertiary)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.7)
-                } else if let account = item.accountLine(needsDefault: needsDefault) {
-                    Text(account)
-                        .font(.system(size: identitySize, weight: .medium))
-                        .foregroundStyle(WidgetTheme.tertiary)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.75)
-                }
-            }
-            .frame(height: labelSize + identitySize + 4, alignment: .top)
+            Text(name)
+                .font(.system(size: 10.5, weight: .semibold))
+                .foregroundStyle(.white.opacity(0.94))
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
 
-            if item.isError && item.windows.isEmpty {
+            Spacer(minLength: 6)
+
+            if item.isError {
                 Text("查询失败")
-                    .font(.system(size: windowSize, weight: .medium))
+                    .font(.system(size: 9.5, weight: .semibold))
                     .foregroundStyle(WidgetTheme.amber)
                     .lineLimit(1)
-                    .frame(maxWidth: .infinity, alignment: .leading)
             } else if item.isBalance {
-                Text("可用余额")
-                    .font(.system(size: windowSize, weight: .medium))
-                    .foregroundStyle(WidgetTheme.tertiary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                Text(item.balanceCompact)
+                    .font(.system(size: 12, weight: .bold, design: .rounded))
+                    .monospacedDigit()
+                    .foregroundStyle(WidgetTheme.mint)
             } else {
-                VStack(spacing: 2) {
-                    ForEach(QuotaSlot.allCases) { slot in
+                // 有数据的槽位并排（通常是 5h + 周）；没有月度额度时不会
+                // 再出现一个孤零零的「月 —」。
+                HStack(spacing: 7) {
+                    ForEach(item.availableSlots) { slot in
                         let w = item.window(for: slot)
-                        HStack(spacing: 2) {
+                        HStack(spacing: 3) {
                             Text(slot.title)
-                                .font(.system(size: windowSize, weight: .medium))
+                                .font(.system(size: 8.5, weight: .medium))
                                 .foregroundStyle(WidgetTheme.tertiary)
-                                .lineLimit(1)
-                            Spacer(minLength: 1)
                             Text(w?.pct.map { "\($0)%" } ?? "—")
-                                .font(.system(size: windowSize + 0.5,
-                                              weight: .semibold, design: .rounded))
+                                .font(.system(size: 11, weight: .bold, design: .rounded))
                                 .monospacedDigit()
                                 .foregroundStyle((w?.pct).map(widgetQuotaColor) ?? WidgetTheme.tertiary)
-                                .lineLimit(1)
                         }
-                        .frame(height: windowSize + 2)
                     }
                 }
             }
         }
-        .padding(.horizontal, 5)
-        .frame(maxWidth: .infinity)
+        .frame(height: 20)
     }
 
-    @ViewBuilder
     private var ring: some View {
-        if item.isBalance {
-            QuotaRingView(pct: nil, amount: item.balanceCompact,
-                          size: ringSize, color: WidgetTheme.mint)
-        } else if let pct = item.primaryWindow?.pct {
-            QuotaRingView(pct: pct, size: ringSize, color: item.ringColor)
-        } else if item.isError {
-            QuotaRingView(pct: nil, amount: "!", size: ringSize,
-                          color: WidgetTheme.amber)
+        let ringPct = item.primaryWindow?.pct
+        let color: Color
+        if item.isError {
+            color = WidgetTheme.amber
+        } else if item.isBalance {
+            color = WidgetTheme.mint
         } else {
-            QuotaRingView(pct: nil, amount: "—", size: ringSize,
-                          color: WidgetTheme.tertiary)
+            color = ringPct.map(widgetQuotaColor) ?? WidgetTheme.tertiary
         }
+        return MiniRing(pct: ringPct, color: color,
+                        size: 16, lineWidth: 3, isError: item.isError)
     }
 }
 
@@ -735,37 +745,25 @@ private struct MediumHomeView: View {
     private var hasData: Bool { snap.updatedAt > 0 }
     private var items: [WidgetQuotaItem] { snap.allQuotaItems }
 
-    private struct Layout {
-        let shown: [WidgetQuotaItem]
-        let more: Int
-        let compact: Bool
-        let ring: CGFloat
-        let label: CGFloat
-        let identity: CGFloat
-        let window: CGFloat
-    }
-
-    private var layout: Layout {
-        // 当前主流是 5 个账号；6 个时收窄字号，超过 6 个折叠为 +N。
-        if items.count > 6 {
-            return Layout(shown: Array(items.prefix(5)), more: items.count - 5,
-                          compact: true,
-                          ring: 38, label: 10.5, identity: 8.5, window: 9)
-        }
-        if items.count == 6 {
-            return Layout(shown: items, more: 0,
-                          compact: true,
-                          ring: 34, label: 10, identity: 8, window: 8.5)
-        }
-        return Layout(shown: items, more: 0,
-                      compact: false,
-                      ring: 40, label: 11, identity: 8.5, window: 9)
-    }
-
     private var duplicateLabels: Set<String> {
         let grouped = Dictionary(grouping: items, by: { $0.label })
         return Set(grouped.filter { $0.value.count > 1 }.keys)
     }
+
+    /// 展示顺序：查询失败的排最前（需要处理），其余按占用最高的窗口降序。
+    private var ordered: [WidgetQuotaItem] {
+        items.sorted { a, b in
+            if a.isError != b.isError { return a.isError }
+            return (a.primaryWindow?.pct ?? -1) > (b.primaryWindow?.pct ?? -1)
+        }
+    }
+
+    /// 5 个以内全部展示；超过 5 个时展示 4 个 + 一行「还有 N 个账号」，
+    /// 保证总高度（4×20 + 16）不超过中尺寸内容区。
+    private var shown: [WidgetQuotaItem] {
+        ordered.count > 5 ? Array(ordered.prefix(4)) : ordered
+    }
+    private var moreCount: Int { max(0, ordered.count - shown.count) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -780,21 +778,19 @@ private struct MediumHomeView: View {
             } else if items.isEmpty {
                 HomePlaceholder(hasData: true)
             } else {
-                HStack(alignment: .top, spacing: 0) {
-                    ForEach(layout.shown) { item in
-                        MediumAccountColumn(
-                            item: item,
-                            needsDefault: duplicateLabels.contains(item.label),
-                            compact: layout.compact,
-                            ringSize: layout.ring,
-                            labelSize: layout.label,
-                            identitySize: layout.identity,
-                            windowSize: layout.window)
+                VStack(spacing: 0) {
+                    ForEach(shown) { item in
+                        MediumQuotaRow(item: item,
+                                       needsDefault: duplicateLabels.contains(item.label))
                     }
-                    if layout.more > 0 {
-                        MoreQuotaCell(count: layout.more,
-                                      ringSize: layout.ring,
-                                      labelSize: layout.label)
+                    if moreCount > 0 {
+                        HStack {
+                            Text("还有 \(moreCount) 个账号")
+                                .font(.system(size: 9, weight: .medium))
+                                .foregroundStyle(WidgetTheme.tertiary)
+                            Spacer(minLength: 0)
+                        }
+                        .frame(height: 16)
                     }
                 }
                 Spacer(minLength: 0)
@@ -808,56 +804,55 @@ private struct MediumHomeView: View {
 private struct LargeQuotaRow: View {
     let item: WidgetQuotaItem
     let needsDefault: Bool
-    let ringSize: CGFloat
-    let labelSize: CGFloat
+    /// 全部账号里真实存在的窗口槽位（列对齐；全都没有「月」时不画月列）
+    let slots: [QuotaSlot]
     let rowHeight: CGFloat
+    /// 6 个账号时压缩行内边距与字号，保证不和中尺寸一样溢出
+    var compact: Bool = false
+
+    private var indicatorColor: Color {
+        if item.isError { return WidgetTheme.amber }
+        if item.isBalance { return WidgetTheme.mint }
+        return item.primaryWindow?.pct.map(widgetQuotaColor) ?? WidgetTheme.tertiary
+    }
 
     var body: some View {
-        HStack(spacing: 10) {
-            ring
+        VStack(alignment: .leading, spacing: compact ? 4 : 6) {
+            HStack(spacing: 7) {
+                MiniRing(pct: item.primaryWindow?.pct,
+                         color: indicatorColor,
+                         size: compact ? 15 : 17,
+                         lineWidth: 2.5,
+                         isError: item.isError)
 
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 5) {
-                    Text(item.label)
-                        .font(.system(size: labelSize, weight: .semibold))
-                        .foregroundStyle(.white.opacity(0.94))
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.8)
+                Text(item.label)
+                    .font(.system(size: compact ? 11.5 : 12.5, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.94))
+                    .lineLimit(1)
 
-                    if item.isSynced {
-                        Text("同步")
-                            .font(.system(size: 7, weight: .semibold))
-                            .padding(.horizontal, 4)
-                            .padding(.vertical, 1)
-                            .background(Capsule().fill(Color(red: 0.29, green: 0.78, blue: 1.0).opacity(0.16)))
-                            .foregroundStyle(Color(red: 0.45, green: 0.84, blue: 1.0))
-                    }
-                    if item.isBalance {
-                        Text("余额")
-                            .font(.system(size: 7, weight: .semibold))
-                            .padding(.horizontal, 4)
-                            .padding(.vertical, 1)
-                            .background(Capsule().fill(WidgetTheme.mint.opacity(0.16)))
-                            .foregroundStyle(WidgetTheme.mint)
-                    }
-
-                    Spacer(minLength: 4)
-
-                    Text(item.identityText(compact: false,
-                                           needsDefault: needsDefault))
-                        .font(.system(size: 9, weight: .medium))
-                        .foregroundStyle(WidgetTheme.tertiary)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.8)
+                if item.isBalance {
+                    Text("余额")
+                        .font(.system(size: 7.5, weight: .semibold))
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 1)
+                        .background(Capsule().fill(WidgetTheme.mint.opacity(0.16)))
+                        .foregroundStyle(WidgetTheme.mint)
                 }
 
-                detailLine
+                Spacer(minLength: 6)
+
+                Text(item.identityText(compact: false, needsDefault: needsDefault))
+                    .font(.system(size: 9, weight: .medium))
+                    .foregroundStyle(WidgetTheme.tertiary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
             }
 
-            Spacer(minLength: 0)
+            detailLine
         }
-        .padding(.horizontal, 9)
-        .frame(height: rowHeight)
+        .padding(.horizontal, 10)
+        .padding(.vertical, compact ? 4 : 6)
+        .frame(height: rowHeight, alignment: .top)
         .background(
             RoundedRectangle(cornerRadius: 11, style: .continuous)
                 .fill(WidgetTheme.card))
@@ -867,27 +862,11 @@ private struct LargeQuotaRow: View {
     }
 
     @ViewBuilder
-    private var ring: some View {
-        if item.isBalance {
-            QuotaRingView(pct: nil, amount: item.balanceCompact,
-                          size: ringSize, color: WidgetTheme.mint)
-        } else if let pct = item.primaryWindow?.pct {
-            QuotaRingView(pct: pct, size: ringSize, color: item.ringColor)
-        } else if item.isError {
-            QuotaRingView(pct: nil, amount: "!", size: ringSize,
-                          color: WidgetTheme.amber)
-        } else {
-            QuotaRingView(pct: nil, amount: "—", size: ringSize,
-                          color: WidgetTheme.tertiary)
-        }
-    }
-
-    @ViewBuilder
     private var detailLine: some View {
         if item.isBalance {
             HStack(spacing: 7) {
                 Text("可用 \(item.balanceFullText)")
-                    .font(.system(size: 10.5, weight: .semibold, design: .rounded))
+                    .font(.system(size: 11, weight: .semibold, design: .rounded))
                     .monospacedDigit()
                     .foregroundStyle(WidgetTheme.mint)
                 if let granted = item.balanceGranted, granted > 0 {
@@ -900,27 +879,54 @@ private struct LargeQuotaRow: View {
             }
         } else if item.windows.isEmpty {
             Text(item.isError ? "查询失败 · 打开 App 查看原因" : "无窗口数据")
-                .font(.system(size: 9, weight: .medium))
+                .font(.system(size: 9.5, weight: .medium))
                 .foregroundStyle(item.isError ? WidgetTheme.amber : WidgetTheme.tertiary)
                 .lineLimit(1)
         } else {
-            HStack(spacing: 12) {
-                ForEach(QuotaSlot.allCases) { slot in
-                    let w = item.window(for: slot)
-                    HStack(spacing: 3) {
-                        Text(slot.title)
-                            .font(.system(size: 9, weight: .medium))
-                            .foregroundStyle(WidgetTheme.tertiary)
-                            .lineLimit(1)
-                        Text(w?.pct.map { "\($0)%" } ?? "—")
-                            .font(.system(size: 10, weight: .semibold, design: .rounded))
-                            .monospacedDigit()
-                            .foregroundStyle((w?.pct).map(widgetQuotaColor) ?? WidgetTheme.tertiary)
-                    }
+            HStack(spacing: 14) {
+                ForEach(slots) { slot in
+                    SlotBar(title: slot.title, pct: item.window(for: slot)?.pct)
                 }
-                Spacer(minLength: 0)
             }
         }
+    }
+}
+
+/// 单个窗口的细进度条：标签 + 条 + 百分比，大尺寸里一行并排三档。
+private struct SlotBar: View {
+    let title: String
+    let pct: Int?
+
+    private var color: Color {
+        pct.map(widgetQuotaColor) ?? WidgetTheme.tertiary
+    }
+
+    var body: some View {
+        HStack(spacing: 5) {
+            Text(title)
+                .font(.system(size: 8.5, weight: .medium))
+                .foregroundStyle(WidgetTheme.tertiary)
+                .frame(width: 11, alignment: .leading)
+
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(WidgetTheme.track)
+                    if let p = pct, p > 0 {
+                        Capsule()
+                            .fill(color)
+                            .frame(width: max(3, geo.size.width * CGFloat(min(Double(p) / 100, 1))))
+                    }
+                }
+            }
+            .frame(height: 4)
+
+            Text(pct.map { "\($0)%" } ?? "—")
+                .font(.system(size: 10, weight: .semibold, design: .rounded))
+                .monospacedDigit()
+                .foregroundStyle(color)
+                .frame(width: 30, alignment: .trailing)
+        }
+        .frame(maxWidth: .infinity)
     }
 }
 
@@ -934,8 +940,6 @@ private struct LargeHomeView: View {
 
     private struct Layout {
         let shown: [WidgetQuotaItem]
-        let ring: CGFloat
-        let label: CGFloat
         let rowHeight: CGFloat
         let spacing: CGFloat
     }
@@ -945,15 +949,30 @@ private struct LargeHomeView: View {
         return Set(grouped.filter { $0.value.count > 1 }.keys)
     }
 
+    /// 所有账号里出现过的槽位；一个都没有的槽位（例如这批账号都没有
+    /// 月度订阅额度）不显示，避免每行都挂一个「月 —」。
+    private var presentSlots: [QuotaSlot] {
+        let filled = QuotaSlot.allCases.filter { slot in
+            items.contains { $0.window(for: slot)?.pct != nil }
+        }
+        return filled.isEmpty ? QuotaSlot.allCases : filled
+    }
+
+    /// 展示顺序：查询失败的排最前，其余按占用最高的窗口降序。
+    private var ordered: [WidgetQuotaItem] {
+        items.sorted { a, b in
+            if a.isError != b.isError { return a.isError }
+            return (a.primaryWindow?.pct ?? -1) > (b.primaryWindow?.pct ?? -1)
+        }
+    }
+
     private var layout: Layout {
         let maxRows = items.count > 6 ? 6 : items.count
-        let shown = Array(items.prefix(maxRows))
+        let shown = Array(ordered.prefix(maxRows))
         if shown.count <= 5 {
-            return Layout(shown: shown, ring: 42, label: 13,
-                          rowHeight: 48, spacing: 5)
+            return Layout(shown: shown, rowHeight: 49, spacing: 5)
         }
-        return Layout(shown: shown, ring: 36, label: 11,
-                      rowHeight: 42, spacing: 4)
+        return Layout(shown: shown, rowHeight: 41, spacing: 4)
     }
 
     var body: some View {
@@ -974,9 +993,9 @@ private struct LargeHomeView: View {
                     ForEach(layout.shown) { item in
                         LargeQuotaRow(item: item,
                                       needsDefault: duplicateLabels.contains(item.label),
-                                      ringSize: layout.ring,
-                                      labelSize: layout.label,
-                                      rowHeight: layout.rowHeight)
+                                      slots: presentSlots,
+                                      rowHeight: layout.rowHeight,
+                                      compact: layout.shown.count > 5)
                     }
                 }
 
@@ -985,7 +1004,7 @@ private struct LargeHomeView: View {
                 HStack(spacing: 4) {
                     Text(items.count > layout.shown.count
                          ? "显示 \(layout.shown.count)/\(items.count) 个账号 · 其余请在 App 查看"
-                         : "共 \(items.count) 个账号 · 5h / 周 / 月 全部窗口")
+                         : "共 \(items.count) 个账号 · \(presentSlots.map(\.title).joined(separator: " / ")) 窗口")
                         .font(.system(size: 9, weight: .medium))
                         .foregroundStyle(WidgetTheme.tertiary)
                         .lineLimit(1)
