@@ -71,12 +71,29 @@ struct AgentHUDProvider: TimelineProvider {
 
     func getTimeline(in context: Context,
                      completion: @escaping (Timeline<AgentHUDEntry>) -> Void) {
-        let entry = currentEntry()
-        // 每 30 分钟由系统调度一次刷新机会（实际频率由系统决定）。
-        // 主 App 每次刷新后会主动 WidgetCenter.reloadAllTimelines()，
-        // 所以这里只是兜底。
-        let next = Date().addingTimeInterval(30 * 60)
-        completion(Timeline(entries: [entry], policy: .after(next)))
+        let base = currentEntry()
+
+        // 账号多于中尺寸一页（5 个）时，按 20 分钟一轮在该页之间轮换，
+        // 保证「订阅很多」时每个账号最终都能被看到，而不是被静默省略。
+        // 页数上限 4（20 个账号），再多也不会有意义地增加信息量。
+        let count = base.snapshot.allQuotaItems.count
+        let perPage = MediumHomeView.pageSize
+        let pages = max(1, min(4, Int(ceil(Double(count) / Double(perPage)))))
+
+        let now = Date()
+        var entries: [AgentHUDEntry] = []
+        for i in 0..<pages {
+            entries.append(AgentHUDEntry(
+                date: now.addingTimeInterval(Double(i) * 20 * 60),
+                snapshot: base.snapshot,
+                currency: base.currency,
+                stale: base.stale,
+                page: i,
+                pageCount: pages))
+        }
+        // 一轮结束后回到第 1 页重新生成（实际刷新时机由系统调度）。
+        completion(Timeline(entries: entries,
+                            policy: .after(now.addingTimeInterval(Double(pages) * 20 * 60))))
     }
 
     private func currentEntry() -> AgentHUDEntry {
@@ -108,6 +125,9 @@ struct AgentHUDEntry: TimelineEntry {
     let currency: Currency
     /// 选中账号与快照数据不一致（等待主 App 刷新）
     let stale: Bool
+    /// 中尺寸账号分页：当前页（0 基）与总页数；1 页时恒为 0/1。
+    var page: Int = 0
+    var pageCount: Int = 1
 }
 
 // MARK: - 共享读取（Widget 进程侧）

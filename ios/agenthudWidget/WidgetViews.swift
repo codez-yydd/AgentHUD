@@ -48,7 +48,8 @@ struct AgentHUDHomeWidgetView: View {
             // 主屏展示全部账号，选中账号只影响锁屏，因此主屏不显示 stale 提示
             SmallHomeView(snap: entry.snapshot, currency: entry.currency, stale: false)
         case .systemMedium:
-            MediumHomeView(snap: entry.snapshot, currency: entry.currency, stale: false)
+            MediumHomeView(snap: entry.snapshot, currency: entry.currency,
+                           stale: false, page: entry.page, pageCount: entry.pageCount)
         case .systemLarge:
             LargeHomeView(snap: entry.snapshot, currency: entry.currency, stale: false)
         default:
@@ -638,88 +639,89 @@ private struct MediumCostBar: View {
     }
 }
 
-/// 中尺寸：一张小表 —— 一行一个窗口，一列一个账号。
+/// 中尺寸：一张小表 —— 一列一个账号、一行一个窗口。
 ///
-/// 改版口径（2026-10）：账号的 5h / 周 / 月 三个数必须都能看到，所以
-/// 保留「一列一个账号 × 三行窗口」的结构；但把重复的噪音去掉：
-/// - 窗口标签只写在最左边一次，不再每列重复 5 遍；
-/// - 账号名压成一行（服务 + 套餐/尾号），不再两行长短不一；
-/// - 环里不再写数字（会和下面某一行的数字重复），环只表示最紧急窗口
-///   的占用程度；错误账号的环显示「!」并把名字染成琥珀色。
+/// 改版口径（2026-10）：
+/// - 账号的 5h / 周 / 月 三个数必须都在（额度组件的主要用途）；
+/// - 列头写清「服务 · 套餐」（GLM · Max / GLM · Pro）+「尾号 07127 /
+///   默认账号」，不能只留一串看不懂的数字；
+/// - 窗口标签只在最左边写一次，不再每列重复五遍；
+/// - 顶部一条细进度条表示该账号最紧急窗口的占用，替代原来占地方的
+///   大圆环（环里的数字还会和下面某一行重复）。
 private struct MediumColumnHeader: View {
     let item: WidgetQuotaItem
     let needsDefault: Bool
-    let nameSize: CGFloat
 
-    private var name: String {
+    private var planText: String {
         var parts: [String] = [item.label]
-        if needsDefault {
-            parts.append(item.accountText.map { WidgetQuotaItem.accountSuffix($0) } ?? "默认")
-        } else if let plan = item.planText {
-            parts.append(plan)
-        }
-        return parts.joined(separator: " ")
+        if let plan = item.planText { parts.append(plan) }
+        return parts.joined(separator: " · ")
+    }
+
+    /// 账号：数字指纹写「尾号 07127」，人类备注名原样。
+    private var accountText: String? {
+        guard let raw = item.accountText else { return nil }
+        return WidgetQuotaItem.shortenAccount(raw)
     }
 
     private var maxPct: Int? { item.primaryWindow?.pct }
 
-    private var ringColor: Color {
+    private var barColor: Color {
         if item.isError { return WidgetTheme.amber }
         if item.isBalance { return WidgetTheme.mint }
         return maxPct.map(widgetQuotaColor) ?? WidgetTheme.tertiary
     }
 
     var body: some View {
-        VStack(spacing: 4) {
-            ZStack {
-                Circle().stroke(WidgetTheme.track, lineWidth: 3)
-                if let p = maxPct, !item.isError, !item.isBalance {
-                    Circle()
-                        .trim(from: 0, to: CGFloat(min(max(Double(p) / 100, 0), 1)))
-                        .stroke(AngularGradient(colors: [ringColor.opacity(0.35), ringColor],
-                                                center: .center),
-                                style: StrokeStyle(lineWidth: 3, lineCap: .round))
-                        .rotationEffect(.degrees(-90))
-                        .shadow(color: ringColor.opacity(0.45), radius: 2)
-                }
-                if item.isError {
-                    Text("!")
-                        .font(.system(size: 13, weight: .bold, design: .rounded))
-                        .foregroundStyle(WidgetTheme.amber)
-                } else if let p = maxPct {
-                    Text("\(p)")
-                        .font(.system(size: 12, weight: .bold, design: .rounded))
-                        .monospacedDigit()
-                        .foregroundStyle(.white.opacity(0.95))
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.6)
-                } else if item.isBalance {
-                    Text(item.balanceCompact)
-                        .font(.system(size: 8, weight: .bold, design: .rounded))
-                        .monospacedDigit()
-                        .foregroundStyle(WidgetTheme.mint)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.45)
-                        .padding(3)
+        VStack(spacing: 3) {
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(WidgetTheme.track)
+                    if let p = maxPct, !item.isError {
+                        Capsule()
+                            .fill(barColor)
+                            .frame(width: max(2, geo.size.width
+                                              * CGFloat(min(max(Double(p) / 100, 0), 1))))
+                    }
                 }
             }
-            .frame(width: 32, height: 32)
+            .frame(height: 4)
 
-            Text(name)
-                .font(.system(size: nameSize, weight: .semibold))
+            Text(planText)
+                .font(.system(size: 9.5, weight: .semibold))
                 .foregroundStyle(item.isError ? WidgetTheme.amber
                                               : Color.white.opacity(0.95))
                 .lineLimit(1)
-                .minimumScaleFactor(0.65)
+                .minimumScaleFactor(0.7)
+
+            if let accountText {
+                Text(accountText)
+                    .font(.system(size: 8, weight: .medium))
+                    .foregroundStyle(WidgetTheme.tertiary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
+            } else if needsDefault {
+                Text("默认账号")
+                    .font(.system(size: 8, weight: .medium))
+                    .foregroundStyle(WidgetTheme.tertiary)
+                    .lineLimit(1)
+            } else {
+                Color.clear.frame(height: 9.5)
+            }
         }
         .frame(maxWidth: .infinity)
     }
 }
 
-private struct MediumHomeView: View {
+struct MediumHomeView: View {
     let snap: WidgetSnapshot
     let currency: Currency
     let stale: Bool
+    /// 账号超过一页时，系统按时间轮换展示的页码（0 基）
+    var page: Int = 0
+    var pageCount: Int = 1
+
+    static let pageSize = 5
 
     private var hasData: Bool { snap.updatedAt > 0 }
     private var items: [WidgetQuotaItem] { snap.allQuotaItems }
@@ -737,12 +739,18 @@ private struct MediumHomeView: View {
         }
     }
 
-    private var shown: [WidgetQuotaItem] { Array(ordered.prefix(5)) }
+    private var shown: [WidgetQuotaItem] {
+        let pages = max(1, pageCount)
+        let index = min(max(page, 0), pages - 1)
+        let start = index * Self.pageSize
+        let end = min(start + Self.pageSize, ordered.count)
+        guard start < end else { return [] }
+        return Array(ordered[start..<end])
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            MediumCostBar(snap: snap, currency: currency, stale: stale,
-                          overflow: max(0, items.count - shown.count))
+            MediumCostBar(snap: snap, currency: currency, stale: stale)
 
             WidgetDivider()
                 .padding(.top, 5)
@@ -754,28 +762,25 @@ private struct MediumHomeView: View {
                 HomePlaceholder(hasData: true)
             } else {
                 table
+                if pageCount > 1 {
+                    pageDots
+                }
                 Spacer(minLength: 0)
             }
         }
     }
 
     private var table: some View {
-        VStack(spacing: 2) {
-            // 表头：每个账号一列（小圆环 + 名字）
+        VStack(spacing: 0) {
             HStack(spacing: 0) {
                 Color.clear.frame(width: 18)
                 ForEach(shown) { item in
                     MediumColumnHeader(item: item,
-                                       needsDefault: duplicateLabels.contains(item.label),
-                                       nameSize: 9)
+                                       needsDefault: duplicateLabels.contains(item.label))
                 }
             }
             .padding(.bottom, 6)
 
-            WidgetDivider()
-                .padding(.bottom, 3)
-
-            // 三个窗口各一行，行首只标一次
             ForEach(QuotaSlot.allCases) { slot in
                 HStack(spacing: 0) {
                     Text(slot.title)
@@ -785,7 +790,7 @@ private struct MediumHomeView: View {
                     ForEach(shown) { item in
                         let w = item.window(for: slot)
                         Text(w?.pct.map { "\($0)%" } ?? "—")
-                            .font(.system(size: 11, weight: .semibold, design: .rounded))
+                            .font(.system(size: 12, weight: .semibold, design: .rounded))
                             .monospacedDigit()
                             .foregroundStyle((w?.pct).map(widgetQuotaColor) ?? WidgetTheme.tertiary)
                             .lineLimit(1)
@@ -793,9 +798,25 @@ private struct MediumHomeView: View {
                             .frame(maxWidth: .infinity)
                     }
                 }
-                .frame(height: 17)
+                .frame(height: 19)
             }
         }
+    }
+
+    /// 多页时的小圆点：让「还有账号没显示」这件事可见，而不是悄悄省略。
+    private var pageDots: some View {
+        HStack(spacing: 4) {
+            Spacer(minLength: 0)
+            ForEach(0..<max(1, pageCount), id: \.self) { i in
+                Circle()
+                    .fill(i == min(max(page, 0), pageCount - 1)
+                          ? WidgetTheme.secondary
+                          : WidgetTheme.track)
+                    .frame(width: 4, height: 4)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.top, 2)
     }
 }
 
