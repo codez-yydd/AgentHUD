@@ -594,6 +594,16 @@ private extension WidgetQuotaItem {
         }
     }
 
+    /// 圆环里固定展示的档位：5h → 周 → 月，缺档才退回占用最高的一条。
+    /// 固定 5h 是为了让并排的几个账号能横向对比，不用每列先读档位名。
+    var ringSlot: QuotaSlot? {
+        [QuotaSlot.hour5, .weekly, .monthly].first { window(for: $0)?.pct != nil }
+    }
+
+    var ringWindow: WidgetQuotaWindow? {
+        ringSlot.flatMap { window(for: $0) } ?? primaryWindow
+    }
+
     /// 该账号实际有数据的槽位；没有任何槽位（积分/Token 配额等）时
     /// 回退到全部槽位，保持旧行为而不是空白。
     var availableSlots: [QuotaSlot] {
@@ -726,26 +736,24 @@ private struct MediumAccountColumn: View {
     /// 一页 5 个账号时每列只有 66pt，套餐名单独占一行才不会被截成省略号。
     var compactName: Bool = false
 
-    private var primary: WidgetQuotaWindow? { item.primaryWindow }
+    /// 环里固定画 5h（没有 5h 的账号退到周、月），这样四列能横向对比；
+    /// 其余两档在下面一行，颜色同样表示紧急度，信息一个不少。
+    private var gaugeSlot: QuotaSlot? { item.ringSlot }
 
-    /// 主环对应的档位（5h / 周 / 月），找不到就退回窗口自带的标题。
-    private var primarySlot: QuotaSlot? {
-        guard let key = primary?.key else { return nil }
-        return QuotaSlot.allCases.first { item.window(for: $0)?.key == key }
-    }
+    private var gaugeWindow: WidgetQuotaWindow? { item.ringWindow }
 
-    private var primaryCaption: String {
+    private var gaugeCaption: String {
         if item.isError && item.windows.isEmpty { return "失败" }
-        return primarySlot?.title ?? primary?.title ?? "额度"
+        return gaugeSlot?.title ?? gaugeWindow?.title ?? "额度"
     }
 
     private var restSlots: [QuotaSlot] {
-        QuotaSlot.allCases.filter { $0 != primarySlot }
+        Array(QuotaSlot.allCases.filter { $0 != gaugeSlot }.prefix(2))
     }
 
     private var gaugeColor: Color {
         if item.isBalance { return WidgetTheme.mint }
-        return (primary?.pct).map(widgetQuotaColor) ?? WidgetTheme.tertiary
+        return (gaugeWindow?.pct).map(widgetQuotaColor) ?? WidgetTheme.tertiary
     }
 
     private var title: String {
@@ -767,8 +775,8 @@ private struct MediumAccountColumn: View {
 
     var body: some View {
         VStack(spacing: 5) {
-            QuotaGauge(pct: item.isBalance ? nil : primary?.pct,
-                       caption: item.isBalance ? "余额" : primaryCaption,
+            QuotaGauge(pct: item.isBalance ? nil : gaugeWindow?.pct,
+                       caption: item.isBalance ? "余额" : gaugeCaption,
                        size: gaugeSize,
                        color: gaugeColor,
                        failed: item.isError && item.windows.isEmpty,
@@ -796,6 +804,8 @@ private struct MediumAccountColumn: View {
             }
 
             restReadout
+                // 固定高度：失败/余额列没有这一行时，各列圆环仍然对齐
+                .frame(height: 13)
         }
         .frame(maxWidth: .infinity)
     }
@@ -938,17 +948,11 @@ private struct LargeQuotaRow: View {
     let rowHeight: CGFloat
     var compact: Bool = false
 
-    private var primary: WidgetQuotaWindow? { item.primaryWindow }
+    private var primary: WidgetQuotaWindow? { item.ringWindow }
     private var ringPct: Int? { primary?.pct }
 
     private var ringSlotTitle: String {
-        guard let key = primary?.key else { return "" }
-        switch key {
-        case "hour5", "interval": return "5h"
-        case "weekly": return "周"
-        case "monthly", "cursor_auto", "cursor_api": return "月"
-        default: return primary?.title ?? ""
-        }
+        item.ringSlot?.title ?? primary?.title ?? ""
     }
 
     /// 明细行只列「环里没画」的其余窗口，避免同一个数字出现两次。
