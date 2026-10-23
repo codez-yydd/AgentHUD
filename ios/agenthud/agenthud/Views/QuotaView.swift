@@ -55,7 +55,7 @@ struct QuotaView: View {
                                         VStack(spacing: 0) {
                                             ForEach(Array(entries.enumerated()), id: \.element.id) { idx, entry in
                                                 QuotaCompactRow(
-                                                    title: QuotaView.shortAccountLabel(entry.label.isEmpty ? entry.agent.displayName : entry.label),
+                                                    title: QuotaView.displayTitle(label: entry.label, agent: entry.agent),
                                                     plan: entry.planName,
                                                     windows: entry.windows,
                                                     balance: entry.balance,
@@ -82,7 +82,7 @@ struct QuotaView: View {
                                         VStack(spacing: 0) {
                                             ForEach(Array(section.groups.enumerated()), id: \.element.id) { idx, group in
                                                 QuotaCompactRow(
-                                                    title: QuotaView.shortAccountLabel(group.label.isEmpty ? group.agent.displayName : group.label),
+                                                    title: QuotaView.displayTitle(label: group.label, agent: group.agent),
                                                     plan: group.planBadge,
                                                     windows: group.windows,
                                                     balance: group.balance,
@@ -181,14 +181,29 @@ struct QuotaView: View {
         return order.map { SyncedGroupSection(agent: $0, groups: map[$0] ?? []) }
     }
 
-    /// 账号标签收敛：17 位纯数字账号只留后 4 位（"账号 …7127"），
-    /// 避免长数字把标题挤成两行、把卡片撑高。
+    /// 账号标签收敛：17 位纯数字账号只留后 4 位，避免长数字把标题挤成两行。
     static func shortAccountLabel(_ raw: String) -> String {
         let trimmed = raw.trimmingCharacters(in: .whitespaces)
         let tail = String(trimmed.reversed().prefix { $0.isNumber }.reversed())
         guard tail.count >= 12 else { return trimmed }
         let head = String(trimmed.dropLast(tail.count))
         return head + "…" + tail.suffix(4)
+    }
+
+    /// 可读的账号名：GLM 这类由凭证/用户 id 派生的「账号 16361781344907127」
+    /// 在自己的平台上根本看不到，只留服务名 + 套餐徽章，不再展示这串数字。
+    static func readableAccountName(_ raw: String) -> String? {
+        let trimmed = raw.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return nil }
+        if trimmed.hasPrefix("账号 ") || trimmed.hasPrefix("凭证 ") { return nil }
+        if trimmed.allSatisfy({ $0.isNumber }) { return nil }
+        return shortAccountLabel(trimmed)
+    }
+
+    /// 账号卡标题：能读懂的账号名才拼上，否则只显示服务名。
+    static func displayTitle(label: String, agent: AgentKind) -> String {
+        guard let name = readableAccountName(label) else { return agent.displayName }
+        return "\(agent.displayName) · \(name)"
     }
 
     /// 毫秒时间戳 → "MM-dd HH:mm"（额度卡的更新时间口径）。
@@ -245,8 +260,8 @@ private struct AccountQuotaCard: View {
             VStack(alignment: .leading, spacing: 12) {
                 QuotaAccountHeader(
                     visual: AgentVisual.forAgent(entry.agent),
-                    title: QuotaView.shortAccountLabel(entry.label.isEmpty ? entry.agent.displayName : entry.label),
-                    subtitle: "\(entry.agent.displayName) · 直连 · 更新于 " + Self.timeText(entry.updatedAt),
+                    title: title,
+                    subtitle: subtitle,
                     subtitleIcon: "bolt.horizontal.circle",
                     status: entry.status,
                     plan: entry.planName)
@@ -258,6 +273,16 @@ private struct AccountQuotaCard: View {
                                  emptyText: entry.message ?? "暂无额度数据")
             }
         }
+    }
+
+    private var title: String {
+        QuotaView.displayTitle(label: entry.label, agent: entry.agent)
+    }
+
+    private var subtitle: String {
+        let source = title == entry.agent.displayName
+            ? "直连" : "\(entry.agent.displayName) · 直连"
+        return source + " · 更新于 " + Self.timeText(entry.updatedAt)
     }
 
     private static func timeText(_ ms: Int) -> String {
@@ -276,7 +301,7 @@ private struct SyncedQuotaCard: View {
             VStack(alignment: .leading, spacing: 12) {
                 QuotaAccountHeader(
                     visual: AgentVisual.forAgent(group.agent),
-                    title: QuotaView.shortAccountLabel(group.displayTitle),
+                    title: QuotaView.displayTitle(label: group.label, agent: group.agent),
                     subtitle: "桌面同步 · 更新于 " + Self.timeText(group.updatedAtMs),
                     subtitleIcon: "icloud.and.arrow.down",
                     status: group.isError ? "error" : nil,

@@ -2,13 +2,15 @@
 //  WidgetViews.swift
 //  agenthudWidget
 //
-//  Widget 视图：主屏（小/中/大尺寸，全部账号 HUD 圆环）+ 锁屏（rectangular/circular/inline）。
+//  Widget 视图：主屏（小/中/大尺寸，全部账号 HUD 圆球）+ 锁屏（rectangular/circular/inline）。
 //  所有数据从 AgentHUDEntry.snapshot 读取，不发起网络请求。
-//  主屏按 quotaItems 渲染全部账号/服务商：中尺寸每个账号一列，主环取
-//  占用最高的订阅窗口，下面固定展示 5h / 周 / 月三档；月档只认真实月度
-//  窗口（GLM 的 MCP 月度是次数额度，不属于订阅月额度，不参与月档/主环）。
-//  大尺寸逐行展开并显示套餐 + 账号（凭证备注/尾号，避免无意义编号）；
-//  小尺寸只展示占用最高账号的三档窗口。锁屏仍按选中账号的标量字段渲染。
+//  主屏按 quotaItems 渲染全部账号/服务商：中尺寸一个账号一个圆球，圆环被
+//  切成 5h / 周 / 月三段弧，中心是服务商自家图标，下面一行数字给准确值；
+//  月档只认真实月度窗口（GLM 的 MCP 月度是次数额度，不属于订阅月额度，
+//  不参与月档）。大尺寸逐行展开圆球 + 全部窗口；小尺寸只展示占用最高账号
+//  的三档窗口。锁屏仍按选中账号的标量字段渲染。
+//  账号名只展示「服务 · 套餐」和读得懂的备注名：GLM 那种「账号 1636…」
+//  指纹、「凭证 1」序号在用户自己的平台上都看不到，一律不显示。
 //
 
 import WidgetKit
@@ -177,96 +179,26 @@ private extension WidgetQuotaItem {
         return a
     }
 
-    /// 中/小尺寸用：把长账号指纹缩成「尾号 7127」这类可区分文本。
-    static func shortenAccount(_ raw: String) -> String {
+    /// 人看得懂的账号备注（邮箱 / 自定义名）。
+    ///
+    /// GLM 这类同步账号的 label 是从凭证/用户 id 派生出来的
+    /// 「账号 16361781344907127」——用户在自己的 GLM 平台上根本看不到这串
+    /// 数字；「凭证 1」也只是本机第几条凭证。这两种都解释不了身份，只会让
+    /// 人对着一个陌生编号发呆，所以一律不展示，只留「服务 · 套餐」。
+    var readableAccount: String? {
+        guard let raw = accountText else { return nil }
         let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        if text.hasPrefix("账号 ") {
-            let digits = text.dropFirst(3).trimmingCharacters(in: .whitespaces)
-            if digits.count > 5 { return "尾号 " + String(digits.suffix(5)) }
-        }
-        if text.hasPrefix("凭证 ") { return text }
-        if let at = text.firstIndex(of: "@") {
-            let local = text[..<at]
-            if local.count > 8 {
-                return String(local.prefix(6)) + "…" + String(text[at...])
-            }
-        }
-        if text.count > 12 {
-            return String(text.prefix(4)) + "…" + String(text.suffix(4))
-        }
+        if text.hasPrefix("账号 ") || text.hasPrefix("凭证 ") { return nil }
+        if text.allSatisfy({ $0.isNumber }) { return nil }
+        if text.count >= 12,
+           text.allSatisfy({ $0.isNumber || $0 == "-" || $0 == " " }) { return nil }
         return text
-    }
-
-    /// 大尺寸用：数字指纹仍然只显示尾号，人类可读的备注名才完整展示。
-    static func displayAccount(_ raw: String) -> String {
-        let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        if text.hasPrefix("账号 ") {
-            let digits = text.dropFirst(3).trimmingCharacters(in: .whitespaces)
-            if digits.count > 5 { return "尾号 " + String(digits.suffix(5)) }
-        }
-        return text
-    }
-
-    /// 账号身份：套餐 + 账号（多账号时不再用无意义编号）。
-    func identityText(compact: Bool, needsDefault: Bool = false) -> String {
-        var parts: [String] = []
-        if let plan = planText { parts.append(plan) }
-        if let acct = accountText {
-            parts.append(compact ? Self.shortenAccount(acct) : Self.displayAccount(acct))
-        } else if needsDefault {
-            parts.append("默认")
-        }
-        if parts.isEmpty {
-            if let d = detail?.trimmingCharacters(in: .whitespacesAndNewlines),
-               !d.isEmpty {
-                return compact ? Self.shortenAccount(d) : d
-            }
-            return "默认账号"
-        }
-        return parts.joined(separator: " · ")
     }
 
     /// 服务名 + 套餐：GLM · Max / Codex · Plus。
     var serviceTitle: String {
         guard let plan = planText else { return label }
         return "\(label) · \(plan)"
-    }
-
-    /// 账号行：尾号 7127 / 凭证 1 / 默认账号（无账号且只有一个服务实例时返回 nil）。
-    func accountLine(needsDefault: Bool) -> String? {
-        if let acct = accountText {
-            return Self.shortenAccount(acct)
-        }
-        return needsDefault ? "默认账号" : nil
-    }
-
-    /// 6 列紧凑模式用：只保留 5 位尾号，避免标题被截断。
-    static func accountSuffix(_ raw: String) -> String {
-        let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        if text.hasPrefix("账号 ") {
-            let digits = text.dropFirst(3).trimmingCharacters(in: .whitespaces)
-            if digits.count > 5 { return String(digits.suffix(5)) }
-        }
-        if text.hasPrefix("凭证 ") { return text }
-        if text.count > 8 { return String(text.suffix(4)) }
-        return text
-    }
-
-    /// 6 列紧凑模式：套餐·账号放在一行，标题只留服务名。
-    func compactIdentity(needsDefault: Bool) -> String {
-        var parts: [String] = []
-        if let plan = planText { parts.append(plan) }
-        if let acct = accountText {
-            parts.append(Self.accountSuffix(acct))
-        } else if needsDefault {
-            parts.append("默认")
-        }
-        if parts.isEmpty {
-            if let d = detail?.trimmingCharacters(in: .whitespacesAndNewlines),
-               !d.isEmpty { return d }
-            return "默认"
-        }
-        return parts.joined(separator: "·")
     }
 
 }
@@ -327,6 +259,88 @@ private struct WidgetDivider: View {
         Rectangle()
             .fill(Color.white.opacity(0.07))
             .frame(height: 0.5)
+    }
+}
+
+/// 同服务同套餐重名时的序号（① ② …），只在这种情况才出现。
+private func circledIndex(_ n: Int) -> String {
+    let table = ["①", "②", "③", "④", "⑤", "⑥", "⑦", "⑧", "⑨"]
+    return table[min(max(n, 1), table.count) - 1]
+}
+
+// MARK: - 品牌图标
+
+/// 服务商自家的 mark（Assets.xcassets 里的模板图，跟随 tint 上色）。
+/// 没有品牌资源的 provider 回退到 SF Symbols，保证任何账号都有图标。
+extension WidgetQuotaItem {
+    var brandAsset: String? {
+        switch agent {
+        case "zai": return "BrandZai"
+        case "deepseek": return "BrandDeepSeek"
+        case "moonshot": return "BrandMoonshot"
+        case "minimax": return "BrandMiniMax"
+        case "opencodego": return "BrandOpenCode"
+        case "alibaba": return "BrandAlibaba"
+        case "alibabatoken": return "BrandAlibabaToken"
+        case "codex": return "BrandCodex"
+        case "claude": return "BrandClaude"
+        case "cursor": return "BrandCursor"
+        case "kimi": return "BrandKimi"
+        case "qoder": return "BrandQoder"
+        case "longcat": return "BrandLongCat"
+        case "mimo": return "BrandMiMo"
+        case "stepfun": return "BrandStepFun"
+        case "grok": return "BrandGrok"
+        default: return nil
+        }
+    }
+
+    var brandSymbol: String {
+        switch agent {
+        case "zai": return "sparkles"
+        case "deepseek": return "water.waves"
+        case "moonshot": return "moon.stars.fill"
+        case "minimax": return "waveform"
+        case "opencodego": return "curlybraces"
+        case "alibaba": return "cloud.fill"
+        case "alibabatoken": return "shippingbox.fill"
+        case "codex": return "chevron.left.forwardslash.chevron.right"
+        case "claude": return "asterisk"
+        case "cursor": return "cursorarrow.rays"
+        case "kimi": return "moon.fill"
+        case "qoder": return "square.stack.3d.up.fill"
+        case "longcat": return "cat.fill"
+        case "mimo": return "circle.hexagongrid.fill"
+        case "stepfun": return "chart.line.uptrend.xyaxis"
+        case "grok": return "bolt.fill"
+        default: return "cpu"
+        }
+    }
+}
+
+/// 品牌图标（模板渲染，单色）。尺寸由调用方给，保持正方形。
+private struct ProviderMark: View {
+    let item: WidgetQuotaItem
+    let size: CGFloat
+    var color: Color = .white.opacity(0.92)
+
+    var body: some View {
+        Group {
+            if let asset = item.brandAsset {
+                Image(asset)
+                    .renderingMode(.template)
+                    .resizable()
+                    .scaledToFit()
+            } else {
+                Image(systemName: item.brandSymbol)
+                    .resizable()
+                    .scaledToFit()
+                    .padding(size * 0.10)
+            }
+        }
+        .foregroundStyle(color)
+        .frame(width: size, height: size)
+        .accessibilityHidden(true)
     }
 }
 
@@ -428,11 +442,6 @@ private struct SmallHomeView: View {
         }
     }
 
-    private var duplicateLabels: Set<String> {
-        let grouped = Dictionary(grouping: items, by: { $0.label })
-        return Set(grouped.filter { $0.value.count > 1 }.keys)
-    }
-
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .firstTextBaseline, spacing: 4) {
@@ -458,11 +467,16 @@ private struct SmallHomeView: View {
             if !hasData {
                 HomePlaceholder(hasData: false)
             } else if let hero {
-                Text(hero.serviceTitle)
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(.white.opacity(0.95))
-                    .lineLimit(1)
-                if let account = hero.accountLine(needsDefault: duplicateLabels.contains(hero.label)) {
+                HStack(spacing: 5) {
+                    ProviderMark(item: hero, size: 14,
+                                 color: hero.isError ? WidgetTheme.amber : .white.opacity(0.92))
+                    Text(hero.serviceTitle)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(hero.isError ? WidgetTheme.amber : .white.opacity(0.95))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
+                }
+                if let account = hero.readableAccount {
                     Text(account)
                         .font(.system(size: 9, weight: .medium))
                         .foregroundStyle(WidgetTheme.tertiary)
@@ -639,58 +653,136 @@ private struct MediumCostBar: View {
     }
 }
 
-/// 中尺寸：一行一个账号，右侧三列是 5h / 周 / 月。
+/// 中尺寸：一个账号一个 HUD 圆球，三档窗口在圆球下方对齐成一行。
 ///
-/// 账号名占左侧整行宽度，所以「GLM · Max · 尾号 07127」可以完整显示；
-/// 三个窗口的数值在右侧对齐成三列，表头只写一次。
-private struct MediumQuotaRow: View {
+/// 圆球外圈切成三段弧（5h / 周 / 月，12 点方向顺时针），中心是服务商自家
+/// 图标：一眼能看出「哪个服务、哪一档快满了」，下面的数字给出准确值。
+/// 账号名只保留「服务 · 套餐」，不再挂「尾号 07127 / 凭证 1」这类在平台
+/// 上根本看不到的编号。
+private struct QuotaOrb: View {
     let item: WidgetQuotaItem
-    let needsDefault: Bool
-    let slots: [QuotaSlot]
-    let nameWidth: CGFloat
-    let cellWidth: CGFloat
+    let size: CGFloat
 
-    private var name: String {
-        var parts: [String] = [item.label]
-        if let plan = item.planText { parts.append(plan) }
-        if let raw = item.accountText {
-            parts.append(WidgetQuotaItem.shortenAccount(raw))
-        } else if needsDefault {
-            parts.append("默认账号")
-        }
-        return parts.joined(separator: " · ")
-    }
+    /// 三段弧的起始角（12 点 → 4 点 → 8 点），与下方数字顺序一致。
+    private static let starts: [Double] = [-90, 30, 150]
+    /// 每段 110°，留 10° 缺口，缺口本身就把三段分开了。
+    private static let sweep: Double = 110.0 / 360.0
 
-    private var maxPct: Int? { item.primaryWindow?.pct }
+    private var line: CGFloat { max(2.6, size * 0.072) }
 
-    private var dotColor: Color {
+    private var accent: Color {
         if item.isError { return WidgetTheme.amber }
         if item.isBalance { return WidgetTheme.mint }
-        return maxPct.map(widgetQuotaColor) ?? WidgetTheme.tertiary
+        return item.primaryWindow?.pct.map(widgetQuotaColor) ?? WidgetTheme.tertiary
     }
 
     var body: some View {
-        HStack(spacing: 6) {
+        ZStack {
+            // 球面：中心一点冷光，向外压暗，让圆环读起来是个球而不是缺口
             Circle()
-                .fill(dotColor)
-                .frame(width: 6, height: 6)
+                .fill(RadialGradient(
+                    colors: [Color.white.opacity(0.05), Color.white.opacity(0.012)],
+                    center: .center, startRadius: 0, endRadius: size * 0.5))
+            Circle()
+                .fill(RadialGradient(colors: [accent.opacity(0.18), accent.opacity(0)],
+                                     center: .center,
+                                     startRadius: 0, endRadius: size * 0.55))
 
-            Text(name)
-                .font(.system(size: 10, weight: .semibold))
-                .foregroundStyle(item.isError ? WidgetTheme.amber
-                                              : Color.white.opacity(0.93))
-                .lineLimit(1)
-                .minimumScaleFactor(0.7)
-                .frame(width: nameWidth, alignment: .leading)
+            ForEach(Array(QuotaSlot.allCases.enumerated()), id: \.offset) { index, slot in
+                arc(slot: slot, start: Self.starts[index])
+            }
 
-            ForEach(slots) { slot in
-                let w = item.window(for: slot)
-                Text(w?.pct.map { "\($0)%" } ?? "—")
-                    .font(.system(size: 11.5, weight: .semibold, design: .rounded))
-                    .monospacedDigit()
-                    .foregroundStyle((w?.pct).map(widgetQuotaColor) ?? WidgetTheme.tertiary)
+            ProviderMark(item: item, size: size * 0.38,
+                         color: item.isError ? WidgetTheme.amber : .white.opacity(0.93))
+        }
+        .frame(width: size, height: size)
+    }
+
+    private func arc(slot: QuotaSlot, start: Double) -> some View {
+        let pct = item.window(for: slot)?.pct
+        let frac = min(max(Double(pct ?? 0) / 100, 0), 1)
+        let color = pct.map(widgetQuotaColor) ?? WidgetTheme.tertiary
+        return ZStack {
+            Circle()
+                .trim(from: 0, to: Self.sweep)
+                .stroke(WidgetTheme.track,
+                        style: StrokeStyle(lineWidth: line, lineCap: .round))
+            if let pct, pct > 0 {
+                Circle()
+                    .trim(from: 0, to: Self.sweep * frac)
+                    .stroke(color, style: StrokeStyle(lineWidth: line, lineCap: .round))
+                    .shadow(color: color.opacity(0.5), radius: line * 1.3)
+            }
+        }
+        .rotationEffect(.degrees(start))
+    }
+}
+
+/// 中尺寸一列：圆球 + 名字 + 「5h 65% 周 54% 月 —」。
+private struct MediumAccountColumn: View {
+    let item: WidgetQuotaItem
+    /// 同服务同套餐重名时才给序号（①②），正常情况为 nil。
+    let ordinal: Int?
+    let orbSize: CGFloat
+
+    /// 第一行只放服务名，套餐单独一行：列宽只有 60~80pt，挤成
+    /// 「Claude Code · Max 20x」一定被截成省略号，两行反而每个字都看得见。
+    private var planLine: String {
+        var text = item.planText ?? ""
+        if let ordinal {
+            text += (text.isEmpty ? "" : " ") + circledIndex(ordinal)
+        }
+        return text
+    }
+
+
+    var body: some View {
+        VStack(spacing: 4) {
+            QuotaOrb(item: item, size: orbSize)
+            VStack(spacing: 1) {
+                Text(item.label)
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(item.isError ? WidgetTheme.amber : Color.white.opacity(0.93))
                     .lineLimit(1)
-                    .frame(width: cellWidth, alignment: .trailing)
+                    .minimumScaleFactor(0.7)
+                // 固定占位：有套餐和没套餐的账号，下面的数字要能对齐
+                Text(planLine)
+                    .font(.system(size: 8.5, weight: .medium))
+                    .foregroundStyle(WidgetTheme.tertiary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+                    .frame(height: 10)
+            }
+            readouts
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    @ViewBuilder
+    private var readouts: some View {
+        if item.isBalance {
+            Text(item.balanceCompact)
+                .font(.system(size: 10, weight: .semibold, design: .rounded))
+                .monospacedDigit()
+                .foregroundStyle(WidgetTheme.mint)
+                .lineLimit(1)
+        } else {
+            HStack(alignment: .top, spacing: 4) {
+                ForEach(QuotaSlot.allCases) { slot in
+                    let w = item.window(for: slot)
+                    VStack(spacing: 0) {
+                        Text(slot.title)
+                            .font(.system(size: 7, weight: .medium))
+                            .foregroundStyle(WidgetTheme.tertiary)
+                        Text(w?.pct.map { "\($0)%" } ?? "—")
+                            .font(.system(size: 10, weight: .semibold, design: .rounded))
+                            .monospacedDigit()
+                            .foregroundStyle((w?.pct).map(widgetQuotaColor) ?? WidgetTheme.tertiary)
+                    }
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+                    .frame(maxWidth: .infinity)
+                }
             }
         }
     }
@@ -703,14 +795,20 @@ struct MediumHomeView: View {
     var page: Int = 0
     var pageCount: Int = 1
 
+    /// 一页最多几个账号：5 列时每列 66pt，圆球 + 名字 + 数字仍放得下。
     static let pageSize = 5
 
     private var hasData: Bool { snap.updatedAt > 0 }
     private var items: [WidgetQuotaItem] { snap.allQuotaItems }
 
-    private var duplicateLabels: Set<String> {
-        let grouped = Dictionary(grouping: items, by: { $0.label })
+    /// 同服务 + 同套餐出现多次时才需要序号区分。
+    private var duplicateKeys: Set<String> {
+        let grouped = Dictionary(grouping: items, by: { Self.identityKey($0) })
         return Set(grouped.filter { $0.value.count > 1 }.keys)
+    }
+
+    static func identityKey(_ item: WidgetQuotaItem) -> String {
+        "\(item.label)|\(item.planText ?? "")"
     }
 
     private var ordered: [WidgetQuotaItem] {
@@ -729,58 +827,50 @@ struct MediumHomeView: View {
         return Array(ordered[start..<end])
     }
 
+    /// 圆球大小跟着列数走：账号少就画大点，一列圆球占满高度。
+    private var orbSize: CGFloat {
+        switch shown.count {
+        case 0, 1, 2: return 58
+        case 3: return 52
+        case 4: return 48
+        default: return 42
+        }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             MediumCostBar(snap: snap, currency: currency, stale: stale)
 
             WidgetDivider()
                 .padding(.top, 5)
-                .padding(.bottom, 5)
+                .padding(.bottom, 6)
 
             if !hasData {
                 HomePlaceholder(hasData: false)
             } else if items.isEmpty {
                 HomePlaceholder(hasData: true)
             } else {
-                table
+                HStack(alignment: .center, spacing: 0) {
+                    ForEach(Array(shown.enumerated()), id: \.element.id) { _, item in
+                        MediumAccountColumn(item: item,
+                                            ordinal: ordinal(for: item),
+                                            orbSize: orbSize)
+                    }
+                }
+                .frame(maxHeight: .infinity)
+
                 if pageCount > 1 { pageDots }
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
-    /// 三档窗口固定展示（5h / 周 / 月），没有数据的显示「—」，
-    /// 让「这个账号没有月度额度」这件事本身也是可见信息。
-    private var slots: [QuotaSlot] { QuotaSlot.allCases }
-
-    private var cellWidth: CGFloat { 44 }
-    private var nameWidth: CGFloat {
-        332 - 6 - 6 - 6 - cellWidth * CGFloat(slots.count) - 6
-    }
-
-    private var table: some View {
-        VStack(spacing: 0) {
-            // 表头：右侧三列只标一次
-            HStack(spacing: 6) {
-                Color.clear.frame(width: 5)
-                Color.clear.frame(width: nameWidth)
-                ForEach(slots) { slot in
-                    Text(slot.title)
-                        .font(.system(size: 8, weight: .medium))
-                        .foregroundStyle(WidgetTheme.tertiary)
-                        .frame(width: cellWidth, alignment: .trailing)
-                }
-            }
-            .frame(height: 12)
-
-            ForEach(shown) { item in
-                MediumQuotaRow(item: item,
-                               needsDefault: duplicateLabels.contains(item.label),
-                               slots: slots,
-                               nameWidth: nameWidth,
-                               cellWidth: cellWidth)
-                    .frame(maxHeight: .infinity)
-            }
-        }
+    private func ordinal(for item: WidgetQuotaItem) -> Int? {
+        let key = Self.identityKey(item)
+        guard duplicateKeys.contains(key) else { return nil }
+        let same = ordered.filter { Self.identityKey($0) == key }
+        guard let index = same.firstIndex(where: { $0.id == item.id }) else { return nil }
+        return index + 1
     }
 
     private var pageDots: some View {
@@ -802,7 +892,8 @@ struct MediumHomeView: View {
 
 private struct LargeQuotaRow: View {
     let item: WidgetQuotaItem
-    let needsDefault: Bool
+    /// 同服务同套餐重名时才给序号（① ②）。
+    let ordinal: Int?
     let slots: [QuotaSlot]
     let rowHeight: CGFloat
     var compact: Bool = false
@@ -840,10 +931,23 @@ private struct LargeQuotaRow: View {
 
             VStack(alignment: .leading, spacing: compact ? 2 : 4) {
                 HStack(spacing: 5) {
+                    ProviderMark(item: item, size: compact ? 12 : 13,
+                                 color: item.isError ? WidgetTheme.amber : .white.opacity(0.90))
+
                     Text(item.label)
                         .font(.system(size: compact ? 12 : 13, weight: .semibold))
                         .foregroundStyle(.white.opacity(0.94))
                         .lineLimit(1)
+
+                    if let plan = item.planText {
+                        Text(plan)
+                            .font(.system(size: 8.5, weight: .semibold))
+                            .padding(.horizontal, 4)
+                            .padding(.vertical, 1)
+                            .background(Capsule().fill(Color.white.opacity(0.07)))
+                            .foregroundStyle(WidgetTheme.secondary)
+                            .lineLimit(1)
+                    }
 
                     if item.isBalance {
                         Text("余额")
@@ -856,11 +960,19 @@ private struct LargeQuotaRow: View {
 
                     Spacer(minLength: 6)
 
-                    Text(item.identityText(compact: false, needsDefault: needsDefault))
-                        .font(.system(size: 9.5, weight: .medium))
-                        .foregroundStyle(WidgetTheme.tertiary)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.8)
+                    if let ordinal {
+                        Text(circledIndex(ordinal))
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundStyle(WidgetTheme.secondary)
+                    }
+
+                    if let identity = item.readableAccount {
+                        Text(identity)
+                            .font(.system(size: 9.5, weight: .medium))
+                            .foregroundStyle(WidgetTheme.tertiary)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.8)
+                    }
                 }
 
                 detailLine
@@ -977,7 +1089,7 @@ private struct LargeHomeView: View {
     }
 
     private var duplicateLabels: Set<String> {
-        let grouped = Dictionary(grouping: items, by: { $0.label })
+        let grouped = Dictionary(grouping: items, by: { MediumHomeView.identityKey($0) })
         return Set(grouped.filter { $0.value.count > 1 }.keys)
     }
 
@@ -996,6 +1108,14 @@ private struct LargeHomeView: View {
             if a.isError != b.isError { return a.isError }
             return (a.primaryWindow?.pct ?? -1) > (b.primaryWindow?.pct ?? -1)
         }
+    }
+
+    private func ordinal(for item: WidgetQuotaItem) -> Int? {
+        let key = MediumHomeView.identityKey(item)
+        guard duplicateLabels.contains(key) else { return nil }
+        let same = ordered.filter { MediumHomeView.identityKey($0) == key }
+        guard let index = same.firstIndex(where: { $0.id == item.id }) else { return nil }
+        return index + 1
     }
 
     private var layout: Layout {
@@ -1024,7 +1144,7 @@ private struct LargeHomeView: View {
                 VStack(spacing: layout.spacing) {
                     ForEach(layout.shown) { item in
                         LargeQuotaRow(item: item,
-                                      needsDefault: duplicateLabels.contains(item.label),
+                                      ordinal: ordinal(for: item),
                                       slots: presentSlots,
                                       rowHeight: layout.rowHeight,
                                       compact: layout.shown.count > 5)

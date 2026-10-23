@@ -48,6 +48,7 @@
 		BB0000000000000000000002 /* WidgetViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000102 /* WidgetViews.swift */; };
 		BB0000000000000000000003 /* WidgetShared.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000103 /* WidgetShared.swift */; };
 		BB0000000000000000000004 /* WidgetAccountIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000104 /* WidgetAccountIntent.swift */; };
+		BB0000000000000000000005 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000119 /* Assets.xcassets */; };
 
 /* ===== PBXFileReference ===== */
 
@@ -83,6 +84,7 @@
 		BB0000000000000000000102 /* WidgetViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WidgetViews.swift; sourceTree = "<group>"; };
 		BB0000000000000000000103 /* WidgetShared.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WidgetShared.swift; sourceTree = "<group>"; };
 		BB0000000000000000000104 /* WidgetAccountIntent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WidgetAccountIntent.swift; sourceTree = "<group>"; };
+		BB0000000000000000000119 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		BB0000000000000000000201 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		BB0000000000000000000202 /* agenthudWidget.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = agenthudWidget.entitlements; sourceTree = "<group>"; };
 
@@ -173,6 +175,7 @@
 				BB0000000000000000000102 /* WidgetViews.swift */,
 				BB0000000000000000000103 /* WidgetShared.swift */,
 				BB0000000000000000000104 /* WidgetAccountIntent.swift */,
+				BB0000000000000000000119 /* Assets.xcassets */,
 				BB0000000000000000000201 /* Info.plist */,
 				BB0000000000000000000202 /* agenthudWidget.entitlements */,
 			);
@@ -204,6 +207,7 @@
 			buildConfigurationList = EE0000000000000000000002 /* Build configuration list for PBXNativeTarget "agenthudWidget" */;
 			buildPhases = (
 				DD0000000000000000000021 /* Sources */,
+				DD0000000000000000000022 /* Resources */,
 			);
 			buildRules = ();
 			dependencies = ();
@@ -257,6 +261,15 @@
 		};
 
 /* ===== PBXResourcesBuildPhase ===== */
+
+		DD0000000000000000000022 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				BB0000000000000000000005 /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 
 		DD0000000000000000000012 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
