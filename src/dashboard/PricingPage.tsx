@@ -10,10 +10,12 @@
  * 搜索过滤、来源标识、新增模型表单；页头（含保存按钮）吸顶，长表滚动时
  * 保存动作始终可见。
  *
- * 币种口径：默认按语言推导（中文=人民币、英文=美元，与总览/对比页同规则），
- * 页内切换只改本页展示、不写偏好也不改全局币种——全局币种由界面语言唯一
- * 推导，后端偏好（saveCurrency，菜单栏标题读取）由面板 App.tsx 在启动/
- * 切语言时统一回写，无手动切换入口；本地 zbar-currency 偏好键已废弃无读取方。
+ * 币种口径：初始与回跟随设置页的全局币种（默认跟随语言：中文=人民币、
+ * 英文=美元，与总览/日志页同规则），页内切换只改本页展示、不写偏好也
+ * 不改全局币种——全局币种可在主窗口「设置」页手动指定（currency.json
+ * 的 mode 字段）；后端偏好快照（saveCurrency，菜单栏标题读取）由面板
+ * App.tsx 在启动/切语言时统一回写（手动指定时不被覆盖）。
+ * 本地 zbar-currency 偏好键已废弃无读取方。
  *
  * 草稿（draft）放模块级单例：切侧栏页面会卸载本组件，放组件 state 里草稿
  * 会随卸载丢失；单例在窗口会话内存活，重新挂载时恢复。
@@ -52,7 +54,7 @@ import { canonicalModelId, lookupPrice } from "../modelName";
 import { AlertBanner } from "../layout";
 import { useI18n } from "../i18n";
 import { Card, Skeleton } from "./primitives";
-import { currencyOf } from "./overview/derive";
+import { useCurrencyPref } from "./settings/currencyPref";
 import { DiffPanel } from "./pricing/DiffPanel";
 import { PriceTable } from "./pricing/PriceTable";
 import {
@@ -70,7 +72,9 @@ import {
 let pricingDraftStore: Record<string, string> = {};
 
 export function PricingPage() {
-  const { locale, t } = useI18n();
+  const { t } = useI18n();
+  // 全局币种（设置页可手动指定；默认跟随语言 = 升级前 currencyOf(locale)）
+  const { currency: globalCurrency } = useCurrencyPref();
   const [pricing, setPricing] = useState<PricingConfig | null>(null);
   const [models, setModels] = useState<ModelInfo[]>([]);
   // 已落盘快照（JSON 串）：dirty 判定「内存 pricing ≠ 最后一次成功落盘的内容」
@@ -83,8 +87,9 @@ export function PricingPage() {
   // USD→CNY 汇率：¥ 视图的折算展示用（价格只存美元，人民币一律实时折算）
   const [fxRate, setFxRate] = useState(7.2);
   const [fxLoading, setFxLoading] = useState(false);
-  // 币种：默认按语言推导（中文=人民币、英文=美元），页内切换只改本页展示
-  const [currency, setCurrency] = useState<Currency>(() => currencyOf(locale));
+  // 币种：初始取全局币种（跟随语言 = 语言推导，手动指定 = 设置值），
+  // 页内切换只改本页展示（「仅本页」口径）
+  const [currency, setCurrency] = useState<Currency>(() => globalCurrency);
   // 草稿：把每个输入框的编辑值作为字符串暂存，避免小数点输入被 parseFloat 吞掉。
   // key = `${modelId}|${field}`；初值取模块级单例（跨页面切换不丢草稿）
   const [draft, setDraft] = useState<Record<string, string>>(
@@ -164,11 +169,12 @@ export function PricingPage() {
       .catch(() => {});
   }, []);
 
-  // 语言切换：币种回到语言对应的默认口径（与总览/对比页同规则）。
-  // 本页不做任何持久化——全局币种从属语言，写盘入口在面板 App.tsx
+  // 全局币种变化（语言切换推导值变化 / 设置页手动指定变化）时本页回到
+  // 全局口径（与升级前「切语言回语言默认」同款回跟规则）。本页不做任何
+  // 持久化——全局手动指定的写盘入口在主窗口「设置」页
   useEffect(() => {
-    setCurrency(currencyOf(locale));
-  }, [locale]);
+    setCurrency(globalCurrency);
+  }, [globalCurrency]);
 
   // 把某个来源的 diff 结果写入共享状态（更新差异数 + 默认勾选全部新增项，
   // 变动项默认不勾以保护用户自定义）
@@ -877,9 +883,11 @@ export function PricingPage() {
  *  ¥ 口径约 61px、$ 口径约 46px（没有折算副行），行块紧贴排布，
  *  避免加载完成后整表高度跳动。 */
 function PricingSkeleton() {
-  const { locale } = useI18n();
+  // 币种读全局设置（默认跟随语言，与真实内容的首选口径一致，
+  // 加载完成后不因口径不同跳行高）
+  const { currency } = useCurrencyPref();
   const rowClass =
-    currencyOf(locale) === "cny"
+    currency === "cny"
       ? "db-price-skeleton__row"
       : "db-price-skeleton__row db-price-skeleton__row--usd";
   return (

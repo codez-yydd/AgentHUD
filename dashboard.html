@@ -24,8 +24,16 @@
       // 首帧前兜底：先按面板写入的主题键切 .dark，避免暗色用户看到白闪。
       // 只读不写（appearance.ts 是唯一写入方）；主逻辑在 dashboard-main.tsx
       // 启动时再同步一次（幂等），此处只为早于 CSS 生效。
+      // 来源偏好为「跟随系统」（zbar-theme-pref === "system"）时改读系统
+      // 当前深浅色——应用未运行期间系统可能已切换，存储的解析值
+      //（zbar-theme）是旧的，按它上色首帧会跳变（与 appearance.ts 的
+      // bootstrapTheme 同语义）。
       try {
-        if (localStorage.getItem("zbar-theme") === "dark") {
+        var dark =
+          localStorage.getItem("zbar-theme-pref") === "system"
+            ? window.matchMedia("(prefers-color-scheme: dark)").matches
+            : localStorage.getItem("zbar-theme") === "dark";
+        if (dark) {
           document.documentElement.classList.add("dark");
         }
       } catch (_) {

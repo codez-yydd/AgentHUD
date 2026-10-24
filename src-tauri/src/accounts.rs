@@ -20,7 +20,9 @@
 //!   （任一侧解析失败）时降级为原文整串回写，绝不让合并逻辑使切换失败。
 //! - 切换前用现场数据刷新"即将被切走账号"的**已存在**快照（不新建条目），
 //!   保证被切走账号的快照不会停留在过期键集上。
-//! - 指纹（user_id）解密失败时降级为 unknown-id 快照，不阻塞捕获。
+//! - 指纹（user_id）解密失败时降级为 unknown-id 快照，不阻塞捕获
+//!   （仅手动捕获；自动捕获轮询对无指纹轮次整轮跳过，防 unknown 快照
+//!   无限堆积，见 upsert_snapshot_at_opts）。
 
 use crate::pricing::config_dir;
 use crate::zcode_crypto::{fingerprint_of_credentials, Fingerprint};
@@ -29,6 +31,7 @@ use serde_json::{Map, Value};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
+use tauri::{AppHandle, Emitter};
 // macOS/Windows 退出进程的轮询等待使用（Linux 下避免 unused import）
 #[cfg(any(target_os = "macos", windows))]
 use std::time::Duration;
@@ -45,6 +48,13 @@ pub struct AccountMeta {
     pub email: Option<String>,
     pub fingerprint: String,
     pub created_at: i64,
+    /// 最近一次捕获/刷新时间（主窗口「凭证与账号管理」页展示用；磁盘快照
+    /// 自始有值，default 仅为反序列化旧数据兜底）
+    #[serde(default)]
+    pub updated_at: i64,
+    /// 捕获时选中的 Coding Plan provider（ZCode 登录渠道标识；老快照为 None）
+    #[serde(default)]
+    pub login_provider: Option<String>,
     #[serde(default)]
     pub is_current: bool,
 }
@@ -293,6 +303,8 @@ impl From<&AccountSnapshot> for AccountMeta {
             email: s.email.clone(),
             fingerprint: s.fingerprint.clone(),
             created_at: s.created_at,
+            updated_at: s.updated_at,
+            login_provider: s.login_provider.clone(),
             is_current: false, // 由 list_accounts 按实时指纹回填
         }
     }
@@ -360,33 +372,80 @@ fn default_display_name(fp: Option<&Fingerprint>, email: Option<&str>, id: &str)
         .unwrap_or_else(|| format!("账号-{}", &id[..id.len().min(8)]))
 }
 
-/// 现场两文件原文 → 快照 upsert 核心（capture_account 与"切换到其他账号前
-/// 刷新被切走账号快照"共用，编译期保证两处解析与 upsert 语义一致）。
-/// base 为快照基目录（生产为 ~/.agenthud；单测注入临时目录）。
+/// upsert 内核的结果形态。
+/// - Nothing：没有可处理的当前账号（credentials.json 缺失/非法 JSON，
+///   或 update_only 下指纹无对应快照），由调用方决定报错还是静默跳过；
+/// - Unchanged：现场有效内容与既有快照完全一致，幂等跳过未落盘
+///   （仅 skip_unchanged=true 的自动捕获路径会出现，见 upsert_snapshot_at_opts）；
+/// - Upserted：新建或刷新了快照（updated_existing 区分两种情形）。
+#[derive(Debug)]
+enum UpsertOutcome {
+    Nothing,
+    Unchanged,
+    Upserted(CaptureOutcome),
+}
+
+/// 现场两文件原文 → 快照 upsert 核心（capture_account、"切换到其他账号前
+/// 刷新被切走账号快照"、自动捕获轮询三方共用，编译期保证解析与 upsert
+/// 语义一致）。base 为快照基目录（生产为 ~/.agenthud；单测注入临时目录）。
 ///
 /// update_only=true 只刷新指纹命中的**已存在**快照（切换路径专用：不在切换
 /// 路径产生新账号条目；指纹解密降级成 unknown-* 时自然落空，静默跳过）。
 /// update_only=false 为常规捕获：无对应快照则新建（凭证键集异常导致指纹
 /// 提取失败时，与升级前一致地退化为 unknown-* 快照，不阻塞捕获）。
 ///
-/// 返回 Ok(None) = 没有可处理的当前账号（credentials.json 不存在、不是合法
-/// JSON，或 update_only 下无对应快照），由调用方决定报错还是跳过；
+/// skip_unchanged=true（自动捕获轮询专用）：旧快照存在且现场两文件的有效
+/// 内容（凭证原文 + coding-plan providers + 选中 provider）与之完全一致时
+/// 返回 Unchanged，不落盘、不刷新 updated_at——60s 一轮的轮询若每轮都
+/// 原样重写，快照文件会被无谓刷写。指纹为 None 的轮次在该路径下直接
+/// 返回 Nothing 不落盘（防 unknown 快照无限堆积，机理见函数体内注释），
+/// unknown 快照只能由手动捕获产生。手动捕获与切换前刷新一律传 false，
+/// 行为与短路机制引入前完全一致（手动捕获同内容仍正常返回成功）。
+///
 /// Err 只表示快照读取/落盘失败。
 fn upsert_snapshot_at(
     base: &Path,
     live: &LiveFiles,
     update_only: bool,
 ) -> Result<Option<CaptureOutcome>, String> {
+    match upsert_snapshot_at_opts(base, live, update_only, false)? {
+        UpsertOutcome::Upserted(outcome) => Ok(Some(outcome)),
+        // skip_unchanged=false 时 Unchanged 分支不可达，归入 None 保持旧签名语义
+        _ => Ok(None),
+    }
+}
+
+/// upsert_snapshot_at 的完整参数版内核（原签名函数是其 skip_unchanged=false
+/// 的薄封装，既有调用点与测试零改动）。
+fn upsert_snapshot_at_opts(
+    base: &Path,
+    live: &LiveFiles,
+    update_only: bool,
+    skip_unchanged: bool,
+) -> Result<UpsertOutcome, String> {
     let raw = match live.credentials.as_deref() {
         Some(raw) => raw,
-        None => return Ok(None),
+        None => return Ok(UpsertOutcome::Nothing),
     };
     let creds: Value = match serde_json::from_str(raw) {
         Ok(v) => v,
         // 非法 JSON：无法提取指纹（捕获路径另行报"格式异常"，切换路径跳过）
-        Err(_) => return Ok(None),
+        Err(_) => return Ok(UpsertOutcome::Nothing),
     };
     let fp = fingerprint_of_credentials(&creds); // 解密失败降级 None，不阻塞
+    // 自动捕获路径（skip_unchanged=true）的防堆积闸：指纹为 None 时本轮
+    // 直接跳过、不落盘。机理：unknown 快照 id 含毫秒时间戳（见
+    // snapshot_id_of），每轮都不同，下方按 id 查旧快照（load_snapshot_at）
+    // 的幂等短路永远命中不了——现场是合法 JSON 却取不到指纹（登出残留
+    // `{}`、解密失败、JWT 缺 user_id/sub 等）时，60s 一轮的自动捕获会
+    // 每轮新建一个 unknown-* 快照并广播事件，一天堆积 1440 个文件、把
+    // 账号列表灌满。因此 unknown 快照只能由手动捕获产生
+    // （skip_unchanged=false，用户点击自然限频，既有语义不变）。切换路径
+    // （update_only=true）不受影响：unknown id 在该路径下本就命中不了
+    // 任何快照、只会静默 Nothing。
+    if skip_unchanged && fp.is_none() {
+        return Ok(UpsertOutcome::Nothing);
+    }
     let id = snapshot_id_of(fp.as_ref());
     let fingerprint = fp.as_ref().map(|f| f.user_id.clone()).unwrap_or_default();
     let email = fp.as_ref().and_then(|f| f.email.clone());
@@ -396,8 +455,23 @@ fn upsert_snapshot_at(
     let login_provider =
         crate::quota::pick_coding_plan_api_key(&providers).map(|(k, _, _)| k);
 
+    let old = load_snapshot_at(base, &id);
+    // 幂等短路（仅 skip_unchanged=true）：凭证原文一致则指纹必然一致（同一
+    // 解析逻辑），无需另比；display_name/email 变化但凭证未变时同样跳过
+    // （低频展示字段，交手动捕获刷新）
+    if skip_unchanged {
+        if let Some(old) = old.as_ref() {
+            if old.credentials_raw == raw
+                && old.config_providers == providers
+                && old.login_provider == login_provider
+            {
+                return Ok(UpsertOutcome::Unchanged);
+            }
+        }
+    }
+
     let now = now_ms();
-    let (snapshot, updated_existing) = match load_snapshot_at(base, &id) {
+    let (snapshot, updated_existing) = match old {
         Some(old) => (
             AccountSnapshot {
                 version: 1,
@@ -420,7 +494,7 @@ fn upsert_snapshot_at(
             true,
         ),
         // 只更新已存在的快照：不新建条目（切换路径不产生新账号）
-        None if update_only => return Ok(None),
+        None if update_only => return Ok(UpsertOutcome::Nothing),
         None => {
             let display_name = default_display_name(fp.as_ref(), email.as_deref(), &id);
             (
@@ -443,7 +517,7 @@ fn upsert_snapshot_at(
     };
     let account = AccountMeta::from(&snapshot);
     save_snapshot_at(base, &snapshot)?;
-    Ok(Some(CaptureOutcome {
+    Ok(UpsertOutcome::Upserted(CaptureOutcome {
         account,
         updated_existing,
     }))
@@ -475,6 +549,151 @@ pub fn capture_account() -> Result<CaptureOutcome, String> {
         Some(outcome) => Ok(outcome),
         None => Err(capture_without_credentials_error(&live)),
     }
+}
+
+// ============================================================
+// 第三节：ZCode 换账号自动捕获（后台轮询，应用运行期间常驻）
+// ============================================================
+
+/// 自动捕获事件名：后台轮询发现新登录（新建快照）或既有快照凭证内容
+/// 真的变化时广播，前端账号卡片（SettingsPanel 的 AccountsCard）监听后
+/// 刷新账号列表。payload 为 { name: 账号名, created: 是否新建 }。
+const ACCOUNTS_AUTO_CAPTURED_EVENT: &str = "zbar://accounts-auto-captured";
+
+/// 自动捕获单轮（spawn_auto_capture 的循环体）：读现场 → 持锁 upsert
+/// （幂等短路）。返回 Some 表示捕获到变化（新建快照或凭证内容真的变化），
+/// 需要广播事件；其余情况（凭证不存在/非法 JSON/取不到指纹/内容未变）
+/// 静默返回 None。取不到指纹的轮次整轮跳过不落盘（防 unknown 快照
+/// 无限堆积，见 upsert_snapshot_at_opts 体内注释）。
+/// 持 accounts_lock 与手动捕获/切换事务/重命名互斥：切换写回现场后，
+/// 本轮 upsert 同一快照幂等，不会与切换事务交错写快照目录。
+fn auto_capture_once() -> Option<CaptureOutcome> {
+    let _guard = accounts_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    // 路径定位/读现场失败（数据目录异常、权限/IO 故障）：环境问题静默跳过
+    // 本轮，下一轮（60s 后）自动重试，绝不 panic、不阻塞任何调用方
+    let base = config_dir().ok()?;
+    let live = read_live_files().ok()?;
+    match upsert_snapshot_at_opts(&base, &live, false, true) {
+        Ok(UpsertOutcome::Upserted(outcome)) => Some(outcome),
+        // 无凭证/非法 JSON/内容未变：正常路径，本轮无事可做
+        Ok(_) => None,
+        // 快照落盘失败：低频日志 + 下一轮重试，不让线程退出
+        Err(e) => {
+            eprintln!("[zbar-accounts] 自动捕获落盘失败（下轮重试）: {e}");
+            None
+        }
+    }
+}
+
+/// 自动捕获一轮的门控入口：开关关闭时**在读取任何现场文件之前**直接
+/// 返回 None（本轮零读零写，与「凭证不存在」的静默跳过同形）；开启时
+/// 行为与开关引入前逐字一致（直接进 auto_capture_once）。
+/// 开关由调用方每周期读一次（线程循环里读文件，60s 一次开销可忽略），
+/// 因此设置页改开关后下一周期即生效，无需重启。
+fn auto_capture_step(enabled: bool) -> Option<CaptureOutcome> {
+    if !enabled {
+        return None;
+    }
+    auto_capture_once()
+}
+
+/// 后台线程：应用运行期间自动捕获 ZCode 现场登录——用户在 ZCode 客户端
+/// 换账号登录后无需手动点「捕获当前登录」。每 60s 一轮，首周期延迟 30s
+/// 错开启动高峰；幂等短路保证无变化轮零写盘（updated_at 不动）；只有
+/// 新建快照或既有快照凭证内容真的变化时才广播 accounts-auto-captured
+/// 事件（打开着的设置页立即看到新账号）。线程随进程退出自然终止。
+/// 每周期读一次自动捕获开关（load_app_settings，文件极小）：关掉后
+/// 跳过捕获（auto_capture_step 短路），重新开启即时恢复——线程不退出、
+/// 不需要重启应用。
+pub fn spawn_auto_capture(app: AppHandle) {
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_secs(30));
+        loop {
+            if let Some(outcome) = auto_capture_step(auto_capture_enabled()) {
+                let _ = app.emit(
+                    ACCOUNTS_AUTO_CAPTURED_EVENT,
+                    serde_json::json!({
+                        "name": outcome.account.display_name,
+                        "created": !outcome.updated_existing,
+                    }),
+                );
+            }
+            std::thread::sleep(std::time::Duration::from_secs(60));
+        }
+    });
+}
+
+// ============================================================
+// 第四节：应用级设置（~/.agenthud/app-settings.json，主窗口设置页读写）
+// ============================================================
+
+/// 应用设置。当前只有 ZCode 换账号自动捕获开关；后续应用级开关并入本
+/// 文件（不另开新文件），读写照 hud-bar.json 的原子写先例（临时文件 +
+/// rename，避免半截 JSON 让下次读取整文件失配）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppSettings {
+    /// 自动捕获开关（默认开）。关闭后 spawn_auto_capture 线程每周期跳过
+    /// 捕获；文件缺失/损坏回退默认开（见 load_app_settings_at）。
+    #[serde(default = "default_auto_capture")]
+    pub auto_capture: bool,
+}
+
+fn default_auto_capture() -> bool {
+    true
+}
+
+impl Default for AppSettings {
+    fn default() -> Self {
+        Self {
+            auto_capture: default_auto_capture(),
+        }
+    }
+}
+
+fn app_settings_path() -> Result<PathBuf, String> {
+    Ok(config_dir()?.join("app-settings.json"))
+}
+
+/// 读取应用设置（路径注入版，单测用 temp 路径）：文件不存在或损坏一律
+/// 回退默认值（自动捕获 = 开）——读取失败绝不能把开关静默关掉。
+fn load_app_settings_at(path: &Path) -> AppSettings {
+    fs::read_to_string(path)
+        .ok()
+        .and_then(|text| serde_json::from_str::<AppSettings>(&text).ok())
+        .unwrap_or_default()
+}
+
+/// 保存应用设置（路径注入版）：原子写（先写临时文件再改名）。
+fn save_app_settings_at(path: &Path, settings: &AppSettings) -> Result<(), String> {
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir).map_err(|e| format!("创建配置目录失败: {e}"))?;
+    }
+    let json = serde_json::to_string_pretty(settings)
+        .map_err(|e| format!("序列化应用设置失败: {e}"))?;
+    let tmp = path.with_extension("json.tmp");
+    fs::write(&tmp, json).map_err(|e| format!("写入应用设置失败: {e}"))?;
+    fs::rename(&tmp, path).map_err(|e| format!("保存应用设置失败: {e}"))
+}
+
+/// 读取应用设置（真实路径）。
+pub fn load_app_settings() -> AppSettings {
+    app_settings_path()
+        .map(|path| load_app_settings_at(&path))
+        .unwrap_or_default()
+}
+
+/// 保存应用设置（真实路径，原子写）。调用方（set_auto_capture 命令）
+/// 自行保证「先 load 最新 → 只覆盖目标字段 → 整体写回」。
+pub fn save_app_settings_raw(settings: &AppSettings) -> Result<(), String> {
+    save_app_settings_at(&app_settings_path()?, settings)
+}
+
+/// 自动捕获开关当前值（spawn_auto_capture 每周期调用一次）。
+pub fn auto_capture_enabled() -> bool {
+    load_app_settings().auto_capture
 }
 
 /// 列出全部快照 + 实时推断当前登录账号。
@@ -2153,6 +2372,276 @@ mod tests {
             config: None
         })
         .starts_with("credentials.json 格式异常: "));
+    }
+
+    /// 自动捕获路径（skip_unchanged=true）的幂等短路：
+    /// - 首轮新建快照；同内容第二轮 Unchanged 跳过，不落盘、updated_at 不变；
+    /// - config 的 coding-plan provider 变化（凭证原文未变）时不得短路，照常刷新；
+    /// - 手动捕获路径回归（skip_unchanged=false）：同内容仍正常返回成功并重写。
+    #[test]
+    fn auto_capture_skips_unchanged_and_manual_still_refreshes() {
+        let base = TempBase::new("auto-skip");
+        let live = live_for("u1");
+
+        // 首轮：新建快照
+        let first = match upsert_snapshot_at_opts(&base.0, &live, false, true).unwrap() {
+            UpsertOutcome::Upserted(o) => o,
+            other => panic!("首轮应新建快照，实得 {other:?}"),
+        };
+        assert!(!first.updated_existing, "首轮是新条目");
+        assert_eq!(first.account.id, "u1");
+        let created = load_snapshot_at(&base.0, "u1").unwrap();
+
+        // 等毫秒时间戳推进，保证"是否重新落盘"可由 updated_at 区分
+        std::thread::sleep(std::time::Duration::from_millis(3));
+
+        // 同内容第二轮：幂等跳过，updated_at 保持首轮值（零写盘）
+        assert!(
+            matches!(
+                upsert_snapshot_at_opts(&base.0, &live, false, true).unwrap(),
+                UpsertOutcome::Unchanged
+            ),
+            "同内容轮询应短路跳过"
+        );
+        let after_skip = load_snapshot_at(&base.0, "u1").unwrap();
+        assert_eq!(
+            after_skip.updated_at, created.updated_at,
+            "跳过轮不得刷新 updated_at"
+        );
+        assert_eq!(after_skip.credentials_raw, created.credentials_raw);
+
+        // config 变化（apiKey 刷新）而凭证原文未变：不得短路，照常 upsert
+        let mut live_config_changed = live.clone();
+        live_config_changed.config = Some(
+            r#"{"provider":{"builtin:bigmodel-coding-plan":{"options":{"apiKey":"k2","baseURL":"https://open.bigmodel.cn/api/anthropic"}}}}"#
+                .into(),
+        );
+        let refreshed = match upsert_snapshot_at_opts(
+            &base.0,
+            &live_config_changed,
+            false,
+            true,
+        )
+        .unwrap()
+        {
+            UpsertOutcome::Upserted(o) => o,
+            other => panic!("config 变化应照常 upsert，实得 {other:?}"),
+        };
+        assert!(refreshed.updated_existing, "命中已存在快照");
+        let after_refresh = load_snapshot_at(&base.0, "u1").unwrap();
+        assert!(
+            after_refresh.updated_at > created.updated_at,
+            "config 变化后应重新落盘"
+        );
+        assert_eq!(
+            after_refresh
+                .config_providers
+                .get("builtin:bigmodel-coding-plan")
+                .and_then(|p| p.get("options"))
+                .and_then(|o| o.get("apiKey")),
+            Some(&serde_json::json!("k2")),
+            "config_providers 跟随现场刷新"
+        );
+
+        // 手动捕获路径回归（旧签名 skip_unchanged=false）：凭证/config 与快照
+        // 一致仍正常返回成功（capture_account 不走短路）
+        std::thread::sleep(std::time::Duration::from_millis(3));
+        let manual = upsert_snapshot_at(&base.0, &live_config_changed, false)
+            .unwrap()
+            .expect("手动捕获同内容仍应返回成功");
+        assert!(manual.updated_existing, "命中已存在快照");
+        let after_manual = load_snapshot_at(&base.0, "u1").unwrap();
+        assert!(
+            after_manual.updated_at > after_refresh.updated_at,
+            "手动捕获同内容仍应重新落盘刷新 updated_at"
+        );
+        assert_eq!(after_manual.created_at, created.created_at, "created_at 保留");
+    }
+
+    /// 现场换新指纹（用户在 ZCode 客户端换了账号登录）：自动捕获路径新建
+    /// 快照、既有快照不受影响——「换账号自动捕获」的核心场景。
+    #[test]
+    fn auto_capture_new_fingerprint_creates_snapshot() {
+        let base = TempBase::new("auto-new");
+        // 先捕获 u1（模拟既有账号），现场换成 u2 登录
+        let live1 = live_for("u1");
+        upsert_snapshot_at(&base.0, &live1, false).unwrap();
+        let live2 = live_for("u2");
+
+        let outcome = match upsert_snapshot_at_opts(&base.0, &live2, false, true).unwrap() {
+            UpsertOutcome::Upserted(o) => o,
+            other => panic!("新指纹应新建快照，实得 {other:?}"),
+        };
+        assert!(!outcome.updated_existing, "新指纹是新条目");
+        assert_eq!(outcome.account.id, "u2");
+        assert_eq!(
+            outcome.account.display_name, "账号-u2",
+            "payload 携带的账号名按默认优先级生成"
+        );
+
+        // u1 保留、u2 新建；新快照凭证原文 = 现场 u2 原文
+        let metas = load_meta_list_at(&base.0);
+        assert_eq!(metas.len(), 2, "既有快照保留，新快照加入");
+        let snap2 = load_snapshot_at(&base.0, "u2").unwrap();
+        assert_eq!(snap2.credentials_raw, live2.credentials.unwrap());
+    }
+
+    /// 非法 JSON（ZCode 正在写文件/半截写入）：自动捕获路径静默跳过
+    /// （Nothing，不落盘不报错），现场恢复合法内容后下一轮再捕获。
+    #[test]
+    fn auto_capture_invalid_json_skips_silently() {
+        let base = TempBase::new("auto-badjson");
+        let bad = LiveFiles {
+            credentials: Some("not json".into()),
+            config: None,
+        };
+        assert!(
+            matches!(
+                upsert_snapshot_at_opts(&base.0, &bad, false, true).unwrap(),
+                UpsertOutcome::Nothing
+            ),
+            "非法 JSON 应静默跳过"
+        );
+        // 零落盘：连快照目录都不创建
+        assert!(!base.0.join("accounts").exists());
+    }
+
+    /// P1 回归锚定：自动捕获路径对「合法 JSON 但取不到指纹」的现场
+    /// （登出残留 `{}`、解密失败、JWT 缺 user_id/sub 等）必须整轮跳过。
+    /// 机理：unknown-* 的 id 含毫秒时间戳、每轮不同，按 id 查旧快照的
+    /// 幂等短路永远命中不了，若照常 upsert，60s 一轮会每轮新建一个
+    /// unknown 快照（一天 1440 个）并广播事件。手动捕获同一输入仍产出
+    /// unknown 快照（既有语义不变）。
+    #[test]
+    fn auto_capture_fingerprint_none_rounds_never_accumulate() {
+        let no_fp = LiveFiles {
+            credentials: Some("{}".into()), // 合法 JSON 登出残留：取不到指纹
+            config: None,
+        };
+
+        // 全新基目录：连续多轮（模拟 60s 轮询）全部 Nothing、零落盘——
+        // 连快照目录都不创建，文件数自然不增长
+        let base = TempBase::new("auto-nofp");
+        for round in 1..=5 {
+            assert!(
+                matches!(
+                    upsert_snapshot_at_opts(&base.0, &no_fp, false, true).unwrap(),
+                    UpsertOutcome::Nothing
+                ),
+                "第 {round} 轮：无指纹现场应整轮跳过"
+            );
+        }
+        assert!(
+            !base.0.join("accounts").exists(),
+            "自动路径不得为无指纹现场创建任何快照文件"
+        );
+
+        // 已有快照的目录同样不增长：先正常捕获 u1，再让无指纹现场连续
+        // 多轮，文件数保持不变
+        let base2 = TempBase::new("auto-nofp-mixed");
+        upsert_snapshot_at(&base2.0, &live_for("u1"), false).unwrap();
+        let before = load_meta_list_at(&base2.0).len();
+        for _ in 0..5 {
+            assert!(matches!(
+                upsert_snapshot_at_opts(&base2.0, &no_fp, false, true).unwrap(),
+                UpsertOutcome::Nothing
+            ));
+        }
+        assert_eq!(
+            load_meta_list_at(&base2.0).len(),
+            before,
+            "无指纹轮次不得新增任何快照文件"
+        );
+
+        // 手动捕获回归：同一输入仍产出 unknown-* 快照（既有语义锚定）
+        let manual = upsert_snapshot_at(&base.0, &no_fp, false)
+            .unwrap()
+            .expect("手动捕获无指纹凭证照旧产出快照");
+        assert!(
+            manual.account.id.starts_with("unknown-"),
+            "手动路径保留 unknown 降级语义"
+        );
+        assert_eq!(load_meta_list_at(&base.0).len(), 1);
+
+        // 切换路径（update_only=true）不受防堆积闸影响：同一输入照旧静默
+        // 跳过（独立基目录，避免与上面手动创建的 unknown 快照同毫秒相撞）
+        let fresh = TempBase::new("auto-nofp-switch");
+        assert!(
+            upsert_snapshot_at(&fresh.0, &no_fp, true).unwrap().is_none(),
+            "切换路径对无指纹快照本就静默跳过"
+        );
+        assert!(!fresh.0.join("accounts").exists());
+    }
+
+    // ---- 应用设置（自动捕获开关）：路径注入版，temp 目录，不碰真实
+    //      ~/.agenthud；开关「开」路径的捕获行为由上方 upsert 层既有测试
+    //      覆盖（auto_capture_step(true) 只是原样转调 auto_capture_once）----
+
+    /// 每个测试独立的临时文件路径，父目录随用随建、结束时清理。
+    struct TempSettings(PathBuf);
+
+    impl TempSettings {
+        fn new(tag: &str) -> Self {
+            let dir = std::env::temp_dir().join(format!(
+                "zbar-appsettings-test-{tag}-{}-{}",
+                std::process::id(),
+                now_ms()
+            ));
+            fs::create_dir_all(&dir).expect("创建临时目录失败");
+            TempSettings(dir.join("app-settings.json"))
+        }
+    }
+
+    impl Drop for TempSettings {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(self.0.parent().unwrap());
+        }
+    }
+
+    /// 默认值：文件缺失 / 损坏 / 非法 JSON 一律回退「自动捕获开」——
+    /// 读取失败绝不能把开关静默关掉。
+    #[test]
+    fn 应用设置_缺失与损坏回退默认开() {
+        let p = TempSettings::new("default");
+        assert_eq!(load_app_settings_at(&p.0).auto_capture, true, "文件缺失默认开");
+        fs::write(&p.0, "not json").unwrap();
+        assert_eq!(load_app_settings_at(&p.0).auto_capture, true, "非法 JSON 默认开");
+        // 半截字段（手改配置丢字段）：serde default 补开
+        fs::write(&p.0, "{}").unwrap();
+        assert_eq!(load_app_settings_at(&p.0).auto_capture, true, "缺字段默认开");
+    }
+
+    /// 落盘 roundtrip：关 → 读回关；重新开 → 读回开（原子写后内容完整）。
+    #[test]
+    fn 应用设置_开关落盘roundtrip() {
+        let p = TempSettings::new("roundtrip");
+        save_app_settings_at(&p.0, &AppSettings { auto_capture: false }).unwrap();
+        assert_eq!(
+            load_app_settings_at(&p.0).auto_capture,
+            false,
+            "关闭后读回应为关"
+        );
+        save_app_settings_at(&p.0, &AppSettings { auto_capture: true }).unwrap();
+        assert_eq!(
+            load_app_settings_at(&p.0).auto_capture,
+            true,
+            "重新开启读回应为开"
+        );
+        // 临时文件不残留（原子写以 rename 收尾）
+        assert!(!p.0.with_extension("json.tmp").exists());
+    }
+
+    /// 门控短路：开关关闭时 auto_capture_step 在读取任何现场文件之前
+    /// 直接返回 None（零读零写）——不依赖也不触碰 ZCode 数据目录，
+    /// 因此在任意环境（含无凭证的 CI）都可稳定断言。
+    /// 开启路径 = 原样转调 auto_capture_once，其 upsert 行为由上方
+    /// auto_capture_* 系列测试覆盖。
+    #[test]
+    fn 自动捕获_开关关闭时整轮跳过() {
+        assert!(
+            auto_capture_step(false).is_none(),
+            "开关关闭时本轮必须直接跳过"
+        );
     }
 }
 

@@ -808,7 +808,13 @@ export function SyncPage() {
                 {t("dashboard.sync.devicesEmpty")}
               </p>
             ) : (
-              <div className="db-table-wrap">
+              <>
+                {/* 操作说明（信息性弱提示，照卡③ dataHint 先例）：
+                    操作列三个按钮裸文案语义不明，合并尤其易误解为「合并视图」 */}
+                <p className="db-sync-scopehint">
+                  {t("dashboard.sync.devicesOpsHint")}
+                </p>
+                <div className="db-table-wrap">
                 <table className="db-table db-sync-devices">
                   <thead>
                     <tr>
@@ -899,7 +905,7 @@ export function SyncPage() {
                                   onClick={() => setMergeSource(d)}
                                   disabled={!masterReady || busy}
                                   title={
-                                    opsTitle ?? t("dashboard.sync.merge")
+                                    opsTitle ?? t("dashboard.sync.mergeHint")
                                   }
                                 >
                                   {t("dashboard.sync.merge")}
@@ -912,7 +918,8 @@ export function SyncPage() {
                                   }
                                   disabled={!masterReady || busy}
                                   title={
-                                    opsTitle ?? t("dashboard.sync.deleteData")
+                                    opsTitle ??
+                                    t("dashboard.sync.deleteDataHint")
                                   }
                                 >
                                   {t("dashboard.sync.deleteData")}
@@ -925,7 +932,8 @@ export function SyncPage() {
                     })}
                   </tbody>
                 </table>
-              </div>
+                </div>
+              </>
             )}
           </Card>
 

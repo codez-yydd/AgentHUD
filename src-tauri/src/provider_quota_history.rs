@@ -355,6 +355,26 @@ pub fn load_all() -> Result<Vec<AgentQuotaSnapshot>, String> {
     Ok(out)
 }
 
+/// 读取指定时间范围内的本地快照（[from_ms, to_ms) 半开区间，升序）。
+/// 主窗口「额度驾驶舱」页（QuotaPage）的 90 天窗口取数用，与 CLI 通道的
+/// agent_quota_history::load_range 同构。
+pub fn load_range(from_ms: i64, to_ms: i64) -> Result<Vec<AgentQuotaSnapshot>, String> {
+    Ok(filter_range(load_all()?, from_ms, to_ms))
+}
+
+/// 区间过滤的纯函数部分（便于单测注入：快照数组由测试直接构造，
+/// 不触碰真实的 ~/.agenthud/provider_quota_history.jsonl）。
+fn filter_range(
+    snapshots: Vec<AgentQuotaSnapshot>,
+    from_ms: i64,
+    to_ms: i64,
+) -> Vec<AgentQuotaSnapshot> {
+    snapshots
+        .into_iter()
+        .filter(|snapshot| snapshot.ts >= from_ms && snapshot.ts < to_ms)
+        .collect()
+}
+
 /// 删除 provider 额度快照历史（与 CLI 通道的清理入口对称）。
 pub fn clear_history() -> Result<(), String> {
     let append_lock = APPEND_LOCK.get_or_init(|| Mutex::new(()));
@@ -472,6 +492,33 @@ mod tests {
         assert!(!is_provider_snapshot_source("cursor"));
         assert!(is_provider_snapshot_source("deepseek"));
         assert!(is_provider_snapshot_source("alibabatoken"));
+    }
+
+    /// 区间过滤（load_range 的纯函数部分）：[from, to) 半开区间——
+    /// 恰好等于 from 的采样保留、恰好等于 to 的采样排除，与 CLI 通道
+    /// agent_quota_history::load_range 的口径一致。
+    #[test]
+    fn filter_range_is_half_open() {
+        let snap = |ts: i64| AgentQuotaSnapshot {
+            source: "deepseek".into(),
+            ts,
+            plan_type: None,
+            windows: Vec::new(),
+            label: None,
+            plan_name: None,
+            balance: None,
+            message: None,
+        };
+        let snaps = vec![snap(1_000), snap(2_000), snap(3_000), snap(4_000)];
+        let out = filter_range(snaps, 2_000, 4_000);
+        assert_eq!(
+            out.iter().map(|s| s.ts).collect::<Vec<_>>(),
+            vec![2_000, 3_000],
+            "from 侧闭、to 侧开；界外采样剔除且保持升序"
+        );
+        // 空区间 / 全界外为空
+        assert!(filter_range(vec![snap(1_000)], 2_000, 3_000).is_empty());
+        assert!(filter_range(Vec::new(), 0, i64::MAX).is_empty());
     }
 
     #[test]

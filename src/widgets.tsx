@@ -49,6 +49,14 @@ export function remainingTextColor(remaining: number): string {
   return `hsl(${h}, ${s}%, ${Math.max(l - 10, 28)}%)`;
 }
 
+/** 剩余百分比 → 暗底强调色：同一套剩余色相，亮度整体抬到 58–68%，
+ *  供额度驾驶舱的深色仪表盘（圆形仪表 / 深色控制台大号数字）使用；
+ *  亮色卡片仍用 remainingTextColor（压暗以保住小字对比度）。 */
+export function remainingAccentColor(remaining: number): string {
+  const [h, s, l] = remainingHsl(remaining);
+  return `hsl(${h}, ${Math.min(s, 82)}%, ${Math.min(Math.max(l + 18, 58), 68)}%)`;
+}
+
 /** 通用进度条 */
 export function ProgressBar({
   pct,

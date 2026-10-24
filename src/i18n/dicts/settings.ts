@@ -159,7 +159,7 @@ export const settings = {
   "settings.accountsRename": "重命名",
   "settings.accountsRenameDesc": "为该账号快照设置一个好认的名字。",
   "settings.accountsEmpty":
-    "还没有账号快照。在 ZCode 客户端登录账号后点「捕获当前登录」保存，之后在另一个账号登录再捕获一次，即可一键切换。",
+    "还没有账号快照。在 ZCode 客户端登录账号后即可自动保存为快照（也可点「捕获当前登录」立即保存），之后在另一个账号登录再捕获一次，即可一键切换。",
   "settings.accountsLoadFail": "读取账号列表失败：{msg}",
 
   // ===== 智能切换（手动按钮按额度算法选号）+ 自动切换（额度用满无人值守开关）=====

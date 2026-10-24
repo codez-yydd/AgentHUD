@@ -9,6 +9,7 @@ mod alibabatoken;
 mod claude;
 mod codex;
 mod cookie_util;
+mod credential_overview;
 mod cursor;
 mod db;
 mod deepseek;
@@ -58,7 +59,7 @@ use std::collections::BTreeMap;
 use tauri::{
     menu::{CheckMenuItem, Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    AppHandle, LogicalPosition, Manager, PhysicalSize, WindowEvent,
+    AppHandle, Emitter, LogicalPosition, Manager, PhysicalSize, WindowEvent,
 };
 use tauri_plugin_updater::UpdaterExt;
 
@@ -234,18 +235,70 @@ fn set_pricing(config: PricingConfig) -> Result<(), String> {
     Ok(())
 }
 
+/// currency.json 的两个写方（set_currency / set_currency_mode）共用的互斥锁：
+/// 两者都是「读→改→写」，无锁并发时毫秒级交错会把对方刚写入的字段用旧
+/// 快照冲掉（典型：语言跟随链的 set_currency 丢失用户手动 mode）。
+/// 照 accounts.rs 的 accounts_lock 先例（OnceLock + 毒锁恢复）。
+static CURRENCY_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+
+fn currency_lock() -> &'static std::sync::Mutex<()> {
+    CURRENCY_LOCK.get_or_init(|| std::sync::Mutex::new(()))
+}
+
 /// set_currency：保存货币偏好。前端切换货币时同步给后端，菜单栏标题据此显示。
 /// 保存后立即刷新一次菜单栏标题，避免用户切换后还要等 30 秒后台周期。
 /// 标题刷新含 SQLite 查询（开启同步后还有 HTTP 请求），必须卸载到阻塞线程池，
 /// 否则同步 command 在主线程执行会阻塞 UI（与 spawn_title_updater 同款模式）。
 #[tauri::command]
 fn set_currency(currency: String, app: AppHandle) -> Result<(), String> {
+    // 持 CURRENCY_LOCK 罩住「读→改→写」临界区，与 set_currency_mode 串行化；
+    // 临界区仅覆盖落盘（毫秒级文件 IO），锁随函数返回释放
+    let _guard = currency_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     pricing::save_currency(&currency)?;
     let _ = tauri::async_runtime::spawn_blocking(move || {
         let title = today_tray_title(&app);
         let _ = app.tray_by_id("main").map(|t| t.set_title(Some(title)));
     });
     Ok(())
+}
+
+/// 币种来源变化事件（set_currency_mode 落盘后广播）：payload =
+/// { mode, currency }。面板与主窗口各窗监听后同步本地展示——主窗口改了
+/// 币种，面板的花费口径、菜单栏标题（load_currency）跟着变。事件名风格
+/// 沿 zbar://pricing-updated。
+const CURRENCY_CHANGED_EVENT: &str = "zbar://currency-changed";
+
+/// get_currency_setting：读取币种设置（mode 三态 + 生效币种）。
+/// 主窗口设置页与面板启动对齐用（轻量文件读，无需 spawn_blocking）。
+#[tauri::command]
+fn get_currency_setting() -> Result<pricing::CurrencySetting, String> {
+    Ok(pricing::load_currency_setting())
+}
+
+/// set_currency_mode：设置币种来源（follow / cny / usd，主窗口设置页入口）。
+/// 落盘后广播币种变化事件（面板 + 主窗口各窗同步），并立即刷新一次菜单栏
+/// 标题（生效币种可能已切换，标题里的 ¥/$ 不等 30s 周期）。标题刷新含
+/// SQLite 查询，卸载到阻塞线程池（与 set_currency 同款模式）。
+#[tauri::command]
+fn set_currency_mode(mode: String, app: AppHandle) -> Result<pricing::CurrencySetting, String> {
+    // 持 CURRENCY_LOCK：与 set_currency 的「读→改→写」串行化（同上），
+    // 防止手动 mode 写入被语言跟随链的旧快照交错覆盖
+    let _guard = currency_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let setting = pricing::save_currency_mode(&mode)?;
+    let payload = serde_json::json!({
+        "mode": setting.mode,
+        "currency": setting.currency,
+    });
+    let _ = app.emit(CURRENCY_CHANGED_EVENT, payload);
+    let _ = tauri::async_runtime::spawn_blocking(move || {
+        let title = today_tray_title(&app);
+        let _ = app.tray_by_id("main").map(|t| t.set_title(Some(title)));
+    });
+    Ok(setting)
 }
 
 /// 汇总价格差异检查的遍历主体：「实际调用过 ∪ 用户已配置 ∪ 远端同步」的模型 id。
@@ -449,6 +502,41 @@ async fn account_quotas() -> Result<Vec<accounts::AccountQuotaEntry>, String> {
         .map_err(|e| format!("多账号额度查询任务失败: {e}"))?
 }
 
+// ===== 应用级设置（accounts.rs 的 ~/.agenthud/app-settings.json）=====
+// 主窗口设置页读写；自动捕获线程每周期自己重读文件，命令侧无需通知线程
+//（改完下一周期即生效）。
+
+/// 读取应用设置（自动捕获开关等；轻量文件读）。
+#[tauri::command]
+fn get_app_settings() -> Result<accounts::AppSettings, String> {
+    Ok(accounts::load_app_settings())
+}
+
+/// app-settings.json 的写方（set_auto_capture）互斥锁：该命令是「读→改→写」，
+/// 连点/多窗并发会让两次读改写交错——临时文件同名时物理交错可损坏文件，
+/// 而损坏回退默认开（与用户关闭意图相反）。照 accounts_lock 先例。
+static APP_SETTINGS_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> =
+    std::sync::OnceLock::new();
+
+fn app_settings_lock() -> &'static std::sync::Mutex<()> {
+    APP_SETTINGS_LOCK.get_or_init(|| std::sync::Mutex::new(()))
+}
+
+/// 写自动捕获开关（读-改-写：先取最新设置，只覆盖目标字段，防止未来
+/// 文件里新增字段被整份旧快照写回冲掉）。
+#[tauri::command]
+fn set_auto_capture(enabled: bool) -> Result<accounts::AppSettings, String> {
+    // 持 APP_SETTINGS_LOCK 罩住「读→改→写」临界区，串行化并发调用，
+    // 防止交错丢更新或临时文件物理交错损坏 JSON
+    let _guard = app_settings_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut settings = accounts::load_app_settings();
+    settings.auto_capture = enabled;
+    accounts::save_app_settings_raw(&settings)?;
+    Ok(settings)
+}
+
 // ===== 周额度追踪 / 对比页 =====
 // 以下命令内部为全文件读取/逐行解析（quota_history，90 天约 38MB）或 SQLite 查询
 // （busy_timeout 3s），对比页每 60s 触发一轮，统一 async + spawn_blocking
@@ -543,6 +631,21 @@ async fn get_agent_quota_history(
     })
     .await
     .map_err(|e| format!("读取 Agent 额度快照任务失败: {e}"))?
+}
+
+/// 读取 provider 通道额度快照历史（provider_quota_history：11 个凭证型
+/// provider，每条凭证一条快照按 label 区分）。主窗口「额度驾驶舱」页
+/// （QuotaPage）的纯本地历史读取，不发 HTTP。复用 AgentQuotaHistoryRequest
+/// 的 {from_ms, to_ms} 形状，spawn_blocking 卸载全文件逐行解析。
+#[tauri::command]
+async fn get_provider_quota_history(
+    req: AgentQuotaHistoryRequest,
+) -> Result<Vec<agent_quota_history::AgentQuotaSnapshot>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        provider_quota_history::load_range(req.from_ms, req.to_ms)
+    })
+    .await
+    .map_err(|e| format!("读取 provider 额度快照任务失败: {e}"))?
 }
 
 /// 清空额度快照历史（设置页"清理历史"用）。provider 快照历史
@@ -2941,6 +3044,10 @@ pub fn run() {
             }
             spawn_title_updater(app.handle().clone());
             spawn_fx_rate_refresher();
+            // ZCode 换账号自动捕获：每 60s 轮询现场登录并幂等 upsert 快照
+            //（首周期延迟 30s，内容未变零写盘）；捕获到新登录时广播事件，
+            // 打开着的设置页账号卡片立即刷新（见 accounts::spawn_auto_capture）
+            accounts::spawn_auto_capture(app.handle().clone());
 
             // 旧手动 cookie（~/.zbar/cursor.json 的 cookie_header）一次性迁移到
             // 凭证体系（~/.zbar/credentials/cursor.json）。幂等：已迁移/无旧值
@@ -3046,6 +3153,7 @@ pub fn run() {
             get_weekly_compare_for_snapshots,
             get_today_delta,
             get_agent_quota_history,
+            get_provider_quota_history,
             clear_quota_history,
             get_compare_tokens,
             get_compare_tokens_for_agent,
@@ -3080,6 +3188,12 @@ pub fn run() {
             remove_account,
             rename_account,
             account_quotas,
+            // 应用级设置（主窗口设置页）：自动捕获开关
+            get_app_settings,
+            set_auto_capture,
+            // 币种来源设置（主窗口设置页）：三态 + 生效币种
+            get_currency_setting,
+            set_currency_mode,
             check_update,
             show_notification,
             projects::get_projects,
@@ -3148,6 +3262,8 @@ pub fn run() {
             provider_credentials::record_credential_check,
             provider_credentials::has_provider_credentials,
             provider_quota::get_provider_quota,
+            // 主窗口「凭证与账号管理」页区块二：各源本地凭证静态概览（只读）
+            credential_overview::fetch_credential_overview,
             kimi_oauth::start_kimi_device_auth,
             kimi_oauth::poll_kimi_device_auth
         ])

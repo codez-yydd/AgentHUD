@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
 import type { AccountMeta, AccountQuotaEntry, AccountsState } from "./types";
 import {
   captureAccount,
@@ -21,6 +22,11 @@ import { levelLabel } from "./format";
 import { remainingTextColor } from "./widgets";
 import { SettingsCard } from "./layout";
 import { useI18n } from "./i18n";
+
+/** 后端「ZCode 换账号自动捕获」事件（accounts.rs 的 spawn_auto_capture 每
+ * 60s 轮询现场登录，新建快照或凭证内容真的变化时广播），payload 含账号名
+ * 与是否新建（此处只当刷新信号用）。 */
+const ACCOUNTS_AUTO_CAPTURED_EVENT = "zbar://accounts-auto-captured";
 
 /** 日志时间格式化：HH:mm（本地时区） */
 function logTime(ts: number): string {
@@ -93,6 +99,29 @@ export function AccountsCard() {
   useEffect(() => {
     reload();
   }, [reload]);
+
+  // ZCode 换账号自动捕获：后端轮询捕获到新登录时广播事件，打开着的设置页
+  // 立即刷新账号列表与各账号额度（无需手动点「捕获当前登录」）。监听失败
+  // 静默，不影响手动捕获路径；卸载时 unlisten。
+  useEffect(() => {
+    let dispose: (() => void) | undefined;
+    let cancelled = false;
+    listen(ACCOUNTS_AUTO_CAPTURED_EVENT, () => {
+      reload();
+      refreshAccountQuotas();
+    })
+      .then((unlisten) => {
+        if (cancelled) unlisten();
+        else dispose = unlisten;
+      })
+      .catch(() => {
+        /* 静默：保持挂载时的手动捕获路径 */
+      });
+    return () => {
+      cancelled = true;
+      dispose?.();
+    };
+  }, [reload, refreshAccountQuotas]);
 
   // 捕获当前登录（同账号重复捕获为更新）
   const handleCapture = async () => {

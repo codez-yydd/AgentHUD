@@ -17,13 +17,16 @@ export const dashboard = {
   "dashboard.titlebar.restore": "还原",
   "dashboard.titlebar.close": "关闭",
 
-  // 侧栏导航项（同时用作页面标题）：用量总览 / 请求日志 / 模型速度 / 周额度对比 / 同步与设备 / 价格设置
+  // 侧栏导航项（同时用作页面标题）：用量总览 / 请求日志 / 模型速度 / 周额度对比 / 额度驾驶舱 / 同步与设备 / 凭证与账号 / 价格设置 / 设置
   "dashboard.overview": "用量总览",
   "dashboard.logs": "请求日志",
   "dashboard.speed": "模型速度",
   "dashboard.compare": "周额度对比",
+  "dashboard.quota": "额度驾驶舱",
   "dashboard.sync": "同步与设备",
+  "dashboard.accounts": "凭证与账号",
   "dashboard.pricing": "价格设置",
+  "dashboard.settings": "设置",
 
   // 页面说明
   "dashboard.overview.desc": "跨服务用量、花费与趋势的汇总视图。",
@@ -33,7 +36,11 @@ export const dashboard = {
     "跨来源、跨渠道对比各模型的流式输出速度；同名模型在不同来源或渠道独立成行，近似口径带 ≈ 标记。",
   "dashboard.compare.desc":
     "各订阅当前额度剩余、近 N 天已用比例趋势，以及本机与其他设备的 Token 对比。",
+  // 口径说明写进页头：本页百分比与进度条统一为剩余额度（= 100 − 已用）
+  "dashboard.quota.desc":
+    "账号 / 凭证级的额度全景：当前剩余、90 天历史趋势与重置窗口。百分比与仪表均为剩余额度（= 100 − 已用）。",
   "dashboard.sync.desc": "本机同步状态、服务端设备管理与数据清理。",
+  "dashboard.accounts.desc": "ZCode 账号快照管理，以及各 Agent 源本地登录凭证的一览。",
   "dashboard.pricing.desc": "模型单价维护与价格表更新。",
 
   // 悬浮窗统计页的主窗口入口（头部工具条图标按钮 + 完整提示/aria）
@@ -237,6 +244,93 @@ export const dashboard = {
   "dashboard.compare.footnote":
     "额度 % = 各订阅周额度窗口的已用比例（本机与远端采样按「时间 + 账号」去重取较高值）；Token = 所选范围内已启用 Agent 的实际用量。两者不是同一指标。",
 
+  // ===== 额度驾驶舱页（大窗）：当前额度总览 / 历史趋势 / 重置时间线 =====
+  // 口径：本页百分比与进度条统一为剩余额度（= 100 − 已用），与总览页
+  // Agent 表的 remainingPct 同口径（HUD 停靠条才是已用口径）
+  // 整页硬错误（三路本地历史全部失败且无任何数据）与空态引导
+  "dashboard.quota.errorTitle": "加载失败",
+  "dashboard.quota.errorReason": "原因：{error}",
+  "dashboard.quota.retry": "重新加载",
+  "dashboard.quota.emptyTitle": "还没有任何额度记录",
+  "dashboard.quota.emptyHint":
+    "保持应用运行会自动积累额度历史，也可以点「刷新」立即查询各源当前额度",
+  // 本地历史读取通道名（单通道失败的弱提示拼接用）
+  "dashboard.quota.channelZai": "智谱（Z.ai）",
+  "dashboard.quota.channelAgent": "Codex / Claude / Cursor / Kimi",
+  "dashboard.quota.channelProvider": "凭证型 Provider",
+  "dashboard.quota.partialFailures":
+    "部分通道历史读取失败，已按暂无历史数据展示：{names}",
+  // 页头刷新按钮（唯一允许触发 live 查询的入口）
+  "dashboard.quota.refreshHint":
+    "实时查询各源额度并写入本地历史采样（本页其余展示只读本地数据，不发网络请求）",
+  "dashboard.quota.refreshing": "查询中…",
+  "dashboard.quota.refreshFailed":
+    "部分源实时查询失败（本地历史不受影响）：{names}",
+  // 页头新鲜度胶囊
+  "dashboard.quota.liveLabel": "本地采样",
+
+  // ---- 驾驶舱控制台：整体余量 / 风险分布 / 态势读数 ----
+  "dashboard.quota.deckEyebrow": "整体余量",
+  "dashboard.quota.deckSub": "全部 {count} 个额度窗口的平均剩余",
+  "dashboard.quota.deckStatusHealthy": "余量充足",
+  "dashboard.quota.deckStatusWarningCount": "{count} 个窗口偏低",
+  "dashboard.quota.deckStatusCriticalCount": "{count} 个窗口告急",
+  "dashboard.quota.riskHealthy": "正常",
+  "dashboard.quota.riskWarning": "偏低",
+  "dashboard.quota.riskCritical": "告急",
+  "dashboard.quota.deckWorst": "最紧张窗口",
+  "dashboard.quota.deckNoSamples": "暂无采样",
+  "dashboard.quota.deckResets": "待重置窗口",
+  "dashboard.quota.deckResetsEmpty": "暂无待重置窗口",
+  "dashboard.quota.deckNextReset": "最近 {time} 后",
+  "dashboard.quota.deckCoverage": "数据覆盖",
+  "dashboard.quota.deckCoverageHint": "{series} 个系列 · 近 90 天",
+
+  // ---- 仪表阵列：每个账号 / 凭证一张卡 ----
+  "dashboard.quota.fleetTitle": "额度仪表",
+  "dashboard.quota.fleetSub": "{count} 个账号 / 凭证 · 按最紧余量排序",
+  "dashboard.quota.windowUnit": "个窗口",
+  "dashboard.quota.windowNoReset": "无重置",
+  "dashboard.quota.updatedAgo": "更新 {time}",
+  "dashboard.quota.staleData": "数据较旧",
+
+  // 窗口档位标签（已知键；credits 为常见的 provider 特有键，其余未知键原样展示）
+  "dashboard.quota.win.hour5": "5 小时窗",
+  "dashboard.quota.win.weekly": "周额度",
+  "dashboard.quota.win.monthly": "月额度",
+  "dashboard.quota.win.cursor_auto": "Auto 池",
+  "dashboard.quota.win.cursor_api": "API 池",
+  "dashboard.quota.win.mcp": "MCP 月度",
+  "dashboard.quota.win.credits": "额度点数",
+  // 无历史数据的来源合并为一行弱提示（不逐源渲染空卡片）
+  "dashboard.quota.sourcesEmptyLabel": "暂无历史数据",
+
+  // ---- 区块②：历史趋势（系列 + 窗口选择器 + 90 天剩余曲线）----
+  "dashboard.quota.trendTitle": "历史趋势",
+  "dashboard.quota.trendRangeSub": "{range} · 剩余额度口径",
+  "dashboard.quota.seriesLabel": "系列",
+  "dashboard.quota.windowLabel": "窗口",
+  "dashboard.quota.trendEmpty": "该窗口暂无历史数据",
+  "dashboard.quota.remaining": "剩余",
+  "dashboard.quota.trendCurrent": "当前剩余",
+  "dashboard.quota.trendLow": "区间最低",
+  "dashboard.quota.trendHigh": "区间最高",
+  "dashboard.quota.trendSamples": "采样点",
+  "dashboard.quota.trendDanger": "告急区 ≤20%",
+  "dashboard.quota.trendFootnote":
+    "折线为该窗口的「剩余 %」（= 100 − 已用）：随消耗下行，窗口重置时跳回 100；按采样时刻连线，无采样时段不连线。",
+
+  // ---- 重置序列（resetAt 在未来，按时间升序）----
+  "dashboard.quota.resetTitle": "重置窗口时间线",
+  "dashboard.quota.timelineOrder": "按重置时刻升序",
+  "dashboard.quota.timelineNext": "最近",
+  "dashboard.quota.resetEmpty": "当前没有带重置时间的窗口",
+  "dashboard.quota.resetIn": "{time} 后",
+
+  // 页脚口径说明（数据来源 / 粒度 / 保留期 / 风险分级）
+  "dashboard.quota.footnote":
+    "数据来自本机额度历史采样（保留近 90 天）：智谱按账号指纹、凭证型 provider 按凭证备注名、Codex / Claude / Cursor / Kimi 为源级粒度。按量付费的余额型服务（如 DeepSeek）只有账户余额、无周期额度窗口，不在此页展示。「刷新」会实时查询各源并更新采样。「整体余量」为全部额度窗口剩余百分比的算术平均；≤20% 标为「告急」、20–50% 标为「偏低」。",
+
   // ===== 同步与设备页（大窗）：本机状态卡 / 设备表 / 数据管理 =====
   // 相对时间（沿面板 sync.* 同款措辞，键独立以兼顾本页语境）
   "dashboard.sync.never": "从未",
@@ -304,6 +398,14 @@ export const dashboard = {
   "dashboard.sync.rename": "改名",
   "dashboard.sync.merge": "合并",
   "dashboard.sync.deleteData": "删数据",
+  // 合并 / 删数据按钮的悬停说明（解锁后 title 用，裸按钮文案无语义）
+  "dashboard.sync.mergeHint":
+    "点击后会弹出对话框，让你选择一个目标设备（可以是本机）：此设备的全部数据将并入目标设备，随后此设备自身被删除，不可恢复。适用于同一台机器重复注册后的清理。",
+  "dashboard.sync.deleteDataHint":
+    "清空该设备保存在服务端的用量数据（明细与额度快照），不影响设备注册与其他设备。",
+  // 设备表上方的操作说明行（弱提示，覆盖操作列三个按钮的语义）
+  "dashboard.sync.devicesOpsHint":
+    "改名：仅修改显示名。合并：点击后在弹窗中选择目标设备（可选本机），该设备的全部数据并入目标设备后自身被删除。删数据：清空该设备在服务端的用量数据。",
   "dashboard.sync.devicesEmpty":
     "未获取到任何设备，可尝试刷新；若刚重置过服务端，请在本机重新注册。",
   "dashboard.sync.devicesError": "设备列表获取失败：{error}",
@@ -322,7 +424,7 @@ export const dashboard = {
   "dashboard.sync.mergeDesc": "将「{name}（{id}）」的 {count} 条明细合并到：",
   "dashboard.sync.mergeTarget": "目标设备",
   "dashboard.sync.mergeWarn":
-    "来源设备的全部数据（明细与额度快照）将并入目标设备，随后来源设备被删除，不可恢复。若来源设备仍注册在某台机器上，请到那台机器断开并重新注册。",
+    "此设备（你在列表中点击的那台，来源）的全部数据（明细与额度快照）将并入你在上方选择的目标设备，随后来源设备被删除，不可恢复。若来源设备仍注册在某台机器上，请到那台机器断开并重新注册。",
   "dashboard.sync.mergeConfirm": "确认合并",
   "dashboard.sync.merged": "已合并 {count} 条明细到「{name}」",
 
@@ -382,6 +484,78 @@ export const dashboard = {
   "dashboard.sync.errorTitle": "加载失败",
   "dashboard.sync.errorReason": "原因：{error}",
   "dashboard.sync.retry": "重新加载",
+
+  // ===== 凭证与账号管理页（大窗）：ZCode 账号快照 + 其他源凭证一览 =====
+  // 时间词组（never/justNow/minAgo 等）与无数据占位（noData）复用上方
+  // dashboard.sync.* 的通用词条，不为本页重复造词。
+  // 整页硬错误态（两块数据源同时失败且无任何数据）
+  "dashboard.accounts.errorTitle": "加载失败",
+  "dashboard.accounts.errorReason": "原因：{error}",
+  "dashboard.accounts.retry": "重新加载",
+
+  // ---- 区块①：ZCode 账号（复用 accounts.rs 快照体系）----
+  "dashboard.accounts.zcodeTitle": "ZCode 账号",
+  "dashboard.accounts.zcodeSub": "{count} 个快照",
+  // 顶部说明：后台自动捕获（刚上线的轮询）+ 手动捕获入口；快照仅存本机
+  "dashboard.accounts.autoCaptureHint":
+    "应用运行期间每分钟自动捕获 ZCode 新登录；也可点「捕获当前登录」立即保存。快照仅存本机，不参与同步。",
+  "dashboard.accounts.capture": "捕获当前登录",
+  "dashboard.accounts.capturing": "捕获中…",
+  "dashboard.accounts.capturedNew": "已保存新账号快照 ✓",
+  "dashboard.accounts.capturedUpdate": "已更新该账号的快照 ✓",
+  "dashboard.accounts.currentLogin": "当前登录",
+  "dashboard.accounts.unknown": "未识别",
+  "dashboard.accounts.colName": "账号",
+  "dashboard.accounts.colProvider": "登录 Provider",
+  "dashboard.accounts.colUpdated": "捕获/更新",
+  "dashboard.accounts.colOps": "操作",
+  "dashboard.accounts.currentBadge": "当前",
+  "dashboard.accounts.switch": "切换",
+  "dashboard.accounts.switching": "切换中…",
+  "dashboard.accounts.rename": "重命名",
+  "dashboard.accounts.renameSave": "保存",
+  "dashboard.accounts.renameCount": "{n}/32",
+  "dashboard.accounts.delete": "删除",
+  "dashboard.accounts.deleting": "删除中…",
+  "dashboard.accounts.empty":
+    "还没有账号快照。在 ZCode 客户端登录账号后即可自动保存为快照（也可点「捕获当前登录」立即保存），之后再捕获其他账号即可一键切换。",
+  "dashboard.accounts.accountsError": "账号列表获取失败：{error}",
+  "dashboard.accounts.switched": "已切换到「{name}」✓",
+  "dashboard.accounts.relaunchFail": "（ZCode 自动重启失败，请手动打开）",
+  "dashboard.accounts.renamed": "已重命名为「{name}」",
+  "dashboard.accounts.deleted": "已删除快照「{name}」",
+  // 切换确认：后果文案与设置页 AccountsCard（settings.accountsConfirmDesc）逐字一致
+  "dashboard.accounts.confirmSwitchTitle": "切换账号",
+  "dashboard.accounts.confirmSwitchDesc":
+    "将退出并重启 ZCode 桌面应用，登录态切换为「{name}」。切换前会自动备份当前登录，失败时自动回滚。",
+  "dashboard.accounts.confirmSwitch": "切换登录",
+  // 删除确认：基础后果与 settings.accountsRemoveConfirm 一致；大窗版额外
+  // 说明当前登录账号的快照会被自动捕获按现场登录重建（设置页紧凑卡片不展开）
+  "dashboard.accounts.confirmDeleteTitle": "删除账号快照",
+  "dashboard.accounts.confirmDeleteDesc":
+    "仅删除本应用保存的快照，不影响 ZCode 当前登录。若删除的是当前登录账号的快照，自动捕获开启时会在约 1 分钟内按当前登录自动重建。",
+  "dashboard.accounts.confirmDelete": "删除",
+
+  // ---- 区块②：其他源凭证一览（只读静态信息，不发 HTTP）----
+  "dashboard.accounts.overviewTitle": "其他源凭证一览",
+  "dashboard.accounts.overviewSub": "{count}/{total} 个源检测到本地凭证",
+  // 安全说明：只读元信息 + 不展示凭证内容 + 不做主动联网校验
+  "dashboard.accounts.overviewHint":
+    "以下为各 Agent 源在本机的登录/凭证文件静态信息（只读）。为安全起见不展示凭证内容，也不做主动联网校验。",
+  "dashboard.accounts.colSource": "来源",
+  "dashboard.accounts.colAccount": "账号标识",
+  "dashboard.accounts.colKind": "凭证类型",
+  "dashboard.accounts.colPath": "凭证文件",
+  "dashboard.accounts.colModified": "最近修改",
+  "dashboard.accounts.colStatus": "状态",
+  "dashboard.accounts.kindOauth": "OAuth",
+  "dashboard.accounts.kindApiKey": "API Key",
+  "dashboard.accounts.kindUnknown": "未知",
+  "dashboard.accounts.statusMissing": "未检测到",
+  "dashboard.accounts.statusFound": "已检测到",
+  // 单源读取/解析失败（该行标红，不阻塞其他源；title 放具体原因）
+  "dashboard.accounts.sourceError": "读取失败",
+  "dashboard.accounts.overviewError": "凭证概览获取失败：{error}",
 
   // ===== 价格设置页（大窗）=====
   "dashboard.pricing.currencyLabel": "币种",
@@ -463,6 +637,39 @@ export const dashboard = {
   "dashboard.pricing.applying": "应用中…",
   "dashboard.pricing.applySelected": "应用选中",
   "dashboard.pricing.applySelectedCount": "应用选中 ({count})",
+
+  // ===== 设置页（大窗）：语言 / 主题 / 币种 / 自动捕获 / HUD 停靠条 =====
+  // 每行 = 标题 + 简短说明（说清「这是干啥的」）+ 控件（分段或开关）
+  "dashboard.settings.desc":
+    "语言、外观、币种与常驻功能开关；改动即时生效并同步到全部窗口。",
+  // ① 语言
+  "dashboard.settings.language": "语言",
+  "dashboard.settings.languageHint":
+    "界面显示语言，面板与主窗口同步切换。",
+  "dashboard.settings.languageZh": "中文",
+  "dashboard.settings.languageEn": "English",
+  // ② 外观主题
+  "dashboard.settings.theme": "外观主题",
+  "dashboard.settings.themeHint":
+    "浅色 / 深色外观；「跟随系统」时随操作系统的深浅色设置自动切换。",
+  "dashboard.settings.themeLight": "浅色",
+  "dashboard.settings.themeDark": "深色",
+  "dashboard.settings.themeSystem": "跟随系统",
+  // ③ 币种（全局折算口径；默认 = 升级前的语言跟随行为）
+  "dashboard.settings.currency": "币种",
+  "dashboard.settings.currencyHint":
+    "各页花费折算与菜单栏标题的统一币种；默认跟随语言（中文 ¥ / 英文 $），手动指定后全部页面固定使用所选币种。",
+  "dashboard.settings.currencyFollow": "跟随语言",
+  "dashboard.settings.currencyCny": "¥ 人民币",
+  "dashboard.settings.currencyUsd": "$ 美元",
+  // ④ 自动捕获新登录（accounts.rs 后台轮询开关，默认开）
+  "dashboard.settings.autoCapture": "自动捕获新登录",
+  "dashboard.settings.autoCaptureHint":
+    "应用运行时后台每分钟检测 ZCode 新登录并保存为账号快照；关闭后仍可在「凭证与账号」页手动捕获。改完下一分钟内生效，无需重启。",
+  // ⑤ HUD 停靠条（与托盘菜单 / 面板按钮同一份配置）
+  "dashboard.settings.hudBar": "HUD 停靠条",
+  "dashboard.settings.hudBarHint":
+    "贴屏幕边缘常驻的额度小条；与托盘右键菜单的开关是同一份配置，两处状态同步。",
 
   // ===== 请求日志页（大窗）：筛选行 / 明细表 / 分页条 / 详情抽屉 =====
   // 时间范围四档与其他主窗口页统一，全部复用 dashboard.overview.range.*

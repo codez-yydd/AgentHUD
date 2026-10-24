@@ -63,7 +63,8 @@ import {
   formatRangeSummary,
   type CustomRangeValue,
 } from "../CustomRangeMenu";
-import { currencyOf, costOf } from "../overview/derive";
+import { costOf } from "../overview/derive";
+import { useCurrencyPref } from "../settings/currencyPref";
 import {
   peekSyncConfigCached,
   readSyncConfigCached,
@@ -407,7 +408,9 @@ export function LogsPage() {
     page,
   });
 
-  const currency = currencyOf(locale);
+  // 币种：读设置（默认跟随语言 = 升级前 currencyOf(locale) 同一口径；
+  // 设置页手动指定后全页跟随）
+  const { currency } = useCurrencyPref();
   const pages = Math.max(1, Math.ceil(total / LOG_PAGE_SIZE));
   // 表内仍是旧行时的取数中状态：压暗 + 不可点开详情（见 LogTable 的 busy）
   const busy = loading && rows.length > 0;

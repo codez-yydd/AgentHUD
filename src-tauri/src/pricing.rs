@@ -1155,6 +1155,130 @@ mod tests {
         assert_eq!(resolve_base_dir(&home), home.join(".agenthud"));
         let _ = fs::remove_dir_all(&home);
     }
+
+    // ===== 币种偏好（路径注入版纯函数，temp 目录，不触碰真实 ~/.agenthud）=====
+
+    /// 每个测试独立的临时文件路径，父目录随用随建、结束时清理。
+    struct TempCurrencyPref(PathBuf);
+
+    impl TempCurrencyPref {
+        fn new(tag: &str) -> Self {
+            let dir = std::env::temp_dir().join(format!(
+                "zbar-currency-test-{tag}-{}-{}",
+                std::process::id(),
+                chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+            ));
+            fs::create_dir_all(&dir).expect("创建临时目录失败");
+            TempCurrencyPref(dir.join("currency.json"))
+        }
+
+        fn write_raw(&self, text: &str) {
+            fs::write(&self.0, text).expect("写入测试文件失败");
+        }
+    }
+
+    impl Drop for TempCurrencyPref {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(self.0.parent().unwrap());
+        }
+    }
+
+    /// 旧格式文件（无 mode 字段）零行为变化：生效币种仍按 currency 字段
+    /// 判定（usd → usd，其余 → cny），设置页读到 follow。
+    #[test]
+    fn 币种_旧格式无mode行为不变() {
+        let p = TempCurrencyPref::new("legacy");
+        p.write_raw(r#"{"currency":"usd"}"#);
+        let pref = load_currency_pref_at(&p.0).expect("旧格式应可解析");
+        assert_eq!(effective_currency(&pref), "usd");
+        assert_eq!(setting_mode(pref.mode.as_deref()), "follow");
+
+        p.write_raw(r#"{"currency":"cny"}"#);
+        let pref = load_currency_pref_at(&p.0).expect("旧格式应可解析");
+        assert_eq!(effective_currency(&pref), "cny");
+        // 升级前的宽松口径保留：currency 乱值（非 usd）一律按 cny
+        p.write_raw(r#"{"currency":"eur"}"#);
+        let pref = load_currency_pref_at(&p.0).expect("旧格式应可解析");
+        assert_eq!(effective_currency(&pref), "cny");
+    }
+
+    /// 手动 mode 优先于快照字段：load_currency 两条路径结论一致。
+    #[test]
+    fn 币种_手动mode优先生效() {
+        let p = TempCurrencyPref::new("manual");
+        p.write_raw(r#"{"currency":"cny","mode":"usd"}"#);
+        let pref = load_currency_pref_at(&p.0).expect("应可解析");
+        assert_eq!(effective_currency(&pref), "usd");
+        assert_eq!(setting_mode(pref.mode.as_deref()), "usd");
+        // 非法 mode 收敛为 follow（手改配置的脏值防御）
+        p.write_raw(r#"{"currency":"usd","mode":"eur"}"#);
+        let pref = load_currency_pref_at(&p.0).expect("应可解析");
+        assert_eq!(effective_currency(&pref), "usd");
+        assert_eq!(setting_mode(pref.mode.as_deref()), "follow");
+    }
+
+    /// 文件缺失 / 损坏 / 非法 JSON：读取返回 None（调用方回退默认口径）。
+    #[test]
+    fn 币种_缺失与损坏回退默认() {
+        let p = TempCurrencyPref::new("broken");
+        assert!(load_currency_pref_at(&p.0).is_none(), "文件不存在应返回 None");
+        p.write_raw("not json");
+        assert!(load_currency_pref_at(&p.0).is_none(), "非法 JSON 应返回 None");
+    }
+
+    /// 面板语言跟随链（save_currency）不得推翻手动 mode：读-改-写保留
+    /// mode 字段；follow 模式下写出的文件与升级前同构（仅 currency 字段，
+    /// mode 缺省不落盘）。
+    #[test]
+    fn 币种_保存快照保留手动mode() {
+        let p = TempCurrencyPref::new("preserve");
+        // follow 模式：写入后文件仅含 currency 字段（与升级前逐字节同构）
+        save_currency_pref_at(&p.0, &CurrencyPref { currency: "usd".into(), mode: None }).unwrap();
+        assert_eq!(
+            fs::read_to_string(&p.0).unwrap(),
+            "{\n  \"currency\": \"usd\"\n}",
+            "follow 模式落盘内容与升级前一致"
+        );
+
+        // 手动 mode 下走 save_currency 语义（只改快照字段）：
+        // 模拟读-改-写：load → 只改 currency → save
+        let mut pref = load_currency_pref_at(&p.0).unwrap();
+        pref.mode = Some("usd".into());
+        pref.currency = "cny".into();
+        save_currency_pref_at(&p.0, &pref).unwrap();
+        let mut next = load_currency_pref_at(&p.0).unwrap();
+        next.currency = "cny".into(); // 面板语言链只覆盖快照字段
+        save_currency_pref_at(&p.0, &next).unwrap();
+        let after = load_currency_pref_at(&p.0).unwrap();
+        assert_eq!(after.mode.as_deref(), Some("usd"), "手动 mode 不得被语言链覆盖");
+        assert_eq!(effective_currency(&after), "usd", "手动指定仍是生效币种");
+    }
+
+    /// save_currency_mode（设置页入口）：手动指定同步快照字段；改回
+    /// follow 保留快照（展示沿用最近的语言推导值）。
+    #[test]
+    fn 币种_设置页mode落盘与回退() {
+        let p = TempCurrencyPref::new("mode");
+        // follow（默认）→ 手动 cny：文件自洽，两条读取路径都是 cny
+        save_currency_pref_at(&p.0, &CurrencyPref { currency: "usd".into(), mode: None }).unwrap();
+        let pref = load_currency_pref_at(&p.0).unwrap();
+        let manual = normalize_mode(Some("cny")).unwrap();
+        let mut next = pref.clone();
+        next.mode = Some(manual.to_string());
+        next.currency = manual.to_string();
+        save_currency_pref_at(&p.0, &next).unwrap();
+        let after = load_currency_pref_at(&p.0).unwrap();
+        assert_eq!(effective_currency(&after), "cny");
+        assert_eq!(setting_mode(after.mode.as_deref()), "cny");
+
+        // 手动 → follow：mode 清空、快照保留原值
+        let mut back = after.clone();
+        back.mode = None;
+        save_currency_pref_at(&p.0, &back).unwrap();
+        let after = load_currency_pref_at(&p.0).unwrap();
+        assert_eq!(setting_mode(after.mode.as_deref()), "follow");
+        assert_eq!(effective_currency(&after), "cny", "回退 follow 后沿用快照值");
+    }
 }
 
 /// 把用户勾选的若干 (model_id, currency, price) 合并进 pricing 并保存。
@@ -1181,37 +1305,163 @@ fn collapse_insert(map: &mut BTreeMap<String, ModelPrice>, model_id: &str, price
     map.insert(model_id.to_string(), price);
 }
 
-// ===== 货币偏好（菜单栏标题据此显示 ¥ / $）=====
+// ===== 货币偏好（菜单栏标题据此显示 ¥ / $；主窗口设置页可手动指定）=====
 
-/// 读取货币偏好；文件不存在或非法时返回 "cny"。
-pub fn load_currency() -> String {
-    let path = match config_dir() {
-        Ok(d) => d.join("currency.json"),
-        Err(_) => return "cny".to_string(),
-    };
-    fs::read_to_string(&path)
+/// 币种偏好文件（~/.agenthud/currency.json）。
+///
+/// - `currency`：生效币种的落盘快照（面板语言跟随链继续写：语言切换时
+///   App.tsx 把语言推导值经 save_currency 写进来）；
+/// - `mode`：来源标记——`None`/缺省 = 跟随语言（默认，升级前旧文件即此
+///   形态，行为逐字节一致）；`Some("cny"|"usd")` = 用户在主窗口设置页
+///   手动指定（load_currency 以手动值为准，语言跟随链的写入只更新快照
+///   字段、不推翻手动选择）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CurrencyPref {
+    #[serde(default = "default_currency")]
+    currency: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    mode: Option<String>,
+}
+
+fn default_currency() -> String {
+    "cny".to_string()
+}
+
+/// 币种设置（get_currency_setting 命令回执）：mode + 解析后的生效币种。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CurrencySetting {
+    /// "follow" | "cny" | "usd"（非法/缺失收敛为 follow）
+    pub mode: String,
+    /// 生效币种（follow 时与 currency 字段一致）
+    pub currency: String,
+}
+
+/// mode 字符串收敛："cny"/"usd" → 手动；其余（含 None/未知值）→ follow
+fn normalize_mode(mode: Option<&str>) -> Option<&str> {
+    match mode {
+        Some("cny") | Some("usd") => mode,
+        _ => None,
+    }
+}
+
+/// 读取币种偏好文件（路径注入版，单测用 temp 路径）：文件不存在或损坏
+/// 返回 None（由调用方按默认口径回退）。
+fn load_currency_pref_at(path: &Path) -> Option<CurrencyPref> {
+    fs::read_to_string(path)
         .ok()
         .and_then(|s| serde_json::from_str::<CurrencyPref>(&s).ok())
-        .map(|c| if c.currency == "usd" { "usd" } else { "cny" }.to_string())
+}
+
+/// 生效币种：手动 mode 优先；否则按 language 快照字段（usd 之外一律 cny，
+/// 与升级前逐字节一致）。
+fn effective_currency(pref: &CurrencyPref) -> String {
+    match normalize_mode(pref.mode.as_deref()) {
+        Some(mode) => mode.to_string(),
+        None => {
+            if pref.currency == "usd" {
+                "usd".to_string()
+            } else {
+                "cny".to_string()
+            }
+        }
+    }
+}
+
+/// 把 mode 字符串收敛为设置页三态："cny"/"usd" 原样，其余 "follow"
+fn setting_mode(mode: Option<&str>) -> String {
+    normalize_mode(mode).unwrap_or("follow").to_string()
+}
+
+/// 币种偏好落盘（路径注入版）：先写临时文件再改名（原子写，照 hud-bar.json
+/// / session_hud 先例，避免半截 JSON 让下次读取整文件失配）。
+fn save_currency_pref_at(path: &Path, pref: &CurrencyPref) -> Result<(), String> {
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir).map_err(|e| format!("创建配置目录失败: {e}"))?;
+    }
+    let data = serde_json::to_string_pretty(pref)
+        .map_err(|e| format!("序列化货币偏好失败: {e}"))?;
+    let tmp = path.with_extension("json.tmp");
+    fs::write(&tmp, data).map_err(|e| format!("写入货币偏好失败: {e}"))?;
+    fs::rename(&tmp, path).map_err(|e| format!("保存货币偏好失败: {e}"))
+}
+
+fn currency_pref_path() -> Result<PathBuf, String> {
+    Ok(config_dir()?.join("currency.json"))
+}
+
+/// 读取货币偏好（生效币种）；文件不存在或非法时返回 "cny"（升级前行为）。
+pub fn load_currency() -> String {
+    let path = match currency_pref_path() {
+        Ok(p) => p,
+        Err(_) => return "cny".to_string(),
+    };
+    load_currency_pref_at(&path)
+        .map(|p| effective_currency(&p))
         .unwrap_or_else(|| "cny".to_string())
 }
 
-/// 保存货币偏好。
-pub fn save_currency(currency: &str) -> Result<(), String> {
-    let dir = config_dir()?;
-    fs::create_dir_all(&dir).map_err(|e| format!("创建配置目录失败: {e}"))?;
-    let path = dir.join("currency.json");
-    let pref = CurrencyPref {
-        currency: currency.to_string(),
-    };
-    let data = serde_json::to_string_pretty(&pref)
-        .map_err(|e| format!("序列化货币偏好失败: {e}"))?;
-    fs::write(&path, data).map_err(|e| format!("写入货币偏好失败: {e}"))
+/// 读取完整币种设置（主窗口设置页 / 面板启动对齐用）。
+///
+/// 注意 follow 模式下返回的 `currency` 字段语义：它取 currency.json 里的
+/// `currency` 快照值（经 load_currency，文件缺失/损坏时兜底 "cny"），该
+/// 快照由「面板语言跟随链」在语言切换/启动时刷新——因此它只反映**最近
+/// 一次落盘**的语言推导结果，可能与按当前界面语言实时推导的值不一致
+/// （典型：语言刚切换、跟随链尚未写盘的窗口期）。该字段当前无前端展示
+/// 消费方；如需「语言实际推导的币种」应按界面语言推导，勿以本字段为准
+/// （手动 cny/usd 模式下两者天然一致，不受此影响）。
+pub fn load_currency_setting() -> CurrencySetting {
+    let mode = currency_pref_path()
+        .ok()
+        .and_then(|p| load_currency_pref_at(&p))
+        .map(|p| setting_mode(p.mode.as_deref()))
+        .unwrap_or_else(|| "follow".to_string());
+    CurrencySetting {
+        currency: if mode == "follow" {
+            load_currency()
+        } else {
+            mode.clone()
+        },
+        mode,
+    }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-struct CurrencyPref {
-    currency: String,
+/// 保存货币偏好（面板语言跟随链调用）：只更新生效币种快照字段，
+/// **读-改-写保留 mode**——用户手动指定的币种不因语言切换被推翻；
+/// mode 为 follow 时写出的文件与升级前逐字节同构（仅 currency 字段）。
+pub fn save_currency(currency: &str) -> Result<(), String> {
+    let path = currency_pref_path()?;
+    let mut pref = load_currency_pref_at(&path).unwrap_or(CurrencyPref {
+        currency: default_currency(),
+        mode: None,
+    });
+    pref.currency = currency.to_string();
+    save_currency_pref_at(&path, &pref)
+}
+
+/// 保存币种来源标记（主窗口设置页调用）：
+/// - "cny"/"usd"：手动指定，快照字段同步为该值（文件自洽，load_currency
+///   的两条路径结论一致）；
+/// - 其余（"follow"）：回到跟随语言，快照字段保留（面板语言链会在下次
+///   语言切换/启动时刷新它；期间 load_currency 按旧快照展示，与升级前
+///   行为一致）。
+/// 返回落定后的完整设置。
+pub fn save_currency_mode(mode: &str) -> Result<CurrencySetting, String> {
+    let path = currency_pref_path()?;
+    let mut pref = load_currency_pref_at(&path).unwrap_or(CurrencyPref {
+        currency: default_currency(),
+        mode: None,
+    });
+    let manual = normalize_mode(Some(mode));
+    pref.mode = manual.map(str::to_string);
+    if let Some(m) = manual {
+        pref.currency = m.to_string();
+    }
+    save_currency_pref_at(&path, &pref)?;
+    Ok(CurrencySetting {
+        mode: setting_mode(pref.mode.as_deref()),
+        currency: effective_currency(&pref),
+    })
 }
 
 // ===== models.dev 官方价格在线同步（用户手动触发，含本地缓存降级）=====

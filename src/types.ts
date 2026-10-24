@@ -105,6 +105,23 @@ export interface CostResult {
 
 export type Currency = "cny" | "usd";
 
+/** 币种来源（主窗口设置页）：follow = 跟随语言（默认，行为与升级前一致）；
+ *  cny / usd = 用户手动指定（全部页面 + 菜单栏标题的折算币种跟随） */
+export type CurrencyMode = "follow" | "cny" | "usd";
+
+/** 币种设置（get_currency_setting / set_currency_mode 回执）：
+ *  mode 三态 + 解析后的生效币种（follow 时 = 语言推导值） */
+export interface CurrencySetting {
+  mode: CurrencyMode;
+  currency: Currency;
+}
+
+/** 应用级设置（~/.agenthud/app-settings.json）：主窗口设置页读写。
+ *  auto_capture = ZCode 换账号自动捕获开关（默认开；文件缺失/损坏回退开） */
+export interface AppSettings {
+  autoCapture: boolean;
+}
+
 export type RangePreset = "today" | "1d" | "7d" | "30d" | "custom";
 
 // ===== 趋势图：时间序列分桶（与 Rust lib.rs TrendBucket 结构一一对应） =====
@@ -383,6 +400,37 @@ export interface AgentQuotaSnapshot {
 /** 带来源设备的远端 Agent 额度采样。 */
 export interface RemoteAgentQuotaSnapshot extends AgentQuotaSnapshot {
   device_id: string;
+}
+
+// ===== provider 通道额度快照历史（额度驾驶舱页读取用）=====
+
+/** 通道无关的额度窗口采样（key 为各 provider 归一后的稳定键：
+ *  hour5 / weekly / monthly / credits 等，比 CLI 通道的窗口键联合更宽） */
+export interface QuotaHistoryWindow {
+  key: string;
+  /** 已用百分比 0-100 */
+  used_pct: number;
+  /** 窗口下次重置时间（毫秒；缺省为 null） */
+  reset_at: number | null;
+}
+
+/** provider 通道额度快照（provider_quota_history 一行）：结构与 Rust 侧
+ *  AgentQuotaSnapshot 一致，source 为 provider 名（11 个凭证型来源），
+ *  label 为凭证备注名（同 provider 多凭证的账号维度）。used_pct 均为已用
+ *  口径，剩余 = 100 − 已用。 */
+export interface ProviderQuotaHistorySnapshot {
+  source: string;
+  ts: number;
+  plan_type?: string | null;
+  windows: QuotaHistoryWindow[];
+  /** 凭证备注名（账号维度） */
+  label?: string | null;
+  /** 套餐展示名 */
+  plan_name?: string | null;
+  /** 按量计费余额（余额型 provider） */
+  balance?: ProviderQuotaBalance | null;
+  /** 查询失败原因（错误态快照） */
+  message?: string | null;
 }
 
 /** 某个来源/窗口的今日增量。 */
@@ -920,6 +968,10 @@ export interface AccountMeta {
   fingerprint: string;
   /** 创建时间（ms 时间戳） */
   created_at: number;
+  /** 最近一次捕获/刷新时间（ms 时间戳） */
+  updated_at: number;
+  /** 捕获时选中的 Coding Plan provider（ZCode 登录渠道标识；老快照为 null） */
+  login_provider: string | null;
   is_current: boolean;
 }
 
@@ -948,6 +1000,26 @@ export interface SwitchOutcome {
   switched_to: string;
   /** ZCode 是否自动重启成功（false 时提示手动打开） */
   zcode_relaunched: boolean;
+}
+
+// ===== 各源本地凭证概览（credential_overview.rs，主窗口凭证与账号页）=====
+
+/** 单个 Agent 源的本地凭证静态概览（只读元信息，绝不含凭证明文） */
+export interface CredentialSourceOverview {
+  /** 源 id（codex/claude/gemini/grok/kimi/opencode/minimax/dsh） */
+  source: string;
+  /** 凭证类型："oauth" | "apiKey" | "unknown" */
+  kind: string;
+  /** 账号标识（email 或账号名；提取不到为 null） */
+  account: string | null;
+  /** 凭证文件路径（缺失态为该源的预期位置） */
+  path: string;
+  /** 文件最近修改时间（ms 时间戳；读不到为 null） */
+  modified_at: number | null;
+  /** 凭证文件是否存在（false → 前端显示「未检测到」） */
+  exists: boolean;
+  /** 单源提取失败原因（不阻塞其他源；串不含文件内容） */
+  error: string | null;
 }
 
 /** account_quotas 返回：单个账号快照的订阅额度查询结果 */

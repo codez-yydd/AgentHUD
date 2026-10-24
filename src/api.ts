@@ -5,6 +5,7 @@ import type {
   AccountQuotaEntry,
   AgentThemeState,
   AgentQuotaSnapshot,
+  AppSettings,
   AutoCleanupConfig,
   CaptureOutcome,
   CleanupResult,
@@ -12,7 +13,10 @@ import type {
   ClaudeSnapshot,
   CodexSnapshot,
   CostResult,
+  CredentialSourceOverview,
   Currency,
+  CurrencyMode,
+  CurrencySetting,
   CursorConfig,
   CursorSnapshot,
   DeviceInfo,
@@ -33,6 +37,7 @@ import type {
   ApplyPriceItem,
   ProjectSummary,
   ProviderQuotaEntry,
+  ProviderQuotaHistorySnapshot,
   ProxyConfig,
   QuotaResult,
   QuotaSnapshot,
@@ -90,6 +95,34 @@ export async function savePricing(config: PricingConfig): Promise<void> {
  *  价格表页的临时切换口径也走这里让菜单栏跟随。 */
 export async function saveCurrency(currency: Currency): Promise<void> {
   await invoke("set_currency", { currency });
+}
+
+// ===== 币种来源设置（主窗口设置页；Rust 侧 ~/.agenthud/currency.json）=====
+
+/** 读取币种设置（mode 三态 + 生效币种）。面板启动对齐与主窗口设置页用；
+ *  读不到（异常）由调用方按 follow 兜底。 */
+export async function getCurrencySetting(): Promise<CurrencySetting> {
+  return invoke<CurrencySetting>("get_currency_setting");
+}
+
+/** 设置币种来源（follow / cny / usd）：后端落盘 + 广播 zbar://currency-changed
+ *  （面板与各主窗口页跟随）+ 刷新菜单栏标题。返回落定后的设置。 */
+export async function setCurrencyMode(
+  mode: CurrencyMode
+): Promise<CurrencySetting> {
+  return invoke<CurrencySetting>("set_currency_mode", { mode });
+}
+
+// ===== 应用级设置（Rust 侧 ~/.agenthud/app-settings.json）=====
+
+/** 读取应用设置（自动捕获开关等；文件缺失/损坏由后端回退默认值） */
+export async function getAppSettings(): Promise<AppSettings> {
+  return invoke<AppSettings>("get_app_settings");
+}
+
+/** 写自动捕获开关（读-改-写在后端完成）。返回落定后的完整设置。 */
+export async function setAutoCapture(enabled: boolean): Promise<AppSettings> {
+  return invoke<AppSettings>("set_auto_capture", { enabled });
 }
 
 /** 对比内置参考表（编译期嵌入，无网络请求）与用户当前配置，返回差异（不修改任何文件） */
@@ -236,6 +269,17 @@ export async function getAgentQuotaHistory(
   toMs: number
 ): Promise<AgentQuotaSnapshot[]> {
   return invoke<AgentQuotaSnapshot[]>("get_agent_quota_history", {
+    req: { from_ms: fromMs, to_ms: toMs },
+  });
+}
+
+/** 读取 provider 通道额度快照历史（11 个凭证型 provider，每条凭证一条
+ *  快照按 label 区分；纯本地历史读取，不发 HTTP）。主窗口额度驾驶舱页用。 */
+export async function getProviderQuotaHistory(
+  fromMs: number,
+  toMs: number
+): Promise<ProviderQuotaHistorySnapshot[]> {
+  return invoke<ProviderQuotaHistorySnapshot[]>("get_provider_quota_history", {
     req: { from_ms: fromMs, to_ms: toMs },
   });
 }
@@ -697,6 +741,14 @@ export async function renameAccount(
  *  查询成功会写带账号指纹的历史采样，作为各账号今日增量的数据源） */
 export async function accountQuotas(): Promise<AccountQuotaEntry[]> {
   return invoke<AccountQuotaEntry[]>("account_quotas");
+}
+
+/** 各 Agent 源本地凭证静态概览（只读元信息：源 id / 账号标识 / 凭证类型 /
+ *  文件路径与修改时间；后端保证不返回任何凭证明文，也不做主动联网校验） */
+export async function fetchCredentialOverview(): Promise<
+  CredentialSourceOverview[]
+> {
+  return invoke<CredentialSourceOverview[]>("fetch_credential_overview");
 }
 
 /** 发系统通知（额度满自动切换的结果提醒）：macOS osascript / Windows toast，

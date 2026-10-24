@@ -116,6 +116,30 @@ export function PricingIcon({ className }: IconProps) {
   );
 }
 
+/** 凭证与账号：人形 + 下方卡片（账号身份与登录凭证的通用语义） */
+export function AccountsIcon({ className }: IconProps) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden
+    >
+      {/* 账号人形：头部圆 + 肩线 */}
+      <circle cx="10" cy="7.5" r="3.2" />
+      <path d="M4 18.2c0-2.9 2.7-4.4 6-4.4 1 0 2 .16 2.8.47" />
+      {/* 右下角凭证卡：圆角矩形 + 两行信息位 */}
+      <rect x="13" y="14" width="8.5" height="7" rx="1.6" />
+      <path d="M15.2 17h4.1" />
+      <path d="M15.2 19h2.6" />
+    </svg>
+  );
+}
+
 /** 刷新：环形箭头（用量总览页刷新按钮；加载中由调用方加旋转类） */
 export function RefreshIcon({ className }: IconProps) {
   return (
@@ -131,6 +155,31 @@ export function RefreshIcon({ className }: IconProps) {
     >
       <path d="M21 12a9 9 0 1 1-2.64-6.36" />
       <path d="M21 3.5V9h-5.5" />
+    </svg>
+  );
+}
+
+/** 额度驾驶舱：半圆仪表盘 + 指针（额度余量仪表的通用语义；指针指向
+    刻度中段，与页面「剩余额度」的仪表盘隐喻一致） */
+export function QuotaIcon({ className }: IconProps) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden
+    >
+      {/* 仪表盘外廓：上半圆弧 + 底部封口 */}
+      <path d="M4.5 17.5a8.5 8.5 0 1 1 15 0" />
+      {/* 底部封口横线 */}
+      <path d="M3 20.5h18" />
+      {/* 指针：从圆心附近指向右上中段刻度 */}
+      <path d="m12 15 4.2-4.2" />
+      <circle cx="12" cy="15" r="1.1" fill="currentColor" stroke="none" />
     </svg>
   );
 }
@@ -151,6 +200,26 @@ export function SpeedIcon({ className }: IconProps) {
     >
       <path d="M4 17.5 9.2 12l3.2 3.1L20 7.5" />
       <path d="M15.5 7.5H20V12" />
+    </svg>
+  );
+}
+
+/** 设置：齿轮（通用设置语义，第八页「设置」的侧栏导航与页面标识） */
+export function SettingsIcon({ className }: IconProps) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden
+    >
+      {/* 外齿轮：中心圆 + 八齿（等角分布的短辐条） */}
+      <circle cx="12" cy="12" r="3.2" />
+      <path d="M12 2.8v2.4M12 18.8v2.4M21.2 12h-2.4M5.2 12H2.8M18.5 5.5l-1.7 1.7M7.2 16.8l-1.7 1.7M18.5 18.5l-1.7-1.7M7.2 7.2 5.5 5.5" />
     </svg>
   );
 }

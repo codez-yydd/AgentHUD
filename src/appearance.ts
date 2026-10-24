@@ -14,6 +14,10 @@ export const APPEARANCE_CHANGED_EVENT = "zbar://appearance-changed";
 
 /** 主题持久化键 */
 export const THEME_KEY = "zbar-theme";
+/** 主题来源偏好键（主窗口设置页三态）：light/dark/system。解析值照常写
+ *  THEME_KEY（既有读取方零改动），本键只记「用户要哪种来源」——侧栏
+ *  快捷切换（toggleTheme）写解析值时视为改选 light/dark 来源 */
+export const THEME_PREF_KEY = "zbar-theme-pref";
 /** 面板透明度持久化键 */
 export const PANEL_ALPHA_KEY = "zbar-panel-alpha";
 /** 面板透明度默认值（与 index.css 中 --panel-alpha 初始值一致） */
@@ -68,13 +72,118 @@ export function persistTheme(t: Theme): void {
   }
 }
 
-/** 切换主题并返回新值（供快捷按钮调用） */
+/** 切换主题并返回新值（供快捷按钮调用）。快捷切换是二态的显式选择：
+ *  同时写来源偏好（zbar-theme-pref 为 light/dark）——「跟随系统」只能
+ *  在主窗口设置页三态入口里选；这里不写 pref 的话，设置页的分段会停在
+ *  system 而实际主题已被快捷切换固定，两端失步 */
 export function toggleTheme(current: Theme): Theme {
   const next: Theme = current === "dark" ? "light" : "dark";
   applyTheme(next);
   persistTheme(next);
+  persistThemePref(next);
   return next;
 }
+
+// ===== 主题来源三态（主窗口「设置」页入口；解析值仍写 THEME_KEY）=====
+
+/** 主题来源：浅色 / 深色 / 跟随系统 */
+export type ThemePref = "light" | "dark" | "system";
+
+/** 读取主题来源偏好：仅 "system"/"dark"/"light" 是合法显式值；未设置或
+ *  损坏时按**当前生效主题**回退（升级用户没有 pref 键，深色用户首次进
+ *  设置页时分段应如实显示深色，而不是误显浅色） */
+export function loadThemePref(): ThemePref {
+  try {
+    const v = localStorage.getItem(THEME_PREF_KEY);
+    if (v === "system" || v === "dark" || v === "light") return v;
+    return loadTheme();
+  } catch {
+    return loadTheme();
+  }
+}
+
+/** 持久化主题来源偏好 */
+export function persistThemePref(pref: ThemePref): void {
+  try {
+    localStorage.setItem(THEME_PREF_KEY, pref);
+  } catch {
+    /* 忽略：QuotaExceededError、隐私模式等（对齐 persistTheme） */
+  }
+}
+
+/** 系统当前主题（prefers-color-scheme）：读取失败按浅色（与 loadTheme
+ *  的兜底口径一致） */
+export function systemTheme(): Theme {
+  try {
+    return window.matchMedia("(prefers-color-scheme: dark)").matches
+      ? "dark"
+      : "light";
+  } catch {
+    return "light";
+  }
+}
+
+/** 解析来源偏好为生效主题 */
+export function resolveThemePref(pref: ThemePref): Theme {
+  return pref === "system" ? systemTheme() : pref;
+}
+
+/**
+ * 应用主题来源（设置页入口）：写来源偏好 + 解析生效值写 THEME_KEY +
+ * applyTheme（切 .dark 并广播 zbar://appearance-changed，面板 / HUD 等
+ * 跟随窗零改动同步）。侧栏快捷切换（toggleTheme）不走这里——它写解析值
+ * 即视为改选 light/dark 来源（快捷按钮是二态的，点它就是显式选择）。
+ */
+export function applyThemePref(pref: ThemePref): void {
+  persistThemePref(pref);
+  const resolved = resolveThemePref(pref);
+  persistTheme(resolved);
+  applyTheme(resolved);
+}
+
+/**
+ * 启动主题引导（main.tsx / dashboard-main.tsx 首帧前调用）：
+ * 来源为「跟随系统」时按**当前**系统主题重解析——应用未运行期间系统可能
+ * 已切换深浅色，存储的解析值（THEME_KEY）是旧的；重解析后写回，保证
+ * localStorage 里永远是新鲜值（Session HUD 等后启动窗口直接读它）。
+ * 显式来源 / 未设置（按生效值回退）时与升级前 `loadTheme() === "dark"`
+ * 的引导逐字节同语义。
+ */
+export function bootstrapTheme(): void {
+  const resolved = resolveThemePref(loadThemePref());
+  persistTheme(resolved);
+  if (resolved === "dark") applyTheme("dark");
+}
+
+/**
+ * 注册系统主题变化监听（幂等，进程内只挂一次）：来源偏好为「跟随系统」时，
+ * 系统切深/浅色立即解析新值并 applyTheme（广播带动其他窗口跟随）；
+ * 非 system 偏好下系统变化不产生任何动作。主窗口入口（dashboard-main）
+ * 调用一次即可——设置的属主窗口常驻（关闭=隐藏），面板经广播跟随。
+ */
+export function watchSystemTheme(): () => void {
+  if (systemThemeWatched) return () => {};
+  systemThemeWatched = true;
+  try {
+    const mq = window.matchMedia("(prefers-color-scheme: dark)");
+    const onChange = () => {
+      if (loadThemePref() !== "system") return;
+      const resolved = systemTheme();
+      persistTheme(resolved);
+      applyTheme(resolved);
+    };
+    mq.addEventListener("change", onChange);
+    return () => {
+      mq.removeEventListener("change", onChange);
+      systemThemeWatched = false;
+    };
+  } catch {
+    return () => {};
+  }
+}
+
+/** watchSystemTheme 已注册标记（应用生命周期内常驻，正常不解除） */
+let systemThemeWatched = false;
 
 /** 读取面板透明度：非数字或超出 [0.2, 1] 回退默认值 */
 export function loadPanelAlpha(): number {

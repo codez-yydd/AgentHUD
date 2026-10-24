@@ -683,7 +683,7 @@ export const en: typeof zh = {
     "settings.accountsRename": "Rename",
     "settings.accountsRenameDesc": "Set a recognizable name for this snapshot.",
     "settings.accountsEmpty":
-      "No snapshots yet. Log in to an account in the ZCode client and click \"Capture login\", then log in to another account and capture again — after that you can switch with one click.",
+      "No snapshots yet. Log in to an account in the ZCode client and it is captured automatically while the app is running (\"Capture login\" saves it immediately); log in to another account and capture again, and you can switch with one click.",
     "settings.accountsLoadFail": "Failed to load accounts: {msg}",
 
     "settings.accountsAutoSwitch": "Smart",
@@ -1236,8 +1236,11 @@ export const en: typeof zh = {
     "dashboard.logs": "Request logs",
     "dashboard.speed": "Model speed",
     "dashboard.compare": "Weekly compare",
+    "dashboard.quota": "Quota cockpit",
     "dashboard.sync": "Sync & devices",
+    "dashboard.accounts": "Credentials",
     "dashboard.pricing": "Pricing",
+    "dashboard.settings": "Settings",
 
     "dashboard.overview.desc":
       "Aggregated usage, cost and trends across services.",
@@ -1247,8 +1250,14 @@ export const en: typeof zh = {
       "Streaming output speed by model across sources and channels; the same model ranks separately per source/channel, approximate scopes carry a ≈ mark.",
     "dashboard.compare.desc":
       "Weekly quota left per subscription, used-% trends over the selected range, and local vs. other-device token comparison.",
+    // Scope note in the header: percentages and bars uniformly show remaining
+    // quota (= 100 − used)
+    "dashboard.quota.desc":
+      "Per-account/credential quota panorama: current remaining, 90-day history and reset windows. Percentages and gauges show remaining quota (= 100 − used).",
     "dashboard.sync.desc":
       "This machine's sync status, server-side device management and data cleanup.",
+    "dashboard.accounts.desc":
+      "ZCode account snapshot management and an overview of local agent credentials.",
     "dashboard.pricing.desc":
       "Model unit-price maintenance and pricing table updates.",
 
@@ -1456,6 +1465,98 @@ export const en: typeof zh = {
     "dashboard.compare.footnote":
       "Quota % = used ratio of each subscription's weekly window (local and remote samples deduplicated by time + account, keeping the higher value); tokens = actual usage of enabled agents in the selected range. They are different metrics.",
 
+    // ===== Quota cockpit page (wide window): current overview / history
+    // trend / reset timeline =====
+    // Scope rule: percentages and bars on this page uniformly show remaining
+    // quota (= 100 − used), matching the overview agent table's remainingPct
+    // (the HUD dock bar is the used-pct convention)
+    // Whole-page hard error (all three local history channels failed with no
+    // data at all) and the no-data guide state
+    "dashboard.quota.errorTitle": "Failed to load",
+    "dashboard.quota.errorReason": "Reason: {error}",
+    "dashboard.quota.retry": "Reload",
+    "dashboard.quota.emptyTitle": "No quota records yet",
+    "dashboard.quota.emptyHint":
+      "Keep the app running to accumulate quota history, or hit Refresh to check every source's current quota.",
+    // Local history channel names (joined in the partial-failure banner)
+    "dashboard.quota.channelZai": "Z.ai",
+    "dashboard.quota.channelAgent": "Codex / Claude / Cursor / Kimi",
+    "dashboard.quota.channelProvider": "credential-based providers",
+    "dashboard.quota.partialFailures":
+      "Some history channels failed to load and are shown as no data: {names}",
+    // Header refresh button (the only entry allowed to trigger live queries)
+    "dashboard.quota.refreshHint":
+      "Query every source live and record fresh samples (everything else on this page reads local data only, no network requests)",
+    "dashboard.quota.refreshing": "Querying…",
+    "dashboard.quota.refreshFailed":
+      "Live queries failed for some sources (local history unaffected): {names}",
+    // Freshness pill in the header
+    "dashboard.quota.liveLabel": "Local samples",
+
+    // ---- Cockpit deck: overall reserve / risk split / situation readings ----
+    "dashboard.quota.deckEyebrow": "Overall reserve",
+    "dashboard.quota.deckSub": "Mean remaining across {count} quota windows",
+    "dashboard.quota.deckStatusHealthy": "Reserve healthy",
+    "dashboard.quota.deckStatusWarningCount": "{count} window(s) low",
+    "dashboard.quota.deckStatusCriticalCount": "{count} window(s) critical",
+    "dashboard.quota.riskHealthy": "OK",
+    "dashboard.quota.riskWarning": "Low",
+    "dashboard.quota.riskCritical": "Critical",
+    "dashboard.quota.deckWorst": "Tightest window",
+    "dashboard.quota.deckNoSamples": "No samples",
+    "dashboard.quota.deckResets": "Upcoming resets",
+    "dashboard.quota.deckResetsEmpty": "No upcoming resets",
+    "dashboard.quota.deckNextReset": "Next in {time}",
+    "dashboard.quota.deckCoverage": "Source coverage",
+    "dashboard.quota.deckCoverageHint": "{series} series · last 90 days",
+
+    // ---- Instrument grid: one card per account / credential ----
+    "dashboard.quota.fleetTitle": "Quota instruments",
+    "dashboard.quota.fleetSub": "{count} account(s) / credential(s) · tightest first",
+    "dashboard.quota.windowUnit": "windows",
+    "dashboard.quota.windowNoReset": "No reset",
+    "dashboard.quota.updatedAgo": "Updated {time}",
+    "dashboard.quota.staleData": "stale",
+
+    // Window tier labels (known keys; provider-specific keys like credits are
+    // shown as-is)
+    "dashboard.quota.win.hour5": "5-hour window",
+    "dashboard.quota.win.weekly": "Weekly quota",
+    "dashboard.quota.win.monthly": "Monthly quota",
+    "dashboard.quota.win.cursor_auto": "Auto pool",
+    "dashboard.quota.win.cursor_api": "API pool",
+    "dashboard.quota.win.mcp": "MCP monthly",
+    "dashboard.quota.win.credits": "Credits",
+    // Sources without history data merged into one muted line (no empty cards)
+    "dashboard.quota.sourcesEmptyLabel": "No history data",
+
+    // ---- Section 2: history trend (series + window selectors, 90-day
+    // remaining curve) ----
+    "dashboard.quota.trendTitle": "History trend",
+    "dashboard.quota.trendRangeSub": "{range} · remaining quota",
+    "dashboard.quota.seriesLabel": "Series",
+    "dashboard.quota.windowLabel": "Window",
+    "dashboard.quota.trendEmpty": "No history data for this window",
+    "dashboard.quota.remaining": "Remaining",
+    "dashboard.quota.trendCurrent": "Current",
+    "dashboard.quota.trendLow": "Period low",
+    "dashboard.quota.trendHigh": "Period high",
+    "dashboard.quota.trendSamples": "Samples",
+    "dashboard.quota.trendDanger": "Critical ≤20%",
+    "dashboard.quota.trendFootnote":
+      "The line shows the window's remaining % (= 100 − used): it drops with usage and jumps back to 100 when the window resets; points are joined by sample time, gaps are not connected.",
+
+    // ---- Reset sequence (future resetAt, ascending) ----
+    "dashboard.quota.resetTitle": "Reset timeline",
+    "dashboard.quota.timelineOrder": "Earliest reset first",
+    "dashboard.quota.timelineNext": "Next",
+    "dashboard.quota.resetEmpty": "No windows with an upcoming reset",
+    "dashboard.quota.resetIn": "in {time}",
+
+    // Footer scope note (data source / granularity / retention / risk bins)
+    "dashboard.quota.footnote":
+      "Data comes from local quota history samples (kept for the last 90 days): Z.ai per account fingerprint, credential-based providers per credential label, Codex / Claude / Cursor / Kimi per source. Pay-as-you-go balance-only services (e.g. DeepSeek) only report an account balance with no periodic quota windows and are not shown on this page. Refresh queries every source live and updates the samples. Overall reserve is the arithmetic mean of all window remaining percentages; ≤20% is marked Critical and 20–50% Low.",
+
     // ===== Sync & devices page (wide window): local status card / device
     // table / server data management =====
     // Relative time (same wording as the panel's sync.* keys, kept separate
@@ -1530,6 +1631,16 @@ export const en: typeof zh = {
     "dashboard.sync.rename": "Rename",
     "dashboard.sync.merge": "Merge",
     "dashboard.sync.deleteData": "Wipe data",
+    // Hover titles for the merge / wipe-data buttons (bare button labels
+    // carry no semantics)
+    "dashboard.sync.mergeHint":
+      "Click to open a dialog and pick a target device (this machine included): all data of this device moves into the target, then this device itself is deleted — irreversible. Useful for cleaning up a machine that ended up registered twice.",
+    "dashboard.sync.deleteDataHint":
+      "Clear the usage data this device stored on the server (records and quota snapshots); its registration and other devices are unaffected.",
+    // Operations note above the device table (weak hint covering all three
+    // action buttons)
+    "dashboard.sync.devicesOpsHint":
+      "Rename: change the display name only. Merge: click, then pick a target device in the dialog (this machine included); the device's data moves into the target and the device itself is deleted. Wipe data: clear that device's usage data on the server.",
     "dashboard.sync.devicesEmpty":
       "No devices found; try refreshing. If the server was just reset, re-register this machine.",
     "dashboard.sync.devicesError": "Failed to load devices: {error}",
@@ -1552,7 +1663,7 @@ export const en: typeof zh = {
       "Merge {count} records of \"{name} ({id})\" into:",
     "dashboard.sync.mergeTarget": "Target device",
     "dashboard.sync.mergeWarn":
-      "All data of the source device (records and quota snapshots) moves to the target, then the source device is deleted — irreversible. If the source device is still registered on a machine, disconnect and re-register there.",
+      "All data of this device (the one you clicked in the list, i.e. the source), records and quota snapshots alike, moves into the target device you choose above; the source device is then deleted — irreversible. If the source device is still registered on a machine, disconnect and re-register there.",
     "dashboard.sync.mergeConfirm": "Merge",
     "dashboard.sync.merged": "Merged {count} records into \"{name}\"",
 
@@ -1618,6 +1729,73 @@ export const en: typeof zh = {
     "dashboard.sync.errorTitle": "Failed to load",
     "dashboard.sync.errorReason": "Reason: {error}",
     "dashboard.sync.retry": "Reload",
+
+    // ===== Credentials & accounts page (wide window): ZCode snapshots + other-source credential overview =====
+    // Time words (never/justNow/…) and the no-data dash reuse dashboard.sync.* above.
+    // Whole-page retry state (both data sources failed with no data at all)
+    "dashboard.accounts.errorTitle": "Failed to load",
+    "dashboard.accounts.errorReason": "Reason: {error}",
+    "dashboard.accounts.retry": "Reload",
+
+    // ---- Section 1: ZCode accounts (accounts.rs snapshot system) ----
+    "dashboard.accounts.zcodeTitle": "ZCode accounts",
+    "dashboard.accounts.zcodeSub": "{count} snapshots",
+    "dashboard.accounts.autoCaptureHint":
+      "While the app is running, new ZCode logins are captured automatically every minute; you can also click \"Capture current login\" to save one now. Snapshots stay on this machine only and are never synced.",
+    "dashboard.accounts.capture": "Capture current login",
+    "dashboard.accounts.capturing": "Capturing…",
+    "dashboard.accounts.capturedNew": "New account snapshot saved ✓",
+    "dashboard.accounts.capturedUpdate": "Snapshot updated ✓",
+    "dashboard.accounts.currentLogin": "Current login",
+    "dashboard.accounts.unknown": "Unrecognized",
+    "dashboard.accounts.colName": "Account",
+    "dashboard.accounts.colProvider": "Login provider",
+    "dashboard.accounts.colUpdated": "Captured/updated",
+    "dashboard.accounts.colOps": "Actions",
+    "dashboard.accounts.currentBadge": "Current",
+    "dashboard.accounts.switch": "Switch",
+    "dashboard.accounts.switching": "Switching…",
+    "dashboard.accounts.rename": "Rename",
+    "dashboard.accounts.renameSave": "Save",
+    "dashboard.accounts.renameCount": "{n}/32",
+    "dashboard.accounts.delete": "Delete",
+    "dashboard.accounts.deleting": "Deleting…",
+    "dashboard.accounts.empty":
+      "No account snapshots yet. Log in to an account in the ZCode client and it will be saved as a snapshot automatically (or click \"Capture current login\"); capture another account later to switch between them in one click.",
+    "dashboard.accounts.accountsError": "Failed to load accounts: {error}",
+    "dashboard.accounts.switched": "Switched to \"{name}\" ✓",
+    "dashboard.accounts.relaunchFail": " (ZCode relaunch failed, please open it manually)",
+    "dashboard.accounts.renamed": "Renamed to \"{name}\"",
+    "dashboard.accounts.deleted": "Deleted snapshot \"{name}\"",
+    "dashboard.accounts.confirmSwitchTitle": "Switch account",
+    "dashboard.accounts.confirmSwitchDesc":
+      "ZCode will quit and relaunch with the login of \"{name}\". The current login is backed up first and rolled back automatically on failure.",
+    "dashboard.accounts.confirmSwitch": "Switch login",
+    "dashboard.accounts.confirmDeleteTitle": "Delete account snapshot",
+    "dashboard.accounts.confirmDeleteDesc":
+      "Only the snapshot stored by this app is deleted; the ZCode login is not affected. If it belongs to the current login account, auto-capture (when enabled) will recreate it from the current login within about a minute.",
+    "dashboard.accounts.confirmDelete": "Delete",
+
+    // ---- Section 2: other-source credential overview (read-only, no HTTP) ----
+    "dashboard.accounts.overviewTitle": "Other sources",
+    "dashboard.accounts.overviewSub":
+      "{count}/{total} sources with local credentials",
+    "dashboard.accounts.overviewHint":
+      "Read-only overview of the local login/credential files of each agent source. For safety, credential contents are never shown and no online checks are performed.",
+    "dashboard.accounts.colSource": "Source",
+    "dashboard.accounts.colAccount": "Account",
+    "dashboard.accounts.colKind": "Credential type",
+    "dashboard.accounts.colPath": "Credential file",
+    "dashboard.accounts.colModified": "Last modified",
+    "dashboard.accounts.colStatus": "Status",
+    "dashboard.accounts.kindOauth": "OAuth",
+    "dashboard.accounts.kindApiKey": "API Key",
+    "dashboard.accounts.kindUnknown": "Unknown",
+    "dashboard.accounts.statusMissing": "Not detected",
+    "dashboard.accounts.statusFound": "Detected",
+    "dashboard.accounts.sourceError": "Read failed",
+    "dashboard.accounts.overviewError":
+      "Failed to load credential overview: {error}",
 
     // ===== Pricing page (wide window) =====
     "dashboard.pricing.currencyLabel": "Currency",
@@ -1703,6 +1881,39 @@ export const en: typeof zh = {
     "dashboard.pricing.applying": "Applying…",
     "dashboard.pricing.applySelected": "Apply selected",
     "dashboard.pricing.applySelectedCount": "Apply selected ({count})",
+
+    // ===== Settings page: language / theme / currency / auto capture / HUD bar =====
+    // Each row = title + short hint (what it does) + control (segmented or switch)
+    "dashboard.settings.desc":
+      "Language, appearance, currency and always-on feature toggles; changes apply instantly and sync across windows.",
+    // ① Language
+    "dashboard.settings.language": "Language",
+    "dashboard.settings.languageHint":
+      "UI display language; the panel and the main window switch together.",
+    "dashboard.settings.languageZh": "中文",
+    "dashboard.settings.languageEn": "English",
+    // ② Theme
+    "dashboard.settings.theme": "Appearance",
+    "dashboard.settings.themeHint":
+      "Light / dark look; \"Follow system\" tracks your OS dark-mode setting automatically.",
+    "dashboard.settings.themeLight": "Light",
+    "dashboard.settings.themeDark": "Dark",
+    "dashboard.settings.themeSystem": "Follow system",
+    // ③ Currency (global conversion scope; default = pre-upgrade language-follow)
+    "dashboard.settings.currency": "Currency",
+    "dashboard.settings.currencyHint":
+      "Single currency used for cost conversion on every page and in the menu-bar title; defaults to the UI language (zh ¥ / en $), a manual pick pins all pages to it.",
+    "dashboard.settings.currencyFollow": "Follow language",
+    "dashboard.settings.currencyCny": "¥ CNY",
+    "dashboard.settings.currencyUsd": "$ USD",
+    // ④ Auto capture of new ZCode logins (accounts.rs background poll, default on)
+    "dashboard.settings.autoCapture": "Auto-capture new logins",
+    "dashboard.settings.autoCaptureHint":
+      "While the app runs, checks once a minute for a new ZCode login and saves it as an account snapshot; turning it off keeps manual capture on the Credentials page. Takes effect within a minute, no restart needed.",
+    // ⑤ HUD bar (same config as the tray menu / panel button)
+    "dashboard.settings.hudBar": "HUD bar",
+    "dashboard.settings.hudBarHint":
+      "The edge-docked quota strip; this toggle shares the same config as the tray menu item and stays in sync.",
 
     "dashboard.logs.rangeLabel": "Time range",
     // Header auto-refresh interval (Off / 5s / 10s / 30s / 60s, default 30s):

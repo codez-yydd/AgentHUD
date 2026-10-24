@@ -34,12 +34,12 @@ import {
   agentView,
   buildAgentRows,
   buildModelRows,
-  currencyOf,
   heatSeries,
   scopeView,
   summarize,
   trendSeries,
 } from "./overview/derive";
+import { useCurrencyPref } from "./settings/currencyPref";
 import { useOverviewData } from "./overview/useOverviewData";
 import {
   USAGE_AGENT_IDS,
@@ -122,7 +122,9 @@ export function OverviewPage() {
   const effectiveScope: OverviewScope = syncEnabled ? scope : "local";
   const remoteDegraded = data?.remoteDegraded ?? false;
 
-  const currency = currencyOf(locale);
+  // 币种：读设置（默认跟随语言 = 升级前 currencyOf(locale) 同一口径；
+  // 设置页手动指定后全页跟随）
+  const { currency } = useCurrencyPref();
   const view = useMemo(() => {
     if (!data) return null;
     const scoped = scopeView(data, effectiveScope);

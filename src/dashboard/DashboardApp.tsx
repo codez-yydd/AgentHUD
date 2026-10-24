@@ -1,11 +1,11 @@
 /**
  * 主窗口（Dashboard）应用壳：顶部自绘标题栏（品牌标识 + 窗口控制，替代
- * decorations: false 后的系统标题栏）+ 左侧固定侧栏（五项导航 + 底部
+ * decorations: false 后的系统标题栏）+ 左侧固定侧栏（导航 + 底部
  * 语言/主题快捷切换）+ 右侧主区。
  *
  * 视图切换用组件内 state（对齐面板 App.tsx 的 view 模式，不引路由库）：
- * 用量总览 / 请求日志 / 模型速度 / 周额度对比 / 同步与设备 / 价格设置 六个
- * 页面各自独立取数渲染。
+ * 用量总览 / 请求日志 / 模型速度 / 周额度对比 / 额度驾驶舱 / 同步与设备 /
+ * 凭证与账号 / 价格设置 / 设置 九个页面各自独立取数渲染。
  */
 import { useEffect, useRef, useState } from "react";
 import type { ComponentType } from "react";
@@ -16,10 +16,13 @@ import { loadLocale } from "../i18n/locale";
 import { useI18n, type MessageKey } from "../i18n";
 import type { IconProps } from "./icons";
 import {
+  AccountsIcon,
   CompareIcon,
   LogsIcon,
   OverviewIcon,
   PricingIcon,
+  QuotaIcon,
+  SettingsIcon,
   SpeedIcon,
   SyncIcon,
 } from "./icons";
@@ -28,11 +31,23 @@ import { OverviewPage } from "./OverviewPage";
 import { LogsPage } from "./logs/LogsPage";
 import { SpeedPage } from "./SpeedPage";
 import { ComparePage } from "./ComparePage";
+import { QuotaPage } from "./QuotaPage";
 import { PricingPage } from "./PricingPage";
 import { SyncPage } from "./SyncPage";
+import { AccountsPage } from "./AccountsPage";
+import { SettingsPage } from "./SettingsPage";
 
 /** 主区视图（新增页面时在此扩展） */
-type View = "overview" | "logs" | "speed" | "compare" | "sync" | "pricing";
+type View =
+  | "overview"
+  | "logs"
+  | "speed"
+  | "compare"
+  | "quota"
+  | "sync"
+  | "accounts"
+  | "pricing"
+  | "settings";
 
 /** 面板 → 主窗口跳页事件（Rust 侧 open_main_window(page) 在开窗/聚焦后
  *  emit_to 本窗，见 main_window.rs；事件名风格沿 zbar://appearance-changed，
@@ -46,8 +61,11 @@ const NAVIGATABLE_VIEWS: readonly string[] = [
   "logs",
   "speed",
   "compare",
+  "quota",
   "sync",
+  "accounts",
   "pricing",
+  "settings",
 ];
 
 /** 侧栏导航项：顺序即展示顺序；labelKey 同时用作页面标题词典键 */
@@ -60,8 +78,11 @@ const NAV_ITEMS: {
   { view: "logs", labelKey: "dashboard.logs", Icon: LogsIcon },
   { view: "speed", labelKey: "dashboard.speed", Icon: SpeedIcon },
   { view: "compare", labelKey: "dashboard.compare", Icon: CompareIcon },
+  { view: "quota", labelKey: "dashboard.quota", Icon: QuotaIcon },
   { view: "sync", labelKey: "dashboard.sync", Icon: SyncIcon },
+  { view: "accounts", labelKey: "dashboard.accounts", Icon: AccountsIcon },
   { view: "pricing", labelKey: "dashboard.pricing", Icon: PricingIcon },
+  { view: "settings", labelKey: "dashboard.settings", Icon: SettingsIcon },
 ];
 
 /**
@@ -190,10 +211,16 @@ export function DashboardApp() {
             <SpeedPage />
           ) : view === "compare" ? (
             <ComparePage />
+          ) : view === "quota" ? (
+            <QuotaPage />
           ) : view === "sync" ? (
             <SyncPage />
-          ) : (
+          ) : view === "accounts" ? (
+            <AccountsPage />
+          ) : view === "pricing" ? (
             <PricingPage />
+          ) : (
+            <SettingsPage />
           )}
         </main>
       </div>

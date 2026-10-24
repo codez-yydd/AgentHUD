@@ -12,6 +12,7 @@ import { SkinStandalonePanel } from "./SkinStandalonePanel";
 import { ADD_SERVICE_EVENT } from "./AddServiceMenu";
 import {
   fetchPricing,
+  getCurrencySetting,
   hasProviderCredentials,
   remoteSourcePresence,
   saveCurrency,
@@ -26,7 +27,7 @@ import {
   loadTheme,
   type Theme,
 } from "./appearance";
-import type { Currency, PricingConfig } from "./types";
+import type { Currency, CurrencyMode, PricingConfig } from "./types";
 import {
   AGENT_VISIBILITY_EVENT,
   CREDENTIALS_CHANGED_EVENT,
@@ -59,10 +60,13 @@ type View =
 export default function App() {
   const { locale, setLocale } = useI18n();
   const [view, setView] = useState<View>("stats");
-  // 币种从属语言：中文=人民币、英文=美元。语言是显式偏好，切换语言时币种跟随
-  // （含启动对齐，菜单栏标题同步刷新）。窄窗价格页移除后本窗不再有手动切换
-  // 币种的入口，币种只随语言（临时切换口径的需求由主窗口定价页承接）
+  // 币种：默认从属语言（中文=人民币、英文=美元）。语言是显式偏好，切换
+  // 语言时币种跟随（含启动对齐，菜单栏标题同步刷新）。窄窗价格页移除后
+  // 本窗不再有手动切换币种的入口（临时切换口径的需求由主窗口定价页承接）。
+  // 主窗口「设置」页可手动指定全局币种（currency.json 的 mode）：
+  // 显式指定时本窗花费口径跟随手动值，语言切换不再覆盖（见下方两个 effect）。
   const langCurrency: Currency = locale === "en" ? "usd" : "cny";
+  const [currencyMode, setCurrencyMode] = useState<CurrencyMode>("follow");
   const [currency, setCurrency] = useState<Currency>(langCurrency);
   const [pricing, setPricing] = useState<PricingConfig>({
     usd: {},
@@ -271,13 +275,78 @@ export default function App() {
     };
   }, []);
 
-  // 语言对应币种生效：启动时把后端偏好对齐到语言（覆盖历史遗留的手动值，
-  // 保证菜单栏标题与界面一致），语言切换时立即跟随并持久化。本地
-  // zbar-currency 键已无任何读取方（窄窗价格页移除后废弃），不再写入
+  // 语言对应币种生效（follow 模式）：启动时把后端偏好对齐到语言（覆盖历史
+  // 遗留的手动值，保证菜单栏标题与界面一致），语言切换时立即跟随并持久化。
+  // 手动指定模式（mode ≠ follow）下**不覆盖**——面板语言链只更新
+  // currency.json 的快照字段（save_currency 保留 mode），本窗展示跟随手动值。
+  // 本地 zbar-currency 键已无任何读取方（窄窗价格页移除后废弃），不再写入
+  const currencyModeRef = useRef(currencyMode);
+  currencyModeRef.current = currencyMode;
+  const langCurrencyRef = useRef(langCurrency);
+  langCurrencyRef.current = langCurrency;
   useEffect(() => {
+    if (currencyModeRef.current !== "follow") return;
     setCurrency(langCurrency);
     saveCurrency(langCurrency).catch(() => {});
   }, [langCurrency]);
+
+  // 币种来源初始化与跨窗跟随：启动读一次设置（手动指定则本窗口径跟随），
+  // 并监听 zbar://currency-changed（主窗口设置页改币种后 Rust 广播）——
+  // 主窗口改了，面板跟着变，无需重启。读取/监听失败静默：保持 follow
+  // （= 升级前行为）
+  useEffect(() => {
+    let cancelled = false;
+    // 时序守卫：启动读取是异步的，其响应可能在 currency-changed 事件之后
+    // 才返回（读到的是事件前的旧值）；事件已到达后晚到的旧响应直接丢弃，
+    // 避免旧值覆盖事件带来的新值（显示短暂回退）
+    let eventSeen = false;
+    getCurrencySetting()
+      .then((setting) => {
+        if (cancelled || eventSeen) return;
+        setCurrencyMode(setting.mode);
+        if (setting.mode !== "follow") setCurrency(setting.currency);
+      })
+      .catch(() => {});
+    let dispose: (() => void) | undefined;
+    listen<{ mode?: string; currency?: string }>(
+      "zbar://currency-changed",
+      (event) => {
+        eventSeen = true;
+        const mode: CurrencyMode =
+          event.payload?.mode === "cny" || event.payload?.mode === "usd"
+            ? event.payload.mode
+            : "follow";
+        setCurrencyMode(mode);
+        if (mode === "follow") {
+          // 回到跟随语言：快照字段立即对齐语言推导值（Rust 侧切回 follow
+          // 保留旧快照，若停在手动值，菜单栏标题币种会与语言不一致，
+          // 直到下次语言切换才纠正；这里主动回写，set_currency 会顺带
+          // 刷新菜单栏标题）
+          setCurrency(langCurrencyRef.current);
+          saveCurrency(langCurrencyRef.current).catch(() => {});
+        } else if (
+          event.payload?.currency === "cny" ||
+          event.payload?.currency === "usd"
+        ) {
+          setCurrency(event.payload.currency);
+        }
+      }
+    )
+      .then((unlisten) => {
+        if (cancelled) unlisten();
+        else dispose = unlisten;
+      })
+      .catch(() => {
+        /* 静默：只失去跨窗实时性 */
+      });
+    return () => {
+      cancelled = true;
+      dispose?.();
+    };
+    // langCurrency 不进依赖：事件回包缺币种值时的回退取「当下语言」推导值，
+    // 语言切换由上方 follow effect 覆盖，这里用 ref 防监听反复重挂
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     fetchPricing()
