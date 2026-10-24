@@ -279,7 +279,7 @@ function LogsMetrics({
 export function LogsPage() {
   const { locale, t } = useI18n();
   const [range, setRange] = useState<LogsRange>("today");
-  /** 自定义区间（非空 = 自定义模式，与五档预设互斥：预设档选中时清空） */
+  /** 自定义区间（非空 = 自定义模式，与四档预设互斥：预设档选中时清空） */
   const [customRange, setCustomRange] = useState<CustomRangeValue | null>(null);
   /** 后端来源名；空串 = 全部来源 */
   const [source, setSource] = useState("");
@@ -666,8 +666,9 @@ export function LogsPage() {
                 : t("dashboard.overview.syncDisabledHint")
             }
           />
-          {/* 时间范围：单个触发按钮 + 弹出面板（五档预设收进面板顶部快捷行；
-              本页不限制最早日期——后端存有全部历史请求记录） */}
+          {/* 时间范围：单个触发按钮 + 弹出面板（四档预设收进面板顶部快捷行；
+              本页不限制最早日期——后端存有全部历史请求记录，长历史由自定义
+              区间覆盖） */}
           <CustomRangeMenu
             value={customRange}
             onChange={changeCustom}

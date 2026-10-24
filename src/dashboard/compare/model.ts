@@ -112,13 +112,14 @@ export const LOCAL_COMPARE_SOURCE: Record<CompareAgent, CompareTokenSource> = {
 // ===== 页头时间范围 =====
 
 /** 页头时间范围预设档（趋势切片 + Token 统计周期） */
-export type ComparePresetRange = "7d" | "30d" | "90d";
+export type ComparePresetRange = "today" | "7d" | "30d" | "90d";
 
 /** 页头时间范围选择：预设档或自定义区间（"custom" 只在页面选中自定义档时使用） */
 export type CompareRange = ComparePresetRange | "custom";
 
 /** 各预设覆盖的自然日数（含今天） */
 export const COMPARE_RANGE_DAYS: Record<ComparePresetRange, number> = {
+  today: 1,
   "7d": 7,
   "30d": 30,
   "90d": 90,
@@ -126,7 +127,12 @@ export const COMPARE_RANGE_DAYS: Record<ComparePresetRange, number> = {
 
 /** 全部范围预设（顺序即页头分段顺序）。
  *  Token 取数一次覆盖这里的全部预设（+ 可选自定义区间），范围切换只做视图选择。 */
-export const COMPARE_RANGES: ComparePresetRange[] = ["7d", "30d", "90d"];
+export const COMPARE_RANGES: ComparePresetRange[] = [
+  "today",
+  "7d",
+  "30d",
+  "90d",
+];
 
 /** 时间窗口 [fromMs, toMs)：预设档 toMs = 取数时刻（本代际的 nowMs）；
  *  自定义区间为所选自然日半开区间（fromMs = 起始日 0 点，toMs = 结束日次日 0 点）。 */
@@ -206,8 +212,8 @@ export function selectedWindow(
  * 仅 Cursor 需要（见 useCompareData.loadLocalTokenTotals）：其后端把事件归属到
  * 「首个命中的区间」（cursor.rs 按 periods 顺序 position 匹配），重叠区间会互相
  * 截断。用互斥段一次取回后，按「段完整落在窗口内」累加即可还原各窗口合计。
- * 原有三个预设档全是「以此刻结尾的嵌套窗口」，本函数输出的分段与改动前的
- * 手工相邻区间写法完全一致。
+ * 四个预设档全是「以此刻结尾的嵌套窗口」（today ⊂ 7d ⊂ 30d ⊂ 90d），本函数
+ * 输出的分段与改动前的手工相邻区间写法完全一致。
  */
 export function disjointSegments(windows: CompareWindow[]): CompareWindow[] {
   const points = [

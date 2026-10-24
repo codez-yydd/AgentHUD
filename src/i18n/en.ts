@@ -1539,7 +1539,6 @@ export const en: typeof zh = {
     "dashboard.pricing.applySelectedCount": "Apply selected ({count})",
 
     "dashboard.logs.rangeLabel": "Time range",
-    "dashboard.logs.range.all": "All",
     // Header auto-refresh interval (Off / 5s / 10s / 30s / 60s, default 30s):
     // the trigger shows "Auto-refresh" + the active option, the full sentence
     // lives in title/aria-label to keep the header compact

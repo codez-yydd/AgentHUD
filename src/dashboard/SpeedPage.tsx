@@ -25,13 +25,13 @@
  * 指标随来源筛选变化，先筛选后看数因果更清晰，日志页同款次序）。
  *
  * 交互：
- *  - 时间范围 = CustomRangeMenu（总览 / 日志 / 对比三页共用件）：三档预设
- *    （今日 / 近 7 天 / 近 30 天）+ 自定义起止自然日历，两模式互斥（选预设
- *    清自定义，应用自定义后预设失效仅作回退档）。预设档前端折算窗口
- *    （今日 = 本地零点、7d / 30d = 滚动窗口，与后端 days 口径一致）；自定义
- *    区间固定透传（历史区间不按此刻推算）。30 天窗口 zcode 约 4 万行进内存
- *    聚合仍可控——近 7 天 <1 万行的既有评估 ×4，逐行累加 + 组内几十级分位
- *    排序毫秒级完成；
+ *  - 时间范围 = CustomRangeMenu（总览 / 日志 / 对比三页共用件）：四档预设
+ *    （今日 / 近 7 天 / 近 30 天 / 近 90 天）+ 自定义起止自然日历，两模式互斥
+ *    （选预设清自定义，应用自定义后预设失效仅作回退档）。预设档前端折算窗口
+ *    （今日 = 本地零点、7d / 30d / 90d = 滚动窗口，与后端 days 口径一致）；
+ *    自定义区间固定透传（历史区间不按此刻推算）。90 天窗口 zcode 约 12 万行
+ *    进内存聚合仍可控——近 7 天 <1 万行的既有评估 ×12，逐行累加 + 组内
+ *    几十级分位排序毫秒级完成；
  *  - 数据范围（本机 / 全部设备，db-seg）：scope=local 不触网。同步未启用时
  *    「全部设备」禁用并固定本机口径（总览页 / 日志页同款先例）；首发射数
  *    挂在同步配置读毕之后（缓存命中即瞬时，避免「先按本机查、配置到位后
@@ -93,15 +93,21 @@ import {
 } from "./syncConfig";
 
 /** 时间档位（后端 days 参数：今日 = 0 自然日零点起，其余 = 滚动窗口） */
-type SpeedDays = "today" | "7d" | "30d";
+type SpeedDays = "today" | "7d" | "30d" | "90d";
 
-const DAYS_VALUE: Record<SpeedDays, number> = { today: 0, "7d": 7, "30d": 30 };
+const DAYS_VALUE: Record<SpeedDays, number> = {
+  today: 0,
+  "7d": 7,
+  "30d": 30,
+  "90d": 90,
+};
 
 /** 天数档位（顺序即分段按钮展示顺序；文案复用总览页同一套 range key） */
 const DAYS_OPTIONS: { days: SpeedDays; labelKey: MessageKey }[] = [
   { days: "today", labelKey: "dashboard.overview.range.today" },
   { days: "7d", labelKey: "dashboard.overview.range.7d" },
   { days: "30d", labelKey: "dashboard.overview.range.30d" },
+  { days: "90d", labelKey: "dashboard.overview.range.90d" },
 ];
 
 /** 偏好持久化键（大窗独立于窄浮窗，见文件头说明；失败静默——记忆仅锦上添花）。
@@ -138,7 +144,12 @@ function loadDays(): SpeedDays {
   try {
     const saved =
       localStorage.getItem(RANGE_KEY) ?? localStorage.getItem(LEGACY_DAYS_KEY);
-    if (saved === "today" || saved === "7d" || saved === "30d") {
+    if (
+      saved === "today" ||
+      saved === "7d" ||
+      saved === "30d" ||
+      saved === "90d"
+    ) {
       // 旧键存量迁移：写入新键（旧键保留无害，读取侧此后只认新键）
       if (localStorage.getItem(RANGE_KEY) == null) {
         localStorage.setItem(RANGE_KEY, saved);
@@ -538,7 +549,7 @@ function SpeedTableRow({
 export function SpeedPage() {
   const { locale, t } = useI18n();
   const [days, setDays] = useState<SpeedDays>(loadDays);
-  /** 自定义区间（非空 = 自定义模式，与三档预设互斥：选预设清空、应用
+  /** 自定义区间（非空 = 自定义模式，与四档预设互斥：选预设清空、应用
    *  自定义后预设值保留在 state 里作为「取消自定义」的回退档） */
   const [custom, setCustom] = useState<CustomRangeValue | null>(loadCustom);
   const [scope, setScope] = useState<ModelSpeedScope>(loadScope);

@@ -317,10 +317,8 @@ export const dashboard = {
   "dashboard.pricing.applySelectedCount": "应用选中 ({count})",
 
   // ===== 请求日志页（大窗）：筛选行 / 明细表 / 分页条 / 详情抽屉 =====
-  // 时间范围前四项复用 dashboard.overview.range.*（同款分段控件文案必须一致），
-  // 只有「全部」是本页独有的第五档
+  // 时间范围四档与其他主窗口页统一，全部复用 dashboard.overview.range.*
   "dashboard.logs.rangeLabel": "时间范围",
-  "dashboard.logs.range.all": "全部",
   // 页头自动刷新间隔（关闭 / 5 / 10 / 30 / 60 秒，默认 30 秒）：触发按钮显示
   // 「自动刷新 + 当前档」，完整语义放 title 与 aria-label，页头保持紧凑
   "dashboard.logs.autoRefresh": "自动刷新",

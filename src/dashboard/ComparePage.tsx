@@ -40,6 +40,7 @@ import { useCompareData } from "./compare/useCompareData";
 
 /** 页头范围分段（顺序即展示顺序；默认近 30 天，兼顾趋势可读性与跨度） */
 const RANGES: { range: ComparePresetRange; labelKey: MessageKey }[] = [
+  { range: "today", labelKey: "dashboard.overview.range.today" },
   { range: "7d", labelKey: "dashboard.overview.range.7d" },
   { range: "30d", labelKey: "dashboard.overview.range.30d" },
   { range: "90d", labelKey: "dashboard.overview.range.90d" },
@@ -171,7 +172,7 @@ export function ComparePage() {
               onChange={setDeviceFilter}
             />
           )}
-          {/* 时间范围：单个触发按钮 + 弹出面板（三档预设收进面板顶部快捷行，
+          {/* 时间范围：单个触发按钮 + 弹出面板（四档预设收进面板顶部快捷行，
               可选最早日期 = 额度快照保留期） */}
           <CustomRangeMenu
             value={customRange}

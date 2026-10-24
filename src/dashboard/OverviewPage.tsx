@@ -54,7 +54,8 @@ import {
   type OverviewScope,
 } from "./overview/model";
 
-/** 页头范围分段（顺序即展示顺序；默认近 30 天，兼顾趋势可读性与跨度） */
+/** 页头范围分段（顺序即展示顺序；默认「今日」——当天用量是最常看的口径，
+ *  更长跨度由其余预设档与自定义区间覆盖） */
 const RANGES: { range: OverviewRange; labelKey: MessageKey }[] = [
   { range: "today", labelKey: "dashboard.overview.range.today" },
   { range: "7d", labelKey: "dashboard.overview.range.7d" },
@@ -89,7 +90,7 @@ export function OverviewPage() {
     syncReady,
     remotePending,
   } = useOverviewData();
-  const [range, setRange] = useState<OverviewRange>("30d");
+  const [range, setRange] = useState<OverviewRange>("today");
   /** 自定义区间（非空 = 自定义模式，优先于预设档；选预设即清空） */
   const [customRange, setCustomRange] = useState<CustomRangeValue | null>(null);
   /** Agent 筛选（"all" 或具体 agent id）：偏好持久化，切换只重新聚合 */

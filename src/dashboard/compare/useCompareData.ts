@@ -207,7 +207,7 @@ async function loadLocalTokenTotals(
     // Cursor 后端把事件归属到「首个命中的区间」（cursor.rs 用 periods 顺序
     // position 匹配），重叠区间会互相截断（7 天的用量不会再计入 30/90 天桶），
     // 因此把全部窗口的并集改写成互不重叠的相邻段一次取回（自定义区间可能
-    // 不以「此刻」结尾，故用通用的并集拆分；对原有三档预设结果完全等价），
+    // 不以「此刻」结尾，故用通用的并集拆分；对四个嵌套预设档结果完全等价），
     // 再按「段完整落在窗口内」累加还原各窗口合计。
     const segments = disjointSegments(windows);
     const buckets = await getCompareTokensForAgent(

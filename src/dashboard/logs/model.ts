@@ -69,20 +69,19 @@ export function sourceShortLabel(source: string): string {
 }
 
 /** 时间范围预设（顺序即展示顺序；默认「今天」——排查当次请求是最常见用法）。
- *  前四项**复用总览页同一套 key**：同款分段控件的文案必须一致（总览用「今日」），
- *  只有「全部」是本页独有的第五档。 */
-export type LogsRange = "today" | "7d" | "30d" | "90d" | "all";
+ *  四档与其他主窗口页统一，**复用总览页同一套 key**：同款分段控件的文案
+ *  必须一致（总览用「今日」）；更长历史由自定义区间覆盖（不限制最早日期）。 */
+export type LogsRange = "today" | "7d" | "30d" | "90d";
 
 export const LOGS_RANGES: { range: LogsRange; labelKey: MessageKey }[] = [
   { range: "today", labelKey: "dashboard.overview.range.today" },
   { range: "7d", labelKey: "dashboard.overview.range.7d" },
   { range: "30d", labelKey: "dashboard.overview.range.30d" },
   { range: "90d", labelKey: "dashboard.overview.range.90d" },
-  { range: "all", labelKey: "dashboard.logs.range.all" },
 ];
 
-/** 预设覆盖的自然日数（含今天；all 不按天数算） */
-const RANGE_DAYS: Record<Exclude<LogsRange, "all">, number> = {
+/** 预设覆盖的自然日数（含今天） */
+const RANGE_DAYS: Record<LogsRange, number> = {
   today: 1,
   "7d": 7,
   "30d": 30,
@@ -96,7 +95,6 @@ export function rangeWindow(
   nowMs: number
 ): { fromMs: number; toMs: number } {
   const toMs = nowMs + 1;
-  if (range === "all") return { fromMs: 0, toMs };
   const todayStart = startOfLocalDay(nowMs);
   return { fromMs: addLocalDays(todayStart, -(RANGE_DAYS[range] - 1)), toMs };
 }
@@ -114,7 +112,7 @@ export function logTimeFull(ms: number): string {
 
 /**
  * 单元格时间：今天只显 "HH:mm:ss"，其余显 "MM-DD HH:mm"；跨年的行补年份
- * （「全部」范围下同月同日跨年会混淆，完整时间恒在 title 与详情里）。
+ * （90 天窗口跨年时同月同日会混淆，完整时间恒在 title 与详情里）。
  */
 export function logTimeShort(ms: number, nowMs: number): string {
   const d = new Date(ms);
