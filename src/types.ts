@@ -230,6 +230,17 @@ export interface DeviceInfo {
   device_name: string;
   created_at: number;
   record_count?: number;
+  /** 最后活跃时刻（最后一条明细的 started_at 毫秒）：新版服务端返回；
+   *  旧服务端不返回、只传过快照的设备为 null——两态均显示 — */
+  last_seen_at?: number | null;
+}
+
+/** 同步服务端连通性探测结果（ping_sync_server 命令）：
+ *  disabled=未注册（无 device_token）；ok=/health 可达；
+ *  unreachable=网络层失败（detail 带原因）；error=本地配置读取失败 */
+export interface SyncPingResult {
+  status: "disabled" | "ok" | "unreachable" | "error";
+  detail?: string;
 }
 
 /** 远端整体汇总（与本地 OverallStat 字段一致） */

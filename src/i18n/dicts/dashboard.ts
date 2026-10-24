@@ -17,11 +17,12 @@ export const dashboard = {
   "dashboard.titlebar.restore": "还原",
   "dashboard.titlebar.close": "关闭",
 
-  // 侧栏导航项（同时用作页面标题）：用量总览 / 请求日志 / 模型速度 / 周额度对比 / 价格设置
+  // 侧栏导航项（同时用作页面标题）：用量总览 / 请求日志 / 模型速度 / 周额度对比 / 同步与设备 / 价格设置
   "dashboard.overview": "用量总览",
   "dashboard.logs": "请求日志",
   "dashboard.speed": "模型速度",
   "dashboard.compare": "周额度对比",
+  "dashboard.sync": "同步与设备",
   "dashboard.pricing": "价格设置",
 
   // 页面说明
@@ -32,6 +33,7 @@ export const dashboard = {
     "跨来源、跨渠道对比各模型的流式输出速度；同名模型在不同来源或渠道独立成行，近似口径带 ≈ 标记。",
   "dashboard.compare.desc":
     "各订阅当前额度剩余、近 N 天已用比例趋势，以及本机与其他设备的 Token 对比。",
+  "dashboard.sync.desc": "本机同步状态、服务端设备管理与数据清理。",
   "dashboard.pricing.desc": "模型单价维护与价格表更新。",
 
   // 悬浮窗统计页的主窗口入口（头部工具条图标按钮 + 完整提示/aria）
@@ -234,6 +236,152 @@ export const dashboard = {
     "Token = 各 Agent 在所选范围内的实际用量：本机按来源聚合 + 已同步设备的上传数据求和。Cursor 明细不上传，仅本机口径。",
   "dashboard.compare.footnote":
     "额度 % = 各订阅周额度窗口的已用比例（本机与远端采样按「时间 + 账号」去重取较高值）；Token = 所选范围内已启用 Agent 的实际用量。两者不是同一指标。",
+
+  // ===== 同步与设备页（大窗）：本机状态卡 / 设备表 / 数据管理 =====
+  // 相对时间（沿面板 sync.* 同款措辞，键独立以兼顾本页语境）
+  "dashboard.sync.never": "从未",
+  "dashboard.sync.justNow": "刚刚",
+  "dashboard.sync.minAgo": "{n} 分钟前",
+  "dashboard.sync.hourAgo": "{n} 小时前",
+  "dashboard.sync.dayAgo": "{n} 天前",
+  // 无数据占位（last_seen_at 缺失 / null：旧服务端或只传过快照的设备）
+  "dashboard.sync.noData": "—",
+
+  // ---- 区块①：本机同步状态卡 ----
+  "dashboard.sync.statusTitle": "本机同步",
+  "dashboard.sync.stateEnabled": "运行中",
+  "dashboard.sync.statePaused": "已暂停",
+  "dashboard.sync.fieldServer": "服务端地址",
+  "dashboard.sync.fieldIdentity": "本机身份",
+  "dashboard.sync.fieldPing": "连通状态",
+  "dashboard.sync.fieldLastSync": "上次同步",
+  "dashboard.sync.fieldPending": "待上传",
+  "dashboard.sync.pendingCount": "{count} 条",
+  "dashboard.sync.pingOk": "正常",
+  "dashboard.sync.pingUnreachable": "不可达",
+  "dashboard.sync.pingDisabled": "未启用",
+  "dashboard.sync.pingDisabledHint": "未注册设备，无服务端可探测",
+  "dashboard.sync.mode": "同步模式",
+  "dashboard.sync.manual": "手动",
+  "dashboard.sync.auto": "自动",
+  "dashboard.sync.interval": "间隔（秒）",
+  // 模式/间隔即改即存成功后的轻提示
+  "dashboard.sync.modeSaved": "已保存",
+  "dashboard.sync.syncNow": "立即同步",
+  "dashboard.sync.syncing": "同步中…",
+  // 暂停态点「立即同步」的禁用说明（title）
+  "dashboard.sync.syncPausedHint": "同步已暂停，开启同步后可手动上传",
+  "dashboard.sync.pause": "暂停同步",
+  "dashboard.sync.resume": "开启同步",
+  "dashboard.sync.disconnect": "断开连接",
+  "dashboard.sync.uploaded": "已上传 {count} 条",
+  // 注册引导态（未注册时的表单卡）
+  "dashboard.sync.registerTitle": "连接到同步服务器",
+  "dashboard.sync.registerDesc":
+    "填入自建同步服务端地址与 Master Token 注册本机；注册完成后自动开启同步并全量上传历史明细。",
+  "dashboard.sync.serverUrl": "服务器地址",
+  "dashboard.sync.masterToken": "Master Token",
+  "dashboard.sync.deviceName": "设备名称",
+  "dashboard.sync.register": "连接并注册",
+  "dashboard.sync.registering": "连接中…",
+  // 未使用 https:// 的地址（含裸地址——后端会默认补 http://）均按明文警示
+  "dashboard.sync.httpWarn":
+    "明文传输：该地址未使用 HTTPS，建议内网使用或配置 HTTPS 反向代理。",
+
+  // ---- 区块②：服务端设备表（master token 解锁管理操作）----
+  "dashboard.sync.devicesTitle": "服务端设备",
+  "dashboard.sync.devicesSub": "{count} 台设备 · {records} 条明细",
+  "dashboard.sync.colDevice": "设备",
+  "dashboard.sync.colDeviceId": "设备 ID",
+  "dashboard.sync.colRegistered": "注册时间",
+  "dashboard.sync.colLastSeen": "最后活跃",
+  "dashboard.sync.lastSeenHint":
+    "该设备最后一条请求明细的数据时刻（旧服务端或只传过快照的设备无此值）",
+  "dashboard.sync.colRecords": "明细记录",
+  "dashboard.sync.recordsHint": "仅统计请求明细，不含额度快照",
+  "dashboard.sync.colOps": "操作",
+  "dashboard.sync.localBadge": "本机",
+  "dashboard.sync.rename": "改名",
+  "dashboard.sync.merge": "合并",
+  "dashboard.sync.deleteData": "删数据",
+  "dashboard.sync.devicesEmpty":
+    "未获取到任何设备，可尝试刷新；若刚重置过服务端，请在本机重新注册。",
+  "dashboard.sync.devicesError": "设备列表获取失败：{error}",
+  "dashboard.sync.masterLabel": "Master Token",
+  "dashboard.sync.masterHint":
+    "设备管理与数据清理需要 Master Token（服务端启动日志可查）。仅保存在本页内存，离开本页即失效。",
+  "dashboard.sync.masterPlaceholder": "粘贴 Master Token 解锁管理操作",
+  "dashboard.sync.masterNeeded": "请先填写 Master Token",
+  // 卡③未解锁时的顶部弱提示（配合按钮禁用，不只靠 title）
+  "dashboard.sync.masterLockedHint": "填写上方 Master Token 后可执行数据清理",
+  // 设备改名弹层
+  "dashboard.sync.renameTitle": "设备改名",
+  "dashboard.sync.renameDesc": "修改「{name}（{id}）」的名称（1-32 字）。",
+  // 设备合并弹层
+  "dashboard.sync.mergeTitle": "合并设备",
+  "dashboard.sync.mergeDesc": "将「{name}（{id}）」的 {count} 条明细合并到：",
+  "dashboard.sync.mergeTarget": "目标设备",
+  "dashboard.sync.mergeWarn":
+    "来源设备的全部数据（明细与额度快照）将并入目标设备，随后来源设备被删除，不可恢复。若来源设备仍注册在某台机器上，请到那台机器断开并重新注册。",
+  "dashboard.sync.mergeConfirm": "确认合并",
+  "dashboard.sync.merged": "已合并 {count} 条明细到「{name}」",
+
+  // ---- 区块③：服务端数据管理 ----
+  "dashboard.sync.dataTitle": "服务端数据管理",
+  // 卡③顶部范围说明：清理对象是服务端上的汇总数据，本机数据不受影响
+  "dashboard.sync.dataHint":
+    "以下操作清理的是同步服务端上的汇总数据（全部设备上传的明细与额度快照），本机数据不受影响，执行前均有二次确认。",
+  "dashboard.sync.totalRecords": "共 {count} 条明细",
+  "dashboard.sync.autoCleanup": "自动清理",
+  // 自动清理开关的副说明（天数框常显：明确天数可自定义）
+  "dashboard.sync.autoCleanupHint":
+    "开启后服务端每天自动删除超过保留天数的旧数据（保留天数可自行设定，如填 90 即只保留最近 90 天），防止服务端数据库无限膨胀；默认关闭。",
+  "dashboard.sync.on": "已开启",
+  "dashboard.sync.off": "已关闭",
+  "dashboard.sync.keepDays": "保留天数",
+  "dashboard.sync.cleanByTime": "按时间清理",
+  // 三个危险操作的副说明（各跟在按钮旁）
+  "dashboard.sync.cleanByTimeHint":
+    "立刻删除全部设备指定天数之前的远端数据，只执行这一次。",
+  "dashboard.sync.clearAll": "全部清空",
+  "dashboard.sync.clearAllHint":
+    "删除服务端上的全部用量数据，设备注册保留。注意：已上传的历史不会重新上传，主窗口「全部设备」口径将不再有这些远端历史。",
+  "dashboard.sync.reset": "重置服务端",
+  "dashboard.sync.resetHint":
+    "删除全部数据并移除所有设备注册（恢复出厂）。重置后所有设备需重新注册才能同步。",
+  "dashboard.sync.cleanupError": "清理状态获取失败：{error}",
+  // 自动清理开关 / 保留天数保存成功的轻提示
+  "dashboard.sync.autoCleanupSaved": "自动清理已更新",
+  "dashboard.sync.deleted": "已删除 {count} 条记录",
+  "dashboard.sync.deletedBoth": "已删除 {records} 条记录、{devices} 个设备",
+
+  // ---- 确认弹层（断开 / 删设备数据 / 按时间清理 / 全部清空 / 重置）----
+  // 确认键文案按动作命名（破坏性递进：断开不删数据用普通键，其余红色）
+  "dashboard.sync.confirmDisconnectTitle": "断开连接",
+  "dashboard.sync.confirmDisconnectDesc":
+    "将清除本机的同步凭证与上传游标（服务端数据保留）。下次注册后会重新全量上传历史明细。",
+  "dashboard.sync.confirmDisconnect": "断开连接",
+  "dashboard.sync.confirmDeviceTitle": "删除设备数据",
+  "dashboard.sync.confirmDeviceDesc":
+    "只删除该设备在服务端上的数据（全部明细与额度快照），不可恢复；设备注册保留。",
+  "dashboard.sync.confirmDelete": "删除",
+  "dashboard.sync.confirmBeforeTitle": "按时间清理",
+  "dashboard.sync.confirmBeforeDesc":
+    "将删除 {days} 天前的所有数据（明细与快照），不可恢复。本机数据不受影响，但已上传的历史不会重新上传。",
+  "dashboard.sync.confirmClean": "清理",
+  "dashboard.sync.confirmAllTitle": "全部清空",
+  "dashboard.sync.confirmAllDesc":
+    "将清空所有设备的用量数据（保留设备注册），不可恢复。本机数据不受影响，但已上传的历史不会重新上传。",
+  "dashboard.sync.confirmClear": "清空",
+  "dashboard.sync.confirmResetTitle": "重置服务端",
+  "dashboard.sync.confirmResetDesc":
+    "将清空全部数据并移除所有设备的注册（含本机），服务端回到初始状态；每台设备（包括本机）需重新注册才能同步。不可恢复。",
+  "dashboard.sync.confirmReset": "重置",
+
+  // ---- 配置读取失败的错误重试态（防已注册用户被误导重注册）----
+  "dashboard.sync.errorTitle": "加载失败",
+  "dashboard.sync.errorReason": "原因：{error}",
+  "dashboard.sync.retry": "重新加载",
 
   // ===== 价格设置页（大窗）=====
   "dashboard.pricing.currencyLabel": "币种",

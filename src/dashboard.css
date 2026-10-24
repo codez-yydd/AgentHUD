@@ -3283,6 +3283,459 @@ body {
   }
 }
 
+/* ============================================================
+ * 同步与设备页（SyncPage）：本机状态卡 / 服务端设备表 / 数据管理。
+ * 配色全走 --db-* 变量（亮暗两套自动翻转）；危险操作色沿 rose 系
+ * （与 .db-btn--danger / .db-price-remove 同源）
+ * ============================================================ */
+
+/* 页头轻提示（操作成功 flash，短暂展示后消失） */
+.db-sync__flash {
+  align-self: center;
+  padding: 2px 10px;
+  border-radius: 999px;
+  background: var(--db-chip-bg);
+  color: var(--db-chip-text);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+/* 页头错误锚点（操作失败横幅，与 flash 同位置；长文案截断，title 看全文） */
+.db-sync__error {
+  align-self: center;
+  max-width: 300px;
+  padding: 2px 10px;
+  border-radius: 999px;
+  background: rgba(244, 63, 94, 0.12);
+  color: #e11d48;
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 暗色下错误锚点文字提亮（固定红在 slate-900 底上偏暗） */
+.dark .db-sync__error {
+  color: #fb7185;
+}
+
+/* 状态卡右上：运行中 / 已暂停 徽标 */
+.db-sync-state {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 9px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.db-sync-state--on {
+  background: var(--db-chip-bg);
+  color: var(--db-chip-text);
+}
+
+.db-sync-state--paused {
+  background: var(--db-track);
+  color: var(--db-text-dim);
+}
+
+/* 状态网格：3 列 × 2 行（窄窗 2 列，见下方媒体查询——必须放在本基础规则
+   之后，否则同特异度下会被这里的 3 列声明覆盖成死规则） */
+.db-sync-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px 16px;
+}
+
+.db-sync-grid__label {
+  display: block;
+  font-size: 11px;
+  color: var(--db-text-dim);
+  margin-bottom: 2px;
+}
+
+.db-sync-grid__value {
+  display: block;
+  font-size: 12.5px;
+  color: var(--db-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 连通状态格：前置状态点（绿 / 红 / 灰）。在 .db-sync-grid__value 的
+   block 之后定义，同特异度下后者语义（行内点 + 文字）生效 */
+.db-sync-ping {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.db-sync-ping::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--db-text-dim);
+  flex: none;
+}
+
+.db-sync-ping.is-ok::before {
+  background: var(--db-accent-emerald);
+}
+
+.db-sync-ping.is-bad::before {
+  background: #f43f5e;
+}
+
+/* 同步模式行：label + 分段 + auto 间隔输入 + 保存 */
+.db-sync-mode {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--db-row-border);
+}
+
+.db-sync-mode__label {
+  font-size: 11px;
+  color: var(--db-text-dim);
+}
+
+.db-sync-mode__interval {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--db-text-dim);
+}
+
+.db-sync-mode__interval input {
+  width: 64px;
+  padding: 3px 7px;
+  border: 1px solid var(--db-border);
+  border-radius: 6px;
+  background: var(--db-card-bg);
+  color: var(--db-text);
+  font-size: 12px;
+  text-align: right;
+  outline: none;
+}
+
+.db-sync-mode__interval input:focus {
+  border-color: var(--db-cal-accent-border);
+}
+
+/* 状态卡操作行 */
+.db-sync-ops {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+/* 断开连接：ghost 危险键（hover 才泛红，弱于确认弹层的实底红键） */
+.db-sync-ops__danger:hover:not(:disabled) {
+  border-color: transparent;
+  background: rgba(244, 63, 94, 0.12);
+  color: #f43f5e;
+}
+
+/* ---- 注册表单（未注册引导态）与通用字段 ---- */
+.db-sync-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-width: 420px;
+}
+
+.db-sync-form__submit {
+  align-self: flex-start;
+}
+
+.db-sync-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.db-sync-field > span:first-child {
+  font-size: 11px;
+  color: var(--db-text-dim);
+}
+
+.db-sync-field input {
+  width: 100%;
+  padding: 5px 9px;
+  border: 1px solid var(--db-border);
+  border-radius: 6px;
+  background: var(--db-card-bg);
+  color: var(--db-text);
+  font-size: 12px;
+  outline: none;
+}
+
+.db-sync-field input:focus {
+  border-color: var(--db-cal-accent-border);
+}
+
+/* 带显隐切换的输入（master token / 注册 token）：右内嵌小按钮 */
+.db-sync-field__box {
+  position: relative;
+  display: block;
+}
+
+.db-sync-field__box input {
+  padding-right: 44px;
+}
+
+.db-sync-field__box button {
+  position: absolute;
+  top: 50%;
+  right: 4px;
+  transform: translateY(-50%);
+  padding: 2px 6px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--db-text-dim);
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.db-sync-field__box button:hover {
+  background: var(--db-hover);
+  color: var(--db-text);
+}
+
+/* 警示文案（HTTP 明文 / 合并破坏性说明） */
+.db-sync-warn {
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--db-accent-amber);
+}
+
+/* ---- master token 解锁区（设备卡顶部）---- */
+.db-sync-master {
+  margin-bottom: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--db-row-border);
+  max-width: 420px;
+}
+
+.db-sync-master__hint {
+  margin-top: 5px;
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: var(--db-text-dim);
+}
+
+/* ---- 服务端设备表 ---- */
+/* 6 列在 900 最小窗会挤压折行：给固定最小宽度，由 .db-table-wrap 横向滚动
+   兜底（照请求日志表的先例） */
+.db-sync-devices {
+  min-width: 720px;
+}
+
+.db-sync-devices__ops {
+  width: 120px;
+  white-space: nowrap;
+  text-align: right;
+}
+
+.db-sync-devices__ops .db-linkbtn {
+  margin-left: 8px;
+}
+
+/* 设备名列：名称 + 本机徽标 + 改名按钮同行 */
+.db-sync-devname {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.db-sync-devname .db-tag,
+.db-sync-devname .db-sync-localbadge {
+  flex: none;
+}
+
+/* 本机徽标：emerald 浅底深字（区别于 sky 蓝的手动标签 db-tag--manual），
+   亮暗两态文字色均走 chip 变量（对比度随主题适配） */
+.db-sync-localbadge {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--db-chip-bg);
+  color: var(--db-chip-text);
+  font-size: 10px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+/* 删数据链接键（行内危险操作，hover 泛红） */
+.db-sync-del:hover:not(:disabled) {
+  color: #f43f5e;
+}
+
+/* last_seen_at 缺失占位（—）：弱化但不隐形 */
+.db-sync-nodata {
+  color: var(--db-text-dim);
+  opacity: 0.7;
+}
+
+/* 设备表空态文案 */
+.db-sync-empty {
+  padding: 18px 0;
+  text-align: center;
+  font-size: 12px;
+  color: var(--db-text-dim);
+}
+
+/* ---- 数据管理区 ---- */
+.db-sync-total {
+  font-size: 11px;
+  color: var(--db-text-dim);
+}
+
+/* 卡③未解锁（未填 master token）时的顶部弱提示 */
+.db-sync-lockedhint {
+  margin-bottom: 10px;
+  font-size: 11px;
+  color: var(--db-accent-amber);
+}
+
+/* 卡③顶部范围说明（清理对象是服务端汇总数据）：信息性弱提示，
+   走中性 dim 色区别于未解锁的 amber 警示 */
+.db-sync-scopehint {
+  margin-bottom: 10px;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--db-text-dim);
+}
+
+/* 卡③操作副说明（自动清理行 / 三个危险操作行） */
+.db-sync-opshint {
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--db-text-dim);
+}
+
+.db-sync-autoclean {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  font-size: 12px;
+  color: var(--db-text);
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--db-row-border);
+}
+
+/* 自动清理行的副说明独占一行（容器是 flex-wrap 横排） */
+.db-sync-autoclean .db-sync-opshint {
+  flex-basis: 100%;
+}
+
+/* 自动清理开启态按钮：浅底深字的 chip 模式（文字色走主题变量——暗色下
+   --db-accent-emerald 提亮为浅绿，配白字对比度不足 1.6:1，实底方案废弃） */
+.db-sync-autoclean__on {
+  border-color: transparent;
+  background: var(--db-chip-bg);
+  color: var(--db-chip-text);
+}
+
+/* 危险操作：原三键横排改为纵列，每操作一行（按钮 + 副说明在键右侧） */
+.db-sync-danger {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+/* 两列网格让三行共享同一按钮列宽（flex 行各自 max-content 会导致按钮宽窄
+   不一、副文案起点参差）：minmax 下限 112px 覆盖中英文最长按钮（中文 5 字
+   ~86px / 英文 "Clean by age" ~100px），各行均取下限 → 按钮完全同宽；
+   副说明落 1fr 列左缘天然对齐，文字过长自动换行（900 最小窗不挤爆） */
+.db-sync-danger__row {
+  display: grid;
+  grid-template-columns: minmax(112px, max-content) 1fr;
+  column-gap: 12px;
+  align-items: center;
+}
+
+.db-sync-danger__row .db-btn {
+  width: 100%;
+  justify-content: center;
+}
+
+/* ---- 弹层内元素 ---- */
+/* 确认弹层的保留天数输入（按时间清理） */
+.db-sync-confirm-days {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 12px;
+  font-size: 12px;
+  color: var(--db-text-dim);
+}
+
+.db-sync-confirm-days input {
+  width: 72px;
+  padding: 4px 8px;
+  border: 1px solid var(--db-border);
+  border-radius: 6px;
+  background: var(--db-card-bg);
+  color: var(--db-text);
+  font-size: 12px;
+  text-align: right;
+  outline: none;
+}
+
+/* 改名弹层的名称输入 + 字数计数 */
+.db-sync-rename-input {
+  width: 100%;
+  padding: 6px 9px;
+  border: 1px solid var(--db-border);
+  border-radius: 6px;
+  background: var(--db-card-bg);
+  color: var(--db-text);
+  font-size: 12.5px;
+  outline: none;
+  margin-bottom: 3px;
+}
+
+.db-sync-rename-input:focus {
+  border-color: var(--db-cal-accent-border);
+}
+
+.db-sync-rename-count {
+  font-size: 10px;
+  color: var(--db-text-dim);
+  text-align: right;
+  margin-bottom: 10px;
+}
+
+/* 合并弹层的目标设备下拉：吃满弹层宽度 */
+.db-sync-merge-select {
+  width: 100%;
+  margin-bottom: 10px;
+}
+
+/* ---- 同步页窄窗回退（≤980px）：状态网格 3 列 → 2 列。必须放在上面的
+   基础规则之后（同特异度靠源码顺序取胜），与页首那段 ≤980px 媒体查询
+   分开维护，避免再次出现「回退写在前、被基础规则覆盖」的死规则 ---- */
+@media (max-width: 980px) {
+  .db-sync-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
 /* 滚动条（与 index.css 同款细条；本窗是普通窗，无热区避让需求） */
 ::-webkit-scrollbar {
   width: 8px;

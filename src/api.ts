@@ -56,6 +56,7 @@ import type {
   SwitchOutcome,
   SyncConfig,
   SyncOutcome,
+  SyncPingResult,
   ThemeParams,
   TrendBucket,
   TrendPoint,
@@ -301,6 +302,12 @@ export async function remoteAgentQuotaSnapshots(
 
 export async function listRemoteDevices(): Promise<DeviceInfo[]> {
   return invoke<DeviceInfo[]>("list_remote_devices");
+}
+
+/** 探测同步服务端连通性（无鉴权 GET /health，超时 connect 2s / 总 5s）：
+ *  未注册返回 status=disabled，不报错 */
+export async function pingSyncServer(): Promise<SyncPingResult> {
+  return invoke<SyncPingResult>("ping_sync_server");
 }
 
 /** 设备筛选下拉的远端设备列表（纯函数）：排除本机 + 过滤零记录设备。

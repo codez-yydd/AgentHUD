@@ -1983,6 +1983,15 @@ async fn list_remote_devices() -> Result<Vec<DeviceInfo>, String> {
         .map_err(|e| format!("设备列表任务失败: {e}"))?
 }
 
+/// 探测同步服务端连通性（主窗口同步页「连通状态」格；无鉴权 GET /health，
+/// 超时 connect 2s / 总 5s）。内部为同步 HTTP（ureq），必须卸载主线程。
+#[tauri::command]
+async fn ping_sync_server() -> Result<sync::SyncPingResult, String> {
+    tauri::async_runtime::spawn_blocking(sync::ping_sync_server)
+        .await
+        .map_err(|e| format!("服务端探测任务失败: {e}"))?
+}
+
 /// 查询清理状态
 #[tauri::command]
 async fn get_cleanup_status() -> Result<CleanupStatus, String> {
@@ -3021,6 +3030,7 @@ pub fn run() {
             remote_snapshots,
             remote_agent_quota_snapshots,
             list_remote_devices,
+            ping_sync_server,
             get_cleanup_status,
             cleanup_server,
             merge_devices,

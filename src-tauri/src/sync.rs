@@ -253,6 +253,9 @@ pub struct DeviceInfo {
     pub created_at: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub record_count: Option<i64>,
+    /// 最后活跃时刻（最后一条明细的 started_at 毫秒；新版服务端返回，
+    /// 旧服务端 / 只传过快照的设备为 null，前端显示 —）
+    pub last_seen_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -263,6 +266,9 @@ pub struct DeviceInfoRaw {
     created_at: i64,
     #[serde(default)]
     record_count: Option<i64>,
+    /// 旧服务端不返回该字段：serde default 保证反序列化不失败（可缺省铁律）
+    #[serde(default)]
+    last_seen_at: Option<i64>,
 }
 
 /// /usage 返回的远端聚合（与服务端 UsageResult 对齐，字段名一致）。
@@ -726,7 +732,29 @@ pub fn upload_incremental() -> Result<SyncOutcome, String> {
     let now = chrono::Local::now().timestamp_millis();
     cfg.last_uploaded_rowid = since;
     cfg.last_sync_at = now;
-    save_sync_config(&cfg)?;
+    // 落盘竞态防护（与本轮开头的 load 之间隔着多批网络上传，可达 15s+）：
+    // 期间用户可能在 UI 上「暂停同步」或「断开连接」——这些操作会立即写盘
+    // （enabled=false / 清空凭证）。若把开头读到的旧快照原样全量写回，会把
+    // 用户的暂停/断开静默复活（断开完全失效）。故落盘前重读配置并按
+    // merge_config_for_save 的决策合并：
+    // - device_token 与本轮开头不同（断开/重注册会换凭证）→ 放弃本轮落盘；
+    //   本轮推进的游标丢弃，下轮按盘上旧游标重传，服务端按
+    //   (device_id, source, local_rowid) 主键 ON CONFLICT 幂等去重，无副作用。
+    // - token 相同（含「仅暂停」：token 不变）→ 以最新配置为底，只覆盖本轮
+    //   推进的游标与 last_sync_at；enabled / mode / interval / server_url /
+    //   device_id / device_name / device_token 一律取最新值，不回滚用户操作。
+    // 重读失败同样放弃落盘：宁可下轮重传，不可回滚用户的暂停/断开。
+    match load_sync_config() {
+        Ok(latest) => match merge_config_for_save(&token, &cfg, &latest) {
+            Some(merged) => save_sync_config(&merged)?,
+            None => eprintln!(
+                "[zbar-sync] 同步期间凭证已变更（断开/重注册），放弃本轮游标落盘；服务端按主键幂等去重，下轮重传无副作用"
+            ),
+        },
+        Err(e) => eprintln!(
+            "[zbar-sync] 落盘前重读配置失败，放弃本轮落盘（下轮重传，服务端幂等兜底）: {e}"
+        ),
+    }
     // 价格表同步失败不影响用量上传；pending 保留，下一轮重试
     if let Err(e) = crate::pricing_sync::sync_with_server(&base, &token) {
         eprintln!("[zbar-sync] 价格表同步失败（下一轮重试）: {e}");
@@ -743,6 +771,47 @@ pub fn upload_incremental() -> Result<SyncOutcome, String> {
         new_max_rowid: since,
         last_sync_at: now,
     })
+}
+
+/// 上传轮结束时「安全落盘」的合并决策（纯函数，单测锁定）：
+/// - `started_token` = 本轮开头读到的 device_token；`ran` = 本轮跑完的内存
+///   配置（含推进后的游标与 last_sync_at）；`latest` = 落盘前重读的最新配置。
+/// - token 不同（用户断开/重注册换凭证）→ None：放弃落盘。本轮游标推进
+///   丢弃，下轮按盘上旧游标重传，服务端按主键 ON CONFLICT 幂等去重。
+/// - token 相同 → Some：以 latest 为底（enabled / mode / interval_seconds /
+///   server_url / device_id / device_name / device_token 全取最新，不回滚
+///   用户在 UI 上的暂停等操作），仅覆盖本轮推进的字段：各来源明细游标
+///   （last_uploaded_*_rowid / *_rev_ts / codex 模型回填双游标）、三类快照
+///   游标与 last_sync_at。新增来源的游标若忘在这里覆盖，会被
+///   `落盘合并取最新身份与本轮游标` 单测的字段清单提醒补齐。
+fn merge_config_for_save(
+    started_token: &str,
+    ran: &SyncConfig,
+    latest: &SyncConfig,
+) -> Option<SyncConfig> {
+    if latest.device_token != started_token {
+        return None;
+    }
+    let mut merged = latest.clone();
+    merged.last_uploaded_rowid = ran.last_uploaded_rowid;
+    merged.last_uploaded_codex_rowid = ran.last_uploaded_codex_rowid;
+    merged.last_uploaded_claude_rowid = ran.last_uploaded_claude_rowid;
+    merged.last_uploaded_claude_rev_ts = ran.last_uploaded_claude_rev_ts;
+    merged.last_uploaded_codex_model_rev_ts = ran.last_uploaded_codex_model_rev_ts;
+    merged.last_uploaded_codex_model_rev_id = ran.last_uploaded_codex_model_rev_id;
+    merged.last_uploaded_dsh_rowid = ran.last_uploaded_dsh_rowid;
+    merged.last_uploaded_dsh_rev_ts = ran.last_uploaded_dsh_rev_ts;
+    merged.last_uploaded_opencode_rowid = ran.last_uploaded_opencode_rowid;
+    merged.last_uploaded_opencode_rev_ts = ran.last_uploaded_opencode_rev_ts;
+    merged.last_uploaded_kimi_rowid = ran.last_uploaded_kimi_rowid;
+    merged.last_uploaded_kimi_rev_ts = ran.last_uploaded_kimi_rev_ts;
+    merged.last_uploaded_minimaxcode_rowid = ran.last_uploaded_minimaxcode_rowid;
+    merged.last_uploaded_minimaxcode_rev_ts = ran.last_uploaded_minimaxcode_rev_ts;
+    merged.last_uploaded_snapshot_ts = ran.last_uploaded_snapshot_ts;
+    merged.last_uploaded_agent_quota_snapshot_ts = ran.last_uploaded_agent_quota_snapshot_ts;
+    merged.last_uploaded_provider_quota_ts = ran.last_uploaded_provider_quota_ts;
+    merged.last_sync_at = ran.last_sync_at;
+    Some(merged)
 }
 
 /// 构造派生来源的上传批次 payload。with_projects=false 时剥掉每条记录的
@@ -1758,10 +1827,12 @@ pub fn fetch_remote_agent_quota_snapshots(
     Ok(resp.snapshots)
 }
 
-/// 拉取设备列表（供前端设备筛选器）。
+/// 拉取设备列表（供前端设备筛选器与主窗口同步页）。
+/// 仅检查 device_token（未注册/已断开即空列表）；暂停态（enabled=false 但
+/// 凭证仍在）依旧可查——主窗口同步页在暂停时也要展示设备表。
 pub fn fetch_devices() -> Result<Vec<DeviceInfo>, String> {
     let cfg = load_sync_config()?;
-    if !cfg.enabled || cfg.device_token.is_empty() {
+    if cfg.device_token.is_empty() {
         return Ok(Vec::new());
     }
     let base = &cfg.server_url;
@@ -1780,8 +1851,48 @@ pub fn fetch_devices() -> Result<Vec<DeviceInfo>, String> {
             device_name: r.device_name,
             created_at: r.created_at,
             record_count: r.record_count,
+            last_seen_at: r.last_seen_at,
         })
         .collect())
+}
+
+/// 同步服务端连通性探测结果（ping_sync_server 命令）。
+/// - disabled：未注册（无 device_token），无服务端可探；
+/// - ok：GET {server}/health 返回 2xx（/health 无鉴权）；
+/// - unreachable：网络层失败（连不上 / 超时），detail 带可读原因。
+/// 本函数不产生 "error" 状态：读取本地配置失败直接走 Err（invoke reject），
+/// 前端的 catch 分支自行把异常折算成 status="error" 展示。
+#[derive(Debug, Clone, Serialize)]
+pub struct SyncPingResult {
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+/// 探测同步服务端连通性（主窗口同步页「连通状态」格）。
+/// 无鉴权 GET /health，超时档取后台静默查询档（connect 2s / 总 5s，与
+/// fetch_devices 同款）：探测失败快速返回，不拖慢刷新链路。
+pub fn ping_sync_server() -> Result<SyncPingResult, String> {
+    let cfg = load_sync_config()?;
+    if cfg.device_token.is_empty() {
+        return Ok(SyncPingResult {
+            status: "disabled".into(),
+            detail: None,
+        });
+    }
+    match agent_with_timeouts(2, 5)
+        .get(&format!("{}/health", cfg.server_url))
+        .call()
+    {
+        Ok(_) => Ok(SyncPingResult {
+            status: "ok".into(),
+            detail: None,
+        }),
+        Err(e) => Ok(SyncPingResult {
+            status: "unreachable".into(),
+            detail: Some(map_http_err("探测服务端")(e)),
+        }),
+    }
 }
 
 // ===== 清理 =====
@@ -1895,9 +2006,11 @@ pub fn rename_device(req: RenameDeviceRequest) -> Result<RenameResult, String> {
 }
 
 /// 查询清理状态（数据量 + 自动清理配置）。device_token 鉴权。
+/// 与 fetch_devices 同款：暂停态（enabled=false 但凭证仍在）依旧可查，
+/// 主窗口同步页在暂停时也要展示数据管理区。
 pub fn fetch_cleanup_status() -> Result<CleanupStatus, String> {
     let cfg = load_sync_config()?;
-    if !cfg.enabled || cfg.device_token.is_empty() {
+    if cfg.device_token.is_empty() {
         return Err("同步未启用或未注册设备".into());
     }
     let base = &cfg.server_url;
@@ -2339,6 +2452,92 @@ mod tests {
         assert_eq!(back.last_uploaded_kimi_rev_ts, 10);
         assert_eq!(back.last_uploaded_minimaxcode_rowid, 11);
         assert_eq!(back.last_uploaded_minimaxcode_rev_ts, 12);
+    }
+
+    /// R1 落盘竞态：上传期间凭证变了（断开清空 / 重注册换号）→ 放弃落盘，
+    /// 不把旧快照的 enabled / device_token 写回复活用户的断开操作。
+    #[test]
+    fn 落盘前凭证变更则放弃落盘() {
+        let mut ran = SyncConfig::default();
+        ran.device_token = "tok-a".into();
+        ran.enabled = true;
+        ran.last_uploaded_rowid = 500;
+
+        // 断开：token 清空
+        let disconnected = SyncConfig::default();
+        assert!(merge_config_for_save("tok-a", &ran, &disconnected).is_none());
+
+        // 重注册：token 换成别的值
+        let mut reregistered = SyncConfig::default();
+        reregistered.device_token = "tok-b".into();
+        assert!(merge_config_for_save("tok-a", &ran, &reregistered).is_none());
+    }
+
+    /// R1 落盘竞态：token 未变（仅暂停等 UI 操作）→ 以最新配置为底合并，
+    /// 身份/开关/模式取最新值（不回滚暂停与改名），游标与 last_sync_at 取
+    /// 本轮推进值。字段清单逐项断言：新增来源游标忘覆盖时在此补断言。
+    #[test]
+    fn 落盘合并取最新身份与本轮游标() {
+        let mut ran = SyncConfig::default();
+        ran.device_token = "tok-a".into();
+        ran.enabled = true;
+        ran.mode = SyncMode::Auto;
+        ran.interval_seconds = 60;
+        ran.device_name = "old-name".into();
+        ran.last_uploaded_rowid = 500;
+        ran.last_uploaded_codex_rowid = 1;
+        ran.last_uploaded_claude_rowid = 2;
+        ran.last_uploaded_claude_rev_ts = 3;
+        ran.last_uploaded_codex_model_rev_ts = 4;
+        ran.last_uploaded_codex_model_rev_id = 5;
+        ran.last_uploaded_dsh_rowid = 6;
+        ran.last_uploaded_dsh_rev_ts = 7;
+        ran.last_uploaded_opencode_rowid = 8;
+        ran.last_uploaded_opencode_rev_ts = 9;
+        ran.last_uploaded_kimi_rowid = 10;
+        ran.last_uploaded_kimi_rev_ts = 11;
+        ran.last_uploaded_minimaxcode_rowid = 12;
+        ran.last_uploaded_minimaxcode_rev_ts = 13;
+        ran.last_uploaded_snapshot_ts = 14;
+        ran.last_uploaded_agent_quota_snapshot_ts = 15;
+        ran.last_uploaded_provider_quota_ts = 16;
+        ran.last_sync_at = 123_456;
+
+        let mut latest = SyncConfig::default();
+        latest.device_token = "tok-a".into();
+        // 本轮上传期间用户在 UI 上的操作：暂停 + 改模式/间隔 + 改设备名
+        latest.enabled = false;
+        latest.mode = SyncMode::Manual;
+        latest.interval_seconds = 300;
+        latest.device_name = "renamed".into();
+        latest.last_uploaded_rowid = 100;
+
+        let merged = merge_config_for_save("tok-a", &ran, &latest).unwrap();
+        // 身份与开关取最新：不回滚用户的暂停 / 模式 / 改名
+        assert!(!merged.enabled);
+        assert_eq!(merged.mode, SyncMode::Manual);
+        assert_eq!(merged.interval_seconds, 300);
+        assert_eq!(merged.device_name, "renamed");
+        assert_eq!(merged.device_token, "tok-a");
+        // 游标与 last_sync_at 取本轮推进值（不被盘上旧值拖回）
+        assert_eq!(merged.last_uploaded_rowid, 500);
+        assert_eq!(merged.last_uploaded_codex_rowid, 1);
+        assert_eq!(merged.last_uploaded_claude_rowid, 2);
+        assert_eq!(merged.last_uploaded_claude_rev_ts, 3);
+        assert_eq!(merged.last_uploaded_codex_model_rev_ts, 4);
+        assert_eq!(merged.last_uploaded_codex_model_rev_id, 5);
+        assert_eq!(merged.last_uploaded_dsh_rowid, 6);
+        assert_eq!(merged.last_uploaded_dsh_rev_ts, 7);
+        assert_eq!(merged.last_uploaded_opencode_rowid, 8);
+        assert_eq!(merged.last_uploaded_opencode_rev_ts, 9);
+        assert_eq!(merged.last_uploaded_kimi_rowid, 10);
+        assert_eq!(merged.last_uploaded_kimi_rev_ts, 11);
+        assert_eq!(merged.last_uploaded_minimaxcode_rowid, 12);
+        assert_eq!(merged.last_uploaded_minimaxcode_rev_ts, 13);
+        assert_eq!(merged.last_uploaded_snapshot_ts, 14);
+        assert_eq!(merged.last_uploaded_agent_quota_snapshot_ts, 15);
+        assert_eq!(merged.last_uploaded_provider_quota_ts, 16);
+        assert_eq!(merged.last_sync_at, 123_456);
     }
 
     /// disconnect 必须清空**每个来源**的明细游标。这里按 serde 字段名扫描

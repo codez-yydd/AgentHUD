@@ -437,13 +437,19 @@ def find_device_by_token_hash(token_hash):
 
 
 def list_devices():
-    """列出所有设备（附各设备记录数）。"""
+    """列出所有设备（附各设备记录数与最后活跃时刻）。
+
+    last_seen_at = 该设备最后一条明细的 started_at（MAX 走既有
+    idx_device_started 索引），语义是「最后一条明细的数据时刻」；只传过
+    快照、从无明细的设备为 NULL（旧客户端按缺省处理显示 —）。
+    """
     conn = get_conn()
     try:
         rows = conn.execute(
             """
             SELECT d.device_id, d.device_name, d.created_at,
-                   (SELECT COUNT(*) FROM usage_records u WHERE u.device_id = d.device_id) AS cnt
+                   (SELECT COUNT(*) FROM usage_records u WHERE u.device_id = d.device_id) AS cnt,
+                   (SELECT MAX(started_at) FROM usage_records u WHERE u.device_id = d.device_id) AS last_seen
             FROM devices d
             ORDER BY d.created_at ASC
             """
@@ -454,6 +460,7 @@ def list_devices():
                 "device_name": r["device_name"],
                 "created_at": r["created_at"],
                 "record_count": r["cnt"],
+                "last_seen_at": r["last_seen"],
             }
             for r in rows
         ]

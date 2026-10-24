@@ -1236,6 +1236,7 @@ export const en: typeof zh = {
     "dashboard.logs": "Request logs",
     "dashboard.speed": "Model speed",
     "dashboard.compare": "Weekly compare",
+    "dashboard.sync": "Sync & devices",
     "dashboard.pricing": "Pricing",
 
     "dashboard.overview.desc":
@@ -1246,6 +1247,8 @@ export const en: typeof zh = {
       "Streaming output speed by model across sources and channels; the same model ranks separately per source/channel, approximate scopes carry a ≈ mark.",
     "dashboard.compare.desc":
       "Weekly quota left per subscription, used-% trends over the selected range, and local vs. other-device token comparison.",
+    "dashboard.sync.desc":
+      "This machine's sync status, server-side device management and data cleanup.",
     "dashboard.pricing.desc":
       "Model unit-price maintenance and pricing table updates.",
 
@@ -1452,6 +1455,169 @@ export const en: typeof zh = {
       "Tokens = actual usage per agent in the selected range: local aggregation plus uploaded data from synced devices. Cursor details are not uploaded, so it is local-only.",
     "dashboard.compare.footnote":
       "Quota % = used ratio of each subscription's weekly window (local and remote samples deduplicated by time + account, keeping the higher value); tokens = actual usage of enabled agents in the selected range. They are different metrics.",
+
+    // ===== Sync & devices page (wide window): local status card / device
+    // table / server data management =====
+    // Relative time (same wording as the panel's sync.* keys, kept separate
+    // for this page's context)
+    "dashboard.sync.never": "never",
+    "dashboard.sync.justNow": "just now",
+    "dashboard.sync.minAgo": "{n} min ago",
+    "dashboard.sync.hourAgo": "{n} h ago",
+    "dashboard.sync.dayAgo": "{n} d ago",
+    // No-data placeholder (last_seen_at missing / null: old server or
+    // snapshot-only devices)
+    "dashboard.sync.noData": "—",
+
+    // ---- Section 1: local sync status card ----
+    "dashboard.sync.statusTitle": "This machine",
+    "dashboard.sync.stateEnabled": "Running",
+    "dashboard.sync.statePaused": "Paused",
+    "dashboard.sync.fieldServer": "Server",
+    "dashboard.sync.fieldIdentity": "Identity",
+    "dashboard.sync.fieldPing": "Reachability",
+    "dashboard.sync.fieldLastSync": "Last sync",
+    "dashboard.sync.fieldPending": "Pending upload",
+    "dashboard.sync.pendingCount": "{count} records",
+    "dashboard.sync.pingOk": "OK",
+    "dashboard.sync.pingUnreachable": "Unreachable",
+    "dashboard.sync.pingDisabled": "Not enabled",
+    "dashboard.sync.pingDisabledHint":
+      "No device registered, no server to probe",
+    "dashboard.sync.mode": "Sync mode",
+    "dashboard.sync.manual": "Manual",
+    "dashboard.sync.auto": "Auto",
+    "dashboard.sync.interval": "Interval (s)",
+    // Flash after mode/interval are saved on change
+    "dashboard.sync.modeSaved": "Saved",
+    "dashboard.sync.syncNow": "Sync now",
+    "dashboard.sync.syncing": "Syncing…",
+    // Disable reason (title) for "Sync now" while paused
+    "dashboard.sync.syncPausedHint":
+      "Sync is paused; resume sync to upload manually",
+    "dashboard.sync.pause": "Pause sync",
+    "dashboard.sync.resume": "Resume sync",
+    "dashboard.sync.disconnect": "Disconnect",
+    "dashboard.sync.uploaded": "Uploaded {count} records",
+    // Registration guide (form card shown before registering)
+    "dashboard.sync.registerTitle": "Connect to a sync server",
+    "dashboard.sync.registerDesc":
+      "Enter your self-hosted server address and master token to register this machine; sync starts automatically afterwards and uploads full history.",
+    "dashboard.sync.serverUrl": "Server URL",
+    "dashboard.sync.masterToken": "Master token",
+    "dashboard.sync.deviceName": "Device name",
+    "dashboard.sync.register": "Connect & register",
+    "dashboard.sync.registering": "Connecting…",
+    // Any address without https:// (bare addresses get http:// prepended by
+    // the backend) is flagged as cleartext
+    "dashboard.sync.httpWarn":
+      "Cleartext transfer: this address does not use HTTPS; prefer a LAN or an HTTPS reverse proxy.",
+
+    // ---- Section 2: server device table (unlocked by master token) ----
+    "dashboard.sync.devicesTitle": "Server devices",
+    "dashboard.sync.devicesSub": "{count} devices · {records} records",
+    "dashboard.sync.colDevice": "Device",
+    "dashboard.sync.colDeviceId": "Device ID",
+    "dashboard.sync.colRegistered": "Registered",
+    "dashboard.sync.colLastSeen": "Last active",
+    "dashboard.sync.lastSeenHint":
+      "Data time of the device's latest request record (missing on old servers or snapshot-only devices)",
+    "dashboard.sync.colRecords": "Records",
+    "dashboard.sync.recordsHint":
+      "Request records only, quota snapshots excluded",
+    "dashboard.sync.colOps": "Actions",
+    "dashboard.sync.localBadge": "This machine",
+    "dashboard.sync.rename": "Rename",
+    "dashboard.sync.merge": "Merge",
+    "dashboard.sync.deleteData": "Wipe data",
+    "dashboard.sync.devicesEmpty":
+      "No devices found; try refreshing. If the server was just reset, re-register this machine.",
+    "dashboard.sync.devicesError": "Failed to load devices: {error}",
+    "dashboard.sync.masterLabel": "Master token",
+    "dashboard.sync.masterHint":
+      "Device management and data cleanup require the master token (found in the server startup log). It lives only in this page's memory and is gone once you leave the page.",
+    "dashboard.sync.masterPlaceholder":
+      "Paste the master token to unlock management",
+    "dashboard.sync.masterNeeded": "Enter the master token first",
+    // Weak hint at the top of section 3 while locked (paired with the
+    // disabled buttons, not just titles)
+    "dashboard.sync.masterLockedHint":
+      "Enter the master token above to manage data cleanup",
+    // Rename dialog
+    "dashboard.sync.renameTitle": "Rename device",
+    "dashboard.sync.renameDesc": "Rename \"{name} ({id})\" (1-32 chars).",
+    // Merge dialog
+    "dashboard.sync.mergeTitle": "Merge devices",
+    "dashboard.sync.mergeDesc":
+      "Merge {count} records of \"{name} ({id})\" into:",
+    "dashboard.sync.mergeTarget": "Target device",
+    "dashboard.sync.mergeWarn":
+      "All data of the source device (records and quota snapshots) moves to the target, then the source device is deleted — irreversible. If the source device is still registered on a machine, disconnect and re-register there.",
+    "dashboard.sync.mergeConfirm": "Merge",
+    "dashboard.sync.merged": "Merged {count} records into \"{name}\"",
+
+    // ---- Section 3: server data management ----
+    "dashboard.sync.dataTitle": "Server data management",
+    // Scope note at the top of section 3: these ops act on server-side
+    // aggregated data only
+    "dashboard.sync.dataHint":
+      "The operations below clean up aggregated data on the sync server (records and quota snapshots uploaded by all devices). Data on this machine is untouched, and every action asks you to confirm first.",
+    "dashboard.sync.totalRecords": "{count} records total",
+    "dashboard.sync.autoCleanup": "Auto cleanup",
+    // Sub-caption for the auto-cleanup toggle (days input is always visible:
+    // make clear the keep-days is customizable)
+    "dashboard.sync.autoCleanupHint":
+      "When on, the server automatically deletes data older than the keep-days setting once a day (the value is yours to set — enter 90 to keep only the last 90 days), keeping its database from growing without bound. Off by default.",
+    "dashboard.sync.on": "On",
+    "dashboard.sync.off": "Off",
+    "dashboard.sync.keepDays": "Days to keep",
+    "dashboard.sync.cleanByTime": "Clean by age",
+    // Sub-captions for the three dangerous operations (next to each button)
+    "dashboard.sync.cleanByTimeHint":
+      "Immediately deletes remote data older than the chosen number of days across all devices — a one-time action.",
+    "dashboard.sync.clearAll": "Clear all",
+    "dashboard.sync.clearAllHint":
+      "Deletes all usage data on the server; device registrations are kept. Note: uploaded history will not re-upload, so the \"All devices\" view in the main window loses those remote records.",
+    "dashboard.sync.reset": "Reset server",
+    "dashboard.sync.resetHint":
+      "Deletes all data and removes every device registration (factory reset). Afterwards, every device must re-register before it can sync again.",
+    "dashboard.sync.cleanupError": "Failed to load cleanup status: {error}",
+    // Flash after the auto-cleanup switch / keep-days are saved
+    "dashboard.sync.autoCleanupSaved": "Auto cleanup updated",
+    "dashboard.sync.deleted": "Deleted {count} records",
+    "dashboard.sync.deletedBoth":
+      "Deleted {records} records and {devices} devices",
+
+    // ---- Confirm dialogs (disconnect / wipe device / clean by age / clear
+    // all / reset) ----
+    // Confirm-button labels are named per action (escalating severity:
+    // disconnect keeps no data loss and uses the normal primary button)
+    "dashboard.sync.confirmDisconnectTitle": "Disconnect",
+    "dashboard.sync.confirmDisconnectDesc":
+      "Clears this machine's sync credentials and upload cursors (server data is kept). After re-registering, the full history uploads again.",
+    "dashboard.sync.confirmDisconnect": "Disconnect",
+    "dashboard.sync.confirmDeviceTitle": "Wipe device data",
+    "dashboard.sync.confirmDeviceDesc":
+      "Deletes only this device's data on the server (all of its records and quota snapshots) — irreversible. The device registration itself is kept.",
+    "dashboard.sync.confirmDelete": "Delete",
+    "dashboard.sync.confirmBeforeTitle": "Clean by age",
+    "dashboard.sync.confirmBeforeDesc":
+      "Deletes all data older than {days} days (records and snapshots) — irreversible. Data on this machine is untouched, but uploaded history will not re-upload.",
+    "dashboard.sync.confirmClean": "Clean",
+    "dashboard.sync.confirmAllTitle": "Clear all",
+    "dashboard.sync.confirmAllDesc":
+      "Clears usage data of every device (device registrations are kept) — irreversible. Data on this machine is untouched, but uploaded history will not re-upload.",
+    "dashboard.sync.confirmClear": "Clear",
+    "dashboard.sync.confirmResetTitle": "Reset server",
+    "dashboard.sync.confirmResetDesc":
+      "Clears all data and removes every device's registration (including this machine's), returning the server to its initial state. Every device, including this one, must re-register before it can sync again. Irreversible.",
+    "dashboard.sync.confirmReset": "Reset",
+
+    // ---- Dedicated retry state when the config cannot be read (prevents a
+    // registered user from being misled into re-registering) ----
+    "dashboard.sync.errorTitle": "Failed to load",
+    "dashboard.sync.errorReason": "Reason: {error}",
+    "dashboard.sync.retry": "Reload",
 
     // ===== Pricing page (wide window) =====
     "dashboard.pricing.currencyLabel": "Currency",

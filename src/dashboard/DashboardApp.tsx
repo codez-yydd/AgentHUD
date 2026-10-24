@@ -4,8 +4,8 @@
  * 语言/主题快捷切换）+ 右侧主区。
  *
  * 视图切换用组件内 state（对齐面板 App.tsx 的 view 模式，不引路由库）：
- * 用量总览 / 请求日志 / 模型速度 / 周额度对比 / 价格设置 五个页面各自独立
- * 取数渲染。
+ * 用量总览 / 请求日志 / 模型速度 / 周额度对比 / 同步与设备 / 价格设置 六个
+ * 页面各自独立取数渲染。
  */
 import { useEffect, useRef, useState } from "react";
 import type { ComponentType } from "react";
@@ -21,6 +21,7 @@ import {
   OverviewIcon,
   PricingIcon,
   SpeedIcon,
+  SyncIcon,
 } from "./icons";
 import { TitleBar } from "./TitleBar";
 import { OverviewPage } from "./OverviewPage";
@@ -28,9 +29,10 @@ import { LogsPage } from "./logs/LogsPage";
 import { SpeedPage } from "./SpeedPage";
 import { ComparePage } from "./ComparePage";
 import { PricingPage } from "./PricingPage";
+import { SyncPage } from "./SyncPage";
 
 /** 主区视图（新增页面时在此扩展） */
-type View = "overview" | "logs" | "speed" | "compare" | "pricing";
+type View = "overview" | "logs" | "speed" | "compare" | "sync" | "pricing";
 
 /** 面板 → 主窗口跳页事件（Rust 侧 open_main_window(page) 在开窗/聚焦后
  *  emit_to 本窗，见 main_window.rs；事件名风格沿 zbar://appearance-changed，
@@ -44,6 +46,7 @@ const NAVIGATABLE_VIEWS: readonly string[] = [
   "logs",
   "speed",
   "compare",
+  "sync",
   "pricing",
 ];
 
@@ -57,6 +60,7 @@ const NAV_ITEMS: {
   { view: "logs", labelKey: "dashboard.logs", Icon: LogsIcon },
   { view: "speed", labelKey: "dashboard.speed", Icon: SpeedIcon },
   { view: "compare", labelKey: "dashboard.compare", Icon: CompareIcon },
+  { view: "sync", labelKey: "dashboard.sync", Icon: SyncIcon },
   { view: "pricing", labelKey: "dashboard.pricing", Icon: PricingIcon },
 ];
 
@@ -186,6 +190,8 @@ export function DashboardApp() {
             <SpeedPage />
           ) : view === "compare" ? (
             <ComparePage />
+          ) : view === "sync" ? (
+            <SyncPage />
           ) : (
             <PricingPage />
           )}

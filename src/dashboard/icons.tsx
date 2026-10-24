@@ -74,6 +74,29 @@ export function CompareIcon({ className }: IconProps) {
   );
 }
 
+/** 同步与设备：云 + 双向箭头（多设备上云同步的通用语义） */
+export function SyncIcon({ className }: IconProps) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden
+    >
+      {/* 云轮廓（底部敞开，让位给内部箭头的视觉重心） */}
+      <path d="M17.5 15.5a4 4 0 0 0 0-8 6 6 0 0 0-11.63 1.5A4.25 4.25 0 0 0 6.5 15.5" />
+      {/* 云内双向箭头（⇄）：上传 / 下载双向同步 */}
+      <path d="M8.5 12h7" />
+      <path d="m10.5 10-2 2 2 2" />
+      <path d="m13.5 10 2 2-2 2" />
+    </svg>
+  );
+}
+
 /** 价格设置：价签（单价/价格表语义） */
 export function PricingIcon({ className }: IconProps) {
   return (
