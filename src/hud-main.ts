@@ -1054,10 +1054,17 @@ let expandTimer: ReturnType<typeof setTimeout> | null = null;
 let collapseTimer: ReturnType<typeof setTimeout> | null = null;
 /** 指针离开条/卡后的收卡延迟 */
 let cardCloseTimer: ReturnType<typeof setTimeout> | null = null;
-/** 在条目间移动时的开卡防抖（避免扫过一排条目连续换卡闪动） */
+/** 在条目间移动时的开卡防抖（避免扫过一排条目连续换卡闪动；快速扫过
+ *  屏幕边缘时也不该弹卡——指针须在同一目标停留 250ms 才开） */
 let hoverSwitchTimer: ReturnType<typeof setTimeout> | null = null;
 /** 已在排队等待开卡的条目（同一条目内的子元素切换不再重排计时器） */
 let hoverPending: string | null = null;
+/** 最近一次真实 pointermove 的时刻（performance.now，0 = 尚未动过）：
+ *  hover 开卡的"真实指针活动"校验依据。数据刷新更新条目 DOM、或条目数
+ *  变化引起窗口几何调整时，静止压在条上的指针会被浏览器补发 pointerover
+ *  /pointerenter（不需要任何鼠标移动），不校验就会表现为"没碰鼠标，
+ *  详情卡每 30s 自己弹出来" */
+let lastPointerMoveAt = 0;
 /** 悬浮守护轮询：真实光标位置（卡片在另一个窗口，DOM 事件看不到） */
 let pointerWatch: ReturnType<typeof setInterval> | null = null;
 let pointerCheckInflight = false;
@@ -1203,11 +1210,25 @@ function ringSvg(
   );
 }
 
-/** 重建条目列表（数据/语言/布局变化时全量重建，条目数 ≤ 8，开销可忽略）。
+/** 条目节点复用池：source → (条目节点, 上次渲染签名)。数据线程每 30s
+ *  推一拍额度（活跃使用时几乎每拍都推），renderItems 若全量 innerHTML
+ *  重建条目，静止压在条上的指针会被浏览器补发 pointerover（DOM 重建后
+ *  hover 链重算，对"新插入到指针下方"的条目补发事件，不需要鼠标移动）
+ *  ——表现为"没碰鼠标，详情卡每 30s 自己弹出来"。所以条目节点跨渲染
+ *  长存，只按签名原地更新（见 renderItems） */
+const itemPool = new Map<string, { el: HTMLElement; sig: string }>();
+
+/** 渲染条目列表（数据/语言/布局变化时调用；差量复用，不全量重建）。
  *  条目 = 环 + 品牌图标，**条上不出数字**（百分比/余额全进悬浮详情卡，
- *  两种朝向一致）；余额型条目（dsh）环内不画进度弧。空态占位节点常驻
- *  胶囊面板内部（#hud-empty 挂在 #hud-strip 下，空态撑起面板高度且自带
- *  拖拽属性可拖动），重建前先摘下、清空后再挂回 */
+ *  两种朝向一致）；余额型条目（dsh）环内不画进度弧。
+ *  复用规则：签名 = 类名 + aria-label + ringSvg 完整输出，任一变化才
+ *  原地更新该节点（属性/内部 SVG），节点本身与在池条目永不销毁重建；
+ *  新 source 建节点、消失的 source 移除；顺序已正确时零 DOM 操作（连
+ *  "同位 insertBefore"都不做——任何节点移动都可能重算 hover 链）。
+ *  单条目内部 HTML 重写仍可能对压在其上的指针补发一次 pointerover，
+ *  由 hover 开卡的"真实指针活动校验"兜底（见 pointerover 监听）。
+ *  空态占位节点常驻 #hud-strip 末尾（空态撑起面板高度且自带拖拽属性
+ *  可拖动），不再随渲染摘挂。 */
 function renderItems(): void {
   // 与主面板设置页同一份可见性偏好（同源 localStorage）：设置里关掉的
   // agent 不在停靠条出现，开启的才渲染
@@ -1215,9 +1236,11 @@ function renderItems(): void {
   const agents = (usage?.agents ?? []).filter(
     (agent) => visibility[agent.source] !== false
   );
-  emptyEl.remove();
-  stripEl.innerHTML = "";
   let shown = 0;
+  // 上一个已就位的条目节点（null = 下一个条目应是 strip 的第一个子节点），
+  // 用于顺序校正：期望 previousSibling 与之一致，不一致才移动
+  let prev: ChildNode | null = null;
+  const seen = new Set<string>();
   for (const agent of agents) {
     const balance = isBalanceAgent(agent) ? agent.balance! : null;
     const offline = isOffline(agent);
@@ -1228,46 +1251,79 @@ function renderItems(): void {
     const quotas = offline ? [] : agent.quotas.slice(0, RING_LAYOUTS.length);
     const quotaText = quotas
       .map(
-        (q) =>
-          `${msg === MESSAGES.en ? q.labelEn : q.labelZh} ${usedPctOf(q)}%`
+        (q) => `${msg === MESSAGES.en ? q.labelEn : q.labelZh} ${usedPctOf(q)}%`
       )
       .join(" · ");
-    const item = document.createElement("div");
     // usage（只有用量、没有订阅额度）比 offline（订阅额度暂时查不到）亮一档：
     // 条目万金油语义仍是"没有实时额度"，但它是被今日用量保留下来的
-    item.className = usageOnly
+    const className = usageOnly
       ? "hud-item usage-only"
       : offline
         ? "hud-item offline"
         : "hud-item";
-    item.dataset.source = agent.source;
     // 完整口径留给读屏（条上不显示文字，数字只在详情卡里）
-    item.setAttribute(
-      "aria-label",
-      usageOnly
-        ? `${label} · ${msg.usageOnly}`
-        : offline
-          ? `${label} · ${msg.offline}`
-          : balance
-            ? `${label} · ${msg.balance} ${fmtMoneyFull(balance.amount, balance.currency)}`
-            : `${label} · ${quotaText}`
-    );
-    item.innerHTML = ringSvg(quotas, agent.source, offline);
-    stripEl.appendChild(item);
+    const ariaLabel = usageOnly
+      ? `${label} · ${msg.usageOnly}`
+      : offline
+        ? `${label} · ${msg.offline}`
+        : balance
+          ? `${label} · ${msg.balance} ${fmtMoneyFull(balance.amount, balance.currency)}`
+          : `${label} · ${quotaText}`;
+    const ring = ringSvg(quotas, agent.source, offline);
+    const sig = `${className}\u0000${ariaLabel}\u0000${ring}`;
+    seen.add(agent.source);
+    let entry = itemPool.get(agent.source);
+    if (!entry) {
+      // 新条目：创建后立即按当前顺序就位（此时 previousSibling 还是
+      // null，不能指望后面的顺序校正兜底——首条目的期望值恰好也是 null，
+      // 会被误判为"已在位"而漏插）
+      const item = document.createElement("div");
+      item.dataset.source = agent.source;
+      stripEl.insertBefore(
+        item,
+        prev ? prev.nextSibling : stripEl.firstChild
+      );
+      entry = { el: item, sig: "" };
+      itemPool.set(agent.source, entry);
+    }
+    const item = entry.el;
+    // 原地更新（不销毁节点本身）：数据/类名/环档位变化的条目才写 DOM。
+    // 30s 数据拍里内容没变的条目签名相同，连 innerHTML 都不碰——这是
+    // 消除"静止指针下补发 pointerover"的主要来源
+    if (entry.sig !== sig) {
+      item.className = className;
+      item.setAttribute("aria-label", ariaLabel);
+      item.innerHTML = ring;
+      entry.sig = sig;
+    }
+    // 顺序校正：仅当节点不在期望位置（上个条目之后/队首）时才移动，
+    // 移动是低频路径（后端下发顺序通常稳定），可接受
+    if (item.previousSibling !== prev) {
+      stripEl.insertBefore(item, prev ? prev.nextSibling : stripEl.firstChild);
+    }
+    prev = item;
     shown++;
+  }
+  // 消失的 source（可见性关闭/后端不再下发）：从池与 DOM 一并移除
+  for (const [source, entry] of itemPool) {
+    if (seen.has(source)) continue;
+    entry.el.remove();
+    itemPool.delete(source);
   }
   // 面板宽高由 CSS 填满窗口内容盒（窗口尺寸由 Rust bar_metrics 按
   // 条目数/缩放/拉伸维护）；这里只标记单条目，让 space-between 改居中。
+  // emptyEl 常驻 strip 末尾（所有条目都插在它之前），无需摘挂
   stripEl.classList.toggle("single", shown <= 1);
-  stripEl.appendChild(emptyEl);
   emptyEl.textContent = msg.empty;
   emptyEl.classList.toggle("on", shown === 0);
-  // 重建后详情锚点可能失效，统一收起（数据 30s 一拍，罕见路径）
+  // 详情条目可能已消失（可见性关闭/后端不再下发），统一收起（罕见路径）
   if (detailSource && !agents.some((a) => a.source === detailSource)) {
     closeDetail();
   } else if (detailSource) {
-    // 详情仍有效：补挂高亮（重建即丢）并按新条目几何重开一次卡（卡片页
-    // 按新数据重渲染、不重放入场动画，位置跟着条目走）
+    // 详情仍有效：补挂高亮（幂等；新出现的条目没有 active 类）并按当前
+    // 条目几何重开一次卡（force：卡片页按新数据重渲染、不重放入场动画，
+    // 位置跟着条目走——这是数据刷新时卡片重绘的正常路径，不受 hover 的
+    // 指针活动校验约束）
     const item = stripEl.querySelector<HTMLElement>(
       `.hud-item[data-source="${detailSource}"]`
     );
@@ -1505,7 +1561,7 @@ async function checkPointer(): Promise<void> {
   if (dragging || resizing) return;
   const dockOpen = rootEl.classList.contains("hud-open");
   if (!detailSource && !dockOpen) {
-    // 抽屉/卡片还在排队（hover 70ms 防扫过、条目切换 60ms 防抖）时别停
+    // 抽屉/卡片还在排队（hover 70ms 防扫过、条目切换 250ms 防抖）时别停
     // 守护：ensurePointerWatch 会立即跑一次本函数，那一刻 .hud-open 还没
     // 加上，一停就会让"移出去不折叠"的兜底整段失效
     if (!expandTimer && !hoverPending) stopPointerWatch();
@@ -1960,6 +2016,18 @@ document.addEventListener("pointermove", (e) => {
   }
 });
 
+// 真实指针活动记录（与上面拖拽用的 pointermove 分开挂，逻辑分离）：
+// 只更新时间戳，供 hover 开卡校验"指针真的动过"。DOM 更新/窗口几何变化
+// 在静止指针下补发的合成 pointerover 不伴随 pointermove，距上次真实移动
+// 通常已数秒（数据 30s 一拍），据此即可与真实 hover 区分开
+document.addEventListener(
+  "pointermove",
+  () => {
+    lastPointerMoveAt = performance.now();
+  },
+  { passive: true }
+);
+
 document.addEventListener("pointerup", () => {
   drag = null;
   void endDrag();
@@ -2011,15 +2079,23 @@ stripEl.addEventListener("pointerover", (e) => {
   // 用新流程作废旧流程，卡会被无限推迟。
   if (detailSource === source) return;
   if (hoverPending === source) return;
-  // 条目间移动防抖：指针在同一目标停留 60ms 才换卡，扫过整排时不闪
+  // 条目间移动防抖：指针在同一目标停留 250ms 才换卡——鼠标快速扫过屏幕
+  // 边缘（路过条但不停留）时不会误开卡，扫过整排条目也不闪
   hoverPending = source;
   clearHoverSwitchTimer();
   hoverSwitchTimer = setTimeout(() => {
     hoverSwitchTimer = null;
     hoverPending = null;
+    // 真实指针活动校验：距上次真实 pointermove 超过 600ms 一律不开卡。
+    // 真实 hover 在 250ms 防抖到期时指针必然刚移动过（距今 ≤250ms+ε，
+    // 600ms 窗口放行，差值给慢速移动的用户留余量）；而数据刷新更新条目
+    // DOM / 窗口几何变化在静止指针下补发的合成 pointerover，距上次真实
+    // 移动通常已数秒（数据 30s 一拍），在此拦截。只拦 hover 开卡：
+    // click 开卡不受影响（真实点击必须照常开）
+    if (performance.now() - lastPointerMoveAt > 600) return;
     if (!item.isConnected) return;
     void showDetailCard(source, item);
-  }, 60);
+  }, 250);
 });
 stripEl.addEventListener("pointerenter", () => {
   if (dragging) return; // 拖拽中进入不算悬停
