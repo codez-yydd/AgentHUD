@@ -135,8 +135,8 @@ interface Column {
 function buildColumns(hasSource: boolean, hasSplit: boolean): Column[] {
   if (hasSource && hasSplit) {
     return [
-      { key: "rank", width: 38, align: "left" },
-      { key: "model", width: 334, align: "left" },
+      { key: "rank", width: 46, align: "left" },
+      { key: "model", width: 326, align: "left" },
       { key: "source", width: 132, align: "left" },
       { key: "requests", width: 86, align: "right" },
       { key: "input", width: 106, align: "right" },
@@ -148,8 +148,8 @@ function buildColumns(hasSource: boolean, hasSplit: boolean): Column[] {
   }
   if (hasSource) {
     return [
-      { key: "rank", width: 38, align: "left" },
-      { key: "model", width: 360, align: "left" },
+      { key: "rank", width: 46, align: "left" },
+      { key: "model", width: 352, align: "left" },
       { key: "source", width: 180, align: "left" },
       { key: "requests", width: 100, align: "right" },
       { key: "tokens", width: 170, align: "right" },
@@ -159,8 +159,8 @@ function buildColumns(hasSource: boolean, hasSplit: boolean): Column[] {
   }
   if (hasSplit) {
     return [
-      { key: "rank", width: 38, align: "left" },
-      { key: "model", width: 466, align: "left" },
+      { key: "rank", width: 46, align: "left" },
+      { key: "model", width: 458, align: "left" },
       { key: "requests", width: 86, align: "right" },
       { key: "input", width: 106, align: "right" },
       { key: "output", width: 106, align: "right" },
@@ -170,8 +170,8 @@ function buildColumns(hasSource: boolean, hasSplit: boolean): Column[] {
     ];
   }
   return [
-    { key: "rank", width: 38, align: "left" },
-    { key: "model", width: 470, align: "left" },
+    { key: "rank", width: 46, align: "left" },
+    { key: "model", width: 462, align: "left" },
     { key: "requests", width: 110, align: "right" },
     { key: "tokens", width: 190, align: "right" },
     { key: "cost", width: 180, align: "right" },
