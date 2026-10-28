@@ -1294,7 +1294,13 @@ pub const EFFECTS_JS_VERSION: u32 = 6;
 /// V44：底部状态条溢出适配由优先级整段隐藏改为横向滚动 + 滚轮（居中改
 /// qfull margin:0 auto、prio/qseg-off/quotaFitHidden 退役，缓存段临界
 /// 闪烁随之根治；数据契约零改动）。
-pub const USAGE_JS_VERSION: u32 = 44;
+/// V45：横向滚动条由隐藏改为显式 4px 细条（qb-line 重置标准 scrollbar
+/// 属性恢复 webkit 伪元素生效权，防 ZCode 全局样式顶出默认粗条）。
+/// V46：底部状态条去中文文字标签（本轮/会话/工具/今日/子代理/缓存段删
+/// 段内标签、额度 5h 段去"额度"前导与每周段"每周"前缀），口径说明全部
+/// 由各段悬浮 title 承担；额度 5h/每周段补 battery/repeat 行内 SVG 图标
+/// （数据契约零改动）。
+pub const USAGE_JS_VERSION: u32 = 46;
 
 /// 桌面像素宠物脚本 pet.js 的版本化落盘标记。
 /// 版本头写在模板首行注释（ZBAR-THEME-V 标记，提取器与

@@ -804,9 +804,21 @@ pub const EFFECTS_JS: &str = r#"// =============================================
 /// 与 effects.js 同款：自愈、静默失败、空值防御；DOM 选择器集中在头部
 /// 常量，便于实机比对调整。
 pub const USAGE_JS: &str = r#"// ============================================================
-// ZBAR-THEME-V44
+// ZBAR-THEME-V46
 // ZBar Agent 对话页用量统计条（由 ZBar 落盘并随版本升级覆盖）
 // ============================================================
+// V46 变更（底部状态条去中文文字标签，纯渲染端微调、数据契约零改动——
+//   各段本就带原生 title 悬浮说明该列口径，段内中文标签（本轮/会话/
+//   工具/今日/子代理/缓存）删除省横向空间，title 承担全部口径说明；额
+//   度两段（5h/每周）原本无图标、删"额度"前导后无标识，补 battery（剩
+//   余电量隐喻）/repeat（周期重置隐喻）行内 SVG 图标；词条删除仅限失去
+//   消费方的标签词，title 词条与 5h 前缀词保留）：
+// V45 变更（实机反馈：V44 隐藏滚动条失效，横向滚动时顶出默认粗滚动条——
+//   ZCode 全局标准 scrollbar-width/scrollbar-color 可继承，Chromium 121+
+//   元素上取非 auto 值（含继承）即整体禁用 webkit 伪元素。改为显式细滚
+//   动条：qb-line 声明 scrollbar-width:auto;scrollbar-color:auto 重置继
+//   承值恢复伪元素生效权，滚动条从隐藏改 4px 细条（thumb 中性半透明灰 +
+//   透明 track）；滚轮横滚与左右缘渐隐零改动）：
 // V44 变更（底部状态条溢出适配机制退役重做——实机反馈：分段串长随对话
 //   天然变化（工具/子代理/缓存段条件性出现、token 数字随会话增长变
 //   宽），且右侧计划列表/子代理面板/浏览器等侧面板压缩对话区宽度，
@@ -1784,12 +1796,15 @@ pub const USAGE_JS: &str = r#"// ===============================================
    *   （"· 均 38.4 · 快 71.6 · 慢 12.4"）共用同一组标签；
    * - sep：标签与数值间是否插空格（中文紧邻"均38"，英文插空格"avg 38"）；
    * - latest / n：tooltip 的"最近/latest"与样本数单位"笔/requests"；
-   * - quotaLead/quota5h/quotaWk：V28 独立额度行（zh 初版 "额度 5h 余78%
-   *   · 周余93%"，en "Quota 5h 78% · wk 93%"）；V29 删除 updated 更新时
-   *   间戳尾段词（时间戳整体下线）；V30 起行尾再补 cachePct「缓存」
-   *   段（当前会话命中率，zh "缓存" / en "cache"）；V32 扁平化去括号，
-   *   zh 改 "5h " / "每周 "（与 en 同款尾随空格，「标签 + 裸数值」），
-   *   行形 "额度 5h 65% 3h02m · 每周 93% 6d21h · 缓存 88.7%"。
+   * - quota5h：V28 独立额度行（zh 初版 "额度 5h 余78% · 周余93%"，en
+   *   "Quota 5h 78% · wk 93%"）；V29 删除 updated 更新时间戳尾段词（时
+   *   间戳整体下线）；V30 起行尾再补 cachePct「缓存」段（当前会话命中
+   *   率，zh "缓存" / en "cache"）；V32 扁平化去括号，zh 改 "5h " / "每
+   *   周 "（与 en 同款尾随空格，「标签 + 裸数值」），行形 "额度 5h 65%
+   *   3h02m · 每周 93% 6d21h · 缓存 88.7%"；V46 删除失去消费方的标签词
+   *   quotaLead/quotaWk/cachePct（底部状态条去文字标签，quotaLead 前导
+   *   与每周/缓存标签删除、配 battery/repeat 图标，5h 前缀保留——"5h
+   *   65%" 中 5h 是窗口标识而非列标签），口径说明全部由各段 title 承担。
    * en 词表保留为完整对照（判定三信号全为 zh 命中，见 LANG_ZH），后续
    * 若需放开英文界面或测试驱动可直接切换 */
   var WORDS = {
@@ -1800,16 +1815,10 @@ pub const USAGE_JS: &str = r#"// ===============================================
       sep: "",
       latest: "最近",
       n: "笔",
-      quotaLead: "额度",
       quota5h: "5h ",
-      quotaWk: "每周 ",
-      cachePct: "缓存",
-      /* V33 底部状态条分段词条与 title 文案 */
+      /* V33 底部状态条分段词条与 title 文案（V46 去文字标签：sess/tools/
+       * today/subs 标签词删除，仅 title 词条保留） */
       turn: "本轮",
-      sess: "会话",
-      tools: "工具",
-      today: "今日",
-      subs: "子代理",
       req: "req",
       tIn: "输入",
       tOut: "输出",
@@ -1832,16 +1841,9 @@ pub const USAGE_JS: &str = r#"// ===============================================
       sep: " ",
       latest: "latest",
       n: "requests",
-      quotaLead: "Quota",
       quota5h: "5h ",
-      quotaWk: "wk ",
-      cachePct: "cache",
-      /* V33 底部状态条分段词条与 title 文案 */
+      /* V33 底部状态条分段词条与 title 文案（V46 去文字标签，同 zh） */
       turn: "turn",
-      sess: "session",
-      tools: "tools",
-      today: "today",
-      subs: "subs",
       req: "req",
       tIn: "in",
       tOut: "out",
@@ -2102,8 +2104,9 @@ pub const USAGE_JS: &str = r#"// ===============================================
        * 滚动——qb-line 自身成为滚动容器（overflow-x:auto），居中让位
        * 给 qfull 的 margin:0 auto（justify-content:center 在溢出时
        * scrollLeft=0 左端内容不可达，flex-start + 子项 auto margin 溢
-       * 出时归零、内容锚左可完整滚到两端）。滚动条经 ::-webkit-
-       * scrollbar 隐藏保持胶囊视觉干净（ZCode 为 Electron/Chromium） */
+       * 出时归零、内容锚左可完整滚到两端）。滚动条 V45 起显式矮化为 4px
+       * 细条，qb-line 重置标准 scrollbar-width/scrollbar-color 防 ZCode
+       * 全局样式禁用 webkit 伪元素（ZCode 为 Electron/Chromium） */
       "[" + ATTR_QUOTA_BAR + "] .zbar-usage-qb-line{" +
       "position:relative;display:flex;align-items:center;justify-content:flex-start;" +
       "box-sizing:border-box;width:100%;max-width:100%;" +
@@ -2115,8 +2118,10 @@ pub const USAGE_JS: &str = r#"// ===============================================
       "border-radius:10px;" +
       "box-shadow:inset 0 1px 0 rgba(255,255,255,.05), 0 8px 22px rgba(0,0,0,.26), 0 1px 3px rgba(0,0,0,.18);" +
       "-webkit-backdrop-filter:blur(12px) saturate(1.2);backdrop-filter:blur(12px) saturate(1.2);" +
-      "opacity:var(--zbar-usage-opacity,.55);}" +
-      "[" + ATTR_QUOTA_BAR + "] .zbar-usage-qb-line::-webkit-scrollbar{display:none;}" +
+      "opacity:var(--zbar-usage-opacity,.55);scrollbar-width:auto;scrollbar-color:auto;}" +
+      "[" + ATTR_QUOTA_BAR + "] .zbar-usage-qb-line::-webkit-scrollbar{height:4px;}" +
+      "[" + ATTR_QUOTA_BAR + "] .zbar-usage-qb-line::-webkit-scrollbar-thumb{background:rgba(127,127,127,.4);border-radius:2px;}" +
+      "[" + ATTR_QUOTA_BAR + "] .zbar-usage-qb-line::-webkit-scrollbar-track{background:transparent;}" +
       /* 完整分段容器：flex:none 保证内容不被压扁不换行；margin:0 auto
        * 在 flex 容器里吸收剩余空间——不溢出时视觉居中，溢出时归零锚左
        * 交给滚动（V44 居中与滚动的两全解） */
@@ -3979,6 +3984,18 @@ pub const USAGE_JS: &str = r#"// ===============================================
       "M6 21a3 3 0 1 0 0-6 3 3 0 0 0 0 6z",
       "M18 9a9 9 0 0 1-9 9"
     ],
+    /* V46 额度两段去文字标签后补标识图标（feather 同款纯 path）：
+     * battery=剩余电量隐喻配 5h 窗口、repeat=周期重置隐喻配每周窗口 */
+    battery: [
+      "M3 6h14a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2z",
+      "M23 13v-2"
+    ],
+    repeat: [
+      "M17 1l4 4-4 4",
+      "M3 11V9a4 4 0 0 1 4-4h14",
+      "M7 23l-4-4 4-4",
+      "M21 13v2a4 4 0 0 1-4 4H3"
+    ],
     gauge: ["M4.9 19a9 9 0 1 1 14.2 0", "M12 13l3.5-3.5"]
   };
 
@@ -4077,7 +4094,6 @@ pub const USAGE_JS: &str = r#"// ===============================================
           " · " + W.tCr + " " + tCr2 + " · " + W.tCw + " " + tCw2 +
           " · " + tReq2 + " " + W.n,
         parts: [
-          { t: W.turn, c: "zbar-usage-qdim" },
           { t: fmtTokensShort(tIn2 + tOut2), c: "zbar-usage-qval" },
           { t: tReq2 + " " + W.req, c: "zbar-usage-qdim" }
         ]
@@ -4097,7 +4113,6 @@ pub const USAGE_JS: &str = r#"// ===============================================
         ico: "bubble",
         title: W.sessTitle,
         parts: [
-          { t: W.sess, c: "zbar-usage-qdim" },
           { t: fmtTokensShort(sTt), c: "zbar-usage-qval" },
           { t: sRq + " " + W.req, c: "zbar-usage-qdim" }
         ]
@@ -4109,10 +4124,7 @@ pub const USAGE_JS: &str = r#"// ===============================================
       segs.push({
         ico: "wrench",
         title: W.toolsTitle,
-        parts: [
-          { t: W.tools, c: "zbar-usage-qdim" },
-          { t: String(sv.tl), c: "zbar-usage-qval" }
-        ]
+        parts: [{ t: String(sv.tl), c: "zbar-usage-qval" }]
       });
     }
     /* ⑤ 今日：顶层 today.tt + "N req"（today.rq；V33 新消费字段，本
@@ -4122,7 +4134,6 @@ pub const USAGE_JS: &str = r#"// ===============================================
         ico: "calendar",
         title: W.todayTitle,
         parts: [
-          { t: W.today, c: "zbar-usage-qdim" },
           { t: fmtTokensShort(lastToday.tt), c: "zbar-usage-qval" },
           { t: (lastToday.rq || 0) + " " + W.req, c: "zbar-usage-qdim" }
         ]
@@ -4150,42 +4161,38 @@ pub const USAGE_JS: &str = r#"// ===============================================
           ico: "branch",
           title: W.subsTitle,
           dot: subRunning,
-          parts: [
-            { t: W.subs, c: "zbar-usage-qdim" },
-            { t: String(subN), c: "zbar-usage-qval" }
-          ]
+          parts: [{ t: String(subN), c: "zbar-usage-qval" }]
         });
       }
     }
-    /* ⑦ 额度（V32 原样迁入 + V34 补 title）：h5/wk 缺失只隐对应段；三
-     * 档变色挂段级 class（主数值部分继承变色）；倒计时段由
-     * quotaCountdownOf 生成（rs 缺失/非法/已过期 → 无倒计时段），qfaint
-     * 显式回灰——阈变色仍只属于剩余百分比（V31 界线不变） */
+    /* ⑦ 额度（V32 原样迁入 + V34 补 title + V46 补图标去"额度"前导，
+     * 口径说明由 title 承担）：h5/wk 缺失只隐对应段；三档变色挂段级
+     * class（主数值部分继承变色）；倒计时段由 quotaCountdownOf 生成
+     * （rs 缺失/非法/已过期 → 无倒计时段），qfaint 显式回灰——阈变色
+     * 仍只属于剩余百分比（V31 界线不变） */
     if (qd && typeof qd.h5 === "number" && isFinite(qd.h5)) {
       var h5cd = quotaCountdownOf(qd.h5rs, nowMs);
       var h5Parts = [
-        { t: W.quotaLead + " " + W.quota5h + Math.round(qd.h5) + "%", c: quotaClassOf(qd.h5) }
+        { t: W.quota5h + Math.round(qd.h5) + "%", c: quotaClassOf(qd.h5) }
       ];
       if (h5cd) h5Parts.push({ t: h5cd, c: "zbar-usage-qfaint" });
-      segs.push({ title: W.quota5hTitle, parts: h5Parts });
+      segs.push({ ico: "battery", title: W.quota5hTitle, parts: h5Parts });
     }
     if (qd && typeof qd.wk === "number" && isFinite(qd.wk)) {
       var wkcd = quotaCountdownOf(qd.wkrs, nowMs);
-      var wkParts = [
-        { t: W.quotaWk + Math.round(qd.wk) + "%", c: quotaClassOf(qd.wk) }
-      ];
+      var wkParts = [{ t: Math.round(qd.wk) + "%", c: quotaClassOf(qd.wk) }];
       if (wkcd) wkParts.push({ t: wkcd, c: "zbar-usage-qfaint" });
-      segs.push({ title: W.quotaWkTitle, parts: wkParts });
+      segs.push({ ico: "repeat", title: W.quotaWkTitle, parts: wkParts });
     }
-    /* ⑧ 缓存（V30 逻辑原样迁入 + V33 仪表图标 + V34 title）：当前会话
-     * 命中率 cr / (cr + 非缓存输入)，分母 0（cacheHitText 返回 "—"）
-     * 不入段不留残留 */
+    /* ⑧ 缓存（V30 逻辑原样迁入 + V33 仪表图标 + V34 title + V46 去文字
+     * 标签，口径说明由 title 承担）：当前会话命中率 cr / (cr + 非缓存
+     * 输入)，分母 0（cacheHitText 返回 "—"）不入段不留残留 */
     var hit = cacheHitText(tcr, tin);
     if (hit !== "—") {
       segs.push({
         ico: "gauge",
         title: W.cacheTitle,
-        parts: [{ t: W.cachePct + " " + hit, c: "" }]
+        parts: [{ t: hit, c: "" }]
       });
     }
     if (!segs.length) {
@@ -6113,8 +6120,8 @@ mod tests {
     #[test]
     fn usage_js_v34_分段状态条与设计语言() {
         // ---- 版本标记（V44 起头部升级，V34 特征除溢出隐藏外保留）----
-        assert!(USAGE_JS.contains("ZBAR-THEME-V44"));
-        assert!(!USAGE_JS.contains("ZBAR-THEME-V43"), "版本头应已升到 V44");
+        assert!(USAGE_JS.contains("ZBAR-THEME-V46"));
+        assert!(!USAGE_JS.contains("ZBAR-THEME-V45"), "版本头应已升到 V46");
         // ---- 字体跟随客户端（任务红线：--font-mono 引用）：四个注入层
         // （每轮条/会话条/模型底板/底部条）各一条 font-family 声明，缺失
         // 回退既有等宽栈
@@ -6140,7 +6147,7 @@ mod tests {
             "底板配色改由客户端语义变量接管，V26 亮色媒体查询应删除"
         );
         // ---- 胶囊容器（任务红线：backdrop-filter 存在）：blur+saturate
-        // 带前缀、内高光+双层投影、圆角、V44 横向滚动容器 + 隐藏滚动条 ----
+        // 带前缀、内高光+双层投影、圆角、V44 横向滚动容器 + V45 细滚动条 ----
         assert!(
             USAGE_JS
                 .contains("-webkit-backdrop-filter:blur(12px) saturate(1.2);backdrop-filter:blur(12px) saturate(1.2);"),
@@ -6155,10 +6162,16 @@ mod tests {
         assert!(
             USAGE_JS.contains("white-space:nowrap;overflow-x:auto;overflow-y:hidden;pointer-events:auto;")
                 && USAGE_JS
-                    .contains(".zbar-usage-qb-line::-webkit-scrollbar{display:none;}")
+                    .contains(".zbar-usage-qb-line::-webkit-scrollbar{height:4px;}")
+                && USAGE_JS.contains(
+                    ".zbar-usage-qb-line::-webkit-scrollbar-thumb{background:rgba(127,127,127,.4);border-radius:2px;}",
+                )
+                && USAGE_JS.contains(".zbar-usage-qb-line::-webkit-scrollbar-track{background:transparent;}")
+                && USAGE_JS.contains("scrollbar-width:auto;scrollbar-color:auto;")
+                && !USAGE_JS.contains("::-webkit-scrollbar{display:none;}")
                 && USAGE_JS.contains("justify-content:flex-start;")
                 && USAGE_JS.contains("flex:none;margin:0 auto;"),
-            "V44 胶囊应改横向滚动容器（overflow-x:auto + 隐藏滚动条；flex-start + qfull margin:0 auto 兼顾不溢出时居中与溢出时可完整滚动）"
+            "V45 胶囊滚动条显式矮化：overflow-x:auto + 4px 细条 + 标准属性重置（flex-start + qfull margin:0 auto 兼顾不溢出时居中与溢出时可完整滚动）"
         );
         assert!(USAGE_JS.contains("border-radius:10px;"), "状态条圆角 10px");
         assert!(
@@ -6191,9 +6204,11 @@ mod tests {
                     .contains("\"[\" + ATTR_QUOTA_BAR + \"] .zbar-usage-tps-fast{color:#34d399;}\""),
             "每轮条/底部条速度三档色应与模型行同阈值同色系"
         );
-        // ---- 分段清单与行内 SVG 图标（createElementNS，无 innerHTML）----
+        // ---- 分段清单与行内 SVG 图标（createElementNS，无 innerHTML；
+        // V46 额度 5h/每周段去文字标签后补 battery/repeat 图标）----
         for ico in [
-            "bolt", "hourglass", "bubble", "wrench", "calendar", "branch", "gauge",
+            "bolt", "hourglass", "bubble", "wrench", "calendar", "branch",
+            "battery", "repeat", "gauge",
         ] {
             assert!(
                 USAGE_JS.contains(&format!("ico: \"{ico}\"")),
@@ -6269,18 +6284,26 @@ mod tests {
                 && USAGE_JS.contains("function segsTextOf(segs)"),
             "每轮条/会话条应保持全串比对零 DOM 机制（比对串=字段段文本拼接）"
         );
-        // ---- 词表新词条（zh/en 双语）----
+        // ---- 词表新词条（zh/en 双语；V46 去文字标签后标签词删除，
+        // turn（title 用）/req/title 词条保留）----
         assert!(
             USAGE_JS.contains("turn: \"本轮\"")
-                && USAGE_JS.contains("sess: \"会话\"")
-                && USAGE_JS.contains("tools: \"工具\"")
-                && USAGE_JS.contains("today: \"今日\"")
-                && USAGE_JS.contains("subs: \"子代理\"")
                 && USAGE_JS.contains("req: \"req\"")
                 && USAGE_JS.contains("speedTitle: \"最近一笔请求的生成速度；≥70 绿 / ≥40 黄 / <40 红（t/s）\"")
                 && USAGE_JS.contains("turn: \"turn\"")
                 && USAGE_JS.contains("todayTitle: \"All sessions today (local calendar day)\""),
-            "WORDS 应补底部条分段与 title 词条（zh/en 双语）"
+            "WORDS 应含底部条分段与 title 词条（zh/en 双语）"
+        );
+        // V46 防回退：失去消费方的标签词条应整体删除（zh/en 两侧均无残留）
+        assert!(
+            !USAGE_JS.contains("sess: \"")
+                && !USAGE_JS.contains("tools: \"")
+                && !USAGE_JS.contains("today: \"")
+                && !USAGE_JS.contains("subs: \"")
+                && !USAGE_JS.contains("quotaLead: \"")
+                && !USAGE_JS.contains("quotaWk: \"")
+                && !USAGE_JS.contains("cachePct: \""),
+            "V46 去文字标签后失去消费方的词条应删除"
         );
         // ---- 红线复核：定位/挂载/闸门/轮询机制零改动 ----
         assert!(
@@ -6382,20 +6405,26 @@ mod tests {
             "底部条数值应走 fmtTokensShort（去等宽补位空格，段内间距由 gap 承担）"
         );
         assert!(
-            !USAGE_JS.contains("{ t: W.turn + \" \"")
-                && !USAGE_JS.contains("{ t: W.sess + \" \"")
-                && !USAGE_JS.contains("{ t: W.tools + \" \"")
-                && !USAGE_JS.contains("{ t: W.today + \" \"")
-                && !USAGE_JS.contains("{ t: W.subs + \" \""),
-            "底部条标签/数值文本不应携带语义间距空格（由 flex gap 承担）"
+            !USAGE_JS.contains("{ t: W.turn,")
+                && !USAGE_JS.contains("{ t: W.sess,")
+                && !USAGE_JS.contains("{ t: W.tools,")
+                && !USAGE_JS.contains("{ t: W.today,")
+                && !USAGE_JS.contains("{ t: W.subs,"),
+            "V46 去文字标签：底部条分段 parts 不应再含中文标签 part（悬浮 title 承担口径说明）"
+        );
+        assert!(
+            !USAGE_JS.contains("W.cachePct")
+                && !USAGE_JS.contains("W.quotaLead")
+                && !USAGE_JS.contains("W.quotaWk +"),
+            "V46 去文字标签：额度前导/每周/缓存标签词条应零消费（W.quotaWkTitle 保留，故按消费形态匹配防回退）"
         );
     }
 
     #[test]
     fn usage_js_v35_卡片对齐与缓存率() {
         // ---- 版本标记 ----
-        assert!(USAGE_JS.contains("ZBAR-THEME-V44"));
-        assert!(!USAGE_JS.contains("ZBAR-THEME-V43"), "版本头应已升到 V44");
+        assert!(USAGE_JS.contains("ZBAR-THEME-V46"));
+        assert!(!USAGE_JS.contains("ZBAR-THEME-V45"), "版本头应已升到 V46");
         // ---- 任务 A：输入框卡片定位（零选择器假设 + V37R 语义锚点）----
         assert!(
             USAGE_JS.contains("function locateComposerCard(region)")
@@ -6518,8 +6547,8 @@ mod tests {
     #[test]
     fn usage_js_v36_浅色主题可读性() {
         // ---- 版本标记 ----
-        assert!(USAGE_JS.contains("ZBAR-THEME-V44"));
-        assert!(!USAGE_JS.contains("ZBAR-THEME-V43"), "版本头应已升到 V44");
+        assert!(USAGE_JS.contains("ZBAR-THEME-V46"));
+        assert!(!USAGE_JS.contains("ZBAR-THEME-V45"), "版本头应已升到 V46");
         // ---- a) 透明度下限：三处行透明消费点（每轮条容器/会话条行/
         // 底部条行）以 max() 兜 .82 底（用户调高 >.82 仍取用户值），
         // dim/qfaint 弱色同步提亮；规则全部带 html:not(.dark) 前缀 ----
@@ -6712,8 +6741,9 @@ mod tests {
         // 存」段并存）；d) ✚ 缓存写段 cw 0 整段隐藏（含启动窗口占位
         // 态）、>0 带 title（词表新增 cwTitle 双语条目，
         // renderRowParts/renderBarLine 补 title 通道））
-        assert!(USAGE_JS.contains("ZBAR-THEME-V44"));
-        assert!(!USAGE_JS.contains("ZBAR-THEME-V43"), "版本头应已升到 V44");
+        assert!(USAGE_JS.contains("ZBAR-THEME-V46"));
+        assert!(!USAGE_JS.contains("ZBAR-THEME-V45"), "版本头应已升到 V46");
+        assert!(!USAGE_JS.contains("ZBAR-THEME-V43"), "版本头不应回退");
         assert!(!USAGE_JS.contains("ZBAR-THEME-V33"), "版本头不应回退");
         assert!(!USAGE_JS.contains("ZBAR-THEME-V31"), "版本头不应回退");
         assert!(!USAGE_JS.contains("ZBAR-THEME-V30"), "版本头不应回退");
@@ -6797,18 +6827,15 @@ mod tests {
             "region 缺失兜底路径应有 fixed 切换标记与贴底居中常量（同会话条兜底模式）"
         );
         assert!(
-            USAGE_JS.contains("quotaLead: \"额度\"")
-                && USAGE_JS.contains("quota5h: \"5h \"")
-                && USAGE_JS.contains("quotaWk: \"每周 \"")
-                && USAGE_JS.contains("cachePct: \"缓存\""),
-            "zh 词表应含额度行标签（V32 扁平化去「余」字）与 V30 缓存段标签"
+            USAGE_JS.contains("quota5h: \"5h \""),
+            "zh/en 词表应含额度行 5h 窗口前缀（V32 扁平化去「余」字；V46 去文字标签后保留——5h 是窗口标识而非列标签）"
         );
+        // V46 防回退：失去消费方的额度/缓存标签词条删除（zh/en 两侧）
         assert!(
-            USAGE_JS.contains("quotaLead: \"Quota\"")
-                && USAGE_JS.contains("quota5h: \"5h \"")
-                && USAGE_JS.contains("quotaWk: \"wk \"")
-                && USAGE_JS.contains("cachePct: \"cache\""),
-            "en 词表应含额度行标签（V29 删除更新时间词）与 V30 缓存段标签"
+            !USAGE_JS.contains("quotaLead: \"")
+                && !USAGE_JS.contains("quotaWk: \"")
+                && !USAGE_JS.contains("cachePct: \""),
+            "V46 去文字标签后 quotaLead/quotaWk/cachePct 词条应删除"
         );
         assert!(
             USAGE_JS.contains("var QUOTA_MID_REMAIN = 30")
@@ -6945,11 +6972,13 @@ mod tests {
             "renderAll 主路径应求值会话级判定（sessHasData）"
         );
         assert!(
-            quota_body.contains("W.quotaLead + \" \" + W.quota5h + Math.round(qd.h5) + \"%\"")
-                && quota_body.contains("W.quotaWk + Math.round(qd.wk) + \"%\"")
+            quota_body.contains("W.quota5h + Math.round(qd.h5) + \"%\"")
+                && quota_body.contains("Math.round(qd.wk) + \"%\"")
                 && quota_body.contains("quotaClassOf(qd.h5)")
-                && quota_body.contains("quotaClassOf(qd.wk)"),
-            "额度行应按额度旁路数据渲染 5h/周剩余段（缺失不入段，无分隔符残留）: {quota_body}"
+                && quota_body.contains("quotaClassOf(qd.wk)")
+                && quota_body.contains("ico: \"battery\"")
+                && quota_body.contains("ico: \"repeat\""),
+            "额度行应按额度旁路数据渲染 5h/周剩余段（V46 去前导标签补 battery/repeat 图标，缺失不入段，无分隔符残留）: {quota_body}"
         );
         // V30 缓存命中率段：签名带 anchor（renderAll 主路径与 sessHasData
         // 同源传入），函数体内按 renderSessionBar 同款双口径算当前会话
@@ -6969,8 +6998,8 @@ mod tests {
             quota_body.contains("var hit = cacheHitText(tcr, tin);")
                 && quota_body.contains("if (hit !== \"—\") {")
                 && quota_body
-                    .contains("segs.push({\n        ico: \"gauge\",\n        title: W.cacheTitle,\n        parts: [{ t: W.cachePct + \" \" + hit, c: \"\" }]\n      });"),
-            "额度行应在每周段后追加「缓存」段（仪表图标 + 口径 title，分母为 0 时不入段）: {quota_body}"
+                    .contains("segs.push({\n        ico: \"gauge\",\n        title: W.cacheTitle,\n        parts: [{ t: hit, c: \"\" }]\n      });"),
+            "额度行应在每周段后追加缓存段（V46 去文字标签、仪表图标 + 口径 title，分母为 0 时不入段）: {quota_body}"
         );
         // V31/V32 窗口重置倒计时：a) 新增格式化与倒计时段函数（rs 缺失/
         // 非法/已过期 <= now 返回空串 → 该窗口不加段；时长阶梯 <1h "35m"
