@@ -1171,6 +1171,8 @@ pub(crate) fn query_stats_at(
         }
     }
 
+    db::fill_duration_metrics(&conn, "opencode", from_ms, to_ms, &mut overall, &mut by_model)?;
+
     let (earliest_ms, latest_ms): (Option<i64>, Option<i64>) = conn
         .query_row(
             "SELECT MIN(started_at), MAX(started_at) FROM model_usage",
@@ -1482,8 +1484,8 @@ pub(crate) fn query_window_sessions_at(
               WHERE m2.session_id = model_usage.session_id
                 AND m2.cwd IS NOT NULL AND m2.cwd != ''
               ORDER BY m2.started_at DESC LIMIT 1),
-            COALESCE(SUM(CASE WHEN duration_ms > 0 THEN output_tokens ELSE 0 END), 0),
-            COALESCE(SUM(CASE WHEN duration_ms > 0 THEN duration_ms ELSE 0.0 END), 0.0)
+            COALESCE(SUM(CASE WHEN duration_ms BETWEEN 200 AND 3600000 AND output_tokens > 0 THEN output_tokens ELSE 0 END), 0),
+            COALESCE(SUM(CASE WHEN duration_ms BETWEEN 200 AND 3600000 AND output_tokens > 0 THEN duration_ms ELSE 0.0 END), 0.0)
          FROM model_usage
          WHERE session_id IN (
             SELECT session_id FROM model_usage

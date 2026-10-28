@@ -121,7 +121,7 @@ const PriceRowView = memo(function PriceRowView({
   onRemove: (id: string) => void;
 }) {
   const { t } = useI18n();
-  const drafts: Record<keyof ModelPrice, string | undefined> = {
+  const drafts: Partial<Record<keyof ModelPrice, string | undefined>> = {
     input: dIn,
     output: dOut,
     cache_read: dCache,

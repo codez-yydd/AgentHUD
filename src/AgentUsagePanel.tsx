@@ -412,7 +412,7 @@ export function AgentUsagePanel({
             {(() => {
               const rows = stats.by_model.map((m) => {
                 const hasPrice = hasPositivePrice(m.model_id, pricing);
-                const costVal = modelCost(m.model_id, m.input_tokens, m.output_tokens, m.cache_read_tokens, pricing, currency, fxRate);
+                const costVal = modelCost(m.model_id, m.input_tokens, m.output_tokens, m.cache_read_tokens, pricing, currency, fxRate, cacheRateMode === "separate" ? "claude" : "zcode", m.cache_write_tokens);
                 // 发生折叠时 tooltip 列出被合并的原始写法与请求份额
                 const vs = (m as FoldedModelStat).variants;
                 const variantTitle = vs && vs.length > 1

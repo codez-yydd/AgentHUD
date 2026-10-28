@@ -99,7 +99,7 @@
 //! ## 速度聚合（sa / models，V25 附加字段，向后兼容）
 //!
 //! 每轮条与会话条的"平均 / 快 / 慢"聚合、会话条下方的模型分组速度行，
-//! 全部来自同一条**行级唯一真源**：`token_speed::generation_sample`（首字
+//! 全部来自同一条**行级唯一真源**：`token_speed::speed_sample`（首字
 //! 到完成的精确生成样本，`first_token_at` / `completed_at` 齐全、时序正常、
 //! `output_tokens > 0`，且要求 `generation` 质量——`request_average` 近似
 //! 样本只服务"最近速度"位，绝不进聚合池，口径与免注入悬浮窗模型速度区
@@ -345,7 +345,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::token_speed::{
-    generation_sample, is_completed_status, request_speed_at, GenerationSample, PENDING_FRESH_MS,
+    speed_sample, is_completed_status, request_speed_at, GenerationSample, PENDING_FRESH_MS,
     RequestTiming, SpeedSnapshot, SpeedState,
 };
 
@@ -1252,6 +1252,7 @@ struct LatestUsageRequest {
 /// 逐笔比较——不保留样本向量、任何时刻都不排序，内存 O(键数)。
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 struct SpeedAgg {
+    approximate: bool,
     /// Σ 合格输出 token（avg 分子）
     sum_output: i64,
     /// Σ 生成毫秒 = Σ(completed_at − first_token_at)（avg 分母）
@@ -1260,7 +1261,7 @@ struct SpeedAgg {
     max_tps: f64,
     /// 样本池内单笔最慢速度 t/s
     min_tps: f64,
-    /// 样本笔数（通过 generation_sample 判定的请求数）
+    /// 样本笔数（通过 speed_sample 判定的请求数）
     samples: i64,
 }
 
@@ -1281,6 +1282,7 @@ impl SpeedAgg {
 
     /// 累入一笔精确生成样本：首笔初始化极值，其后逐笔比较 + Σ 相加
     fn add(&mut self, sample: GenerationSample) {
+        self.approximate |= sample.quality == crate::token_speed::SpeedQuality::RequestAverage;
         if self.samples <= 0 {
             self.max_tps = sample.tps;
             self.min_tps = sample.tps;
@@ -1307,6 +1309,7 @@ impl SpeedAgg {
             *self = *other;
             return;
         }
+        self.approximate |= other.approximate;
         self.sum_output += other.sum_output;
         self.sum_ms += other.sum_ms;
         if other.max_tps > self.max_tps {
@@ -1325,6 +1328,7 @@ impl SpeedAgg {
             return None;
         }
         Some(SpeedAggRow {
+            approximate: self.approximate,
             avg: self.avg_tps(),
             max: self.max_tps,
             min: self.min_tps,
@@ -1338,6 +1342,8 @@ impl SpeedAgg {
 /// 端照常导出原始值，隐藏属展示语义）。
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 pub(crate) struct SpeedAggRow {
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    approximate: bool,
     /// 加权均速 t/s（Σ输出 ÷ Σ生成毫秒 × 1000）
     avg: f64,
     /// 样本池内单笔最快 t/s
@@ -1363,6 +1369,8 @@ struct ModelSpeedAgg {
 /// 悬浮窗 HudModelSpeed，口径同 SpeedAggRow）。
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub(crate) struct ModelSpeed {
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    approximate: bool,
     /// 模型 id 原值（渲染端 truncate 展示 + title 给全名）
     model: String,
     /// 该模型最近一笔完成请求的生成速度 t/s
@@ -1388,7 +1396,7 @@ pub(crate) struct ModelSpeed {
 ///
 /// V25 起同一次读取顺带产出三套精确样本聚合（轮 / 会话 / 模型），见
 /// `by_turn_agg` / `by_session_agg` / `by_model`；样本判定复用
-/// `token_speed::generation_sample`（与免注入悬浮窗模型速度区同源），
+/// `token_speed::speed_sample`（与免注入悬浮窗模型速度区同源），
 /// 因此本类型的 `load` 需要被观察时刻来拒绝未来时刻的脏行。
 #[derive(Debug, Clone, Default)]
 struct SpeedCatalog {
@@ -1503,10 +1511,10 @@ impl SpeedCatalog {
                 model_id: model_id.clone(),
             };
             let order = request_order(&timing);
-            // V25 精确样本聚合：只有通过 generation_sample 判定的行进池
+            // V25 精确样本聚合：只有通过 speed_sample 判定的行进池
             //（request_average 近似样本只服务"最近速度"位）。流式累加，
             // 不保留样本向量、不排序（见模块头"速度聚合"节）。
-            let sample = generation_sample(&timing, observed_at_ms);
+            let sample = speed_sample(&timing, observed_at_ms);
             let candidate = LatestUsageRequest { order, timing };
             update_latest(&mut catalog.by_session, session_id.clone(), candidate.clone());
             let turn_key = turn_id
@@ -1576,6 +1584,7 @@ impl SpeedCatalog {
                 (
                     entry.last_order,
                     ModelSpeed {
+                        approximate: entry.agg.approximate,
                         model: model.clone(),
                         tps: entry.last_tps,
                         avg: entry.agg.avg_tps(),
@@ -3221,6 +3230,7 @@ mod tests {
         // 为 {avg,max,min,n} 紧凑形态
         assert!(!json.contains("\"sa\":"), "无精确样本不应写 sa 键：{json}");
         t.speed_agg = Some(SpeedAggRow {
+            approximate: false,
             avg: 164.0,
             max: 300.0,
             min: 20.0,

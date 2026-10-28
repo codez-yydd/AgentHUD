@@ -9,7 +9,7 @@ import { canonicalModelId, displayModelName, lookupPrice } from "../../modelName
 import type { MessageKey } from "../../i18n";
 
 /** 可编辑的价格字段（顺序即表格列顺序；ModelPrice 实际只有这三项） */
-export const PRICE_FIELDS: { key: keyof ModelPrice; labelKey: MessageKey }[] = [
+export const PRICE_FIELDS: { key: Exclude<keyof ModelPrice, "cache_write">; labelKey: MessageKey }[] = [
   { key: "input", labelKey: "dashboard.pricing.colInput" },
   { key: "output", labelKey: "dashboard.pricing.colOutput" },
   { key: "cache_read", labelKey: "dashboard.pricing.colCacheRead" },

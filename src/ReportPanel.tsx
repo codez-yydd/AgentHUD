@@ -295,7 +295,7 @@ function makeAgent(
       model.cache_read_tokens,
       pricing,
       "cny",
-      fxRate
+      fxRate, id, model.cache_write_tokens
     ),
     cost_usd: modelCost(
       model.model_id,
@@ -304,7 +304,7 @@ function makeAgent(
       model.cache_read_tokens,
       pricing,
       "usd",
-      fxRate
+      fxRate, id, model.cache_write_tokens
     ),
     priced: hasPositivePrice(model.model_id, pricing),
   }));

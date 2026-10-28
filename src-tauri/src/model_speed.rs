@@ -1,106 +1,14 @@
-//! 模型速度统计面板数据源：聚合 7 个本地来源的 `model_usage`（每行 = 一次
-//! 模型请求），按 **(source, provider_id, model_id)** 三元组分组，输出每组
-//! 的输出速度分位、首 token 延迟、请求耗时与 token 量级（主面板"速度"tab
-//! 消费，`src/ModelSpeedPanel.tsx`）。同名模型跨来源 / 跨渠道**绝不合并**：
-//! 同一个 deepseek-v4.1-flash 走 OpenCode Go 订阅与走 deepseek 官方 key 是
-//! 两组，GLM-5.3 在不同中转站也各自独立——速度是"渠道体验"指标，合并统计
-//! 会把快慢渠道互相平均掉。
+//! Per-model request speed statistics. Token volume and timing sample counts
+//! are independent: only validated requests contribute to speed denominators.
+//! Weighted mean = sum(output) * 1000 / sum(request/stream milliseconds).
+//! Percentiles describe individual request rates, not whole-turn throughput.
 //!
-//! ## 查询窗口（两模式）
-//!
-//! - **days 模式**（窄窗速度页 / 缺省）：days > 0 = 滚动窗口 now − N×24h、
-//!   days = 0 = 本地时区自然日零点起（`range_start_ms`），**无上界**；
-//! - **自定义区间模式**（大窗速度页 CustomRangeMenu）：`from_ms` 与 `to_ms`
-//!   同时给时按半开区间 `[from_ms, to_ms)` 查询（含上界
-//!   `started_at < to_ms`，to 可以在过去——历史区间固定，不按此刻推算），
-//!   忽略 days。本地行 SQL 上界、远端行窗口过滤、远端请求的 to 参数
-//!   三处同一口径。
-//!
-//! ## 来源与打开方式（对齐 request_logs 的 7 路）
-//!
-//! - `zcode`：ZCode 主库，沿用 `zcode_sessions::open_main_db_readonly_uri`
-//!   （URI 只读，保持既有行为）；本机未安装（`db::db_path` 解析失败）按库
-//!   不存在降级 0 条——远端 zcode 行照常并入（见 open_speed_source）；
-//! - `codex` / `claude` / `kimi` / `dsh` / `opencode` / `minimaxcode`：各自的
-//!   导入库 `~/.agenthud/<name>.sqlite`，复用 `request_logs::open_source`
-//!   （文件不存在 → 0 条，本模块只 SELECT 绝不迁移）。单源打开 / 查询失败
-//!   只 eprintln! 记录并跳过，不让整页失败（对齐 request_logs 容错风格）。
-//!
-//! ## 速度口径（样本分两池，组内分层不混算）
-//!
-//! 各来源速度原料不同（权威差异说明见 request_logs.rs 模块头）：
-//! - `zcode`：有 first_token_at / completed_at 事件时刻 → 精确生成口径，
-//!   样本进 generation 池；缺事件时刻的行不产速度样本，**不降级到
-//!   duration_ms**（保持既有行为，回归安全）；
-//! - `claude` / `kimi` / `dsh` / `opencode` / `minimaxcode`：导入库无事件
-//!   时刻列、有 duration_ms → 每行调 `token_speed::request_speed_at` 得
-//!   请求平均近似速度（output ÷ duration_ms，含首字延迟），样本进
-//!   average 池；observed_at 传 0：历史行不做未来时刻拒绝（与
-//!   request_logs 的 row_to_log 同款）；
-//! - `codex`：无任何耗时列 → 无速度样本、无耗时统计，只有请求数 / token
-//!   量级。
-//!
-//! 组装 DTO 时按池分层：**generation 池非空 → 速度统计（avg/P10/P50/P90/
-//! 样本数）只用精确池，speedQuality = "generation"（前端无 ≈）；generation
-//! 空而 average 池非空 → 只用 average 池，speedQuality = "request_average"
-//! （前端 ≈ 前缀）；两池皆空 → 全部速度字段 null**。精确与近似是两种分母
-//! 语义，同一分组混算 P50 会失真——分层后本机模式每源天然只有一池（zcode
-//! → generation、导入库 → average），行为与既有版本一致；全部设备模式下
-//! zcode 组本机有精确样本时远端近似样本也绝不掺入（见下）。
-//!
-//! zcode 精确口径细节（速度参考 zcode-token-usage-statusbar：token/s =
-//! output_tokens ÷ (completed_at − first_token_at)，按请求时间戳而非
-//! duration_ms 列）：
-//! - 行级有效性共用 token_speed::generation_sample（B1）：完成状态（空/
-//!   success/缺列按完成降级）、output > 0、completed > first > 0、
-//!   first ≥ started、观测时刻拒绝未来、样本时长边界 [200ms, 1h]；
-//!   平均速度 = Σoutput ÷ Σ生成毫秒；
-//! - 思考感知窗口（2026-10 参考项目真库裁决）：思考型请求（reasoning
-//!   tokens > 0，或模型名含 claude——Claude 系列不单独上报思考 token 但
-//!   output 已含思考）的生成窗口前移为 completed_at − started_at，思考
-//!   时长不再漏出分母（见 token_speed::thinking_generation_span）；
-//! - 慢/均/快速度 = 每请求速度（output × 1000 ÷ 生成毫秒）的
-//!   P10/P50/P90 分位（行拉到 Rust 内存排序计算）；
-//! - 首 token 延迟：优先 time_to_first_token_ms 列（正数才可信；zcode 与
-//!   dsh 是真实数据，opencode / minimaxcode 该列恒 NULL，其余来源缺列），
-//!   回退 first_token_at − started_at 的 min/avg/P90（仅 zcode 有该列）；
-//! - 请求耗时：zcode = completed_at − started_at；导入库 = 真实
-//!   duration_ms（> 0 才入样本，NULL / 0 跳过，不做估算回退）；
-//! - 输入/输出 token = 全部行 input_tokens（原值，已含缓存读）/
-//!   output_tokens 的 avg/max；
-//! - 成功率 = completed 行占比（仅 zcode 有 status 列；导入库无该列 →
-//!   null，前端显示 —）。
-//!
-//! 异常行防御：started_at/first_token_at/completed_at 任一为 NULL、
-//! 非正或时序倒置（first < started、completed < first、completed <
-//! started）的行只跳过**对应统计**，不影响其它字段；turn_id 为 NULL 的
-//! CLI 后台请求行**不过滤**（速度统计对所有模型请求有效，与轮次无关）。
-//!
-//! ## 性能、容错与远端边界
-//!
-//! 7 库窗口内行全读进内存聚合：主库近 7 天量级 < 1 万行（既有评估），
-//! 导入库是单工具会话导入、窗口内量级更小，逐行进 Rust 排序分位无压力。
-//! 命令为 async + spawn_blocking（多库 SQLite 查询 + scope=all 时的同步
-//! HTTP 不跑主线程，与 request_logs 同款）。纯逻辑拆分为
-//! collect_source_speed_with_remote（单源聚合，内存 sqlite + 注入远端行
-//! 可测）与 collect_all_speeds（容错编排，本机 fetch 与远端结果均可注入）。
-//!
-//! ## 全部设备口径（scope = "all"）
-//!
-//! 远端第 8 路：GET /usage_records 一次拉取其他设备的窗口内明细
-//! （exclude_device = 本机——本机记录本地直读、两集合不相交无需去重，
-//! 见 request_logs 模块头的权威说明），行按真实 source 分桶并入对应来源
-//! 路的聚合（不在 SOURCES 集合里的未知来源丢弃并记日志）。远端行只有
-//! duration_ms 近似原料（first_token_at / completed_at 永不上传）→ 只进
-//! average 池：zcode 组本机有精确样本时仍精确（远端行只增加 requests /
-//! token / 耗时 / TTFT 统计，不进速度池），本机无样本时 request_average
-//! 点亮；导入库组本机与远端的 average 样本同池合并。远端无 status 列 →
-//! 不进成功率统计（成功率的分子分母都只算本机行，见 merge_remote_speed_rows）。
-//! 远端失败（同步未启用 / 未注册 / 网络 / 旧服务端 404 等一切「尝试拉
-//! 远端但没拉到」）不阻塞本机数据，只把 remote_failed 置 true 交前端弱
-//! 提示；本机模式恒 false。行数上限 5000（服务端 /usage_records 同款
-//! 夹紧；今日 / 7 天窗口下速度分位统计的样本量足够，对齐日志页深页折衷
-//! 的先例），**不循环分页拉全量**——2026-10-21 服务端宕机教训即全量无上限。
+//! ZCode uses event timestamps and conservative request-average timing when
+//! reasoning placement is uncertain. DSH already records stream spans; other
+//! imported/remote sources record request spans. Never subtract TTFT from DSH.
+//! Exact and approximate pools are kept separate, with exact samples preferred
+//! within a source/provider/model group. Request-average values display ≈.
+//! Tool execution gaps between model requests do not contribute to either pool.
 
 use rusqlite::Connection;
 use serde::Serialize;
@@ -128,7 +36,7 @@ pub struct ModelSpeedStat {
     /// 的权重口径——后端 successRate 分母只算本机行，权重用 requests 会
     /// 在全部设备口径下失真（本机模式两者相等，行为不变）
     pub local_requests: i64,
-    /// 速度合格样本数（generation_sample 行级判定通过的请求数；与 requests
+    /// 速度合格样本数（speed_sample 行级判定通过的请求数；与 requests
     /// 总数口径不同——无可信生成区间的请求不产生速度样本，null = 无可信样本）
     pub speed_sample_count: Option<i64>,
     /// 组级速度口径（serde 序列化为 "generation" | "request_average"，与
@@ -466,7 +374,7 @@ pub(crate) fn collect_source_speed(
 /// days 模式无上界。老版本库核心列缺失时本地行按 0 条降级（远端行照常
 /// 并入——本地未安装的来源在全部设备模式下仍有数据）；非核心列缺失按
 /// NULL 降级（对应统计为 null）。速度口径按池分层（见模块头）：zcode 走
-/// token_speed::generation_sample 共享行级判定（B1，缺事件时刻的行不产
+/// token_speed::speed_sample 共享行级判定（B1，缺事件时刻的行不产
 /// 速度样本、不降级 duration_ms）；导入库与远端行走 request_speed_at
 /// 请求平均近似（duration_ms > 0 才有样本，codex 本地无该列恒无本地样本）。
 pub(crate) fn collect_source_speed_with_remote(
@@ -513,7 +421,6 @@ pub(crate) fn collect_source_speed_with_remote(
         );
         // TTFT 列（优先口径）与思考感知信号列：缺列（老版本库）按 NULL/0 降级
         let ttft = opt("time_to_first_token_ms");
-        let has_reasoning = crate::db::has_column(conn, "model_usage", "reasoning_tokens");
         let reasoning = num("reasoning_tokens");
         // 导入库的近似速度窗口原料（zcode 主库也可能有该列但速度不使用——
         // 精确口径只认事件时刻；codex 无该列按 NULL → 恒无速度样本）
@@ -632,53 +539,25 @@ pub(crate) fn collect_source_speed_with_remote(
             } else if let Some(d) = duration_ms {
                 g.durs.push(d);
             }
-            // 速度样本（口径分池，见模块头）：
+            // Each sample is one model request. Never use turn/tool wall time.
             if is_zcode {
-                // zcode → generation 池：共享行级判定（B1）——完成状态行经
-                // token_speed::generation_sample 校验（completed > first > 0、
-                // first ≥ started、拒绝未来时刻、样本时长边界 [200ms, 1h]；
-                // 状态列缺失的老库按全完成降级参与）。思考型请求（reasoning
-                // > 0 或模型名含 claude）的生成窗口前移为 completed −
-                // started，见共享判定。缺事件时刻的行不产速度样本，不降级
-                // duration_ms。
-                let is_completed = !has_status_col
-                    || crate::token_speed::is_completed_status(status.as_deref());
-                if is_completed {
+                if !has_status_col || crate::token_speed::is_completed_status(status.as_deref()) {
                     let timing = crate::token_speed::RequestTiming {
-                        output_tokens: output,
-                        started_at: (started > 0).then_some(started),
-                        first_token_at: first,
-                        completed_at: completed,
-                        duration_ms: None,
-                        request_id: None,
-                        // 思考感知窗口信号：缺列（老库）或零值按 None
-                        reasoning_tokens: (has_reasoning && reasoning > 0).then_some(reasoning),
-                        model_id,
+                        output_tokens: output, started_at: Some(started),
+                        first_token_at: first, completed_at: completed,
+                        reasoning_tokens: (reasoning > 0).then_some(reasoning), model_id,
+                        ..Default::default()
                     };
-                    if let Some(sample) = crate::token_speed::generation_sample(&timing, observed) {
-                        g.generation_pairs.push((
-                            sample.output_tokens as f64,
-                            sample.generation_ms as f64,
-                        ));
+                    if let Some(sample) = crate::token_speed::speed_sample(&timing, observed) {
+                        let pool = if sample.quality == SpeedQuality::Generation { &mut g.generation_pairs } else { &mut g.average_pairs };
+                        pool.push((sample.output_tokens as f64, sample.generation_ms as f64));
                     }
                 }
             } else if let Some(d) = duration_ms {
-                // 导入库 → average 池：request_average 近似（output ÷
-                // duration_ms，含首字延迟）。request_speed_at 内部完成零输出 /
-                // started 有效性 / 窗口边界 [200ms, 1h] 校验，通过后分子分母
-                // 与判定严格同源；codex 无 duration_ms 列恒走不进本分支
-                let timing = crate::token_speed::RequestTiming {
-                    output_tokens: output,
-                    started_at: (started > 0).then_some(started),
-                    first_token_at: None,
-                    completed_at: None,
-                    duration_ms: Some(d),
-                    request_id: None,
-                    reasoning_tokens: (has_reasoning && reasoning > 0).then_some(reasoning),
-                    model_id,
-                };
-                if crate::token_speed::request_speed_at(&timing, observed).is_some() {
-                    g.average_pairs.push((output as f64, d as f64));
+                let quality = crate::token_speed::duration_quality(source);
+                if crate::token_speed::duration_speed(output, d as f64, quality, started).is_some() {
+                    let pool = if quality == SpeedQuality::Generation { &mut g.generation_pairs } else { &mut g.average_pairs };
+                    pool.push((output as f64, d as f64));
                 }
             }
         }
@@ -828,18 +707,10 @@ fn merge_remote_speed_rows(
         if let Some(d) = row.duration_ms.filter(|value| *value > 0.0) {
             let d = d as i64;
             g.durs.push(d);
-            let timing = crate::token_speed::RequestTiming {
-                output_tokens: row.output_tokens,
-                started_at: (row.started_at > 0).then_some(row.started_at),
-                first_token_at: None,
-                completed_at: None,
-                duration_ms: Some(d),
-                request_id: None,
-                reasoning_tokens: (row.reasoning_tokens > 0).then_some(row.reasoning_tokens),
-                model_id: Some(row.model_id.clone()),
-            };
-            if crate::token_speed::request_speed_at(&timing, 0).is_some() {
-                g.average_pairs.push((row.output_tokens as f64, d as f64));
+            let quality = crate::token_speed::duration_quality(source);
+            if crate::token_speed::duration_speed(row.output_tokens, d as f64, quality, row.started_at).is_some() {
+                let pool = if quality == SpeedQuality::Generation { &mut g.generation_pairs } else { &mut g.average_pairs };
+                pool.push((row.output_tokens as f64, d as f64));
             }
         }
     }
@@ -1087,9 +958,9 @@ mod tests {
         let m = &stats[0];
         assert_eq!(m.requests, 3);
         assert_eq!(m.success_rate, Some(1.0));
-        assert_eq!(m.avg_tps, None, "全部速度样本不可信应为 null");
-        assert_eq!(m.speed_sample_count, None, "无速度样本时样本数为 null");
-        assert_eq!(m.p50_tps, None);
+        assert!((m.avg_tps.unwrap() - 10_000.0 / 900.0).abs() < 1e-9);
+        assert_eq!(m.speed_sample_count, Some(1));
+        assert_eq!(m.speed_quality, Some(SpeedQuality::RequestAverage));
         // TTFT：t2 行 first(800) ≥ started 但 completed<first 不影响 TTFT；
         // 样本 = [800, 100] → min 100、P90 800
         assert_eq!(m.ttft_min_ms, Some(100));

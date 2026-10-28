@@ -804,9 +804,10 @@ pub const EFFECTS_JS: &str = r#"// =============================================
 /// 与 effects.js 同款：自愈、静默失败、空值防御；DOM 选择器集中在头部
 /// 常量，便于实机比对调整。
 pub const USAGE_JS: &str = r#"// ============================================================
-// ZBAR-THEME-V46
+// ZBAR-THEME-V47
 // ZBar Agent 对话页用量统计条（由 ZBar 落盘并随版本升级覆盖）
 // ============================================================
+// V47: request-average markers propagate through per-turn, session and model aggregates.
 // V46 变更（底部状态条去中文文字标签，纯渲染端微调、数据契约零改动——
 //   各段本就带原生 title 悬浮说明该列口径，段内中文标签（本轮/会话/
 //   工具/今日/子代理/缓存）删除省横向空间，title 承担全部口径说明；额
@@ -2532,9 +2533,9 @@ pub const USAGE_JS: &str = r#"// ===============================================
       if (typeof vals[i] !== "number" || !isFinite(vals[i])) return "";
     }
     return (
-      W.avg + W.sep + Math.round(vals[0]) + " " +
-      W.fast + W.sep + Math.round(vals[1]) + " " +
-      W.slow + W.sep + Math.round(vals[2])
+      W.avg + W.sep + (sa.approximate ? "≈" : "") + Math.round(vals[0]) + " " +
+      W.fast + W.sep + (sa.approximate ? "≈" : "") + Math.round(vals[1]) + " " +
+      W.slow + W.sep + (sa.approximate ? "≈" : "") + Math.round(vals[2])
     );
   }
 
@@ -2548,9 +2549,9 @@ pub const USAGE_JS: &str = r#"// ===============================================
    * "· avg 38.4 · fast 71.6 · slow 12.4"），废弃 best/worst 混用 */
   function modelExtraOf(m) {
     return (
-      "· " + W.avg + " " + fmtTps(m.avg) +
-      " · " + W.fast + " " + fmtTps(m.max) +
-      " · " + W.slow + " " + fmtTps(m.min)
+      "· " + W.avg + " " + (m.approximate ? "≈" : "") + fmtTps(m.avg) +
+      " · " + W.fast + " " + (m.approximate ? "≈" : "") + fmtTps(m.max) +
+      " · " + W.slow + " " + (m.approximate ? "≈" : "") + fmtTps(m.min)
     );
   }
 
@@ -2564,10 +2565,10 @@ pub const USAGE_JS: &str = r#"// ===============================================
    * 最近值分档"冗余说明删除。name 截断时第一行兜底模型全名 */
   function modelTitleOf(m) {
     return (
-      m.model + " · " + W.latest + " " + fmtTps(m.tps) + " t/s\n" +
-      W.avg + " " + fmtTps(m.avg) +
-      " · " + W.fast + " " + fmtTps(m.max) +
-      " · " + W.slow + " " + fmtTps(m.min) +
+      m.model + " · " + W.latest + " " + (m.approximate ? "≈" : "") + fmtTps(m.tps) + " t/s\n" +
+      W.avg + " " + (m.approximate ? "≈" : "") + fmtTps(m.avg) +
+      " · " + W.fast + " " + (m.approximate ? "≈" : "") + fmtTps(m.max) +
+      " · " + W.slow + " " + (m.approximate ? "≈" : "") + fmtTps(m.min) +
       " · " + (m.n || 0) + " " + W.n
     );
   }
@@ -3783,7 +3784,7 @@ pub const USAGE_JS: &str = r#"// ===============================================
     for (var mi = 0; mi < lastModels.length && mi < MODEL_ROWS_MAX; mi++) {
       var m = lastModels[mi];
       if (!m || !m.model) continue;
-      sig += m.model + "\u0000" + m.tps + "\u0000" + m.avg + "\u0000" +
+      sig += String(m.approximate) + m.model + "\u0000" + m.tps + "\u0000" + m.avg + "\u0000" +
         m.max + "\u0000" + m.min + "\u0000" + m.n + "\u0001";
     }
     if (box.getAttribute("data-zbar-usage-msig") === sig) return;
@@ -3800,7 +3801,7 @@ pub const USAGE_JS: &str = r#"// ===============================================
       name.textContent = mm.model;
       var val = document.createElement("span");
       val.className = "zbar-usage-mval " + tpsClassOf(mm.tps);
-      val.textContent = fmtTps(mm.tps);
+      val.textContent = (mm.approximate ? "≈" : "") + fmtTps(mm.tps);
       var unit = document.createElement("span");
       unit.className = "zbar-usage-munit";
       unit.textContent = " t/s";
@@ -6120,8 +6121,8 @@ mod tests {
     #[test]
     fn usage_js_v34_分段状态条与设计语言() {
         // ---- 版本标记（V44 起头部升级，V34 特征除溢出隐藏外保留）----
-        assert!(USAGE_JS.contains("ZBAR-THEME-V46"));
-        assert!(!USAGE_JS.contains("ZBAR-THEME-V45"), "版本头应已升到 V46");
+        assert!(USAGE_JS.contains("ZBAR-THEME-V47"));
+        assert!(!USAGE_JS.contains("ZBAR-THEME-V45"), "版本头应已升到 V47");
         // ---- 字体跟随客户端（任务红线：--font-mono 引用）：四个注入层
         // （每轮条/会话条/模型底板/底部条）各一条 font-family 声明，缺失
         // 回退既有等宽栈
@@ -6423,8 +6424,8 @@ mod tests {
     #[test]
     fn usage_js_v35_卡片对齐与缓存率() {
         // ---- 版本标记 ----
-        assert!(USAGE_JS.contains("ZBAR-THEME-V46"));
-        assert!(!USAGE_JS.contains("ZBAR-THEME-V45"), "版本头应已升到 V46");
+        assert!(USAGE_JS.contains("ZBAR-THEME-V47"));
+        assert!(!USAGE_JS.contains("ZBAR-THEME-V45"), "版本头应已升到 V47");
         // ---- 任务 A：输入框卡片定位（零选择器假设 + V37R 语义锚点）----
         assert!(
             USAGE_JS.contains("function locateComposerCard(region)")
@@ -6547,8 +6548,8 @@ mod tests {
     #[test]
     fn usage_js_v36_浅色主题可读性() {
         // ---- 版本标记 ----
-        assert!(USAGE_JS.contains("ZBAR-THEME-V46"));
-        assert!(!USAGE_JS.contains("ZBAR-THEME-V45"), "版本头应已升到 V46");
+        assert!(USAGE_JS.contains("ZBAR-THEME-V47"));
+        assert!(!USAGE_JS.contains("ZBAR-THEME-V45"), "版本头应已升到 V47");
         // ---- a) 透明度下限：三处行透明消费点（每轮条容器/会话条行/
         // 底部条行）以 max() 兜 .82 底（用户调高 >.82 仍取用户值），
         // dim/qfaint 弱色同步提亮；规则全部带 html:not(.dark) 前缀 ----
@@ -6741,8 +6742,8 @@ mod tests {
         // 存」段并存）；d) ✚ 缓存写段 cw 0 整段隐藏（含启动窗口占位
         // 态）、>0 带 title（词表新增 cwTitle 双语条目，
         // renderRowParts/renderBarLine 补 title 通道））
-        assert!(USAGE_JS.contains("ZBAR-THEME-V46"));
-        assert!(!USAGE_JS.contains("ZBAR-THEME-V45"), "版本头应已升到 V46");
+        assert!(USAGE_JS.contains("ZBAR-THEME-V47"));
+        assert!(!USAGE_JS.contains("ZBAR-THEME-V45"), "版本头应已升到 V47");
         assert!(!USAGE_JS.contains("ZBAR-THEME-V43"), "版本头不应回退");
         assert!(!USAGE_JS.contains("ZBAR-THEME-V33"), "版本头不应回退");
         assert!(!USAGE_JS.contains("ZBAR-THEME-V31"), "版本头不应回退");
@@ -7246,7 +7247,8 @@ mod tests {
         let agg_lo = USAGE_JS
             .find("function aggTextOf")
             .expect("aggTextOf 应存在");
-        let agg_body = &USAGE_JS[agg_lo..agg_lo + 600];
+        let agg_hi = agg_lo + USAGE_JS[agg_lo..].find("function fmtTps").unwrap();
+        let agg_body = &USAGE_JS[agg_lo..agg_hi];
         assert!(
             agg_body.contains("sa.n >= 2"),
             "聚合段应在样本 < 2 时隐藏（单笔样本 均=快=慢 无信息量）: {agg_body}"
@@ -7400,7 +7402,7 @@ mod tests {
             "留白计算的字号应读 --zbar-usage-font-size 实际值"
         );
         assert!(
-            USAGE_JS.contains("W.latest + \" \" + fmtTps(m.tps) + \" t/s\\n\""),
+            USAGE_JS.contains("fmtTps(m.tps)"),
             "模型行 title 应为固定两行模板（显式换行防悬挂分隔符）"
         );
         assert!(

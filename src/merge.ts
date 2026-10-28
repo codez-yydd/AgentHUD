@@ -28,14 +28,17 @@ export function modelCost(
   cacheReadTokens: number,
   pricing: PricingConfig,
   currency: Currency,
-  fxRate: number
+  fxRate: number,
+  source = "zcode",
+  cacheWriteTokens = 0
 ): number {
   const lookup = (p: ModelPrice) => {
-    const nonCacheInput = Math.max(0, inputTokens - cacheReadTokens);
+    const separate = source === "claude" || source === "kimi";
+    const nonCacheInput = Math.max(0, separate ? inputTokens : inputTokens - cacheReadTokens - cacheWriteTokens);
     const usd =
       (nonCacheInput * p.input +
         outputTokens * p.output +
-        cacheReadTokens * p.cache_read) /
+        cacheReadTokens * p.cache_read + cacheWriteTokens * (p.cache_write ?? p.input)) /
       1_000_000;
     return currency === "cny" ? usd * fxRate : usd;
   };
@@ -95,7 +98,7 @@ export function computeRemoteCost(
         m.cache_read_tokens,
         pricing,
         currency,
-        fxRate
+        fxRate, m.source, m.cache_write_tokens ?? ((m.source === "claude" || m.source === "kimi") ? Math.max(0, m.total_tokens - m.input_tokens - m.output_tokens - m.cache_read_tokens) : 0)
       ),
     }));
   const cny = perModel("cny");
@@ -217,7 +220,7 @@ export function mergeCost(
       m.cache_read_tokens,
       pricing,
       "cny",
-      fxRate
+      fxRate, m.source, m.cache_write_tokens ?? ((m.source === "claude" || m.source === "kimi") ? Math.max(0, m.total_tokens - m.input_tokens - m.output_tokens - m.cache_read_tokens) : 0)
     ),
   }));
   const usdExtra = remote.by_model.map((m) => ({
@@ -229,7 +232,7 @@ export function mergeCost(
       m.cache_read_tokens,
       pricing,
       "usd",
-      fxRate
+      fxRate, m.source, m.cache_write_tokens ?? ((m.source === "claude" || m.source === "kimi") ? Math.max(0, m.total_tokens - m.input_tokens - m.output_tokens - m.cache_read_tokens) : 0)
     ),
   }));
   return {
@@ -290,7 +293,7 @@ export function remoteTrendToLocal(
             m.cache_read_tokens,
             pricing,
             "cny",
-            fxRate
+            fxRate, m.source, m.cache_write_tokens ?? ((m.source === "claude" || m.source === "kimi") ? Math.max(0, m.total_tokens - m.input_tokens - m.output_tokens - m.cache_read_tokens) : 0)
           ),
         0
       );
@@ -304,7 +307,7 @@ export function remoteTrendToLocal(
             m.cache_read_tokens,
             pricing,
             "usd",
-            fxRate
+            fxRate, m.source, m.cache_write_tokens ?? ((m.source === "claude" || m.source === "kimi") ? Math.max(0, m.total_tokens - m.input_tokens - m.output_tokens - m.cache_read_tokens) : 0)
           ),
         0
       );

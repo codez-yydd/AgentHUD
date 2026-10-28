@@ -1,93 +1,21 @@
-//! 主窗口「请求日志」页的取数：把 7 个本地来源的请求级明细表（`model_usage`，
-//! 每行 = 一次模型请求）按时间倒序合并成一份可分页的列表；`scope = "all"`
-//! 时再并入同步服务端上其他设备的逐条明细（远端作为第 8 路同语义接入）。
+//! Multi-source request logs. Each row represents a model request, not an
+//! entire agent turn. Sources are merged before global pagination; summaries
+//! cover the full filter range. Other devices are fetched excluding this device.
 //!
-//! ## 来源与打开方式
+//! Speed is computed by Rust only. A rejected/missing sample stays null in the
+//! UI. Completed ZCode events use token_speed::request_speed_at; uncertain
+//! reasoning timing is a request average. DSH records a stream duration, whereas
+//! Claude/Kimi/OpenCode/MiniMax durations describe requests. Duration-only paths
+//! never subtract TTFT. Remote rows use the same recorded-duration validation.
 //!
-//! - `zcode`：ZCode 主库（`db::db_path()`，**只读**打开，与 db.rs 同款 flags）；
-//! - `codex` / `claude` / `kimi` / `dsh` / `opencode` / `minimaxcode`：各自的
-//!   导入库 `~/.agenthud/<name>.sqlite`（与前端的「来源」概念对齐，见
-//!   src/dashboard/compare/model.ts 的 remoteSource 映射）；
-//! - 远端（仅 `scope = "all"` 且已启用同步）：GET /usage_records 一次拉取
-//!   其他设备（`exclude_device=<本机>`）的明细 + by_model 聚合，按行的真实
-//!   source 分桶归并进对应来源路（见「全部设备口径」）。本机记录会上传到
-//!   服务端本机 device_id 名下，因此远端查询必须排除本机，两集合不相交，
-//!   合并无需去重。
+//! All speed samples require positive output and a window in [200ms, 1h].
+//! Failed/nonterminal local requests never produce speed. Tool execution
+//! between requests is excluded; model-generated tool arguments remain output.
 //!
-//! 本模块对导入库只做 SELECT：直接 `Connection::open` 打开，**刻意不调用各模块的
-//! `open_*_db()`**——那些函数会建表 / 补列 / 触发迁移，而这里只是读一眼；
-//! 库文件不存在（未安装 / 未用过）按 0 条处理，ZCode 主库路径解析失败同样按
-//! 0 条（未安装 ZCode 时页面必须照常显示空态）。
-//!
-//! ## 列差异与降级
-//!
-//! 各库 `model_usage` 列基本统一（started_at / model_id / provider_id /
-//! input_tokens / output_tokens / cache_read_input_tokens /
-//! cache_creation_input_tokens / reasoning_tokens / computed_total_tokens /
-//! session_id），差异一律用 `db::has_column` 逐个降级、缺失列 SELECT NULL，
-//! 绝不改库（老 zcode 主库无 session_id、老 claude 库无 cwd / project_key）：
-//! - `duration_ms`：zcode / claude / kimi / dsh / opencode / minimaxcode 有
-//!   （>0 才给，缺失与 0 都按 None）；
-//! - `time_to_first_token_ms`：zcode 与 dsh 是真实数据（opencode / minimaxcode
-//!   该列恒 NULL），其余来源无该列，统一按 None；
-//! - `first_token_at` / `completed_at`（行级速度原料）：zcode 主库的事件时刻，
-//!   导入库无该列按 NULL；
-//! - `project`：codex / kimi 从各自 `session_meta` 表按会话取（无表 / 无该会话
-//!   → None），claude / dsh / opencode / minimaxcode 取行内 cwd / project_key；
-//!   zcode 主库没有项目列（归属在 zcode_sessions 派生库），本页不做跨库解析。
-//!
-//! ## 行级速度口径
-//!
-//! 单笔速度（`speed_tps` / `speed_quality`）的**唯一真源 = `token_speed`**：
-//! `row_to_log` 逐行调 `token_speed::request_speed_at`，思考感知窗口（思考型
-//! 请求 output 已含思考 token，生成窗口前移为 completed − started 全程，
-//! 防止思考时长漏出分母导致速率虚高）、[200ms, 1h] 样本窗口边界与时序校验
-//! 全在该行级判定内，前端 `speedOf` 不再自行判定生成窗口。`observed_at_ms`
-//! 传 0：这些是已落库的历史行，不做未来时刻拒绝（与既有日志页语义一致）。
-//! 判定失败（零输出 / 时序倒置 / 窗口越界 / 无时间戳）两字段为 None，前端回退。
-//!
-//! ## 分页与归并
-//!
-//! 每个来源按 `started_at DESC` 取「前 (page+1)×page_size 行」（**单源不带
-//! OFFSET**：全局页码对应的 offset 落在归并之后，单源先 OFFSET 会把归并结果
-//! 切歪），各源结果做 k 路归并（同毫秒按「本机在前、来源名稳定序」，本机行
-//! device 为 None 恒排在远端行之前）后切片出当前页；total = 各源同条件
-//! COUNT 之和。单源失败（表不存在、库损坏等）只记 eprintln! 并跳过该源，把
-//! 来源名放进 `failed_sources` 交前端弱提示，不让整页失败。
-//!
-//! ## 全部设备口径（scope = "all"）
-//!
-//! 远端作为一路接入 `collect_sources` 之后的归并：同步启用时 GET
-//! /usage_records 一次请求（带 `exclude_device=<本机>`，单来源筛选时再带
-//! `source`），返回行按真实 source 分桶归并进对应来源路——来源列展示、
-//! agent 筛选语义、merge_summaries 的分源缓存命中率（included / separate）
-//! 全部自动复用本地来源路的既有逻辑，无需为远端写特殊分支。行数上限：
-//! 单来源筛选与本地单源一致；全部来源时拉 limit×源数 行（服务端全局排序后
-//! 分桶，可证明每源仍能取足自身的前 limit 名，归并切页正确；上限同样夹到
-//! MAX_FETCH_ROWS）。远端行不带耗时 / 首字 / 速度（服务端明细无这些列，恒
-//! None，前端灰化「—」）；device 字段带回设备 id 供前端展示；远端拉取失败 /
-//! 同步未启用 / 旧服务端 404 一律计入 `failed_sources`（统一标识 "remote"），
-//! 本机数据照常展示，绝不清空表格。服务端无该接口的旧版本走同一降级路径。
-//!
-//! 具体设备筛选（`device` 非空，前端设备下拉选中某台远端设备时下发）：
-//! 跳过全部本机来源拉取，远端请求改带 `devices=<该设备>`（服务端 devices
-//! 参数优先于 exclude_device，只查该设备）——行与汇总都只来自该设备（口径
-//! 一致）；远端失败照样计入 `failed_sources`（该口径下它是唯一来源，
-//! total 为 0 时空表需要提示）。
-//!
-//! ## 汇总指标
-//!
-//! `summary`：当前筛选条件（agent + model + 时间范围）下**全范围**聚合
-//! （不是当前页），每源在分页查询外另发一条聚合 SQL（同 WHERE）：请求数 /
-//! 各项 token 和 + 按 model_id 分组的成本折算输入（复用 Billable/cost_for，
-//! 无价格模型贡献 0）。缓存命中率分子统一为 Σcache_read，分母分两套口径：
-//! `included` 源（zcode / codex / dsh / opencode / minimaxcode，input 已含
-//! 缓存读）= Σinput；`separate` 源（claude / kimi，缓存读写单独成列、不含在
-//! input 内）= Σinput + Σcache_read + Σcache_write。分母为 0 → None。
-//!
-//! 耗时只认来源库里的**真实** `duration_ms`（> 0 才给）；没有该列或值为
-//! NULL / 0 的来源（如 codex 会话文件本就不含耗时）按无耗时下发（None），
-//! 前端显示灰化「—」，不再做任何估算回退。
+//! Token totals retain source-native columns: Claude/Kimi inputs exclude cache
+//! reads/writes, while the other importers include cached input. Cache rates
+//! and billing therefore use the original source. Missing databases are empty;
+//! failing sources are reported without clearing the remaining results.
 
 use rusqlite::{params, Connection, OpenFlags};
 use serde::Serialize;
@@ -175,6 +103,8 @@ impl crate::Billable for RequestLogRow {
     fn cache_read_tokens(&self) -> i64 {
         self.cache_read_tokens
     }
+    fn cache_write_tokens(&self) -> i64 { self.cache_write_tokens }
+    fn total_tokens(&self) -> i64 { self.total_tokens }
 }
 
 /// get_request_logs 的返回：范围内总条数 + 当前页明细 + 全范围汇总 + 失败来源
@@ -234,6 +164,8 @@ struct ModelTokens {
     input_tokens: i64,
     output_tokens: i64,
     cache_read_tokens: i64,
+    total_tokens: i64,
+    cache_write_tokens: i64,
 }
 
 impl SourceTotals {
@@ -264,6 +196,8 @@ impl crate::Billable for ModelTokens {
     fn cache_read_tokens(&self) -> i64 {
         self.cache_read_tokens
     }
+    fn total_tokens(&self) -> i64 { self.total_tokens }
+    fn cache_write_tokens(&self) -> i64 { self.cache_write_tokens }
 }
 
 /// 模型筛选项（跨源合并同名模型后的计数）
@@ -429,29 +363,28 @@ fn select_list(conn: &Connection, source: &str) -> String {
     } else {
         "NULL"
     };
+    let status = if crate::db::has_column(conn, "model_usage", "status") { "status" } else { "NULL" };
     let project = project_expr(conn, source).unwrap_or_else(|| "NULL".into());
     format!(
         "started_at, COALESCE(model_id,''), COALESCE(provider_id,''), \
          COALESCE(input_tokens,0), COALESCE(output_tokens,0), \
          COALESCE(cache_read_input_tokens,0), COALESCE(cache_creation_input_tokens,0), \
          COALESCE(reasoning_tokens,0), COALESCE(computed_total_tokens,0), \
-         {session}, {project}, {duration}, {ttft}, {first_token}, {completed}"
+         {session}, {project}, {duration}, {ttft}, {first_token}, {completed}, {status}"
     )
 }
 
-/// 行读取（列序与 `select_list` 一致；花费由调用方按本机价格表统一折算）。
-/// 行级速度的**唯一真源 = `token_speed`**：思考感知窗口（思考型请求用
-/// completed − started 全程窗口）、[200ms, 1h] 样本窗口边界与时序校验都在
-/// `request_speed_at` 的行级判定里，前端 speedOf 不再自行判定生成窗口。
-/// `observed_at_ms` 传 0：已落库的历史行不做未来时刻拒绝（与既有日志页
-/// 语义一致）；判定失败两字段为 None，前端按 null 回退。
+/// Read one request and keep backend validation authoritative for the UI.
 fn row_to_log(row: &rusqlite::Row<'_>, source: &str) -> rusqlite::Result<RequestLogRow> {
     let started_at: i64 = row.get(0)?;
     let model_id: String = row.get(1)?;
     let output_tokens: i64 = row.get(4)?;
     let reasoning_tokens: i64 = row.get(7)?;
     let duration_ms: Option<f64> = row.get(11)?;
-    let speed = crate::token_speed::request_speed_at(
+    let status: Option<String> = row.get(15)?;
+    let speed = if !crate::token_speed::is_completed_status(status.as_deref()) { None } else if source != "zcode" {
+        duration_ms.and_then(|duration| crate::token_speed::duration_speed(output_tokens, duration, crate::token_speed::duration_quality(source), started_at))
+    } else { crate::token_speed::request_speed_at(
         &crate::token_speed::RequestTiming {
             output_tokens,
             started_at: Some(started_at),
@@ -468,8 +401,8 @@ fn row_to_log(row: &rusqlite::Row<'_>, source: &str) -> rusqlite::Result<Request
             reasoning_tokens: (reasoning_tokens > 0).then_some(reasoning_tokens),
             model_id: (!model_id.is_empty()).then(|| model_id.clone()),
         },
-        0,
-    );
+        chrono::Utc::now().timestamp_millis(),
+    ) };
     Ok(RequestLogRow {
         source: source.to_string(),
         started_at,
@@ -532,7 +465,7 @@ fn merge_summaries(
         summary.cache_write_tokens += item.cache_write_tokens;
         summary.total_tokens += item.total_tokens;
         for group in &item.by_model {
-            summary.cost_usd += crate::cost_for(group, pricing);
+            summary.cost_usd += crate::cost_for_source(group, pricing, source);
         }
         hit_numerator += item.cache_read_tokens;
         hit_denominator += cache_denominator(source, item);
@@ -581,7 +514,7 @@ fn query_source_totals(
     }
     let mut stmt = conn.prepare(&format!(
         "SELECT COALESCE(model_id,''), COALESCE(SUM(input_tokens),0), \
-                COALESCE(SUM(output_tokens),0), COALESCE(SUM(cache_read_input_tokens),0) \
+                COALESCE(SUM(output_tokens),0), COALESCE(SUM(cache_read_input_tokens),0), COALESCE(SUM(computed_total_tokens),0), COALESCE(SUM(cache_creation_input_tokens),0) \
          FROM model_usage {WHERE_LOG} GROUP BY model_id"
     ))?;
     let groups = stmt
@@ -591,6 +524,8 @@ fn query_source_totals(
                 input_tokens: row.get(1)?,
                 output_tokens: row.get(2)?,
                 cache_read_tokens: row.get(3)?,
+                total_tokens: row.get(4)?,
+                cache_write_tokens: row.get(5)?,
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;
@@ -673,6 +608,8 @@ fn query_source_models(
 /// project_key；花费由调用方对当前页统一折算，此置 0；
 /// device 带回设备 id 供前端展示归属。
 fn remote_row_to_log(record: &crate::sync::RemoteUsageRecord) -> RequestLogRow {
+    let speed = record.duration_ms.and_then(|duration| crate::token_speed::duration_speed(
+        record.output_tokens, duration, crate::token_speed::duration_quality(&record.source), record.started_at));
     RequestLogRow {
         source: record.source.clone(),
         started_at: record.started_at,
@@ -694,8 +631,8 @@ fn remote_row_to_log(record: &crate::sync::RemoteUsageRecord) -> RequestLogRow {
             .or_else(|| record.project_key.clone()),
         duration_ms: record.duration_ms.filter(|value| *value > 0.0),
         ttft_ms: record.time_to_first_token_ms.filter(|value| *value > 0.0),
-        speed_tps: None,
-        speed_quality: None,
+        speed_tps: speed.as_ref().map(|s| s.value),
+        speed_quality: speed.map(|s| s.quality),
         device: Some(record.device_id.clone()),
     }
 }
@@ -733,6 +670,8 @@ fn split_remote_records(
                 input_tokens: group.input_tokens,
                 output_tokens: group.output_tokens,
                 cache_read_tokens: group.cache_read_tokens,
+                total_tokens: group.total_tokens,
+                cache_write_tokens: group.cache_write_tokens,
             });
         }
     }
@@ -1017,7 +956,7 @@ pub fn collect_request_logs(
     let pricing = crate::load_pricing().unwrap_or_default();
     let fx = crate::load_fx_rate();
     for row in &mut rows {
-        row.cost_usd = crate::cost_for(row, &pricing.usd);
+        row.cost_usd = crate::cost_for_source(row, &pricing.usd, &row.source);
         row.cost_cny = row.cost_usd * fx;
     }
     let summary = merge_summaries(&totals, &pricing.usd, fx);
@@ -1128,6 +1067,25 @@ mod tests {
 
     /// 分页入参归一：缺省 / 越界 / 负数
     #[test]
+    fn logs_reject_unfinished_requests_and_preserve_stream_duration() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE model_usage (started_at INTEGER, model_id TEXT, provider_id TEXT,
+            input_tokens INTEGER, output_tokens INTEGER, cache_read_input_tokens INTEGER,
+            cache_creation_input_tokens INTEGER, reasoning_tokens INTEGER, computed_total_tokens INTEGER,
+            duration_ms REAL, time_to_first_token_ms REAL, status TEXT);
+            INSERT INTO model_usage VALUES (1000,'m','p',10,1060,0,0,0,1070,4200,1055,'running');").unwrap();
+        let sql = format!("SELECT {} FROM model_usage", select_list(&conn, "dsh"));
+        let row = conn.query_row(&sql, [], |r| row_to_log(r,"dsh")).unwrap();
+        assert_eq!(row.speed_tps, None);
+        conn.execute("UPDATE model_usage SET status='completed'", []).unwrap();
+        let row = conn.query_row(&sql, [], |r| row_to_log(r,"dsh")).unwrap();
+        assert!((row.speed_tps.unwrap() - 1060.0 / 4.2).abs() < 1e-9);
+        assert_eq!(row.speed_quality, Some(crate::token_speed::SpeedQuality::Generation));
+        conn.execute("UPDATE model_usage SET duration_ms=105", []).unwrap();
+        assert!(conn.query_row(&sql, [], |r| row_to_log(r,"dsh")).unwrap().speed_tps.is_none());
+    }
+
+    #[test]
     fn normalize_paging_clamps() {
         assert_eq!(normalize_paging(0, 20), (0, 20));
         assert_eq!(normalize_paging(-3, 20), (0, 20));
@@ -1194,7 +1152,7 @@ mod tests {
         // 近似（duration_ms 兜底窗口），不是 None
         assert_eq!(
             row.speed_quality,
-            Some(crate::token_speed::SpeedQuality::RequestAverage)
+            Some(crate::token_speed::SpeedQuality::Generation)
         );
         assert!(row.speed_tps.is_some());
 
@@ -1281,7 +1239,7 @@ mod tests {
         assert!((tps - 10.0).abs() < 1e-9, "{tps}");
         assert_eq!(
             rows[1].speed_quality,
-            Some(crate::token_speed::SpeedQuality::Generation)
+            Some(crate::token_speed::SpeedQuality::RequestAverage)
         );
         // claude 系按名识别：同思考行口径
         let tps = rows[2].speed_tps.expect("claude 行应有生成速度");
@@ -1436,7 +1394,9 @@ mod tests {
                 input_tokens: 30,
                 output_tokens: 11,
                 cache_read_tokens: 4,
-            }
+                total_tokens: 46,
+    cache_write_tokens: 1,
+}
         );
         assert_eq!(
             totals.by_model[1],
@@ -1445,7 +1405,9 @@ mod tests {
                 input_tokens: 40,
                 output_tokens: 8,
                 cache_read_tokens: 9,
-            }
+                total_tokens: 57,
+    cache_write_tokens: 0,
+}
         );
 
         // 模型筛选：只算 b
@@ -1476,7 +1438,9 @@ mod tests {
                 input_tokens: 100,
                 output_tokens: 10,
                 cache_read_tokens: 40,
-            }],
+                total_tokens: 110,
+    cache_write_tokens: 0,
+}],
         };
         // separate 源：分母 = input + read + write
         let separate = SourceTotals {
@@ -1491,7 +1455,9 @@ mod tests {
                 input_tokens: 50,
                 output_tokens: 5,
                 cache_read_tokens: 30,
-            }],
+                total_tokens: 105,
+    cache_write_tokens: 20,
+}],
         };
         let mut pricing = BTreeMap::new();
         pricing.insert(
@@ -1500,6 +1466,7 @@ mod tests {
                 input: 1.0,
                 output: 2.0,
                 cache_read: 0.5,
+                cache_write: None,
             },
         );
         let summary = merge_summaries(
@@ -1805,8 +1772,8 @@ mod tests {
         assert_eq!(row.total_tokens, 170);
         assert_eq!(row.duration_ms, Some(2500.0), "远端行耗时透传");
         assert_eq!(row.ttft_ms, Some(500.0), "远端行首字透传");
-        assert!(row.speed_tps.is_none());
-        assert!(row.speed_quality.is_none());
+        assert!(row.speed_tps.is_some());
+        assert_eq!(row.speed_quality, Some(crate::token_speed::SpeedQuality::RequestAverage));
         assert_eq!(row.session_id.as_deref(), Some("s9"));
     }
 
@@ -1865,7 +1832,9 @@ mod tests {
                     input_tokens: 30,
                     output_tokens: 10,
                     cache_read_tokens: 0,
-                }],
+                    total_tokens: 40,
+    cache_write_tokens: 0,
+}],
             },
         )];
         let mut rows: Vec<RequestLogRow> = Vec::new();
@@ -1958,7 +1927,7 @@ mod tests {
         assert_eq!(json["device"], "dev-a");
         assert_eq!(json["duration_ms"], 1200.0, "远端行耗时透传");
         assert_eq!(json["ttft_ms"], 300.0, "远端行首字透传");
-        assert!(json["speed_tps"].is_null());
+        assert!(json["speed_tps"].as_f64().unwrap() > 0.0);
 
         let mut local_row = row.clone();
         local_row.device = None;

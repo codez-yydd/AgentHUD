@@ -5,23 +5,10 @@ use std::path::PathBuf;
 // TimeZone trait 提供 timestamp_millis_opt 等方法，用于把毫秒转回本地时间
 use chrono::TimeZone;
 
-/// 速度/延迟指标（serde flatten 平铺进 ModelStat/OverallStat，JSON 形状与
-/// 直接加字段一致）。仅数据源带耗时的 Agent 有值（zcode 库有 duration+TTFT、
-/// Claude 导入库有 duration；Codex/Cursor 无耗时数据恒为 None）。
-/// 同步链路里旧版本数据无这些字段，反序列化按 None 兜底。
-///
-/// ZCode 主库（db::query_stats）自 V24.1 起改用**真实事件时间**的生成口径
-/// （first_token_at → completed_at，共享 token_speed::generation_sample 行级
-/// 判定）：`avg_tps = speedOutputTokens × 1000 / speedGenerationMs`（分母为
-/// 零 → null，绝不显示 0 t/s 冒充缺失），`max_tps` 为合格样本中单请求最快
-/// 值（无 500 t/s 封顶）。`speedQuality` 区分口径：zcode 恒为 `generation`
-/// （有合格样本时；历史页面方案只展示 generation 样本，首 Token 缺失的
-/// request_average 参考值不混入）；claude/kimi 只有请求总耗时，标
-/// `request_average`（TS 侧用 ≈ 前缀区分）。`avg_ttft_ms` 是独立指标，
-/// 有自己的样本集合（`ttftSampleCount`），不与速度样本同集。
-/// 旧字段（avg_tps/max_tps/avg_ttft_ms）保留原名（snake 形态，前端既有
-/// 消费端不动），新字段为 camelCase 契约：speedOutputTokens、
-/// speedGenerationMs、speedSampleCount、ttftSampleCount、speedQuality。
+/// Request/stream speed metrics. Additive output, milliseconds and sample
+/// counts refer to the same validated rows. Approximate timing remains marked
+/// request_average through alias folding and cross-device merges. TTFT has its
+/// own independent sample count. Missing timing is None, never a zero rate.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct SpeedMetrics {
     /// 平均输出速度（tok/s，仅统计可信样本）
@@ -181,96 +168,33 @@ pub(crate) fn has_column(conn: &Connection, table: &str, column: &str) -> bool {
 
 // ===== 输出速度（tok/s）与首字延迟（TTFT）聚合 =====
 //
-// 口径参考 zcode-assistant 的噪声过滤：
-// - 生成窗口 = 总耗时 − 首 token 等待（TTFT），即真实吐字窗口；
-// - 「整块下发」（TTFT ≥ 90% 总耗时，非流式接口/中转缓冲把响应攒在服务端）：
-//   总耗时 − TTFT 只是传输耗时，会把速度放大到数千 tok/s，改用 TTFT 本身
-//   作为生成窗口（含排队与预填充，是速度的保守下界）；
-// - 可信样本条件：输出 ≥10 tokens、生成窗口 ≥100ms、速度 ≤500 tok/s
-//   （现有模型物理上达不到 500，超出视为计时异常丢弃，不参与均值）；
-// - TTFT 均值取正值行（负值/缺失忽略）。
-
-/// 行级生成窗口的 SQL CASE 表达式（引用列 duration_ms / time_to_first_token_ms）。
-/// has_ttft = false（无 TTFT 列，如 Claude 导入库）：生成窗口退化为总耗时。
-fn gen_window_expr(has_ttft: bool) -> String {
-    if !has_ttft {
-        return "CASE WHEN COALESCE(duration_ms,0) > 0 THEN duration_ms END".into();
-    }
-    "CASE
-        WHEN COALESCE(duration_ms,0) <= 0 THEN NULL
-        WHEN time_to_first_token_ms IS NOT NULL
-             AND time_to_first_token_ms >= 0
-             AND time_to_first_token_ms <= duration_ms
-        THEN CASE
-            WHEN time_to_first_token_ms * 10 >= duration_ms * 9
-            THEN time_to_first_token_ms
-            ELSE duration_ms - time_to_first_token_ms
-        END
-        ELSE duration_ms
-    END"
-    .into()
+/// Duration-only sources already store either the request span or the stream
+/// span (DSH). Subtracting TTFT would corrupt the latter. Both SQL consumers
+/// use exactly the same sample set and weighted numerator/denominator.
+fn duration_valid_sql() -> String {
+    format!("output_tokens > 0 AND duration_ms BETWEEN {} AND {}",
+        crate::token_speed::MIN_GEN_MS, crate::token_speed::MAX_GEN_MS)
 }
 
-/// 速度/TTFT 聚合的 SELECT 尾部片段（3 列：avg_tps, max_tps, avg_ttft_ms）。
-/// 列缺失时全部占位 NULL（如 Codex 导入库无耗时数据）。
-/// 追加在既有聚合 SQL 的最后一个聚合列之后，读取方按 Option<f64> 取列。
 pub(crate) fn speed_agg_columns(has_duration: bool, has_ttft: bool) -> String {
-    if !has_duration {
-        return ", NULL, NULL, NULL".into();
-    }
-    let gen = gen_window_expr(has_ttft);
-    let tps = format!(
-        "CASE
-            WHEN COALESCE(output_tokens,0) >= 10 AND ({gen}) >= 100
-                 AND COALESCE(output_tokens,0) * 1000.0 / ({gen}) <= 500.0
-            THEN COALESCE(output_tokens,0) * 1000.0 / ({gen})
-        END"
-    );
-    let ttft = if has_ttft {
-        // TTFT 物理上不超过总耗时，超出视为异常计时一并忽略
-        "CASE WHEN time_to_first_token_ms >= 0
-               AND time_to_first_token_ms <= duration_ms
-          THEN time_to_first_token_ms END"
-    } else {
-        "NULL"
-    };
-    format!(", AVG({tps}), MAX({tps}), AVG({ttft})")
+    if !has_duration { return ", NULL, NULL, NULL".into(); }
+    let valid = duration_valid_sql();
+    let ttft = if has_ttft { "CASE WHEN time_to_first_token_ms >= 0 THEN time_to_first_token_ms END" } else { "NULL" };
+    format!(", SUM(CASE WHEN {valid} THEN output_tokens * 1000.0 END) / SUM(CASE WHEN {valid} THEN duration_ms END), MAX(CASE WHEN {valid} THEN output_tokens * 1000.0 / duration_ms END), AVG({ttft})")
 }
 
-/// 会话级速度/TTFT 聚合的 SELECT 尾部片段（4 列：可信行 tps 总和、可信行数、
-/// 有效 TTFT 行总和、有效 TTFT 行数）。供项目浏览器会话查询用：行查询按
-/// 「会话 × 模型」分组，跨分组保持与 speed_agg_columns 相同的「整体平均」
-/// 口径必须传 SUM/COUNT（各分组 SUM/COUNT 分别累加后再相除 = 全部可信行的
-/// AVG，直接对分组 AVG 再平均会产生二次平均偏差）。
-/// 可信条件与 speed_agg_columns 完全一致（同一 gen_window_expr 与噪声过滤：
-/// 输出 ≥10 tokens、生成窗口 ≥100ms、速度 ≤500 tok/s；TTFT 取 0≤ttft≤duration），
-/// 两处表达式需同步维护。列缺失时占位 NULL/0（无耗时来源 → 调用方读得 None）。
+/// Legacy field names tps_sum/tps_count now carry weighted output*1000 and
+/// duration milliseconds, so combining model rows remains associative.
 pub(crate) fn session_speed_agg_columns(has_duration: bool, has_ttft: bool) -> String {
-    if !has_duration {
-        return ", NULL, 0, NULL, 0".into();
-    }
-    let gen = gen_window_expr(has_ttft);
-    let tps = format!(
-        "CASE
-            WHEN COALESCE(output_tokens,0) >= 10 AND ({gen}) >= 100
-                 AND COALESCE(output_tokens,0) * 1000.0 / ({gen}) <= 500.0
-            THEN COALESCE(output_tokens,0) * 1000.0 / ({gen})
-        END"
-    );
-    let ttft = if has_ttft {
-        // TTFT 物理上不超过总耗时，超出视为异常计时一并忽略（同 speed_agg_columns）
-        "CASE WHEN time_to_first_token_ms >= 0
-               AND time_to_first_token_ms <= duration_ms
-          THEN time_to_first_token_ms END"
-    } else {
-        "NULL"
-    };
-    format!(", SUM({tps}), COUNT({tps}), SUM({ttft}), COUNT({ttft})")
+    if !has_duration { return ", NULL, 0, NULL, 0".into(); }
+    let valid = duration_valid_sql();
+    let ttft = if has_ttft { "CASE WHEN time_to_first_token_ms >= 0 THEN time_to_first_token_ms END" } else { "NULL" };
+    format!(", SUM(CASE WHEN {valid} THEN output_tokens * 1000.0 END), CAST(COALESCE(SUM(CASE WHEN {valid} THEN duration_ms END),0) AS INTEGER), SUM({ttft}), COUNT({ttft})")
 }
 
 /// 会话级 TTFT-only 聚合片段（2 列：有效 TTFT 行总和、行数）。供 zcode
 /// 项目会话查询用——速度部分已切换为行级生成口径（B4，Rust 侧
-/// token_speed::generation_sample 聚合），TTFT 是独立指标沿用列表达式；
+/// token_speed::speed_sample 聚合），TTFT 是独立指标沿用列表达式；
 /// Claude/Kimi/Codex 继续使用 session_speed_agg_columns 的完整片段。
 pub(crate) fn session_ttft_agg_columns(has_duration: bool, has_ttft: bool) -> String {
     if !has_duration || !has_ttft {
@@ -307,6 +231,7 @@ pub(crate) fn query_current_model(conn: &Connection) -> Option<CurrentModelStat>
 /// 语义一致。
 #[derive(Default, Debug, Clone)]
 pub(crate) struct GenerationSpeedAgg {
+    approximate: bool,
     /// 合格样本输出 token 合计（分子）
     speed_output_tokens: i64,
     /// 合格样本生成毫秒合计（分母）
@@ -323,6 +248,7 @@ pub(crate) struct GenerationSpeedAgg {
 
 impl GenerationSpeedAgg {
     fn absorb(&mut self, sample: &crate::token_speed::GenerationSample) {
+        self.approximate |= sample.quality == crate::token_speed::SpeedQuality::RequestAverage;
         self.speed_output_tokens += sample.output_tokens;
         self.speed_generation_ms += sample.generation_ms;
         self.speed_sample_count += 1;
@@ -354,14 +280,46 @@ impl GenerationSpeedAgg {
             // ZCode 历史页面方案：仅展示 generation 合格样本；首 Token 缺失
             // 的 request_average 参考值不混入聚合（缺失即 null，显示 —）
             speed_quality: (self.speed_sample_count > 0)
-                .then_some(crate::token_speed::SpeedQuality::Generation),
+                .then_some(if self.approximate { crate::token_speed::SpeedQuality::RequestAverage } else { crate::token_speed::SpeedQuality::Generation }),
         }
     }
 }
 
+/// Source-native duration statistics, including the sample weights used by
+/// the UI when model aliases are folded. Missing timing remains unavailable.
+pub(crate) fn fill_duration_metrics(conn: &Connection, source: &str, from_ms: i64, to_ms: i64,
+    overall: &mut OverallStat, models: &mut [ModelStat]) -> Result<(), String> {
+    if !has_column(conn, "model_usage", "duration_ms") { return Ok(()); }
+    let ttft = if has_column(conn, "model_usage", "time_to_first_token_ms") { "time_to_first_token_ms" } else { "NULL" };
+    let mut stmt = conn.prepare(&format!("SELECT COALESCE(provider_id,''), COALESCE(model_id,''), output_tokens, duration_ms, {ttft} FROM model_usage WHERE started_at >= ?1 AND started_at < ?2")).map_err(|e| e.to_string())?;
+    let rows = stmt.query_map(rusqlite::params![from_ms,to_ms], |r| Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,i64>(2)?,r.get::<_,Option<f64>>(3)?,r.get::<_,Option<f64>>(4)?))).map_err(|e|e.to_string())?;
+    let mut total = GenerationSpeedAgg::default();
+    let mut by_model: BTreeMap<(String,String), GenerationSpeedAgg> = BTreeMap::new();
+    for row in rows {
+        let (provider,model,output,duration,ttft) = row.map_err(|e|e.to_string())?;
+        let agg = by_model.entry((provider,model)).or_default();
+        if let Some(ttft) = ttft.filter(|t| t.is_finite() && *t >= 0.0) {
+            total.absorb_ttft(ttft as i64); agg.absorb_ttft(ttft as i64);
+        }
+        if let Some(d) = duration {
+            let d = d.trunc();
+            if let Some(speed) = crate::token_speed::duration_speed(output, d, crate::token_speed::duration_quality(source), 0) {
+                let sample = crate::token_speed::GenerationSample { output_tokens: output,
+                    generation_ms: d as i64, tps: speed.value, quality: speed.quality };
+                total.absorb(&sample); agg.absorb(&sample);
+            }
+        }
+    }
+    overall.speed = total.into_metrics();
+    for model in models {
+        model.speed = by_model.remove(&(model.provider_id.clone(), model.model_id.clone())).unwrap_or_default().into_metrics();
+    }
+    Ok(())
+}
+
 /// ZCode 主库专属的行级生成速度聚合（B2）：读 `model_usage` 的
 /// status/started_at/first_token_at/completed_at/output_tokens，用共享的
-/// token_speed::generation_sample 行级判定验证（真实生成样本要求
+/// token_speed::speed_sample 行级判定验证（真实生成样本要求
 /// output>0 且 completed>first>0，外加 started 校验、未来时间拒绝与
 /// 样本时长边界 [200ms, 1h]；>500 t/s 的高速样本不设上限阈值），在
 /// Rust 侧累加 overall 与各 (provider_id, model_id) 的可加总分子/分母/
@@ -451,7 +409,7 @@ pub(crate) fn collect_generation_speed(
             reasoning_tokens: (has_reasoning && reasoning > 0).then_some(reasoning),
             model_id: (!model.is_empty()).then(|| model.clone()),
         };
-        if let Some(sample) = crate::token_speed::generation_sample(&timing, observed_at_ms) {
+        if let Some(sample) = crate::token_speed::speed_sample(&timing, observed_at_ms) {
             overall.absorb(&sample);
             if !model.is_empty() {
                 by_model
@@ -1011,9 +969,9 @@ mod tests {
             )
             .unwrap();
         // 可信样本 = {200, 500, 100, 100}；TTFT 样本 = {500,1900,500,10,0}
-        assert!(approx(avg.unwrap(), 225.0), "avg={avg:?}");
-        assert!(approx(max.unwrap(), 500.0), "max={max:?}");
-        assert!(approx(ttft.unwrap(), 582.0), "ttft={ttft:?}");
+        assert!(approx(avg.unwrap(), 11855000.0 / 13000.0), "avg={avg:?}");
+        assert!(approx(max.unwrap(), 10000.0), "max={max:?}");
+        assert!(approx(ttft.unwrap(), 7010.0 / 7.0), "ttft={ttft:?}");
     }
 
     /// 无耗时列的库（Codex 导入库同构）：占位 NULL，查询不报错。
@@ -1096,8 +1054,8 @@ mod tests {
             }
             tcnt += r.get::<_, i64>(4).unwrap();
         }
-        let panel_avg = 225.0f64;
-        let panel_ttft = 582.0f64;
+        let panel_avg = 11855000.0 / 13000.0;
+        let panel_ttft = 7010.0 / 7.0;
         assert!(cnt > 0 && (sum / cnt as f64 - panel_avg).abs() < 1e-6);
         assert!(tcnt > 0 && (tsum / tcnt as f64 - panel_ttft).abs() < 1e-6);
     }
@@ -1207,12 +1165,12 @@ mod tests {
         let (overall, by_model) = collect_generation_speed(&conn, 0, 200_000, 110_000).unwrap();
         // overall：样本 = A 两笔（8s+250ms）+ B 的 109000→109400（400ms）→
         // 加权 (1000+50+200)×1000/(8000+250+400) ≈ 144.64
-        assert_eq!(overall.speed_sample_count, Some(3));
-        assert_eq!(overall.speed_output_tokens, Some(1_250));
-        assert_eq!(overall.speed_generation_ms, Some(8_650));
-        assert!(approx(overall.avg_tps.unwrap(), 1_250_000.0 / 8_650.0), "{overall:?}");
+        assert_eq!(overall.speed_sample_count, Some(4));
+        assert_eq!(overall.speed_output_tokens, Some(1_550));
+        assert_eq!(overall.speed_generation_ms, Some(109_650));
+        assert!(approx(overall.avg_tps.unwrap(), 1_550_000.0 / 109_650.0), "{overall:?}");
         assert!(approx(overall.max_tps.unwrap(), 500.0), "max 应取单请求最快且不封顶");
-        assert_eq!(overall.speed_quality, Some(crate::token_speed::SpeedQuality::Generation));
+        assert_eq!(overall.speed_quality, Some(crate::token_speed::SpeedQuality::RequestAverage));
         // TTFT 独立样本集：A 的 92000（≤ duration）与 B 的 5000（> duration
         // 剔除）、B 首字缺失行 TTFT 无值 → 仅 1 个样本
         assert_eq!(overall.ttft_sample_count, Some(1));
@@ -1222,8 +1180,8 @@ mod tests {
         assert!(approx(a.avg_tps.unwrap(), 1_050_000.0 / 8_250.0));
         let b = by_model.get(&("p".to_string(), "B".to_string())).unwrap();
         // B 仅 109000→109400 一笔有效：200 tok / 0.4s = 500 t/s
-        assert_eq!(b.speed_sample_count, Some(1));
-        assert!(approx(b.avg_tps.unwrap(), 500.0));
+        assert_eq!(b.speed_sample_count, Some(2));
+        assert!(approx(b.avg_tps.unwrap(), 500_000.0 / 101_400.0));
         assert_eq!(b.ttft_sample_count, None, "TTFT 异常行不计入（无样本为 None）");
 
         // 可加总性：总体分子/分母/样本数 = Σ模型

@@ -116,7 +116,7 @@ export function PricingPage() {
   // 表格工具条状态：搜索过滤、新增模型表单、隐藏名单展开
   const [query, setQuery] = useState("");
   const [newId, setNewId] = useState("");
-  const [newPrice, setNewPrice] = useState<Record<keyof ModelPrice, string>>({
+  const [newPrice, setNewPrice] = useState<Record<Exclude<keyof ModelPrice, "cache_write">, string>>({
     input: "",
     output: "",
     cache_read: "",

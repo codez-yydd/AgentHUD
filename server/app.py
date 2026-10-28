@@ -401,7 +401,8 @@ def _validate_model_price(model_id, raw_price):
     if not isinstance(raw_price, dict):
         return None, f"模型 {model_id} 的价格必须是对象或 null"
     price = {}
-    for key in ("input", "output", "cache_read"):
+    keys = ("input", "output", "cache_read") + (("cache_write",) if "cache_write" in raw_price else ())
+    for key in keys:
         value = raw_price.get(key)
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             return None, f"模型 {model_id} 缺少有效的 {key}"

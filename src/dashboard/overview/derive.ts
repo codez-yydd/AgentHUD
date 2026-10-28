@@ -569,6 +569,7 @@ export function buildModelRows(
   const keys = rangeKeys(raw, range, custom);
   /** 一个模型折叠键（modelRowKey）的聚合组 */
   interface ModelGroup {
+    costUsd: number;
     agg: DayModelAgg;
     /** 原始写法 → 该写法的累计（rep / variants / 成本都从这里派生） */
     spellings: Map<string, SpellingAgg>;
@@ -585,12 +586,13 @@ export function buildModelRows(
   const absorb = (
     modelId: string,
     src: DayModelAgg,
-    cursorCostUsd: number | null = null
+    cursorCostUsd: number | null = null,
+    billingSource = "zcode"
   ): ModelGroup => {
     const key = modelRowKey(modelId);
     let group = groups.get(key);
     if (!group) {
-      group = { agg: { ...src }, spellings: new Map(), rep: modelId };
+      group = { costUsd: 0, agg: { ...src }, spellings: new Map(), rep: modelId };
       groups.set(key, group);
     } else {
       group.agg.requests += src.requests;
@@ -599,6 +601,8 @@ export function buildModelRows(
       group.agg.cacheRead += src.cacheRead;
       group.agg.total += src.total;
     }
+    const writes = billingSource === "claude" || billingSource === "kimi" ? Math.max(0, src.total - src.input - src.output - src.cacheRead) : 0;
+    group.costUsd += cursorCostUsd ?? (raw.pricing ? modelCost(modelId, src.input, src.output, src.cacheRead, raw.pricing, "usd", raw.fxRate, billingSource, writes) : 0);
     const spelling = group.spellings.get(modelId) ?? {
       total: 0,
       requests: 0,
@@ -634,7 +638,7 @@ export function buildModelRows(
     for (const key of keys) {
       const day = days.get(key);
       if (!day) continue;
-      for (const [modelId, model] of day.byModel) absorb(modelId, model);
+      for (const [modelId, model] of day.byModel) absorb(modelId, model, null, id);
       // Cursor 的未拆分用量由 cursorByModel 顶替（见函数注释），不在此累计
       if (isCursor || day.unsplit <= 0) continue;
       unsplitTotal += day.unsplit;
@@ -675,21 +679,7 @@ export function buildModelRows(
     // 标题 / 面板汇总页同款口径；用该写法自己的原始 id 调用，带前缀的写法由
     // lookupPrice 的去前缀候选兜底），扣掉该写法里的 Cursor 贡献后折算，
     // 再叠加 Cursor 写法的后端 cost_usd——两来源互不重复计价（见函数注释）。
-    let costUsd = 0;
-    for (const [spellingId, spelling] of group.spellings) {
-      if (raw.pricing) {
-        costUsd += modelCost(
-          spellingId,
-          Math.max(0, spelling.input - (spelling.cursor?.input ?? 0)),
-          Math.max(0, spelling.output - (spelling.cursor?.output ?? 0)),
-          Math.max(0, spelling.cacheRead - (spelling.cursor?.cacheRead ?? 0)),
-          raw.pricing,
-          "usd",
-          raw.fxRate
-        );
-      }
-      costUsd += spelling.cursor?.costUsd ?? 0;
-    }
+    const costUsd = group.costUsd;
     // 折叠明细：同一写法多次出现已按写法累加（tooltip 读作「各写法的请求数」）；
     // 只有一个写法时与 foldModelStatRows 一致不携带（行没被折叠过）
     const variants = [...group.spellings].map(([model_id, spelling]) => ({

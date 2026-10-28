@@ -531,6 +531,7 @@ mod tests {
             input,
             output: input * 2.0,
             cache_read: 0.0,
+            cache_write: None,
         }
     }
 

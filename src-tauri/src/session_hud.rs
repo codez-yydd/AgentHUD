@@ -64,7 +64,7 @@ use tauri::{
 
 use crate::local_agents;
 use crate::token_speed::{
-    generation_sample, is_completed_status, request_speed_at, PENDING_FRESH_MS, RequestTiming,
+    speed_sample, is_completed_status, request_speed_at, PENDING_FRESH_MS, RequestTiming,
     SessionTree, SpeedQuality, SpeedSnapshot, SpeedState,
 };
 
@@ -2557,6 +2557,7 @@ fn collect_model_speeds(conn: &Connection, window_start: i64) -> Vec<HudModelSpe
     // 单趟聚合：行按 started_at 降序，每模型首条可信样本即"最近一笔"。
     // 输出排序键 last_at 随聚合暂存，出口重排。
     struct ModelSpeedAgg {
+        approximate: bool,
         last_at: i64,
         last_tps: f64,
         /// 样本池内单笔最快 / 最慢速度（首笔样本在 or_insert 初始化）
@@ -2577,7 +2578,7 @@ fn collect_model_speeds(conn: &Connection, window_start: i64) -> Vec<HudModelSpe
         if has_status && !is_completed_status(status.as_deref()) {
             continue;
         }
-        // 速度样本：行级唯一真源 token_speed::generation_sample（首字到
+        // 速度样本：行级唯一真源 token_speed::speed_sample（首字到
         // 完成的精确生成样本，含思考感知窗口与样本时长边界；首字缺失/
         // 时序倒置/窗口越界的行在此无样本，不产出 tps 也不进 Σ 分母）。
         // claude 系按名识别需要模型名（reasoning 恒 0 也前移窗口）
@@ -2590,11 +2591,12 @@ fn collect_model_speeds(conn: &Connection, window_start: i64) -> Vec<HudModelSpe
         };
         timing.reasoning_tokens = (has_reasoning && reasoning > 0).then_some(reasoning);
         timing.model_id = Some(model.clone());
-        let Some(sample) = generation_sample(&timing, observed_at_ms) else {
+        let Some(sample) = speed_sample(&timing, observed_at_ms) else {
             continue;
         };
         let tps = sample.tps;
         let entry = aggs.entry(model).or_insert(ModelSpeedAgg {
+            approximate: false,
             last_at: started_at,
             last_tps: tps,
             max_tps: tps,
@@ -2615,6 +2617,7 @@ fn collect_model_speeds(conn: &Connection, window_start: i64) -> Vec<HudModelSpe
         if tps < entry.min_tps {
             entry.min_tps = tps;
         }
+        entry.approximate |= sample.quality == SpeedQuality::RequestAverage;
         entry.sum_out += output;
         entry.sum_ms += sample.generation_ms;
         entry.samples += 1;
@@ -2632,7 +2635,7 @@ fn collect_model_speeds(conn: &Connection, window_start: i64) -> Vec<HudModelSpe
                     // 本函数只跑 ZCode 主库（status='completed' 已在上方
                     // 判定）；生成窗口思考感知，见
                     // token_speed::thinking_generation_span
-                    quality: SpeedQuality::Generation,
+                    quality: if a.approximate { SpeedQuality::RequestAverage } else { SpeedQuality::Generation },
                     last_at: a.last_at,
                     tps: a.last_tps,
                     avg_tps: a.sum_out as f64 * 1000.0 / a.sum_ms as f64,
@@ -2723,10 +2726,8 @@ pub(crate) fn collect_derived_model_speeds(
         if model.is_empty() || started_at <= 0 || output <= 0 || !(duration > 0.0) {
             continue;
         }
-        let tps = output as f64 * 1000.0 / duration;
-        if !tps.is_finite() {
-            continue;
-        }
+        let Some(speed) = crate::token_speed::duration_speed(output, duration, quality, started_at) else { continue };
+        let tps = speed.value;
         let entry = aggs.entry(model).or_insert(ModelSpeedAgg {
             last_at: started_at,
             last_tps: tps,

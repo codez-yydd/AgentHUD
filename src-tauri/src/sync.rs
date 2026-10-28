@@ -328,6 +328,8 @@ pub struct RemoteModelStat {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RemoteTrendBucketModel {
     #[serde(default)]
+    pub source: String,
+    #[serde(default)]
     pub model_id: String,
     #[serde(default)]
     pub provider_id: String,

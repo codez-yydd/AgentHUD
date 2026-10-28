@@ -1065,6 +1065,8 @@ pub fn query_stats(from_ms: i64, to_ms: i64) -> Result<db::Stats, String> {
         }
     }
 
+    db::fill_duration_metrics(&conn, "kimi", from_ms, to_ms, &mut overall, &mut by_model)?;
+
     let (earliest_ms, latest_ms): (Option<i64>, Option<i64>) = conn
         .query_row(
             "SELECT MIN(started_at), MAX(started_at) FROM model_usage",
@@ -1180,9 +1182,9 @@ fn query_step_meta_aggregate(
                     AND st.state = 'completed' AND st.ttft_ms IS NOT NULL
                   ORDER BY COALESCE(st.ended_at, st.updated_at) DESC
                   LIMIT 1),
-                COALESCE(SUM(CASE WHEN sm.stream_ms > 0 AND sm.output_tokens > 0
+                COALESCE(SUM(CASE WHEN sm.stream_ms BETWEEN 200 AND 3600000 AND sm.output_tokens > 0
                                   THEN sm.output_tokens ELSE 0 END), 0),
-                COALESCE(SUM(CASE WHEN sm.stream_ms > 0 AND sm.output_tokens > 0
+                COALESCE(SUM(CASE WHEN sm.stream_ms BETWEEN 200 AND 3600000 AND sm.output_tokens > 0
                                   THEN sm.stream_ms ELSE 0 END), 0.0)
          FROM step_meta sm
          WHERE sm.session_id IN ({placeholders})
@@ -1231,7 +1233,7 @@ pub(crate) fn query_window_sessions_at(
     // `limit` 条
     let sql = "SELECT model_usage.session_id,
             MAX(model_usage.started_at),
-            COALESCE(SUM(MAX(0, model_usage.input_tokens - model_usage.cache_read_input_tokens)), 0),
+            COALESCE(SUM(model_usage.input_tokens + model_usage.cache_creation_input_tokens), 0),
             COALESCE(SUM(model_usage.output_tokens), 0),
             COALESCE(SUM(model_usage.cache_read_input_tokens), 0),
             COUNT(*),
@@ -1240,8 +1242,8 @@ pub(crate) fn query_window_sessions_at(
               WHERE sm.session_id = model_usage.session_id),
             -- 请求平均速度原料：仅统计 duration_ms > 0 的行，分子分母
             -- 同范围（NULL/0/负耗时行一并排除，防短耗时行放大均值）
-            COALESCE(SUM(CASE WHEN model_usage.duration_ms > 0 THEN model_usage.output_tokens ELSE 0 END), 0),
-            COALESCE(SUM(CASE WHEN model_usage.duration_ms > 0 THEN model_usage.duration_ms ELSE 0 END), 0)
+            COALESCE(SUM(CASE WHEN model_usage.duration_ms BETWEEN 200 AND 3600000 AND model_usage.output_tokens > 0 THEN model_usage.output_tokens ELSE 0 END), 0),
+            COALESCE(SUM(CASE WHEN model_usage.duration_ms BETWEEN 200 AND 3600000 AND model_usage.output_tokens > 0 THEN model_usage.duration_ms ELSE 0 END), 0)
          FROM model_usage
          WHERE model_usage.session_id IN (
             SELECT session_id FROM model_usage
@@ -4237,7 +4239,7 @@ mod tests {
         // s-new 全生命周期累计：↑ = max(0,30−50) + (100−40) = 60、
         // ↓ = 10、⟲ = 90、× = 2；项目目录来自 session_meta.cwd 原值
         let s_new = &found.sessions[0];
-        assert_eq!(s_new.in_tokens, 60);
+        assert_eq!(s_new.in_tokens, 130);
         assert_eq!(s_new.out_tokens, 10);
         assert_eq!(s_new.cache_read, 90);
         assert_eq!(s_new.req_count, 2);
@@ -4251,7 +4253,7 @@ mod tests {
         // ↑ = 8900 + 10、↓ = 8001、⟲ = 100、× = 2；NULL/负耗时行全部
         // 排除 → 无速度原料
         let s_old = &found.sessions[1];
-        assert_eq!(s_old.in_tokens, 8910);
+        assert_eq!(s_old.in_tokens, 9010);
         assert_eq!(s_old.out_tokens, 8001);
         assert_eq!(s_old.cache_read, 100);
         assert_eq!(s_old.req_count, 2);

@@ -390,7 +390,7 @@ export function addRemoteTrendDays(
           m.cache_read_tokens ?? 0,
           pricing,
           "usd",
-          fxRate
+          fxRate, m.source, m.cache_write_tokens ?? ((m.source === "claude" || m.source === "kimi") ? Math.max(0, m.total_tokens - m.input_tokens - m.output_tokens - m.cache_read_tokens) : 0)
         );
       }
       const agg = day.byModel.get(m.model_id) ?? emptyModelAgg();

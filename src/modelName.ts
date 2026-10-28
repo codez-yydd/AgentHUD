@@ -163,6 +163,7 @@ export function foldModelStatRows(rows: ModelStat[]): FoldedModelStat[] {
     reasoning_tokens: number;
     total_tokens: number;
     /** generation 口径可加总分子/分母/样本数（仅带新契约的行参与求和） */
+    timedApproximate: boolean;
     genNum: number;
     genDen: number;
     genCount: number;
@@ -196,6 +197,7 @@ export function foldModelStatRows(rows: ModelStat[]): FoldedModelStat[] {
         cache_write_tokens: 0,
         reasoning_tokens: 0,
         total_tokens: 0,
+        timedApproximate: false,
         genNum: 0,
         genDen: 0,
         genCount: 0,
@@ -230,6 +232,7 @@ export function foldModelStatRows(rows: ModelStat[]): FoldedModelStat[] {
       m.speedSampleCount != null &&
       m.speedSampleCount > 0
     ) {
+      g.timedApproximate ||= m.speedQuality === "request_average";
       g.genNum += m.speedOutputTokens;
       g.genDen += genDen;
       g.genCount += m.speedSampleCount;
@@ -303,7 +306,7 @@ export function foldModelStatRows(rows: ModelStat[]): FoldedModelStat[] {
       speedSampleCount: gen ? g.genCount : undefined,
       ttftSampleCount:
         g.ttftDen > 0 ? g.ttftDen : (g.rep.ttftSampleCount ?? undefined),
-      speedQuality: gen ? "generation" : ra ? "request_average" : undefined,
+      speedQuality: gen ? (g.timedApproximate ? "request_average" : "generation") : ra ? "request_average" : undefined,
       // request_average 行回填本机权重快照合计（= 参与加权的权重之和）：
       // 折叠结果再次折叠/再次合并时权重保持本机口径不变（幂等）；
       // generation 行不带（不用 Token 权重）

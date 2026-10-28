@@ -24,7 +24,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Mutex, OnceLock};
 
 use crate::pricing::{load_pricing, ModelPrice};
-use crate::{claude, codex, db, local_agents, zcode_sessions, Billable, cost_for};
+use crate::{claude, codex, db, local_agents, zcode_sessions, Billable};
 
 /// 未知项目的聚合键（无 cwd / 无项目维度的用量全部归入）
 pub const UNKNOWN_PROJECT: &str = "__unknown__";
@@ -125,6 +125,7 @@ impl Billable for ProjectModelRow {
     fn cache_read_tokens(&self) -> i64 {
         self.cache_read_tokens
     }
+    fn total_tokens(&self) -> i64 { self.total_tokens }
 }
 
 /// 各源会话明细查询返回的「会话 × 模型」聚合行。
@@ -146,7 +147,7 @@ pub(crate) struct ProjectSessionModelRow {
     /// 累加后相除（等价于面板公式限定会话范围，避免二次平均偏差）；
     /// 无耗时来源（codex）为 None/0。
     /// **zcode 路径恒 None/0**（B4）：zcode 会话速度改用下方 gen_* 可加总
-    /// 生成口径（token_speed::generation_sample 行级判定），防止同一数值
+    /// 生成口径（token_speed::speed_sample 行级判定），防止同一数值
     /// 在主面板（生成口径）与项目页（旧请求平均）之间静默错位；
     /// claude/kimi 保留本字段（各自的 request_average 源质量）。
     pub tps_sum: Option<f64>,
@@ -176,6 +177,7 @@ impl Billable for ProjectSessionModelRow {
     fn cache_read_tokens(&self) -> i64 {
         self.cache_read_tokens
     }
+    fn cache_write_tokens(&self) -> i64 { self.cache_write_tokens }
 }
 
 /// get_projects 返回的单个项目汇总
@@ -268,7 +270,7 @@ fn accumulate(
     row: &ProjectModelRow,
     usd: &BTreeMap<String, ModelPrice>,
 ) {
-    let cost = cost_for(row, usd);
+    let cost = crate::cost_for_source(row, usd, source);
     let acc = projects.entry(row.project_key.clone()).or_default();
     let agent = acc.by_agent.entry(source.to_string()).or_default();
     agent.tokens += row.total_tokens.max(0) as u64;
@@ -405,7 +407,7 @@ fn accumulate_zcode_with_derived(
 
 /// zcode 会话明细的行级生成速度聚合（B4）：对当页会话集合读
 /// status/started_at/first_token_at/completed_at/output_tokens，经共享
-/// token_speed::generation_sample 行级判定后按 (session_id, model_id) 累加
+/// token_speed::speed_sample 行级判定后按 (session_id, model_id) 累加
 /// 可加总分子/分母/样本数并写回各行 gen_* 字段。zcode 会话速度不再使用
 /// 旧 duration−TTFT 估算口径（与主面板 query_stats 的生成口径一致，防止
 /// 后台局部变更后项目页静默错位）。老库缺事件时间列时全部保持 None/0
@@ -472,6 +474,7 @@ fn fill_zcode_generation_speed(
         out: i64,
         ms: i64,
         count: i64,
+        approximate: bool,
     }
     let observed_at_ms = chrono::Utc::now().timestamp_millis();
     let mut aggs: BTreeMap<(String, String), GenAgg> = BTreeMap::new();
@@ -492,8 +495,9 @@ fn fill_zcode_generation_speed(
             reasoning_tokens: (has_reasoning && reasoning > 0).then_some(reasoning),
             model_id: (!model.is_empty()).then(|| model.clone()),
         };
-        if let Some(sample) = crate::token_speed::generation_sample(&timing, observed_at_ms) {
+        if let Some(sample) = crate::token_speed::speed_sample(&timing, observed_at_ms) {
             let agg = aggs.entry((session, model)).or_default();
+            agg.approximate |= sample.quality == crate::token_speed::SpeedQuality::RequestAverage;
             agg.out += sample.output_tokens;
             agg.ms += sample.generation_ms;
             agg.count += 1;
@@ -501,6 +505,13 @@ fn fill_zcode_generation_speed(
     }
     for row in rows.iter_mut() {
         match aggs.get(&(row.session_id.clone(), row.model_id.clone())) {
+            Some(agg) if agg.count > 0 && agg.approximate => {
+                row.gen_out = None;
+                row.gen_ms = None;
+                row.gen_count = 0;
+                row.tps_sum = Some(agg.out as f64 * 1000.0);
+                row.tps_count = agg.ms;
+            }
             Some(agg) if agg.count > 0 => {
                 row.gen_out = Some(agg.out);
                 row.gen_ms = Some(agg.ms);
@@ -1168,6 +1179,9 @@ fn session_speed(
     tps_sum: Option<f64>,
     tps_count: i64,
 ) -> (Option<f64>, Option<String>) {
+    if gen_ms > 0 && gen_count > 0 && tps_count > 0 {
+        return (Some((gen_out as f64 * 1000.0 + tps_sum.unwrap_or(0.0)) / (gen_ms + tps_count) as f64), Some("request_average".into()));
+    }
     if gen_ms > 0 && gen_count > 0 {
         (
             Some(gen_out as f64 * 1000.0 / gen_ms as f64),
@@ -1286,7 +1300,7 @@ fn query_sessions(
             build.cache_read_tokens += row.cache_read_tokens.max(0) as u64;
             build.cache_write_tokens += row.cache_write_tokens.max(0) as u64;
             build.requests += row.requests.max(0) as u64;
-            build.cost_usd += cost_for(&row, &pricing.usd);
+            build.cost_usd += crate::cost_for_source(&row, &pricing.usd, src);
             build.tps_sum = sum_opt(build.tps_sum, row.tps_sum);
             build.tps_count += row.tps_count.max(0);
             build.ttft_sum = sum_opt(build.ttft_sum, row.ttft_sum);
@@ -1302,13 +1316,14 @@ fn query_sessions(
         .map(|((source, session_id), build)| {
             // 会话级速度与口径标记（生成口径优先，回落请求平均；见
             // session_speed doc）
-            let (speed_tps, speed_quality) = session_speed(
+            let (speed_tps, mut speed_quality) = session_speed(
                 build.gen_out,
                 build.gen_ms,
                 build.gen_count,
                 build.tps_sum,
                 build.tps_count,
             );
+            if source == "dsh" && speed_tps.is_some() { speed_quality = Some("generation".into()); }
             SessionSummary {
                 session_id,
                 source,

@@ -71,6 +71,8 @@ pub(crate) trait Billable {
     fn input_tokens(&self) -> i64;
     fn output_tokens(&self) -> i64;
     fn cache_read_tokens(&self) -> i64;
+    fn cache_write_tokens(&self) -> i64 { 0 }
+    fn total_tokens(&self) -> i64 { self.input_tokens() + self.output_tokens() }
 }
 
 impl Billable for db::ModelStat {
@@ -86,6 +88,8 @@ impl Billable for db::ModelStat {
     fn cache_read_tokens(&self) -> i64 {
         self.cache_read_tokens
     }
+    fn total_tokens(&self) -> i64 { self.total_tokens }
+    fn cache_write_tokens(&self) -> i64 { self.cache_write_tokens }
 }
 
 impl Billable for db::BucketModelStat {
@@ -101,6 +105,7 @@ impl Billable for db::BucketModelStat {
     fn cache_read_tokens(&self) -> i64 {
         self.cache_read_tokens
     }
+    fn total_tokens(&self) -> i64 { self.total_tokens }
 }
 
 /// 按 price map 计算单个模型的花费（每百万 token 计价）。
@@ -113,12 +118,22 @@ impl Billable for db::BucketModelStat {
 /// 不一致，让任何形态都能算出花费）。原始形态恒优先，模型名自身带 "/" 时不会被
 /// 截断形态抢先命中。线性扫描仅在 miss 时发生。
 pub(crate) fn cost_for<B: Billable>(s: &B, map: &BTreeMap<String, ModelPrice>) -> f64 {
+    cost_for_source(s, map, "zcode")
+}
+
+pub(crate) fn cost_for_source<B: Billable>(s: &B, map: &BTreeMap<String, ModelPrice>, source: &str) -> f64 {
+    let separate = matches!(source, "claude" | "kimi");
     let lookup = |p: &ModelPrice| {
-        let non_cache_input =
-            (s.input_tokens() - s.cache_read_tokens()).max(0) as f64;
+        let cache_write = if separate {
+            (s.total_tokens() - s.input_tokens() - s.output_tokens() - s.cache_read_tokens()).max(s.cache_write_tokens()).max(0)
+        } else { s.cache_write_tokens().max(0) };
+        let non_cache_input = if separate { s.input_tokens().max(0) } else {
+            (s.input_tokens() - s.cache_read_tokens() - cache_write).max(0)
+        } as f64;
         (non_cache_input * p.input
             + s.output_tokens() as f64 * p.output
-            + s.cache_read_tokens() as f64 * p.cache_read)
+            + s.cache_read_tokens() as f64 * p.cache_read
+            + cache_write as f64 * p.cache_write.unwrap_or(p.input))
             / 1_000_000.0
     };
     for cand in pricing::model_id_candidates(s.model_id()) {
@@ -1338,7 +1353,7 @@ async fn get_claude_usage(req: ClaudeUsageRequest) -> Result<ClaudeSnapshot, Str
                 let cost_usd = b
                     .by_model
                     .iter()
-                    .map(|m| cost_for(m, &pricing.usd))
+                    .map(|m| cost_for_source(m, &pricing.usd, "claude"))
                     .sum::<f64>();
                 TrendBucket {
                     label: b.label,
@@ -1443,7 +1458,7 @@ async fn get_kimi_usage(req: KimiUsageRequest) -> Result<KimiSnapshot, String> {
                 let cost_usd = b
                     .by_model
                     .iter()
-                    .map(|m| cost_for(m, &pricing.usd))
+                    .map(|m| cost_for_source(m, &pricing.usd, "kimi"))
                     .sum::<f64>();
                 TrendBucket {
                     label: b.label,
@@ -2488,7 +2503,7 @@ fn today_tray_title(app: &AppHandle) -> String {
                 .by_model
                 .iter()
                 .map(|m| {
-                    cost_for(
+                    cost_for_source(
                         &db::ModelStat {
                             model_id: m.model_id.clone(),
                             provider_id: m.provider_id.clone(),
@@ -2503,6 +2518,7 @@ fn today_tray_title(app: &AppHandle) -> String {
                             speed: Default::default(),
                         },
                         &pricing.usd,
+                        &m.source,
                     )
                 })
                 .sum::<f64>();
@@ -2546,7 +2562,7 @@ fn today_tray_title(app: &AppHandle) -> String {
         cost += stats
             .by_model
             .iter()
-            .map(|m| cost_for(m, &pricing.usd))
+            .map(|m| cost_for_source(m, &pricing.usd, "claude"))
             .sum::<f64>();
         by_source.insert("claude".to_string(), stats.overall.total_tokens);
     }
@@ -2560,7 +2576,7 @@ fn today_tray_title(app: &AppHandle) -> String {
         cost += stats
             .by_model
             .iter()
-            .map(|m| cost_for(m, &pricing.usd))
+            .map(|m| cost_for_source(m, &pricing.usd, source))
             .sum::<f64>();
         // 后端来源名 → HUD source（opencode → opencodego、minimaxcode →
         // minimax）；注册表未来新增但 HUD 不展示的来源会被忽略。
@@ -3286,6 +3302,26 @@ mod tests {
     /// （Kimi Code + 智谱实测为 zhipuai-coding-plan/glm-5.3-flash）要能对上用户
     /// 按裸模型名配置的价格；模型名自身带 "/" 时原始 id 优先，不被截断形态抢走。
     #[test]
+    fn cost_normalizes_source_cache_columns_and_charges_cache_writes() {
+        struct Usage { input: i64 }
+        impl Billable for Usage {
+            fn model_id(&self) -> &str { "m" }
+            fn input_tokens(&self) -> i64 { self.input }
+            fn output_tokens(&self) -> i64 { 20 }
+            fn cache_read_tokens(&self) -> i64 { 900 }
+            fn cache_write_tokens(&self) -> i64 { 50 }
+            fn total_tokens(&self) -> i64 { 1070 }
+        }
+        let prices = BTreeMap::from([("m".into(), ModelPrice { input: 2.0, output: 10.0,
+            cache_read: 0.2, cache_write: Some(2.5) })]);
+        let separate = cost_for_source(&Usage { input: 100 }, &prices, "claude");
+        let included = cost_for_source(&Usage { input: 1050 }, &prices, "zcode");
+        assert!((separate - 705.0 / 1_000_000.0).abs() < 1e-12);
+        assert!((separate - included).abs() < 1e-12);
+        assert!((cost_for_source(&Usage { input: 100 }, &prices, "kimi") - included).abs() < 1e-12);
+    }
+
+    #[test]
     fn cost_for_matches_provider_prefixed_model_id() {
         struct Row {
             model: String,
@@ -3320,6 +3356,7 @@ mod tests {
                     input: 0.3,
                     output: 1.2,
                     cache_read: 0.03,
+                    cache_write: None,
                 },
             ),
             (
@@ -3328,6 +3365,7 @@ mod tests {
                     input: 9.0,
                     output: 9.0,
                     cache_read: 9.0,
+                    cache_write: None,
                 },
             ),
             (
@@ -3336,6 +3374,7 @@ mod tests {
                     input: 1.0,
                     output: 2.0,
                     cache_read: 0.1,
+                    cache_write: None,
                 },
             ),
         ]);
@@ -3442,7 +3481,7 @@ mod tests {
             sync::RemoteTrendBucket {
                 label: hour_ms(15).to_string(),
                 by_model: vec![sync::RemoteTrendBucketModel {
-                    model_id: "glm-4.6".into(),
+                    source: "zcode".into(),                    model_id: "glm-4.6".into(),
                     provider_id: "zai".into(),
                     requests: 2,
                     input_tokens: 40,
@@ -3485,7 +3524,7 @@ mod tests {
         let remote = sync::RemoteTrendBucket {
             label: ms.to_string(),
             by_model: vec![sync::RemoteTrendBucketModel {
-                model_id: "glm-4.6".into(),
+                    source: "zcode".into(),                model_id: "glm-4.6".into(),
                 provider_id: "zai".into(),
                 requests: 2,
                 input_tokens: 40,

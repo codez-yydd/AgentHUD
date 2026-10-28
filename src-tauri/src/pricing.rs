@@ -13,6 +13,8 @@ pub struct ModelPrice {
     pub input: f64,
     pub output: f64,
     pub cache_read: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_write: Option<f64>,
 }
 
 impl Default for ModelPrice {
@@ -21,6 +23,7 @@ impl Default for ModelPrice {
             input: 0.0,
             output: 0.0,
             cache_read: 0.0,
+            cache_write: None,
         }
     }
 }
@@ -492,7 +495,8 @@ fn diff_with_reference(
                 Some(u) => {
                     let same = u.input == default_usd.input
                         && u.output == default_usd.output
-                        && u.cache_read == default_usd.cache_read;
+                        && u.cache_read == default_usd.cache_read
+                        && u.cache_write == default_usd.cache_write;
                     if !same {
                         changed.push(item(Some(u)));
                     }
@@ -544,6 +548,7 @@ mod tests {
             input,
             output,
             cache_read,
+            cache_write: None,
         }
     }
 
@@ -750,7 +755,7 @@ mod tests {
         // 白名单外（deepinfra）不收录
         assert!(!m.contains_key("llama-3.3-70b-instruct-turbo"), "白名单外厂商应跳过");
         // 白名单内但无 models 的厂商（qwen）自然跳过，不影响其他厂商
-        assert_eq!(m.get("glm-4.6"), Some(&price(0.6, 2.2, 0.11)));
+        assert_eq!(m.get("glm-4.6"), Some(&ModelPrice { cache_write: Some(0.0), ..price(0.6, 2.2, 0.11) }));
         // 模型 id 大写归一小写；cost 缺 cache_read 按 0
         assert_eq!(m.get("glm-4.5-air"), Some(&price(0.11, 0.42, 0.0)));
         // 带 org 前缀的 id 取 "/" 最后一段
@@ -1543,8 +1548,7 @@ fn save_modelsdev_cache(cache: &ModelsdevCache) -> Result<(), String> {
 ///   org 前缀；与本应用"参考表 key 全小写"的口径对齐）；
 /// - 同一 key 重复时保留首个（不同厂商偶然同名时以先遍历到的为准，不抖动）；
 /// - cost 缺失或为 null 的条目（官方未公布价格）跳过；cost 存在但缺
-///   input/output/cache_read 某字段时按 0.0；cache_write 不入库
-///   （本应用计费口径只有三项）。
+///   input/output/cache_read 缺失按 0.0；cache_write 为可选价，缺失按普通输入价估算。
 fn parse_modelsdev_prices(root: &serde_json::Value) -> BTreeMap<String, ModelPrice> {
     let mut out = BTreeMap::new();
     for pid in MODELSDEV_PROVIDERS {
@@ -1582,6 +1586,7 @@ fn parse_modelsdev_prices(root: &serde_json::Value) -> BTreeMap<String, ModelPri
                 input: cost("input"),
                 output: cost("output"),
                 cache_read: cost("cache_read"),
+                cache_write: cost_obj.get("cache_write").and_then(|v| v.as_f64()).filter(|v| v.is_finite() && *v >= 0.0),
             });
         }
     }

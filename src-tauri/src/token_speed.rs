@@ -9,13 +9,10 @@
 //! to a fake rate) and windows beyond one hour are treated as hung or
 //! leaking timers and dropped — see `MIN_GEN_MS` / `MAX_GEN_MS`.
 //!
-//! 思考感知窗口（2026-10 参考项目 zcode-token-usage-statusbar 真库裁决）：
-//! ZCode 的 `output_tokens` 已包含思考 token（provider 原生 totalTokens
-//! = input + output，reasoning 不另加），且思考 token 在 `first_token_at`
-//! 之前流出——含思考段的请求若按 completed − first 计时，思考时长漏出
-//! 分母、速率系统性虚高（实测 claude-opus-5-5 有 35% 请求超 300 tok/s）。
-//! 思考型请求改用 completed − started 作为生成窗口，见
-//! `thinking_generation_span`。
+//! Speed measures model requests, never a whole agent turn. Tool execution
+//! between requests is excluded. Tool-call arguments are model output and
+//! remain in output_tokens; tool results belong to a later request's input.
+//! Unknown reasoning timing uses a conservative request average, marked ≈.
 
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
@@ -90,40 +87,19 @@ pub(crate) struct RequestTiming {
     pub completed_at: Option<i64>,
     pub duration_ms: Option<i64>,
     pub request_id: Option<String>,
-    /// 该请求上报的思考（推理）token 数；老库缺列为 None。ZCode 的
-    /// output_tokens 已包含思考 token（provider 原生 totalTokens =
-    /// input + output，reasoning 不另加），因此本字段只用作"该请求含
-    /// 思考段"的识别信号（> 0 时生成窗口前移到 started，见
-    /// `thinking_generation_span`），绝不叠加进速度分子。
+    /// Reasoning is already included in output; this is an uncertainty signal,
+    /// never an extra term in the numerator.
     pub reasoning_tokens: Option<i64>,
-    /// 模型 id（思考型模型识别用）；老库缺列为 None。Claude 系列不单独
-    /// 上报思考 token（reasoning_tokens 恒 0）但 output 已含思考，需按
-    /// 模型名（含 "claude"，大小写不敏感）识别并同样前移生成窗口。
+    /// Claude may omit reasoning counts; keep its timing conservatively marked
+    /// as a request average rather than assuming a provider's stream semantics.
     pub model_id: Option<String>,
 }
 
-/// 思考感知的生成窗口选择（不含样本时长边界校验）：
-/// - 非思考型请求返回 None（调用方用 completed − first 首字窗口）；
-/// - 思考型请求（reasoning_tokens > 0，或模型名含 "claude"——Claude 系
-///   列 reasoning 恒 0 但 output 已含思考，按名识别，大小写不敏感）返回
-///   completed − started：思考 token 在首字之前流出，按首字窗口计时会把
-///   思考时长漏出分母、速率系统性虚高（见模块头"思考感知窗口"）；
-/// - started 缺失或区间非正时返回 None（调用方退回首字窗口，不因此
-///   丢样本）。
-fn thinking_generation_span(request: &RequestTiming) -> Option<i64> {
-    let thinking = request.reasoning_tokens.is_some_and(|tokens| tokens > 0)
-        || request
-            .model_id
-            .as_deref()
-            .is_some_and(|model| model.to_ascii_lowercase().contains("claude"));
-    if !thinking {
-        return None;
-    }
-    request
-        .started_at
-        .zip(request.completed_at)
-        .and_then(|(started, completed)| completed.checked_sub(started))
-        .filter(|span| *span > 0)
+/// Without provider event guarantees, reasoning may precede the recorded
+/// first token. Model names are only a conservative uncertainty signal.
+fn has_uncertain_reasoning(request: &RequestTiming) -> bool {
+    request.reasoning_tokens.is_some_and(|n| n > 0)
+        || request.model_id.as_deref().is_some_and(|m| m.to_ascii_lowercase().contains("claude"))
 }
 
 /// Compute a speed without applying a minimum duration or a stale-value
@@ -182,17 +158,17 @@ pub(crate) fn request_speed_at(
             // invalid even if a duration fallback happens to be present.
             return None;
         }
-        // 思考感知窗口：含思考段的请求用 completed − started（思考段在
-        // 首字之前流出，见 thinking_generation_span），其余请求维持首字
-        // 窗口。有首字与完成时刻的行只有生成样本或无样本两种结局：窗口
-        // 越界（<MIN_GEN_MS 抖动 / >MAX_GEN_MS 挂死，见 finite_rate）时
-        // 整行拒绝，绝不降级为 request_average——那会把同一段时长换个
-        // 口径重新放行。
-        let span = thinking_generation_span(request).unwrap_or(completed - first);
+        // Reasoning placement is unknown: the full request window is a
+        // conservative average, never an exact generation measurement.
+        let (span, quality) = if has_uncertain_reasoning(request) {
+            (completed.checked_sub(started?)?, SpeedQuality::RequestAverage)
+        } else {
+            (completed - first, SpeedQuality::Generation)
+        };
         let value = finite_rate(request.output_tokens, span)?;
         return Some(SpeedSnapshot {
             value,
-            quality: SpeedQuality::Generation,
+            quality,
             completed_at: completed,
             request_id: request.request_id.clone(),
         });
@@ -238,6 +214,27 @@ pub(crate) fn request_speed_at(
     })
 }
 
+/// A source-recorded request or stream duration; never subtract TTFT here.
+/// Some importers timestamp the usage event at completion, so this path does
+/// not synthesize completion by adding duration to that event timestamp.
+pub(crate) fn duration_speed(
+    output_tokens: i64, duration_ms: f64, quality: SpeedQuality, completed_at: i64,
+) -> Option<SpeedSnapshot> {
+    if output_tokens <= 0 || !duration_ms.is_finite()
+        || duration_ms < MIN_GEN_MS as f64 || duration_ms > MAX_GEN_MS as f64 {
+        return None;
+    }
+    let value = output_tokens as f64 * 1000.0 / duration_ms;
+    (value.is_finite() && value > 0.0).then_some(SpeedSnapshot {
+        value, quality, completed_at, request_id: None,
+    })
+}
+
+/// DSH records a stream span; other importers record whole-request durations.
+pub(crate) fn duration_quality(source: &str) -> SpeedQuality {
+    if source == "dsh" { SpeedQuality::Generation } else { SpeedQuality::RequestAverage }
+}
+
 fn finite_rate(output_tokens: i64, span_ms: i64) -> Option<f64> {
     // 样本时长边界（generation 与 request_average 两档共用）：极短窗口
     //（<MIN_GEN_MS）多为计时抖动/缓存命中伪请求，极长窗口（>MAX_GEN_MS）
@@ -250,55 +247,32 @@ fn finite_rate(output_tokens: i64, span_ms: i64) -> Option<f64> {
     value.is_finite().then_some(value).filter(|value| *value > 0.0)
 }
 
-/// 一条通过全部行级有效性判定的"真实生成样本"（供速度排行、汇总统计
-/// 与项目会话聚合共用同一判定，杜绝各处口径漂移）：
-/// - `output_tokens > 0`，完成状态由调用方按 `is_completed_status` 判定；
-/// - `completed_at > first_token_at > 0`（真实事件时间区间）；
-/// - 有 `started_at` 时要求 `first_token_at >= started_at` 且
-///   `completed_at > started_at`（时刻与请求起点不能倒置）；
-/// - `observed_at_ms > 0` 时拒绝未来时刻；
-/// - 生成窗口落在 [MIN_GEN_MS, MAX_GEN_MS]（200ms~1h，防抖动/挂死样本，
-///   被拒样本不降级不补偿）。
-/// 生成窗口（与单笔速度 tps 的分母严格同源，见 `thinking_generation_span`）：
-/// 默认 completed_at − first_token_at；思考型请求（reasoning_tokens > 0
-/// 或模型名含 claude）改用 completed_at − started_at——思考 token 在首字
-/// 之前流出且已计入 output_tokens，按首字窗口计时会把思考时长漏出分母、
-/// 速率系统性虚高。首 Token 缺失的行在此口径下没有生成样本（只能走显式
-/// request_average），逆序/未来/未完成/零输出/窗口越界一律返回 None。
+/// Validated per-request sample. Both numerator and denominator must be
+/// accumulated together; a turn's wall-clock duration is never a substitute.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct GenerationSample {
-    /// 合格输出 token 数（可加总分子）
     pub output_tokens: i64,
-    /// 生成毫秒 = completed_at − first_token_at（思考型请求为
-    /// completed_at − started_at），可加总分母
     pub generation_ms: i64,
-    /// 该单笔请求的生成速度 t/s
     pub tps: f64,
+    pub quality: SpeedQuality,
 }
 
-/// 共享行级有效性判定：完整复用 `request_speed_at` 的校验路径，并额外
-/// 要求结果是 `generation` 质量（排除 request_average 回退样本）。
-pub(crate) fn generation_sample(
-    request: &RequestTiming,
-    observed_at_ms: i64,
-) -> Option<GenerationSample> {
+pub(crate) fn speed_sample(request: &RequestTiming, observed_at_ms: i64) -> Option<GenerationSample> {
     let snapshot = request_speed_at(request, observed_at_ms)?;
-    if snapshot.quality != SpeedQuality::Generation {
-        return None;
-    }
-    let first = request.first_token_at.filter(|value| *value > 0)?;
-    let completed = request.completed_at.filter(|value| *value > 0)?;
-    // 与 request_speed_at 的生成窗口同源重算（思考型请求前移到 started，
-    // 见 thinking_generation_span）；窗口边界已由 request_speed_at 校验，
-    // 这里只兜 checked_sub 与非正防御，保证分子分母永不漂移。
-    let generation_ms = thinking_generation_span(request)
-        .or_else(|| completed.checked_sub(first))
-        .filter(|span| *span > 0)?;
-    Some(GenerationSample {
-        output_tokens: request.output_tokens,
-        generation_ms,
-        tps: snapshot.value,
-    })
+    let span = if snapshot.quality == SpeedQuality::Generation {
+        request.completed_at?.checked_sub(request.first_token_at?)?
+    } else {
+        request.started_at.zip(request.completed_at)
+            .and_then(|(s,c)| c.checked_sub(s)).filter(|ms| *ms > 0)
+            .or(request.duration_ms)?
+    };
+    Some(GenerationSample { output_tokens: request.output_tokens,
+        generation_ms: span, tps: snapshot.value, quality: snapshot.quality })
+}
+
+#[cfg(test)]
+pub(crate) fn generation_sample(request: &RequestTiming, observed_at_ms: i64) -> Option<GenerationSample> {
+    speed_sample(request, observed_at_ms).filter(|s| s.quality == SpeedQuality::Generation)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -453,6 +427,26 @@ fn table_exists(conn: &Connection, table: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tool_execution_wait_is_excluded_from_request_speed() {
+        let requests = [RequestTiming {
+            output_tokens: 100, started_at: Some(1_000), first_token_at: Some(2_000),
+            completed_at: Some(3_000), ..Default::default()
+        }, RequestTiming {
+            // A tool runs for 60 seconds between these two model requests.
+            output_tokens: 100, started_at: Some(63_000), first_token_at: Some(64_000),
+            completed_at: Some(65_000), ..Default::default()
+        }];
+        let samples: Vec<_> = requests.iter().filter_map(|r| speed_sample(r, 100_000)).collect();
+        let output: i64 = samples.iter().map(|s| s.output_tokens).sum();
+        let span: i64 = samples.iter().map(|s| s.generation_ms).sum();
+        assert_eq!((output, span), (200, 2_000));
+        assert_eq!(output as f64 * 1000.0 / span as f64, 100.0);
+        assert!(duration_speed(90, 1.0, SpeedQuality::Generation, 0).is_none());
+        assert!(duration_speed(0, 1000.0, SpeedQuality::Generation, 0).is_none());
+        assert!(duration_speed(90, f64::INFINITY, SpeedQuality::Generation, 0).is_none());
+    }
 
     #[test]
     fn generation_speed_uses_exact_short_span_without_floor() {
@@ -657,9 +651,9 @@ mod tests {
             ..RequestTiming::default()
         };
         let speed = request_speed(&reasoning).expect("思考样本有效");
-        assert_eq!(speed.quality, SpeedQuality::Generation);
+        assert_eq!(speed.quality, SpeedQuality::RequestAverage);
         assert!((speed.value - 10.0).abs() < f64::EPSILON, "{speed:?}");
-        let sample = generation_sample(&reasoning, 200_000).expect("思考样本进聚合池");
+        let sample = speed_sample(&reasoning, 200_000).expect("思考样本进聚合池");
         assert_eq!(sample.generation_ms, 100_000, "聚合分母与速度分母同源");
         assert!((sample.tps - 10.0).abs() < f64::EPSILON);
 
@@ -705,9 +699,7 @@ mod tests {
             reasoning_tokens: Some(50_000),
             ..RequestTiming::default()
         };
-        let sample = generation_sample(&no_started, 200_000).expect("缺 started 不丢样本");
-        assert_eq!(sample.generation_ms, 100_000);
-        assert!((sample.tps - 10.0).abs() < f64::EPSILON);
+        assert!(speed_sample(&no_started, 200_000).is_none(), "unknown reasoning start cannot manufacture a precise rate");
 
         // <200ms（MIN_GEN_MS 之下）：计时抖动样本整体拒绝——不产出速度，
         // 也不降级为 request_average 把同一段时长重新放行。

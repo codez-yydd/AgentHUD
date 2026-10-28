@@ -88,6 +88,7 @@ export interface ModelPrice {
   input: number;
   output: number;
   cache_read: number;
+  cache_write?: number;
 }
 
 export interface PricingConfig {
@@ -289,6 +290,8 @@ export interface RemoteModelStat {
 
 /** 远端趋势桶内模型 */
 export interface RemoteTrendBucketModel {
+  source?: string;
+  cache_write_tokens?: number;
   model_id: string;
   provider_id: string;
   requests: number;

@@ -1300,7 +1300,7 @@ pub const EFFECTS_JS_VERSION: u32 = 6;
 /// 段内标签、额度 5h 段去"额度"前导与每周段"每周"前缀），口径说明全部
 /// 由各段悬浮 title 承担；额度 5h/每周段补 battery/repeat 行内 SVG 图标
 /// （数据契约零改动）。
-pub const USAGE_JS_VERSION: u32 = 46;
+pub const USAGE_JS_VERSION: u32 = 47;
 
 /// 桌面像素宠物脚本 pet.js 的版本化落盘标记。
 /// 版本头写在模板首行注释（ZBAR-THEME-V 标记，提取器与

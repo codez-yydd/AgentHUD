@@ -379,7 +379,7 @@ function buildModelRows(
         m.cache_read_tokens,
         pricing,
         currency,
-        fxRate
+        fxRate, "codex", m.cache_write_tokens
       ),
       hasPrice,
       mergedNote: mergedNoteOf(m),
@@ -404,7 +404,7 @@ function buildModelRows(
         m.cache_read_tokens,
         pricing,
         currency,
-        fxRate
+        fxRate, "claude", m.cache_write_tokens
       ),
       hasPrice,
       mergedNote: mergedNoteOf(m),
@@ -443,7 +443,7 @@ function buildModelRows(
         m.cache_read_tokens,
         pricing,
         currency,
-        fxRate
+        fxRate, "kimi", m.cache_write_tokens
       ),
       hasPrice,
       mergedNote: mergedNoteOf(m),
@@ -470,7 +470,7 @@ function buildModelRows(
         m.cache_read_tokens,
         pricing,
         currency,
-        fxRate
+        fxRate, "dsh", m.cache_write_tokens
       ),
       hasPrice,
       mergedNote: mergedNoteOf(m),
@@ -498,7 +498,7 @@ function buildModelRows(
         m.cache_read_tokens,
         pricing,
         currency,
-        fxRate
+        fxRate, "opencode", m.cache_write_tokens
       ),
       hasPrice,
       mergedNote: mergedNoteOf(m),
@@ -525,7 +525,7 @@ function buildModelRows(
         m.cache_read_tokens,
         pricing,
         currency,
-        fxRate
+        fxRate, "minimaxcode", m.cache_write_tokens
       ),
       hasPrice,
       mergedNote: mergedNoteOf(m),

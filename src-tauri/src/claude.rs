@@ -841,6 +841,8 @@ pub fn query_stats(from_ms: i64, to_ms: i64) -> Result<db::Stats, String> {
         }
     }
 
+    db::fill_duration_metrics(&conn, "claude", from_ms, to_ms, &mut overall, &mut by_model)?;
+
     let (earliest_ms, latest_ms): (Option<i64>, Option<i64>) = conn
         .query_row(
             "SELECT MIN(started_at), MAX(started_at) FROM model_usage",
@@ -896,7 +898,7 @@ pub(crate) fn query_window_sessions_at(
     // `limit` 条
     let sql = "SELECT session_id,
             MAX(started_at),
-            COALESCE(SUM(MAX(0, input_tokens - cache_read_input_tokens)), 0),
+            COALESCE(SUM(input_tokens + cache_creation_input_tokens), 0),
             COALESCE(SUM(output_tokens), 0),
             COALESCE(SUM(cache_read_input_tokens), 0),
             COUNT(*),
@@ -907,8 +909,8 @@ pub(crate) fn query_window_sessions_at(
               ORDER BY m2.started_at DESC LIMIT 1),
             -- 请求平均速度原料：仅统计 duration_ms > 0 的行，分子分母
             -- 同范围（NULL/0/负耗时行一并排除，防短耗时行放大均值）
-            COALESCE(SUM(CASE WHEN duration_ms > 0 THEN output_tokens ELSE 0 END), 0),
-            COALESCE(SUM(CASE WHEN duration_ms > 0 THEN duration_ms ELSE 0.0 END), 0.0)
+            COALESCE(SUM(CASE WHEN duration_ms BETWEEN 200 AND 3600000 AND output_tokens > 0 THEN output_tokens ELSE 0 END), 0),
+            COALESCE(SUM(CASE WHEN duration_ms BETWEEN 200 AND 3600000 AND output_tokens > 0 THEN duration_ms ELSE 0.0 END), 0.0)
          FROM model_usage
          WHERE session_id IN (
             SELECT session_id FROM model_usage
@@ -2483,7 +2485,7 @@ mod tests {
         assert_eq!(found.sessions[1].session_id, "s-b");
         // s-a：↑ = 60 + 10 = 70、↓ = 4、⟲ = 40、× = 2；cwd 取最近一行 /b
         let s_a = &found.sessions[0];
-        assert_eq!(s_a.in_tokens, 70);
+        assert_eq!(s_a.in_tokens, 110);
         assert_eq!(s_a.out_tokens, 4);
         assert_eq!(s_a.cache_read, 40);
         assert_eq!(s_a.req_count, 2);
@@ -2496,7 +2498,7 @@ mod tests {
         // s-b：全生命周期 ↑ = 8900 + 10、cwd 全空 → None；
         // NULL/0 耗时行全部排除 → 无速度原料
         let s_b = &found.sessions[1];
-        assert_eq!(s_b.in_tokens, 8910);
+        assert_eq!(s_b.in_tokens, 9010);
         assert_eq!(s_b.out_tokens, 8001);
         assert_eq!(s_b.project, None);
         assert_eq!(s_b.speed_out_tokens, 0);
