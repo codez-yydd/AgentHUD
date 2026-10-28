@@ -53,6 +53,8 @@ export interface CardDefinition {
   simple: boolean;
   /** 合理最小高度（逻辑 px；字号变大后由组件按真实标题高度再抬升） */
   minHeight: number;
+  /** 展示级别默认值（仅在 caps.detail 时有意义） */
+  defaultDetail?: CardDetail;
   caps: CardCapabilities;
 }
 
@@ -74,8 +76,21 @@ const LIST_CAPS: CardCapabilities = {
  * 新增卡片只改这里 + 页面渲染；旧配置里没有的 ID 由 readPageLayout 补齐。
  */
 export const CARD_REGISTRY: readonly CardDefinition[] = [
-  // ---- 悬浮面板 / 汇总页 ----
+  // ---- 悬浮面板 / 汇总页（经典顺序保持升级前：花费 → 来源卡 → 额度 → 趋势 → 模型）----
   {
+    id: "summary.hero",
+    window: "panel",
+    page: "summary",
+    labelKey: "customize.card.hero",
+    order: 5,
+    classic: true,
+    simple: false,
+    minHeight: 110,
+    caps: ALL_CAPS,
+  },
+  {
+    // 来源卡是一组小卡片（每个来源一张），不套单一卡片外框：
+    // 只参与显隐 / 排序；高度、折叠由组内卡片自身决定
     id: "summary.agents",
     window: "panel",
     page: "summary",
@@ -84,7 +99,30 @@ export const CARD_REGISTRY: readonly CardDefinition[] = [
     classic: true,
     simple: false,
     minHeight: 96,
-    caps: ALL_CAPS,
+    caps: { resize: false, collapse: false, expandList: false, detail: false, hide: true },
+  },
+  {
+    id: "summary.speed",
+    window: "panel",
+    page: "summary",
+    labelKey: "customize.card.speed",
+    order: 12,
+    classic: false,
+    simple: true,
+    minHeight: 100,
+    defaultDetail: "primary",
+    caps: { ...ALL_CAPS, detail: true },
+  },
+  {
+    id: "summary.usage",
+    window: "panel",
+    page: "summary",
+    labelKey: "customize.card.usage",
+    order: 16,
+    classic: false,
+    simple: true,
+    minHeight: 100,
+    caps: { ...ALL_CAPS, detail: true },
   },
   {
     id: "summary.quota",
@@ -121,6 +159,29 @@ export const CARD_REGISTRY: readonly CardDefinition[] = [
   },
   // ---- 主窗口 / 用量总览 ----
   {
+    id: "overview.speed",
+    window: "dashboard",
+    page: "overview",
+    labelKey: "customize.card.speed",
+    order: 5,
+    classic: false,
+    simple: true,
+    minHeight: 150,
+    caps: { ...ALL_CAPS, detail: true },
+  },
+  {
+    id: "overview.usage",
+    window: "dashboard",
+    page: "overview",
+    labelKey: "customize.card.usage",
+    order: 8,
+    classic: false,
+    simple: true,
+    minHeight: 150,
+    caps: { ...ALL_CAPS, detail: true },
+  },
+  {
+    // 四张指标卡是一组，不套单一卡片外框：只参与显隐 / 排序
     id: "overview.metrics",
     window: "dashboard",
     page: "overview",
@@ -129,7 +190,7 @@ export const CARD_REGISTRY: readonly CardDefinition[] = [
     classic: true,
     simple: false,
     minHeight: 96,
-    caps: { ...ALL_CAPS, resize: false },
+    caps: { resize: false, collapse: false, expandList: false, detail: false, hide: true },
   },
   {
     id: "overview.trend",
@@ -162,7 +223,8 @@ export const CARD_REGISTRY: readonly CardDefinition[] = [
     classic: true,
     simple: true,
     minHeight: 150,
-    caps: ALL_CAPS,
+    defaultDetail: "full",
+    caps: { ...ALL_CAPS, detail: true },
   },
   {
     id: "overview.models",
@@ -208,8 +270,8 @@ interface StoredRoot {
   custom: Record<string, unknown>;
 }
 
-/** 配置版本：v2 起含方案 / 顺序 / 显示级别；v1 仅高度与折叠，读取时迁移 */
-export const LAYOUT_VERSION = 2;
+/** 配置版本：v3 起含经典/简洁/自定义方案与展示级别；v2 的高度/折叠配置可直接解析 */
+export const LAYOUT_VERSION = 3;
 
 /** 布局持久化键 */
 export const UI_LAYOUT_KEY = "zbar-ui-layout";
@@ -261,7 +323,7 @@ export function defaultCardState(
         : scheme === "custom"
           ? !def.classic
           : !def.classic,
-    detail: "primary",
+    detail: def.defaultDetail ?? "primary",
   };
 }
 
@@ -364,7 +426,9 @@ export function normalizePageLayout(
       detail: def.caps.detail
         ? explicit.detail === "full"
           ? "full"
-          : "primary"
+          : explicit.detail === "primary"
+            ? "primary"
+            : fallback.detail
         : "primary",
     };
   }
@@ -442,6 +506,11 @@ export function writePageLayout(
   const key = pageKey(window, page);
   root.v = LAYOUT_VERSION;
   root.pages[key] = clean;
+  // 自定义方案是当前生效布局：任何写入都同步刷新 custom 快照，
+  // 避免全隐藏恢复 / 拖高之后切走再切回丢失最新自定义布局
+  if (clean.scheme === "custom" && clean.customized) {
+    root.custom[key] = clean;
+  }
   writeRoot(root);
   notifyLayoutChanged(window, page);
   return clean;

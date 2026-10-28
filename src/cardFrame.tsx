@@ -36,6 +36,7 @@ import {
   UI_LAYOUT_LOCAL_EVENT,
   cardDefinition,
   readCardState,
+  readPageLayout,
   writeCardState,
   type CardLayoutState,
   type LayoutScheme,
@@ -179,6 +180,10 @@ export function CardFrame({
   const [stored, setStored] = useState<CardLayoutState>(() =>
     readCardState(frame.window, frame.page, frame.id)
   );
+  // 页面顺序（CSS flex order）：布局配置改顺序后无需页面重排 JSX
+  const [pageOrder, setPageOrder] = useState<number>(() =>
+    readPageLayout(frame.window, frame.page).order.indexOf(frame.id)
+  );
   const state = edit?.layout.cards[frame.id] ?? stored;
 
   const cardRef = useRef<HTMLDivElement | null>(null);
@@ -198,7 +203,12 @@ export function CardFrame({
 
   // 同窗口布局事件（其他卡片切换方案 / 其他窗口广播）→ 重读本卡状态
   useEffect(() => {
-    const reload = () => setStored(readCardState(frame.window, frame.page, frame.id));
+    const reload = () => {
+      setStored(readCardState(frame.window, frame.page, frame.id));
+      setPageOrder(
+        readPageLayout(frame.window, frame.page).order.indexOf(frame.id)
+      );
+    };
     window.addEventListener(UI_LAYOUT_LOCAL_EVENT, reload);
     let dispose: (() => void) | undefined;
     let cancelled = false;
@@ -249,7 +259,7 @@ export function CardFrame({
     ro.observe(headEl);
     ro.observe(card);
     return () => ro.disconnect();
-  }, [baseMin, state.collapsed, state.listExpanded]);
+  }, [baseMin, state.collapsed, state.listExpanded, state.hidden]);
 
   const fixed =
     state.height != null && !state.listExpanded && !state.collapsed;
@@ -393,10 +403,17 @@ export function CardFrame({
     !!list && list.total > list.collapsedCount && !state.collapsed;
   const showHandle =
     caps.resize && !state.listExpanded && !state.collapsed;
+  const effectiveOrder = edit
+    ? edit.layout.order.indexOf(frame.id)
+    : pageOrder;
 
-  const style: CSSProperties | undefined = effectiveHeight
-    ? { height: `${effectiveHeight}px` }
-    : undefined;
+  const style: CSSProperties | undefined = {
+    ...(effectiveHeight ? { height: `${effectiveHeight}px` } : null),
+    // flex 容器内按注册表 / 用户顺序显示；+10 让页头 / 编辑栏（order 0/1）始终在前，
+    // 同时不改变卡片之间的相对顺序。hidden 只隐藏显示内容
+    order: effectiveOrder >= 0 ? effectiveOrder + 10 : undefined,
+    display: state.hidden ? "none" : undefined,
+  };
 
   return (
     <div
@@ -411,6 +428,7 @@ export function CardFrame({
       data-card-height={fixed ? Math.round(effectiveHeight ?? 0) : "auto"}
       data-card-collapsed={state.collapsed ? "1" : "0"}
       data-list-expanded={state.listExpanded ? "1" : "0"}
+      data-card-hidden={state.hidden ? "1" : "0"}
     >
       <div ref={headRef} className="card-frame__head">
         {head(controls)}

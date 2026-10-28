@@ -26,89 +26,129 @@ export function AgentTable({
   rows,
   currency,
   rangeLabel,
+  compact = false,
+  useDetail = false,
 }: {
   rows: AgentRow[];
   currency: Currency;
   /** 自定义区间摘要（MM-DD ~ MM-DD；预设档不传）：作为卡片副标题前缀，
    *  「范围内」列表头的数值口径由此可读 */
   rangeLabel?: string;
+  /** 简洁方案：只保留服务名 / 剩余百分比 / 重置时间（套餐余量核心信息） */
+  compact?: boolean;
+  /** 自定义方案：由卡片展示级别（主要 / 完整）决定是否精简 */
+  useDetail?: boolean;
 }) {
   const { locale, t } = useI18n();
+  const quotaOnlyCount = rows.filter((row) => row.quota != null).length;
 
   return (
     <Card
-      title={t("dashboard.overview.agentTitle")}
+      title={
+        compact
+          ? t("customize.card.quota")
+          : t("dashboard.overview.agentTitle")
+      }
       frame={{ window: "dashboard", page: "overview", id: "overview.quota" }}
-      summary={t("customize.summaryQuotaTable", { count: rows.length })}
+      summary={t("customize.summaryQuotaTable", {
+        count: compact ? quotaOnlyCount : rows.length,
+      })}
       sub={
-        rangeLabel != null
-          ? `${rangeLabel} · ${t("dashboard.overview.agentSub")}`
-          : t("dashboard.overview.agentSub")
+        compact
+          ? t("customize.quotaSubCompact")
+          : rangeLabel != null
+            ? `${rangeLabel} · ${t("dashboard.overview.agentSub")}`
+            : t("dashboard.overview.agentSub")
       }
     >
-      {rows.length === 0 ? (
-        <div className="db-empty">{t("dashboard.overview.agentEmpty")}</div>
-      ) : (
-        <div className="db-table-wrap">
-          <table className="db-table">
-            <thead>
-              <tr>
-                <th>{t("dashboard.overview.colAgent")}</th>
-                <th className="db-table__num">{t("dashboard.overview.colToday")}</th>
-                <th className="db-table__num">{t("dashboard.overview.colRange")}</th>
-                <th className="db-table__num">{t("dashboard.overview.colCost")}</th>
-                <th className="db-table__quota">{t("dashboard.overview.colQuota")}</th>
-                <th
-                  className="db-table__quota db-table__quota--compact"
-                  title={t("dashboard.overview.colHour5Hint")}
-                >
-                  {t("dashboard.overview.colHour5")}
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((row) => (
-                <tr key={row.id}>
-                  <td>
-                    <div className="db-agent">
-                      <span className="db-agent__icon" style={{ color: row.color }}>
-                        <BrandIcon brand={row.id} className="h-4 w-4" />
-                      </span>
-                      <span className="db-agent__name">{row.label}</span>
-                    </div>
-                  </td>
-                  <td className="db-table__num num">
-                    {row.todayTokens > 0
-                      ? formatTokensLocale(row.todayTokens, locale)
-                      : "—"}
-                  </td>
-                  <td className="db-table__num num">
-                    {row.rangeTokens > 0
-                      ? formatTokensLocale(row.rangeTokens, locale)
-                      : "—"}
-                    {/* 范围内数值含其他设备贡献时的行内小标记（「全部设备」才会出现） */}
-                    {row.remoteRangeTokens > 0 && (
-                      <span
-                        className="db-tag db-tag--remote"
-                        title={t("dashboard.overview.remoteIncludedHint")}
-                      >
-                        {t("dashboard.overview.remoteIncluded")}
-                      </span>
-                    )}
-                  </td>
-                  <td className="db-table__num num">{costCellText(row, currency, t)}</td>
-                  <td>
-                    <QuotaCell row={row} />
-                  </td>
-                  <td className="db-table__quota--compact">
-                    <Hour5Cell hour5={row.quota?.hour5 ?? null} />
-                  </td>
+      {({ detail }) => {
+        const quotaOnly = compact || (useDetail && detail === "primary");
+        // 套餐余量视图只保留有额度快照的服务：没有额度数据的服务不占一行
+        const displayRows = quotaOnly
+          ? rows.filter((row) => row.quota != null)
+          : rows;
+        return displayRows.length === 0 ? (
+          <div className="db-empty">{t("dashboard.overview.agentEmpty")}</div>
+        ) : (
+          <div className="db-table-wrap">
+            <table className="db-table">
+              <thead>
+                <tr>
+                  <th>{t("dashboard.overview.colAgent")}</th>
+                  {!quotaOnly && (
+                    <>
+                      <th className="db-table__num">
+                        {t("dashboard.overview.colToday")}
+                      </th>
+                      <th className="db-table__num">
+                        {t("dashboard.overview.colRange")}
+                      </th>
+                      <th className="db-table__num">
+                        {t("dashboard.overview.colCost")}
+                      </th>
+                    </>
+                  )}
+                  <th className="db-table__quota">
+                    {t("dashboard.overview.colQuota")}
+                  </th>
+                  <th
+                    className="db-table__quota db-table__quota--compact"
+                    title={t("dashboard.overview.colHour5Hint")}
+                  >
+                    {t("dashboard.overview.colHour5")}
+                  </th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
+              </thead>
+              <tbody>
+                {displayRows.map((row) => (
+                  <tr key={row.id}>
+                    <td>
+                      <div className="db-agent">
+                        <span className="db-agent__icon" style={{ color: row.color }}>
+                          <BrandIcon brand={row.id} className="h-4 w-4" />
+                        </span>
+                        <span className="db-agent__name">{row.label}</span>
+                      </div>
+                    </td>
+                    {!quotaOnly && (
+                      <>
+                        <td className="db-table__num num">
+                          {row.todayTokens > 0
+                            ? formatTokensLocale(row.todayTokens, locale)
+                            : "—"}
+                        </td>
+                        <td className="db-table__num num">
+                          {row.rangeTokens > 0
+                            ? formatTokensLocale(row.rangeTokens, locale)
+                            : "—"}
+                          {/* 范围内数值含其他设备贡献时的行内小标记（「全部设备」才会出现） */}
+                          {row.remoteRangeTokens > 0 && (
+                            <span
+                              className="db-tag db-tag--remote"
+                              title={t("dashboard.overview.remoteIncludedHint")}
+                            >
+                              {t("dashboard.overview.remoteIncluded")}
+                            </span>
+                          )}
+                        </td>
+                        <td className="db-table__num num">
+                          {costCellText(row, currency, t)}
+                        </td>
+                      </>
+                    )}
+                    <td>
+                      <QuotaCell row={row} />
+                    </td>
+                    <td className="db-table__quota--compact">
+                      <Hour5Cell hour5={row.quota?.hour5 ?? null} />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        );
+      }}
     </Card>
   );
 }

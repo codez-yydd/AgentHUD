@@ -2,7 +2,13 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { UPDATE_READY_KEY, UPDATE_READY_EVENT } from "./updater";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import type { CredentialKind, Currency, PricingConfig, StatsTab } from "./types";
+import type {
+  CredentialKind,
+  Currency,
+  PricingConfig,
+  RangePreset,
+  StatsTab,
+} from "./types";
 import { getHudBarState, onHudBarState, setHudBarEnabled } from "./hudBar";
 import { fetchPin, openMainWindow, setPin, selectableRemoteDevices } from "./api";
 import { useDataCache } from "./DataCache";
@@ -501,6 +507,20 @@ export function StatsPanel({
   // 触及不到，需独立令牌联动（面板 useEffect 消费该 prop）
   const [speedRefresh, setSpeedRefresh] = useState(0);
 
+  // 简洁用量卡的时间范围文案：与顶部 RangePicker 同一 preset / custom 状态
+  const summaryRangeLabel =
+    preset === "custom"
+      ? `${custom.from} → ${custom.to}`
+      : t(
+          preset === "today"
+            ? "range.today"
+            : preset === "1d"
+              ? "range.24h"
+              : preset === "7d"
+                ? "range.7d"
+                : "range.30d"
+        );
+
   return (
     // relative：承载「＋添加服务」的添加凭证全卡弹层（CredentialFormDialog
     // 的 absolute inset-0 以最近定位祖先为界）
@@ -965,6 +985,9 @@ export function StatsPanel({
           fxRate={fxRate}
           pricing={pricing}
           agentVisibility={agentVisibility}
+          rangeLabel={summaryRangeLabel}
+          rangePreset={preset}
+          onRangeChange={(p: RangePreset) => setPreset(p)}
         />
       )}
 

@@ -17,6 +17,12 @@
 import { useMemo, useState } from "react";
 import { useI18n, type MessageKey } from "../i18n";
 import { AlertBanner, EmptyState } from "../layout";
+import {
+  LayoutEditorBar,
+  LayoutEntryButton,
+  PageLayoutEditProvider,
+  usePageLayoutEditor,
+} from "../layoutEditor";
 import { RefreshIcon } from "./icons";
 import { DropdownMenu, type DropdownOption } from "../DropdownMenu";
 import {
@@ -29,6 +35,7 @@ import { HeatmapCard } from "./overview/HeatmapCard";
 import { MetricCards } from "./overview/MetricCards";
 import { ModelTable } from "./overview/ModelTable";
 import { OverviewSkeleton } from "./overview/primitives";
+import { OverviewSpeedCard, OverviewUsageCard } from "./overview/SimpleCards";
 import { TrendCard } from "./overview/TrendCard";
 import {
   agentView,
@@ -78,6 +85,7 @@ function timeText(ms: number): string {
 
 export function OverviewPage() {
   const { locale, t } = useI18n();
+  const editor = usePageLayoutEditor("dashboard", "overview");
   const {
     data,
     loading,
@@ -149,6 +157,24 @@ export function OverviewPage() {
   //（逐卡标注对它们是噪音），AgentTable 不跟随筛选也不能带
   const agentName =
     agentFilter === "all" ? undefined : agentLabel(agentFilter);
+  // 指标卡组不套单一卡片外框：单独读取注册表状态用于顺序 / 显隐
+  const metricsCardState = editor.layout.cards["overview.metrics"];
+  const metricsOrder = editor.layout.order.indexOf("overview.metrics");
+  const speedHidden = editor.layout.cards["overview.speed"]?.hidden;
+  const usageHidden = editor.layout.cards["overview.usage"]?.hidden;
+  const heatmapState = editor.layout.cards["overview.heatmap"];
+  const quotaState = editor.layout.cards["overview.quota"];
+  // 热力图 + 额度表仅在「经典且两张都显示」时并排成组：自定义顺序 / 简洁只留
+  // 一张时拆开渲染，避免分组包装吞掉全局 order（拖到前面的卡片才能真正靠前）
+  const useDuo =
+    editor.scheme === "classic" && !heatmapState?.hidden && !quotaState?.hidden;
+  const duoOrder = useDuo
+    ? Math.min(
+        editor.layout.order.indexOf("overview.heatmap"),
+        editor.layout.order.indexOf("overview.quota")
+      ) + 10
+    : undefined;
+  const duoHidden = !!heatmapState?.hidden && !!quotaState?.hidden;
   // 自定义区间可选最早日期：取数窗口（365 天）起点——更早的日期没有数据，
   // 面板不放开（切范围只重新聚合，不会为此扩大取数窗口）
   const minMs = useMemo(
@@ -234,6 +260,7 @@ export function OverviewPage() {
             <RefreshIcon className={`h-3.5 w-3.5 ${loading ? "db-spin" : ""}`} />
             {t("common.refresh")}
           </button>
+          <LayoutEntryButton onClick={editor.openEditor} />
           {/* 远端合并中：本机数据已可见，其他设备贡献仍在后台合并（弱标记，
               不阻塞界面；仅「全部设备」范围可能出现） */}
           {effectiveScope === "all" && remotePending && (
@@ -276,6 +303,8 @@ export function OverviewPage() {
         </div>
       )}
 
+      {editor.editing && <LayoutEditorBar editor={editor} />}
+
       {hardError ? (
         /* 专用错误态：全部 Agent 取数失败，此时没有任何可用数据，
            不复用「暂无用量数据」的采集引导空态（那会把失败说成没数据） */
@@ -316,16 +345,63 @@ export function OverviewPage() {
           }
         />
       ) : (
-        <>
-          <MetricCards
-            summary={view.summary}
-            currency={currency}
-            /* 自定义区间按非今日处理（范围内 ≠ 今日，第 4 卡仍展示今日 Token） */
-            range={customRange ? "custom" : range}
-            /* 自定义范围下把区间摘要标在「范围内 Token」卡上（预设档不显示，
-               卡片标题保持原有简洁） */
-            rangeLabel={customRange ? rangeLabel : undefined}
-          />
+        <PageLayoutEditProvider editor={editor}>
+          {editor.allHidden && !editor.editing && (
+            <div className="db-card px-5 py-6 text-center" style={{ order: 2 }}>
+              <div className="db-card__title">{t("customize.noCardsTitle")}</div>
+              <p className="db-page__desc">{t("customize.noCardsHint")}</p>
+              <div className="mt-3 flex justify-center gap-2">
+                <button
+                  type="button"
+                  className="db-btn db-btn--primary"
+                  onClick={editor.restoreAllNow}
+                >
+                  {t("customize.restoreAll")}
+                </button>
+                <button
+                  type="button"
+                  className="db-btn"
+                  onClick={editor.openEditor}
+                >
+                  {t("customize.entry")}
+                </button>
+              </div>
+            </div>
+          )}
+          <div
+            className="min-w-0"
+            style={{
+              order: metricsOrder >= 0 ? metricsOrder + 10 : undefined,
+              display: metricsCardState?.hidden ? "none" : undefined,
+            }}
+          >
+            <MetricCards
+              summary={view.summary}
+              currency={currency}
+              /* 自定义区间按非今日处理（范围内 ≠ 今日，第 4 卡仍展示今日 Token） */
+              range={customRange ? "custom" : range}
+              /* 自定义范围下把区间摘要标在「范围内 Token」卡上（预设档不显示，
+                 卡片标题保持原有简洁） */
+              rangeLabel={customRange ? rangeLabel : undefined}
+            />
+          </div>
+          {!speedHidden && (
+            <OverviewSpeedCard
+              scope={effectiveScope === "all" ? "all" : "local"}
+            />
+          )}
+          {!usageHidden && (
+            <OverviewUsageCard
+              summary={view.summary}
+              currency={currency}
+              range={customRange ? "custom" : range}
+              rangeLabel={rangeLabel}
+              onRangeChange={(next) => {
+                setCustomRange(null);
+                setRange(next);
+              }}
+            />
+          )}
           <TrendCard
             series={view.trend}
             currency={currency}
@@ -333,25 +409,34 @@ export function OverviewPage() {
             /* Agent 筛选生效时副标题标注数据归属（合计非跨 Agent 口径） */
             agentName={agentName}
           />
-          {/* 热力图 + Agent 表：默认上下堆叠（与页面其余卡片同节奏）；仅大窗
-              （≥1340px，内容区 ≥1080px）并排两列，减少大窗下的纵向滚动。
-              断点依据：52 列热力图的格子边长随列宽线性变化——默认 1100 窗若
-              强行并排，热力列仅约 419px，扣除 51×2px 列间隙与 26px 星期标签
-              列后格子约 5.4px，hover 命中区过小、四档色阶不可辨，且 Agent 表
-              右列任何宽度都横向滚动、额度列默认屏外；1340 起热力列约 585px、
-              格子约 8px（1280 内容列上限下约 9.5px），并排才划算。并排列宽
-              11fr : 9fr——热力图对宽度最敏感，分略宽一列；Agent 表列挤由
-              .db-table-wrap 横向滚动兜底。行内 align-items: stretch，矮的
-              热力图卡拉伸至与表卡同高（内容保持自然高度、底部留白），两卡
-              上下边对齐比高低参差整齐 */}
-          <div className="db-overview-duo">
-            <HeatmapCard series={view.heat} />
-            <AgentTable
-              rows={view.rows}
-              currency={currency}
-              rangeLabel={customRange ? rangeLabel : undefined}
-            />
-          </div>
+          {/* 热力图 + Agent 表：经典方案且两张都显示时并排（≥1340px 两列），
+              其余情况拆成两个独立卡片，顺序完全由自定义布局决定。 */}
+          {useDuo ? (
+            <div
+              className="db-overview-duo"
+              style={{ order: duoOrder, display: duoHidden ? "none" : undefined }}
+            >
+              <HeatmapCard series={view.heat} />
+              <AgentTable
+                rows={view.rows}
+                currency={currency}
+                rangeLabel={customRange ? rangeLabel : undefined}
+                compact={false}
+                useDetail={false}
+              />
+            </div>
+          ) : (
+            <>
+              <HeatmapCard series={view.heat} />
+              <AgentTable
+                rows={view.rows}
+                currency={currency}
+                rangeLabel={customRange ? rangeLabel : undefined}
+                compact={editor.scheme === "simple"}
+                useDetail={editor.scheme === "custom"}
+              />
+            </>
+          )}
           {/* 模型用量表：与 Agent 表同一份范围口径（范围内切片），成本按本机
               价格表折算（Cursor 用其后端成本），默认折叠前 10 行 */}
           <ModelTable
@@ -364,10 +449,10 @@ export function OverviewPage() {
           />
           {/* 口径脚注：本机成本由后端按定价表 × 汇率折算，远端成本用同一份
               价格表在前端折算（与菜单栏标题同源），非账单金额 */}
-          <p className="db-page__footnote">
+          <p className="db-page__footnote" style={{ order: 9999 }}>
             {t("dashboard.overview.costFootnote")}
           </p>
-        </>
+        </PageLayoutEditProvider>
       )}
     </div>
   );

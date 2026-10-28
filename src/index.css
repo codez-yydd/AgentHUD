@@ -919,6 +919,332 @@ body.card-resizing * {
   color: #7dd3fc;
 }
 
+/* ============================================================
+ * 「调整显示」编辑栏与入口：两窗共用结构类，着色走各自主题变量。
+ * 编辑栏吸附在滚动容器顶部，卡片列表可滚动，页面卡片仍可见并常显拖动手柄。
+ * ============================================================ */
+.layout-entry {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 7px;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.5);
+  color: rgba(51, 65, 85, 0.72);
+  font-size: 10px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: color 0.12s ease, background 0.12s ease, border-color 0.12s ease;
+}
+.layout-entry:hover {
+  color: #0284c7;
+  border-color: rgba(14, 165, 233, 0.28);
+  background: rgba(14, 165, 233, 0.07);
+}
+.dark .layout-entry {
+  border-color: rgba(226, 232, 240, 0.12);
+  background: rgba(15, 23, 42, 0.35);
+  color: rgba(226, 232, 240, 0.68);
+}
+.dark .layout-entry:hover {
+  color: #7dd3fc;
+  border-color: rgba(56, 189, 248, 0.3);
+  background: rgba(56, 189, 248, 0.12);
+}
+.layout-editor {
+  position: sticky;
+  top: 0;
+  z-index: 30;
+  /* 页面是 flex column：编辑栏始终在最前，卡片用各自的 order 排序 */
+  order: -1;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 9px 10px;
+  border: 1px solid rgba(14, 165, 233, 0.28);
+  border-radius: 14px;
+  background: rgba(248, 250, 252, 0.96);
+  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.14);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+.dark .layout-editor {
+  border-color: rgba(56, 189, 248, 0.3);
+  background: rgba(15, 23, 42, 0.96);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.35);
+}
+.layout-editor__top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.layout-editor__heading {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px;
+  min-width: 0;
+}
+.layout-editor__title {
+  font-size: 11px;
+  font-weight: 700;
+  color: rgba(15, 23, 42, 0.9);
+}
+.dark .layout-editor__title {
+  color: rgba(226, 232, 240, 0.92);
+}
+.layout-editor__badge {
+  padding: 1px 5px;
+  border-radius: 999px;
+  background: rgba(14, 165, 233, 0.14);
+  color: #0284c7;
+  font-size: 8px;
+  font-weight: 600;
+}
+.dark .layout-editor__badge {
+  background: rgba(56, 189, 248, 0.16);
+  color: #7dd3fc;
+}
+.layout-editor__meta {
+  font-size: 9px;
+  color: rgba(51, 65, 85, 0.55);
+}
+.dark .layout-editor__meta {
+  color: rgba(226, 232, 240, 0.55);
+}
+.layout-editor__actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 3px;
+}
+.layout-editor__btn {
+  padding: 3px 7px;
+  border: 1px solid rgba(15, 23, 42, 0.1);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.7);
+  color: rgba(51, 65, 85, 0.78);
+  font-size: 9px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.layout-editor__btn:hover {
+  color: #0284c7;
+  background: rgba(14, 165, 233, 0.08);
+}
+.layout-editor__btn--primary {
+  border-color: transparent;
+  background: #0ea5e9;
+  color: #fff;
+}
+.layout-editor__btn--primary:hover {
+  background: #0284c7;
+  color: #fff;
+}
+.dark .layout-editor__btn {
+  border-color: rgba(226, 232, 240, 0.14);
+  background: rgba(15, 23, 42, 0.5);
+  color: rgba(226, 232, 240, 0.78);
+}
+.dark .layout-editor__btn:hover {
+  color: #7dd3fc;
+  background: rgba(56, 189, 248, 0.12);
+}
+.dark .layout-editor__btn--primary,
+.dark .layout-editor__btn--primary:hover {
+  border-color: transparent;
+  background: #0284c7;
+  color: #fff;
+}
+.layout-editor__hint {
+  margin: 0;
+  font-size: 8.5px;
+  line-height: 1.45;
+  color: rgba(51, 65, 85, 0.55);
+}
+.dark .layout-editor__hint {
+  color: rgba(226, 232, 240, 0.55);
+}
+.layout-editor__schemes {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+.layout-editor__label {
+  font-size: 9px;
+  font-weight: 600;
+  color: rgba(51, 65, 85, 0.6);
+}
+.dark .layout-editor__label {
+  color: rgba(226, 232, 240, 0.6);
+}
+.layout-editor__scheme-pills {
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 8px;
+  background: rgba(15, 23, 42, 0.05);
+}
+.dark .layout-editor__scheme-pills {
+  background: rgba(226, 232, 240, 0.08);
+}
+.layout-editor__pill {
+  padding: 2px 7px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: rgba(51, 65, 85, 0.7);
+  font-size: 9px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.layout-editor__pill--active {
+  background: #0ea5e9;
+  color: #fff;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.16);
+}
+.dark .layout-editor__pill {
+  color: rgba(226, 232, 240, 0.72);
+}
+.dark .layout-editor__pill--active {
+  background: rgba(255, 255, 255, 0.85);
+  color: #16233d;
+}
+.layout-editor__list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 34vh;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+.layout-editor__row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 3px 4px;
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.5);
+  border: 1px solid transparent;
+}
+.layout-editor__row:hover {
+  border-color: rgba(14, 165, 233, 0.2);
+}
+.layout-editor__row.is-dragging {
+  opacity: 0.55;
+}
+.layout-editor__row.is-hidden .layout-editor__name {
+  opacity: 0.5;
+  text-decoration: line-through;
+}
+.dark .layout-editor__row {
+  background: rgba(15, 23, 42, 0.4);
+}
+.layout-editor__grip {
+  flex: none;
+  color: rgba(51, 65, 85, 0.35);
+  font-size: 11px;
+  line-height: 1;
+  cursor: grab;
+  user-select: none;
+}
+.dark .layout-editor__grip {
+  color: rgba(226, 232, 240, 0.35);
+}
+.layout-editor__name {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 1;
+  min-width: 90px;
+  font-size: 9px;
+  color: rgba(15, 23, 42, 0.82);
+}
+.dark .layout-editor__name {
+  color: rgba(226, 232, 240, 0.85);
+}
+.layout-editor__name input {
+  accent-color: #0ea5e9;
+  width: 12px;
+  height: 12px;
+}
+.layout-editor__row-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-wrap: wrap;
+}
+.layout-editor__select {
+  height: 18px;
+  padding: 0 2px;
+  border: 1px solid rgba(15, 23, 42, 0.1);
+  border-radius: 5px;
+  background: rgba(255, 255, 255, 0.7);
+  color: rgba(51, 65, 85, 0.8);
+  font-size: 8px;
+}
+.dark .layout-editor__select {
+  border-color: rgba(226, 232, 240, 0.14);
+  background: rgba(15, 23, 42, 0.6);
+  color: rgba(226, 232, 240, 0.8);
+}
+.layout-editor__mini {
+  height: 18px;
+  padding: 0 4px;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 5px;
+  background: transparent;
+  color: rgba(51, 65, 85, 0.65);
+  font-size: 8px;
+  cursor: pointer;
+}
+.layout-editor__mini:hover:not(:disabled) {
+  color: #0284c7;
+  border-color: rgba(14, 165, 233, 0.3);
+}
+.layout-editor__mini:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+.layout-editor__mini.is-on {
+  color: #0284c7;
+  background: rgba(14, 165, 233, 0.1);
+}
+.dark .layout-editor__mini {
+  border-color: rgba(226, 232, 240, 0.12);
+  color: rgba(226, 232, 240, 0.68);
+}
+.dark .layout-editor__mini.is-on {
+  color: #7dd3fc;
+  background: rgba(56, 189, 248, 0.12);
+}
+.layout-editor__mini--icon {
+  width: 18px;
+  padding: 0;
+  font-size: 10px;
+}
+.layout-editor__empty {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 5px 6px;
+  border-radius: 7px;
+  background: rgba(245, 158, 11, 0.1);
+  color: rgba(120, 53, 15, 0.9);
+  font-size: 8.5px;
+}
+.dark .layout-editor__empty {
+  background: rgba(245, 158, 11, 0.14);
+  color: #fde68a;
+}
+
 /* 字号控件：增减按钮（输入框与预设复用两窗通用工具类） */
 .font-size-control__step {
   display: inline-flex;

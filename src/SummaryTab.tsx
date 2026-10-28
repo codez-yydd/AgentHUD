@@ -15,6 +15,7 @@ import type {
   OverallStat,
   PricingConfig,
   ProviderQuotaEntry,
+  RangePreset,
   SpeedQuality,
   Stats,
   TrendPoint,
@@ -53,6 +54,13 @@ import {
   SortToggle,
   StatusBadge,
 } from "./layout";
+import {
+  LayoutEditorBar,
+  LayoutEntryButton,
+  PageLayoutEditProvider,
+  usePageLayoutEditor,
+} from "./layoutEditor";
+import { SimpleSpeedCard, SimpleUsageCard } from "./SimpleSummaryCards";
 
 interface Props {
   stats: Stats | null;
@@ -75,6 +83,12 @@ interface Props {
   fxRate: number;
   pricing: PricingConfig;
   agentVisibility: AgentVisibility;
+  /** 当前时间范围文案（简洁用量卡副标题；由 StatsPanel 传入） */
+  rangeLabel?: string;
+  /** 当前时间范围档位（卡内快捷切换高亮用） */
+  rangePreset?: RangePreset;
+  /** 卡内快捷切换时间范围（与顶部 RangePicker 同一状态） */
+  onRangeChange?: (preset: RangePreset) => void;
 }
 
 /** 缓存命中率：input 含 cache_read 口径（ZCode / Codex） */
@@ -742,9 +756,13 @@ export function SummaryTab({
   fxRate,
   pricing,
   agentVisibility,
+  rangeLabel,
+  rangePreset,
+  onRangeChange,
 }: Props) {
   const { t } = useI18n();
   const resetDisplay = useResetDisplay();
+  const editor = usePageLayoutEditor("panel", "summary");
   const [trendMetric, setTrendMetric] = useState<"cost" | "token">("cost");
   const [sortBy, setSortBy] = useState<"cost" | "token" | "requests">("cost");
   const [now, setNow] = useState(Date.now());
@@ -1494,41 +1512,105 @@ export function SummaryTab({
           weekly: weekly != null ? Math.round(100 - weekly.percentage) : "—",
         })
       : t("customize.summaryQuotaFallback");
+  const totalRequests = mergedTrend.reduce((sum, p) => sum + p.requests, 0);
+  const heroCardSummary = `${formatCost(totalCost, currency)} · ${formatTokens(
+    totalTokens
+  )}`;
+  // 来源卡组不套单一卡片外框：单独读取注册表状态用于顺序 / 显隐
+  const agentsCardState = editor.layout.cards["summary.agents"];
+  const agentsOrder = editor.layout.order.indexOf("summary.agents");
+  const speedAgents = agents.map((a) => ({
+    id: a.id,
+    name: a.name,
+    color: a.color,
+    currentModel: a.currentModel ?? null,
+    avgTps: a.avgTps ?? null,
+    speedQuality: a.speedQuality ?? null,
+    avgTtftMs: a.avgTtftMs ?? null,
+  }));
 
   return (
     <div className="flex-1 min-h-0 overflow-y-auto px-3 py-2.5 page-stack">
-      <HeroMetric
-        label={t("summary.totalCost")}
-        value={formatCost(totalCost, currency)}
-        accent="sky"
-        badge={
-          <StatusBadge color="emerald">
-            {t("summary.sources", { count: activeAgents.length })}
-          </StatusBadge>
-        }
-        footer={
-          <MetricPair
-            left={{ label: t("summary.totalTokens"), value: formatTokens(totalTokens) }}
-            /* 花费分布条与总花费/costPct 同口径：传全量来源（不按展示
-               开关过滤），否则隐藏高花费来源后同屏两处"占比"语义分叉 */
-            right={{ label: t("summary.costDist"), value: <CompositionBar agents={allAgents} /> }}
-          />
-        }
-      />
+      <PageLayoutEditProvider editor={editor}>
+        {!editor.editing && (
+          <div className="flex justify-end shrink-0" style={{ order: -2 }}>
+            <LayoutEntryButton onClick={editor.openEditor} />
+          </div>
+        )}
+        {editor.editing && <LayoutEditorBar editor={editor} />}
 
-      {activeAgents.length > 0 && (
-        <div className="flex flex-col gap-1.5 shrink-0">
-          {activeAgents.map((a) => (
-            <AgentCostCard
-              key={a.id}
-              agent={a}
-              currency={currency}
-              costPct={totalCost > 0 ? a.cost / totalCost : 0}
-              speedLocal={speedLocalLabel}
+        {editor.allHidden && !editor.editing && (
+          <div className="card-base rounded-2xl px-4 py-6 text-center">
+            <div className="text-[12px] font-semibold text-slate-700">
+              {t("customize.noCardsTitle")}
+            </div>
+            <p className="mt-1 text-[10px] leading-relaxed text-slate-500">
+              {t("customize.noCardsHint")}
+            </p>
+            <div className="mt-3 flex justify-center gap-2">
+              <button
+                type="button"
+                className="rounded-full bg-sky-500 px-3 py-1 text-[10px] font-medium text-white transition-colors hover:bg-sky-600"
+                onClick={editor.restoreAllNow}
+              >
+                {t("customize.restoreAll")}
+              </button>
+              <LayoutEntryButton onClick={editor.openEditor} />
+            </div>
+          </div>
+        )}
+
+        <HeroMetric
+          label={t("summary.totalCost")}
+          value={formatCost(totalCost, currency)}
+          accent="sky"
+          card={{ window: "panel", page: "summary", id: "summary.hero" }}
+          cardSummary={heroCardSummary}
+          badge={
+            <StatusBadge color="emerald">
+              {t("summary.sources", { count: activeAgents.length })}
+            </StatusBadge>
+          }
+          footer={
+            <MetricPair
+              left={{ label: t("summary.totalTokens"), value: formatTokens(totalTokens) }}
+              /* 花费分布条与总花费/costPct 同口径：传全量来源（不按展示
+                 开关过滤），否则隐藏高花费来源后同屏两处"占比"语义分叉 */
+              right={{ label: t("summary.costDist"), value: <CompositionBar agents={allAgents} /> }}
             />
-          ))}
-        </div>
-      )}
+          }
+        />
+
+        <SimpleSpeedCard agents={speedAgents} speedLocal={speedLocalLabel} />
+        <SimpleUsageCard
+          tokens={totalTokens}
+          cost={totalCost}
+          requests={totalRequests}
+          currency={currency}
+          rangeLabel={rangeLabel ?? t("customize.usage.noRange")}
+          rangePreset={rangePreset}
+          onRangeChange={onRangeChange}
+        />
+
+        {activeAgents.length > 0 && (
+          <div
+            className="flex flex-col gap-1.5 shrink-0"
+            style={{
+              order: agentsOrder >= 0 ? agentsOrder + 10 : undefined,
+              display: agentsCardState?.hidden ? "none" : undefined,
+            }}
+          >
+            {activeAgents.map((a) => (
+              <AgentCostCard
+                key={a.id}
+                agent={a}
+                currency={currency}
+                costPct={totalCost > 0 ? a.cost / totalCost : 0}
+                speedLocal={speedLocalLabel}
+              />
+            ))}
+          </div>
+        )}
 
       {agents.some((a) => a.metrics.length > 0 || a.empty) && (
         <SectionCard
@@ -1778,6 +1860,7 @@ export function SummaryTab({
           )}
         </SectionCard>
       )}
+      </PageLayoutEditProvider>
     </div>
   );
 }

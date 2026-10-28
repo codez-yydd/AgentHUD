@@ -6,10 +6,20 @@
 export const customize = {
   // ===== 入口 / 面板 =====
   "customize.entry": "调整显示",
+  "customize.entryHint": "调整显示内容与顺序",
   "customize.title": "调整显示",
   "customize.hint":
     "选择显示内容、调整顺序和展示级别；卡片高度可直接拖动底边。",
   "customize.editHint": "拖动卡片底边可调高度，完成后点「完成」保存。",
+  "customize.editBarHint":
+    "勾选显示内容、拖动排序；下方卡片可直接拖底边改高度。",
+  "customize.schemeSwitchHint": "切换方案前会保存当前自定义布局，不会销毁它。",
+  "customize.cardCount": "{count} 张卡片",
+  "customize.hiddenCards": "已隐藏 {count} 张",
+  "customize.editing": "调整中",
+  "customize.visibleToggle": "显示此卡片",
+  "customize.noCardsTitle": "当前没有显示任何卡片",
+  "customize.noCardsHint": "只隐藏显示内容，数据采集与统计仍在运行。",
   "customize.done": "完成",
   "customize.cancel": "取消",
   "customize.resetDefault": "恢复默认",
@@ -63,8 +73,29 @@ export const customize = {
   "customize.summaryMetrics": "区间 Token {tokens}",
   "customize.summaryHeatmap": "近 52 周活跃度",
   "customize.summaryQuotaTable": "{count} 个服务的套餐余量",
+  "customize.quotaSubCompact": "剩余额度 · 重置时间",
+
+  // ===== 速度 / 用量卡（简洁方案的核心内容）=====
+  "customize.speed.label": "平均速度",
+  "customize.speed.local": "本机平均速度",
+  "customize.speed.model": "当前模型",
+  "customize.speed.none": "暂无速度数据",
+  "customize.speed.noneHint": "有带耗时的请求后自动显示，不使用虚构数据",
+  "customize.speed.source": "来源",
+  "customize.speed.today": "今日聚合",
+  "customize.speed.fullHint": "完整信息显示更多模型与 TTFT",
+  "customize.speed.samples": "样本 {count}",
+  "customize.usage.title": "Token 用量",
+  "customize.usage.rangeTokens": "区间 Token",
+  "customize.usage.todayTokens": "今日 Token",
+  "customize.usage.rangeCost": "区间花费",
+  "customize.usage.todayCost": "今日花费",
+  "customize.usage.requests": "请求数",
+  "customize.usage.rangeHint": "时间范围与顶部范围选择器同步",
+  "customize.usage.noRange": "当前范围",
 
   // ===== 卡片名称（注册表 labelKey）=====
+  "customize.card.hero": "合计花费",
   "customize.card.agents": "各服务花费",
   "customize.card.quota": "套餐余量",
   "customize.card.trend": "用量趋势",
@@ -72,17 +103,29 @@ export const customize = {
   "customize.card.metrics": "用量指标",
   "customize.card.heatmap": "活跃热力图",
   "customize.card.speed": "当前速度",
-  "customize.card.usage": "今日 Token",
+  "customize.card.usage": "Token 用量",
 };
 
 /** 英文对照（键集必须与中文一致，en.ts 的 typeof zh 约束会兜底检查） */
 export const customizeEn: { [K in keyof typeof customize]: string } = {
   "customize.entry": "Customize",
+  "customize.entryHint": "Choose visible cards and their order",
   "customize.title": "Customize display",
   "customize.hint":
     "Choose cards, reorder them and set the detail level; drag a card's bottom edge to resize.",
   "customize.editHint":
     "Drag a card's bottom edge to resize, then press Done to save.",
+  "customize.editBarHint":
+    "Tick cards to show and drag to reorder; drag a card's bottom edge below to resize.",
+  "customize.schemeSwitchHint":
+    "Your current custom layout is saved before switching, so it is never lost.",
+  "customize.cardCount": "{count} cards",
+  "customize.hiddenCards": "{count} hidden",
+  "customize.editing": "Editing",
+  "customize.visibleToggle": "Show this card",
+  "customize.noCardsTitle": "No cards are visible",
+  "customize.noCardsHint":
+    "Only the display is hidden; data collection and statistics keep running.",
   "customize.done": "Done",
   "customize.cancel": "Cancel",
   "customize.resetDefault": "Reset to default",
@@ -132,7 +175,28 @@ export const customizeEn: { [K in keyof typeof customize]: string } = {
   "customize.summaryMetrics": "Range tokens {tokens}",
   "customize.summaryHeatmap": "Last 52 weeks of activity",
   "customize.summaryQuotaTable": "Plan quota for {count} services",
+  "customize.quotaSubCompact": "Remaining quota · reset time",
 
+  "customize.speed.label": "Average speed",
+  "customize.speed.local": "Local average speed",
+  "customize.speed.model": "Current model",
+  "customize.speed.none": "No speed data yet",
+  "customize.speed.noneHint":
+    "Shown once requests with timing data arrive; no placeholder numbers are used.",
+  "customize.speed.source": "Source",
+  "customize.speed.today": "Today's aggregate",
+  "customize.speed.fullHint": "Full detail shows more models and TTFT",
+  "customize.speed.samples": "{count} samples",
+  "customize.usage.title": "Token usage",
+  "customize.usage.rangeTokens": "Tokens in range",
+  "customize.usage.todayTokens": "Today's tokens",
+  "customize.usage.rangeCost": "Cost in range",
+  "customize.usage.todayCost": "Today's cost",
+  "customize.usage.requests": "Requests",
+  "customize.usage.rangeHint": "Synced with the range picker at the top",
+  "customize.usage.noRange": "Current range",
+
+  "customize.card.hero": "Total spend",
   "customize.card.agents": "Service spend",
   "customize.card.quota": "Plan quota",
   "customize.card.trend": "Usage trend",
@@ -140,5 +204,5 @@ export const customizeEn: { [K in keyof typeof customize]: string } = {
   "customize.card.metrics": "Usage metrics",
   "customize.card.heatmap": "Activity heatmap",
   "customize.card.speed": "Current speed",
-  "customize.card.usage": "Today's tokens",
+  "customize.card.usage": "Token usage",
 };

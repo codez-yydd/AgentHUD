@@ -251,12 +251,17 @@ export function HeroMetric({
   accent = "sky",
   badge,
   footer,
+  card,
+  cardSummary,
 }: {
   label: string;
   value: string;
   accent?: "sky" | "emerald" | "orange" | "violet" | "indigo";
   badge?: ReactNode;
   footer?: ReactNode;
+  /** 接入统一卡片外框（汇总页「合计花费」可调高度 / 折叠 / 排序） */
+  card?: CardFrameRef;
+  cardSummary?: ReactNode;
 }) {
   const accentMap = {
     sky: "hero-sky",
@@ -272,12 +277,17 @@ export function HeroMetric({
     violet: "text-violet-600",
     indigo: "text-indigo-600",
   };
-  return (
-    <div className={`${accentMap[accent]} rounded-2xl px-3.5 py-3`}>
-      <div className="flex items-center justify-between mb-1.5">
-        <span className="section-title">{label}</span>
+  const head = (controls?: ReactNode) => (
+    <div className="flex items-center justify-between gap-1 mb-1.5">
+      <span className="section-title">{label}</span>
+      <div className="flex items-center gap-1 shrink-0">
         {badge}
+        {controls}
       </div>
+    </div>
+  );
+  const body = (
+    <>
       {/* 大号数值（26px）单行截断：260px 窄窗 + 1.25 字号档下长金额（如
           「约 ¥123,456.78」）不折行顶破英雄卡；完整值由 title 悬浮兜底 */}
       <div
@@ -291,6 +301,24 @@ export function HeroMetric({
           {footer}
         </div>
       )}
+    </>
+  );
+  if (card) {
+    return (
+      <CardFrame
+        frame={card}
+        className={`${accentMap[accent]} rounded-2xl px-3.5 py-3`}
+        summary={cardSummary}
+        head={head}
+      >
+        {body}
+      </CardFrame>
+    );
+  }
+  return (
+    <div className={`${accentMap[accent]} rounded-2xl px-3.5 py-3`}>
+      {head()}
+      {body}
     </div>
   );
 }

@@ -5773,6 +5773,252 @@ body.card-resizing * {
 }
 
 /* ============================================================
+ * 「调整显示」编辑栏（主窗口变量版）：结构类与面板同源，颜色走 --db-*。
+ * ============================================================ */
+.layout-entry {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 32px;
+  padding: 0 12px;
+  border: 1px solid var(--db-border);
+  border-radius: 10px;
+  background: var(--db-card-bg);
+  color: var(--db-text-dim);
+  font-family: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition: color 0.12s ease, background 0.12s ease, border-color 0.12s ease;
+}
+.layout-entry:hover {
+  color: var(--db-active-text);
+  border-color: var(--db-cal-accent-border-soft);
+  background: var(--db-cal-accent-bg);
+}
+.layout-editor {
+  position: sticky;
+  top: 0;
+  z-index: 30;
+  /* 主窗口页头 order 0，编辑栏排在页头之后、卡片之前 */
+  order: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+  border: 1px solid var(--db-cal-accent-border-soft);
+  border-radius: 14px;
+  background: var(--db-pop-bg);
+  box-shadow: var(--db-pop-shadow);
+}
+.layout-editor__top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.layout-editor__heading {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 7px;
+  min-width: 0;
+}
+.layout-editor__title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--db-text);
+}
+.layout-editor__badge {
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--db-cal-accent-bg);
+  color: var(--db-cal-accent-text);
+  font-size: 10px;
+  font-weight: 600;
+}
+.layout-editor__meta {
+  font-size: 11px;
+  color: var(--db-text-dim);
+}
+.layout-editor__actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.layout-editor__btn {
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--db-border);
+  border-radius: 8px;
+  background: var(--db-card-bg);
+  color: var(--db-text);
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.layout-editor__btn:hover {
+  background: var(--db-hover);
+}
+.layout-editor__btn--primary {
+  border-color: transparent;
+  background: var(--db-cal-solid);
+  color: var(--db-cal-solid-text);
+}
+.layout-editor__btn--primary:hover {
+  filter: brightness(1.08);
+  background: var(--db-cal-solid);
+}
+.layout-editor__hint {
+  margin: 0;
+  font-size: 10.5px;
+  line-height: 1.55;
+  color: var(--db-text-dim);
+}
+.layout-editor__schemes {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+.layout-editor__label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--db-text-dim);
+}
+.layout-editor__scheme-pills {
+  display: flex;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 9px;
+  background: var(--db-seg-bg);
+}
+.layout-editor__pill {
+  padding: 4px 12px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--db-text-dim);
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.layout-editor__pill--active {
+  background: var(--db-seg-active-bg);
+  color: var(--db-seg-active-text);
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.12);
+}
+.layout-editor__list {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  max-height: 38vh;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+.layout-editor__row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 5px 7px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: var(--db-hover);
+}
+.layout-editor__row:hover {
+  border-color: var(--db-cal-accent-border-soft);
+}
+.layout-editor__row.is-dragging {
+  opacity: 0.55;
+}
+.layout-editor__row.is-hidden .layout-editor__name {
+  opacity: 0.5;
+  text-decoration: line-through;
+}
+.layout-editor__grip {
+  flex: none;
+  color: var(--db-text-dim);
+  font-size: 13px;
+  line-height: 1;
+  cursor: grab;
+  user-select: none;
+}
+.layout-editor__name {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex: 1;
+  min-width: 120px;
+  font-size: 11.5px;
+  color: var(--db-text);
+}
+.layout-editor__name input {
+  width: 14px;
+  height: 14px;
+  accent-color: var(--db-cal-solid);
+}
+.layout-editor__row-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.layout-editor__select {
+  height: 24px;
+  padding: 0 4px;
+  border: 1px solid var(--db-border);
+  border-radius: 6px;
+  background: var(--db-card-bg);
+  color: var(--db-text);
+  font-family: inherit;
+  font-size: 10px;
+}
+.layout-editor__mini {
+  height: 24px;
+  padding: 0 7px;
+  border: 1px solid var(--db-border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--db-text-dim);
+  font-family: inherit;
+  font-size: 10px;
+  cursor: pointer;
+}
+.layout-editor__mini:hover:not(:disabled) {
+  color: var(--db-active-text);
+  border-color: var(--db-cal-accent-border-soft);
+}
+.layout-editor__mini:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+.layout-editor__mini.is-on {
+  color: var(--db-active-text);
+  background: var(--db-cal-accent-bg);
+}
+.layout-editor__mini--icon {
+  width: 24px;
+  padding: 0;
+  font-size: 12px;
+}
+.layout-editor__empty {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 7px 9px;
+  border-radius: 8px;
+  background: rgba(245, 158, 11, 0.12);
+  color: var(--db-accent-amber);
+  font-size: 10.5px;
+}
+
+/* ============================================================
  * 字号放大后的布局重排：--ui-scale 通过 #root 变换缩小 CSS 可用宽度，
  * 媒体查询仍按物理窗口宽度判断，因而这里改用容器查询按**实际布局宽度**
  * 调整侧栏 / 页内边距 / 指标卡列数，保证最大字号下入口仍可点、数值不被挤断。

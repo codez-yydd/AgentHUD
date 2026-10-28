@@ -45,19 +45,32 @@ function test(name, fn) {
   }
 }
 
-test("经典默认：汇总页四张卡、全部自适应、顺序即注册表顺序", () => {
+test("经典默认：顺序即注册表顺序，经典卡可见、简洁专属卡隐藏", () => {
   const page = defaultPageLayout("panel", "summary");
   assert.equal(page.scheme, "classic");
   assert.deepEqual(page.order, [
+    "summary.hero",
     "summary.agents",
+    "summary.speed",
+    "summary.usage",
     "summary.quota",
     "summary.trend",
     "summary.models",
   ]);
   for (const state of Object.values(page.cards)) {
     assert.equal(state.height, null);
-    assert.equal(state.hidden, false);
   }
+  for (const id of [
+    "summary.hero",
+    "summary.agents",
+    "summary.quota",
+    "summary.trend",
+    "summary.models",
+  ]) {
+    assert.equal(page.cards[id].hidden, false, id);
+  }
+  assert.equal(page.cards["summary.speed"].hidden, true);
+  assert.equal(page.cards["summary.usage"].hidden, true);
 });
 
 test("坏配置逐项回退，未知卡片 ID 被丢弃", () => {
@@ -125,12 +138,21 @@ test("高度：非数字 / 过小回退自适应，超大值封顶，保留整�
   );
 });
 
-test("简洁方案默认只显示套餐余量，其余隐藏", () => {
+test("简洁方案默认只显示速度 / 用量 / 套餐余量", () => {
   const page = defaultPageLayout("panel", "summary", "simple");
   const visible = Object.entries(page.cards)
     .filter(([, state]) => !state.hidden)
     .map(([id]) => id);
-  assert.deepEqual(visible, ["summary.quota"]);
+  assert.deepEqual(visible, ["summary.speed", "summary.usage", "summary.quota"]);
+  const dashboard = defaultPageLayout("dashboard", "overview", "simple");
+  const dashVisible = Object.entries(dashboard.cards)
+    .filter(([, state]) => !state.hidden)
+    .map(([id]) => id);
+  assert.deepEqual(dashVisible, [
+    "overview.speed",
+    "overview.usage",
+    "overview.quota",
+  ]);
 });
 
 test("已定制页面：缺失于配置的注册表卡片默认隐藏（新卡不挤进自定义布局）", () => {
@@ -149,7 +171,8 @@ test("已定制页面：缺失于配置的注册表卡片默认隐藏（新卡�
   assert.equal(page.customized, true);
   assert.equal(page.cards["summary.quota"].hidden, false);
   assert.equal(page.cards["summary.agents"].hidden, true);
-  assert.equal(page.order[page.order.length - 1], "summary.agents");
+  assert.ok(page.order.includes("summary.agents"));
+  assert.equal(page.cards["summary.hero"].hidden, true);
 });
 
 test("持久化按窗口 + 页面隔离，单卡写入不影响其他页", () => {
@@ -194,6 +217,18 @@ test("自定义快照切换方案后仍可读回", () => {
   assert.equal(restored.cards["summary.models"].height, 300);
 });
 
+test("写入自定义方案时同步刷新 custom 快照（拖高 / 恢复全显示不丢）", () => {
+  store.clear();
+  const custom = defaultPageLayout("panel", "summary", "custom");
+  custom.customized = true;
+  writePageLayout("panel", "summary", custom);
+  writeCardState("panel", "summary", "summary.models", { height: 280 });
+  assert.equal(
+    readCustomSnapshot("panel", "summary").cards["summary.models"].height,
+    280
+  );
+});
+
 test("恢复默认清空本页配置与快照", () => {
   store.clear();
   writeCardState("panel", "summary", "summary.models", { height: 260 });
@@ -206,10 +241,15 @@ test("恢复默认清空本页配置与快照", () => {
 
 test("每张卡都有注册表定义与合理最小高度", () => {
   for (const id of [
+    "summary.hero",
     "summary.agents",
     "summary.quota",
+    "summary.speed",
+    "summary.usage",
     "summary.trend",
     "summary.models",
+    "overview.speed",
+    "overview.usage",
     "overview.metrics",
     "overview.trend",
     "overview.heatmap",
@@ -222,6 +262,12 @@ test("每张卡都有注册表定义与合理最小高度", () => {
     const state = defaultCardState(def, "classic");
     assert.equal(state.hidden, !def.classic);
   }
+  // 展示级别默认值：套餐余量表完整信息，简洁卡主要信息
+  assert.equal(cardDefinition("overview.quota").defaultDetail, "full");
+  assert.equal(
+    defaultCardState(cardDefinition("overview.quota"), "classic").detail,
+    "full"
+  );
 });
 
 console.log(`\n${passed} layout tests passed`);
