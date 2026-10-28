@@ -64,6 +64,7 @@ export function ModelTable({
   currency,
   rangeLabel,
   agentName,
+  onExport,
 }: {
   rows: ModelRow[];
   currency: Currency;
@@ -74,6 +75,8 @@ export function ModelTable({
    *  独立 prop（本表跟随筛选、AgentTable 不跟随，共用 rangeLabel 会反向
    *  污染 Agent 表的口径说明），拼进副标题前缀链 */
   agentName?: string;
+  /** 「导出完整图片」入口（全部模型行，不受折叠/卡片高度限制） */
+  onExport?: () => void;
 }) {
   const { locale, t } = useI18n();
   const intlLocale = dateLocale(locale);
@@ -88,6 +91,18 @@ export function ModelTable({
         tokens: formatTokensLocale(totalTokens, locale),
       })}
       list={{ total: rows.length, collapsedCount: COLLAPSED_ROWS }}
+      action={
+        onExport && rows.length > 0 ? (
+          <button
+            type="button"
+            className="db-linkbtn"
+            onClick={onExport}
+            title={t("export.entry")}
+          >
+            <span aria-hidden="true">⤓</span> {t("export.entry")}
+          </button>
+        ) : undefined
+      }
       // 副标题前缀链：自定义区间摘要 · Agent 名 · 既有排序说明（各段独立
       //  可选，" · " 分隔与本页失败名单等惯例一致；与 TrendCard 的词条分支
       //  不同，这里末段是固定短语，直接拼接即可，无需专用词条）

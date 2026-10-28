@@ -37,6 +37,7 @@ import {
 import { useDataCache } from "./DataCache";
 import { useEffect, useState } from "react";
 import { useI18n } from "./i18n";
+import { ModelUsageExportModal } from "./ModelUsageExport";
 import type { AgentId, AgentVisibility } from "./agentVisibility";
 import { AGENT_COLOR } from "./agentVisibility";
 import { useResetDisplay } from "./resetDisplay";
@@ -89,6 +90,8 @@ interface Props {
   rangePreset?: RangePreset;
   /** 卡内快捷切换时间范围（与顶部 RangePicker 同一状态） */
   onRangeChange?: (preset: RangePreset) => void;
+  /** 当前设备筛选文案（完整导出图片头部用） */
+  deviceLabel?: string;
 }
 
 /** 缓存命中率：input 含 cache_read 口径（ZCode / Codex） */
@@ -759,10 +762,12 @@ export function SummaryTab({
   rangeLabel,
   rangePreset,
   onRangeChange,
+  deviceLabel,
 }: Props) {
   const { t } = useI18n();
   const resetDisplay = useResetDisplay();
   const editor = usePageLayoutEditor("panel", "summary");
+  const [exportOpen, setExportOpen] = useState(false);
   const [trendMetric, setTrendMetric] = useState<"cost" | "token">("cost");
   const [sortBy, setSortBy] = useState<"cost" | "token" | "requests">("cost");
   const [now, setNow] = useState(Date.now());
@@ -1501,6 +1506,32 @@ export function SummaryTab({
     count: sortedModels.length,
     tokens: formatTokens(modelTokenTotal),
   });
+  // 完整导出：全部模型行，保留当前排序；面板模型榜没有输入/输出拆分，
+  // 画布会自动隐藏这两列，只展示请求 / 总 Token / 花费 / 占比
+  const exportData =
+    sortedModels.length > 0
+      ? {
+          rows: sortedModels.map((m) => ({
+            key: m.key,
+            name: displayModelName(m.name),
+            source: m.source,
+            requests: m.requests,
+            input: null,
+            output: null,
+            tokens: m.tokens,
+            cost: m.hasPrice ? m.cost : null,
+            unpriced: !m.hasPrice,
+            unsplit: false,
+            share: modelTokenTotal > 0 ? m.tokens / modelTokenTotal : 0,
+          })),
+          currency,
+          rangeLabel: rangeLabel ?? t("customize.usage.noRange"),
+          filters: [
+            deviceLabel ?? t("stats.deviceAll"),
+            t("export.filterAllSources"),
+          ],
+        }
+      : null;
   const trendCardSummary = t("customize.summaryTrend", {
     cost: formatCost(trendTotalCost, currency),
     tokens: formatTokens(trendTotalTokens),
@@ -1770,16 +1801,27 @@ export function SummaryTab({
           cardSummary={modelCardSummary}
           list={{ total: sortedModels.length, collapsedCount: 4 }}
           action={
-            <SortToggle
-              options={[
-                { key: "requests", label: t("common.requests") },
-                { key: "token", label: "Token" },
-                { key: "cost", label: t("common.cost") },
-              ]}
-              value={sortBy}
-              onChange={setSortBy}
-              accent="sky"
-            />
+            <div className="flex items-center gap-1">
+              <SortToggle
+                options={[
+                  { key: "requests", label: t("common.requests") },
+                  { key: "token", label: "Token" },
+                  { key: "cost", label: t("common.cost") },
+                ]}
+                value={sortBy}
+                onChange={setSortBy}
+                accent="sky"
+              />
+              <button
+                type="button"
+                className="card-frame__control"
+                title={t("export.entry")}
+                aria-label={t("export.entry")}
+                onClick={() => setExportOpen(true)}
+              >
+                ⤓
+              </button>
+            </div>
           }
         >
           {({ listExpanded, fixed }) => (
@@ -1861,6 +1903,12 @@ export function SummaryTab({
         </SectionCard>
       )}
       </PageLayoutEditProvider>
+      {exportOpen && exportData && (
+        <ModelUsageExportModal
+          data={exportData}
+          onClose={() => setExportOpen(false)}
+        />
+      )}
     </div>
   );
 }

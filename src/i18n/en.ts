@@ -19,11 +19,13 @@ import { credentials } from "./dicts/credentials";
 import { dashboard } from "./dicts/dashboard";
 import { customizeEn } from "./dicts/customize";
 import { fontEn } from "./dicts/font";
+import { exportImageEn } from "./dicts/exportImage";
 import { zh } from "./zh";
 
 export const en: typeof zh = {
   ...customizeEn,
   ...fontEn,
+  ...exportImageEn,
   ...({
     // 基础状态
     "common.loading": "Loading…",

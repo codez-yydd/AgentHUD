@@ -521,6 +521,27 @@ export function StatsPanel({
                 : "range.30d"
         );
 
+  // 完整导出图片头部的设备筛选文案（与顶部设备下拉同一状态）
+  const summaryDeviceLabel =
+    deviceFilter === "all"
+      ? t("stats.deviceAll")
+      : deviceFilter === "local"
+        ? syncConfig?.device_name
+          ? t("stats.deviceLocalName", { name: syncConfig.device_name })
+          : t("stats.deviceLocal")
+        : (() => {
+            const device = selectableRemoteDevices(
+              remoteDevices,
+              syncConfig?.device_id
+            ).find((d) => d.device_id === deviceFilter);
+            return device
+              ? t("common.deviceOption", {
+                  name: device.device_name,
+                  id: device.device_id.slice(0, 6),
+                })
+              : t("stats.deviceAll");
+          })();
+
   return (
     // relative：承载「＋添加服务」的添加凭证全卡弹层（CredentialFormDialog
     // 的 absolute inset-0 以最近定位祖先为界）
@@ -988,6 +1009,7 @@ export function StatsPanel({
           rangeLabel={summaryRangeLabel}
           rangePreset={preset}
           onRangeChange={(p: RangePreset) => setPreset(p)}
+          deviceLabel={summaryDeviceLabel}
         />
       )}
 

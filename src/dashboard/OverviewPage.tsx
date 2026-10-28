@@ -23,6 +23,8 @@ import {
   PageLayoutEditProvider,
   usePageLayoutEditor,
 } from "../layoutEditor";
+import { ModelUsageExportModal } from "../ModelUsageExport";
+import { displayModelName } from "../modelName";
 import { RefreshIcon } from "./icons";
 import { DropdownMenu, type DropdownOption } from "../DropdownMenu";
 import {
@@ -41,6 +43,7 @@ import {
   agentView,
   buildAgentRows,
   buildModelRows,
+  costOf,
   heatSeries,
   scopeView,
   summarize,
@@ -86,6 +89,7 @@ function timeText(ms: number): string {
 export function OverviewPage() {
   const { locale, t } = useI18n();
   const editor = usePageLayoutEditor("dashboard", "overview");
+  const [exportOpen, setExportOpen] = useState(false);
   const {
     data,
     loading,
@@ -152,11 +156,46 @@ export function OverviewPage() {
   const rangeLabel = customRange
     ? formatRangeSummary(customRange.fromMs, customRange.toMs, locale)
     : t(RANGES.find((item) => item.range === range)!.labelKey);
+
   // 筛选中的 Agent 品牌名（未筛选为 undefined）：只下发给跟随筛选的
   // TrendCard / ModelTable 作副标题口径标注；MetricCards / HeatmapCard 不带
   //（逐卡标注对它们是噪音），AgentTable 不跟随筛选也不能带
   const agentName =
     agentFilter === "all" ? undefined : agentLabel(agentFilter);
+
+  // 完整导出数据：全部模型行（不受表格折叠 / 卡片高度影响），主窗口模型表
+  // 跨来源合并，因此 source 留空由画布隐藏该列；范围与筛选写进图片头部
+  const exportData = useMemo(() => {
+    if (!view || view.modelRows.length === 0) return null;
+    return {
+      rows: view.modelRows.map((row) => {
+        const cost = row.unsplit
+          ? null
+          : costOf(row.costUsd, row.costCny, currency);
+        return {
+          key: row.key,
+          name: displayModelName(row.modelId),
+          requests: row.requests,
+          input: row.unsplit ? null : row.input,
+          output: row.unsplit ? null : row.output,
+          tokens: row.total,
+          cost,
+          unpriced: !row.unsplit && row.total > 0 && (cost ?? 0) <= 0,
+          unsplit: row.unsplit,
+          share: row.share,
+        };
+      }),
+      currency,
+      rangeLabel,
+      filters: [
+        effectiveScope === "all"
+          ? t("dashboard.overview.scope.all")
+          : t("dashboard.overview.scope.local"),
+        agentName ?? t("export.filterAllAgents"),
+        t("export.filterAllSources"),
+      ],
+    };
+  }, [view, currency, rangeLabel, agentName, effectiveScope, t]);
   // 指标卡组不套单一卡片外框：单独读取注册表状态用于顺序 / 显隐
   const metricsCardState = editor.layout.cards["overview.metrics"];
   const metricsOrder = editor.layout.order.indexOf("overview.metrics");
@@ -446,6 +485,7 @@ export function OverviewPage() {
             /* 同 TrendCard：筛选生效时副标题标注 Agent 口径（走独立 prop，
                 不拼进 rangeLabel——AgentTable 不跟随筛选但共用该参数） */
             agentName={agentName}
+            onExport={() => setExportOpen(true)}
           />
           {/* 口径脚注：本机成本由后端按定价表 × 汇率折算，远端成本用同一份
               价格表在前端折算（与菜单栏标题同源），非账单金额 */}
@@ -453,6 +493,13 @@ export function OverviewPage() {
             {t("dashboard.overview.costFootnote")}
           </p>
         </PageLayoutEditProvider>
+      )}
+
+      {exportOpen && exportData && (
+        <ModelUsageExportModal
+          data={exportData}
+          onClose={() => setExportOpen(false)}
+        />
       )}
     </div>
   );
