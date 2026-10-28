@@ -16,13 +16,16 @@ import {
 } from "@tauri-apps/plugin-autostart";
 import {
   applyPanelAlpha,
-  applyUiScale,
   loadPanelAlpha,
-  loadUiScale,
   persistPanelAlpha,
-  persistUiScale,
-  UI_SCALE_OPTIONS,
 } from "./appearance";
+import {
+  commitPanelFontPx,
+  loadPanelFontPx,
+  previewFontPx,
+  resetFontPx,
+} from "./fontSettings";
+import { FontSizeControl } from "./FontSizeControl";
 import {
   WIN_PRESETS,
   BASE_PCT,
@@ -86,8 +89,8 @@ export function SettingsPanel({
 
   // ===== 外观：面板透明度（localStorage 持久化，改完即时生效）=====
   const [alpha, setAlpha] = useState<number>(() => loadPanelAlpha());
-  // ===== 外观：字体大小（整体缩放，档位见 UI_SCALE_OPTIONS，改完即时生效即存）=====
-  const [uiScale, setUiScale] = useState<string>(loadUiScale);
+  // ===== 外观：基准字号（逻辑 px；旧 zbar-ui-scale 档位自动迁移）=====
+  const [fontPx, setFontPx] = useState<number>(loadPanelFontPx);
   // ===== 外观：窗口大小（工作区百分比，档位见 WIN_PRESETS；null = 从未调整过，视同标准档）=====
   const [winPct, setWinPct] = useState<WinSizePct | null>(loadWinSizePct);
   // 边缘拖拽在设置页可见时落盘后同步档位胶囊：ResizeHandles 每次成功
@@ -330,26 +333,19 @@ export function SettingsPanel({
           </p>
         </SettingsCard>
 
-        {/* 字体大小（整体缩放）：档位白名单见 appearance.ts 的 UI_SCALE_OPTIONS，点击即时预览并落盘 */}
+        {/* 基准字号：小/标准/大/特大为旧档位等比迁移值，自定义支持 10~24px
+            （0.5px 步进）；输入过程实时预览，回车/失焦确认并落盘 */}
         <SettingsCard
-          title={t("settings.fontSize")}
-          hint={t("settings.fontSizeHint")}
+          title={t("font.panelTitle")}
+          hint={t("font.panelHint")}
         >
-          <PillGroup>
-            {UI_SCALE_OPTIONS.map((option) => (
-              <PillButton
-                key={option.value}
-                active={option.value === uiScale}
-                onClick={() => {
-                  applyUiScale(option.value);
-                  persistUiScale(option.value);
-                  setUiScale(option.value);
-                }}
-              >
-                {t(option.labelKey)}
-              </PillButton>
-            ))}
-          </PillGroup>
+          <FontSizeControl
+            target="panel"
+            value={fontPx}
+            onChange={(px) => setFontPx(commitPanelFontPx(px))}
+            onPreview={(px) => previewFontPx("panel", px)}
+            onReset={() => setFontPx(resetFontPx("panel"))}
+          />
         </SettingsCard>
 
         {/* 窗口大小：工作区百分比档位（见 windowSize.ts 的 WIN_PRESETS）；

@@ -16,6 +16,7 @@ import { share } from "./dicts/share";
 import { credentials } from "./dicts/credentials";
 import { dashboard } from "./dicts/dashboard";
 import { customize } from "./dicts/customize";
+import { font } from "./dicts/font";
 
 export const zh = {
   ...common,
@@ -34,4 +35,5 @@ export const zh = {
   ...credentials,
   ...dashboard,
   ...customize,
+  ...font,
 };

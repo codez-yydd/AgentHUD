@@ -111,7 +111,8 @@ export const theme = {
   "theme.usageHint":
     "ZCode 对话内每轮末尾统计条（↑输入 ↓输出 · ×请求数 · 速度等）的外观，拖动滑块即时保存并热生效（约 1 秒）。",
   "theme.paramUsageFontSize": "字号",
-  "theme.paramUsageFontSizeHint": "统计条文字大小（9~16px）",
+  "theme.paramUsageFontSizeHint":
+    "统计条文字大小（9~24px，逻辑像素；条高与输入区留白随之自适应）",
   "theme.paramUsageOpacity": "不透明度",
   "theme.paramUsageOpacityHint":
     "统计条文字不透明度；进行中的轮次等待态会更淡一些",

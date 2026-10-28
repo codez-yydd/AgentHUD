@@ -26,8 +26,8 @@ export function RangePicker({ preset, custom, min, onChange }: Props) {
   const { t } = useI18n();
 
   return (
-    <div className="space-y-2">
-      <div className="flex gap-1 p-0.5 rounded-xl bg-slate-900/4">
+    <div className="panel-range space-y-2">
+      <div className="panel-range__presets flex gap-1 p-0.5 rounded-xl bg-slate-900/4">
         {PRESETS.map((p) => (
           <button
             key={p.value}

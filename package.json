@@ -9,6 +9,7 @@
     "preview": "vite preview",
     "test:speed": "tsc -p scripts/tsconfig.speed.json && node scripts/run-speed-tests.mjs",
     "test:layout": "node --experimental-strip-types scripts/ui-layout-tests.mjs",
+    "test:font": "node --experimental-strip-types scripts/font-settings-tests.mjs",
     "tauri": "tauri"
   },
   "dependencies": {

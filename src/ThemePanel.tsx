@@ -201,7 +201,8 @@ const SLIDERS: ReadonlyArray<SliderDef> = [
  * 用量统计条滑块定义：独立于壁纸效果参数的单独配置区域（独立 SettingsCard
  * 渲染，卡片结构见下方"用量统计条"区），调整 ZCode 对话内每轮末尾用量
  * 统计条的字号与文字不透明度，同样经 variables.css 热重载即时生效。
- * - usageFontSize：整数 px 刻度（9~16，步进 1），刻度即存储值直存
+ * - usageFontSize：px 刻度（9~24，步进 0.5；统计条排版与输入区留白按字号
+ *   自适应），刻度即存储值直存
  * - usageOpacity：存储 0.25~1 小数、百分比刻度 25~100、步进 5
  *   （scale 机制同 SLIDERS：存储值 = 刻度值/100）
  */
@@ -211,9 +212,9 @@ const USAGE_SLIDERS: ReadonlyArray<SliderDef> = [
     labelKey: "theme.paramUsageFontSize",
     hintKey: "theme.paramUsageFontSizeHint",
     min: 9,
-    max: 16,
-    step: 1,
-    format: (v) => `${v}px`,
+    max: 24,
+    step: 0.5,
+    format: (v) => `${Number.isInteger(v) ? v : v.toFixed(1)}px`,
   },
   {
     key: "usageOpacity",

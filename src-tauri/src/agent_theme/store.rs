@@ -120,7 +120,8 @@ pub const DEFAULT_BASE_ALPHA: f64 = 0.25;
 /// （variables.css 渲染真值并随热重载即时生效），默认关闭不改变
 /// 既有观感
 pub const DEFAULT_TEXT_SHADOW: f64 = 0.0;
-/// 对话内用量统计条字号默认值（用户可调参数 usage_font_size，9~16 整数 px）：
+/// 对话内用量统计条字号默认值（用户可调参数 usage_font_size，9~24 逻辑 px，
+/// 支持 0.5px 步进）：
 /// 取 usage.js V3 模板实际写死的 10px（font 简写 `400 10px/1.5`），
 /// 升级 V4 后默认观感与旧版一致（V4 起消费 --zbar-usage-font-size，
 /// variables.css 渲染真值并随热重载即时生效，模板内仅保留兜底）
@@ -182,7 +183,7 @@ pub const SIDEBAR_RIGHT_OPACITY_RANGE: (f64, f64) = (0.0, 1.0);
 pub const PLAYBACK_RATE_RANGE: (f64, f64) = (0.5, 2.0);
 pub const BASE_ALPHA_RANGE: (f64, f64) = (0.0, 1.0);
 pub const TEXT_SHADOW_RANGE: (f64, f64) = (0.0, 1.0);
-pub const USAGE_FONT_SIZE_RANGE: (f64, f64) = (9.0, 16.0);
+pub const USAGE_FONT_SIZE_RANGE: (f64, f64) = (9.0, 24.0);
 pub const USAGE_OPACITY_RANGE: (f64, f64) = (0.25, 1.0);
 /* 宠物尺寸档位合法域（1..=5）与旧 px 值迁移口径统一由 pet 模块提供
 （PET_SIZE_LEVEL_PCT / normalize_pet_size），不再各模块重复维护范围常量 */

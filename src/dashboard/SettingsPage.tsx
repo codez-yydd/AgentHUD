@@ -28,6 +28,16 @@ import {
 } from "../appearance";
 import { getAppSettings, setAutoCapture as setAutoCaptureApi } from "../api";
 import { getHudBarState, onHudBarState, setHudBarEnabled } from "../hudBar";
+import { FontSizeControl } from "../FontSizeControl";
+import {
+  FONT_CHANGED_EVENT,
+  commitDashboardFontLink,
+  commitDashboardFontPx,
+  loadDashboardFontLink,
+  previewFontPx,
+  resetFontPx,
+  resolveFontPx,
+} from "../fontSettings";
 import { useCurrencyPref } from "./settings/currencyPref";
 import type { CurrencyMode } from "../types";
 import type { Locale } from "../i18n/locale";
@@ -124,6 +134,32 @@ export function SettingsPage() {
   // ---- 主题来源：挂载读一次；监听外观广播重读（侧栏快捷切换 / 其他窗口
   //      改主题后，本页分段选项跟着当前来源走，不停留在旧值） ----
   const [themePref, setThemePref] = useState<ThemePref>(() => loadThemePref());
+  // ---- 字号：主窗口独立基准字号 + 可选的「跟随面板」----
+  // 跟随开启时展示面板字号（控件禁用），关闭时恢复主窗口自己的保存值。
+  const [fontLinked, setFontLinked] = useState<boolean>(() =>
+    loadDashboardFontLink()
+  );
+  const [fontPx, setFontPx] = useState<number>(() => resolveFontPx("dashboard"));
+  useEffect(() => {
+    let dispose: (() => void) | undefined;
+    let cancelled = false;
+    // 面板设置页改字号 / 其他窗口切换跟随：重读生效值
+    listen(FONT_CHANGED_EVENT, () => {
+      setFontLinked(loadDashboardFontLink());
+      setFontPx(resolveFontPx("dashboard"));
+    })
+      .then((unlisten) => {
+        if (cancelled) unlisten();
+        else dispose = unlisten;
+      })
+      .catch(() => {
+        /* 静默：保持当前显示 */
+      });
+    return () => {
+      cancelled = true;
+      dispose?.();
+    };
+  }, []);
   useEffect(() => {
     let dispose: (() => void) | undefined;
     let cancelled = false;
@@ -242,7 +278,43 @@ export function SettingsPage() {
           />
         </section>
 
-        {/* ③ 币种 */}
+        {/* ③ 字号：主窗口独立基准字号（默认 13px），可切换为跟随悬浮面板。
+            旧版面板的整体缩放档位只迁移到面板，不改变主窗口既有观感 */}
+        <section className="db-set-row db-set-row--font">
+          <div className="db-set-row__text">
+            <h2 className="db-set-row__title">{t("font.dashboardTitle")}</h2>
+            <p className="db-set-row__desc">{t("font.dashboardHint")}</p>
+          </div>
+          <div className="db-set-font">
+            <FontSizeControl
+              target="dashboard"
+              value={fontPx}
+              disabled={fontLinked}
+              onChange={(px) => setFontPx(commitDashboardFontPx(px))}
+              onPreview={(px) => previewFontPx("dashboard", px)}
+              onReset={() => setFontPx(resetFontPx("dashboard"))}
+            />
+          </div>
+        </section>
+
+        {/* ④ 跟随面板字号：只影响主窗口解析值，两个窗口各自的存储值保留 */}
+        <section className="db-set-row">
+          <div className="db-set-row__text">
+            <h2 className="db-set-row__title">{t("font.link")}</h2>
+            <p className="db-set-row__desc">{t("font.linkHint")}</p>
+          </div>
+          <ToggleSwitch
+            checked={fontLinked}
+            title={t("font.link")}
+            onChange={(next) => {
+              commitDashboardFontLink(next);
+              setFontLinked(next);
+              setFontPx(resolveFontPx("dashboard"));
+            }}
+          />
+        </section>
+
+        {/* ④ 币种 */}
         <section className="db-set-row">
           <div className="db-set-row__text">
             <h2 className="db-set-row__title">{t("dashboard.settings.currency")}</h2>

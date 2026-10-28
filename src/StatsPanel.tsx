@@ -509,7 +509,7 @@ export function StatsPanel({
       <div className="px-3 pt-2.5 pb-2 border-b border-slate-900/8">
         {/* Windows 无边框窗口拖动 */}
         <div
-          className={`flex items-center justify-between mb-2 ${
+          className={`panel-topbar flex items-center justify-between mb-2 ${
             isWindows ? "cursor-default" : ""
           }`}
           onMouseDown={
@@ -532,7 +532,7 @@ export function StatsPanel({
               置顶按钮为 10 个）：11×22px + 10×2px 间距 = 262px ≤ 300 −
               24(px-3) = 276px 可用宽度，按钮不换行也不裁切；标题压到约
               14px 由 truncate 收尾 */}
-          <div className="flex items-center gap-0.5 shrink-0">
+          <div className="panel-toolbar flex items-center gap-0.5 shrink-0">
             <button
               onClick={onGoReports}
               className="toolbar-btn"
@@ -686,8 +686,7 @@ export function StatsPanel({
               setPreset(p);
               setCustom(c);
             }}
-          />
-        )}
+          />        )}
         {/* 设备筛选单独占一行，标签保持完整名称；未来新增 Agent 时横向滚动。 */}
         {tab !== "speed" && syncEnabled && (
           <div className="mt-2 flex items-center">

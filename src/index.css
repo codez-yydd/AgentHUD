@@ -919,6 +919,84 @@ body.card-resizing * {
   color: #7dd3fc;
 }
 
+/* 字号控件：增减按钮（输入框与预设复用两窗通用工具类） */
+.font-size-control__step {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  flex: none;
+  padding: 0;
+  border: 1px solid rgba(15, 23, 42, 0.1);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.4);
+  color: rgba(51, 65, 85, 0.75);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+.font-size-control__step:hover:not(:disabled) {
+  background: rgba(15, 23, 42, 0.06);
+  color: rgba(15, 23, 42, 0.85);
+}
+.font-size-control__step:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.dark .font-size-control__step {
+  border-color: rgba(226, 232, 240, 0.12);
+  background: rgba(15, 23, 42, 0.35);
+  color: rgba(226, 232, 240, 0.72);
+}
+.dark .font-size-control__step:hover:not(:disabled) {
+  background: rgba(226, 232, 240, 0.1);
+  color: rgba(226, 232, 240, 0.92);
+}
+
+/* 字号分档下的面板头部适配：整体缩放后 CSS 布局宽度变窄，11 个图标按钮
+   不再按 22px 硬撑一行——换行/让时间范围预设换行，保证所有入口仍可点击 */
+html[data-font-tier="md"] .panel-topbar,
+html[data-font-tier="lg"] .panel-topbar,
+html[data-font-tier="xl"] .panel-topbar {
+  flex-wrap: wrap;
+  row-gap: 4px;
+}
+html[data-font-tier="md"] .panel-toolbar,
+html[data-font-tier="lg"] .panel-toolbar,
+html[data-font-tier="xl"] .panel-toolbar {
+  margin-left: auto;
+  flex: 1 1 100%;
+  max-width: 100%;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  row-gap: 2px;
+}
+/* 图标按钮保持 22px 命中区，不允许被 flex 压扁；宁可换行也不缩小入口 */
+html[data-font-tier="md"] .panel-toolbar > .toolbar-btn,
+html[data-font-tier="lg"] .panel-toolbar > .toolbar-btn,
+html[data-font-tier="xl"] .panel-toolbar > .toolbar-btn {
+  flex: none;
+}
+html[data-font-tier="md"] .panel-range__presets,
+html[data-font-tier="lg"] .panel-range__presets,
+html[data-font-tier="xl"] .panel-range__presets {
+  flex-wrap: wrap;
+  row-gap: 3px;
+}
+html[data-font-tier="md"] .panel-range__presets > button,
+html[data-font-tier="lg"] .panel-range__presets > button,
+html[data-font-tier="xl"] .panel-range__presets > button {
+  flex: 1 1 30%;
+  min-width: 30%;
+}
+html[data-font-tier="md"] .panel-range > .flex,
+html[data-font-tier="lg"] .panel-range > .flex,
+html[data-font-tier="xl"] .panel-range > .flex {
+  flex-wrap: wrap;
+}
+
 /* 滚动条 */
 /* 纵向 8px：滚动条贴窗口右缘，宽度太细（原 5px）命中困难；加宽改善拖动手感。
  * 横向保持 5px：底部 South 热区未让位，加宽横向条会新增遮挡。 */

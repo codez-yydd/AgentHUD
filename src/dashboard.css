@@ -34,6 +34,11 @@
   -moz-osx-font-smoothing: grayscale;
   font-variant-numeric: tabular-nums;
 
+  /* 整体字号缩放：与面板共用同一套设置（--ui-scale = 基准字号 / 13px）。
+     本项目大量字号写死为 px，只改 html font-size 无效，故用 #root 变换
+     等比缩放全部字号 / 行高 / 控件，保持标题、核心数字、辅助文字的层级。 */
+  --ui-scale: 1;
+
   /* 主窗口页面变量（面板的 --panel-* 是玻璃面板专用，不复用）：
      亮色 = slate-100 底 + 白色侧栏；暗色在 .dark 覆盖为 slate-900 系 */
   --db-bg: #f1f5f9;
@@ -129,6 +134,17 @@ body,
   margin: 0;
   padding: 0;
   height: 100%;
+}
+
+/* 主窗口字号缩放：缩放后按 1/scale 补偿宽高，视觉窗口尺寸不变；内容按更窄
+   的布局宽度重排（大字号时允许换行 / 调整列数），由 .db-main 与 .db-page
+   的滚动兜底。transform 是纯渲染变换，不改变标题栏拖拽等命中逻辑。 */
+#root {
+  transform: scale(var(--ui-scale, 1));
+  transform-origin: top left;
+  width: calc(100% / var(--ui-scale, 1));
+  height: calc(100% / var(--ui-scale, 1));
+  overflow: hidden;
 }
 
 body {
@@ -5477,6 +5493,16 @@ body {
   opacity: 0.55;
 }
 
+/* 字号设置行：控件区域固定宽，窄窗在既有 ≤980 回退里改为占满一行 */
+.db-set-row--font {
+  align-items: flex-start;
+}
+.db-set-font {
+  width: 360px;
+  max-width: 100%;
+  flex: none;
+}
+
 /* ---- 设置页窄窗回退（≤980px，放在本段基础规则之后）：行改纵向堆叠，
    控件落到文案下方（右侧不再挤压说明文字） ---- */
 @media (max-width: 980px) {
@@ -5484,6 +5510,9 @@ body {
     flex-direction: column;
     align-items: flex-start;
     gap: 12px;
+  }
+  .db-set-font {
+    width: 100%;
   }
 }
 
@@ -5713,4 +5742,120 @@ body.card-resizing * {
 /* 展开全部后列表不再内部滚动（卡片外框此时也回到自适应高度） */
 .card-frame[data-list-expanded="1"] .card-frame__body {
   overflow: visible;
+}
+
+/* ---- 字号控件增减按钮（面板同名类 · 主窗口变量版） ---- */
+.font-size-control__step {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  flex: none;
+  padding: 0;
+  border: 1px solid var(--db-border);
+  border-radius: 8px;
+  background: var(--db-card-bg);
+  color: var(--db-text-dim);
+  font-family: inherit;
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+.font-size-control__step:hover:not(:disabled) {
+  background: var(--db-hover);
+  color: var(--db-text);
+}
+.font-size-control__step:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* ============================================================
+ * 字号放大后的布局重排：--ui-scale 通过 #root 变换缩小 CSS 可用宽度，
+ * 媒体查询仍按物理窗口宽度判断，因而这里改用容器查询按**实际布局宽度**
+ * 调整侧栏 / 页内边距 / 指标卡列数，保证最大字号下入口仍可点、数值不被挤断。
+ * ============================================================ */
+.db-shell {
+  container-type: inline-size;
+}
+.db-page {
+  container-type: inline-size;
+}
+@container (max-width: 980px) {
+  .db-sidebar {
+    width: 168px;
+  }
+  .db-page {
+    padding: 20px 22px 26px;
+  }
+  .db-page__title {
+    font-size: 16px;
+  }
+  .db-page__desc {
+    font-size: 11px;
+  }
+}
+@container (max-width: 760px) {
+  .db-sidebar {
+    width: 150px;
+  }
+  .db-nav {
+    gap: 0;
+    padding: 2px 6px;
+  }
+  .db-nav__item {
+    gap: 7px;
+    padding: 5px 8px;
+    font-size: 11px;
+    line-height: 1.25;
+  }
+  .db-page {
+    padding: 16px 16px 22px;
+    gap: 14px;
+  }
+  .db-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+  }
+  .db-card__head {
+    flex-wrap: wrap;
+    padding: 12px 14px 0;
+  }
+  .db-card__body {
+    padding: 12px 14px;
+  }
+  .db-card__action {
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    min-width: 0;
+    max-width: 100%;
+  }
+  .card-frame__summary {
+    margin: 0 14px;
+  }
+  .card-frame__listfoot {
+    padding: 0 14px 10px;
+  }
+  /* 大字号下设置行改为上下堆叠：右侧字号控件不挤压左侧说明/标题 */
+  .db-set-row {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 12px;
+  }
+  .db-set-font {
+    width: 100%;
+  }
+}
+@container (max-width: 560px) {
+  .db-metrics {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .db-page__header {
+    gap: 10px;
+  }
+  .db-page__actions {
+    gap: 6px;
+  }
 }

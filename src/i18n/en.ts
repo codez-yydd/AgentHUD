@@ -18,10 +18,12 @@ import { share } from "./dicts/share";
 import { credentials } from "./dicts/credentials";
 import { dashboard } from "./dicts/dashboard";
 import { customizeEn } from "./dicts/customize";
+import { fontEn } from "./dicts/font";
 import { zh } from "./zh";
 
 export const en: typeof zh = {
   ...customizeEn,
+  ...fontEn,
   ...({
     // 基础状态
     "common.loading": "Loading…",
@@ -810,7 +812,8 @@ export const en: typeof zh = {
     "theme.usageHint":
       "Look of the per-turn usage line (↑ input ↓ output · × requests · speed) at the end of each ZCode chat turn. Sliders save as you drag and apply live within ~1s.",
     "theme.paramUsageFontSize": "Font size",
-    "theme.paramUsageFontSizeHint": "Text size of the usage line (9–16px)",
+    "theme.paramUsageFontSizeHint":
+      "Text size of the usage line (9–24px logical pixels; bar height and composer padding adapt automatically)",
     "theme.paramUsageOpacity": "Opacity",
     "theme.paramUsageOpacityHint":
       "Text opacity of the usage line; the waiting state of an in-progress turn is fainter",
