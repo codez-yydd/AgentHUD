@@ -11,8 +11,8 @@
  * 才能与菜单栏标题的「本地自然日」口径对齐。
  *
  * 除总量与输入/输出外，各来源的 by_model 也逐日并入 DayAgg.byModel（模型
- * 用量表的数据源，成本在派生层用本机价格表统一折算）；Cursor 的按模型聚合
- * 是「请求范围整段」、无按日拆分，走 useOverviewData 的 cursorByModel 旁路。
+ * 用量表的数据源，成本在派生层用本机价格表统一折算）；Cursor 的 events 由
+ * 后端按「日 + 模型」聚合，走 useOverviewData 的 cursorByModelByDay 旁路。
  */
 import type {
   CursorDailyEntry,
@@ -249,8 +249,8 @@ export function addTrendDays(
 /**
  * Cursor 每日明细 → 按日聚合。daily 无输入/输出拆分（只有总量），
  * 整日 token 计入 unsplit；人民币成本按本机汇率折算（与面板 Cursor 页同款）。
- * daily 也没有模型拆分：byModel 留空，模型用量表走 cursorByModel 旁路
- * （Cursor events 的按模型聚合是「请求范围整段」，无按日拆分）。
+ * daily 也没有模型拆分：byModel 留空，模型用量表走 cursorByModelByDay 旁路
+ * （后端把 events 按日 + 模型拆分）。
  */
 export function addCursorDays(
   daily: CursorDailyEntry[],

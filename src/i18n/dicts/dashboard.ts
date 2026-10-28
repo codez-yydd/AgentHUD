@@ -199,7 +199,7 @@ export const dashboard = {
   "dashboard.overview.modelVariantsHint": "已合并的写法：{list}",
   "dashboard.overview.modelVariantItem": "{model}（{count} 次请求）",
   "dashboard.overview.modelFootnote":
-    "模型花费按本机价格表估算（美元价 × 当前汇率），未覆盖的模型显示「未定价」。Cursor 明细无逐日模型拆分，其行取该来源固定 90 天窗口的全量。「未拆分」为旧数据或无逐模型拆分的来源，用量计入输入侧且不计花费。",
+    "模型花费按本机价格表估算（美元价 × 当前汇率），未覆盖的模型显示「未定价」。Cursor 的模型明细按日拆分，只统计所选范围内有请求的模型。「未拆分」为旧数据或无逐模型拆分的来源，用量计入输入侧且不计花费。",
 
   // ===== 周额度对比页（大窗）=====
   "dashboard.compare.device": "设备",

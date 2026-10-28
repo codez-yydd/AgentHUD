@@ -752,6 +752,21 @@ pub struct CursorModelStat {
     pub requests: i64,
 }
 
+/// 按「日 + 模型」聚合：events 本身带 timestamp / model，可在后端直接按日
+/// 拆分（前端原来只有整段 by_model，无法按今日/7 天切片）。
+#[derive(Debug, Clone, Serialize)]
+pub struct CursorModelDailyEntry {
+    /// 完整日期 "2026-08-13"（本地时区）
+    pub date: String,
+    pub model: String,
+    pub cost_usd: f64,
+    pub total_tokens: i64,
+    pub input_tokens: i64,
+    pub output_tokens: i64,
+    pub cache_read_tokens: i64,
+    pub requests: i64,
+}
+
 /// events 汇总
 #[derive(Debug, Clone, Serialize)]
 pub struct CursorEventsSummary {
@@ -767,7 +782,12 @@ pub struct CursorEventsSummary {
 }
 
 /// 把 events 聚合为（汇总, 每日明细, 按模型）
-fn aggregate_events(events: &[UsageEvent]) -> (CursorEventsSummary, Vec<CursorDailyEntry>, Vec<CursorModelStat>) {
+fn aggregate_events(events: &[UsageEvent]) -> (
+    CursorEventsSummary,
+    Vec<CursorDailyEntry>,
+    Vec<CursorModelStat>,
+    Vec<CursorModelDailyEntry>,
+) {
     let mut total_cost_usd = 0.0f64;
     let mut metered_ok = true;
     let mut metered_cents = 0.0f64;
@@ -783,6 +803,9 @@ fn aggregate_events(events: &[UsageEvent]) -> (CursorEventsSummary, Vec<CursorDa
     let mut daily: HashMap<String, (f64, i64, i64)> = HashMap::new();
     // 按模型聚合: model → (cost, tokens, input, output, cache_read, requests)
     let mut by_model: HashMap<String, (f64, i64, i64, i64, i64, i64)> = HashMap::new();
+    // 按「日 + 模型」聚合: (完整日期, model) → 同一组字段
+    let mut by_model_daily: HashMap<(String, String), (f64, i64, i64, i64, i64, i64)> =
+        HashMap::new();
 
     for ev in events {
         let ts = match ev.timestamp {
@@ -824,16 +847,26 @@ fn aggregate_events(events: &[UsageEvent]) -> (CursorEventsSummary, Vec<CursorDa
         total_requests += 1;
 
         // 按日（本地时区，完整日期 key）
+        let model = ev.model.clone().unwrap_or_else(|| "unknown".to_string());
         if let Some(dt) = chrono::Local.timestamp_millis_opt(ts).single() {
             let day_key = format!("{}", dt.format("%Y-%m-%d"));
-            let entry = daily.entry(day_key).or_insert((0.0, 0, 0));
+            let entry = daily.entry(day_key.clone()).or_insert((0.0, 0, 0));
             entry.0 += cost;
             entry.1 += tokens;
             entry.2 += 1;
+            // 同日同模型也直接在后端聚合，前端按日切片即可还原任意范围
+            let dm = by_model_daily
+                .entry((day_key, model.clone()))
+                .or_insert((0.0, 0, 0, 0, 0, 0));
+            dm.0 += cost;
+            dm.1 += tokens;
+            dm.2 += inp;
+            dm.3 += out;
+            dm.4 += cr;
+            dm.5 += 1;
         }
 
-        // 按模型
-        let model = ev.model.clone().unwrap_or_else(|| "unknown".to_string());
+        // 按模型（模型名从事件读取；无 model 的事件归入 unknown）
         let m = by_model
             .entry(model)
             .or_insert((0.0, 0, 0, 0, 0, 0));
@@ -883,6 +916,26 @@ fn aggregate_events(events: &[UsageEvent]) -> (CursorEventsSummary, Vec<CursorDa
         .collect();
     model_vec.sort_by(|a, b| b.cost_usd.partial_cmp(&a.cost_usd).unwrap_or(std::cmp::Ordering::Equal));
 
+    // 按「日 + 模型」：日期升序、同日按花费降序（前端按日键切片）
+    let mut model_daily_vec: Vec<CursorModelDailyEntry> = by_model_daily
+        .into_iter()
+        .map(|((date, model), (cost, tokens, inp, out, cr, reqs))| CursorModelDailyEntry {
+            date,
+            model,
+            cost_usd: cost,
+            total_tokens: tokens,
+            input_tokens: inp,
+            output_tokens: out,
+            cache_read_tokens: cr,
+            requests: reqs,
+        })
+        .collect();
+    model_daily_vec.sort_by(|a, b| {
+        a.date
+            .cmp(&b.date)
+            .then_with(|| b.cost_usd.partial_cmp(&a.cost_usd).unwrap_or(std::cmp::Ordering::Equal))
+    });
+
     let summary = CursorEventsSummary {
         total_cost_usd,
         metered_cost_usd: if metered_ok && saw_valid_event {
@@ -897,7 +950,7 @@ fn aggregate_events(events: &[UsageEvent]) -> (CursorEventsSummary, Vec<CursorDa
         requests: total_requests,
     };
 
-    (summary, daily_vec, model_vec)
+    (summary, daily_vec, model_vec, model_daily_vec)
 }
 
 // ============================================================
@@ -1046,6 +1099,9 @@ pub struct CursorSnapshot {
     pub today_quota: Option<CursorTodayQuota>,
     pub daily: Vec<CursorDailyEntry>,
     pub by_model: Vec<CursorModelStat>,
+    /// 按「日 + 模型」聚合：供总览页按今日/7 天/30 天切片，避免整段 90 天
+    /// 的 by_model 在今日视图里显示历史模型
+    pub by_model_daily: Vec<CursorModelDailyEntry>,
     /// 最近使用的模型（口径：查询时间范围内最新一条带模型名的用量事件）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub current_model: Option<db::CurrentModelStat>,
@@ -1202,19 +1258,19 @@ pub fn fetch_cursor_snapshot(from_ms: i64, to_ms: i64) -> Result<CursorSnapshot,
                 last_used_ms: ts,
             })
     });
-    let (events_summary, daily, by_model) = match range_events {
+    let (events_summary, daily, by_model, by_model_daily) = match range_events {
         Ok(events) => {
             if events.is_empty() {
-                (None, Vec::new(), Vec::new())
+                (None, Vec::new(), Vec::new(), Vec::new())
             } else {
-                let (s, d, m) = aggregate_events(&events);
-                (Some(s), d, m)
+                let (s, d, m, md) = aggregate_events(&events);
+                (Some(s), d, m, md)
             }
         }
         Err(ref e) => {
             // events 失败不阻断套餐展示，但记录错误供前端区分"无数据"和"拉取失败"
             events_error = Some(e.clone());
-            (None, Vec::new(), Vec::new())
+            (None, Vec::new(), Vec::new(), Vec::new())
         }
     };
 
@@ -1242,6 +1298,7 @@ pub fn fetch_cursor_snapshot(from_ms: i64, to_ms: i64) -> Result<CursorSnapshot,
         today_quota,
         daily,
         by_model,
+        by_model_daily,
         current_model,
     })
 }
@@ -1253,7 +1310,7 @@ pub fn fetch_cursor_usage_totals(from_ms: i64, to_ms: i64) -> Result<(f64, i64),
     let cfg = load_cursor_config()?;
     let cookie = resolve_cookie(&cfg)?;
     let events = fetch_events_cached(&cookie, from_ms, to_ms)?;
-    let (summary, _, _) = aggregate_events(&events);
+    let (summary, _, _, _) = aggregate_events(&events);
     Ok((summary.total_cost_usd, summary.total_tokens))
 }
 
@@ -1467,6 +1524,59 @@ pub(crate) fn fetch_manual_quota_entries(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cursor_model_daily_splits_by_local_day() {
+        let day1 = Local
+            .with_ymd_and_hms(2026, 8, 13, 12, 0, 0)
+            .unwrap()
+            .timestamp_millis();
+        let day2 = Local
+            .with_ymd_and_hms(2026, 8, 14, 12, 0, 0)
+            .unwrap()
+            .timestamp_millis();
+        let event = |ts: i64, model: &str, input: i64, output: i64, cents: f64| UsageEvent {
+            timestamp: Some(ts),
+            model: Some(model.to_string()),
+            kind: None,
+            token_usage: Some(EventTokenUsage {
+                input_tokens: Some(input),
+                output_tokens: Some(output),
+                cache_write_tokens: Some(0),
+                cache_read_tokens: Some(0),
+                total_cents: Some(cents),
+            }),
+            charged_cents: Some(cents),
+        };
+        let events = vec![
+            event(day1, "m1", 100, 10, 100.0),
+            event(day1, "m2", 50, 0, 50.0),
+            event(day2, "m1", 10, 0, 10.0),
+        ];
+        let (summary, daily, by_model, by_model_daily) = aggregate_events(&events);
+        assert_eq!(summary.total_tokens, 170);
+        assert_eq!(summary.requests, 3);
+        assert_eq!(daily.len(), 2);
+        assert_eq!(by_model.len(), 2);
+        // 整段 by_model 仍按模型累计
+        let m1 = by_model.iter().find(|m| m.model == "m1").unwrap();
+        assert_eq!(m1.total_tokens, 120);
+        assert_eq!(m1.requests, 2);
+        // 按日拆分：两天的 m1 各自独立
+        assert_eq!(by_model_daily.len(), 3);
+        let d1m1 = by_model_daily
+            .iter()
+            .find(|m| m.date == "2026-08-13" && m.model == "m1")
+            .unwrap();
+        assert_eq!(d1m1.total_tokens, 110);
+        assert_eq!(d1m1.requests, 1);
+        let d2m1 = by_model_daily
+            .iter()
+            .find(|m| m.date == "2026-08-14" && m.model == "m1")
+            .unwrap();
+        assert_eq!(d2m1.total_tokens, 10);
+        assert_eq!(d2m1.requests, 1);
+    }
 
     #[test]
     fn event_kind_maps_to_cursor_quota_window() {

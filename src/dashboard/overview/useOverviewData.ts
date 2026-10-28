@@ -27,9 +27,9 @@
  *    渲染、不出现加载态；缓存超过 60 秒才在后台静默刷新（不阻塞界面，完成后
  *    整份替换），手动刷新按钮永远强制重取；
  *  - 模型用量表的数据来源：各 Agent 日聚合的 by_model（本机 + 远端逐日已合并
- *    进 DayAgg.byModel）、Cursor 的范围内模型聚合旁路（cursorByModel，其 events
- *    无按日拆分）与本机价格表（pricing，统一折算模型成本，与远端合并共用）；
- *    时间范围切换同样是纯切片，不重新取数；
+ *    进 DayAgg.byModel）、Cursor 的按「日 + 模型」聚合旁路
+ *    （cursorByModelByDay）与本机价格表（pricing，统一折算模型成本，与远端
+ *    合并共用）；时间范围切换同样是纯切片，不重新取数；
  *  - 一次性发布：本机数据、provider 额度与远端合并**全部就绪后才发布**，
  *    首屏要么骨架、要么完整数据，不再先出「仅本机」的较小数值、等远端到了
  *    再翻倍（用户可感知的数字从少到多跳变）。有上一次完整快照时先上屏旧值、
@@ -114,7 +114,7 @@ const CACHE_FRESH_MS = 60_000;
 // 刷新完成后整份替换。只接受同一天（windowStartMs 与今天对齐）的快照，跨天
 // 直接丢弃——「今日」卡片与 24h 趋势不能拿昨天的数据冒充。
 const OVERVIEW_CACHE_KEY = "zbar-dashboard-overview-cache";
-const OVERVIEW_CACHE_VERSION = 1;
+const OVERVIEW_CACHE_VERSION = 2;
 /** Map → 可 JSON 序列化的标记键（OverviewRaw 里 merged/quotas/byModel 都是 Map） */
 const MAP_MARK = "__zbarMap";
 
@@ -161,7 +161,7 @@ function loadPersistedOverview(): { data: OverviewRaw; at: number } | null {
       !Array.isArray(data.dayKeys) ||
       !(data.merged instanceof Map) ||
       !(data.quotas instanceof Map) ||
-      !(data.cursorByModel instanceof Map) ||
+      !(data.cursorByModelByDay instanceof Map) ||
       !Array.isArray(data.perAgent) ||
       !Array.isArray(data.remotePerAgent) ||
       !Array.isArray(data.failures)
@@ -221,9 +221,9 @@ export interface AgentDays {
   days: Map<string, DayAgg>;
 }
 
-/** Cursor 范围内按模型的聚合（events 是「按请求范围整段」聚合，无按日拆分，
- *  故不并入 DayAgg.byModel，单独一条旁路给模型用量表）；成本用 Cursor 后端
- *  算好的 cost_usd（美元），人民币由展示层乘汇率折算，不重新按价格表折算。 */
+/** Cursor 单日按模型的聚合（后端 events 按日拆分，不并入 DayAgg.byModel，
+ *  单独一条旁路给模型用量表）；成本用 Cursor 后端算好的 cost_usd（美元），
+ *  人民币由展示层乘汇率折算，不重新按价格表折算。 */
 export interface CursorModelAgg {
   requests: number;
   input: number;
@@ -236,8 +236,9 @@ export interface CursorModelAgg {
 /** 单 Agent 本地取数结果：按日聚合 + Cursor 专有的范围内模型聚合旁路 */
 interface AgentLocalLoad {
   days: Map<string, DayAgg>;
-  /** 仅 Cursor 非空（其余 Agent 的 by_model 已逐日并入 days 的 DayAgg.byModel） */
-  cursorModels: Map<string, CursorModelAgg>;
+  /** 仅 Cursor 非空：日键 → 该日按模型聚合（其余 Agent 的 by_model 已逐日
+   *  并入 days 的 DayAgg.byModel） */
+  cursorModelsByDay: Map<string, Map<string, CursorModelAgg>>;
 }
 
 /** 页面一次性取数结果（范围/数据范围切换时只读它做切片聚合） */
@@ -251,9 +252,10 @@ export interface OverviewRaw {
   merged: Map<string, DayAgg>;
   /** 本机各 Agent 的按日聚合（Agent 表与透视用） */
   perAgent: AgentDays[];
-  /** Cursor 范围内按模型聚合（Cursor events 口径，固定 90 天取数窗口；未登录 /
-   *  取数失败为空表）——模型用量表把 Cursor 的模型数据从这里整份并入 */
-  cursorByModel: Map<string, CursorModelAgg>;
+  /** Cursor 按「日 + 模型」聚合（Cursor events 口径，固定 90 天取数窗口；
+   *  未登录 / 取数失败为空表）——模型用量表按所选日键切片，避免 90 天
+   *  历史模型出现在今日视图 */
+  cursorByModelByDay: Map<string, Map<string, CursorModelAgg>>;
   /** 远端（其他设备）各 Agent 的按日聚合；未启用同步 / 全部失败为空数组 */
   remotePerAgent: AgentDays[];
   /** 各 Agent 的当前额度剩余（取不到则无键；额度不合并远端） */
@@ -341,7 +343,7 @@ async function loadAgentDays(
   fxPromise: Promise<number>
 ): Promise<AgentLocalLoad> {
   const days = new Map<string, DayAgg>();
-  const cursorModels = new Map<string, CursorModelAgg>();
+  const cursorModelsByDay = new Map<string, Map<string, CursorModelAgg>>();
   const toMs = nowMs;
   const windowDays = id === "cursor" ? USAGE_WINDOW_DAYS : WINDOW_DAYS;
   const fromMs = startOfLocalDay(addLocalDays(nowMs, -(windowDays - 1)));
@@ -380,11 +382,23 @@ async function loadAgentDays(
     case "cursor": {
       // Cursor 走独立快照：daily 为按日明细，事件按请求范围后端已切片；
       // 人民币折算需要汇率，等同一份已发起的汇率读取（不额外串行）。
-      // by_model 是「整段范围」聚合（无按日拆分），单独带出给模型用量表。
+      // by_model_daily 为「日 + 模型」聚合，供模型用量表按所选范围切片。
       const snapshot = await fetchCursorUsage(fromMs, toMs);
       addCursorDays(snapshot.daily, await fxPromise, days);
-      for (const model of snapshot.by_model) {
-        cursorModels.set(model.model, {
+      // 后端按「日 + 模型」返回（完整日期），转成前端统一的 MM-DD 日键；
+      // 同一天多个模型各占一条，后续 buildModelRows 按所选 range 的 keys 切片
+      for (const model of snapshot.by_model_daily ?? []) {
+        if (model.date.length < 10) continue;
+        const dayKey = model.date.slice(5);
+        if (!/^\d{2}-\d{2}$/.test(dayKey)) continue;
+        const byModel =
+          cursorModelsByDay.get(dayKey) ??
+          (() => {
+            const created = new Map<string, CursorModelAgg>();
+            cursorModelsByDay.set(dayKey, created);
+            return created;
+          })();
+        byModel.set(model.model, {
           requests: model.requests,
           input: model.input_tokens,
           output: model.output_tokens,
@@ -396,7 +410,7 @@ async function loadAgentDays(
       break;
     }
   }
-  return { days, cursorModels };
+  return { days, cursorModelsByDay };
 }
 
 /**
@@ -648,13 +662,16 @@ async function loadOverview(
   const perAgent: AgentDays[] = [];
   const failures: string[] = [];
   let firstError: string | null = null;
-  // Cursor 的模型聚合旁路：只有 Cursor 会填充（其 events 无按日拆分）
-  const cursorByModel = new Map<string, CursorModelAgg>();
+  // Cursor 的按日模型旁路：只有 Cursor 会填充
+  const cursorByModelByDay = new Map<
+    string,
+    Map<string, CursorModelAgg>
+  >();
   for (const { id, value, error } of results) {
     if (value) {
       perAgent.push({ id, days: value.days });
-      for (const [modelId, agg] of value.cursorModels) {
-        cursorByModel.set(modelId, agg);
+      for (const [dayKey, byModel] of value.cursorModelsByDay) {
+        cursorByModelByDay.set(dayKey, byModel);
       }
     } else if (!isMissingInstall(error)) {
       failures.push(agentLabel(id));
@@ -695,7 +712,7 @@ async function loadOverview(
     windowStartMs,
     merged: mergeDayMaps(perAgent.map((entry) => entry.days)),
     perAgent,
-    cursorByModel,
+    cursorByModelByDay,
     remotePerAgent: [],
     quotas,
     fxRate,

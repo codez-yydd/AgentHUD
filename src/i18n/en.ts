@@ -1425,7 +1425,7 @@ export const en: typeof zh = {
     "dashboard.overview.modelVariantsHint": "Merged spellings: {list}",
     "dashboard.overview.modelVariantItem": "{model} ({count} requests)",
     "dashboard.overview.modelFootnote":
-      "Model cost is estimated with this machine's price table (USD price × current FX rate); models without a price show \"Unpriced\". Cursor has no per-day model split, so its rows cover that source's fixed 90-day window. \"(not split)\" aggregates legacy data or sources without a per-model split: those tokens count as input side and carry no cost.",
+      "Model cost is estimated with this machine's price table (USD price × current FX rate); models without a price show \"Unpriced\". Cursor model detail is split by day and only covers models used in the selected range. \"(not split)\" aggregates legacy data or sources without a per-model split: those tokens count as input side and carry no cost.",
 
     // ===== Compare page (wide window) =====
     "dashboard.compare.device": "Device",

@@ -18,7 +18,6 @@ import {
 import type { CustomRangeValue } from "../CustomRangeMenu";
 import {
   RANGE_DAYS,
-  REMOTE_WINDOW_DAYS,
   USAGE_AGENT_IDS,
   agentLabel,
   dayOf,
@@ -75,8 +74,8 @@ export interface OverviewView {
   merged: Map<string, DayAgg>;
   /** 各 Agent 的合并日聚合（顺序同 USAGE_AGENT_IDS） */
   perAgent: ViewAgent[];
-  /** Cursor 范围内按模型聚合（仅本机口径：Cursor 明细不上传，不随数据范围变化） */
-  cursorByModel: Map<string, CursorModelAgg>;
+  /** Cursor 按「日 + 模型」聚合（仅本机口径：Cursor 明细不上传，不随数据范围变化） */
+  cursorByModelByDay: Map<string, Map<string, CursorModelAgg>>;
   quotas: Map<UsageAgentId, QuotaInfo>;
   fxRate: number;
   /** 本机价格表（模型成本折算用；null = 读不到，成本按 0） */
@@ -106,7 +105,7 @@ export function scopeView(raw: OverviewRaw, scope: OverviewScope): OverviewView 
         days: entry.days,
         remoteDays: null,
       })),
-      cursorByModel: raw.cursorByModel,
+      cursorByModelByDay: raw.cursorByModelByDay,
       quotas: raw.quotas,
       fxRate: raw.fxRate,
       pricing: raw.pricing,
@@ -135,7 +134,7 @@ export function scopeView(raw: OverviewRaw, scope: OverviewScope): OverviewView 
     windowStartMs: raw.windowStartMs,
     merged: mergeDayMaps(perAgent.map((entry) => entry.days)),
     perAgent,
-    cursorByModel: raw.cursorByModel,
+    cursorByModelByDay: raw.cursorByModelByDay,
     quotas: raw.quotas,
     fxRate: raw.fxRate,
     pricing: raw.pricing,
@@ -155,9 +154,9 @@ export function scopeView(raw: OverviewRaw, scope: OverviewScope): OverviewView 
  * 等口径不随筛选变化）。Agent 统计表**不跟随**——它是跨 Agent 的分解对比
  * 表，是否切片由调用方决定（OverviewPage 里 Agent 表仍取范围视图的结果）。
  *
- * cursorByModel 特判：Cursor 的按模型聚合是「请求范围整段」旁路数据（不随
- * Agent 日聚合走），仅筛选 cursor 时保留原表，其余 Agent 置空 Map——否则
- * 模型用量表会把 Cursor 整段用量混进其他 Agent 的行。
+ * cursorByModelByDay 特判：Cursor 的按模型聚合是独立旁路（不随 Agent 日聚合
+ * 走），仅筛选 cursor 时保留原表，其余 Agent 置空 Map——否则模型用量表会把
+ * Cursor 用量混进其他 Agent 的行。
  *
  * 找不到该 Agent（当前数据范围下无数据，如仅本机用过的 Agent）时：merged
  * 用空 Map、perAgent 空数组，dayKeys 仍保留——热力图照常铺满 52 周空格子、
@@ -173,10 +172,10 @@ export function agentView(
     ...view,
     merged: hit ? hit.days : new Map<string, DayAgg>(),
     perAgent: hit ? [hit] : [],
-    cursorByModel:
+    cursorByModelByDay:
       agent === "cursor"
-        ? view.cursorByModel
-        : new Map<string, CursorModelAgg>(),
+        ? view.cursorByModelByDay
+        : new Map<string, Map<string, CursorModelAgg>>(),
   };
 }
 
@@ -543,10 +542,8 @@ interface SpellingAgg {
  *
  * 口径与数据来源：
  *  - 本机与远端（「全部设备」时已在 scopeView 合并进同一份 DayAgg）逐模型相加；
- *  - Cursor 的 events 是「按请求范围整段」聚合（无按日拆分），因此整份并入，
- *    且仅当其窗口（固定 REMOTE_WINDOW_DAYS 天）与所选范围有交叠——自定义
- *    365 天区间早于该窗口时 Cursor 无贡献。注意：更短的时间范围下 Cursor 行
- *    仍是整个 90 天窗口的量（卡片脚注说明），这是既有取数窗口的取舍；
+ *  - Cursor 的 events 由后端按「日 + 模型」聚合（cursorByModelByDay），这里
+ *    随所选范围逐日并入；今日没有 Cursor 用量时不会带出历史模型；
  *  - 成本**按写法分别折算**（而非按组一次折算）：组成本 = Σ(非 Cursor 写法)
  *    modelCost(该写法的原始 id, 该写法三段 token) + Σ(Cursor 写法) 该写法的
  *    后端 cost_usd。按写法折算既让每个写法都能命中自己的价格条目
@@ -556,10 +553,10 @@ interface SpellingAgg {
  *    价格表读不到时非 Cursor 写法成本按 0（显示「未定价」）；
  *  - 「未拆分」行：by_model 整日缺失的用量（旧数据 / 无拆分来源）汇总成一行，
  *    token 全部计入输入侧（与趋势图 splitNote 同口径），不参与成本折算。
- *    Cursor 的 daily 同样整日计入 unsplit，但其模型数据走 cursorByModel 旁路，
- *    这里按 Agent 排除，避免同一份用量计两次。
+ *    Cursor 的 daily 同样整日计入 unsplit，但其模型数据走 cursorByModelByDay
+ *    旁路，这里按 Agent 排除，避免同一份用量计两次。
  *  - 占比分母 = 全部行（含未拆分行）的 total 之和：与指标卡的「范围内 Token」
- *    对齐（Cursor 的 90 天窗口偏差除外，见上）。
+ *    对齐。
  */
 export function buildModelRows(
   raw: OverviewView,
@@ -639,7 +636,7 @@ export function buildModelRows(
       const day = days.get(key);
       if (!day) continue;
       for (const [modelId, model] of day.byModel) absorb(modelId, model, null, id);
-      // Cursor 的未拆分用量由 cursorByModel 顶替（见函数注释），不在此累计
+      // Cursor 的未拆分用量由 cursorByModelByDay 顶替（见函数注释），不在此累计
       if (isCursor || day.unsplit <= 0) continue;
       unsplitTotal += day.unsplit;
       // 整日都无 by_model 时（旧数据 / 无拆分来源）整日的请求数都属于未拆分行；
@@ -648,14 +645,13 @@ export function buildModelRows(
     }
   }
 
-  // Cursor：范围与其固定取数窗口有交叠时整份并入。三段 token 进组（展示），
-  // 后端 cost_usd 记在该写法的 cursor 贡献上（成本按写法折算，不重复计价）。
-  // Cursor 的模型名同样经 modelRowKey 折叠——带 provider 前缀的写法与裸名合并。
-  const cursorWindow = new Set(raw.dayKeys.slice(-REMOTE_WINDOW_DAYS));
-  const cursorInRange =
-    raw.cursorByModel.size > 0 && keys.some((key) => cursorWindow.has(key));
-  if (cursorInRange) {
-    for (const [modelId, model] of raw.cursorByModel) {
+  // Cursor：按所选范围的每个日键并入当日按模型聚合。Cursor 的 daily 整日
+  // 计入 unsplit（无输入/输出拆分），模型数据来自独立的 cursorByModelByDay，
+  // 逐日切片后不会把 90 天历史模型带进今日视图。
+  for (const key of keys) {
+    const byModel = raw.cursorByModelByDay.get(key);
+    if (!byModel) continue;
+    for (const [modelId, model] of byModel) {
       absorb(
         modelId,
         {

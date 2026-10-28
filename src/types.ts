@@ -601,6 +601,12 @@ export interface CursorModelStat {
   requests: number;
 }
 
+/** Cursor 按「日 + 模型」聚合（events 后端按日拆分，供任意范围切片） */
+export interface CursorModelDailyEntry extends CursorModelStat {
+  /** 完整日期 "2026-08-13"（本地时区） */
+  date: string;
+}
+
 /** Cursor 完整快照（get_cursor_usage 返回） */
 export interface CursorSnapshot {
   /** 是否成功登录并获取到数据 */
@@ -619,6 +625,8 @@ export interface CursorSnapshot {
   today_quota?: CursorTodayQuota | null;
   daily: CursorDailyEntry[];
   by_model: CursorModelStat[];
+  /** 按「日 + 模型」聚合：今日/近 7 天等范围切片用；旧后端可能缺省 */
+  by_model_daily?: CursorModelDailyEntry[];
   /** 最近使用的模型（范围内最新一条带模型名的用量事件） */
   current_model?: CurrentModel | null;
 }
