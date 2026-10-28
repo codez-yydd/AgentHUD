@@ -1,0 +1,144 @@
+/**
+ * 界面定制词条（卡片高度 / 折叠 / 展开 / 显示方案）。
+ * 单独成文件，避免与既有页面词典互相覆盖。
+ */
+
+export const customize = {
+  // ===== 入口 / 面板 =====
+  "customize.entry": "调整显示",
+  "customize.title": "调整显示",
+  "customize.hint":
+    "选择显示内容、调整顺序和展示级别；卡片高度可直接拖动底边。",
+  "customize.editHint": "拖动卡片底边可调高度，完成后点「完成」保存。",
+  "customize.done": "完成",
+  "customize.cancel": "取消",
+  "customize.resetDefault": "恢复默认",
+  "customize.resetPage": "本页恢复默认",
+  "customize.saved": "显示设置已保存",
+  "customize.close": "收起调整面板",
+
+  // ===== 方案 =====
+  "customize.scheme": "显示方案",
+  "customize.schemeClassic": "经典",
+  "customize.schemeSimple": "简洁",
+  "customize.schemeCustom": "自定义",
+  "customize.schemeClassicHint": "保留全部卡片和现有顺序（升级默认）",
+  "customize.schemeSimpleHint": "只突出速度、用量和套餐余量",
+  "customize.schemeCustomHint": "自由选择卡片、顺序和展示级别",
+
+  // ===== 卡片列表 =====
+  "customize.visible": "显示内容",
+  "customize.order": "卡片顺序",
+  "customize.moveUp": "上移",
+  "customize.moveDown": "下移",
+  "customize.dragHint": "拖动排序",
+  "customize.detail": "展示级别",
+  "customize.detailPrimary": "主要信息",
+  "customize.detailFull": "完整信息",
+  "customize.height": "高度",
+  "customize.heightAuto": "自适应",
+  "customize.resetHeight": "恢复自适应高度",
+  "customize.collapsed": "折叠",
+  "customize.hiddenAll": "所有卡片都已隐藏，数据采集和统计不会停止。",
+  "customize.restoreAll": "恢复显示全部",
+  "customize.selectCards": "显示内容",
+  "customize.listHint": "勾选要显示的卡片，拖动或点箭头调整顺序。",
+
+  // ===== 卡片操作 =====
+  "card.dragHint": "拖动底边调整高度",
+  "card.collapse": "折叠为标题与摘要",
+  "card.expand": "展开卡片",
+  "card.resetHeight": "恢复自适应高度",
+  "card.expandAll": "展开全部 {count} 项",
+  "card.collapseList": "收起列表",
+  "card.listExpandedHint": "已展开全部，改为页面整体滚动",
+  "card.summaryFallback": "已折叠",
+
+  // ===== 折叠摘要 =====
+  "customize.summaryModels": "{count} 个模型 · {tokens} Token",
+  "customize.summaryQuota": "5h 余 {hour5}% · 周余 {weekly}%",
+  "customize.summaryQuotaFallback": "按服务查看套餐余量",
+  "customize.summaryTrend": "区间合计 {cost} · {tokens}",
+  "customize.summaryTotal": "区间合计 {value}",
+  "customize.summaryMetrics": "区间 Token {tokens}",
+  "customize.summaryHeatmap": "近 52 周活跃度",
+  "customize.summaryQuotaTable": "{count} 个服务的套餐余量",
+
+  // ===== 卡片名称（注册表 labelKey）=====
+  "customize.card.agents": "各服务花费",
+  "customize.card.quota": "套餐余量",
+  "customize.card.trend": "用量趋势",
+  "customize.card.models": "模型用量",
+  "customize.card.metrics": "用量指标",
+  "customize.card.heatmap": "活跃热力图",
+  "customize.card.speed": "当前速度",
+  "customize.card.usage": "今日 Token",
+};
+
+/** 英文对照（键集必须与中文一致，en.ts 的 typeof zh 约束会兜底检查） */
+export const customizeEn: { [K in keyof typeof customize]: string } = {
+  "customize.entry": "Customize",
+  "customize.title": "Customize display",
+  "customize.hint":
+    "Choose cards, reorder them and set the detail level; drag a card's bottom edge to resize.",
+  "customize.editHint":
+    "Drag a card's bottom edge to resize, then press Done to save.",
+  "customize.done": "Done",
+  "customize.cancel": "Cancel",
+  "customize.resetDefault": "Reset to default",
+  "customize.resetPage": "Reset this page",
+  "customize.saved": "Display settings saved",
+  "customize.close": "Close panel",
+
+  "customize.scheme": "Layout",
+  "customize.schemeClassic": "Classic",
+  "customize.schemeSimple": "Simple",
+  "customize.schemeCustom": "Custom",
+  "customize.schemeClassicHint": "Keep every card and the existing order (upgrade default)",
+  "customize.schemeSimpleHint": "Highlight speed, usage and quota only",
+  "customize.schemeCustomHint": "Pick cards, order and detail level freely",
+
+  "customize.visible": "Visible cards",
+  "customize.order": "Card order",
+  "customize.moveUp": "Move up",
+  "customize.moveDown": "Move down",
+  "customize.dragHint": "Drag to reorder",
+  "customize.detail": "Detail level",
+  "customize.detailPrimary": "Primary",
+  "customize.detailFull": "Full",
+  "customize.height": "Height",
+  "customize.heightAuto": "Auto",
+  "customize.resetHeight": "Reset to auto height",
+  "customize.collapsed": "Collapsed",
+  "customize.hiddenAll": "All cards are hidden. Data collection and statistics keep running.",
+  "customize.restoreAll": "Show all cards",
+  "customize.selectCards": "Visible cards",
+  "customize.listHint": "Tick cards to show, drag or use the arrows to reorder.",
+
+  "card.dragHint": "Drag the bottom edge to resize",
+  "card.collapse": "Collapse to title and summary",
+  "card.expand": "Expand card",
+  "card.resetHeight": "Reset to auto height",
+  "card.expandAll": "Show all {count}",
+  "card.collapseList": "Collapse list",
+  "card.listExpandedHint": "Showing all items; the page now scrolls as a whole",
+  "card.summaryFallback": "Collapsed",
+
+  "customize.summaryModels": "{count} models · {tokens} tokens",
+  "customize.summaryQuota": "5h {hour5}% left · week {weekly}% left",
+  "customize.summaryQuotaFallback": "Quota by service",
+  "customize.summaryTrend": "Total {cost} · {tokens}",
+  "customize.summaryTotal": "Range total {value}",
+  "customize.summaryMetrics": "Range tokens {tokens}",
+  "customize.summaryHeatmap": "Last 52 weeks of activity",
+  "customize.summaryQuotaTable": "Plan quota for {count} services",
+
+  "customize.card.agents": "Service spend",
+  "customize.card.quota": "Plan quota",
+  "customize.card.trend": "Usage trend",
+  "customize.card.models": "Model usage",
+  "customize.card.metrics": "Usage metrics",
+  "customize.card.heatmap": "Activity heatmap",
+  "customize.card.speed": "Current speed",
+  "customize.card.usage": "Today's tokens",
+};

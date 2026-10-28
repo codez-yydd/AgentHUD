@@ -6,6 +6,11 @@
  */
 import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
+import {
+  CardFrame,
+  type CardBodyContext,
+  type CardFrameRef,
+} from "../cardFrame";
 
 /**
  * 当前是否暗色主题：观察 <html> 的 .dark 类（DashboardApp 的 applyDomTheme 与
@@ -29,32 +34,69 @@ export function useDarkTheme(): boolean {
   return dark;
 }
 
-/** 区块卡片：标题行（左标题+副标题，右操作区）+ 内容区 */
+/** 区块卡片：标题行（左标题+副标题，右操作区）+ 内容区。
+ *  frame 传入稳定卡片 ID / 所属窗口页面后，接入统一的可调高度、折叠与列表
+ *  展开能力；不传时保持原有纯展示卡片（既有调用零改动）。 */
 export function Card({
   title,
   sub,
   action,
   children,
   className = "",
+  frame,
+  summary,
+  list,
+  bodyClassName,
 }: {
   title?: string;
   sub?: string;
   action?: ReactNode;
-  children: ReactNode;
+  children: ReactNode | ((ctx: CardBodyContext) => ReactNode);
   className?: string;
+  frame?: CardFrameRef;
+  /** 折叠时展示的摘要 */
+  summary?: ReactNode;
+  list?: { total: number; collapsedCount: number };
+  /** 正文容器附加类（图表卡撑满高度时使用） */
+  bodyClassName?: string;
 }) {
+  const renderHead = (controls?: ReactNode) =>
+    title || action || controls ? (
+      <header className="db-card__head">
+        <div className="db-card__headline">
+          {title && <h2 className="db-card__title">{title}</h2>}
+          {sub && <span className="db-card__sub">{sub}</span>}
+        </div>
+        <div className="db-card__action">
+          {action}
+          {controls}
+        </div>
+      </header>
+    ) : null;
+
+  if (frame) {
+    return (
+      <CardFrame
+        frame={frame}
+        className={`db-card ${className}`}
+        bodyClassName={`db-card__body ${bodyClassName ?? ""}`}
+        summary={summary}
+        list={list}
+        head={renderHead}
+      >
+        {children}
+      </CardFrame>
+    );
+  }
+
   return (
     <section className={`db-card ${className}`}>
-      {(title || action) && (
-        <header className="db-card__head">
-          <div className="db-card__headline">
-            {title && <h2 className="db-card__title">{title}</h2>}
-            {sub && <span className="db-card__sub">{sub}</span>}
-          </div>
-          {action && <div className="db-card__action">{action}</div>}
-        </header>
-      )}
-      <div className="db-card__body">{children}</div>
+      {renderHead()}
+      <div className="db-card__body">
+        {typeof children === "function"
+          ? children({ listExpanded: false, fixed: false, detail: "primary" })
+          : children}
+      </div>
     </section>
   );
 }

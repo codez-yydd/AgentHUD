@@ -17,9 +17,11 @@ import { projects } from "./dicts/projects";
 import { share } from "./dicts/share";
 import { credentials } from "./dicts/credentials";
 import { dashboard } from "./dicts/dashboard";
+import { customizeEn } from "./dicts/customize";
 import { zh } from "./zh";
 
 export const en: typeof zh = {
+  ...customizeEn,
   ...({
     // 基础状态
     "common.loading": "Loading…",

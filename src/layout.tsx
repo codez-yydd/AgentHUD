@@ -8,6 +8,11 @@ import {
   type Theme,
 } from "./appearance";
 import { useI18n } from "./i18n";
+import {
+  CardFrame,
+  type CardBodyContext,
+  type CardFrameRef,
+} from "./cardFrame";
 
 /* ============================================================
  * 全站统一布局组件 — 所有子页面共用同一套视觉语言
@@ -173,18 +178,55 @@ export function SettingsCard({
   );
 }
 
-/** 内容区块卡片（带可选标题） */
+/** 内容区块卡片（带可选标题）
+ *  card 传入稳定卡片 ID / 所属窗口页面后，接入统一的可调高度、折叠与列表
+ *  展开能力；不传时保持原有纯展示卡片（既有调用零改动）。 */
 export function SectionCard({
   title,
   action,
   children,
   className = "",
+  card,
+  cardSummary,
+  list,
+  bodyClassName,
 }: {
   title?: string;
   action?: ReactNode;
-  children: ReactNode;
+  children: ReactNode | ((ctx: CardBodyContext) => ReactNode);
   className?: string;
+  card?: CardFrameRef;
+  /** 折叠时展示的摘要（标题 + 一行关键数字） */
+  cardSummary?: ReactNode;
+  list?: { total: number; collapsedCount: number };
+  /** 正文容器附加类（图表卡需要 flex 撑满高度时使用） */
+  bodyClassName?: string;
 }) {
+  const renderHead = (controls: ReactNode) => (
+    <div className="flex items-center justify-between gap-1 mb-2">
+      <span className="section-title min-w-0 truncate">{title}</span>
+      <div className="flex items-center gap-1 shrink-0">
+        {action}
+        {controls}
+      </div>
+    </div>
+  );
+
+  if (card) {
+    return (
+      <CardFrame
+        frame={card}
+        className={`card-base rounded-2xl px-3 py-2.5 ${className}`}
+        bodyClassName={bodyClassName}
+        summary={cardSummary}
+        list={list}
+        head={renderHead}
+      >
+        {children}
+      </CardFrame>
+    );
+  }
+
   return (
     <div className={`card-base rounded-2xl px-3 py-2.5 ${className}`}>
       {title && (
@@ -193,7 +235,11 @@ export function SectionCard({
           {action}
         </div>
       )}
-      {children}
+      {typeof children === "function" ? children({
+        listExpanded: false,
+        fixed: false,
+        detail: "primary",
+      }) : children}
     </div>
   );
 }

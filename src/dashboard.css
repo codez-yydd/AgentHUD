@@ -5486,3 +5486,231 @@ body {
     gap: 12px;
   }
 }
+
+/* ============================================================
+ * 数据卡片外框（高度可调 / 折叠 / 列表展开）：与面板 index.css 同源，
+ * 视觉仍由 .db-card 承担，这里只补交互层；颜色走 --db-* 变量。
+ * ============================================================ */
+.card-frame {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  /* 页面是 flex column：可调卡片固定高度后 overflow:hidden 会让自动最小尺寸
+     归零、被 flex 压缩成一条线；显式禁止收缩，页面整体滚动兜底 */
+  flex: 0 0 auto;
+  min-width: 0;
+}
+.card-frame__head {
+  flex: none;
+  min-width: 0;
+}
+.card-frame__body {
+  min-width: 0;
+}
+.card-frame--fixed {
+  overflow: hidden;
+}
+.card-frame__summary {
+  flex: none;
+  min-width: 0;
+  margin: 0 18px;
+  padding: 8px 0 2px;
+  border-top: 1px solid var(--db-row-border);
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--db-text-dim);
+}
+.card-frame__summary-muted {
+  opacity: 0.8;
+}
+.card-frame__controls {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: none;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+.card-frame:hover > .card-frame__head .card-frame__controls,
+.card-frame:focus-within > .card-frame__head .card-frame__controls,
+.card-frame--editing .card-frame__controls {
+  opacity: 1;
+}
+.card-frame__control {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--db-text-dim);
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+.card-frame__control:hover {
+  color: var(--db-active-text);
+  background: var(--db-hover);
+}
+.card-frame__control:focus-visible {
+  outline: 2px solid var(--db-active-text);
+  outline-offset: 1px;
+}
+.card-frame__grip {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 3;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  height: 10px;
+  cursor: ns-resize;
+  opacity: 0;
+  touch-action: none;
+  transition: opacity 0.15s ease, background 0.15s ease;
+}
+.card-frame__grip > span {
+  display: block;
+  width: 46px;
+  height: 3px;
+  margin-bottom: 3px;
+  border-radius: 999px;
+  background: var(--db-track);
+  transition: width 0.15s ease, background 0.15s ease;
+}
+.card-frame:hover > .card-frame__grip,
+.card-frame__grip:focus-visible,
+.card-frame--dragging > .card-frame__grip {
+  opacity: 1;
+}
+.card-frame__grip:focus-visible {
+  outline: 2px solid var(--db-active-text);
+  outline-offset: -2px;
+}
+.card-frame--editing {
+  outline: 1px dashed var(--db-cal-accent-border);
+  outline-offset: 3px;
+}
+.card-frame--editing > .card-frame__grip {
+  opacity: 1;
+  background: var(--db-cal-accent-bg);
+}
+.card-frame--editing > .card-frame__grip > span {
+  width: 60px;
+  background: var(--db-cal-accent-border);
+}
+.card-frame--dragging > .card-frame__grip > span {
+  width: 60px;
+  background: var(--db-cal-solid);
+}
+body.card-resizing,
+body.card-resizing * {
+  cursor: ns-resize !important;
+  user-select: none !important;
+}
+.card-frame__listfoot {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+  flex: none;
+  padding: 0 18px 12px;
+}
+.card-frame__listhint {
+  margin-right: auto;
+  font-size: 10px;
+  line-height: 1.4;
+  color: var(--db-text-dim);
+}
+.card-frame__linkbtn {
+  padding: 2px 4px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--db-active-text);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.card-frame__linkbtn:hover {
+  text-decoration: underline;
+}
+
+/* ---- 可调高度卡片内的图表 / 热力图：绘图区跟随高度增长，而不是只留空白 ---- */
+.db-card__body--chart {
+  display: flex;
+  flex-direction: column;
+}
+.db-card__body--chart .db-chart {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+}
+.card-frame[data-card-height]:not([data-card-height="auto"])
+  .db-card__body--chart
+  .db-chart__plot {
+  /* 手动高度下取消 clamp 固定图高，让柱体撑满卡片剩余高度 */
+  flex: 1 1 auto;
+  height: auto;
+  min-height: 120px;
+}
+.db-card__body--heat {
+  display: flex;
+  flex-direction: column;
+}
+.card-frame[data-card-height]:not([data-card-height="auto"])
+  .db-card__body--heat
+  .db-heat {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+.card-frame[data-card-height]:not([data-card-height="auto"])
+  .db-card__body--heat
+  .db-heat__chart {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+}
+.card-frame[data-card-height]:not([data-card-height="auto"])
+  .db-card__body--heat
+  .db-heat__body {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+.card-frame[data-card-height]:not([data-card-height="auto"])
+  .db-card__body--heat
+  .db-heat__grid {
+  grid-template-rows: repeat(7, minmax(0, 1fr));
+}
+.card-frame[data-card-height]:not([data-card-height="auto"])
+  .db-card__body--heat
+  .db-heat__cell,
+.card-frame[data-card-height]:not([data-card-height="auto"])
+  .db-card__body--heat
+  .db-heat__cell-wrap {
+  aspect-ratio: auto;
+  height: 100%;
+}
+.card-frame[data-card-height]:not([data-card-height="auto"])
+  .db-card__body--heat
+  .db-heat__col {
+  height: 100%;
+}
+
+/* 多列并排时不再强行等高：单独拉高一张卡，不会让旁边卡片出现大片空白 */
+.db-overview-duo {
+  align-items: start;
+}
+
+/* 展开全部后列表不再内部滚动（卡片外框此时也回到自适应高度） */
+.card-frame[data-list-expanded="1"] .card-frame__body {
+  overflow: visible;
+}

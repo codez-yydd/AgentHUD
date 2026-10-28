@@ -121,6 +121,9 @@ export function HeatmapCard({ series }: { series: HeatSeries }) {
       className="db-card--heat"
       title={t("dashboard.overview.heatTitle")}
       sub={t("dashboard.overview.heatSub")}
+      frame={{ window: "dashboard", page: "overview", id: "overview.heatmap" }}
+      summary={t("customize.summaryHeatmap")}
+      bodyClassName="db-card__body--heat"
       action={
         <div className="db-heat__actions">
           {/* 每日 / 每周 / 累计：纯客户端聚合切换，不重新取数 */}

@@ -1,8 +1,10 @@
 import { useState } from "react";
+import type { ReactNode } from "react";
 import type { Currency, CurrentModel, SpeedQuality, TrendPoint } from "./types";
 import { formatCost, formatMs, formatTps, formatTokens, dateStr } from "./format";
 import { displayModelName } from "./modelName";
 import { useI18n } from "./i18n";
+import { CardFrame, type CardFrameRef } from "./cardFrame";
 
 // ============================================================
 // 额度剩余渐变色：所有额度进度条统一按「剩余百分比」着色。
@@ -256,6 +258,8 @@ export function TrendChart<M extends TrendMetric>({
   onMetricChange,
   showMetricToggle = true,
   fill = false,
+  card,
+  cardSummary,
 }: {
   points: TrendPoint[];
   bucket: "hour" | "day";
@@ -267,6 +271,9 @@ export function TrendChart<M extends TrendMetric>({
   showMetricToggle?: boolean;
   /** 撑满父级剩余高度（汇总页用，避免柱图下方大块留白） */
   fill?: boolean;
+  /** 接管卡片外框（高度 / 折叠 / 摘要），不传保持原有纯展示卡片 */
+  card?: CardFrameRef;
+  cardSummary?: ReactNode;
 }) {
   const { t } = useI18n();
   const metricOptions: M[] = metrics ?? (["cost", "token"] as M[]);
@@ -318,33 +325,31 @@ export function TrendChart<M extends TrendMetric>({
   const labelStep =
     n <= 8 ? 1 : Math.max(2, Math.ceil(n / 7));
 
-  return (
-    <div
-      className={`card-base rounded-2xl px-3 pt-2.5 pb-2 ${
-        fill ? "flex-1 min-h-0 flex flex-col" : ""
-      }`}
-    >
-      {/* 标题行 */}
-      <div className="flex items-center justify-between mb-2 shrink-0">
-        <div className="flex items-center gap-1.5">
-          <div className="section-title">
-            <span>{t("common.usageTrend")}</span>
-          </div>
-          {deltaText && (
-            <span
-              className={`text-[9px] num px-1 py-px rounded ${
-                deltaKind !== "pct"
-                  ? "text-slate-500 bg-slate-900/5"
-                  : deltaUp
-                    ? "text-rose-600 bg-rose-500/10"
-                    : "text-emerald-600 bg-emerald-500/10"
-              }`}
-              title={isHour ? t("common.trendVsHour") : t("common.trendVsDay")}
-            >
-              {deltaText}
-            </span>
-          )}
+  const fillHeight = fill || card != null;
+
+  /** 标题行：指标切换 + 卡片外框注入的折叠 / 复位按钮 */
+  const titleRow = (controls?: ReactNode) => (
+    <div className="flex items-center justify-between gap-1 mb-2 shrink-0">
+      <div className="flex items-center gap-1.5 min-w-0">
+        <div className="section-title">
+          <span>{t("common.usageTrend")}</span>
         </div>
+        {deltaText && (
+          <span
+            className={`text-[9px] num px-1 py-px rounded ${
+              deltaKind !== "pct"
+                ? "text-slate-500 bg-slate-900/5"
+                : deltaUp
+                  ? "text-rose-600 bg-rose-500/10"
+                  : "text-emerald-600 bg-emerald-500/10"
+            }`}
+            title={isHour ? t("common.trendVsHour") : t("common.trendVsDay")}
+          >
+            {deltaText}
+          </span>
+        )}
+      </div>
+      <div className="flex items-center gap-1 shrink-0">
         {/* 指标切换：按钮组按 metrics 渲染 */}
         {showMetricToggle && onMetricChange && (
           <div className="flex gap-0.5 p-0.5 rounded-lg bg-slate-900/4">
@@ -367,12 +372,17 @@ export function TrendChart<M extends TrendMetric>({
             ))}
           </div>
         )}
+        {controls}
       </div>
+    </div>
+  );
 
-      {/* 柱状图 */}
+  const chartBody = (
+    <>
+      {/* 柱状图：可调高度时 flex-1 撑满，绘图区跟着变高而不是只加空白 */}
       <div
         className={`flex items-end ${barGap} relative ${
-          fill ? "flex-1 min-h-14" : "h-16"
+          fillHeight ? "flex-1 min-h-16" : "h-16"
         }`}
       >
         {points.map((d, i) => {
@@ -449,6 +459,31 @@ export function TrendChart<M extends TrendMetric>({
           );
         })}
       </div>
+    </>
+  );
+
+  if (card) {
+    return (
+      <CardFrame
+        frame={card}
+        className="card-base rounded-2xl px-3 pt-2.5 pb-2"
+        bodyClassName="flex flex-col"
+        summary={cardSummary}
+        head={titleRow}
+      >
+        {chartBody}
+      </CardFrame>
+    );
+  }
+
+  return (
+    <div
+      className={`card-base rounded-2xl px-3 pt-2.5 pb-2 ${
+        fill ? "flex-1 min-h-0 flex flex-col" : ""
+      }`}
+    >
+      {titleRow()}
+      {chartBody}
     </div>
   );
 }

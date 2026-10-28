@@ -734,6 +734,191 @@ body,
   -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent);
 }
 
+/* ============================================================
+ * 数据卡片外框（高度可调 / 折叠 / 列表展开）：视觉仍由 .card-base 等
+ * 既有类承担，这里只补交互层，不改变原始卡片配色与圆角。
+ * ============================================================ */
+.card-frame {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  /* 页面是 flex column：可调卡片固定高度后 overflow:hidden 会让自动最小尺寸
+     归零、被 flex 压缩成一条线；显式禁止收缩，页面整体滚动兜底 */
+  flex: 0 0 auto;
+  min-width: 0;
+}
+.card-frame__head {
+  flex: none;
+  min-width: 0;
+}
+.card-frame__body {
+  min-width: 0;
+}
+.card-frame--fixed {
+  overflow: hidden;
+}
+.card-frame--fixed > .card-frame__body {
+  /* 固定高度下只让正文滚动：卡片头 / 操作按钮 / 展开按钮保持可见 */
+  padding-right: 1px;
+}
+.card-frame__summary {
+  flex: none;
+  min-width: 0;
+  margin-top: 2px;
+  padding-top: 6px;
+  border-top: 1px solid rgba(15, 23, 42, 0.06);
+  font-size: 10px;
+  line-height: 1.5;
+  color: rgba(51, 65, 85, 0.66);
+}
+.dark .card-frame__summary {
+  border-top-color: rgba(226, 232, 240, 0.08);
+  color: rgba(226, 232, 240, 0.6);
+}
+.card-frame__summary-muted {
+  opacity: 0.8;
+}
+.card-frame__controls {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: none;
+  /* 普通态悬停才出现：安静不抢数据视线 */
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+.card-frame:hover > .card-frame__head .card-frame__controls,
+.card-frame:focus-within > .card-frame__head .card-frame__controls,
+.card-frame--editing .card-frame__controls {
+  opacity: 1;
+}
+.card-frame__control {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: rgba(51, 65, 85, 0.5);
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+.card-frame__control:hover {
+  color: rgba(2, 132, 199, 0.9);
+  background: rgba(14, 165, 233, 0.1);
+}
+.card-frame__control:focus-visible {
+  outline: 2px solid rgba(14, 165, 233, 0.5);
+  outline-offset: 1px;
+}
+.dark .card-frame__control {
+  color: rgba(226, 232, 240, 0.55);
+}
+.dark .card-frame__control:hover {
+  color: #7dd3fc;
+  background: rgba(56, 189, 248, 0.12);
+}
+/* 拖动手柄：普通态只在悬停 / 聚焦 / 拖动时出现一条轻量提示 */
+.card-frame__grip {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 3;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  height: 9px;
+  cursor: ns-resize;
+  opacity: 0;
+  touch-action: none;
+  transition: opacity 0.15s ease, background 0.15s ease;
+}
+.card-frame__grip > span {
+  display: block;
+  width: 36px;
+  height: 3px;
+  margin-bottom: 2px;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.2);
+  transition: width 0.15s ease, background 0.15s ease;
+}
+.card-frame:hover > .card-frame__grip,
+.card-frame__grip:focus-visible,
+.card-frame--dragging > .card-frame__grip {
+  opacity: 1;
+}
+.card-frame__grip:focus-visible {
+  outline: 2px solid rgba(14, 165, 233, 0.45);
+  outline-offset: -2px;
+}
+.dark .card-frame__grip > span {
+  background: rgba(226, 232, 240, 0.28);
+}
+/* 「调整显示」编辑态：明确画出可调整边界与常显手柄 */
+.card-frame--editing {
+  outline: 1px dashed rgba(14, 165, 233, 0.45);
+  outline-offset: 2px;
+}
+.card-frame--editing > .card-frame__grip {
+  opacity: 1;
+  background: rgba(14, 165, 233, 0.07);
+}
+.card-frame--editing > .card-frame__grip > span {
+  width: 48px;
+  background: rgba(14, 165, 233, 0.65);
+}
+.card-frame--dragging > .card-frame__grip > span {
+  width: 48px;
+  background: rgba(14, 165, 233, 0.8);
+}
+.dark .card-frame--editing > .card-frame__grip > span,
+.dark .card-frame--dragging > .card-frame__grip > span {
+  background: rgba(56, 189, 248, 0.8);
+}
+body.card-resizing,
+body.card-resizing * {
+  cursor: ns-resize !important;
+  user-select: none !important;
+}
+.card-frame__listfoot {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 6px;
+  flex: none;
+  margin-top: 6px;
+}
+.card-frame__listhint {
+  margin-right: auto;
+  font-size: 9px;
+  line-height: 1.4;
+  color: rgba(51, 65, 85, 0.5);
+}
+.dark .card-frame__listhint {
+  color: rgba(255, 255, 255, 0.62);
+}
+.card-frame__linkbtn {
+  padding: 2px 4px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: #0284c7;
+  font-size: 10px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.card-frame__linkbtn:hover {
+  text-decoration: underline;
+}
+.dark .card-frame__linkbtn {
+  color: #7dd3fc;
+}
+
 /* 滚动条 */
 /* 纵向 8px：滚动条贴窗口右缘，宽度太细（原 5px）命中困难；加宽改善拖动手感。
  * 横向保持 5px：底部 South 热区未让位，加宽横向条会新增遮挡。 */

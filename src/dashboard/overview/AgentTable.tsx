@@ -38,6 +38,8 @@ export function AgentTable({
   return (
     <Card
       title={t("dashboard.overview.agentTitle")}
+      frame={{ window: "dashboard", page: "overview", id: "overview.quota" }}
+      summary={t("customize.summaryQuotaTable", { count: rows.length })}
       sub={
         rangeLabel != null
           ? `${rangeLabel} · ${t("dashboard.overview.agentSub")}`

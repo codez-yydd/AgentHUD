@@ -91,6 +91,9 @@ export function TrendCard({
   return (
     <Card
       title={t("dashboard.overview.trendTitle")}
+      frame={{ window: "dashboard", page: "overview", id: "overview.trend" }}
+      summary={t("customize.summaryTotal", { value: formatMetric(rangeTotal) })}
+      bodyClassName="db-card__body--chart"
       // 副标题 = 范围口径说明位：Agent 筛选生效时换带 {agent} 的词条
       //（「近 30 天 · Claude Code · 合计 …」），未筛选维持原词条
       sub={

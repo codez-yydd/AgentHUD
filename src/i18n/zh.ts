@@ -15,6 +15,7 @@ import { projects } from "./dicts/projects";
 import { share } from "./dicts/share";
 import { credentials } from "./dicts/credentials";
 import { dashboard } from "./dicts/dashboard";
+import { customize } from "./dicts/customize";
 
 export const zh = {
   ...common,
@@ -32,4 +33,5 @@ export const zh = {
   ...share,
   ...credentials,
   ...dashboard,
+  ...customize,
 };

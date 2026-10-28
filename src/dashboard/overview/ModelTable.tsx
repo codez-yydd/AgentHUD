@@ -21,7 +21,6 @@
  * 行数多时默认只展示前 COLLAPSED_ROWS 行，「展开全部 N 个模型 / 收起」由
  * 文本按钮切换（纯前端状态，不重新取数）。空数据显示 db-empty 空态。
  */
-import { useState } from "react";
 import { formatCost, formatTokensLocale } from "../../format";
 import { useI18n, type TFn } from "../../i18n";
 import { dateLocale } from "../../i18n/locale";
@@ -78,13 +77,17 @@ export function ModelTable({
 }) {
   const { locale, t } = useI18n();
   const intlLocale = dateLocale(locale);
-  // 折叠态默认收起；行数降到阈值以下时按钮消失、多余状态无害
-  const [expanded, setExpanded] = useState(false);
-  const visible = expanded ? rows : rows.slice(0, COLLAPSED_ROWS);
+  const totalTokens = rows.reduce((sum, row) => sum + row.total, 0);
 
   return (
     <Card
       title={t("dashboard.overview.modelTitle")}
+      frame={{ window: "dashboard", page: "overview", id: "overview.models" }}
+      summary={t("customize.summaryModels", {
+        count: rows.length,
+        tokens: formatTokensLocale(totalTokens, locale),
+      })}
+      list={{ total: rows.length, collapsedCount: COLLAPSED_ROWS }}
       // 副标题前缀链：自定义区间摘要 · Agent 名 · 既有排序说明（各段独立
       //  可选，" · " 分隔与本页失败名单等惯例一致；与 TrendCard 的词条分支
       //  不同，这里末段是固定短语，直接拼接即可，无需专用词条）
@@ -94,116 +97,105 @@ export function ModelTable({
           .join(" · ")
       }
     >
-      {rows.length === 0 ? (
-        <div className="db-empty">{t("dashboard.overview.modelEmpty")}</div>
-      ) : (
-        <>
-          <div className="db-table-wrap">
-            <table className="db-table">
-              <thead>
-                <tr>
-                  <th>{t("dashboard.overview.colModel")}</th>
-                  <th className="db-table__num">
-                    {t("dashboard.overview.colRequests")}
-                  </th>
-                  <th
-                    className="db-table__num"
-                    title={t("dashboard.overview.colModelInputHint")}
-                  >
-                    {t("dashboard.overview.colModelInput")}
-                  </th>
-                  <th className="db-table__num">
-                    {t("dashboard.overview.colModelOutput")}
-                  </th>
-                  <th className="db-table__num">
-                    {t("dashboard.overview.colModelTotal")}
-                  </th>
-                  <th className="db-table__num">
-                    {t("dashboard.overview.colCost")}
-                  </th>
-                  <th className="db-table__share">
-                    {t("dashboard.overview.colShare")}
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                {visible.map((row) => (
-                  <tr key={row.unsplit ? "__unsplit__" : row.key}>
-                    <td>
-                      {row.unsplit ? (
-                        <span
-                          className="db-model__unsplit"
-                          title={t("dashboard.overview.modelUnsplitHint")}
-                        >
-                          {t("dashboard.overview.modelUnsplit")}
-                        </span>
-                      ) : (
-                        <span
-                          className="db-model__name"
-                          title={modelCellTitle(row, t, intlLocale)}
-                        >
-                          {displayModelName(row.modelId)}
-                        </span>
-                      )}
-                    </td>
-                    <td className="db-table__num num">
-                      {row.requests > 0
-                        ? row.requests.toLocaleString(intlLocale)
-                        : "—"}
-                    </td>
-                    {/* 未拆分行：token 无输入/输出拆分，整份计入输入侧（输出列
-                        显示占位符，不把未知伪装成 0） */}
-                    <td className="db-table__num num">
-                      {formatTokensLocale(row.input, locale)}
-                    </td>
-                    <td className="db-table__num num">
-                      {row.unsplit || row.output <= 0
-                        ? "—"
-                        : formatTokensLocale(row.output, locale)}
-                    </td>
-                    <td className="db-table__num num">
-                      {formatTokensLocale(row.total, locale)}
-                    </td>
-                    <td className="db-table__num num">
-                      {costCellText(row, currency, t)}
-                    </td>
-                    <td className="db-table__share">
-                      <div className="db-share">
-                        <span className="db-share__pct num">
-                          {shareText(row.share)}
-                        </span>
-                        <div className="db-share__track">
-                          <div
-                            className="db-share__fill"
-                            style={{ width: `${Math.min(100, row.share * 100)}%` }}
-                          />
-                        </div>
-                      </div>
-                    </td>
+      {({ listExpanded }) => {
+        const visible = listExpanded ? rows : rows.slice(0, COLLAPSED_ROWS);
+        return rows.length === 0 ? (
+          <div className="db-empty">{t("dashboard.overview.modelEmpty")}</div>
+        ) : (
+          <>
+            <div className="db-table-wrap">
+              <table className="db-table">
+                <thead>
+                  <tr>
+                    <th>{t("dashboard.overview.colModel")}</th>
+                    <th className="db-table__num">
+                      {t("dashboard.overview.colRequests")}
+                    </th>
+                    <th
+                      className="db-table__num"
+                      title={t("dashboard.overview.colModelInputHint")}
+                    >
+                      {t("dashboard.overview.colModelInput")}
+                    </th>
+                    <th className="db-table__num">
+                      {t("dashboard.overview.colModelOutput")}
+                    </th>
+                    <th className="db-table__num">
+                      {t("dashboard.overview.colModelTotal")}
+                    </th>
+                    <th className="db-table__num">
+                      {t("dashboard.overview.colCost")}
+                    </th>
+                    <th className="db-table__share">
+                      {t("dashboard.overview.colShare")}
+                    </th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          {rows.length > COLLAPSED_ROWS && (
-            <div className="db-modeltable__more">
-              <button
-                type="button"
-                className="db-linkbtn"
-                aria-expanded={expanded}
-                onClick={() => setExpanded((value) => !value)}
-              >
-                {expanded
-                  ? t("dashboard.overview.modelCollapse")
-                  : t("dashboard.overview.modelExpandAll", { count: rows.length })}
-              </button>
+                </thead>
+                <tbody>
+                  {visible.map((row) => (
+                    <tr key={row.unsplit ? "__unsplit__" : row.key}>
+                      <td>
+                        {row.unsplit ? (
+                          <span
+                            className="db-model__unsplit"
+                            title={t("dashboard.overview.modelUnsplitHint")}
+                          >
+                            {t("dashboard.overview.modelUnsplit")}
+                          </span>
+                        ) : (
+                          <span
+                            className="db-model__name"
+                            title={modelCellTitle(row, t, intlLocale)}
+                          >
+                            {displayModelName(row.modelId)}
+                          </span>
+                        )}
+                      </td>
+                      <td className="db-table__num num">
+                        {row.requests > 0
+                          ? row.requests.toLocaleString(intlLocale)
+                          : "—"}
+                      </td>
+                      {/* 未拆分行：token 无输入/输出拆分，整份计入输入侧（输出列
+                          显示占位符，不把未知伪装成 0） */}
+                      <td className="db-table__num num">
+                        {formatTokensLocale(row.input, locale)}
+                      </td>
+                      <td className="db-table__num num">
+                        {row.unsplit || row.output <= 0
+                          ? "—"
+                          : formatTokensLocale(row.output, locale)}
+                      </td>
+                      <td className="db-table__num num">
+                        {formatTokensLocale(row.total, locale)}
+                      </td>
+                      <td className="db-table__num num">
+                        {costCellText(row, currency, t)}
+                      </td>
+                      <td className="db-table__share">
+                        <div className="db-share">
+                          <span className="db-share__pct num">
+                            {shareText(row.share)}
+                          </span>
+                          <div className="db-share__track">
+                            <div
+                              className="db-share__fill"
+                              style={{ width: `${Math.min(100, row.share * 100)}%` }}
+                            />
+                          </div>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
-          )}
-          <p className="db-modeltable__foot">
-            {t("dashboard.overview.modelFootnote")}
-          </p>
-        </>
-      )}
+            <p className="db-modeltable__foot">
+              {t("dashboard.overview.modelFootnote")}
+            </p>
+          </>
+        );
+      }}
     </Card>
   );
 }

@@ -1472,6 +1472,29 @@ export function SummaryTab({
         : sortedModels[0].requests
     : 0;
 
+  // 折叠态摘要 / 展开按钮所需的汇总数（只做展示，不改变任何统计口径）
+  const modelTokenTotal = sortedModels.reduce((sum, m) => sum + m.tokens, 0);
+  const trendTotalTokens = mergedTrend.reduce((sum, p) => sum + p.total_tokens, 0);
+  const trendTotalCost = mergedTrend.reduce(
+    (sum, p) => sum + (currency === "cny" ? p.cost_cny : p.cost_usd),
+    0
+  );
+  const modelCardSummary = t("customize.summaryModels", {
+    count: sortedModels.length,
+    tokens: formatTokens(modelTokenTotal),
+  });
+  const trendCardSummary = t("customize.summaryTrend", {
+    cost: formatCost(trendTotalCost, currency),
+    tokens: formatTokens(trendTotalTokens),
+  });
+  const quotaCardSummary =
+    hour5 != null || weekly != null
+      ? t("customize.summaryQuota", {
+          hour5: hour5 != null ? Math.round(100 - hour5.percentage) : "—",
+          weekly: weekly != null ? Math.round(100 - weekly.percentage) : "—",
+        })
+      : t("customize.summaryQuotaFallback");
+
   return (
     <div className="flex-1 min-h-0 overflow-y-auto px-3 py-2.5 page-stack">
       <HeroMetric
@@ -1508,7 +1531,11 @@ export function SummaryTab({
       )}
 
       {agents.some((a) => a.metrics.length > 0 || a.empty) && (
-        <SectionCard title={t("summary.quotaMonitor")}>
+        <SectionCard
+          title={t("summary.quotaMonitor")}
+          card={{ window: "panel", page: "summary", id: "summary.quota" }}
+          cardSummary={quotaCardSummary}
+        >
           <div className="divide-y divide-slate-900/6 -mx-1">
             {agents.map((a) => (
               <div
@@ -1648,6 +1675,8 @@ export function SummaryTab({
           metric={trendMetric}
           onMetricChange={setTrendMetric}
           fill={sortedModels.length === 0}
+          card={{ window: "panel", page: "summary", id: "summary.trend" }}
+          cardSummary={trendCardSummary}
         />
       )}
 
@@ -1655,6 +1684,9 @@ export function SummaryTab({
       {sortedModels.length > 0 && (
         <SectionCard
           title={t("common.modelUsage")}
+          card={{ window: "panel", page: "summary", id: "summary.models" }}
+          cardSummary={modelCardSummary}
+          list={{ total: sortedModels.length, collapsedCount: 4 }}
           action={
             <SortToggle
               options={[
@@ -1668,7 +1700,14 @@ export function SummaryTab({
             />
           }
         >
-          <div className="max-h-36 overflow-y-auto overflow-x-hidden overscroll-contain space-y-1">
+          {({ listExpanded, fixed }) => (
+          <div
+            className={`${
+              listExpanded || fixed
+                ? ""
+                : "max-h-36 overflow-y-auto"
+            } overflow-x-hidden overscroll-contain space-y-1`}
+          >
             {sortedModels.map((m) => {
               const sortVal =
                 sortBy === "cost"
@@ -1736,6 +1775,7 @@ export function SummaryTab({
               );
             })}
           </div>
+          )}
         </SectionCard>
       )}
     </div>
