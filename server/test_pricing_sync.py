@@ -45,6 +45,14 @@ class PricingSyncTest(unittest.TestCase):
     def _price(self, input_, output, cache_read=0):
         return {"input": input_, "output": output, "cache_read": cache_read}
 
+    def test_cache_write_price_is_optional_and_round_trips(self):
+        price = dict(self._price(2, 10, 0.2), cache_write=2.5)
+        clean, error = app._validate_model_price("m", price)
+        self.assertIsNone(error)
+        self.assertEqual(clean, price)
+        for value in (-1, True, float("inf")):
+            self.assertIsNotNone(app._validate_model_price("m", dict(price, cache_write=value))[1])
+
     def _bootstrap(self):
         response = self._post({
             "changes": {

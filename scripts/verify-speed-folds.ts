@@ -346,3 +346,29 @@ function abVariants(): ModelStat[] {
 
 // 断言脚本无输出即成功（runner 在加载成功后统一打印结果；
 // 本脚本编译目标 lib 无 DOM/node 类型，不引用 console）
+
+// Rejected samples must not be revived by a client-side timing formula.
+import { speedOf } from "../src/requestSpeed";
+import type { RequestLogRow } from "../src/types";
+const rejectedLog = { output_tokens: 87, duration_ms: 6444, ttft_ms: 6339,
+  speed_tps: null, speed_quality: null } as RequestLogRow;
+check(speedOf(rejectedLog) === null, "rejected 105ms sample stays unavailable");
+check(speedOf({ ...rejectedLog, speed_tps: 0 }) === null, "zero is not a speed sample");
+check(speedOf({ ...rejectedLog, speed_tps: Infinity }) === null, "infinite rate rejected");
+check(speedOf({ ...rejectedLog, speed_tps: 25, speed_quality: "request_average" })?.approximate === true,
+  "request-average quality is preserved");
+
+// Additive timing weights must retain approximate quality after alias folding.
+const approxTimed = foldModelStatRows([
+  row("glm-5.3", "z", 1, 100, { avg_tps: 100, speedQuality: "request_average",
+    speedOutputTokens: 100, speedGenerationMs: 1000, speedSampleCount: 1 }),
+  row("GLM-5.3", "z", 1, 100, { avg_tps: 10, speedQuality: "request_average",
+    speedOutputTokens: 100, speedGenerationMs: 10000, speedSampleCount: 1 }),
+])[0];
+close(approxTimed.avg_tps, 200000 / 11000, 1e-9, "request average folds by actual elapsed duration");
+check(approxTimed.speedQuality === "request_average", "folding never promotes an approximate rate");
+
+import { modelCost } from "../src/merge";
+const cachePrices = { usd: { m: { input: 2, output: 10, cache_read: 0.2, cache_write: 2.5 } } };
+close(modelCost("m", 100, 20, 900, cachePrices, "usd", 7, "claude", 50), 705 / 1e6, 1e-12, "Claude inputs exclude cache read");
+close(modelCost("m", 1050, 20, 900, cachePrices, "usd", 7, "zcode", 50), 705 / 1e6, 1e-12, "included input cost matches disjoint source");
