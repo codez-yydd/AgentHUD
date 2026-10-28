@@ -1658,15 +1658,20 @@ export function SummaryTab({
                 }`}
               >
                 <div className="flex items-center justify-between gap-1 mb-1.5">
-                  <div className="flex items-center gap-1.5 min-w-0">
+                  <div className="flex items-center gap-1.5 min-w-0 flex-1">
                     <span className="w-2 h-2 rounded-full shrink-0" style={{ background: a.color }} />
-                    <span className="text-[10px] font-semibold text-slate-700 shrink-0">{a.name}</span>
+                    <span
+                      className="text-[10px] font-semibold text-slate-700 truncate"
+                      title={a.name}
+                    >
+                      {a.name}
+                    </span>
                     {a.badge && (
                       <span className={`shrink-0 px-1 py-px rounded text-[8px] font-medium ${a.badgeClass}`}>{a.badge}</span>
                     )}
                     {a.currentModel && (
                       <span
-                        className="text-[9px] text-slate-500/90 truncate"
+                        className="text-[9px] text-slate-500/90 truncate min-w-0"
                         title={
                           // 默认 tooltip 是「当前模型」标签；标签被缩短（去掉了
                           // provider 配置名前缀）时补上完整 id

@@ -1322,6 +1322,12 @@ html[data-font-tier="lg"] .panel-range > .flex,
 html[data-font-tier="xl"] .panel-range > .flex {
   flex-wrap: wrap;
 }
+/* 特大字号：整体缩放后面板逻辑宽度只剩约 200px，内容区左右内边距略收，
+   给卡片多留横向空间，减少额度行 / 趋势刻度把页面撑出横向滚动 */
+html[data-font-tier="xl"] .page-stack {
+  padding-left: 0.375rem;
+  padding-right: 0.375rem;
+}
 
 /* 滚动条 */
 /* 纵向 8px：滚动条贴窗口右缘，宽度太细（原 5px）命中困难；加宽改善拖动手感。

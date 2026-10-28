@@ -446,7 +446,7 @@ export function TrendChart<M extends TrendMetric>({
           return (
             <span
               key={d.label}
-              className={`flex-1 text-[8px] num min-w-0 whitespace-nowrap ${
+              className={`flex-1 text-[8px] num min-w-0 overflow-hidden whitespace-nowrap ${
                 isFirst ? "text-left" : isLast ? "text-right" : "text-center"
               } ${
                 isLast
