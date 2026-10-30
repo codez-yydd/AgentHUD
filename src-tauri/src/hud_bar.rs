@@ -1432,9 +1432,20 @@ fn feed_loop(app: AppHandle) {
     // 本会话内取到过额度/余额的来源 = 订阅存在的证据（粘滞）。额度查询偶发
     // 失败时，已确认的订阅不该从条上消失（见 PlaceholderEvidence）
     let mut subscribed: HashSet<String> = HashSet::new();
+    let mut zai_account = crate::accounts::current_fingerprint();
+    let mut account_check = Instant::now();
     loop {
         if FEED_STOP.load(Ordering::Relaxed) {
             return;
+        }
+        if account_check.elapsed() >= Duration::from_secs(1) {
+            account_check = Instant::now();
+            let current = crate::accounts::current_fingerprint();
+            if current != zai_account {
+                zai_account = current;
+                zai_cache = None;
+                FORCE_PUSH.store(true, Ordering::Relaxed);
+            }
         }
         // ---- 数据拍 ----
         let forced = FORCE_PUSH.load(Ordering::Relaxed);

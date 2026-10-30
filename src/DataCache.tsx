@@ -1125,7 +1125,7 @@ export function DataProvider({ pricing, credentialPresence, children }: Provider
   const opencodeInflight = useRef<Set<string>>(new Set());
   const minimaxcodeInflight = useRef<Set<string>>(new Set());
   const quotaReqId = useRef(0);
-  const accountQuotasInflight = useRef(false);
+  const accountQuotasReqId = useRef(0);
   // 两路额度数据各自的最近成功时刻：切换账号后 refreshQuota（live，读 ~/.zcode
   // 实时凭证）与 refreshAccountQuotas（读快照 + 实时指纹）并行、到达顺序不定，
   // 合并时只允许较新一路覆盖当前账号条目，避免把旧账号额度贴到新账号名下
@@ -1753,7 +1753,9 @@ export function DataProvider({ pricing, credentialPresence, children }: Provider
         setQuota(r);
         setQuotaError(null);
         // 额度刷新成功后顺带读今日增量（快照由 fetch_quota 采样写入）
-        getTodayDelta().then(setTodayDelta).catch(() => {});
+        getTodayDelta().then((delta) => {
+          if (reqId === quotaReqId.current) setTodayDelta(delta);
+        }).catch(() => {});
         // 额度用满自动切换只挂在成功路径：自动切换执行期间（约 8-15s）live
         // 查询可能超时失败，失败路径不检查，天然不会误触发
         maybeAutoSwitchRef.current(r);
@@ -1768,18 +1770,29 @@ export function DataProvider({ pricing, credentialPresence, children }: Provider
   // 历史采样——各账号"今日增量"的数据源，读路径按指纹过滤互不污染）。
   // 失败静默保留旧值：账号级失败原因在各条目 error 字段里，不设全局 error。
   const loadAccountQuotas = useCallback(() => {
-    if (accountQuotasInflight.current) return;
-    accountQuotasInflight.current = true;
+    const reqId = ++accountQuotasReqId.current;
     fetchAccountQuotas()
       .then((r) => {
+        if (reqId !== accountQuotasReqId.current) return;
         accountQuotasTsRef.current = Date.now();
         setAccountQuotas(r);
       })
-      .catch(() => {})
-      .finally(() => {
-        accountQuotasInflight.current = false;
-      });
+      .catch(() => {});
   }, []);
+
+  useEffect(() => {
+    const subscription = listen("zbar://account-changed", () => {
+      ++quotaReqId.current;
+      ++accountQuotasReqId.current;
+      quotaTsRef.current = 0;
+      setQuota(null);
+      setTodayDelta(null);
+      setAccountQuotas([]);
+      loadQuota();
+      loadAccountQuotas();
+    });
+    return () => { void subscription.then((unlisten) => unlisten()); };
+  }, [loadQuota, loadAccountQuotas]);
 
   /**
    * 额度用满自动切换检查（无人值守，只在 loadQuota 成功路径调用）：

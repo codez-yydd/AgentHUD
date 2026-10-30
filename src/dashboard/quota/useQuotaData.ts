@@ -22,6 +22,7 @@
  *   （hasProviderCredentials 逐源探测，均为本地文件检查）。
  */
 import { useCallback, useEffect, useRef, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
 import type { AccountMeta } from "../../types";
 import {
   fetchClaudeUsage,
@@ -267,6 +268,13 @@ export function useQuotaData(): QuotaCockpitState {
   }, [loadLocal]);
 
   // 首载：纯本地读取（零 HTTP）
+  useEffect(() => {
+    const subscription = listen("zbar://account-changed", () => {
+      void fetchQuota().catch(() => {}).then(() => loadLocal());
+    });
+    return () => { void subscription.then((unlisten) => unlisten()); };
+  }, [loadLocal]);
+
   useEffect(() => {
     void loadLocal();
     return () => {

@@ -98,6 +98,8 @@ export function AccountsCard() {
 
   useEffect(() => {
     reload();
+    const subscription = listen("zbar://account-changed", reload);
+    return () => { void subscription.then((unlisten) => unlisten()); };
   }, [reload]);
 
   // ZCode 换账号自动捕获：后端轮询捕获到新登录时广播事件，打开着的设置页

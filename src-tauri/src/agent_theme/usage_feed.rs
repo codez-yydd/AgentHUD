@@ -730,10 +730,12 @@ fn quota_loop() {
         if !store::load_state(TARGET_APP_ID).is_installed() {
             return;
         }
+        let account = crate::accounts::current_fingerprint();
         quota_query_once();
         // 分段睡眠：sleep 期间可及时感知 stop（查询期间不响应，HTTP
         // 总超时 15 秒封顶，随后在下一检查点退出）。
-        for _ in 0..(QUOTA_INTERVAL_MS / 100) {
+        for tick in 0..(QUOTA_INTERVAL_MS / 100) {
+            if tick % 10 == 0 && crate::accounts::current_fingerprint() != account { break; }
             if QUOTA_STOP.load(Ordering::Relaxed) {
                 return;
             }
@@ -748,7 +750,9 @@ fn quota_loop() {
 /// 静默保留上次文件，下一周期重试。
 fn quota_query_once() {
     let result = (|| -> Result<(), String> {
+        let account = crate::accounts::current_fingerprint();
         let quota = crate::quota::query_quota()?;
+        if crate::accounts::current_fingerprint() != account { return Ok(()); }
         // 卸载竞态防护：HTTP 查询期间（最长 15 秒）皮肤可能已被还原/卸载并
         // 清理主题目录，写盘前复核安装状态，已卸载则直接返回，不重建目录
         if !store::load_state(TARGET_APP_ID).is_installed() {

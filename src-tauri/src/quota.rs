@@ -215,6 +215,22 @@ pub(crate) fn pick_account_provider_plan_key(
     candidates.into_iter().next()
 }
 
+/// Select only keys owned by this account, including when a foreign key is the
+/// sole candidate. Credential stores accumulate keys across logins.
+pub(crate) fn pick_exact_account_plan_key(
+    creds: &serde_json::Value,
+    identity: &str,
+    secret: &[u8],
+) -> Option<(String, String)> {
+    let owned: serde_json::Map<String, serde_json::Value> = creds
+        .as_object()?
+        .iter()
+        .filter(|(k, _)| plan_key_identity(k) == Some(identity))
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    pick_account_provider_plan_key(&serde_json::Value::Object(owned), Some(identity), secret)
+}
+
 /// 读取 credentials.json 并挑选账号级套餐凭证（只读 + 全链路静默失败：
 /// 文件不存在/读取失败/解析失败/无匹配键/解密失败一律 None，由调用方回退
 /// config.json 路径，绝不因此报错）。
@@ -224,7 +240,85 @@ fn pick_from_credentials(dir: &std::path::Path) -> Option<(String, String)> {
     // 身份优先用同一份解析结果的指纹（与 accounts 侧同源：JWT 的 user_id）
     let identity = crate::zcode_crypto::fingerprint_of_credentials(&creds).map(|fp| fp.user_id);
     let secret = crate::zcode_crypto::credential_secret();
+    if let Some(id) = identity.as_deref() {
+        if let Some(found) = project_plan_credential(&creds, id, &secret) {
+            return Some(found);
+        }
+    }
     pick_account_provider_plan_key(&creds, identity.as_deref(), &secret)
+}
+
+/// Exchange the account's project location for its short-lived access token.
+pub(crate) fn project_plan_credential(
+    creds: &serde_json::Value,
+    identity: &str,
+    secret: &[u8],
+) -> Option<(String, String)> {
+    if crate::zcode_crypto::fingerprint_of_credentials(creds)?.user_id != identity {
+        return None;
+    }
+    for (key, value) in creds.as_object()? {
+        let Some(encoded) = key.strip_prefix("project-key-location:v1:") else {
+            continue;
+        };
+        let bytes = encoded.as_bytes();
+        let mut decoded = Vec::new();
+        let mut i = 0;
+        while i < bytes.len() {
+            if bytes[i] == b'%' {
+                let hex = std::str::from_utf8(bytes.get(i + 1..i + 3)?).ok()?;
+                decoded.push(u8::from_str_radix(hex, 16).ok()?);
+                i += 3;
+            } else {
+                decoded.push(bytes[i]);
+                i += 1;
+            }
+        }
+        let scope: Vec<serde_json::Value> = serde_json::from_slice(&decoded).ok()?;
+        if scope.get(2)?.as_str()? != identity {
+            continue;
+        }
+        let origin = scope.first()?.as_str()?;
+        if !matches!(origin, "https://bigmodel.cn" | "https://z.ai") {
+            continue;
+        }
+        let raw = crate::zcode_crypto::decrypt_value(value.as_str()?, secret).ok()?;
+        let location: serde_json::Value = serde_json::from_str(&raw).ok()?;
+        let field = |name: &str| -> Option<&str> {
+            let v = location.get(name)?.as_str()?;
+            v.bytes()
+                .all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_')
+                .then_some(v)
+        };
+        let login_key = if origin == "https://bigmodel.cn" {
+            "oauth:bigmodel:access_token"
+        } else {
+            "oauth:zai:access_token"
+        };
+        let login =
+            crate::zcode_crypto::decrypt_value(creds.get(login_key)?.as_str()?, secret).ok()?;
+        let url = format!(
+            "{origin}/api/biz/v1/organization/{}/projects/{}/api_keys/{}/access_tokens",
+            field("organizationId")?,
+            field("projectId")?,
+            field("apiKeyId")?
+        );
+        let response: serde_json::Value = ureq::post(&url)
+            .set(
+                "Authorization",
+                &format!("Bearer {}", login.trim().trim_start_matches("Bearer ")),
+            )
+            .timeout(Duration::from_secs(15))
+            .send_json(serde_json::json!({"clientType":"zcode"}))
+            .ok()?
+            .into_json()
+            .ok()?;
+        let token = response.get("data")?.get("accessToken")?.as_str()?;
+        if !token.trim().is_empty() {
+            return Some((key.clone(), token.to_string()));
+        }
+    }
+    None
 }
 
 /// 从 config.json 原文取 Coding Plan provider 的 options.baseURL（纯解析，
@@ -279,6 +373,13 @@ fn pick_from_config() -> Result<(String, String, String), String> {
     if let Some((credential_key, api_key)) = pick_from_credentials(&dir) {
         return Ok((credential_key, api_key, plan_base_url(&dir)));
     }
+    // A project login must never fall back to an older account's config key.
+    if std::fs::read_to_string(dir.join("credentials.json")).ok()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+        .and_then(|v| v.as_object().map(|o| o.keys().any(|k| k.starts_with("project-key-location:v1:"))))
+        .unwrap_or(false) {
+        return Err("ZCode 项目额度凭证获取失败，请检查网络或重新登录该账号".into());
+    }
     // 第 2 级：config.json 的 coding-plan provider（错误文案契约不变）
     let path = dir.join("config.json");
     if !path.exists() {
@@ -330,9 +431,7 @@ pub(crate) fn pick_coding_plan_api_key(
 ) -> Option<(String, String, String)> {
     // 内置 Coding Plan provider 固定优先顺序（无端点配置后的确定性选择）
     for preferred in ["builtin:bigmodel-coding-plan", "builtin:zai-coding-plan"] {
-        if let Some((api_key, base_url)) =
-            providers.get(preferred).and_then(provider_credential)
-        {
+        if let Some((api_key, base_url)) = providers.get(preferred).and_then(provider_credential) {
             return Some((preferred.to_string(), api_key, base_url));
         }
     }
@@ -340,9 +439,7 @@ pub(crate) fn pick_coding_plan_api_key(
     providers
         .iter()
         .filter(|(k, _)| k.contains("coding-plan"))
-        .find_map(|(k, v)| {
-            provider_credential(v).map(|(key, base)| (k.clone(), key, base))
-        })
+        .find_map(|(k, v)| provider_credential(v).map(|(key, base)| (k.clone(), key, base)))
 }
 
 /// 请求额度接口并解析（给定 apiKey 与 provider baseURL 的纯查询）。
@@ -385,11 +482,7 @@ pub(crate) fn query_quota_with(token: &str, base_url: &str) -> Result<QuotaResul
     let data = resp.data.ok_or("额度响应缺少 data 字段")?;
 
     // MCP 月度额度：type=TIME_LIMIT（与 token 额度区分开，先单独取）
-    let mcp = data
-        .limits
-        .iter()
-        .find(|l| l.kind == "TIME_LIMIT")
-        .cloned();
+    let mcp = data.limits.iter().find(|l| l.kind == "TIME_LIMIT").cloned();
 
     // token 额度（TOKENS_LIMIT），窗口类型由 unit + number 识别：
     // (3, 5) = 5 小时；(6, 1) = 每周。
@@ -447,8 +540,13 @@ pub(crate) fn query_quota_with(token: &str, base_url: &str) -> Result<QuotaResul
 /// 端点按其 options.baseURL 判断走 api.z.ai 还是 open.bigmodel.cn。
 /// 对外行为与错误文案不变（pick_from_config 的错误前缀被前端识别为登录引导分支）。
 pub fn query_quota() -> Result<QuotaResult, String> {
+    let account = crate::accounts::current_fingerprint();
     let (_provider_key, token, base_url) = pick_from_config()?;
-    query_quota_with(&token, &base_url)
+    let result = query_quota_with(&token, &base_url)?;
+    if crate::accounts::current_fingerprint() != account {
+        return Err("登录态已变化，请重新查询额度".into());
+    }
+    Ok(result)
 }
 
 /// 把一次成功的额度查询转为历史快照（fetch_quota 与 account_quotas 共用，
@@ -487,7 +585,9 @@ pub fn fetch_quota() -> Result<QuotaResult, String> {
     // 复核指纹未变：查询期间发生账号切换则本条数值归属不明，丢弃采样
     // （最坏丢一条 30s 采样，30s 后补采），绝不写错配数据。
     if let Some(acc) = &account {
-        if crate::accounts::current_fingerprint().map(|fp| fp.user_id).as_deref()
+        if crate::accounts::current_fingerprint()
+            .map(|fp| fp.user_id)
+            .as_deref()
             != Some(acc.as_str())
         {
             return Ok(result);
@@ -510,6 +610,20 @@ pub fn fetch_quota() -> Result<QuotaResult, String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn exact_account_key_never_uses_foreign_single_candidate() {
+        let creds = serde_json::json!({
+            "account-provider:coding-plan:account:111:api-key": "foreign-key"
+        });
+        assert!(super::pick_exact_account_plan_key(&creds, "222", b"test").is_none());
+        assert_eq!(
+            super::pick_exact_account_plan_key(&creds, "111", b"test")
+                .unwrap()
+                .1,
+            "foreign-key"
+        );
+    }
+
     use super::*;
 
     /// setting.json 的 dataBaseDir 解析：正常路径/前后空白可解析，
@@ -790,7 +904,9 @@ mod tests {
             b"secret"
         )
         .is_none());
-        assert!(pick_account_provider_plan_key(&serde_json::json!([1, 2]), None, b"secret").is_none());
+        assert!(
+            pick_account_provider_plan_key(&serde_json::json!([1, 2]), None, b"secret").is_none()
+        );
         assert!(pick_account_provider_plan_key(
             &serde_json::json!({
                 "account-provider:coding-plan:account:bigmodel-coding-plan:account:111:api-key": ""
@@ -871,7 +987,9 @@ mod tests {
         );
         // key 不含 baseURL / 无 provider / 坏 JSON → 空串
         assert_eq!(
-            plan_base_url_from_config(r#"{"provider":{"builtin:zai-coding-plan":{"options":{"apiKey":"k"}}}}"#),
+            plan_base_url_from_config(
+                r#"{"provider":{"builtin:zai-coding-plan":{"options":{"apiKey":"k"}}}}"#
+            ),
             ""
         );
         assert_eq!(plan_base_url_from_config(r#"{"other":1}"#), "");

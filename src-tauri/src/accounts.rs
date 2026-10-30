@@ -896,7 +896,7 @@ fn merge_credentials_with_live(snapshot_raw: &str, live_raw: Option<&str>) -> St
     };
     for (key, value) in live {
         // 快照无此键 → 插入；已有同名键 → 覆盖（现场值更新鲜）
-        if key.starts_with(ACCOUNT_PROVIDER_KEY_PREFIX) {
+        if key.starts_with(ACCOUNT_PROVIDER_KEY_PREFIX) || key.starts_with("project-key-location:v1:") {
             snap.insert(key, value);
         }
     }
@@ -1079,9 +1079,35 @@ fn snapshot_credential(
 /// 歧义——一律静默 None，由调用方按 allow_config_fallback 决定是否回退
 /// config_providers 路径。
 fn snapshot_plan_credential(snap: &AccountSnapshot) -> Option<(String, String)> {
+    let live_raw = credentials_path().ok().and_then(|p| fs::read_to_string(p).ok());
+    // Keep the snapshot's login token; borrow only newer account-scoped locations.
+    let merged = merge_credentials_with_live(&snap.credentials_raw, live_raw.as_deref());
+    let own_creds: Value = serde_json::from_str(&merged).ok()?;
+    let secret = crate::zcode_crypto::credential_secret();
+    if let Some(found) =
+        crate::quota::project_plan_credential(&own_creds, &snap.fingerprint, &secret)
+    {
+        return Some(found);
+    }
+    // ZCode keeps keys for multiple accounts in the live credential store.
+    // Old snapshots may predate their creation. Only accept an exact owner match.
+    if let Some(found) = credentials_path()
+        .ok()
+        .and_then(|p| fs::read_to_string(p).ok())
+        .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+        .and_then(|creds| {
+            crate::quota::pick_exact_account_plan_key(
+                &creds,
+                &snap.fingerprint,
+                &crate::zcode_crypto::credential_secret(),
+            )
+        })
+    {
+        return Some(found);
+    }
     let creds: Value = serde_json::from_str(&snap.credentials_raw).ok()?;
     let secret = crate::zcode_crypto::credential_secret();
-    crate::quota::pick_account_provider_plan_key(&creds, Some(&snap.fingerprint), &secret)
+    crate::quota::pick_exact_account_plan_key(&creds, &snap.fingerprint, &secret)
 }
 
 /// snapshot_credential 第 1 级的 base_url：只从快照自身的 config_providers 取
@@ -1141,7 +1167,7 @@ pub fn account_quotas() -> Result<Vec<AccountQuotaEntry>, String> {
         .map(|snap| {
             (
                 snap.fingerprint.clone(),
-                snapshot_credential(snap, allow_config_fallback),
+                snap,
             )
         })
         .collect();
@@ -1149,8 +1175,8 @@ pub fn account_quotas() -> Result<Vec<AccountQuotaEntry>, String> {
     let results: Vec<_> = std::thread::scope(|scope| {
         let handles: Vec<_> = jobs
             .into_iter()
-            .map(|(fingerprint, cred)| {
-                scope.spawn(move || match cred {
+            .map(|(fingerprint, snap)| {
+                scope.spawn(move || match snapshot_credential(snap, allow_config_fallback) {
                     // 错误文案刻意不以「未找到 ZCode Coding Plan 凭证」开头：
                     // 该前缀被前端识别为"当前账号未登录"的引导分支，而这里是
                     // "该快照缺凭证"的账号级提示，语义不同，绝不能混用
@@ -2194,6 +2220,17 @@ mod tests {
         assert_eq!(obj.len(), 2, "非 account-provider: 前缀键一律以快照为准");
         assert_eq!(obj.get("zcodejwttoken").unwrap(), "snap");
         assert_eq!(obj.get("oauth:active_provider").unwrap(), "snap-p");
+    }
+
+    #[test]
+    fn merge_project_locations_preserves_snapshot_login() {
+        let snapshot = r#"{"zcodejwttoken":"account-a","oauth:bigmodel:access_token":"login-a","project-key-location:v1:scope-a":"old"}"#;
+        let live = r#"{"zcodejwttoken":"account-b","oauth:bigmodel:access_token":"login-b","project-key-location:v1:scope-a":"fresh","project-key-location:v1:scope-b":"other"}"#;
+        let merged: Value = serde_json::from_str(&merge_credentials_with_live(snapshot, Some(live))).unwrap();
+        assert_eq!(merged["zcodejwttoken"], "account-a");
+        assert_eq!(merged["oauth:bigmodel:access_token"], "login-a");
+        assert_eq!(merged["project-key-location:v1:scope-a"], "fresh");
+        assert_eq!(merged["project-key-location:v1:scope-b"], "other");
     }
 
     /// 降级保护：现场缺失、现场/快照任一侧不是 JSON 对象 → 原文整串回写

@@ -477,14 +477,18 @@ async fn capture_account() -> Result<accounts::CaptureOutcome, String> {
 /// 持锁后现场不符则取消切换（防排队期间用户手动切换被覆盖）；手动切换不传。
 #[tauri::command]
 async fn switch_account(
+    app: AppHandle,
     id: String,
     expect_fingerprint: Option<String>,
 ) -> Result<accounts::SwitchOutcome, String> {
-    tauri::async_runtime::spawn_blocking(move || {
+    let outcome = tauri::async_runtime::spawn_blocking(move || {
         accounts::switch_account(&id, expect_fingerprint.as_deref())
     })
     .await
-    .map_err(|e| format!("切换账号任务失败: {e}"))?
+    .map_err(|e| format!("切换账号任务失败: {e}"))??;
+    use tauri::Emitter;
+    let _ = app.emit("zbar://account-changed", ());
+    Ok(outcome)
 }
 
 /// 删除账号快照（仅删本应用快照文件，不影响 ZCode 当前登录）。

@@ -200,6 +200,11 @@ export function AccountsPage() {
   }, []);
 
   // ---- 区块①操作（复用 AccountsCard 的命令链路）----
+  useEffect(() => {
+    const subscription = listen("zbar://account-changed", () => void refreshAll());
+    return () => { void subscription.then((unlisten) => unlisten()); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   /** 手动捕获当前登录（同账号重复捕获为更新；成功后 flash 区分新建/更新） */
   async function handleCapture() {
