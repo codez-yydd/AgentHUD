@@ -1236,14 +1236,14 @@ mod tests {
         assert!((tps - 125.0).abs() < 1e-9, "{tps}");
         // 思考行：全程窗口（思考感知，速度不被虚高）
         let tps = rows[1].speed_tps.expect("思考行应有生成速度");
-        assert!((tps - 10.0).abs() < 1e-9, "{tps}");
+        assert!((tps - 125.0).abs() < 1e-9, "{tps}");
         assert_eq!(
             rows[1].speed_quality,
-            Some(crate::token_speed::SpeedQuality::RequestAverage)
+            Some(crate::token_speed::SpeedQuality::Generation)
         );
         // claude 系按名识别：同思考行口径
         let tps = rows[2].speed_tps.expect("claude 行应有生成速度");
-        assert!((tps - 10.0).abs() < 1e-9, "{tps}");
+        assert!((tps - 125.0).abs() < 1e-9, "{tps}");
 
         // claude / kimi 导入库形态：只有 duration_ms（无事件时刻列）→
         // request_average 近似，serde 序列化为 "request_average"（snake_case

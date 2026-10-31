@@ -1823,7 +1823,7 @@ mod tests {
             return;
         };
         let frames = split_zstd_frames(&bytes);
-        if frames.len() < 3 {
+        if frames.len() < 4 {
             eprintln!("[test] 会话日志帧数不足，跳过");
             return;
         }

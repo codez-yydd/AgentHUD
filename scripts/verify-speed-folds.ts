@@ -372,3 +372,17 @@ import { modelCost } from "../src/merge";
 const cachePrices = { usd: { m: { input: 2, output: 10, cache_read: 0.2, cache_write: 2.5 } } };
 close(modelCost("m", 100, 20, 900, cachePrices, "usd", 7, "claude", 50), 705 / 1e6, 1e-12, "Claude inputs exclude cache read");
 close(modelCost("m", 1050, 20, 900, cachePrices, "usd", 7, "zcode", 50), 705 / 1e6, 1e-12, "included input cost matches disjoint source");
+
+// Observed streams and total-request durations cannot share a denominator.
+for (const samples of [
+  [row("deepseek", "a", 1, 100, { speedQuality: "request_average", avg_tps: 10,
+    speedOutputTokens: 100, speedGenerationMs: 10000, speedSampleCount: 1, max_tps: 10 }),
+   row("DeepSeek", "b", 1, 100, { speedQuality: "generation", avg_tps: 100,
+    speedOutputTokens: 100, speedGenerationMs: 1000, speedSampleCount: 1, max_tps: 100 })],
+].flatMap((rows) => [rows, [...rows].reverse()])) {
+  const folded = foldModelStatRows(samples)[0];
+  close(folded.avg_tps, 100, 1e-9, "stream timing wins regardless of model variant order");
+  eqNull(folded.speedQuality, "generation", "selected pool quality");
+  eqNull(folded.speedSampleCount, 1, "only selected samples are counted");
+  close(foldModelStatRows([folded])[0].avg_tps, 100, 1e-9, "selected pool is idempotent");
+}

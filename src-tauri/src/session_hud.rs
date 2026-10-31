@@ -2512,7 +2512,7 @@ fn collect_today_total(conn: &Connection, today_start: i64) -> Result<HudTodayTo
 /// 锦上添花信息，失败静默降级，下个轮询周期自然重试）。扫查行数以
 /// MODEL_SPEED_SCAN_ROWS 为硬上限（started_at 降序 LIMIT，走
 /// model_usage_started_model_idx 前缀索引，绝不全表扫）。
-fn collect_model_speeds(conn: &Connection, window_start: i64) -> Vec<HudModelSpeed> {
+pub(crate) fn collect_model_speeds(conn: &Connection, window_start: i64) -> Vec<HudModelSpeed> {
     let has = |col: &str| crate::db::has_column(conn, "model_usage", col);
     if !has_table(conn, "model_usage") || !has("model_id") || !has("started_at") {
         return Vec::new();
@@ -2557,15 +2557,9 @@ fn collect_model_speeds(conn: &Connection, window_start: i64) -> Vec<HudModelSpe
     // 单趟聚合：行按 started_at 降序，每模型首条可信样本即"最近一笔"。
     // 输出排序键 last_at 随聚合暂存，出口重排。
     struct ModelSpeedAgg {
-        approximate: bool,
+        pool: crate::token_speed::SpeedTotals,
         last_at: i64,
         last_tps: f64,
-        /// 样本池内单笔最快 / 最慢速度（首笔样本在 or_insert 初始化）
-        max_tps: f64,
-        min_tps: f64,
-        sum_out: i64,
-        sum_ms: i64,
-        samples: i64,
     }
     let mut aggs: BTreeMap<String, ModelSpeedAgg> = BTreeMap::new();
     for row in rows.flatten() {
@@ -2596,36 +2590,19 @@ fn collect_model_speeds(conn: &Connection, window_start: i64) -> Vec<HudModelSpe
         };
         let tps = sample.tps;
         let entry = aggs.entry(model).or_insert(ModelSpeedAgg {
-            approximate: false,
-            last_at: started_at,
-            last_tps: tps,
-            max_tps: tps,
-            min_tps: tps,
-            sum_out: 0,
-            sum_ms: 0,
-            samples: 0,
+            pool: Default::default(), last_at: 0, last_tps: 0.0,
         });
-        // DESC 序首见即最近一笔；同刻多行取先到者（防御乱序 only >）
-        if started_at > entry.last_at {
+        let replaces_average = entry.pool.approximate && sample.quality == SpeedQuality::Generation;
+        if !entry.pool.add(sample) { continue; }
+        if replaces_average || started_at > entry.last_at {
             entry.last_at = started_at;
             entry.last_tps = tps;
         }
-        // 单笔最快 / 最慢（首笔已在 or_insert 初始化，逐笔比较即可）
-        if tps > entry.max_tps {
-            entry.max_tps = tps;
-        }
-        if tps < entry.min_tps {
-            entry.min_tps = tps;
-        }
-        entry.approximate |= sample.quality == SpeedQuality::RequestAverage;
-        entry.sum_out += output;
-        entry.sum_ms += sample.generation_ms;
-        entry.samples += 1;
     }
 
     let mut out: Vec<(i64, HudModelSpeed)> = aggs
         .into_iter()
-        .filter(|(_, a)| a.sum_ms > 0)
+        .filter(|(_, a)| a.pool.sum_ms > 0)
         .map(|(model, a)| {
             (
                 a.last_at,
@@ -2635,13 +2612,13 @@ fn collect_model_speeds(conn: &Connection, window_start: i64) -> Vec<HudModelSpe
                     // 本函数只跑 ZCode 主库（status='completed' 已在上方
                     // 判定）；生成窗口思考感知，见
                     // token_speed::thinking_generation_span
-                    quality: if a.approximate { SpeedQuality::RequestAverage } else { SpeedQuality::Generation },
+                    quality: if a.pool.approximate { SpeedQuality::RequestAverage } else { SpeedQuality::Generation },
                     last_at: a.last_at,
                     tps: a.last_tps,
-                    avg_tps: a.sum_out as f64 * 1000.0 / a.sum_ms as f64,
-                    max_tps: a.max_tps,
-                    min_tps: a.min_tps,
-                    samples: a.samples,
+                    avg_tps: a.pool.sum_output as f64 * 1000.0 / a.pool.sum_ms as f64,
+                    max_tps: a.pool.max_tps,
+                    min_tps: a.pool.min_tps,
+                    samples: a.pool.samples,
                 },
             )
         })
@@ -2684,11 +2661,11 @@ pub(crate) fn collect_derived_model_speeds(
     }
     let mut stmt = conn
         .prepare(
-            "SELECT COALESCE(model_id, ''), started_at, \
+            &format!("SELECT COALESCE(model_id, ''), started_at, \
                     COALESCE(output_tokens, 0), COALESCE(duration_ms, 0) \
              FROM model_usage \
              WHERE started_at >= ?1 AND model_id IS NOT NULL AND model_id != '' \
-             ORDER BY started_at DESC LIMIT ?2",
+             AND {} ORDER BY started_at DESC LIMIT ?2", crate::db::completed_speed_sql(conn)),
         )
         .map_err(|e| format!("准备 {agent} 模型速度查询失败: {e}"))?;
     let rows = stmt

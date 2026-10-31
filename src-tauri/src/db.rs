@@ -231,15 +231,7 @@ pub(crate) fn query_current_model(conn: &Connection) -> Option<CurrentModelStat>
 /// 语义一致。
 #[derive(Default, Debug, Clone)]
 pub(crate) struct GenerationSpeedAgg {
-    approximate: bool,
-    /// 合格样本输出 token 合计（分子）
-    speed_output_tokens: i64,
-    /// 合格样本生成毫秒合计（分母）
-    speed_generation_ms: i64,
-    /// 合格样本数
-    speed_sample_count: i64,
-    /// 单请求最快生成速度
-    max_tps: f64,
+    pool: crate::token_speed::SpeedTotals,
     /// TTFT 有效样本合计（独立口径，复用旧规则的 0 ≤ ttft ≤ duration）
     ttft_sum_ms: i64,
     /// TTFT 有效样本数
@@ -248,13 +240,7 @@ pub(crate) struct GenerationSpeedAgg {
 
 impl GenerationSpeedAgg {
     fn absorb(&mut self, sample: &crate::token_speed::GenerationSample) {
-        self.approximate |= sample.quality == crate::token_speed::SpeedQuality::RequestAverage;
-        self.speed_output_tokens += sample.output_tokens;
-        self.speed_generation_ms += sample.generation_ms;
-        self.speed_sample_count += 1;
-        if sample.tps > self.max_tps {
-            self.max_tps = sample.tps;
-        }
+        self.pool.add(*sample);
     }
 
     fn absorb_ttft(&mut self, ttft_ms: i64) {
@@ -265,22 +251,21 @@ impl GenerationSpeedAgg {
     /// 组装为对外契约。分母为零（无合格样本）时全部速度字段为 None——
     /// 绝不以 0 t/s 冒充缺失。
     fn into_metrics(self) -> SpeedMetrics {
-        let has_generation = self.speed_sample_count > 0 && self.speed_generation_ms > 0;
+        let has_generation = self.pool.samples > 0 && self.pool.sum_ms > 0;
         SpeedMetrics {
             avg_tps: has_generation.then(|| {
-                self.speed_output_tokens as f64 * 1000.0 / self.speed_generation_ms as f64
+                self.pool.sum_output as f64 * 1000.0 / self.pool.sum_ms as f64
             }),
-            max_tps: (self.speed_sample_count > 0).then_some(self.max_tps),
+            max_tps: (self.pool.samples > 0).then_some(self.pool.max_tps),
             avg_ttft_ms: (self.ttft_sample_count > 0)
                 .then(|| self.ttft_sum_ms as f64 / self.ttft_sample_count as f64),
-            speed_output_tokens: (self.speed_sample_count > 0).then_some(self.speed_output_tokens),
-            speed_generation_ms: (self.speed_sample_count > 0).then_some(self.speed_generation_ms),
-            speed_sample_count: (self.speed_sample_count > 0).then_some(self.speed_sample_count),
+            speed_output_tokens: (self.pool.samples > 0).then_some(self.pool.sum_output),
+            speed_generation_ms: (self.pool.samples > 0).then_some(self.pool.sum_ms),
+            speed_sample_count: (self.pool.samples > 0).then_some(self.pool.samples),
             ttft_sample_count: (self.ttft_sample_count > 0).then_some(self.ttft_sample_count),
-            // ZCode 历史页面方案：仅展示 generation 合格样本；首 Token 缺失
-            // 的 request_average 参考值不混入聚合（缺失即 null，显示 —）
-            speed_quality: (self.speed_sample_count > 0)
-                .then_some(if self.approximate { crate::token_speed::SpeedQuality::RequestAverage } else { crate::token_speed::SpeedQuality::Generation }),
+            // Streaming samples take precedence; request averages are fallback only.
+            speed_quality: (self.pool.samples > 0)
+                .then_some(if self.pool.approximate { crate::token_speed::SpeedQuality::RequestAverage } else { crate::token_speed::SpeedQuality::Generation }),
         }
     }
 }
@@ -291,14 +276,16 @@ pub(crate) fn fill_duration_metrics(conn: &Connection, source: &str, from_ms: i6
     overall: &mut OverallStat, models: &mut [ModelStat]) -> Result<(), String> {
     if !has_column(conn, "model_usage", "duration_ms") { return Ok(()); }
     let ttft = if has_column(conn, "model_usage", "time_to_first_token_ms") { "time_to_first_token_ms" } else { "NULL" };
-    let mut stmt = conn.prepare(&format!("SELECT COALESCE(provider_id,''), COALESCE(model_id,''), output_tokens, duration_ms, {ttft} FROM model_usage WHERE started_at >= ?1 AND started_at < ?2")).map_err(|e| e.to_string())?;
+    let completed = completed_speed_sql(conn);
+    let mut stmt = conn.prepare(&format!("SELECT COALESCE(provider_id,''), COALESCE(model_id,''), output_tokens, duration_ms, {ttft} FROM model_usage WHERE started_at >= ?1 AND started_at < ?2 AND {completed}")).map_err(|e| e.to_string())?;
     let rows = stmt.query_map(rusqlite::params![from_ms,to_ms], |r| Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,i64>(2)?,r.get::<_,Option<f64>>(3)?,r.get::<_,Option<f64>>(4)?))).map_err(|e|e.to_string())?;
     let mut total = GenerationSpeedAgg::default();
     let mut by_model: BTreeMap<(String,String), GenerationSpeedAgg> = BTreeMap::new();
     for row in rows {
         let (provider,model,output,duration,ttft) = row.map_err(|e|e.to_string())?;
         let agg = by_model.entry((provider,model)).or_default();
-        if let Some(ttft) = ttft.filter(|t| t.is_finite() && *t >= 0.0) {
+        if let Some(ttft) = ttft.filter(|t| t.is_finite() && *t >= 0.0
+            && (source == "dsh" || duration.is_some_and(|d| d.is_finite() && *t <= d))) {
             total.absorb_ttft(ttft as i64); agg.absorb_ttft(ttft as i64);
         }
         if let Some(d) = duration {
@@ -317,18 +304,20 @@ pub(crate) fn fill_duration_metrics(conn: &Connection, source: &str, from_ms: i6
     Ok(())
 }
 
+pub(crate) fn completed_speed_sql(conn: &Connection) -> &'static str {
+    if has_column(conn, "model_usage", "status") {
+        "(status IS NULL OR status IN ('', 'completed', 'success'))"
+    } else { "1=1" }
+}
+
 /// ZCode 主库专属的行级生成速度聚合（B2）：读 `model_usage` 的
 /// status/started_at/first_token_at/completed_at/output_tokens，用共享的
 /// token_speed::speed_sample 行级判定验证（真实生成样本要求
 /// output>0 且 completed>first>0，外加 started 校验、未来时间拒绝与
 /// 样本时长边界 [200ms, 1h]；>500 t/s 的高速样本不设上限阈值），在
 /// Rust 侧累加 overall 与各 (provider_id, model_id) 的可加总分子/分母/
-/// 样本数/max。思考型请求（reasoning_tokens > 0 或模型名含 claude）的
-/// 生成窗口前移为 completed − started（见 token_speed 模块头"思考感知
-/// 窗口"），思考时长不再漏出分母。TTFT 沿用 time_to_first_token_ms 列
-/// 的独立口径（0 ≤ ttft ≤ duration 的行）。老库缺列（无 status/
-/// first_token_at/completed_at/reasoning_tokens）安全降级：按已完成表
-/// 处理 / 无思考信号 / 无生成样本返回空聚合（速度字段 None）。
+/// 样本数/max。首 Token 包括推理流，模型名不改变窗口。
+/// TTFT 单独统计；旧库无首字时间时仅保留带 ≈ 的请求平均回退。
 pub(crate) fn collect_generation_speed(
     conn: &Connection,
     from_ms: i64,
@@ -1165,12 +1154,12 @@ mod tests {
         let (overall, by_model) = collect_generation_speed(&conn, 0, 200_000, 110_000).unwrap();
         // overall：样本 = A 两笔（8s+250ms）+ B 的 109000→109400（400ms）→
         // 加权 (1000+50+200)×1000/(8000+250+400) ≈ 144.64
-        assert_eq!(overall.speed_sample_count, Some(4));
-        assert_eq!(overall.speed_output_tokens, Some(1_550));
-        assert_eq!(overall.speed_generation_ms, Some(109_650));
-        assert!(approx(overall.avg_tps.unwrap(), 1_550_000.0 / 109_650.0), "{overall:?}");
+        assert_eq!(overall.speed_sample_count, Some(3));
+        assert_eq!(overall.speed_output_tokens, Some(1_250));
+        assert_eq!(overall.speed_generation_ms, Some(8_650));
+        assert!(approx(overall.avg_tps.unwrap(), 1_250_000.0 / 8_650.0), "{overall:?}");
         assert!(approx(overall.max_tps.unwrap(), 500.0), "max 应取单请求最快且不封顶");
-        assert_eq!(overall.speed_quality, Some(crate::token_speed::SpeedQuality::RequestAverage));
+        assert_eq!(overall.speed_quality, Some(crate::token_speed::SpeedQuality::Generation));
         // TTFT 独立样本集：A 的 92000（≤ duration）与 B 的 5000（> duration
         // 剔除）、B 首字缺失行 TTFT 无值 → 仅 1 个样本
         assert_eq!(overall.ttft_sample_count, Some(1));
@@ -1180,8 +1169,8 @@ mod tests {
         assert!(approx(a.avg_tps.unwrap(), 1_050_000.0 / 8_250.0));
         let b = by_model.get(&("p".to_string(), "B".to_string())).unwrap();
         // B 仅 109000→109400 一笔有效：200 tok / 0.4s = 500 t/s
-        assert_eq!(b.speed_sample_count, Some(2));
-        assert!(approx(b.avg_tps.unwrap(), 500_000.0 / 101_400.0));
+        assert_eq!(b.speed_sample_count, Some(1));
+        assert!(approx(b.avg_tps.unwrap(), 500.0));
         assert_eq!(b.ttft_sample_count, None, "TTFT 异常行不计入（无样本为 None）");
 
         // 可加总性：总体分子/分母/样本数 = Σ模型

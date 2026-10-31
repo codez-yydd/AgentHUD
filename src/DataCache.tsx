@@ -175,41 +175,11 @@ const MINIMAXCODE_STALE_MS = 60_000;
 // 触发重刷；重刷后的行由 mergeStats 写入快照，本迁移不再命中。overall 行
 // 无折叠权重问题、TTFT 族为纯本机口径，均不受污染，不剥离。版本升级为
 // 一次性迁移：V2 已处理过的旧口径行（无速度值）对新判定是无操作，幂等。
-const SPEED_CONTRACT_VERSION = 3;
+// V4: observed reasoning streams and homogeneous speed pools. Recompute cached rates.
+const SPEED_CONTRACT_VERSION = 4;
 const SPEED_VERSION_CACHE_KEY = "zbar-speed-cache-version";
 
-/** 行级判断：有速度值但无任何新契约字段 → 旧口径行（需剥离） */
-function isLegacySpeedRow(row: {
-  avg_tps?: number | null;
-  max_tps?: number | null;
-  speedQuality?: string | null;
-  speedOutputTokens?: number | null;
-  speedGenerationMs?: number | null;
-}): boolean {
-  if (row.avg_tps == null && row.max_tps == null) return false;
-  return (
-    row.speedQuality == null &&
-    row.speedOutputTokens == null &&
-    row.speedGenerationMs == null
-  );
-}
-
-/** V3 行级判断：request_average 行带速度但无本机权重快照 → 该行
- *  output_tokens 可能已混入远端 Token（V2 时代合并输出），折叠加权会被
- *  污染，需剥离速度触发重刷。仅用于 by_model 行（overall 不折叠）。 */
-function isUnweightedRequestAvgRow(row: {
-  speedQuality?: string | null;
-  localSpeedWeightTokens?: number | null;
-}): boolean {
-  return (
-    row.speedQuality === "request_average" &&
-    row.localSpeedWeightTokens == null
-  );
-}
-
-/** 剥离旧口径速度字段（保留 TTFT 族字段与全部数值统计）。是否需要剥离由
- *  调用方按行级判定决定（overall → isLegacySpeedRow；by_model → 再叠加
- *  isUnweightedRequestAvgRow），本函数只负责剥离本身。 */
+/** Clear rates from previous timing contracts; retain tokens and TTFT. */
 function stripLegacySpeedRow<T extends ModelStat | OverallStat>(row: T): T {
   const {
     avg_tps: _avgTps,
@@ -223,16 +193,13 @@ function stripLegacySpeedRow<T extends ModelStat | OverallStat>(row: T): T {
   return rest as T;
 }
 
-/** stats 迁移：overall 行按 V1 旧口径判定剥离；by_model 行叠加 V2 无快照
- *  request_average 判定（折叠权重可能被远端 Token 污染） */
+/** V4 recomputes every cached speed using the source timing and selected pool. */
 function migrateLegacySpeedStats<S extends Stats>(s: S): S {
   return {
     ...s,
-    overall: isLegacySpeedRow(s.overall) ? stripLegacySpeedRow(s.overall) : s.overall,
+    overall: stripLegacySpeedRow(s.overall),
     by_model: s.by_model.map((row) =>
-      isLegacySpeedRow(row) || isUnweightedRequestAvgRow(row)
-        ? stripLegacySpeedRow(row)
-        : row
+      stripLegacySpeedRow(row)
     ),
   };
 }
@@ -2393,7 +2360,7 @@ export function DataProvider({ pricing, credentialPresence, children }: Provider
   // 版本标记写入：必须位于 zai/claude/kimi 三个持久化 effect 之后。同一次
   // commit 的 effect 按声明顺序同步执行，挂载轮先落盘迁移后的缓存、再写
   // 版本标记；若两步之间进程被杀，只会残留「版本=旧 + 缓存=已剥离」，
-  // 下次冷启动幂等重跑迁移（isLegacySpeedRow 对新契约行是无操作）。反之
+  // 下次冷启动幂等重跑迁移（已更新版本的缓存不再迁移）。反之
   // 若先写标记，极端窗口会留下「版本=新 + localStorage 仍为旧口径速度
   // 条目」，旧 avg_tps 会被当新契约显示。
   // 大缓存改防抖异步写后该时序仍成立：迁移轮下三个缓存 effect 改用同步

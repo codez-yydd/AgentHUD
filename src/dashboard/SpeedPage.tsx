@@ -711,8 +711,7 @@ export function SpeedPage() {
 
   // 汇总指标（当前筛选集上的总体概览）：
   //  - 最快 P50：取该行 speedQuality 联动 ≈（与窄窗 hero 同一口径处理）；
-  //  - 平均 P50：跨口径混均，title 挂 speed.overviewMeanHint（不标 ≈——
-  //    混合口径不是纯近似）；两个速度值都带小号 t/s 单位；
+  //  - 平均 P50：仅同口径分组参与，流式优先，无流式时带 ≈；
   //  - 总成功率：按 localRequests 加权（后端 successRate 分母只算本机行，
   //    权重用 requests 会在全部设备口径下被远端行稀释失真），title 说明
   const fastestRow = filtered.reduce<ModelSpeedStat | null>((best, row) => {
@@ -720,7 +719,10 @@ export function SpeedPage() {
     if (best?.p50Tps == null || row.p50Tps > best.p50Tps) return row;
     return best;
   }, null);
-  const speedRows = filtered.filter((row) => row.p50Tps != null);
+  const availableSpeeds = filtered.filter((row) => row.p50Tps != null);
+  const streamSpeeds = availableSpeeds.filter((row) => row.speedQuality === "generation");
+  const speedRows = streamSpeeds.length > 0 ? streamSpeeds : availableSpeeds;
+  const meanApproximate = speedRows.some((row) => row.speedQuality === "request_average");
   const meanP50 =
     speedRows.length > 0
       ? speedRows.reduce((sum, row) => sum + (row.p50Tps ?? 0), 0) /
@@ -783,7 +785,7 @@ export function SpeedPage() {
     {
       key: "mean",
       label: t("speed.overviewMean"),
-      value: meanP50 == null ? null : formatTps(meanP50),
+      value: meanP50 == null ? null : `${meanApproximate ? "≈" : ""}${formatTps(meanP50)}`,
       title: t("speed.overviewMeanHint"),
       unit: "t/s",
     },

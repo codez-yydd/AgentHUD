@@ -3,8 +3,7 @@
 //! Weighted mean = sum(output) * 1000 / sum(request/stream milliseconds).
 //! Percentiles describe individual request rates, not whole-turn throughput.
 //!
-//! ZCode uses event timestamps and conservative request-average timing when
-//! reasoning placement is uncertain. DSH already records stream spans; other
+//! ZCode uses first text/reasoning event timestamps. DSH records stream spans; other
 //! imported/remote sources record request spans. Never subtract TTFT from DSH.
 //! Exact and approximate pools are kept separate, with exact samples preferred
 //! within a source/provider/model group. Request-average values display ≈.
@@ -555,7 +554,8 @@ pub(crate) fn collect_source_speed_with_remote(
                 }
             } else if let Some(d) = duration_ms {
                 let quality = crate::token_speed::duration_quality(source);
-                if crate::token_speed::duration_speed(output, d as f64, quality, started).is_some() {
+                if crate::token_speed::is_completed_status(status.as_deref())
+                    && crate::token_speed::duration_speed(output, d as f64, quality, started).is_some() {
                     let pool = if quality == SpeedQuality::Generation { &mut g.generation_pairs } else { &mut g.average_pairs };
                     pool.push((output as f64, d as f64));
                 }
@@ -730,6 +730,65 @@ fn has_table(conn: &Connection, table: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Opt-in audit of existing local data. Never opens a source writable or
+    /// prints prompts/credentials. Ordinary CI uses deterministic fixtures.
+    #[test]
+    #[ignore = "reads local Agent databases; run explicitly with --ignored --nocapture"]
+    fn local_speed_readonly_audit() {
+        for source in ["zcode", "opencode", "kimi", "dsh", "minimaxcode", "claude", "codex"] {
+            let path = if source == "zcode" { crate::db::db_path().unwrap() }
+                else { crate::pricing::config_dir().unwrap().join(format!("{source}.sqlite")) };
+            if !path.exists() { eprintln!("[speed audit] {source}: no local database"); continue; }
+            let conn = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+            conn.execute_batch("BEGIN").unwrap();
+            let now = chrono::Utc::now().timestamp_millis();
+            let stats = collect_source_speed(&conn, source, 0, now).unwrap();
+            let opt = |name: &str| if crate::db::has_column(&conn, "model_usage", name) { name.to_string() } else { "NULL".into() };
+            let sql = format!("SELECT COALESCE(model_id,''), COALESCE(provider_id,''), output_tokens, started_at, {}, {}, {}, {} FROM model_usage",
+                opt("status"), opt("first_token_at"), opt("completed_at"), opt("duration_ms"));
+            let mut statement = conn.prepare(&sql).unwrap();
+            let rows = statement.query_map([], |r| Ok((r.get::<_,String>(0)?, r.get::<_,String>(1)?, r.get::<_,i64>(2)?, r.get::<_,i64>(3)?,
+                r.get::<_,Option<String>>(4)?, r.get::<_,Option<i64>>(5)?, r.get::<_,Option<i64>>(6)?, r.get::<_,Option<f64>>(7)?))).unwrap();
+            type Pools = (Vec<(i64, i64)>, Vec<(i64, i64)>);
+            let mut expected: BTreeMap<(String,String), Pools> = BTreeMap::new();
+            for row in rows {
+                let (model, provider, output, start, status, first, end, duration) = row.unwrap();
+                if output <= 0 || start <= 0 || !crate::token_speed::is_completed_status(status.as_deref()) { continue; }
+                let (span, stream) = if source == "zcode" {
+                    let Some(end) = end.filter(|e| *e > start && *e <= now) else { continue };
+                    if let Some(first) = first {
+                        if first < start || first <= 0 || first >= end { continue; }
+                        (end-first, true)
+                    } else { (end-start, false) }
+                } else {
+                    let Some(duration) = duration.filter(|d| d.is_finite() && *d > 0.0) else { continue };
+                    (duration as i64, source == "dsh")
+                };
+                if !(200..=3_600_000).contains(&span) { continue; }
+                let provider = if source == "zcode" { provider_short(&provider) } else { provider };
+                let pool = expected.entry((model,provider)).or_default();
+                if stream { pool.0.push((output,span)); } else { pool.1.push((output,span)); }
+            }
+            let mut samples = 0;
+            for model in &stats {
+                let pools = expected.get(&(model.model_id.clone(),model.provider.clone()));
+                let pool = pools.map(|p| if p.0.is_empty() { &p.1 } else { &p.0 });
+                match pool.filter(|p| !p.is_empty()) {
+                    Some(pool) => {
+                        let mean = pool.iter().map(|p|p.0).sum::<i64>() as f64 * 1000.0 / pool.iter().map(|p|p.1).sum::<i64>() as f64;
+                        assert!((model.avg_tps.unwrap()-mean).abs() < 1e-7, "{source} native row audit");
+                        assert_eq!(model.speed_sample_count, Some(pool.len() as i64));
+                        let stream = !pools.unwrap().0.is_empty();
+                        assert_eq!(model.speed_quality, Some(if stream { SpeedQuality::Generation } else { SpeedQuality::RequestAverage }));
+                        samples += pool.len();
+                    }
+                    None => assert!(model.avg_tps.is_none(), "{source}: no timing must stay unavailable"),
+                }
+            }
+            eprintln!("[speed audit] {source}: {} model/channel groups, {samples} valid timing samples", stats.len());
+        }
+    }
 
     /// 速度统计测试库（model_usage 按实测 schema 最小化）
     fn speed_db(name: &str) -> (Connection, std::path::PathBuf) {

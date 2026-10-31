@@ -232,12 +232,20 @@ export function foldModelStatRows(rows: ModelStat[]): FoldedModelStat[] {
       m.speedSampleCount != null &&
       m.speedSampleCount > 0
     ) {
-      g.timedApproximate ||= m.speedQuality === "request_average";
-      g.genNum += m.speedOutputTokens;
-      g.genDen += genDen;
-      g.genCount += m.speedSampleCount;
-      if (m.max_tps != null && Number.isFinite(m.max_tps)) {
-        g.genMax = g.genMax == null ? m.max_tps : Math.max(g.genMax, m.max_tps);
+      const approximate = m.speedQuality === "request_average";
+      // Match the backend: a stream pool replaces request averages, never mixes.
+      if (g.genCount > 0 && g.timedApproximate && !approximate) {
+        g.genNum = g.genDen = g.genCount = 0;
+        g.genMax = null;
+      }
+      if (g.genCount === 0 || g.timedApproximate || !approximate) {
+        g.timedApproximate = approximate;
+        g.genNum += m.speedOutputTokens;
+        g.genDen += genDen;
+        g.genCount += m.speedSampleCount;
+        if (m.max_tps != null && Number.isFinite(m.max_tps)) {
+          g.genMax = g.genMax == null ? m.max_tps : Math.max(g.genMax, m.max_tps);
+        }
       }
     } else if (
       m.speedQuality === "request_average" &&

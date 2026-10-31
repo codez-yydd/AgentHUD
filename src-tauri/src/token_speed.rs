@@ -12,7 +12,8 @@
 //! Speed measures model requests, never a whole agent turn. Tool execution
 //! between requests is excluded. Tool-call arguments are model output and
 //! remain in output_tokens; tool results belong to a later request's input.
-//! Unknown reasoning timing uses a conservative request average, marked ≈.
+//! First-token events include reasoning when supplied by ZCode. Request-only
+//! durations remain approximate; the two sample pools are never mixed.
 
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
@@ -87,19 +88,10 @@ pub(crate) struct RequestTiming {
     pub completed_at: Option<i64>,
     pub duration_ms: Option<i64>,
     pub request_id: Option<String>,
-    /// Reasoning is already included in output; this is an uncertainty signal,
-    /// never an extra term in the numerator.
+    /// Metadata only. Reasoning is already included in output; never add it again.
     pub reasoning_tokens: Option<i64>,
-    /// Claude may omit reasoning counts; keep its timing conservatively marked
-    /// as a request average rather than assuming a provider's stream semantics.
+    /// Metadata only. A model name never changes the timing window.
     pub model_id: Option<String>,
-}
-
-/// Without provider event guarantees, reasoning may precede the recorded
-/// first token. Model names are only a conservative uncertainty signal.
-fn has_uncertain_reasoning(request: &RequestTiming) -> bool {
-    request.reasoning_tokens.is_some_and(|n| n > 0)
-        || request.model_id.as_deref().is_some_and(|m| m.to_ascii_lowercase().contains("claude"))
 }
 
 /// Compute a speed without applying a minimum duration or a stale-value
@@ -158,13 +150,9 @@ pub(crate) fn request_speed_at(
             // invalid even if a duration fallback happens to be present.
             return None;
         }
-        // Reasoning placement is unknown: the full request window is a
-        // conservative average, never an exact generation measurement.
-        let (span, quality) = if has_uncertain_reasoning(request) {
-            (completed.checked_sub(started?)?, SpeedQuality::RequestAverage)
-        } else {
-            (completed - first, SpeedQuality::Generation)
-        };
+        // ZCode records the first nonempty text OR reasoning delta. Model
+        // names and reasoning counts cannot override that observed event.
+        let (span, quality) = (completed - first, SpeedQuality::Generation);
         let value = finite_rate(request.output_tokens, span)?;
         return Some(SpeedSnapshot {
             value,
@@ -255,6 +243,48 @@ pub(crate) struct GenerationSample {
     pub generation_ms: i64,
     pub tps: f64,
     pub quality: SpeedQuality,
+}
+
+/// One homogeneous speed pool, shared by summaries, injection and HUD.
+/// Prefer observed streams; use request averages only while no stream exists.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub(crate) struct SpeedTotals {
+    pub approximate: bool,
+    pub sum_output: i64,
+    pub sum_ms: i64,
+    pub max_tps: f64,
+    pub min_tps: f64,
+    pub samples: i64,
+}
+
+impl SpeedTotals {
+    pub fn is_empty(&self) -> bool { self.samples == 0 }
+    pub fn avg_tps(&self) -> f64 {
+        if self.sum_ms <= 0 { 0.0 } else { self.sum_output as f64 * 1000.0 / self.sum_ms as f64 }
+    }
+    /// Whether this sample belongs to the preferred pool. Independent of order.
+    pub fn add(&mut self, sample: GenerationSample) -> bool {
+        let other = Self {
+            approximate: sample.quality == SpeedQuality::RequestAverage,
+            sum_output: sample.output_tokens, sum_ms: sample.generation_ms,
+            max_tps: sample.tps, min_tps: sample.tps, samples: 1,
+        };
+        self.merge(&other)
+    }
+    pub fn merge(&mut self, other: &Self) -> bool {
+        if other.is_empty() { return false; }
+        if self.is_empty() || (self.approximate && !other.approximate) {
+            *self = *other;
+            return true;
+        }
+        if !self.approximate && other.approximate { return false; }
+        self.sum_output += other.sum_output;
+        self.sum_ms += other.sum_ms;
+        self.samples += other.samples;
+        self.max_tps = self.max_tps.max(other.max_tps);
+        self.min_tps = self.min_tps.min(other.min_tps);
+        true
+    }
 }
 
 pub(crate) fn speed_sample(request: &RequestTiming, observed_at_ms: i64) -> Option<GenerationSample> {
@@ -427,6 +457,36 @@ fn table_exists(conn: &Connection, table: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn speed_pools_are_homogeneous_and_order_independent() {
+        let stream = GenerationSample { output_tokens: 100, generation_ms: 1000,
+            tps: 100.0, quality: SpeedQuality::Generation };
+        let average = GenerationSample { output_tokens: 200, generation_ms: 10000,
+            tps: 20.0, quality: SpeedQuality::RequestAverage };
+        let mut a = SpeedTotals::default();
+        a.add(average); a.add(stream);
+        let mut b = SpeedTotals::default();
+        b.add(stream); assert!(!b.add(average));
+        assert_eq!(a, b); assert_eq!(a.samples, 1); assert_eq!(a.avg_tps(), 100.0);
+        let mut only_average = SpeedTotals::default(); only_average.add(average);
+        assert!(only_average.approximate); assert_eq!(only_average.avg_tps(), 20.0);
+        assert!(!a.merge(&only_average));
+        only_average.merge(&b); assert_eq!(only_average, b);
+    }
+
+    #[test]
+    fn duration_sources_preserve_their_native_timing() {
+        for source in ["claude", "kimi", "opencode", "minimaxcode", "codex", "cursor", "dsh"] {
+            let quality = duration_quality(source);
+            assert_eq!(quality, if source == "dsh" { SpeedQuality::Generation } else { SpeedQuality::RequestAverage });
+            assert_eq!(duration_speed(200, 2000.0, quality, 1000).unwrap().value, 100.0);
+            assert!(duration_speed(200, f64::NAN, quality, 1000).is_none());
+            assert!(duration_speed(200, 100.0, quality, 1000).is_none());
+        }
+        // No timing: even nonzero output cannot create a Codex/Cursor rate.
+        assert!(request_speed(&RequestTiming { output_tokens: 200, ..Default::default() }).is_none());
+    }
 
     #[test]
     fn tool_execution_wait_is_excluded_from_request_speed() {
@@ -637,55 +697,22 @@ mod tests {
     }
 
     #[test]
-    fn 思考段生成窗口前移_理由token与claude系按名识别() {
-        // reasoning_tokens > 0（任意模型）：思考段在首字之前流出且已计入
-        // output_tokens，生成窗口前移为 completed − started（100s），绝不
-        // 按首字窗口（8s）虚高成 125 t/s。1000 tok / 100s = 10 t/s。
-        let reasoning = RequestTiming {
-            output_tokens: 1000,
-            started_at: Some(1_000),
-            first_token_at: Some(93_000),
-            completed_at: Some(101_000),
-            reasoning_tokens: Some(80_000),
-            model_id: Some("glm-5.3".to_string()),
-            ..RequestTiming::default()
-        };
-        let speed = request_speed(&reasoning).expect("思考样本有效");
-        assert_eq!(speed.quality, SpeedQuality::RequestAverage);
-        assert!((speed.value - 10.0).abs() < f64::EPSILON, "{speed:?}");
-        let sample = speed_sample(&reasoning, 200_000).expect("思考样本进聚合池");
-        assert_eq!(sample.generation_ms, 100_000, "聚合分母与速度分母同源");
-        assert!((sample.tps - 10.0).abs() < f64::EPSILON);
-
-        // Claude 系列：reasoning 恒 0（甚至缺列）但 output 已含思考，按
-        // 模型名（含 "claude"，大小写不敏感）识别，同样前移窗口。
-        let claude = RequestTiming {
-            output_tokens: 1000,
-            started_at: Some(1_000),
-            first_token_at: Some(93_000),
-            completed_at: Some(101_000),
-            reasoning_tokens: Some(0),
-            model_id: Some("Claude-Opus-5.5".to_string()),
-            ..RequestTiming::default()
-        };
-        let speed = request_speed(&claude).expect("claude 思考样本有效");
-        assert!((speed.value - 10.0).abs() < f64::EPSILON, "{speed:?}");
-
-        // 非思考模型（无 reasoning、模型名不含 claude）：不受影响，维持
-        // completed − first 首字窗口（8s → 125 t/s）。
-        let plain = RequestTiming {
-            output_tokens: 1000,
-            started_at: Some(1_000),
-            first_token_at: Some(93_000),
-            completed_at: Some(101_000),
-            reasoning_tokens: None,
-            model_id: Some("GLM-5.3".to_string()),
-            ..RequestTiming::default()
-        };
-        let speed = request_speed(&plain).expect("非思考样本有效");
-        assert!((speed.value - 125.0).abs() < f64::EPSILON, "{speed:?}");
-        let sample = generation_sample(&plain, 200_000).expect("非思考样本进聚合池");
-        assert_eq!(sample.generation_ms, 8_000);
+    fn reasoning_and_model_names_do_not_override_observed_first_token() {
+        for (output, first, completed, expected) in [
+            (1478, 1793438135471, 1793438151217, 93.86510859900927),
+            (199, 1793438131898, 1793438133248, 147.40740740740742),
+            (424, 1793438111214, 1793438113666, 172.9200652528548),
+        ] {
+            for model in ["deepseek-v4.1-flash", "Claude-Opus", "glm-5"] {
+                let timing = RequestTiming { output_tokens: output,
+                    started_at: Some(first - 4000), first_token_at: Some(first),
+                    completed_at: Some(completed), reasoning_tokens: Some(59),
+                    model_id: Some(model.into()), ..Default::default() };
+                let speed = request_speed(&timing).unwrap();
+                assert_eq!(speed.quality, SpeedQuality::Generation);
+                assert!((speed.value - expected).abs() < 0.001, "{speed:?}");
+            }
+        }
     }
 
     #[test]
@@ -699,7 +726,7 @@ mod tests {
             reasoning_tokens: Some(50_000),
             ..RequestTiming::default()
         };
-        assert!(speed_sample(&no_started, 200_000).is_none(), "unknown reasoning start cannot manufacture a precise rate");
+        assert_eq!(speed_sample(&no_started, 200_000).unwrap().quality, SpeedQuality::Generation);
 
         // <200ms（MIN_GEN_MS 之下）：计时抖动样本整体拒绝——不产出速度，
         // 也不降级为 request_average 把同一段时长重新放行。

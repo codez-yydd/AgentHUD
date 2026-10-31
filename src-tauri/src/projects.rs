@@ -469,13 +469,7 @@ fn fill_zcode_generation_speed(
     let Ok(queried) = queried else {
         return;
     };
-    #[derive(Default)]
-    struct GenAgg {
-        out: i64,
-        ms: i64,
-        count: i64,
-        approximate: bool,
-    }
+    type GenAgg = crate::token_speed::SpeedTotals;
     let observed_at_ms = chrono::Utc::now().timestamp_millis();
     let mut aggs: BTreeMap<(String, String), GenAgg> = BTreeMap::new();
     for row in queried.flatten() {
@@ -497,25 +491,24 @@ fn fill_zcode_generation_speed(
         };
         if let Some(sample) = crate::token_speed::speed_sample(&timing, observed_at_ms) {
             let agg = aggs.entry((session, model)).or_default();
-            agg.approximate |= sample.quality == crate::token_speed::SpeedQuality::RequestAverage;
-            agg.out += sample.output_tokens;
-            agg.ms += sample.generation_ms;
-            agg.count += 1;
+            agg.add(sample);
         }
     }
     for row in rows.iter_mut() {
         match aggs.get(&(row.session_id.clone(), row.model_id.clone())) {
-            Some(agg) if agg.count > 0 && agg.approximate => {
+            Some(agg) if agg.samples > 0 && agg.approximate => {
                 row.gen_out = None;
                 row.gen_ms = None;
                 row.gen_count = 0;
-                row.tps_sum = Some(agg.out as f64 * 1000.0);
-                row.tps_count = agg.ms;
+                row.tps_sum = Some(agg.sum_output as f64 * 1000.0);
+                row.tps_count = agg.sum_ms;
             }
-            Some(agg) if agg.count > 0 => {
-                row.gen_out = Some(agg.out);
-                row.gen_ms = Some(agg.ms);
-                row.gen_count = agg.count;
+            Some(agg) if agg.samples > 0 => {
+                row.tps_sum = None;
+                row.tps_count = 0;
+                row.gen_out = Some(agg.sum_output);
+                row.gen_ms = Some(agg.sum_ms);
+                row.gen_count = agg.samples;
             }
             _ => {
                 row.gen_out = None;
@@ -1179,9 +1172,6 @@ fn session_speed(
     tps_sum: Option<f64>,
     tps_count: i64,
 ) -> (Option<f64>, Option<String>) {
-    if gen_ms > 0 && gen_count > 0 && tps_count > 0 {
-        return (Some((gen_out as f64 * 1000.0 + tps_sum.unwrap_or(0.0)) / (gen_ms + tps_count) as f64), Some("request_average".into()));
-    }
     if gen_ms > 0 && gen_count > 0 {
         (
             Some(gen_out as f64 * 1000.0 / gen_ms as f64),

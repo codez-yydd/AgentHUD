@@ -129,7 +129,7 @@ export const speed = {
   // 均值格 title：全部设备口径下各分组的 P50 可能混合精确（generation）
   // 与近似（request_average）两种口径，简单平均无单一口径归属，故只加
   // 说明不加 ≈ 前缀
-  "speed.overviewMeanHint": "各组速度的简单平均，混合精确与近似口径（近似含首字延迟）",
+  "speed.overviewMeanHint": "各组 P50 的简单平均：优先使用流式速度组，无流式组时使用请求平均组；不是整体吞吐量",
   "speed.overviewSuccess": "成功率",
   "speed.ranking": "模型排行",
   "speed.modelCount": "{n} 个模型",
@@ -137,7 +137,7 @@ export const speed = {
   "speed.samplesNone": "暂无速度样本",
   // 近似速度口径提示（speedQuality = request_average 时挂在数值 title 上：
   // 导入库缺事件时刻，按请求总耗时折算）
-  "speed.approxHint": "请求平均近似速度：该来源缺事件时刻，按请求总耗时折算（含首字延迟）",
+  "speed.approxHint": "请求平均速度：缺少可信流式时间，按输出 Token ÷ 请求总耗时计算（含首字等待）；有流式样本时仅统计流式样本",
   // 未知来源兜底标签（后端新增来源未及更新 SOURCE_META 时显示）
   "speed.sourceUnknown": "未知来源",
   "speed.relativeSpeed": "相对最快模型 {pct}%",

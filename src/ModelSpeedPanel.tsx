@@ -411,7 +411,10 @@ export function ModelSpeedPanel({ refreshToken = 0 }: { refreshToken?: number })
   const maxP50 = rows.reduce((max, row) => Math.max(max, row.p50Tps ?? 0), 0);
   const overview = useMemo(() => {
     const requests = rows.reduce((sum, row) => sum + row.requests, 0);
-    const speedRows = rows.filter((row) => row.p50Tps != null);
+    const availableSpeeds = rows.filter((row) => row.p50Tps != null);
+    const streams = availableSpeeds.filter((row) => row.speedQuality === "generation");
+    const speedRows = streams.length > 0 ? streams : availableSpeeds;
+    const approximate = speedRows.some((row) => row.speedQuality === "request_average");
     const meanP50 = speedRows.length > 0
       ? speedRows.reduce((sum, row) => sum + (row.p50Tps ?? 0), 0) / speedRows.length
       : null;
@@ -423,7 +426,7 @@ export function ModelSpeedPanel({ refreshToken = 0 }: { refreshToken?: number })
     const success = successRequests > 0
       ? successRows.reduce((sum, row) => sum + row.localRequests * (row.successRate ?? 0), 0) / successRequests
       : null;
-    return { requests, meanP50, success };
+    return { requests, meanP50, success, approximate };
   }, [rows]);
 
   // 最快值取排序后首个有 p50 的行：该行可能来自 request_average 来源，
@@ -522,7 +525,7 @@ export function ModelSpeedPanel({ refreshToken = 0 }: { refreshToken?: number })
           <div className="grid grid-cols-2 gap-1.5">
             <OverviewMetric label={t("speed.overviewModels")} value={String(rows.length)} />
             <OverviewMetric label={t("speed.overviewRequests")} value={formatTokens(overview.requests)} />
-            <OverviewMetric label={t("speed.overviewMean")} value={overview.meanP50 == null ? "—" : `${formatTps(overview.meanP50)}`} title={t("speed.overviewMeanHint")} />
+            <OverviewMetric label={t("speed.overviewMean")} value={overview.meanP50 == null ? "—" : `${overview.approximate ? "≈" : ""}${formatTps(overview.meanP50)}`} title={t("speed.overviewMeanHint")} />
             <OverviewMetric label={t("speed.overviewSuccess")} value={percent(overview.success)} />
           </div>
         </div>

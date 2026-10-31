@@ -101,9 +101,8 @@
 //! 每轮条与会话条的"平均 / 快 / 慢"聚合、会话条下方的模型分组速度行，
 //! 全部来自同一条**行级唯一真源**：`token_speed::speed_sample`（首字
 //! 到完成的精确生成样本，`first_token_at` / `completed_at` 齐全、时序正常、
-//! `output_tokens > 0`，且要求 `generation` 质量——`request_average` 近似
-//! 样本只服务"最近速度"位，绝不进聚合池，口径与免注入悬浮窗模型速度区
-//! 一字不差）：
+//! `output_tokens > 0`。优先使用 generation 池，无流式样本时回退
+//! request_average 池并显示 ≈，两个池不混算，与主窗口和 HUD 一致）：
 //! - `avg` = Σoutput_tokens × 1000 ÷ Σgeneration_ms（**加权均速**，不是各
 //!   笔速度的算术平均——长样本权重更高，与会话条 Σ 同源）；`max` / `min`
 //!   = 样本池内单笔最快 / 最慢；`n` = 样本笔数（渲染端 `n < 2` 隐藏聚合
@@ -345,7 +344,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::token_speed::{
-    speed_sample, is_completed_status, request_speed_at, GenerationSample, PENDING_FRESH_MS,
+    speed_sample, is_completed_status, request_speed_at, PENDING_FRESH_MS,
     RequestTiming, SpeedSnapshot, SpeedState,
 };
 
@@ -1254,77 +1253,9 @@ struct LatestUsageRequest {
 /// 口径见模块头"速度聚合"节：avg 为加权均速（Σ输出 ÷ Σ生成毫秒），
 /// max/min 为样本池内单笔极值，samples 为样本笔数。累加只做整型相加与
 /// 逐笔比较——不保留样本向量、任何时刻都不排序，内存 O(键数)。
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
-struct SpeedAgg {
-    approximate: bool,
-    /// Σ 合格输出 token（avg 分子）
-    sum_output: i64,
-    /// Σ 生成毫秒 = Σ(completed_at − first_token_at)（avg 分母）
-    sum_ms: i64,
-    /// 样本池内单笔最快速度 t/s
-    max_tps: f64,
-    /// 样本池内单笔最慢速度 t/s
-    min_tps: f64,
-    /// 样本笔数（通过 speed_sample 判定的请求数）
-    samples: i64,
-}
+type SpeedAgg = crate::token_speed::SpeedTotals;
 
 impl SpeedAgg {
-    /// 无样本时为真（空聚合不写 sa 字段：无精确样本与"样本数 1"是两回事）
-    fn is_empty(&self) -> bool {
-        self.samples <= 0
-    }
-
-    /// 加权均速 t/s（Σ输出 ÷ Σ生成毫秒 × 1000）；无样本返回 0（调用方
-    /// 只在非空聚合上取值）
-    fn avg_tps(&self) -> f64 {
-        if self.sum_ms <= 0 || self.samples <= 0 {
-            return 0.0;
-        }
-        self.sum_output as f64 * 1000.0 / self.sum_ms as f64
-    }
-
-    /// 累入一笔精确生成样本：首笔初始化极值，其后逐笔比较 + Σ 相加
-    fn add(&mut self, sample: GenerationSample) {
-        self.approximate |= sample.quality == crate::token_speed::SpeedQuality::RequestAverage;
-        if self.samples <= 0 {
-            self.max_tps = sample.tps;
-            self.min_tps = sample.tps;
-        } else {
-            if sample.tps > self.max_tps {
-                self.max_tps = sample.tps;
-            }
-            if sample.tps < self.min_tps {
-                self.min_tps = sample.tps;
-            }
-        }
-        self.sum_output += sample.output_tokens;
-        self.sum_ms += sample.generation_ms;
-        self.samples += 1;
-    }
-
-    /// 归并另一聚合（会话树按成员归并：Σ 相加、快慢取极值、样本数相加；
-    /// 成员之间互不重叠，无重复计数路径）
-    fn merge(&mut self, other: &SpeedAgg) {
-        if other.is_empty() {
-            return;
-        }
-        if self.is_empty() {
-            *self = *other;
-            return;
-        }
-        self.approximate |= other.approximate;
-        self.sum_output += other.sum_output;
-        self.sum_ms += other.sum_ms;
-        if other.max_tps > self.max_tps {
-            self.max_tps = other.max_tps;
-        }
-        if other.min_tps < self.min_tps {
-            self.min_tps = other.min_tps;
-        }
-        self.samples += other.samples;
-    }
-
     /// 转数据契约形态；空聚合返回 None（不写 sa 键）。SpeedAgg 是 Copy
     /// 的轻量聚合值，按值消费（调用点均为一次性转换）
     fn to_row(self) -> Option<SpeedAggRow> {
@@ -1544,11 +1475,13 @@ impl SpeedCatalog {
                 });
                 // 最近值：排序时刻最大者（同刻后到者胜，与 update_latest
                 // 同语义——行序不稳定时仍确定性收敛）
-                if order >= entry.last_order {
+                let replaces_average = entry.agg.approximate
+                    && sample.quality == crate::token_speed::SpeedQuality::Generation;
+                if !entry.agg.add(sample) { continue; }
+                if replaces_average || order >= entry.last_order {
                     entry.last_order = order;
                     entry.last_tps = sample.tps;
                 }
-                entry.agg.add(sample);
             }
         }
         Ok(catalog)
@@ -4577,6 +4510,59 @@ mod tests {
             rusqlite::params![sess, turn, started, output, first, completed, model],
         )
         .unwrap();
+    }
+
+    #[test]
+    fn screenshot_speeds_match_summary_injection_model_page_and_hud() {
+        let (conn, path) = agg_db("source-speed-consistency");
+        conn.execute_batch("ALTER TABLE model_usage ADD COLUMN provider_id TEXT DEFAULT 'p';
+            ALTER TABLE model_usage ADD COLUMN reasoning_tokens INTEGER DEFAULT 0;
+            INSERT INTO model_usage (session_id,turn_id,started_at,status,output_tokens,input_tokens,first_token_at,completed_at,duration_ms,model_id,reasoning_tokens) VALUES
+            ('s','t',1000,'completed',199,0,5668,7018,6018,'deepseek-v4.1-flash',59),
+            ('s','t',10000,'completed',424,0,13087,15539,5539,'deepseek-v4.1-flash',38),
+            ('s','t',20000,'completed',10000,0,NULL,22000,2000,'deepseek-v4.1-flash',0),
+            ('s','t',23000,'error',50000,0,24000,26000,3000,'deepseek-v4.1-flash',0);").unwrap();
+        let expected = 623000.0 / 3802.0;
+        let (summary, _) = crate::db::collect_generation_speed(&conn, 0, 30000, 30000).unwrap();
+        let models = crate::model_speed::collect_source_speed(&conn, "zcode", 0, 30000).unwrap();
+        let hud = crate::session_hud::collect_model_speeds(&conn, 0);
+        let catalog = SpeedCatalog::load(&conn, &BTreeSet::from(["s".into()]), 30000).unwrap();
+        let injected = catalog.model_speeds().unwrap();
+        for actual in [summary.avg_tps.unwrap(), models[0].avg_tps.unwrap(), hud[0].avg_tps, injected[0].avg] {
+            assert!((actual - expected).abs() < 1e-9, "{actual} != {expected}");
+        }
+        assert_eq!(summary.speed_sample_count, Some(2));
+        assert_eq!(models[0].speed_sample_count, Some(2));
+        assert_eq!(hud[0].samples, 2);
+        assert_eq!(injected[0].n, 2);
+        assert!(!injected[0].approximate);
+        assert!((hud[0].tps - 424000.0 / 2452.0).abs() < 1e-9);
+        assert!((injected[0].tps - hud[0].tps).abs() < 1e-9);
+        drop(conn); let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn imported_agent_speeds_use_native_duration_and_reject_failed_rows() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE model_usage(model_id TEXT, started_at INTEGER, output_tokens INTEGER, duration_ms REAL, status TEXT);
+            INSERT INTO model_usage VALUES ('model',1000,200,2000,'completed'),
+            ('model',2000,99999,2000,'error'), ('model',3000,99999,2000,'running'),
+            ('model',4000,99999,0,'completed');").unwrap();
+        for source in ["claude", "kimi", "opencode", "minimaxcode", "dsh"] {
+            let models = crate::model_speed::collect_source_speed(&conn, source, 0, 10000).unwrap();
+            let quality = crate::token_speed::duration_quality(source);
+            let hud = crate::session_hud::collect_derived_model_speeds(&conn, 0, 3, source, quality).unwrap();
+            assert_eq!(models[0].speed_quality, Some(quality), "{source}");
+            assert_eq!(models[0].speed_sample_count, Some(1), "{source}");
+            assert_eq!(models[0].avg_tps, Some(100.0), "{source}");
+            assert_eq!(hud[0].avg_tps, 100.0, "{source}");
+            assert_eq!(hud[0].samples, 1, "{source}");
+        }
+        conn.execute_batch("ALTER TABLE model_usage DROP COLUMN duration_ms;").unwrap();
+        for source in ["codex", "cursor"] {
+            let models = crate::model_speed::collect_source_speed(&conn, source, 0, 10000).unwrap();
+            assert!(models[0].avg_tps.is_none(), "{source} missing timing must stay unavailable");
+        }
     }
 
     #[test]

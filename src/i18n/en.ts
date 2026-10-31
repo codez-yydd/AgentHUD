@@ -229,7 +229,7 @@ export const en: typeof zh = {
     // (generation) and approximate (request_average) scopes; simple mean gets
     // an explanation only, no ≈ prefix
     "speed.overviewMeanHint":
-      "Simple mean across groups, mixing exact and approximate scopes (approximate includes TTFT)",
+      "Simple mean of group P50s: stream groups take precedence; otherwise request-average groups. Not overall throughput.",
     "speed.overviewSuccess": "Success",
     "speed.ranking": "Model ranking",
     "speed.modelCount": "{n} models",
@@ -238,7 +238,7 @@ export const en: typeof zh = {
     // Approximate-speed quality hint (title on values when speedQuality is
     // request_average: imported stores lack event timestamps)
     "speed.approxHint":
-      "Approximate request-average speed: this source lacks event timestamps, computed from total request duration (includes TTFT)",
+      "Request-average speed: output tokens divided by total request duration, including TTFT. Used only when no stream samples are available.",
     "speed.sourceUnknown": "Unknown source",
     "speed.relativeSpeed": "{pct}% of fastest model",
     "speed.relativeLabel": "Relative to fastest model",
@@ -2079,7 +2079,7 @@ export const en: typeof zh = {
     "dashboard.logs.detailTtft": "TTFT",
     "dashboard.logs.detailSpeed": "Speed",
     "dashboard.logs.speedApproxHint":
-      "First-to-completion event timestamps missing; speed approximated from total request duration (thinking requests use the full thinking-inclusive window on the backend and carry no marker)",
+      "Request-average speed: output tokens divided by total request duration, including TTFT. Not mixed with stream speeds.",
 
     // ===== Custom time range (shared range control of the three pages) =====
     // Trigger shows the active preset name, or the "MM-DD ~ MM-DD" summary when
