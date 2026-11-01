@@ -397,6 +397,7 @@ pub(crate) fn collect_source_speed_with_remote(
     if local_readable {
         // 列探测降级（与 usage_feed/session_hud 同款防御模式）
         let opt = |col: &str| {
+        if col == "first_token_at" { return crate::db::zcode_first_token_expr(conn); }
             if crate::db::has_column(conn, "model_usage", col) {
                 col.to_string()
             } else {
@@ -704,14 +705,13 @@ fn merge_remote_speed_rows(
         // 耗时 + average 速度池：与导入库同款（> 0 才可信；[200ms, 1h]
         // 窗口边界与零输出校验在 request_speed_at 内部，通过后分子分母
         // 与判定严格同源）
-        if let Some(d) = row.duration_ms.filter(|value| *value > 0.0) {
-            let d = d as i64;
-            g.durs.push(d);
-            let quality = crate::token_speed::duration_quality(source);
-            if crate::token_speed::duration_speed(row.output_tokens, d as f64, quality, row.started_at).is_some() {
-                let pool = if quality == SpeedQuality::Generation { &mut g.generation_pairs } else { &mut g.average_pairs };
-                pool.push((row.output_tokens as f64, d as f64));
-            }
+        if let Some(d) = row.duration_ms.filter(|v| v.is_finite() && *v > 0.0) { g.durs.push(d as i64); }
+        let speed = row.speed_evidence.as_ref().map(|e| e.speed(row.output_tokens,row.started_at))
+            .unwrap_or_else(|| row.duration_ms.and_then(|d| crate::token_speed::duration_speed(row.output_tokens,d,crate::token_speed::duration_quality(source),row.started_at)));
+        if let Some(speed) = speed {
+            let span = row.speed_evidence.as_ref().and_then(|e|e.span_ms).or(row.duration_ms).unwrap();
+            let pool = if speed.quality == SpeedQuality::Generation { &mut g.generation_pairs } else { &mut g.average_pairs };
+            pool.push((row.output_tokens as f64,span));
         }
     }
 }
@@ -746,7 +746,7 @@ mod tests {
             let stats = collect_source_speed(&conn, source, 0, now).unwrap();
             let opt = |name: &str| if crate::db::has_column(&conn, "model_usage", name) { name.to_string() } else { "NULL".into() };
             let sql = format!("SELECT COALESCE(model_id,''), COALESCE(provider_id,''), output_tokens, started_at, {}, {}, {}, {} FROM model_usage",
-                opt("status"), opt("first_token_at"), opt("completed_at"), opt("duration_ms"));
+                opt("status"), crate::db::zcode_first_token_expr(&conn), opt("completed_at"), opt("duration_ms"));
             let mut statement = conn.prepare(&sql).unwrap();
             let rows = statement.query_map([], |r| Ok((r.get::<_,String>(0)?, r.get::<_,String>(1)?, r.get::<_,i64>(2)?, r.get::<_,i64>(3)?,
                 r.get::<_,Option<String>>(4)?, r.get::<_,Option<i64>>(5)?, r.get::<_,Option<i64>>(6)?, r.get::<_,Option<f64>>(7)?))).unwrap();
@@ -847,6 +847,7 @@ mod tests {
         ttft_ms: Option<f64>,
     ) -> crate::sync::RemoteUsageRecord {
         crate::sync::RemoteUsageRecord {
+                speed_evidence: None,
             device_id: "dev-x".into(),
             source: source.into(),
             local_rowid: 0,

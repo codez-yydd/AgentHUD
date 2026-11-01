@@ -290,7 +290,7 @@ const MESSAGES: Record<"zh" | "en", Msg> = {
     modelSpeedExtra: (avg, max, min) => `· 均 ${avg} · 快 ${max} · 慢 ${min}`,
     modelSpeedTitle: (source, quality, model, recent, avg, max, min, n) =>
       `${source} · ${model} · ${quality} · 最近 ${recent} t/s · 均 ${avg} t/s · 快 ${max} t/s · 慢 ${min} t/s · ${n} 笔；颜色按最近值分档`,
-    qualityGeneration: "真生成窗口口径",
+    qualityGeneration: "客户端流式观测口径（含思考和工具参数，非服务端解码速度）",
     qualityRequestAverage: "整请求平均口径（≈，含首字等待）",
     todayLine: (total, req) => `今日 Σ ${total} · × ${req}`,
     todayDetail: (inT, out, cr, req) =>
@@ -322,7 +322,7 @@ const MESSAGES: Record<"zh" | "en", Msg> = {
       `· avg ${avg} · best ${max} · worst ${min}`,
     modelSpeedTitle: (source, quality, model, recent, avg, max, min, n) =>
       `${source} · ${model} · ${quality} · recent ${recent} t/s · avg ${avg} t/s · best ${max} t/s · worst ${min} t/s · ${n} requests; color tiers by the latest value`,
-    qualityGeneration: "true generation window",
+    qualityGeneration: "client-observed stream speed (includes reasoning and tool arguments; not server decode speed)",
     qualityRequestAverage: "whole-request average (≈, includes first-token wait)",
     todayLine: (total, req) => `Today Σ ${total} · × ${req}`,
     todayDetail: (inT, out, cr, req) =>

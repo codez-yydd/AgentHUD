@@ -12,7 +12,8 @@
 //! Speed measures model requests, never a whole agent turn. Tool execution
 //! between requests is excluded. Tool-call arguments are model output and
 //! remain in output_tokens; tool results belong to a later request's input.
-//! First-token events include reasoning when supplied by ZCode. Request-only
+//! First-output evidence includes reasoning and verified tool-input milestones.
+//! ZCode queries resolve their coverage before constructing RequestTiming. Request-only
 //! durations remain approximate; the two sample pools are never mixed.
 
 use rusqlite::Connection;
@@ -24,6 +25,21 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 pub(crate) enum SpeedQuality {
     Generation,
     RequestAverage,
+}
+
+/// Origin-validated timing, transported unchanged through sync. A present
+/// envelope with no span explicitly means unavailable (never revive fallback).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SpeedEvidence {
+    pub version: u32,
+    pub span_ms: Option<f64>,
+    pub quality: Option<SpeedQuality>,
+}
+impl SpeedEvidence {
+    pub(crate) fn speed(&self, output: i64, at: i64) -> Option<SpeedSnapshot> {
+        if self.version != 1 { return None; }
+        duration_speed(output, self.span_ms?, self.quality?, at)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -150,7 +166,7 @@ pub(crate) fn request_speed_at(
             // invalid even if a duration fallback happens to be present.
             return None;
         }
-        // ZCode records the first nonempty text OR reasoning delta. Model
+        // ZCode queries resolve text/reasoning/tool coverage upstream. Model
         // names and reasoning counts cannot override that observed event.
         let (span, quality) = (completed - first, SpeedQuality::Generation);
         let value = finite_rate(request.output_tokens, span)?;

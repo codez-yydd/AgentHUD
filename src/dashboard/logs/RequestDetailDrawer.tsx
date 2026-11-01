@@ -90,7 +90,7 @@ export function RequestDetailDrawer({
 
   const speed = speedOf(row);
   const duration = durationText(row.duration_ms);
-  const speedHintKey = speedApproxHintKey(speed?.approximate === true);
+  const speedHintKey = speed ? speedApproxHintKey(speed.approximate) : null;
   const ttft = ttftText(row.ttft_ms);
   const mainCost = costOf(row.cost_usd, row.cost_cny, currency);
   const otherCurrency: Currency = currency === "cny" ? "usd" : "cny";

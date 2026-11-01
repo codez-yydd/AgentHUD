@@ -1236,6 +1236,7 @@ fn num_col(conn: &Connection, table: &str, col: &str) -> String {
 
 /// 可空列探测降级表达式：列存在取列名，缺失取 NULL
 fn opt_col(conn: &Connection, table: &str, col: &str) -> String {
+    if table == "model_usage" && col == "first_token_at" { return crate::db::zcode_first_token_expr(conn); }
     if crate::db::has_column(conn, table, col) {
         col.to_string()
     } else {
@@ -4539,6 +4540,60 @@ mod tests {
         assert!((hud[0].tps - 424000.0 / 2452.0).abs() < 1e-9);
         assert!((injected[0].tps - hud[0].tps).abs() < 1e-9);
         drop(conn); let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn tool_parameters_do_not_use_a_text_only_stream_window() {
+        let (original,path) = agg_db("tool-window-coverage");
+        let dir = std::env::temp_dir().join(format!("agenthud-speed-surfaces-{}",uuid::Uuid::new_v4()));
+        fs::create_dir_all(dir.join("db")).unwrap();
+        fs::create_dir_all(dir.join("log")).unwrap();
+        let database = dir.join("db/db.sqlite");
+        original.execute("VACUUM INTO ?1",[database.to_str().unwrap()]).unwrap();
+        drop(original); fs::remove_file(path).unwrap();
+        let conn = Connection::open(&database).unwrap();
+        conn.execute_batch("ALTER TABLE model_usage ADD COLUMN provider_id TEXT DEFAULT 'p';
+            ALTER TABLE model_usage ADD COLUMN tool_call_count INTEGER DEFAULT 0;
+            ALTER TABLE model_usage ADD COLUMN trace_id TEXT DEFAULT 'trace';
+            ALTER TABLE model_usage ADD COLUMN span_id TEXT DEFAULT 'span';
+            INSERT INTO model_usage (session_id,turn_id,started_at,status,output_tokens,input_tokens,first_token_at,completed_at,duration_ms,model_id,tool_call_count)
+            VALUES ('s','t',1793520715804,'completed',334,460000,1793520719719,1793520720586,4782,'deepseek-v4.1-flash',2);").unwrap();
+        let now = 1793520800000;
+        let (summary,_) = crate::db::collect_generation_speed(&conn,0,now,now).unwrap();
+        let models = crate::model_speed::collect_source_speed(&conn,"zcode",0,now).unwrap();
+        let hud = crate::session_hud::collect_model_speeds(&conn,0);
+        let catalog = SpeedCatalog::load(&conn,&BTreeSet::from(["s".into()]),now).unwrap();
+        let injected = catalog.model_speeds().unwrap();
+        for rate in [summary.avg_tps.unwrap(),models[0].avg_tps.unwrap(),hud[0].avg_tps,injected[0].avg] {
+            assert!((rate-334000.0/4782.0).abs()<1e-9);
+        }
+        assert_eq!(summary.speed_quality,Some(crate::token_speed::SpeedQuality::RequestAverage));
+        assert_eq!(hud[0].quality,crate::token_speed::SpeedQuality::RequestAverage);
+        assert!(injected[0].approximate);
+        let mut events = Vec::new();
+        for (event,at,span) in [("ttft.model.first_content",1793520719718_i64,"parent"),
+            ("model.request.completed",1793520720560_i64,"span")] {
+            serde_json::to_writer(&mut events,&serde_json::json!({"event":event,
+                "timestamp":chrono::DateTime::from_timestamp_millis(at).unwrap().to_rfc3339(),
+                "traceId":"trace","spanId":span,"sessionId":"s",
+                "context":{"requestId":"wire","attempt":1,"outputKind":"text"}})).unwrap();
+            events.push(b'\n');
+        }
+        fs::write(dir.join("log/zcode-test.jsonl"),events).unwrap();
+        let (summary,_) = crate::db::collect_generation_speed(&conn,0,now,now).unwrap();
+        let models = crate::model_speed::collect_source_speed(&conn,"zcode",0,now).unwrap();
+        let hud = crate::session_hud::collect_model_speeds(&conn,0);
+        let catalog = SpeedCatalog::load(&conn,&BTreeSet::from(["s".into()]),now).unwrap();
+        let injected = catalog.model_speeds().unwrap();
+        for rate in [summary.avg_tps.unwrap(),models[0].avg_tps.unwrap(),hud[0].avg_tps,injected[0].avg] {
+            assert!((rate-334000.0/868.0).abs()<1e-9);
+        }
+        assert_eq!(summary.speed_quality,Some(crate::token_speed::SpeedQuality::Generation));
+        assert_eq!(hud[0].quality,crate::token_speed::SpeedQuality::Generation);
+        assert!(!injected[0].approximate);
+        drop(conn);
+        assert!(fs::canonicalize(&dir).unwrap().starts_with(fs::canonicalize(std::env::temp_dir()).unwrap()));
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

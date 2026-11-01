@@ -299,7 +299,7 @@ def sync():
         # (device_id, local_rowid) 撞键静默丢弃，客户端发现 proto < 2 时
         # 不会推进 codex 游标，升级服务端后自动恢复，数据不丢。
         "proto": (
-            8
+            (9 if hasattr(db, "_speed_evidence") else 8)
             if _speed_fields_available()
             else (
                 7

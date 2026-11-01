@@ -117,7 +117,7 @@ export const speed = {
   "speed.scopeLocal": "本机",
   "speed.scopeAll": "全部",
   "speed.scopeLabel": "数据范围",
-  "speed.scopeAllTitle": "全部设备：并入同步服务端上其他设备的明细（近似口径）",
+  "speed.scopeAllTitle": "全部设备：并入其他设备同步的明细，保留来源设备的速度口径；旧记录按请求均速展示",
   // 全部设备口径下远端拉取失败的弱提示（本机数据照常）
   "speed.remoteUnavailable": "远端数据不可用，当前仅显示本机",
   "speed.fastest": "最快平均速度",
@@ -138,6 +138,7 @@ export const speed = {
   // 近似速度口径提示（speedQuality = request_average 时挂在数值 title 上：
   // 导入库缺事件时刻，按请求总耗时折算）
   "speed.approxHint": "请求平均速度：缺少可信流式时间，按输出 Token ÷ 请求总耗时计算（含首字等待）；有流式样本时仅统计流式样本",
+  "speed.streamHint": "客户端流式观测速度：输出 Token ÷ 首个非空输出至请求完成耗时，输出含正文、思考及工具参数；受分块和供应商缓冲影响，不代表服务端解码速度",
   // 未知来源兜底标签（后端新增来源未及更新 SOURCE_META 时显示）
   "speed.sourceUnknown": "未知来源",
   "speed.relativeSpeed": "相对最快模型 {pct}%",

@@ -216,7 +216,7 @@ export const en: typeof zh = {
     "speed.scopeAll": "All",
     "speed.scopeLabel": "Data scope",
     "speed.scopeAllTitle":
-      "All devices: merges records synced from other devices (approximate speed)",
+      "All devices: preserves the originating device's speed basis; legacy records use request-average speed",
     // Weak hint when the remote fetch fails in all-devices scope (local data still shown)
     "speed.remoteUnavailable": "Remote data unavailable, showing local only",
     "speed.fastest": "Fastest average speed",
@@ -239,6 +239,8 @@ export const en: typeof zh = {
     // request_average: imported stores lack event timestamps)
     "speed.approxHint":
       "Request-average speed: output tokens divided by total request duration, including TTFT. Used only when no stream samples are available.",
+    "speed.streamHint":
+      "Client-observed stream speed: output tokens divided by the first nonempty output-to-completion span. Includes text, reasoning and tool arguments; chunking and provider buffering affect this value. Not server decode speed.",
     "speed.sourceUnknown": "Unknown source",
     "speed.relativeSpeed": "{pct}% of fastest model",
     "speed.relativeLabel": "Relative to fastest model",
@@ -2080,6 +2082,8 @@ export const en: typeof zh = {
     "dashboard.logs.detailSpeed": "Speed",
     "dashboard.logs.speedApproxHint":
       "Request-average speed: output tokens divided by total request duration, including TTFT. Not mixed with stream speeds.",
+    "dashboard.logs.speedStreamHint":
+      "Client-observed stream speed: includes generated text, reasoning and tool arguments from the first output to completion. Affected by chunking and buffering; not server decode speed.",
 
     // ===== Custom time range (shared range control of the three pages) =====
     // Trigger shows the active preset name, or the "MM-DD ~ MM-DD" summary when

@@ -128,7 +128,7 @@ export function LogTable({
             const duration = durationText(row.duration_ms);
             const ttft = ttftText(row.ttft_ms);
             const speed = speedOf(row);
-            const speedHintKey = speedApproxHintKey(speed?.approximate === true);
+            const speedHintKey = speed ? speedApproxHintKey(speed.approximate) : null;
             const fullTime = logTimeFull(row.started_at);
             return (
               <tr

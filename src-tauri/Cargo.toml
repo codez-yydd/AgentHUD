@@ -27,7 +27,7 @@ tauri-plugin-clipboard-manager = "2"
 tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-rusqlite = { version = "0.32", features = ["bundled"] }
+rusqlite = { version = "0.32", features = ["bundled", "functions"] }
 dirs = "5"
 chrono = { version = "0.4", features = ["serde"] }
 # 更新检查：发布日期按 RFC3339 格式化（与官方 updater 插件命令的写法一致）

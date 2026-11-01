@@ -353,11 +353,7 @@ fn select_list(conn: &Connection, source: &str) -> String {
     };
     // 行级速度原料（绝对事件时刻；缺失列按 NULL，正负 / 时序校验交给
     // token_speed 行级判定，SQL 侧不做过滤）
-    let first_token = if crate::db::has_column(conn, "model_usage", "first_token_at") {
-        "first_token_at"
-    } else {
-        "NULL"
-    };
+    let first_token = crate::db::zcode_first_token_expr(conn);
     let completed = if crate::db::has_column(conn, "model_usage", "completed_at") {
         "completed_at"
     } else {
@@ -608,8 +604,10 @@ fn query_source_models(
 /// project_key；花费由调用方对当前页统一折算，此置 0；
 /// device 带回设备 id 供前端展示归属。
 fn remote_row_to_log(record: &crate::sync::RemoteUsageRecord) -> RequestLogRow {
-    let speed = record.duration_ms.and_then(|duration| crate::token_speed::duration_speed(
-        record.output_tokens, duration, crate::token_speed::duration_quality(&record.source), record.started_at));
+    let speed = record.speed_evidence.as_ref()
+        .map(|e| e.speed(record.output_tokens, record.started_at))
+        .unwrap_or_else(|| record.duration_ms.and_then(|duration| crate::token_speed::duration_speed(
+            record.output_tokens, duration, crate::token_speed::duration_quality(&record.source), record.started_at)));
     RequestLogRow {
         source: record.source.clone(),
         started_at: record.started_at,
@@ -1063,6 +1061,60 @@ pub async fn get_request_log_models(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn screenshot_tool_request_keeps_same_evidence_and_rate_after_sync() {
+        let dir = std::env::temp_dir().join(format!("agenthud-speed-sync-{}",uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(dir.join("db")).unwrap();
+        std::fs::create_dir_all(dir.join("log")).unwrap();
+        let conn = rusqlite::Connection::open(dir.join("db/db.sqlite")).unwrap();
+        conn.execute_batch("CREATE TABLE model_usage (
+            started_at INTEGER, model_id TEXT, provider_id TEXT, input_tokens INTEGER,
+            output_tokens INTEGER, cache_read_input_tokens INTEGER, cache_creation_input_tokens INTEGER,
+            reasoning_tokens INTEGER, computed_total_tokens INTEGER, duration_ms REAL,
+            time_to_first_token_ms REAL, first_token_at INTEGER, completed_at INTEGER,
+            tool_call_count INTEGER, finish_reason TEXT, status TEXT);
+            INSERT INTO model_usage VALUES (1793520715804,'deepseek-v4.1-flash','p',460000,
+            334,459648,0,0,460334,4782,3915,1793520719719,1793520720586,2,'tool-calls','completed');
+            ALTER TABLE model_usage ADD trace_id TEXT DEFAULT 'trace';
+            ALTER TABLE model_usage ADD span_id TEXT DEFAULT 'span';
+            ALTER TABLE model_usage ADD session_id TEXT DEFAULT 'session';").unwrap();
+        let compare = || {
+            let sql = format!("SELECT {} FROM model_usage", select_list(&conn,"zcode"));
+            let local = conn.query_row(&sql,[],|r|row_to_log(r,"zcode")).unwrap();
+            let uploaded = crate::db::query_since_at(&conn,0,10).unwrap();
+            let remote: crate::sync::RemoteUsageRecord = serde_json::from_value(serde_json::to_value(&uploaded[0]).unwrap()).unwrap();
+            let synced = remote_row_to_log(&remote);
+            assert_eq!(local.speed_quality, synced.speed_quality);
+            assert_eq!(local.speed_tps, synced.speed_tps);
+            (local,remote)
+        };
+        let (tool,mut remote) = compare();
+        assert_eq!(tool.speed_quality,Some(crate::token_speed::SpeedQuality::RequestAverage));
+        assert!((tool.speed_tps.unwrap()-69.8452530322041).abs()<1e-9);
+        remote.speed_evidence = None; // Legacy server remains conservative.
+        assert_eq!(remote_row_to_log(&remote).speed_tps,tool.speed_tps);
+        let mut lines = Vec::new();
+        for (event,at,span) in [("ttft.model.first_content",1793520719718_i64,"parent"),
+            ("model.request.completed",1793520720560_i64,"span")] {
+            serde_json::to_writer(&mut lines,&serde_json::json!({"event":event,
+                "timestamp":chrono::DateTime::from_timestamp_millis(at).unwrap().to_rfc3339(),
+                "traceId":"trace","spanId":span,"sessionId":"session",
+                "context":{"requestId":"wire-request","attempt":1,"outputKind":"text"}})).unwrap();
+            lines.push(b'\n');
+        }
+        std::fs::write(dir.join("log/zcode-test.jsonl"),lines).unwrap();
+        // Tools are still present. Exact first-content proof, rather than a
+        // blanket tool exclusion or a speed cap, changes the timing quality.
+        let (stream,_) = compare();
+        assert_eq!(stream.speed_quality,Some(crate::token_speed::SpeedQuality::Generation));
+        assert!((stream.speed_tps.unwrap()-334000.0/868.0).abs()<1e-9);
+        conn.execute_batch("UPDATE model_usage SET status='error'").unwrap();
+        let (invalid,_) = compare();
+        assert!(invalid.speed_tps.is_none());
+        drop(conn);
+        assert!(std::fs::canonicalize(&dir).unwrap().starts_with(std::fs::canonicalize(std::env::temp_dir()).unwrap()));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
     use super::*;
 
     /// 分页入参归一：缺省 / 越界 / 负数
@@ -1590,6 +1642,7 @@ mod tests {
         let make_resp = || crate::sync::RemoteUsageRecords {
             total: 1,
             rows: vec![crate::sync::RemoteUsageRecord {
+                speed_evidence: None,
                 device_id: "dev-x".into(),
                 source: "codex".into(),
                 local_rowid: 1,
@@ -1687,6 +1740,7 @@ mod tests {
             total: 3,
             rows: vec![
                 crate::sync::RemoteUsageRecord {
+                speed_evidence: None,
                     device_id: "dev-a".into(),
                     source: "claude".into(),
                     local_rowid: 7,
@@ -1706,6 +1760,7 @@ mod tests {
                     time_to_first_token_ms: Some(500.0),
                 },
                 crate::sync::RemoteUsageRecord {
+                speed_evidence: None,
                     device_id: "dev-b".into(),
                     source: "cursor".into(), // 无本地来源路：应被跳过
                     local_rowid: 1,
@@ -1785,6 +1840,7 @@ mod tests {
             crate::sync::RemoteUsageRecords {
                 total: 2,
                 rows: vec![crate::sync::RemoteUsageRecord {
+                speed_evidence: None,
                     device_id: "dev-a".into(),
                     source: "codex".into(),
                     local_rowid: 1,
@@ -1903,6 +1959,7 @@ mod tests {
     #[test]
     fn remote_row_serialization_contract() {
         let mut local = crate::sync::RemoteUsageRecord {
+                speed_evidence: None,
             device_id: String::new(),
             source: "codex".into(),
             local_rowid: 1,

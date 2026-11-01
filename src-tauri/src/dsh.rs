@@ -1032,6 +1032,7 @@ pub fn query_since(since: i64, limit: usize) -> Result<Vec<db::UsageRow>, String
     let rows = stmt
         .query_map(rusqlite::params![since, limit as i64], |row| {
             Ok(db::UsageRow {
+                speed_evidence: None,
                 local_rowid: row.get(0)?,
                 started_at: row.get(1)?,
                 model_id: row.get(2)?,
@@ -1099,6 +1100,7 @@ pub(crate) fn query_revised_since_at(
     let rows = stmt
         .query_map(rusqlite::params![since_ts, after_id, limit as i64], |row| {
             Ok(db::UsageRow {
+                speed_evidence: None,
                 local_rowid: row.get(0)?,
                 started_at: row.get(1)?,
                 model_id: row.get(2)?,

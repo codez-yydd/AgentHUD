@@ -66,6 +66,7 @@ CREATE TABLE IF NOT EXISTS {table} (
     project_display             TEXT,
     duration_ms                 REAL,
     time_to_first_token_ms      REAL,
+    speed_evidence              TEXT,
     PRIMARY KEY (device_id, source, local_rowid)
 )
 """
@@ -329,6 +330,20 @@ def _migrate_agent_quota_snapshots(conn):
         conn.isolation_level = ""
 
 
+def _speed_evidence(value):
+    """Validated origin timing; null span is an explicit unavailable result."""
+    if not isinstance(value, dict) or type(value.get("version")) is not int or value.get("version") != 1:
+        return None
+    span, quality = value.get("span_ms"), value.get("quality")
+    if span is None and quality is None:
+        return json.dumps({"version": 1, "span_ms": None, "quality": None})
+    if (isinstance(span, bool) or not isinstance(span, (int, float))
+            or not math.isfinite(span) or not 200 <= span <= 3600000
+            or quality not in ("generation", "request_average")):
+        return None
+    return json.dumps({"version": 1, "span_ms": span, "quality": quality})
+
+
 def _migrate_usage_records_speed_columns(conn):
     """usage_records 幂等补列：duration_ms / time_to_first_token_ms（proto 8）。
 
@@ -349,6 +364,9 @@ def _migrate_usage_records_speed_columns(conn):
         conn.execute(
             "ALTER TABLE usage_records ADD COLUMN time_to_first_token_ms REAL"
         )
+        added = True
+    if "speed_evidence" not in cols:
+        conn.execute("ALTER TABLE usage_records ADD COLUMN speed_evidence TEXT")
         added = True
     if added:
         conn.commit()
@@ -501,8 +519,8 @@ def insert_usage_records(device_id, records, uploaded_at):
                          cache_creation_input_tokens, reasoning_tokens,
                          computed_total_tokens, uploaded_at,
                          session_id, project_key, project_display,
-                         duration_ms, time_to_first_token_ms)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                         duration_ms, time_to_first_token_ms, speed_evidence)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(device_id, source, local_rowid) DO UPDATE SET
                         started_at = CASE
                             WHEN excluded.computed_total_tokens > usage_records.computed_total_tokens
@@ -562,8 +580,16 @@ def insert_usage_records(device_id, records, uploaded_at):
                         time_to_first_token_ms = COALESCE(
                             excluded.time_to_first_token_ms,
                             usage_records.time_to_first_token_ms
-                        )
-                    WHERE excluded.computed_total_tokens > usage_records.computed_total_tokens
+                        ),
+                        speed_evidence = CASE
+                            WHEN excluded.computed_total_tokens > usage_records.computed_total_tokens AND excluded.speed_evidence IS NULL THEN NULL
+                            WHEN excluded.computed_total_tokens >= usage_records.computed_total_tokens
+                                THEN COALESCE(excluded.speed_evidence, usage_records.speed_evidence)
+                            ELSE usage_records.speed_evidence END
+                    WHERE (excluded.speed_evidence IS NOT NULL
+                           AND excluded.computed_total_tokens >= usage_records.computed_total_tokens
+                           AND excluded.speed_evidence IS NOT usage_records.speed_evidence)
+                       OR excluded.computed_total_tokens > usage_records.computed_total_tokens
                        OR (
                            COALESCE(usage_records.model_id, '') = ''
                            AND COALESCE(excluded.model_id, '') != ''
@@ -588,6 +614,7 @@ def insert_usage_records(device_id, records, uploaded_at):
                         r.get("project_display"),
                         r.get("duration_ms"),
                         r.get("time_to_first_token_ms"),
+                        _speed_evidence(r.get("speed_evidence")),
                     ),
                 )
                 accepted += cur.rowcount
@@ -1408,7 +1435,7 @@ def query_usage_records(
                    input_tokens, output_tokens, cache_read_input_tokens,
                    cache_creation_input_tokens, reasoning_tokens,
                    computed_total_tokens, session_id, project_key, project_display,
-                   duration_ms, time_to_first_token_ms
+                   duration_ms, time_to_first_token_ms, speed_evidence
             FROM usage_records
             WHERE {where}
             ORDER BY started_at DESC, device_id ASC, source ASC, local_rowid ASC
@@ -1459,6 +1486,7 @@ def query_usage_records(
                 # 客户端按缺省 None 处理（前端显示「—」）。
                 "duration_ms": r["duration_ms"],
                 "time_to_first_token_ms": r["time_to_first_token_ms"],
+                "speed_evidence": json.loads(r["speed_evidence"]) if r["speed_evidence"] else None,
             }
             for r in rows
         ],

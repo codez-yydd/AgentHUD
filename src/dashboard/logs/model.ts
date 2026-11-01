@@ -151,7 +151,7 @@ export function exactCount(n: number, locale: "zh" | "en"): string {
 
 export { speedOf } from "../../requestSpeed";
 
-/** 速度列的近似说明 key：只有「无首字、按总耗时估算」一种近似，非近似返回 null */
-export function speedApproxHintKey(approximate: boolean): MessageKey | null {
-  return approximate ? "dashboard.logs.speedApproxHint" : null;
+/** Both speed bases have an explanation; stream observations are not GPU benchmarks. */
+export function speedApproxHintKey(approximate: boolean): MessageKey {
+  return approximate ? "dashboard.logs.speedApproxHint" : "dashboard.logs.speedStreamHint";
 }

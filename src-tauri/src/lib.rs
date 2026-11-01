@@ -50,6 +50,7 @@ mod today_usage;
 mod token_speed;
 mod zcode_crypto;
 mod zcode_sessions;
+mod zcode_speed_evidence;
 
 use pricing::{load_pricing, save_pricing, ModelPrice, PricingConfig};
 use quota::QuotaResult;

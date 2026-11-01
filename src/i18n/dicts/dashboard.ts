@@ -828,6 +828,8 @@ export const dashboard = {
   "dashboard.logs.detailSpeed": "速度",
   "dashboard.logs.speedApproxHint":
     "请求平均速度：没有可信流式时间，按输出 Token ÷ 请求总耗时计算，包含首字等待；不与流式速度混算",
+  "dashboard.logs.speedStreamHint":
+    "客户端流式观测速度：按首内容至请求完成计时，输出包含正文、思考与工具参数；受分块和缓冲影响，不代表服务端解码速度",
 
   // ===== 自定义时间范围（总览 / 日志 / 对比三页共用的页头时间范围控件）=====
   // 触发按钮显示当前范围标签：生效的预设名，或自定义区间的「MM-DD ~ MM-DD」

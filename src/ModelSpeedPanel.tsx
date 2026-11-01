@@ -167,7 +167,7 @@ function ModelSpeedRow({
   // "≈5…"（对齐日志页 LogTable 的 ≈ 约定，但位置随窄窗形态挪到 label）；
   // title 挂口径说明；generation（zcode 精确）与 null（无样本 → —）不加
   const approximate = model.speedQuality === "request_average";
-  const approxTitle = approximate ? t("speed.approxHint") : undefined;
+  const approxTitle = t(approximate ? "speed.approxHint" : "speed.streamHint");
   const speedLabel = (key: MessageKey) => (approximate ? `≈${t(key)}` : t(key));
   const primarySpeed = model.p50Tps ?? model.avgTps;
   const ratio = model.p50Tps != null && maxP50 > 0 ? model.p50Tps / maxP50 : 0;
@@ -511,7 +511,7 @@ export function ModelSpeedPanel({ refreshToken = 0 }: { refreshToken?: number })
 
         <div className="grid grid-cols-[1.08fr_1fr] gap-2 mt-3">
           <div className="speed-fastest-block">
-            <div className="speed-kicker" title={fastestApprox ? t("speed.approxHint") : undefined}>
+            <div className="speed-kicker" title={t(fastestApprox ? "speed.approxHint" : "speed.streamHint")}>
               {fastestApprox ? `≈${t("speed.fastest")}` : t("speed.fastest")}
             </div>
             {/* 最快值 2rem：260px 窄窗 + 1.25 字号档下会顶破左列——

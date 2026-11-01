@@ -2528,7 +2528,7 @@ pub(crate) fn collect_model_speeds(conn: &Connection, window_start: i64) -> Vec<
          FROM model_usage \
          WHERE started_at >= ?1 AND model_id IS NOT NULL AND model_id != '' \
          ORDER BY started_at DESC LIMIT ?2",
-        opt_expr(has("first_token_at"), "first_token_at"),
+        crate::db::zcode_first_token_expr(conn),
         opt_expr(has("completed_at"), "completed_at"),
         num_expr(has("output_tokens"), "output_tokens"),
     );
@@ -2813,7 +2813,7 @@ fn collect_session_brief(
     let status_expr = if has_status { "status" } else { "NULL" };
     let dur_expr = opt_expr(has("duration_ms"), "duration_ms");
     let ttft_expr = opt_expr(has("time_to_first_token_ms"), "time_to_first_token_ms");
-    let first_expr = opt_expr(has("first_token_at"), "first_token_at");
+    let first_expr = crate::db::zcode_first_token_expr(conn);
     let completed_expr = opt_expr(has("completed_at"), "completed_at");
     // 思考感知窗口信号（见 token_speed::thinking_generation_span）：缺列
     // 按常量 0 读出，构造点按"列存在且 > 0"降级为 None
@@ -3600,7 +3600,9 @@ fn parse_rollout_line(line: &[u8]) -> Option<RolloutRequest> {
         timing: RequestTiming {
             output_tokens,
             started_at: Some(started_at),
-            first_token_at,
+            first_token_at: if response.get("toolCalls").and_then(|v|v.as_array()).is_some_and(|v| !v.is_empty())
+                || response.get("finishReason").and_then(|v|v.as_str()).is_some_and(|v|matches!(v,"tool-calls"|"tool_calls"|"function_call"))
+                { None } else { first_token_at },
             completed_at,
             duration_ms,
             request_id,

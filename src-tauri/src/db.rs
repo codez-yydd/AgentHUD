@@ -166,6 +166,23 @@ pub(crate) fn has_column(conn: &Connection, table: &str, column: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Use exact request-linked first-content evidence for tool requests. Older
+/// databases/logs without this evidence keep the labelled request-average rate.
+pub(crate) fn zcode_first_token_expr(conn: &Connection) -> String {
+    let first = if has_column(conn, "model_usage", "first_token_at") { "first_token_at" } else { "NULL" };
+    let has_tools = has_column(conn, "model_usage", "tool_call_count");
+    let has_finish = has_column(conn, "model_usage", "finish_reason");
+    let tools = if has_tools { "COALESCE(tool_call_count,0)>0" } else { "0" };
+    let finish = if has_finish { "COALESCE(finish_reason IN ('tool-calls','tool_calls','function_call'),0)" } else { "0" };
+    if ["trace_id","span_id","session_id","started_at","completed_at"].iter()
+        .all(|col|has_column(conn,"model_usage",col))
+        && crate::zcode_speed_evidence::install(conn).unwrap_or(false) {
+        return format!("agenthud_zcode_first_content(trace_id,span_id,session_id,started_at,completed_at,{first},({tools} OR {finish}))");
+    }
+    if !has_tools && !has_finish { return first.into(); }
+    format!("CASE WHEN {tools} OR {finish} THEN NULL ELSE {first} END")
+}
+
 // ===== 输出速度（tok/s）与首字延迟（TTFT）聚合 =====
 //
 /// Duration-only sources already store either the request span or the stream
@@ -327,6 +344,7 @@ pub(crate) fn collect_generation_speed(
     let mut overall = GenerationSpeedAgg::default();
     let mut by_model: BTreeMap<(String, String), GenerationSpeedAgg> = BTreeMap::new();
     let opt = |col: &str| {
+        if col == "first_token_at" { return crate::db::zcode_first_token_expr(conn); }
         if has_column(conn, "model_usage", col) {
             col.to_string()
         } else {
@@ -582,6 +600,8 @@ pub(crate) fn default_source() -> String {
 /// 大对象；这两个字段很小，直接携带，服务端忽略即可）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UsageRow {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speed_evidence: Option<crate::token_speed::SpeedEvidence>,
     pub local_rowid: i64,
     pub started_at: i64,
     #[serde(default)]
@@ -650,9 +670,10 @@ pub(crate) fn query_since_at(
     let mut stmt = conn
         .prepare(&sql)
         .map_err(|e| format!("准备增量查询失败: {e}"))?;
-    let rows = stmt
+    let mut rows = stmt
         .query_map(rusqlite::params![since, limit as i64], |row| {
             Ok(UsageRow {
+                speed_evidence: None,
                 local_rowid: row.get(0)?,
                 started_at: row.get(1)?,
                 model_id: row.get::<_, Option<String>>(2)?.unwrap_or_default(),
@@ -677,7 +698,31 @@ pub(crate) fn query_since_at(
         .map_err(|e| format!("读取增量记录失败: {e}"))?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| format!("读取增量记录失败: {e}"))?;
+    annotate_zcode_speed(conn, &mut rows)?;
     Ok(rows)
+}
+
+pub(crate) fn annotate_zcode_speed(conn: &Connection, rows: &mut [UsageRow]) -> Result<(), String> {
+    if rows.is_empty() { return Ok(()); }
+    let ids = rows.iter().map(|r| r.local_rowid.to_string()).collect::<Vec<_>>().join(",");
+    let first = zcode_first_token_expr(conn);
+    let completed = if has_column(conn,"model_usage","completed_at") { "completed_at" } else { "NULL" };
+    let status = if has_column(conn,"model_usage","status") { "status" } else { "NULL" };
+    let duration = if has_column(conn,"model_usage","duration_ms") { "duration_ms" } else { "NULL" };
+    let sql = format!("SELECT rowid, started_at, output_tokens, {first}, {completed}, {status}, {duration} FROM model_usage WHERE rowid IN ({ids})");
+    let mut stmt = conn.prepare(&sql).map_err(|e|e.to_string())?;
+    let now = chrono::Utc::now().timestamp_millis();
+    let values = stmt.query_map([], |r| {
+        let timing = crate::token_speed::RequestTiming { started_at: Some(r.get(1)?), output_tokens: r.get(2)?,
+            first_token_at:r.get(3)?, completed_at:r.get(4)?,
+            duration_ms:r.get::<_,Option<f64>>(6)?.filter(|v|v.is_finite() && *v>0.0).map(|v|v as i64), ..Default::default() };
+        let status: Option<String> = r.get(5)?;
+        let sample = crate::token_speed::is_completed_status(status.as_deref()).then(|| crate::token_speed::speed_sample(&timing,now)).flatten();
+        Ok((r.get::<_,i64>(0)?, crate::token_speed::SpeedEvidence { version:1,
+            span_ms:sample.map(|s|s.generation_ms as f64), quality:sample.map(|s|s.quality) }))
+    }).map_err(|e|e.to_string())?.collect::<Result<BTreeMap<_,_>,_>>().map_err(|e|e.to_string())?;
+    for row in rows { row.speed_evidence = values.get(&row.local_rowid).cloned(); }
+    Ok(())
 }
 
 /// 耗时/首字取值表达式（proto 8 同步上传用，两列拼进增量查询 SELECT 尾部）：

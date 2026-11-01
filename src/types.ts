@@ -1,7 +1,7 @@
 // 与 Rust 后端 serde 结构一一对应
 
 /** 速度口径质量标记（与 Rust token_speed::SpeedQuality 契约一致）：
- *  - generation：真实首 Token → 完成事件时间的生成速度（zcode 新契约）；
+ *  - generation：客户端首个有效输出 → 完成事件的流式观测速度，非服务端解码；
  *  - request_average：仅有请求总耗时的近似值（claude/kimi），界面带 ≈。 */
 export type SpeedQuality = "generation" | "request_average";
 
@@ -208,6 +208,7 @@ export type SyncMode = "manual" | "auto";
 
 /** 同步配置（~/.agenthud/sync.json） */
 export interface SyncConfig {
+  speed_evidence_version?: number;
   enabled: boolean;
   mode: SyncMode;
   interval_seconds: number;

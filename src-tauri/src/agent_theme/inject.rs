@@ -804,9 +804,10 @@ pub const EFFECTS_JS: &str = r#"// =============================================
 /// 与 effects.js 同款：自愈、静默失败、空值防御；DOM 选择器集中在头部
 /// 常量，便于实机比对调整。
 pub const USAGE_JS: &str = r#"// ============================================================
-// ZBAR-THEME-V47
+// ZBAR-THEME-V48
 // ZBar Agent 对话页用量统计条（由 ZBar 落盘并随版本升级覆盖）
 // ============================================================
+// V48: distinguish client-observed stream speed from whole-request average.
 // V47: request-average markers propagate through per-turn, session and model aggregates.
 // V46 变更（底部状态条去中文文字标签，纯渲染端微调、数据契约零改动——
 //   各段本就带原生 title 悬浮说明该列口径，段内中文标签（本轮/会话/
@@ -1826,7 +1827,9 @@ pub const USAGE_JS: &str = r#"// ===============================================
       tCr: "缓存读",
       tCw: "缓存写",
       cwTitle: "缓存写 token",
-      speedTitle: "最近一笔请求的生成速度；≥70 绿 / ≥40 黄 / <40 红（t/s）",
+      speedTitle: "最近一笔请求的输出速度；≥70 绿 / ≥40 黄 / <40 红（t/s）",
+      streamBasis: "客户端流式观测：含正文、思考及工具参数；受分块和缓冲影响，非服务端解码速度",
+      averageBasis: "请求均速（≈）：含首字等待，未取得可靠流式计时",
       sessTitle: "当前会话累计 Σ=非缓存输入+输出+缓存读（会话树口径，含子代理与失败轮）",
       toolsTitle: "会话树全部工具调用",
       todayTitle: "今日全部会话合计（本地自然日）",
@@ -1851,7 +1854,9 @@ pub const USAGE_JS: &str = r#"// ===============================================
       tCr: "cache rd",
       tCw: "cache wr",
       cwTitle: "Cache write tokens",
-      speedTitle: "Latest generation speed; >=70 green / >=40 yellow / <40 red (t/s)",
+      speedTitle: "Latest request output speed; >=70 green / >=40 yellow / <40 red (t/s)",
+      streamBasis: "Client-observed stream: includes text, reasoning and tool arguments; affected by chunking and buffering, not server decode speed",
+      averageBasis: "Request average (≈): includes first-output wait; reliable stream timing unavailable",
       sessTitle: "Current session totals = plain input + output + cache read (session tree incl. subagents)",
       toolsTitle: "All tool calls in the session tree",
       todayTitle: "All sessions today (local calendar day)",
@@ -2569,7 +2574,7 @@ pub const USAGE_JS: &str = r#"// ===============================================
       W.avg + " " + (m.approximate ? "≈" : "") + fmtTps(m.avg) +
       " · " + W.fast + " " + (m.approximate ? "≈" : "") + fmtTps(m.max) +
       " · " + W.slow + " " + (m.approximate ? "≈" : "") + fmtTps(m.min) +
-      " · " + (m.n || 0) + " " + W.n
+      " · " + (m.n || 0) + " " + W.n + "\n" + (m.approximate ? W.averageBasis : W.streamBasis)
     );
   }
 
@@ -4054,7 +4059,7 @@ pub const USAGE_JS: &str = r#"// ===============================================
     if (spd) {
       segs.push({
         ico: "bolt",
-        title: W.speedTitle,
+        title: W.speedTitle + "\n" + (spd.quality === "request_average" ? W.averageBasis : W.streamBasis),
         parts: [
           {
             t: (spd.quality === "request_average" ? "≈" : "") + spd.value.toFixed(1),
@@ -6121,8 +6126,8 @@ mod tests {
     #[test]
     fn usage_js_v34_分段状态条与设计语言() {
         // ---- 版本标记（V44 起头部升级，V34 特征除溢出隐藏外保留）----
-        assert!(USAGE_JS.contains("ZBAR-THEME-V47"));
-        assert!(!USAGE_JS.contains("ZBAR-THEME-V45"), "版本头应已升到 V47");
+        assert!(USAGE_JS.contains("ZBAR-THEME-V48"));
+        assert!(!USAGE_JS.contains("ZBAR-THEME-V45"), "版本头应已升到 V48");
         // ---- 字体跟随客户端（任务红线：--font-mono 引用）：四个注入层
         // （每轮条/会话条/模型底板/底部条）各一条 font-family 声明，缺失
         // 回退既有等宽栈
@@ -6290,7 +6295,7 @@ mod tests {
         assert!(
             USAGE_JS.contains("turn: \"本轮\"")
                 && USAGE_JS.contains("req: \"req\"")
-                && USAGE_JS.contains("speedTitle: \"最近一笔请求的生成速度；≥70 绿 / ≥40 黄 / <40 红（t/s）\"")
+                && USAGE_JS.contains("speedTitle: \"最近一笔请求的输出速度；≥70 绿 / ≥40 黄 / <40 红（t/s）\"")
                 && USAGE_JS.contains("turn: \"turn\"")
                 && USAGE_JS.contains("todayTitle: \"All sessions today (local calendar day)\""),
             "WORDS 应含底部条分段与 title 词条（zh/en 双语）"
@@ -6424,8 +6429,8 @@ mod tests {
     #[test]
     fn usage_js_v35_卡片对齐与缓存率() {
         // ---- 版本标记 ----
-        assert!(USAGE_JS.contains("ZBAR-THEME-V47"));
-        assert!(!USAGE_JS.contains("ZBAR-THEME-V45"), "版本头应已升到 V47");
+        assert!(USAGE_JS.contains("ZBAR-THEME-V48"));
+        assert!(!USAGE_JS.contains("ZBAR-THEME-V45"), "版本头应已升到 V48");
         // ---- 任务 A：输入框卡片定位（零选择器假设 + V37R 语义锚点）----
         assert!(
             USAGE_JS.contains("function locateComposerCard(region)")
@@ -6548,8 +6553,8 @@ mod tests {
     #[test]
     fn usage_js_v36_浅色主题可读性() {
         // ---- 版本标记 ----
-        assert!(USAGE_JS.contains("ZBAR-THEME-V47"));
-        assert!(!USAGE_JS.contains("ZBAR-THEME-V45"), "版本头应已升到 V47");
+        assert!(USAGE_JS.contains("ZBAR-THEME-V48"));
+        assert!(!USAGE_JS.contains("ZBAR-THEME-V45"), "版本头应已升到 V48");
         // ---- a) 透明度下限：三处行透明消费点（每轮条容器/会话条行/
         // 底部条行）以 max() 兜 .82 底（用户调高 >.82 仍取用户值），
         // dim/qfaint 弱色同步提亮；规则全部带 html:not(.dark) 前缀 ----
@@ -6742,8 +6747,8 @@ mod tests {
         // 存」段并存）；d) ✚ 缓存写段 cw 0 整段隐藏（含启动窗口占位
         // 态）、>0 带 title（词表新增 cwTitle 双语条目，
         // renderRowParts/renderBarLine 补 title 通道））
-        assert!(USAGE_JS.contains("ZBAR-THEME-V47"));
-        assert!(!USAGE_JS.contains("ZBAR-THEME-V45"), "版本头应已升到 V47");
+        assert!(USAGE_JS.contains("ZBAR-THEME-V48"));
+        assert!(!USAGE_JS.contains("ZBAR-THEME-V45"), "版本头应已升到 V48");
         assert!(!USAGE_JS.contains("ZBAR-THEME-V43"), "版本头不应回退");
         assert!(!USAGE_JS.contains("ZBAR-THEME-V33"), "版本头不应回退");
         assert!(!USAGE_JS.contains("ZBAR-THEME-V31"), "版本头不应回退");

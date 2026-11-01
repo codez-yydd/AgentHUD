@@ -176,7 +176,7 @@ const MINIMAXCODE_STALE_MS = 60_000;
 // 无折叠权重问题、TTFT 族为纯本机口径，均不受污染，不剥离。版本升级为
 // 一次性迁移：V2 已处理过的旧口径行（无速度值）对新判定是无操作，幂等。
 // V4: observed reasoning streams and homogeneous speed pools. Recompute cached rates.
-const SPEED_CONTRACT_VERSION = 4;
+const SPEED_CONTRACT_VERSION = 5;
 const SPEED_VERSION_CACHE_KEY = "zbar-speed-cache-version";
 
 /** Clear rates from previous timing contracts; retain tokens and TTFT. */

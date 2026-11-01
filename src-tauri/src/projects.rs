@@ -410,8 +410,8 @@ fn accumulate_zcode_with_derived(
 /// token_speed::speed_sample 行级判定后按 (session_id, model_id) 累加
 /// 可加总分子/分母/样本数并写回各行 gen_* 字段。zcode 会话速度不再使用
 /// 旧 duration−TTFT 估算口径（与主面板 query_stats 的生成口径一致，防止
-/// 后台局部变更后项目页静默错位）。老库缺事件时间列时全部保持 None/0
-/// （速度显示 —，不回落旧口径冒充数值）。
+/// 后台局部变更后项目页静默错位）。缺首内容证据但有开始/完成时间时
+/// 显示请求均速，缺完成时间则保持 None/0，不猜造生成窗口。
 fn fill_zcode_generation_speed(
     conn: &Connection,
     rows: &mut [ProjectSessionModelRow],
@@ -422,14 +422,14 @@ fn fill_zcode_generation_speed(
         return;
     }
     let has = |col: &str| db::has_column(conn, "model_usage", col);
-    if !has("first_token_at") || !has("completed_at") || !has("output_tokens") {
+    if !has("completed_at") || !has("output_tokens") {
         return; // 老库缺列：无生成样本，gen_* 保持默认 None/0
     }
     let sessions: BTreeSet<String> = rows.iter().map(|r| r.session_id.clone()).collect();
     let session_list: Vec<String> = sessions.into_iter().collect();
     let (status, first, completed) = (
         if has("status") { "status" } else { "NULL" },
-        "first_token_at",
+        crate::db::zcode_first_token_expr(conn),
         "completed_at",
     );
     // 思考感知窗口信号（见 token_speed::thinking_generation_span）：老库

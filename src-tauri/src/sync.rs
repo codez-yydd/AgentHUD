@@ -63,6 +63,8 @@ impl Default for SyncMode {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SyncConfig {
     #[serde(default)]
+    pub speed_evidence_version: u32,
+    #[serde(default)]
     pub enabled: bool,
     #[serde(default)]
     pub mode: SyncMode,
@@ -143,6 +145,7 @@ fn default_interval() -> u64 {
 impl Default for SyncConfig {
     fn default() -> Self {
         Self {
+            speed_evidence_version: 0,
             enabled: false,
             mode: SyncMode::Manual,
             interval_seconds: default_interval(),
@@ -555,7 +558,16 @@ pub fn upload_incremental() -> Result<SyncOutcome, String> {
     let mut first_batch = true;
     // M5：派生库有映射且服务端 proto >= 5 时，zcode 明细附带会话/项目维度
     // （session_id / project_key / project_display）；否则按旧契约上传。
-    let zcode_with_projects = zcode_projects_supported(&base, &token);
+    let zcode_proto = zcode_protocol(&base, &token);
+    let zcode_with_projects = zcode_proto >= 5 && crate::zcode_sessions::has_project_mapping();
+    if prepare_speed_backfill(&mut cfg,zcode_proto) { since = cfg.last_uploaded_rowid; }
+    if zcode_proto >= 9 && since > 0 {
+        // Logging and SQLite commits are independent. Replay recently completed
+        // rows so delayed first-content evidence can enrich an uploaded row.
+        // Server UPSERTs metadata without incrementing token counts.
+        let conn = db::open_db()?;
+        since = zcode_speed_replay_since(&conn,since,chrono::Utc::now().timestamp_millis())?;
+    }
 
     loop {
         let records = query_zcode_rows_with_sessions(since, BATCH, zcode_with_projects)?;
@@ -662,9 +674,9 @@ pub fn upload_incremental() -> Result<SyncOutcome, String> {
                 );
             }
         }
-        // 游标必须推进到本批最大 rowid（无论服务端是否接受，本地都已处理过这些记录）。
-        // 取 max 防止服务端返回的旧游标回退。
-        since = resp.max_rowid.max(batch_max);
+        // A server can already have higher rowids during history/metadata
+        // replay. Its high-water mark must not skip our remaining local pages.
+        since = batch_max;
         first_batch = false;
         // 明细空 + 快照发完 → 结束
         if records_empty {
@@ -795,6 +807,7 @@ fn merge_config_for_save(
         return None;
     }
     let mut merged = latest.clone();
+    merged.speed_evidence_version = ran.speed_evidence_version;
     merged.last_uploaded_rowid = ran.last_uploaded_rowid;
     merged.last_uploaded_codex_rowid = ran.last_uploaded_codex_rowid;
     merged.last_uploaded_claude_rowid = ran.last_uploaded_claude_rowid;
@@ -850,15 +863,26 @@ fn build_derived_payload(
 
 // ===== zcode 明细的会话/项目维度增强（M5）=====
 
-/// 判断 zcode 明细上传是否附带会话/项目维度（proto 5）：
-/// 派生库有映射 且 服务端自报 proto >= 5。
-/// 探测用空批次请求（无写入副作用，与派生来源的协议探测同款）；网络
-/// 失败/派生库不可用时返回 false，上传退回原契约（三字段不发），不影响
-/// 原有错误路径。
-fn zcode_projects_supported(base: &str, token: &str) -> bool {
-    if !crate::zcode_sessions::has_project_mapping() {
-        return false; // 派生库无映射：无可附带维度，跳过协议探测
-    }
+/// Start one history pass when the server can retain origin timing evidence.
+fn prepare_speed_backfill(cfg: &mut SyncConfig, proto: u32) -> bool {
+    if proto < 9 || cfg.speed_evidence_version >= 1 { return false; }
+    cfg.last_uploaded_rowid = 0;
+    cfg.speed_evidence_version = 1;
+    true
+}
+
+fn zcode_speed_replay_since(conn: &rusqlite::Connection, cursor: i64, now: i64) -> Result<i64,String> {
+    let completed = if db::has_column(conn,"model_usage","completed_at") {
+        "CASE WHEN completed_at > 0 THEN completed_at ELSE started_at END"
+    } else { "started_at" };
+    let sql = format!("SELECT MIN(rowid) FROM model_usage WHERE rowid <= ?1 AND {completed} >= ?2");
+    let oldest: Option<i64> = conn.query_row(&sql,rusqlite::params![cursor,now-10*60*1000],|r|r.get(0))
+        .map_err(|e|format!("查询近期速度证据回补范围失败: {e}"))?;
+    Ok(oldest.map(|rowid|cursor.min(rowid.saturating_sub(1))).unwrap_or(cursor))
+}
+
+/// Probe independently of project mappings: proto 9 also controls speed backfill.
+fn zcode_protocol(base: &str, token: &str) -> u32 {
     let probe: SyncResponse = match agent_with_timeouts(3, 15)
         .post(&format!("{base}/sync"))
         .set("Authorization", &format!("Bearer {token}"))
@@ -876,18 +900,10 @@ fn zcode_projects_supported(base: &str, token: &str) -> bool {
         Err(e) => {
             // 探测失败不阻断同步：本轮不带新字段（原行为），下轮重探
             eprintln!("[zbar-sync] zcode 项目维度协议探测失败（本轮按旧契约上传）: {e}");
-            return false;
+            return 0;
         }
     };
-    if probe.proto >= 5 {
-        true
-    } else {
-        eprintln!(
-            "[zbar-sync] 服务端未升级到 proto 5（当前 proto={}），zcode 明细暂不携带项目维度字段",
-            probe.proto
-        );
-        false
-    }
+    probe.proto
 }
 
 /// 查询主库 rowid > since 的 zcode 明细（与 db::query_since 同 SQL、同
@@ -944,6 +960,7 @@ fn query_zcode_rows_with_sessions_at(
         .query_map(rusqlite::params![since, limit as i64], |row| {
             Ok((
                 UsageRow {
+                speed_evidence: None,
                     local_rowid: row.get(0)?,
                     started_at: row.get(1)?,
                     model_id: row.get::<_, Option<String>>(2)?.unwrap_or_default(),
@@ -970,7 +987,7 @@ fn query_zcode_rows_with_sessions_at(
         .map_err(|e| format!("读取 zcode 增量记录失败: {e}"))?;
 
     // 逐行回填维度：查到映射才附带三字段（绑定出现，查不到保持 None）
-    Ok(rows
+    let mut enriched: Vec<UsageRow> = rows
         .into_iter()
         .map(|(mut row, session_id)| {
             if let Some((key, display)) = session_id.as_ref().and_then(|id| project_map.get(id)) {
@@ -980,7 +997,9 @@ fn query_zcode_rows_with_sessions_at(
             }
             row
         })
-        .collect())
+        .collect();
+    db::annotate_zcode_speed(conn, &mut enriched)?;
+    Ok(enriched)
 }
 
 /// 发送一批明细到 /sync（抽出公共发送逻辑，供 proto 5 降级重试复用）。
@@ -1454,9 +1473,12 @@ pub fn fetch_remote_usage(req: RemoteUsageRequest) -> Result<RemoteUsage, String
 /// 的行一致）。proto 8 起服务端回传耗时/首字（duration_ms /
 /// time_to_first_token_ms，真实值才非 None；旧服务端不返回该键 → None，
 /// serde default 兜底）。速度列仍不回传——行级速度原料（first_token_at /
-/// completed_at）远端不上传，由前端 speedOf 用耗时+首字+output 推导。
+/// completed_at）远端不上传；优先消费来源设备验证的 speed_evidence。
+/// 旧记录缺少证据时只按总耗时展示请求均速，不通过 TTFT 猜造流式窗口。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RemoteUsageRecord {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speed_evidence: Option<crate::token_speed::SpeedEvidence>,
     #[serde(default)]
     pub device_id: String,
     #[serde(default)]
@@ -2186,10 +2208,39 @@ mod tests {
     //! 4. disconnect 的游标重置不漏来源。
 
     use super::*;
+    #[test]
+    fn recent_speed_replay_includes_late_completions_and_legacy_schema() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE model_usage(started_at INTEGER,completed_at INTEGER);
+            INSERT INTO model_usage(rowid,started_at,completed_at) VALUES
+            (1,1000,1900000),(2,2000,3000),(3,1950000,NULL);").unwrap();
+        // An old request can finish recently; use completion, not just start.
+        assert_eq!(zcode_speed_replay_since(&conn,3,2000000).unwrap(),0);
+        assert_eq!(zcode_speed_replay_since(&conn,3,3000000).unwrap(),3);
+        conn.execute_batch("ALTER TABLE model_usage DROP COLUMN completed_at").unwrap();
+        assert_eq!(zcode_speed_replay_since(&conn,3,2000000).unwrap(),2);
+    }
+
+    #[test]
+    fn speed_backfill_waits_for_server_and_preserves_partial_progress() {
+        let mut cfg = super::SyncConfig::default();
+        cfg.last_uploaded_rowid = 100;
+        assert!(!super::prepare_speed_backfill(&mut cfg,8));
+        assert_eq!(cfg.last_uploaded_rowid,100);
+        assert!(super::prepare_speed_backfill(&mut cfg,9));
+        assert_eq!(cfg.last_uploaded_rowid,0);
+        cfg.last_uploaded_rowid=50;
+        let mut resumed: super::SyncConfig = serde_json::from_str(&serde_json::to_string(&cfg).unwrap()).unwrap();
+        assert!(!super::prepare_speed_backfill(&mut resumed,9));
+        assert_eq!(resumed.last_uploaded_rowid,50);
+    }
+
+
 
     /// 造一条明细（字段值不参与断言，只要 local_rowid 可控）。
     fn row(local_rowid: i64) -> UsageRow {
         UsageRow {
+                speed_evidence: None,
             local_rowid,
             started_at: local_rowid * 1_000,
             model_id: "m".into(),

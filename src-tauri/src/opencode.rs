@@ -1403,6 +1403,7 @@ fn query_rows_at(
     let rows = stmt
         .query_map(params, |row| {
             Ok(db::UsageRow {
+                speed_evidence: None,
                 local_rowid: row.get(0)?,
                 started_at: row.get(1)?,
                 model_id: row.get(2)?,

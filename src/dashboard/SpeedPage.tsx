@@ -7,7 +7,7 @@
  * （deepseek 走 OpenCode Go 订阅与走官方 key 是两行，GLM 在不同中转站同理）。
  *
  * 口径分层（后端 model_speed.rs 的两池设计）：speedQuality = "generation"
- * （zcode 事件时刻的精确生成窗口）/ "request_average"（导入库与远端行按
+ * （客户端首内容至完成的观测窗口）/ "request_average"（按来源证据的请求
  * 请求总耗时折算的近似，**含首字延迟**）/ null（无速度样本，速度列「—」）。
  * 近似口径行的 P10/P50/P90 数值前加 ≈（对齐日志页与窄窗的 ≈ 约定，大窗
  * 列宽足够直接前缀），title 挂 speed.approxHint 说明口径。
@@ -432,7 +432,7 @@ function SpeedTableRow({
   // 近似口径（导入库 / 远端行）：速度三列加 ≈ + title（大窗列宽足够直接
   // 前缀，无窄窗的截断问题）；null 口径速度列照常「—」
   const approximate = row.speedQuality === "request_average";
-  const approxTitle = approximate ? t("speed.approxHint") : undefined;
+  const approxTitle = t(approximate ? "speed.approxHint" : "speed.streamHint");
   const tpsText = (value: number | null) =>
     value == null ? null : `${approximate ? "≈" : ""}${formatTps(value)}`;
   const agent = SOURCE_AGENT[row.source as RequestLogSource];
@@ -779,7 +779,7 @@ export function SpeedPage() {
         fastestRow?.p50Tps != null
           ? `${fastestApprox ? "≈" : ""}${formatTps(fastestRow.p50Tps)}`
           : null,
-      title: fastestApprox ? t("speed.approxHint") : undefined,
+      title: t(fastestApprox ? "speed.approxHint" : "speed.streamHint"),
       unit: "t/s",
     },
     {
