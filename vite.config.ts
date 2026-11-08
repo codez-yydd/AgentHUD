@@ -17,6 +17,8 @@ export default defineConfig(async () => ({
   // dashboard.html（管理/分析大窗，Rust 侧 main_window.rs 以
   // WebviewUrl::App("dashboard.html") 加载，同款范式）+ HUD 停靠条
   // hud.html（贴边常驻额度条，Rust 侧 hud_bar.rs 以 WebviewUrl::App 加载，
+  // 同款范式）+ 托盘菜单窗 tray-menu.html（仅 macOS 托盘右键弹出的自定义
+  // 菜单，Rust 侧 tray_menu.rs 以 WebviewUrl::App 加载，零 React 轻壳，
   // 同款范式）
   build: {
     rollupOptions: {
@@ -28,6 +30,9 @@ export default defineConfig(async () => ({
         ),
         dashboard: fileURLToPath(new URL("./dashboard.html", import.meta.url)),
         hud: fileURLToPath(new URL("./hud.html", import.meta.url)),
+        "tray-menu": fileURLToPath(
+          new URL("./tray-menu.html", import.meta.url)
+        ),
       },
     },
   },

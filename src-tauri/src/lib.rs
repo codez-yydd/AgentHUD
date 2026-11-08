@@ -48,6 +48,11 @@ mod stepfun;
 mod sync;
 mod today_usage;
 mod token_speed;
+// 自定义托盘右键菜单窗口：仅 macOS 编译（macOS 上托盘不再挂原生菜单，
+// 右键改弹 HTML 菜单窗口；Windows/Linux 保留原生菜单，本模块不参与编译，
+// 保证非 mac 平台零行为变化）。见 tray_menu.rs 模块注释
+#[cfg(target_os = "macos")]
+mod tray_menu;
 mod zcode_crypto;
 mod zcode_sessions;
 mod zcode_speed_evidence;
@@ -57,8 +62,11 @@ use quota::QuotaResult;
 use chrono::TimeZone;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+// 原生菜单类型仅非 macOS 使用（macOS 托盘不再挂 NSMenu，见 setup_tray
+// 注释）；mac 上不加 cfg 会变成未使用导入告警
+#[cfg(not(target_os = "macos"))]
+use tauri::menu::{CheckMenuItem, Menu, MenuItem};
 use tauri::{
-    menu::{CheckMenuItem, Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     AppHandle, Emitter, LogicalPosition, Manager, PhysicalSize, WindowEvent,
 };
@@ -2447,8 +2455,10 @@ fn fmt_tok(n: i64) -> String {
     }
 }
 
-/// 计算今日（自然日）的总花费 + 总 token，生成菜单栏标题文字。
-fn today_tray_title(app: &AppHandle) -> String {
+/// 计算今日（自然日）的总花费（已按币种偏好折算成展示币种的数值）+
+/// 总 token + 币种是否美元，供菜单栏标题使用。副作用：写今日用量快照
+/// （HUD 停靠条消费），幂等可重复调用。
+fn today_usage_totals() -> (f64, i64, bool) {
     // 当地时间今日 0 点
     let now = chrono::Local::now();
     let today_start = now
@@ -2594,10 +2604,15 @@ fn today_tray_title(app: &AppHandle) -> String {
     // 有用量时动态加回）。放在最后：本拍各来源都已累加完。
     crate::today_usage::store(today_start, by_source);
 
-    let _ = app; // 占位
+    (to_display(cost), total, is_usd)
+}
+
+/// 计算今日（自然日）的总花费 + 总 token，生成菜单栏标题文字。
+fn today_tray_title(_app: &AppHandle) -> String {
+    let (cost, total, is_usd) = today_usage_totals();
     let sym = if is_usd { "$" } else { "¥" };
     if total > 0 {
-        format!("{sym}{:.2}  {}", to_display(cost), fmt_tok(total))
+        format!("{sym}{:.2}  {}", cost, fmt_tok(total))
     } else {
         "AgentHUD".to_string()
     }
@@ -2719,6 +2734,10 @@ fn spawn_fx_rate_refresher() {
 /// 菜单——CheckMenuItem 持有内部句柄不是可捕获进事件闭包的跨线程对象，
 /// 同线程重建整个菜单是最简单可靠的做法（set_menu 只换菜单，托盘上注册
 /// 的 on_menu_event 回调不受影响）。
+/// 仅非 macOS 编译：macOS 26+ ControlCenter 托管菜单栏后，挂 NSMenu 会让
+/// 托盘的 TrayIconEvent::Click 全部不再送达（见 setup_tray 注释），macOS
+/// 托盘不再挂原生菜单。
+#[cfg(not(target_os = "macos"))]
 fn build_main_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     let open_main_item = MenuItem::with_id(app, "open-main", "打开主窗口", true, None::<&str>)?;
     // 勾选态读当前配置（enabled 默认 false：未开启即无勾）
@@ -2737,63 +2756,88 @@ fn build_main_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
 /// 重建托盘菜单（勾选态读当前配置）：托盘开关切换后与 hud-bar 窗口异常
 /// 销毁（开关复位落盘）后两处共用，保证菜单勾选与实际开关一致。失败只
 /// 记日志（托盘仍可用，下次切换再试）。
+/// macOS：托盘不再挂原生菜单（原因同 setup_tray / build_main_menu 注释），
+/// 本函数保留为空实现——hud_bar.rs 的既有调用点（窗口异常销毁 / 面板
+/// 开关落盘后）不加 cfg 即可跨平台编译。
 pub(crate) fn refresh_tray_menu(app: &AppHandle) {
-    if let Some(tray) = app.tray_by_id("main") {
-        match build_main_menu(app) {
-            Ok(next) => {
-                let _ = tray.set_menu(Some(next));
+    #[cfg(not(target_os = "macos"))]
+    {
+        if let Some(tray) = app.tray_by_id("main") {
+            match build_main_menu(app) {
+                Ok(next) => {
+                    let _ = tray.set_menu(Some(next));
+                }
+                Err(e) => eprintln!("[zbar-tray] 重建托盘菜单失败: {e}"),
             }
-            Err(e) => eprintln!("[zbar-tray] 重建托盘菜单失败: {e}"),
         }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let _ = app; // macOS 无原生菜单可刷，保留空实现兼容既有调用点
     }
 }
 
 /// 初始化托盘图标
 fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
-    // 右键菜单三项：「打开主窗口」（Dashboard 管理/分析大窗，见
-    // main_window.rs）/「HUD 停靠条」（贴边常驻额度条的开关，勾选态随
-    // hud-bar.json 的 enabled）/「退出 AgentHUD」。左键单击仍是切换悬浮
-    // 面板（show_menu_on_left_click(false) + 下方 Click 分支），主窗口
-    // 入口只在右键菜单里，避免与左键"切换面板"的既有习惯冲突。
-    let menu = build_main_menu(app)?;
-
     // 初始标题只用占位文字：真实标题（今日花费 + token）的生成依次做
     // SQLite 查询、开启同步后的远程 HTTP、Cursor events 冷缓存全量分页拉取，
     // 冷启动网络慢时会把主线程卡数十秒。spawn_title_updater 启动后会在
     // 后台线程立即执行一次刷新（先刷新再 sleep），占位很快被真实标题替换。
     let title = "AgentHUD".to_string();
-    let _tray = TrayIconBuilder::with_id("main")
+    let builder = TrayIconBuilder::with_id("main")
         .icon(app.default_window_icon().unwrap().clone())
         .tooltip("AgentHUD · 多 Agent 用量监控")
-        .title(title)
-        .menu(&menu)
-        .show_menu_on_left_click(false)
-        .on_menu_event(|app, event| {
-            match event.id().as_ref() {
-                "quit" => app.exit(0),
-                // 打开主窗口：on_menu_event 本身在主线程回调，可直接走
-                // 建窗/聚焦主体（内部自判"已存在则显示聚焦"）；失败只记
-                // 日志，不 panic、不影响托盘后续交互
-                "open-main" => {
-                    // page 传 None：托盘入口只开窗不导航，停留在上次页面
-                    if let Err(e) = main_window::open_main_window_on_main_thread(app, None) {
-                        eprintln!("[zbar-main-window] 打开主窗口失败: {e}");
+        .title(title);
+
+    // 平台分叉（行为隔离的边界线，改托盘逻辑前先读这段）：
+    // - Windows/Linux：与历史版本完全一致——原生右键菜单（打开主窗口 /
+    //   HUD 停靠条 / 退出）+ show_menu_on_left_click(false)（左键不弹菜单，
+    //   走下方 Click 分支切换面板）。本分支一行逻辑不改。
+    // - macOS：**不给托盘挂任何原生 NSMenu**。macOS 26 起菜单栏由
+    //   ControlCenter 托管，tray-icon 靠覆盖在 NSStatusBarButton 上的
+    //   TrayTarget 子视图拦截 mouseDown 区分左右键的做法失效——只要挂了
+    //   NSMenu，系统直接把左键当"打开菜单"处理，应用收不到任何
+    //   TrayIconEvent::Click（上游 tauri-apps/tray-icon#355 验证：去掉
+    //   setMenu 后左右键事件全部正常送达）。因此 macOS 摘掉原生菜单后
+    //   左键恢复切换悬浮面板（原有 Click 分支原样生效），右键改由
+    //   tray_menu 模块的自定义 HTML 菜单窗口承担（见下方 Right 分支）。
+    #[cfg(not(target_os = "macos"))]
+    let builder = {
+        let menu = build_main_menu(app)?;
+        builder
+            .menu(&menu)
+            .show_menu_on_left_click(false)
+            .on_menu_event(|app, event| {
+                match event.id().as_ref() {
+                    "quit" => app.exit(0),
+                    // 打开主窗口：on_menu_event 本身在主线程回调，可直接走
+                    // 建窗/聚焦主体（内部自判"已存在则显示聚焦"）；失败只记
+                    // 日志，不 panic、不影响托盘后续交互
+                    "open-main" => {
+                        // page 传 None：托盘入口只开窗不导航，停留在上次页面
+                        if let Err(e) = main_window::open_main_window_on_main_thread(app, None) {
+                            eprintln!("[zbar-main-window] 打开主窗口失败: {e}");
+                        }
                     }
+                    // HUD 停靠条开关：on_menu_event 本身在主线程回调，可直接
+                    // 走建窗/隐藏主体（toggle_from_tray 内部按新开关落盘并启停
+                    // 数据线程）。切换后重建菜单刷新勾选态（见 refresh_tray_menu）
+                    "hud-bar-toggle" => match hud_bar::toggle_from_tray(app) {
+                        Ok(_) => refresh_tray_menu(app),
+                        Err(e) => eprintln!("[zbar-hud-bar] 切换停靠条失败: {e}"),
+                    },
+                    _ => {}
                 }
-                // HUD 停靠条开关：on_menu_event 本身在主线程回调，可直接
-                // 走建窗/隐藏主体（toggle_from_tray 内部按新开关落盘并启停
-                // 数据线程）。切换后重建菜单刷新勾选态（见 refresh_tray_menu）
-                "hud-bar-toggle" => match hud_bar::toggle_from_tray(app) {
-                    Ok(_) => refresh_tray_menu(app),
-                    Err(e) => eprintln!("[zbar-hud-bar] 切换停靠条失败: {e}"),
-                },
-                _ => {}
-            }
-        })
+            })
+    };
+    // macOS 分叉到此为止：不加 .menu(...)，托盘点击事件全量送达应用
+
+    let _tray = builder
         .on_tray_icon_event(|tray, event| {
-            // 左键点击切换面板（mac 和 win 都用左键）
+            // 左键点击切换面板（mac 和 win 都用左键）；macOS 额外把右键
+            // 送到自定义菜单窗口（原生菜单已摘除，见上方平台分叉注释）
             if let TrayIconEvent::Click {
-                button: MouseButton::Left,
+                button,
                 button_state: MouseButtonState::Up,
                 position,
                 ..
@@ -2806,7 +2850,32 @@ fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
                     position.x as f64 / scale,
                     position.y as f64 / scale,
                 );
-                toggle_panel(tray.app_handle(), Some(pos));
+                match button {
+                    MouseButton::Left => {
+                        // macOS：左键切面板前先收起打开着的自定义菜单，
+                        // 避免菜单与面板同时停在屏幕上（失焦收起是异步的，
+                        // 这里主动 hide 一次更跟手）
+                        #[cfg(target_os = "macos")]
+                        if let Some(menu) =
+                            tray.app_handle().get_webview_window("tray-menu")
+                        {
+                            if menu.is_visible().unwrap_or(false) {
+                                let _ = menu.hide();
+                            }
+                        }
+                        toggle_panel(tray.app_handle(), Some(pos));
+                    }
+                    // 仅 macOS：右键弹自定义菜单窗口（已可见时再按 = 收起）。
+                    // 传物理坐标：菜单窗口自己按目标屏幕的 scale_factor
+                    // 换算逻辑坐标，多显示器/混合 DPI 下不会偏屏。
+                    // Windows/Linux 右键走上方原生菜单，不进本分支
+                    #[cfg(target_os = "macos")]
+                    MouseButton::Right => crate::tray_menu::show_tray_menu(
+                        tray.app_handle(),
+                        (position.x as f64, position.y as f64),
+                    ),
+                    _ => {}
+                }
             }
         })
         .build(app)?;
@@ -3056,6 +3125,14 @@ pub fn run() {
                 prevent_app_nap();
             }
             setup_tray(app.handle())?;
+            // 托盘菜单窗口预热（仅 macOS，tray_menu 模块）：隐藏建窗让
+            // tray-menu.html 的 WebView 提前加载，首次右键只剩定位 + show
+            // （建窗 ~300ms 不能落在右键路径上，同 main_window 预建思路）。
+            // 失败只记日志，首次右键仍能现场建窗
+            #[cfg(target_os = "macos")]
+            if let Err(e) = tray_menu::ensure_tray_menu_window(app.handle()) {
+                eprintln!("[zbar-tray-menu] 预热托盘菜单窗口失败: {e}");
+            }
             // 主窗口预热：托盘初始化后立即预建隐藏的主窗口，dashboard.html 的
             // WebView 提前加载（建窗本身走主线程异步路径，不阻塞启动关键路径），
             // 首次「打开主窗口」只剩 show + focus（见 main_window.rs 的
@@ -3270,6 +3347,16 @@ pub fn run() {
             hud_bar::hud_bar_set_enabled,
             // 主窗口（Dashboard）：托盘菜单与悬浮窗统计页按钮共用的打开入口
             main_window::open_main_window,
+            // 自定义托盘右键菜单（仅 macOS）：轻量状态快照（文件读）+
+            // 用量页汇总/趋势一次取数（async + spawn_blocking）+ 菜单项
+            // 动作分发（同步命令 = 主线程执行，open-main/hud-toggle 的
+            // 建窗铁律要求）
+            #[cfg(target_os = "macos")]
+            tray_menu::tray_menu_state,
+            #[cfg(target_os = "macos")]
+            tray_menu::tray_menu_usage,
+            #[cfg(target_os = "macos")]
+            tray_menu::tray_menu_action,
             model_speed::get_model_speed,
             pets::import_pet,
             pets::list_custom_pets,

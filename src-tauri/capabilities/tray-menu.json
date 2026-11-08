@@ -1,0 +1,14 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "tray-menu",
+  "description": "Custom macOS tray menu window: event listen (appearance / HUD bar state), window hide for Esc and auto-collapse, autostart plugin for the quick-settings switch. Custom commands like tray_menu_state are not ACL-gated.",
+  "windows": ["tray-menu"],
+  "permissions": [
+    "core:default",
+    "core:event:default",
+    "core:window:allow-hide",
+    "core:window:allow-show",
+    "core:window:allow-set-focus",
+    "autostart:default"
+  ]
+}

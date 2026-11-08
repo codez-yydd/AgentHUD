@@ -17,6 +17,7 @@
 //! and billing therefore use the original source. Missing databases are empty;
 //! failing sources are reported without clearing the remaining results.
 
+use chrono::{Datelike, TimeZone};
 use rusqlite::{params, Connection, OpenFlags};
 use serde::Serialize;
 use std::collections::BTreeMap;
@@ -141,6 +142,32 @@ pub struct RequestLogSummary {
     pub total_tokens: i64,
     /// 缓存命中率（0-1）；分母为 0 → None（前端显示「—」）
     pub cache_hit_rate: Option<f64>,
+}
+
+/// 使用趋势的单桶（托盘菜单「用量」页消费）。bucket 为本地时间刻度：
+/// 小时桶 `YYYY-MM-DDTHH`、日桶 `YYYY-MM-DD`（与 query_source_trend 的 SQL
+/// 同口径），前端据此补齐空桶、换算本地显示文案。
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct UsageTrendBucket {
+    pub bucket: String,
+    pub requests: i64,
+    pub input_tokens: i64,
+    pub output_tokens: i64,
+    pub cache_read_tokens: i64,
+    pub cache_write_tokens: i64,
+    pub total_tokens: i64,
+    pub cost_usd: f64,
+    pub cost_cny: f64,
+}
+
+/// 托盘菜单「用量」页的一次取数结果：全范围汇总 + 趋势 + 读取失败的来源。
+/// failed_sources 含「库打开/查询失败」的来源与远端查询失败（"remote"）；
+/// 库不存在（未安装/未用过）不算。
+#[derive(Debug, Clone, Default)]
+pub struct UsageOverview {
+    pub summary: RequestLogSummary,
+    pub trend: Vec<UsageTrendBucket>,
+    pub failed_sources: Vec<String>,
 }
 
 /// 单来源聚合的原始形态（区间内全部行；成本另按 by_model 分组折算）
@@ -441,6 +468,18 @@ fn cache_denominator(source: &str, totals: &SourceTotals) -> i64 {
     }
 }
 
+/// 本机来源的缓存命中分子 / 分母：分子统一为 cache_read，分母按来源
+/// 口径分源累计（included / separate 不混算），分母为 0 → 全部 None。
+fn cache_counts(totals: &[(&str, SourceTotals)]) -> (i64, i64) {
+    let mut numerator = 0i64;
+    let mut denominator = 0i64;
+    for (source, item) in totals {
+        numerator += item.cache_read_tokens;
+        denominator += cache_denominator(source, item);
+    }
+    (numerator, denominator)
+}
+
 /// 逐源聚合结果合并成汇总指标：请求数 / 各项 token 和直接相加；成本按
 /// `by_model` 分组逐模型乘价再求和（复用 cost_for，无价格模型贡献 0）；
 /// 命中率按来源口径逐个累计（分子分母分源累计，避免 included / separate
@@ -451,8 +490,6 @@ fn merge_summaries(
     fx: f64,
 ) -> RequestLogSummary {
     let mut summary = RequestLogSummary::default();
-    let mut hit_numerator = 0i64;
-    let mut hit_denominator = 0i64;
     for (source, item) in totals {
         summary.requests += item.requests;
         summary.input_tokens += item.input_tokens;
@@ -463,13 +500,221 @@ fn merge_summaries(
         for group in &item.by_model {
             summary.cost_usd += crate::cost_for_source(group, pricing, source);
         }
-        hit_numerator += item.cache_read_tokens;
-        hit_denominator += cache_denominator(source, item);
     }
+    let (hit_numerator, hit_denominator) = cache_counts(totals);
     summary.cost_cny = summary.cost_usd * fx;
     summary.cache_hit_rate = (hit_denominator > 0)
         .then(|| hit_numerator as f64 / hit_denominator as f64);
     summary
+}
+
+/// 远端趋势标签 → 本机使用的完整桶键。新版服务端回桶起点的 epoch 毫秒，
+/// 直接按本地时区格式化；旧版回 `HH:00`（小时）或 `MM-DD`（日），这里
+/// 按查询区间推出完整日期：
+/// - 小时：区间终点所在本地日期 + 小时（「当天」档专用）；
+/// - 日：在区间起止年份内找第一个落在 [from, to) 的候选日期，优先较晚
+///   年份（跨年 30 天档不会把 12-31 错配到上一年）。
+fn remote_bucket_key(
+    label: &str,
+    bucket: &str,
+    from_ms: i64,
+    to_ms: i64,
+) -> Option<String> {
+    // 新版服务端直接回桶起点的 epoch 毫秒（字符串形式）；按本地时区格式
+    // 化成与本地趋势一致的 key。旧服务端回 "HH:00" / "MM-DD"，走下面
+    // 的兼容分支。
+    if let Ok(ms) = label.parse::<i64>() {
+        if ms > 0 {
+            let dt = chrono::Local.timestamp_millis_opt(ms).single()?;
+            return Some(if bucket == "hour" {
+                dt.format("%Y-%m-%dT%H").to_string()
+            } else {
+                dt.format("%Y-%m-%d").to_string()
+            });
+        }
+    }
+    if bucket == "hour" {
+        let hour: u32 = label.split(':').next()?.parse().ok()?;
+        let date = chrono::Local
+            .timestamp_millis_opt(to_ms)
+            .single()?
+            .format("%Y-%m-%d")
+            .to_string();
+        return Some(format!("{date}T{hour:02}"));
+    }
+    let (month, day) = label.split_once('-')?;
+    let month: u32 = month.parse().ok()?;
+    let day: u32 = day.parse().ok()?;
+    let from_year = chrono::Local.timestamp_millis_opt(from_ms).single()?.year();
+    let to_year = chrono::Local.timestamp_millis_opt(to_ms).single()?.year();
+    for year in (from_year..=to_year).rev() {
+        let Some(date) = chrono::NaiveDate::from_ymd_opt(year, month, day) else {
+            continue;
+        };
+        let Some(start) = date
+            .and_hms_opt(0, 0, 0)
+            .and_then(|naive| naive.and_local_timezone(chrono::Local).single())
+        else {
+            continue;
+        };
+        let start_ms = start.timestamp_millis();
+        if start_ms >= from_ms && start_ms < to_ms {
+            return Some(format!("{year}-{month:02}-{day:02}"));
+        }
+    }
+    None
+}
+
+/// 合并同步服务上其他设备的用量：summary 累加 overall；成本按 by_model
+/// 逐模型乘价；命中率分子分母按来源口径累计。服务端单次查询有 400 天
+/// 上限，「全部」档按 399 天从近到远分片；趋势标签兼容新版 epoch 毫秒
+/// 与旧版 "MM-DD"/"HH:00"。
+fn merge_remote_usage(
+    summary: &mut RequestLogSummary,
+    trend: &mut BTreeMap<String, UsageTrendBucket>,
+    hit_numerator: &mut i64,
+    hit_denominator: &mut i64,
+    from_ms: i64,
+    to_ms: i64,
+    bucket: &str,
+    pricing: &BTreeMap<String, crate::pricing::ModelPrice>,
+    failed_sources: &mut Vec<String>,
+) {
+    let cfg = match crate::sync::load_sync_config() {
+        Ok(cfg) => cfg,
+        Err(_) => return,
+    };
+    if !cfg.enabled || cfg.device_token.is_empty() {
+        return;
+    }
+    // 服务端单次查询有 400 天上限（历史数据可能更早）：「全部」档按
+    // 399 天一段从近到远分片，遇到空窗口即停；7d/30d/当天仍是单次。
+    // 分片是半开区间，边界不重叠、不会双计。
+    const MAX_WINDOW_MS: i64 = 399 * 86_400_000;
+    const MAX_CHUNKS: usize = 5;
+    let mut windows: Vec<(i64, i64)> = Vec::new();
+    if from_ms > 0 {
+        let mut start = from_ms;
+        while start < to_ms && windows.len() < MAX_CHUNKS {
+            let end = (start + MAX_WINDOW_MS).min(to_ms);
+            windows.push((start, end));
+            start = end;
+        }
+    } else {
+        let mut end = to_ms;
+        for _ in 0..MAX_CHUNKS {
+            let start = (end - MAX_WINDOW_MS).max(0);
+            windows.push((start, end));
+            if start == 0 {
+                break;
+            }
+            end = start;
+        }
+    }
+
+    for (from, to) in windows {
+        let request = crate::sync::RemoteUsageRequest {
+            from_ms: from,
+            to_ms: to,
+            bucket: bucket.to_string(),
+            exclude_device: cfg.device_id.clone(),
+            devices: String::new(),
+            source: String::new(),
+        };
+        let remote = match crate::sync::fetch_remote_usage(request) {
+            Ok(remote) => remote,
+            Err(e) => {
+                eprintln!("[zbar-request-logs] 远端用量查询失败，已跳过: {e}");
+                failed_sources.push("remote".to_string());
+                break;
+            }
+        };
+        // 空窗口 = 已经早于远端最早数据，停止向更早翻
+        if remote.overall.requests == 0
+            && remote.overall.total_tokens == 0
+            && remote.by_model.is_empty()
+            && remote.trend.is_empty()
+        {
+            break;
+        }
+
+        summary.requests += remote.overall.requests;
+        summary.input_tokens += remote.overall.input_tokens;
+        summary.output_tokens += remote.overall.output_tokens;
+        summary.cache_read_tokens += remote.overall.cache_read_tokens;
+        summary.cache_write_tokens += remote.overall.cache_write_tokens;
+        summary.total_tokens += remote.overall.total_tokens;
+        for model in &remote.by_model {
+            let source = if model.source.is_empty() {
+                "zcode"
+            } else {
+                model.source.as_str()
+            };
+            let tokens = ModelTokens {
+                model_id: model.model_id.clone(),
+                input_tokens: model.input_tokens,
+                output_tokens: model.output_tokens,
+                cache_read_tokens: model.cache_read_tokens,
+                cache_write_tokens: model.cache_write_tokens,
+                total_tokens: model.total_tokens,
+            };
+            summary.cost_usd += crate::cost_for_source(&tokens, pricing, source);
+            *hit_numerator += model.cache_read_tokens;
+            *hit_denominator += cache_denominator(
+                source,
+                &SourceTotals {
+                    input_tokens: model.input_tokens,
+                    cache_read_tokens: model.cache_read_tokens,
+                    cache_write_tokens: model.cache_write_tokens,
+                    ..Default::default()
+                },
+            );
+        }
+
+        for item in remote.trend {
+            let Some(key) = remote_bucket_key(&item.label, bucket, from, to) else {
+                continue;
+            };
+            let entry = trend.entry(key.clone()).or_insert_with(|| UsageTrendBucket {
+                bucket: key,
+                ..Default::default()
+            });
+            let requests = if item.requests != 0 {
+                item.requests
+            } else {
+                item.by_model.iter().map(|model| model.requests).sum()
+            };
+            let tokens = if item.total_tokens != 0 {
+                item.total_tokens
+            } else {
+                item.by_model.iter().map(|model| model.total_tokens).sum()
+            };
+            entry.requests += requests;
+            entry.total_tokens += tokens;
+            for model in &item.by_model {
+                let source = if model.source.is_empty() {
+                    "zcode"
+                } else {
+                    model.source.as_str()
+                };
+                entry.cost_usd += crate::cost_for_source(
+                    &ModelTokens {
+                        model_id: model.model_id.clone(),
+                        input_tokens: model.input_tokens,
+                        output_tokens: model.output_tokens,
+                        cache_read_tokens: model.cache_read_tokens,
+                        cache_write_tokens: 0,
+                        total_tokens: model.total_tokens,
+                    },
+                    pricing,
+                    source,
+                );
+                entry.input_tokens += model.input_tokens;
+                entry.output_tokens += model.output_tokens;
+                entry.cache_read_tokens += model.cache_read_tokens;
+            }
+        }
+    }
 }
 
 /// 单来源全范围聚合（与分页查询同一 WHERE）：一条聚合 SQL 出请求数与各项
@@ -527,6 +772,180 @@ fn query_source_totals(
         .collect::<Result<Vec<_>, _>>()?;
     totals.by_model = groups;
     Ok(totals)
+}
+
+/// 趋势分桶的本地时间表达式：小时桶 `YYYY-MM-DDTHH`，日桶 `YYYY-MM-DD`。
+/// 只接受代码内常量，非法值返回 None（调用方按空趋势处理）。
+fn trend_bucket_expr(bucket: &str) -> Option<&'static str> {
+    match bucket {
+        "hour" => Some(
+            "strftime('%Y-%m-%dT%H', started_at / 1000, 'unixepoch', 'localtime')",
+        ),
+        "day" => Some("strftime('%Y-%m-%d', started_at / 1000, 'unixepoch', 'localtime')"),
+        _ => None,
+    }
+}
+
+/// 单来源的分桶聚合（桶 × 模型）。成本必须按模型分组后逐组乘价——不同
+/// 模型单价不同，不能拿桶内 token 总量乘单一价格。返回的 cost_cny 先置 0，
+/// 由 collect_usage_overview 统一按汇率折算。
+fn query_source_trend(
+    conn: &Connection,
+    source: &str,
+    from_ms: i64,
+    to_ms: i64,
+    bucket_expr: &str,
+    pricing: &BTreeMap<String, crate::pricing::ModelPrice>,
+) -> rusqlite::Result<Vec<UsageTrendBucket>> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {bucket_expr} AS bucket, COALESCE(model_id,''), COUNT(*), \
+                COALESCE(SUM(input_tokens),0), COALESCE(SUM(output_tokens),0), \
+                COALESCE(SUM(cache_read_input_tokens),0), \
+                COALESCE(SUM(cache_creation_input_tokens),0), \
+                COALESCE(SUM(computed_total_tokens),0) \
+         FROM model_usage WHERE started_at >= ?1 AND started_at < ?2 \
+         GROUP BY bucket, model_id"
+    ))?;
+    let rows = stmt.query_map(params![from_ms, to_ms], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, i64>(2)?,
+            row.get::<_, i64>(3)?,
+            row.get::<_, i64>(4)?,
+            row.get::<_, i64>(5)?,
+            row.get::<_, i64>(6)?,
+            row.get::<_, i64>(7)?,
+        ))
+    })?;
+
+    let mut merged: BTreeMap<String, UsageTrendBucket> = BTreeMap::new();
+    for row in rows {
+        let (
+            bucket,
+            model_id,
+            requests,
+            input_tokens,
+            output_tokens,
+            cache_read_tokens,
+            cache_write_tokens,
+            total_tokens,
+        ) = row?;
+        let cost = crate::cost_for_source(
+            &ModelTokens {
+                model_id,
+                input_tokens,
+                output_tokens,
+                cache_read_tokens,
+                cache_write_tokens,
+                total_tokens,
+            },
+            pricing,
+            source,
+        );
+        let entry = merged.entry(bucket.clone()).or_insert_with(|| UsageTrendBucket {
+            bucket,
+            ..Default::default()
+        });
+        entry.requests += requests;
+        entry.input_tokens += input_tokens;
+        entry.output_tokens += output_tokens;
+        entry.cache_read_tokens += cache_read_tokens;
+        entry.cache_write_tokens += cache_write_tokens;
+        entry.total_tokens += total_tokens;
+        entry.cost_usd += cost;
+    }
+    Ok(merged.into_values().collect())
+}
+
+/// 托盘菜单「用量」页的一次取数：本机 7 个请求级来源的汇总 + 趋势一次
+/// 打开各来源库完成（避免 summary/trend 两个命令重复打开 SQLite 库），
+/// 有同步配置时再并入服务端其他设备（分片查询，见 merge_remote_usage）。
+/// 单个来源打开 / 查询失败只记日志并计入 failed_sources，其余来源照常返回。
+pub fn collect_usage_overview(from_ms: i64, to_ms: i64, bucket: &str) -> UsageOverview {
+    let Some(bucket_expr) = trend_bucket_expr(bucket) else {
+        return UsageOverview::default();
+    };
+    let pricing = crate::load_pricing().unwrap_or_default();
+    let fx = crate::load_fx_rate();
+    let mut totals: Vec<(&'static str, SourceTotals)> = Vec::new();
+    let mut trend: BTreeMap<String, UsageTrendBucket> = BTreeMap::new();
+    let mut failed_sources: Vec<String> = Vec::new();
+
+    for source in SOURCES {
+        let conn = match open_source(source) {
+            Ok(Some(conn)) => conn,
+            Ok(None) => continue,
+            Err(e) => {
+                eprintln!("[zbar-request-logs] 来源 {source} 打开失败，已跳过: {e}");
+                failed_sources.push(source.to_string());
+                continue;
+            }
+        };
+        match query_source_totals(&conn, from_ms, to_ms, None) {
+            Ok(source_totals) => totals.push((source, source_totals)),
+            Err(e) => {
+                eprintln!("[zbar-request-logs] 来源 {source} 汇总查询失败，已跳过: {e}");
+                failed_sources.push(source.to_string());
+            }
+        }
+        match query_source_trend(&conn, source, from_ms, to_ms, bucket_expr, &pricing.usd) {
+            Ok(buckets) => {
+                for item in buckets {
+                    let entry = trend.entry(item.bucket.clone()).or_insert_with(|| {
+                        UsageTrendBucket {
+                            bucket: item.bucket.clone(),
+                            ..Default::default()
+                        }
+                    });
+                    entry.requests += item.requests;
+                    entry.input_tokens += item.input_tokens;
+                    entry.output_tokens += item.output_tokens;
+                    entry.cache_read_tokens += item.cache_read_tokens;
+                    entry.cache_write_tokens += item.cache_write_tokens;
+                    entry.total_tokens += item.total_tokens;
+                    entry.cost_usd += item.cost_usd;
+                }
+            }
+            Err(e) => {
+                eprintln!("[zbar-request-logs] 来源 {source} 趋势查询失败，已跳过: {e}");
+                failed_sources.push(source.to_string());
+            }
+        }
+    }
+
+    let mut summary = merge_summaries(&totals, &pricing.usd, fx);
+    let (mut hit_numerator, mut hit_denominator) = cache_counts(&totals);
+    merge_remote_usage(
+        &mut summary,
+        &mut trend,
+        &mut hit_numerator,
+        &mut hit_denominator,
+        from_ms,
+        to_ms,
+        bucket,
+        &pricing.usd,
+        &mut failed_sources,
+    );
+    summary.cost_cny = summary.cost_usd * fx;
+    summary.cache_hit_rate = (hit_denominator > 0)
+        .then(|| hit_numerator as f64 / hit_denominator as f64);
+
+    failed_sources.sort();
+    failed_sources.dedup();
+    let mut trend: Vec<UsageTrendBucket> = trend
+        .into_values()
+        .map(|mut item| {
+            item.cost_cny = item.cost_usd * fx;
+            item
+        })
+        .collect();
+    trend.sort_by(|a, b| a.bucket.cmp(&b.bucket));
+    UsageOverview {
+        summary,
+        trend,
+        failed_sources,
+    }
 }
 
 /// 单来源查询：(该来源区间内的全范围聚合, 按 started_at DESC 的前 limit 行)。
@@ -1135,6 +1554,126 @@ mod tests {
         assert_eq!(row.speed_quality, Some(crate::token_speed::SpeedQuality::Generation));
         conn.execute("UPDATE model_usage SET duration_ms=105", []).unwrap();
         assert!(conn.query_row(&sql, [], |r| row_to_log(r,"dsh")).unwrap().speed_tps.is_none());
+    }
+
+    /// 托盘菜单用量趋势：按本地小时分桶，同桶多模型成本逐组乘价后求和，
+    /// 桶内请求数 / token 累加；非法 bucket 表达式返回 None。
+    #[test]
+    fn usage_trend_buckets_by_local_hour_and_sums_costs() {
+        use chrono::TimeZone;
+
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE model_usage (started_at INTEGER, model_id TEXT, \
+             input_tokens INTEGER, output_tokens INTEGER, \
+             cache_read_input_tokens INTEGER, cache_creation_input_tokens INTEGER, \
+             computed_total_tokens INTEGER);",
+        )
+        .unwrap();
+        let day = chrono::Local::now().date_naive();
+        let at = |h: u32, m: u32| {
+            day.and_hms_opt(h, m, 0)
+                .unwrap()
+                .and_local_timezone(chrono::Local)
+                .single()
+                .unwrap()
+                .timestamp_millis()
+        };
+        let hour_label = |ts: i64| {
+            chrono::Local
+                .timestamp_millis_opt(ts)
+                .single()
+                .unwrap()
+                .format("%Y-%m-%dT%H")
+                .to_string()
+        };
+        let (t1, t2, t3) = (at(1, 10), at(1, 50), at(2, 5));
+        conn.execute(
+            "INSERT INTO model_usage VALUES
+             (?1,'m-a',1000000,0,0,0,1000000),
+             (?2,'m-b',0,500000,0,0,500000),
+             (?3,'m-a',2000000,0,0,0,2000000)",
+            params![t1, t2, t3],
+        )
+        .unwrap();
+        let mut pricing = BTreeMap::new();
+        pricing.insert(
+            "m-a".to_string(),
+            crate::pricing::ModelPrice {
+                input: 1.0,
+                output: 2.0,
+                cache_read: 0.5,
+                cache_write: None,
+            },
+        );
+        pricing.insert(
+            "m-b".to_string(),
+            crate::pricing::ModelPrice {
+                input: 1.0,
+                output: 2.0,
+                cache_read: 0.5,
+                cache_write: None,
+            },
+        );
+        let buckets = query_source_trend(
+            &conn,
+            "dsh",
+            0,
+            i64::MAX,
+            trend_bucket_expr("hour").unwrap(),
+            &pricing,
+        )
+        .unwrap();
+        assert_eq!(buckets.len(), 2);
+        let first = &buckets[0];
+        assert_eq!(first.bucket, hour_label(t1));
+        assert_eq!(first.requests, 2);
+        assert_eq!(first.total_tokens, 1_500_000);
+        assert!((first.cost_usd - 2.0).abs() < 1e-9);
+        let second = &buckets[1];
+        assert_eq!(second.bucket, hour_label(t3));
+        assert_eq!(second.requests, 1);
+        assert!((second.cost_usd - 2.0).abs() < 1e-9);
+        assert!(trend_bucket_expr("week").is_none());
+    }
+
+    /// 远端趋势标签兼容：新版 epoch 毫秒直接按本地时间格式化；旧版
+    /// "MM-DD"/"HH:00" 用查询区间推年份（跨年时选落在区间内的那一年）。
+    #[test]
+    fn remote_bucket_keys_accept_epoch_and_legacy_labels() {
+        use chrono::TimeZone;
+
+        let at = |y: i32, m: u32, d: u32, h: u32| {
+            chrono::Local
+                .with_ymd_and_hms(y, m, d, h, 0, 0)
+                .single()
+                .unwrap()
+        };
+        let ms = at(2026, 11, 8, 18).timestamp_millis();
+        assert_eq!(
+            remote_bucket_key(&ms.to_string(), "hour", 0, ms).as_deref(),
+            Some("2026-11-08T18")
+        );
+        assert_eq!(
+            remote_bucket_key(&ms.to_string(), "day", 0, ms).as_deref(),
+            Some("2026-11-08")
+        );
+
+        let from = at(2025, 12, 25, 0).timestamp_millis();
+        let to = at(2026, 1, 5, 0).timestamp_millis();
+        assert_eq!(
+            remote_bucket_key("12-31", "day", from, to).as_deref(),
+            Some("2025-12-31")
+        );
+        assert_eq!(
+            remote_bucket_key("01-02", "day", from, to).as_deref(),
+            Some("2026-01-02")
+        );
+        assert_eq!(
+            remote_bucket_key("11:00", "hour", from, to).as_deref(),
+            Some("2026-01-05T11")
+        );
+        assert!(remote_bucket_key("nonsense", "day", from, to).is_none());
     }
 
     #[test]
