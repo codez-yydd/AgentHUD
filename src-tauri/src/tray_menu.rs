@@ -1,26 +1,37 @@
-//! 自定义托盘右键菜单窗口（仅 macOS 编译，lib.rs 里以 cfg 挂载）。
+//! 自定义托盘右键菜单窗口（macOS 与 Windows 编译，lib.rs 里以 cfg 挂载）。
 //!
-//! 为什么 macOS 需要这个窗口：macOS 26 起菜单栏由 ControlCenter 托管，
-//! tray-icon crate 靠覆盖在 NSStatusBarButton 上的子视图拦截 mouseDown
-//! 区分左右键的做法失效——只要给 NSStatusItem 挂了原生 NSMenu，系统直接
-//! 把左键当"打开菜单"处理，应用收不到任何 TrayIconEvent::Click（上游
-//! tauri-apps/tray-icon#355 已验证：去掉 setMenu 后左右键事件全部
-//! 正常送达）。因此 macOS 上托盘不再挂原生菜单（见 lib.rs setup_tray 的
-//! cfg 分叉注释），左键恢复切换悬浮面板，右键改为弹出本模块创建的
-//! 自定义 HTML 菜单窗口（tray-menu.html，零 React 轻壳，照
-//! session-hud-main.ts 的架构哲学）。Windows/Linux 完全保留原生菜单与
-//! 既有行为，本模块不参与编译。
+//! 两平台启用本模块的动机不同：
+//! - macOS 是被迫摘菜单：macOS 26 起菜单栏由 ControlCenter 托管，tray-icon
+//!   crate 靠覆盖在 NSStatusBarButton 上的子视图拦截 mouseDown 区分左右键
+//!   的做法失效——只要给 NSStatusItem 挂了原生 NSMenu，系统直接把左键当
+//!   "打开菜单"处理，应用收不到任何 TrayIconEvent::Click（上游
+//!   tauri-apps/tray-icon#355 已验证：去掉 setMenu 后左右键事件全部正常
+//!   送达）。因此 macOS 上托盘不再挂原生菜单（见 lib.rs setup_tray 的
+//!   cfg 分叉注释），左键恢复切换悬浮面板，右键改为弹出本模块创建的
+//!   自定义 HTML 菜单窗口。
+//! - Windows 是主动采用同一面板：Windows 托盘不挂菜单时左右键 Click 事件
+//!   均正常送达，无 macOS 的 NSMenu 问题；改用本模块是纯产品决策——与
+//!   macOS 统一"快捷/用量"面板体验。与 macOS 的差异两点：定位锚定点击点
+//!   而非菜单栏底部（Windows 托盘图标在任务栏上，任务栏可停靠屏幕四边，
+//!   见 show_tray_menu 的平台分支）；不挂系统材质——Windows 材质不裁
+//!   圆角，四角会露方角残影，透明窗口直接用页面自身半透明底（见
+//!   ensure_tray_menu_window 的平台分支）。
+//! - Linux 保留原生菜单与既有行为，本模块不参与编译，保证 Linux 零行为
+//!   变化。
+//!
+//! 菜单窗口本体（tray-menu.html，零 React 轻壳，照 session-hud-main.ts 的
+//! 架构哲学）两平台完全共用。
 //!
 //! 职责：
 //! - ensure_tray_menu_window：懒建隐藏窗口（应用 setup 时预热调用一次，
 //!   右键时秒开——建窗 ~300ms 不能落在右键路径上）。菜单窗口保持
 //!   focusable（默认，不设 focusable(false)）：要接收菜单项点击与 Esc，
 //!   "点外部自动收起"依赖 Focused(false) 事件。
-//! - show_tray_menu：托盘图标正下方定位。setup_tray 传入托盘事件的物理
-//!   坐标，本函数用 monitor_from_point 找到点击所在屏幕、按该屏的
-//!   scale_factor 换算逻辑坐标后 show + set_focus；已可见时再按右键 =
-//!   收起。窗口高度按屏幕可用高度夹取（小屏上内容区滚动，底栏始终
-//!   可见）。
+//! - show_tray_menu：定位 + show + set_focus。setup_tray 传入托盘事件的
+//!   物理坐标，本函数用 monitor_from_point 找到点击所在屏幕、按该屏的
+//!   scale_factor 换算逻辑坐标后定位（y 按平台分叉：macOS 贴菜单栏底，
+//!   Windows 锚定点击点）；已可见时再按右键 = 收起。窗口高度按屏幕
+//!   可用高度夹取（小屏上内容区滚动，底栏始终可见）。
 //! - tray_menu_state：轻量状态（版本 / HUD 停靠条开关 / 展示币种）。只做
 //!   文件读，秒回；重查询全部放 tray_menu_usage。
 //! - tray_menu_usage：用量页一次取数（本机 7 个请求来源 + 同步服务上的
@@ -34,8 +45,8 @@
 //!
 //! 尺寸栅格：窗口 340×580（逻辑 px），与 tray-menu.html 的内容栅格
 //! 一一对应：头部 54、标签页 42、内容区自适应滚动（设计值 394）、底栏 90。窗口内边距
-//! 为 0（原生 popover 材质铺满窗口，圆角 12），改任何一端必须同步另一端
-//! （见 tray-menu.html 顶部注释）。
+//! 为 0（系统材质铺满窗口（仅 macOS Popover；Windows 不挂材质、页面底色即背景），圆角 12），
+//! 改任何一端必须同步另一端（见 tray-menu.html 顶部注释）。
 
 use serde::Serialize;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -53,9 +64,13 @@ const TRAY_MENU_WIDTH: f64 = 340.0;
 /// = 580（与 tray-menu.html 的尺寸栅格注释一一对应）。小屏显示时
 /// show_tray_menu 会按屏幕可用高度夹取，内容区滚动、底栏常驻。
 const TRAY_MENU_HEIGHT: f64 = 580.0;
-/// 菜单窗口顶部起点（逻辑 px）：macOS 菜单栏底部约 25pt，与 lib.rs
-/// toggle_panel 的 macOS y=25 同口径
+/// 菜单窗口顶部起点（逻辑 px，macOS 专用口径）：菜单栏底部约 25pt，与
+/// lib.rs toggle_panel 的 macOS y=25 同口径。Windows 走点击点锚定，
+/// 不以本常量为顶部起点（仅无显示器信息的兜底分支沿用）
 const TRAY_MENU_TOP_Y: f64 = 25.0;
+/// Windows：托盘图标中心到任务栏上沿的近似距离（任务栏逻辑半高：Win11
+/// 任务栏 48 逻辑px 的一半；Win10 40px 时误差 4px，视觉无感）
+const TRAY_MENU_TASKBAR_HALF_Y: f64 = 24.0;
 /// 小屏夹取后的最小窗口高：再矮就连标题 + 底栏都放不下，不如让内容区
 /// 从极窄开始滚动
 const TRAY_MENU_MIN_HEIGHT: f64 = 360.0;
@@ -106,9 +121,16 @@ pub(crate) fn ensure_tray_menu_window(app: &AppHandle) -> Result<(), String> {
     // 不设 focusable(false)：菜单要接收点击、Esc，且失焦自动收起依赖
     // key 状态变化（与停靠条"永不抢焦点"相反的有意取舍）
 
-    // popover 材质 + 圆角 12：与 panel 窗口的 windowEffects 同款做法
-    // （tauri.conf.json panel 配 popover/active/16，菜单圆角与前端 CSS
-    // 的 12px 一致），毛玻璃质感由系统材质提供
+    // 窗口材质平台分叉（Linux 不编译本模块，无需分支）：
+    // - macOS：popover 材质 + 圆角 12，与 panel 窗口的 windowEffects 同款
+    //   做法（tauri.conf.json panel 配 popover/active/16，菜单圆角与前端
+    //   CSS 的 12px 一致），毛玻璃质感由系统材质提供。
+    // - Windows：不挂系统材质——Mica/Acrylic 是矩形材质不裁圆角（macOS
+    //   Popover 带 radius 才会裁），CSS 把内容裁成 12px 圆角后四个角外侧
+    //   会露出材质方角残影（2026-11-08 Windows 实测反馈）；透明窗口 +
+    //   页面自身半透明实底（tray-menu.html --m-bg）即得干净圆角，观感
+    //   与系统材质几乎一致。
+    #[cfg(target_os = "macos")]
     let builder = builder.effects(
         tauri::window::EffectsBuilder::new()
             .effect(tauri::window::Effect::Popover)
@@ -120,8 +142,8 @@ pub(crate) fn ensure_tray_menu_window(app: &AppHandle) -> Result<(), String> {
     let win = builder
         .build()
         .map_err(|e| format!("创建托盘菜单窗口失败: {e}"))?;
-    // 显式清空背景防 WebView 白底盖住 popover 材质（照抄 hud_bar.rs
-    // macOS 分支 / panel 的同款处理）
+    // 显式清空背景防 WebView 白底盖住系统材质（macOS/Windows 都需要，
+    // 照抄 hud_bar.rs macOS 分支 / panel 的同款处理）
     let _ = win.set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
 
     // 失焦自动收起：点窗口外任意区域系统会释放本窗口的 key 状态，
@@ -175,8 +197,10 @@ pub(crate) fn show_tray_menu(app: &AppHandle, click_pos: (f64, f64)) {
 
     // 定位：水平居中对齐托盘图标 x，按**点击所在屏幕**的工作区夹紧
     // （monitor_from_point 拿到的 position 是全局物理坐标，换算成该屏
-    // 逻辑坐标后再夹，副屏在主屏右侧时不会把窗口弹回主屏）。顶部贴
-    // 菜单栏底（TRAY_MENU_TOP_Y，同 toggle_panel 口径）。
+    // 逻辑坐标后再夹，副屏在主屏右侧时不会把窗口弹回主屏）。y 按平台
+    // 分叉：macOS 顶部贴菜单栏底（TRAY_MENU_TOP_Y，同 toggle_panel 口径）；
+    // Windows 托盘在任务栏上（任务栏可停靠屏幕底部/顶部/左右侧），菜单
+    // 锚定点击点弹出（见下方 if let Some(mon) 内的平台分支）。
     let (px, py) = click_pos;
     let target_monitor = win
         .monitor_from_point(px, py)
@@ -190,6 +214,15 @@ pub(crate) fn show_tray_menu(app: &AppHandle, click_pos: (f64, f64)) {
     let cx = px / scale;
     let mut x = cx - TRAY_MENU_WIDTH / 2.0;
     let mut height = TRAY_MENU_HEIGHT;
+    // Windows 额外需要点击点的逻辑 y（菜单锚定点击点）；macOS 恒贴菜单栏
+    // 底用不到换算值，不计算以免未使用告警
+    #[cfg(target_os = "windows")]
+    let cy = py / scale;
+    // macOS 的 y 恒定（保持原口径）；Windows 分支内会按点击点改写
+    #[cfg(target_os = "macos")]
+    let y = TRAY_MENU_TOP_Y;
+    #[cfg(target_os = "windows")]
+    let mut y = TRAY_MENU_TOP_Y;
     if let Some(mon) = target_monitor {
         // 该屏自己的 scale：混合 DPI 下 position/size 都是物理像素
         let mon_scale = mon.scale_factor();
@@ -199,13 +232,44 @@ pub(crate) fn show_tray_menu(app: &AppHandle, click_pos: (f64, f64)) {
         let min_x = mon_left + 4.0;
         let max_x = (mon_left + mon_w - TRAY_MENU_WIDTH - 4.0).max(min_x);
         x = x.clamp(min_x, max_x);
-        // 屏幕高度不够时同步缩窗，内容区滚动、底栏常驻
-        height = (mon_h - TRAY_MENU_TOP_Y - 8.0)
-            .clamp(TRAY_MENU_MIN_HEIGHT, TRAY_MENU_HEIGHT);
+        #[cfg(target_os = "macos")]
+        {
+            // 屏幕高度不够时同步缩窗，内容区滚动、底栏常驻
+            height = (mon_h - TRAY_MENU_TOP_Y - 8.0)
+                .clamp(TRAY_MENU_MIN_HEIGHT, TRAY_MENU_HEIGHT);
+        }
+        #[cfg(target_os = "windows")]
+        {
+            let mon_top = mon.position().y as f64 / mon_scale;
+            // 锚定缝 = 图标中心到任务栏贴屏沿的近似距离 24（见
+            // TRAY_MENU_TASKBAR_HALF_Y 的 why）+ 6px 呼吸缝，上下半屏
+            // 对称使用：菜单贴任务栏边弹出时不整缝贴死，视觉更自然
+            let anchor_gap = TRAY_MENU_TASKBAR_HALF_Y + 6.0;
+            if cy - mon_top < mon_h / 2.0 {
+                // 点击在屏幕上半（任务栏停靠顶部的少数布局）：改在点击点
+                // 下方弹出。cy 是托盘图标中心、距任务栏下沿约 24，再叠
+                // anchor_gap 的 6px 缝，菜单顶边落在任务栏下沿之上留缝
+                y = cy + anchor_gap;
+                height = (mon_top + mon_h - y - 8.0)
+                    .clamp(TRAY_MENU_MIN_HEIGHT, TRAY_MENU_HEIGHT);
+            } else {
+                // 常见布局（任务栏在底部/左右侧）：菜单整体收进任务栏上方。
+                // cy 是托盘图标中心（约在任务栏半高处、距任务栏上沿约 24），
+                // 锚点必须上移半个任务栏高：y = cy - height - anchor_gap 让
+                // 菜单底边贴任务栏上沿之上再留缝，不再像旧口径 cy - 2 那样
+                // 越过任务栏上沿约 22px 压在任务栏上（2026-11-08 Windows
+                // 实测反馈）。height 同步多减 4.0 顶部屏缘安全余量（与
+                // macOS 分支 -8 同口径）；小屏时 height 被夹小，菜单自动
+                // 缩高（内容区滚动、底栏常驻）
+                height = (cy - mon_top - anchor_gap - 4.0)
+                    .clamp(TRAY_MENU_MIN_HEIGHT, TRAY_MENU_HEIGHT);
+                y = cy - height - anchor_gap;
+            }
+        }
     } else {
         x = x.max(4.0);
     }
-    let _ = win.set_position(LogicalPosition::new(x, TRAY_MENU_TOP_Y));
+    let _ = win.set_position(LogicalPosition::new(x, y));
     let _ = win.set_size(LogicalSize::new(TRAY_MENU_WIDTH, height));
     let _ = win.show();
     let _ = win.set_focus();
