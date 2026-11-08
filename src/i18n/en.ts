@@ -1069,7 +1069,7 @@ export const en: typeof zh = {
     "credentials.resetFile": "Reset credentials file",
     "credentials.resetTitle": "Reset credentials file",
     "credentials.resetConfirm":
-      "This clears every stored credential for this service and rebuilds an empty file (to repair a corrupted credentials file). Deleted credentials cannot be recovered. Reset now?",
+      "This clears every stored credential for this service and rebuilds an empty file (to repair a corrupted credentials file). Deleted credentials cannot be recovered and must be added again. Reset now?",
     "credentials.resetDone": "Reset ✓",
     "credentials.resetFail": "Reset failed: {msg}",
 
@@ -1085,6 +1085,16 @@ export const en: typeof zh = {
     "credentials.quotaPending":
       "Quota queries are coming soon. Your credential is ready; usage and quota will appear here once connected.",
     "credentials.quotaRefreshing": "Querying quota, please wait…",
+    // Self-repair hint shown when a provider quota query fails outright
+    // (get_provider_quota returns Err, e.g. a corrupted credential file):
+    // the raw backend message (already naming the provider) is shown separately
+    // and the "Reset credentials file" button is embedded in the same banner
+    // (the credentials section itself is unreachable while the file is corrupt,
+    // see ProviderQuotaErrorBanner). This line states the consequences and what
+    // happens afterwards: resetting clears stored credentials (re-add needed)
+    // and querying resumes automatically — no manual retry required.
+    "credentials.quotaCredResetHint":
+      "The credential file may be corrupted. Use the button below to reset: this clears every stored credential for this service (re-add them afterwards); querying resumes automatically.",
     "credentials.noCredentialEntry":
       "This service has no credential entry: it queries credentials already on this machine or local data, and none is available right now.",
     "credentials.entryError": "Query failed",

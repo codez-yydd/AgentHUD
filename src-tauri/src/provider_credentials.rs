@@ -20,7 +20,8 @@
 
 use crate::pricing::config_dir;
 use serde::{Deserialize, Serialize};
-use std::fs;
+use std::fs::{self, File};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
@@ -183,6 +184,15 @@ fn harden_file(path: &Path) {
 /// 同目录临时文件 + rename 原子写（凭证文件含 secret，必须避免半截文件）。
 /// pub(crate)：gemini.rs 刷新 token 后写回 ~/.gemini/oauth_creds.json 复用
 /// 同一惯例（刷新成功与写回之间进程被杀时，半截文件会毁掉用户的登录态）。
+///
+/// rename 前先对临时文件 `sync_all()` 强制落盘。真实事故（2026-11-03）：一次
+/// 写入中断后 `~/.agenthud/credentials/opencodego.json` 变成 400 字节全 NUL
+/// （NTFS 已分配空间但数据从未刷盘，rename 照常生效），凭证全部丢失。只 write
+/// 不 fsync 时，崩溃窗口内 rename 进目标位置的可能就是这种未落盘的空数据。
+///
+/// 目录项一致性不做：Windows 没有可移植的目录 fsync（Unix 上 fsync 目录句柄
+/// 的做法在 Windows 无对应物），极端崩溃下可能回退到旧文件——旧数据好过全
+/// NUL，此处不做补救尝试。
 pub(crate) fn atomic_write(path: &Path, contents: &str) -> Result<(), String> {
     let dir = path
         .parent()
@@ -192,8 +202,11 @@ pub(crate) fn atomic_write(path: &Path, contents: &str) -> Result<(), String> {
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| "file".into());
     let tmp = dir.join(format!(".{name}.tmp"));
-    fs::write(&tmp, contents).map_err(|e| format!("写入临时文件失败: {e}"))?;
+    let mut file = File::create(&tmp).map_err(|e| format!("写入临时文件失败: {e}"))?;
+    file.write_all(contents.as_bytes())
+        .map_err(|e| format!("写入临时文件失败: {e}"))?;
     harden_file(&tmp);
+    file.sync_all().map_err(|e| format!("同步临时文件失败: {e}"))?;
     fs::rename(&tmp, path).map_err(|e| format!("替换文件失败: {e}"))
 }
 
@@ -314,7 +327,29 @@ fn has_credentials(provider: &str) -> Result<bool, String> {
     if provider == "grok" && crate::grok::has_local_data() {
         return Ok(true);
     }
-    Ok(!load_provider(provider)?.entries.is_empty())
+    Ok(has_credentials_at(&provider_path(provider)?))
+}
+
+/// 文件级三分支 presence 判断（path 注入版，供单测）：
+/// - 文件不存在 → false（正常无凭证，首次添加前无需预建）；
+/// - 文件存在但读取/解析失败 → true（语义是「有凭证，只是读不出」。若此处
+///   返回 Err，前端 presence 键不写入，120s 轮询 / presence 补刷 / 面板挂载
+///   补刷会整体跳过该 provider，凭证损坏故障完全静默——2026-11-03
+///   opencodego 凭证文件损坏事故的另一半症状。让 presence 为 true 接上
+///   轮询链路后，读取错误本身由额度查询链路透出给用户并触发自愈引导）；
+/// - 正常 → 按 entries 是否为空。
+fn has_credentials_at(path: &Path) -> bool {
+    if !path.exists() {
+        return false;
+    }
+    // 不复用 load_provider：presence 只关心「读不读得出」，不需要错误文案
+    let parsed: Option<ProviderFile> = fs::read_to_string(path)
+        .ok()
+        .and_then(|raw| serde_json::from_str(&raw).ok());
+    match parsed {
+        Some(file) => !file.entries.is_empty(),
+        None => true,
+    }
 }
 
 /// 添加一条凭证的内部内核（command 与 kimi_oauth 设备码登录共用）：
@@ -733,5 +768,76 @@ mod tests {
         assert_eq!(json["maskedSecret"], "sk-123…cdef");
         assert_eq!(json["createdAt"], serde_json::json!(1730000000000i64));
         assert!(json.get("secret").is_none());
+    }
+
+    #[test]
+    fn atomic_write_round_trip_and_tmp_cleanup() {
+        // atomic_write 接收任意路径，用系统临时目录实测（不触碰真实
+        // ~/.agenthud）：写入 → rename 后目标内容一致、临时文件已消失；
+        // 覆盖写走同一链路（临时文件重建后再 rename）
+        let dir = std::env::temp_dir()
+            .join(format!("agenthud_atomic_write_{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("cred.json");
+        let tmp = dir.join(".cred.json.tmp");
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_file(&tmp);
+
+        let contents = r#"{"secret":"sk-1234567890abcdef"}"#;
+        atomic_write(&path, contents).unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), contents);
+        assert!(!tmp.exists(), "rename 后临时文件应不存在");
+
+        let updated = r#"{"secret":"sk-updated"}"#;
+        atomic_write(&path, updated).unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), updated);
+        assert!(!tmp.exists());
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn has_credentials_three_branches() {
+        // has_credentials_at 接收任意路径，用系统临时目录实测（不触碰真实
+        // ~/.agenthud）：三分支语义——不存在 / 存在但损坏 / 正常
+        let dir = std::env::temp_dir()
+            .join(format!("agenthud_has_cred_{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+
+        // 1) 文件不存在 → 无凭证（首次添加前的正常态）
+        assert!(!has_credentials_at(&dir.join("absent.json")));
+
+        // 2a) 全 NUL 坏文件（写入中断事故形态：NTFS 已分配空间但数据未落盘）
+        //     → 仍视为有凭证：presence 为 true 才能让 120s 轮询与错误 banner
+        //     链路接上，故障不至于完全静默
+        let corrupt = dir.join("corrupt.json");
+        fs::write(&corrupt, vec![0u8; 400]).unwrap();
+        assert!(has_credentials_at(&corrupt));
+
+        // 2b) 非 UTF-8 乱码损坏（read_to_string 直接失败）→ 同分支
+        let garbage = dir.join("garbage.json");
+        fs::write(&garbage, [0xff, 0xfe, 0x00, 0x01]).unwrap();
+        assert!(has_credentials_at(&garbage));
+
+        // 2c) 合法 UTF-8 但不是 JSON（手改出错）→ 同分支
+        let not_json = dir.join("not_json.json");
+        fs::write(&not_json, "not a json").unwrap();
+        assert!(has_credentials_at(&not_json));
+
+        // 3a) 正常含凭证文件 → 有凭证
+        let ok = dir.join("ok.json");
+        fs::write(
+            &ok,
+            r#"{"version":1,"entries":[{"id":"a","label":"x","kind":"apiKey","secret":"sk-1234567890abcdef","region":null,"created_at":1,"updated_at":1}]}"#,
+        )
+        .unwrap();
+        assert!(has_credentials_at(&ok));
+
+        // 3b) 正常但 entries 为空（删空后保留的骨架）→ 无凭证
+        let empty = dir.join("empty.json");
+        fs::write(&empty, r#"{"version":1,"entries":[]}"#).unwrap();
+        assert!(!has_credentials_at(&empty));
+
+        fs::remove_dir_all(&dir).unwrap();
     }
 }

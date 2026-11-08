@@ -593,6 +593,18 @@ export interface ProviderQuotaCacheEntry {
   ts: number;
 }
 
+/** provider 额度查询整体失败（get_provider_quota 返回 Err）的错误记录：
+ *  command 级失败时后端读不到任何条目（典型：凭证文件损坏成全 NUL，第一步
+ *  读凭证就 Err），旧缓存值照常保留展示（保旧不丢数据），但必须叠加本错误
+ *  提示——否则每轮轮询都静默失败，用户对着陈旧额度毫无感知（2026-11-03
+ *  opencodego 凭证损坏事故）。message 为后端错误原文，ts 为最近一次失败
+ *  时刻。仅运行时状态不持久化：冷启动后会立即重新查询，持久化旧错误反而
+ *  会在故障已自愈（如用户已重置凭证文件）时误报。 */
+export interface ProviderQuotaErrorInfo {
+  message: string;
+  ts: number;
+}
+
 /** 冷启动恢复缓存时清掉 refreshing 标志（与 stripRefreshing 同款，但
  *  条目缺 entries 字段的旧数据一并兜底为空数组）。 */
 function normalizeQuotaCache(
@@ -698,6 +710,10 @@ export interface DataCacheValue {
   // ===== 通用 provider 额度缓存（provider → {entries, refreshing, ts}；
   //      120s 轮询仅覆盖已有凭证的 provider，手动刷新不受此限制）=====
   providerQuota: Record<string, ProviderQuotaCacheEntry>;
+  /** 各 provider 额度查询的整体失败记录（provider → {message, ts}）：
+   *  command 级 Err（如凭证文件损坏）时后端读不到任何条目，面板据此在旧值
+   *  上方叠加错误提示、无旧值时替代「查询中」占位；查询成功即清除 */
+  providerQuotaErrors: Record<string, ProviderQuotaErrorInfo>;
   /** 手动刷新某 provider 的额度（面板刷新按钮用；force 供凭证增删改事件
    *  路径使用：inflight 存在时登记补刷而非丢弃）；查询结果不含 secret，
    *  完成后顺带刷新该 provider 凭证列表以同步 last_check 徽章 */
@@ -974,6 +990,12 @@ export function DataProvider({ pricing, credentialPresence, children }: Provider
   const [providerQuota, setProviderQuota] = useState<
     Record<string, ProviderQuotaCacheEntry>
   >(() => normalizeQuotaCache(loadCache<Record<string, ProviderQuotaCacheEntry>>("zbar-provider-quota") ?? {}));
+  // 各 provider 额度查询的整体失败记录（provider → {message, ts}）：查询
+  // 成功即清除该 provider 的记录。仅运行时状态不落盘，理由见
+  // ProviderQuotaErrorInfo 注释
+  const [providerQuotaErrors, setProviderQuotaErrors] = useState<
+    Record<string, ProviderQuotaErrorInfo>
+  >({});
   const providerQuotaInflight = useRef<Set<string>>(new Set());
   // 事件驱动 force 刷新的补刷登记：inflight 存在时登记，当前查询完成后
   // 消费（再查一轮）并从集合移除——一次性登记，天然防无限循环
@@ -991,8 +1013,9 @@ export function DataProvider({ pricing, credentialPresence, children }: Provider
   }, [credentialPresence]);
 
   /** 刷新某 provider 的额度（120s 轮询与手动刷新共用）：inflight 去重，
-   *  刷新期间保留旧 entries（不清空、无闪烁）；command 整体失败保留旧值
-   *  （单凭证失败已在条目 status/message 里表达，无全局 error 可设）。
+   *  刷新期间保留旧 entries（不清空、无闪烁）；command 整体失败保留旧值并
+   *  记录整体错误（providerQuotaErrors，供面板叠加 ⚠ 提示；单凭证失败仍只
+   *  在条目 status/message 里表达，不算整体失败）。查询成功即清除整体错误。
    *  完成后顺带刷新该 provider 凭证列表，让凭证卡的 last_check 徽章
    *  与本轮回写结论同步。
    *  force（事件驱动路径专用）：inflight 存在时不丢弃本次刷新——飞行中的
@@ -1014,12 +1037,27 @@ export function DataProvider({ pricing, credentialPresence, children }: Provider
         }));
         return fetchProviderQuota(provider)
           .then((entries) => {
+            // 成功即清除整体失败记录：空数组是后端的正常结论（凭证被清空
+            // / 未接入），不是查询失败，同样要清错
+            setProviderQuotaErrors((prev) => {
+              if (!(provider in prev)) return prev;
+              const next = { ...prev };
+              delete next[provider];
+              return next;
+            });
             setProviderQuota((prev) => ({
               ...prev,
               [provider]: { entries, refreshing: false, ts: Date.now() },
             }));
           })
-          .catch(() => {
+          .catch((e) => {
+            // command 整体失败（读不到任何条目）：旧 entries 照常保留展示
+            // （保旧不丢数据），同时记录错误让面板叠加 ⚠ 提示。ts 记最近
+            // 一次失败时刻，连续失败时时间随之更新，用户可判断故障是否持续
+            setProviderQuotaErrors((prev) => ({
+              ...prev,
+              [provider]: { message: String(e), ts: Date.now() },
+            }));
             setProviderQuota((prev) => ({
               ...prev,
               [provider]: {
@@ -2579,6 +2617,7 @@ export function DataProvider({ pricing, credentialPresence, children }: Provider
       credentials,
       refreshCredentials,
       providerQuota,
+      providerQuotaErrors,
       refreshProviderQuota,
       lastUpdate,
       refreshing,
@@ -2611,6 +2650,7 @@ export function DataProvider({ pricing, credentialPresence, children }: Provider
       credentials,
       refreshCredentials,
       providerQuota,
+      providerQuotaErrors,
       refreshProviderQuota,
       lastUpdate,
       refreshing,

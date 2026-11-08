@@ -54,7 +54,7 @@ export const credentials = {
   "credentials.resetFile": "重置凭证文件",
   "credentials.resetTitle": "重置凭证文件",
   "credentials.resetConfirm":
-    "将清除该服务全部已存凭证并重建空文件（用于修复损坏的凭证文件），已删除的凭证不可恢复，确认重置？",
+    "将清除该服务全部已存凭证并重建空文件（用于修复损坏的凭证文件），已删除的凭证不可恢复，重置后需重新添加。确认重置？",
   "credentials.resetDone": "已重置 ✓",
   "credentials.resetFail": "重置失败：{msg}",
 
@@ -69,6 +69,13 @@ export const credentials = {
   "credentials.quotaPending":
     "额度查询接入即将上线。凭证已就绪，接入后将自动在此展示用量与额度。",
   "credentials.quotaRefreshing": "正在查询额度，请稍候…",
+  // provider 额度查询整体失败（get_provider_quota 返回 Err，如凭证文件损坏
+  // 成全 NUL）时的自愈引导：错误原文由后端 message 展示（含 provider 名），
+  // 「重置凭证文件」按钮由 banner 直接内嵌（凭证管理区在坏文件场景不可达，
+  // 见 ProviderQuotaErrorBanner），此处只说明后果与后续行为——重置清空该
+  // 服务已存凭证、需重新添加，重置后自动恢复查询（无需手动重试）
+  "credentials.quotaCredResetHint":
+    "凭证文件可能已损坏。点击下方按钮重置：将清空该服务已保存的凭证（重置后需重新添加），并自动恢复查询。",
   // 无凭证录入入口的 provider（现仅 moonshot；opencodego / minimax / deepseek
   // 已按用户要求开放入口，见 agentVisibility.NO_CREDENTIAL_ENTRY_AGENTS）
   // 在既无已存凭证也无本地数据时的空态说明——否则面板会是一片空白

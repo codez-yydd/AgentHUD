@@ -7,7 +7,7 @@ import type {
 } from "./types";
 import { AgentUsagePanel, type AgentUsageSnapshot } from "./AgentUsagePanel";
 import { BrandIcon } from "./BrandIcon";
-import { QuotaEntryCard } from "./QuotaEntryCard";
+import { ProviderQuotaErrorBanner, QuotaEntryCard } from "./QuotaEntryCard";
 import { useDataCache } from "./DataCache";
 import { AGENT_COLOR } from "./agentVisibility";
 import { ProviderAccountsSection } from "./ProviderAccountsSection";
@@ -65,10 +65,14 @@ function toUsageSnapshot(
 export function MinimaxPanel(props: Props) {
   const { t } = useI18n();
   const resetDisplay = useResetDisplay();
-  const { providerQuota, refreshProviderQuota } = useDataCache();
+  const { providerQuota, providerQuotaErrors, refreshProviderQuota } =
+    useDataCache();
   const cacheEntry = providerQuota["minimax"];
   const quotaEntries = cacheEntry?.entries ?? [];
   const refreshing = cacheEntry?.refreshing ?? false;
+  // 整体查询失败（command 级 Err，如凭证文件损坏）：旧值照常展示，但必须
+  // 叠加错误提示（见 ProviderQuotaErrorBanner）
+  const quotaError = providerQuotaErrors["minimax"];
   // 是否已完成首轮查询（ts>0）：区分「还没查过」与「查过确认无数据」
   //（照 GenericQuotaPanel；本地无 MiniMax Code 数据、也没配 Coding Plan Key 时
   // 首轮返回空数组，不能一片空白——空态另有底部凭证区的引导）
@@ -85,10 +89,12 @@ export function MinimaxPanel(props: Props) {
     return () => clearInterval(timer);
   }, [hasResets]);
 
-  // 查询中 / 首轮未回 / 已有条目才渲染额度板块：首轮已回且确认无数据时整块
-  // 不渲染（不留一块空标题）——没存过 Key 的机器本来就没有套餐额度可展示，
-  // 此时下方用量面板已经说明了 MiniMax Code 的本地用量。
-  const showQuota = quotaEntries.length > 0 || refreshing || !firstRoundDone;
+  // 查询中 / 首轮未回 / 已有条目 / 整体查询失败才渲染额度板块：首轮已回且
+  // 确认无数据时整块不渲染（不留一块空标题）——没存过 Key 的机器本来就没
+  // 有套餐额度可展示，此时下方用量面板已经说明了 MiniMax Code 的本地用量；
+  // 失败态必须保留板块，否则错误对用户不可见。
+  const showQuota =
+    quotaEntries.length > 0 || refreshing || !firstRoundDone || !!quotaError;
 
   return (
     <>
@@ -114,14 +120,25 @@ export function MinimaxPanel(props: Props) {
             </button>
           </div>
 
+          {/* 整体查询失败提示（command 级 Err）：无错误时渲染 null。无旧值时
+              替代下方「查询中」占位，有旧值时叠加在配额卡上方（保旧不丢数据，
+              但用户必须知道数据已不再新鲜）。凭证文件损坏时卡内嵌
+              「重置凭证文件」自愈入口；mb-1.5 与下方卡片对齐间距（容器非
+              page-stack，无自动 gap） */}
+          <ProviderQuotaErrorBanner provider="minimax" className="mb-1.5" />
+
           {quotaEntries.length === 0 ? (
             // 空态一档：查询中或首轮未回（照 GenericQuotaPanel 的档位与文案；
-            // 无本地数据也无 Key 时同样不能一片空白，底部凭证区给出录入引导）
-            <div className="card-base rounded-2xl px-3 py-3">
-              <p className="text-[10px] text-slate-500 leading-relaxed">
-                {t("credentials.quotaRefreshing")}
-              </p>
-            </div>
+            // 无本地数据也无 Key 时同样不能一片空白，底部凭证区给出录入引导）。
+            // 整体查询失败且未在刷新（错误静置态）时改由上方错误卡表达，
+            // 不能再显示「查询中」误导用户以为查询仍在进行。
+            quotaError && !refreshing ? null : (
+              <div className="card-base rounded-2xl px-3 py-3">
+                <p className="text-[10px] text-slate-500 leading-relaxed">
+                  {t("credentials.quotaRefreshing")}
+                </p>
+              </div>
+            )
           ) : (
             // 每条凭证一张配额卡（与 GenericQuotaPanel / KimiOtherAccounts
             // 共用渲染，品牌色取 AGENT_COLOR.minimax）

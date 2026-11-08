@@ -12,7 +12,7 @@ import {
 } from "./agentVisibility";
 import { CredentialsCard, type CredentialRegionOption } from "./CredentialsCard";
 import { BrandIcon } from "./BrandIcon";
-import { QuotaEntryCard } from "./QuotaEntryCard";
+import { ProviderQuotaErrorBanner, QuotaEntryCard } from "./QuotaEntryCard";
 import { useResetDisplay } from "./resetDisplay";
 
 interface GenericQuotaPanelProps {
@@ -51,10 +51,14 @@ export function GenericQuotaPanel({
 }: GenericQuotaPanelProps) {
   const { t } = useI18n();
   const resetDisplay = useResetDisplay();
-  const { credentials, providerQuota, refreshProviderQuota } = useDataCache();
+  const { credentials, providerQuota, providerQuotaErrors, refreshProviderQuota } =
+    useDataCache();
   const cacheEntry = providerQuota[provider];
   const quotaEntries: ProviderQuotaEntry[] = cacheEntry?.entries ?? [];
   const refreshing = cacheEntry?.refreshing ?? false;
+  // 整体查询失败（command 级 Err，如凭证文件损坏）：旧值照常展示，但必须
+  // 叠加错误提示（见 ProviderQuotaErrorBanner）
+  const quotaError = providerQuotaErrors[provider];
   // 是否已完成首轮查询（ts>0）：区分「还没查过」与「查过确认无数据」
   const firstRoundDone = (cacheEntry?.ts ?? 0) > 0;
   const hasCreds = (credentials[provider]?.length ?? 0) > 0;
@@ -115,19 +119,28 @@ export function GenericQuotaPanel({
         />
       )}
 
+      {/* 额度整体查询失败提示（command 级 Err）：无错误时渲染 null，无条件
+          插入即可。无旧值时它替代下方「查询中」占位（占位条件已排除错误
+          静置态），有旧值时叠加在配额卡上方——旧数据照常展示，但用户必须
+          知道它已不再新鲜。 */}
+      <ProviderQuotaErrorBanner provider={provider} />
+
       {/* 额度空态三档：无凭证（凭证卡空态已含引导，不重复提示）/
           有凭证查询中（refreshing 或未完成首轮）/ 确认未接入
           （doubao 等后端暂无查询分支的 provider，首轮返回空数组）。
           本地型 provider 即使没有凭证也会真的发起查询（数据来自本地库），
           因此「查询中」占位同样适用，否则纯本地用户会看到面板空白。
           无凭证录入入口的 provider（现仅 moonshot）另给一条说明：
-          它没有凭证卡，既无已存凭证也无本地数据时不能让面板一片空白。 */}
+          它没有凭证卡，既无已存凭证也无本地数据时不能让面板一片空白。
+          整体查询失败且未在刷新（错误静置态）时改由上方错误卡表达，
+          不能再显示「查询中」误导用户以为查询仍在进行。 */}
       {quotaEntries.length === 0 &&
         (hasCreds || isLocalAgent(provider) || !hasCredentialEntry(provider)) &&
         (refreshing ||
           !firstRoundDone ||
           NOT_YET_PROVIDERS.includes(provider) ||
-          !hasCredentialEntry(provider)) && (
+          !hasCredentialEntry(provider)) &&
+        !(quotaError && !refreshing) && (
         <div className="card-base rounded-2xl px-3 py-3">
           <p className="text-[10px] text-slate-500 leading-relaxed">
             {refreshing || !firstRoundDone

@@ -25,6 +25,13 @@
 //!   无限堆积，见 upsert_snapshot_at_opts）。
 
 use crate::pricing::config_dir;
+// 同目录临时文件 + rename 原子写复用 provider_credentials 的实现（带
+// rename 前 sync_all 强制落盘：只 write 不 fsync 时，崩溃窗口内 rename
+// 进目标位置的可能只是未落盘的空数据——本模块写的正是 ZCode 的
+// credentials.json / config.json，损坏后果与 2026-11-03 provider 凭证
+// 事故同类）。签名与语义（路径、tmp 命名、0600、错误文案）与原先的
+// 本地副本完全一致，副本已删除。
+use crate::provider_credentials::atomic_write;
 use crate::zcode_crypto::{fingerprint_of_credentials, Fingerprint};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -201,30 +208,8 @@ fn harden_dir(dir: &Path) {
     let _ = dir;
 }
 
-/// 文件权限收紧到 0600。
-fn harden_file(path: &Path) {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
-    }
-    let _ = path;
-}
-
-/// 同目录临时文件 + rename 原子写（快照含凭证，必须避免半截文件）。
-fn atomic_write(path: &Path, contents: &str) -> Result<(), String> {
-    let dir = path
-        .parent()
-        .ok_or_else(|| format!("路径缺少父目录: {}", path.display()))?;
-    let name = path
-        .file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_else(|| "file".into());
-    let tmp = dir.join(format!(".{name}.tmp"));
-    fs::write(&tmp, contents).map_err(|e| format!("写入临时文件失败: {e}"))?;
-    harden_file(&tmp);
-    fs::rename(&tmp, path).map_err(|e| format!("替换文件失败: {e}"))
-}
+// 同目录临时文件 + rename 原子写（快照含凭证，必须避免半截文件）：
+// 实现复用 provider_credentials::atomic_write（见文件头部 use 处说明）。
 
 /// 在指定基目录下保存快照（tmp+rename，目录 0700 / 文件 0600）。
 fn save_snapshot_at(base: &Path, snap: &AccountSnapshot) -> Result<(), String> {

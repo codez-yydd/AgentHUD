@@ -7,9 +7,13 @@
  * 与 Z.ai / Codex / Claude / Cursor 及汇总页的额度条完全一致；绝对值另起
  * 一行标「已用 N / 总量」。详见 QuotaWindowBar 的注释。
  */
+import { useState } from "react";
 import type { MessageKey } from "./i18n";
 import { useI18n } from "./i18n";
+import { useDataCache } from "./DataCache";
 import type { ProviderQuotaEntry } from "./types";
+import { resetProviderCredentials } from "./api";
+import { notifyCredentialsChanged } from "./agentVisibility";
 import { ProgressBar, remainingGradient, remainingTextColor } from "./widgets";
 import { formatCountdownCore, formatResetStamp } from "./format";
 
@@ -187,6 +191,165 @@ export function QuotaEntryCard({
             </span>
           )}
         </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * 凭证文件损坏类错误的判定：Rust provider_credentials.rs 的 load_provider
+ * 有两条同类错误前缀（均为硬编码中文、不受界面语言影响，includes 匹配可靠）：
+ * - 「凭证文件解析失败（{provider}）: …」——合法 UTF-8 但 JSON 解析失败
+ *   （典型：全 NUL 坏文件）；
+ * - 「读取凭证文件失败（{provider}）: …」——非 UTF-8 乱码等读盘失败。
+ * 两者都是「文件在但读不出」的同一故障形态，自愈入口相同，一并匹配。
+ */
+function isCredResettableError(message: string): boolean {
+  return (
+    message.includes("凭证文件解析失败") || message.includes("读取凭证文件失败")
+  );
+}
+
+/**
+ * provider 额度查询整体失败的公共错误卡（get_provider_quota 返回 Err）：
+ * 与单条目 status="error"（QuotaEntryCard 内部渲染）不同，本卡表达的是
+ * command 级失败——后端读不到任何条目（典型：凭证文件损坏，第一步读凭证
+ * 就 Err）。从 DataCache 读错误记录，无错误渲染 null，面板可无条件插入。
+ * 错误叠加时旧缓存条目照常渲染（保旧不丢数据，由面板负责），本卡只负责
+ * 把失败本身告知用户，样式与 QuotaEntryCard 的 error 行保持一致
+ * （⚠ + rose 文字 + 徽章）。
+ *
+ * 凭证文件损坏场景（isCredResettableError）内嵌「重置凭证文件」自愈入口
+ * （二次确认后调用后端 reset_provider：删除坏文件并重建空骨架）。入口必须
+ * 放在 banner 内而非引导用户去凭证管理区：坏文件时凭证列表永远读取失败
+ * （DataCache 只在成功时写 credentials 缓存），凭证卡区块在多数面板整体
+ * 不渲染，重置按钮不可达（2026-11-03 opencodego 事故的真实路径）。重置
+ * 成功后广播 credentials-changed：DataCache 失效刷新该 provider 凭证列表
+ * 并 force 补刷额度（查询成功即清除本错误卡），App 重查 presence 联动
+ * tab 显隐——整个闭环复用既有事件机制，banner 内无需额外刷新调用。
+ *
+ * className：调用点用它与相邻卡片对齐间距（各面板卡片间距口径不一：
+ * page-stack 容器自带 gap 无需外边距，其余面板传 mt-1.5 / mb-1.5），
+ * 组件自身不带任何外边距。
+ */
+export function ProviderQuotaErrorBanner({
+  provider,
+  className = "",
+}: {
+  provider: string;
+  /** 与相邻卡片对齐间距（如 mt-1.5 / mb-1.5），由调用点按面板口径传入 */
+  className?: string;
+}) {
+  const { t } = useI18n();
+  const { providerQuotaErrors } = useDataCache();
+  const err = providerQuotaErrors[provider];
+  // 重置流程本地态：二次确认 / 进行中 / 结果反馈。挂载在早退之前声明
+  //（hooks 顺序稳定；无错误时这些态不会被用到）
+  const [confirming, setConfirming] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<{ ok: boolean; text: string } | null>(
+    null
+  );
+  if (!err) return null;
+  const isCredParseError = isCredResettableError(err.message);
+
+  // 重置凭证文件（后端删坏文件重建空骨架）：成功后广播凭证变更，刷新与
+  // 额度补刷走 DataCache 的既有事件链路（见组件注释）；失败在按钮旁透出
+  const handleReset = async () => {
+    setBusy(true);
+    setResult(null);
+    try {
+      await resetProviderCredentials(provider);
+      setConfirming(false);
+      notifyCredentialsChanged(provider);
+      setResult({ ok: true, text: t("credentials.resetDone") });
+    } catch (e) {
+      setResult({
+        ok: false,
+        text: t("credentials.resetFail", { msg: String(e) }),
+      });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className={`card-base rounded-2xl px-3 py-2.5 relative ${className}`}>
+      {/* 标题行：查询失败徽章（复用条目级文案与配色）+ 最近失败时刻 */}
+      <div className="flex items-center justify-between gap-2 mb-1.5">
+        <span className="shrink-0 px-1.5 py-px rounded-full text-[8px] font-medium bg-rose-500/12 text-rose-600">
+          {t("credentials.entryError")}
+        </span>
+        <span className="num text-[9px] text-slate-500/70 shrink-0">
+          {formatResetStamp(err.ts)}
+        </span>
+      </div>
+      {/* 后端错误原文（与 QuotaEntryCard 的条目错误行同款样式） */}
+      <p
+        className="text-[10px] text-rose-600/90 leading-relaxed break-all"
+        title={err.message}
+      >
+        ⚠ {err.message}
+      </p>
+      {/* 凭证文件损坏场景的自愈入口：后果说明 + 重置按钮（入口就在本卡内，
+          不引导用户去凭证管理区——坏文件时那片区域整体不可达，见组件注释） */}
+      {isCredParseError && (
+        <>
+          <p className="text-[10px] text-amber-700 leading-relaxed mt-1">
+            {t("credentials.quotaCredResetHint")}
+          </p>
+          <div className="flex items-center gap-2 mt-1.5">
+            <button
+              onClick={() => {
+                setResult(null);
+                setConfirming(true);
+              }}
+              disabled={busy}
+              className="text-[9px] px-2 py-0.5 rounded bg-red-500/10 text-red-600 hover:bg-red-500/20 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              {t("credentials.resetFile")}
+            </button>
+            {result && (
+              <span
+                className={`text-[9px] leading-relaxed break-all ${
+                  result.ok ? "text-emerald-600" : "text-rose-600"
+                }`}
+              >
+                {result.text}
+              </span>
+            )}
+          </div>
+          {/* 二次确认弹层（样式对齐 CredentialsCard 的 ConfirmResetOverlay；
+              覆盖本卡而非全屏，busy 保持挂载） */}
+          {confirming && (
+            <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/30 rounded-2xl">
+              <div className="mx-3 w-full rounded-lg bg-elevated border border-slate-900/10 p-3 shadow-xl">
+                <div className="text-[12px] font-semibold text-slate-900 mb-1">
+                  {t("credentials.resetTitle")}
+                </div>
+                <p className="text-[10px] text-slate-700/65 leading-relaxed mb-2">
+                  {t("credentials.resetConfirm")}
+                </p>
+                <div className="flex gap-1.5">
+                  <button
+                    onClick={() => setConfirming(false)}
+                    disabled={busy}
+                    className="flex-1 text-[11px] py-1 rounded-md bg-slate-900/5 text-slate-700/70 hover:bg-slate-900/10 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                  >
+                    {t("common.cancel")}
+                  </button>
+                  <button
+                    onClick={() => void handleReset()}
+                    disabled={busy}
+                    className="flex-1 text-[11px] py-1 rounded-md bg-red-500 text-white hover:bg-red-600 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                  >
+                    {busy ? t("common.saving") : t("credentials.resetFile")}
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+        </>
       )}
     </div>
   );

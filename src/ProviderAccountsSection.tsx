@@ -8,7 +8,7 @@ import {
   type CredentialRegionOption,
 } from "./CredentialsCard";
 import type { BrandIconName } from "./BrandIcon";
-import { QuotaEntryCard } from "./QuotaEntryCard";
+import { ProviderQuotaErrorBanner, QuotaEntryCard } from "./QuotaEntryCard";
 import { useResetDisplay } from "./resetDisplay";
 
 export interface ProviderAccountsSectionProps {
@@ -70,13 +70,22 @@ export function ProviderAccountsSection({
 }: ProviderAccountsSectionProps) {
   const { t } = useI18n();
   const resetDisplay = useResetDisplay();
-  const { credentials, refreshCredentials, providerQuota, refreshProviderQuota } =
-    useDataCache();
+  const {
+    credentials,
+    refreshCredentials,
+    providerQuota,
+    providerQuotaErrors,
+    refreshProviderQuota,
+  } = useDataCache();
   const entries = credentials[provider];
   const hasCreds = (entries?.length ?? 0) > 0;
-  // 展开态：用户显式操作优先，否则有凭证自动展开、无凭证收起
+  // 整体查询失败（command 级 Err，典型：凭证文件损坏）：
+  // 是坏文件场景下本区唯一可达的自愈入口（见下方门槛注释）
+  const quotaError = providerQuotaErrors[provider];
+  // 展开态：用户显式操作优先，否则有凭证（或整体查询失败需展示自愈入口）
+  // 自动展开、无凭证收起
   const [expandedOverride, setExpandedOverride] = useState<boolean | null>(null);
-  const open = expandedOverride ?? hasCreds;
+  const open = expandedOverride ?? (hasCreds || !!quotaError);
   const cacheEntry = providerQuota[provider];
   const quotaEntries = cacheEntry?.entries ?? [];
   const refreshing = cacheEntry?.refreshing ?? false;
@@ -111,8 +120,11 @@ export function ProviderAccountsSection({
     return () => clearInterval(timer);
   }, [hasResets]);
 
-  // 凭证列表未加载完成不渲染（防闪：加载为本地文件读，瞬时完成）
-  if (!entriesLoaded) return null;
+  // 凭证列表未加载完成不渲染（防闪：加载为本地文件读，瞬时完成）。
+  // 整体查询失败时仍渲染：坏文件会让凭证列表永远读取失败（entriesLoaded
+  // 恒 false），若按原门槛整区隐藏，带「重置凭证文件」自愈入口的错误
+  // banner 不可达，用户没有任何修复路径（2026-11-03 凭证损坏事故形态）
+  if (!entriesLoaded && !quotaError) return null;
 
   return (
     <div className="shrink-0 max-h-[45%] overflow-y-auto overscroll-contain border-t border-slate-900/8 mx-3 pb-2.5">
@@ -159,6 +171,19 @@ export function ProviderAccountsSection({
             optional={optional}
             dualHintKey={dualHintKey}
           />
+
+          {/* 整体查询失败提示（command 级 Err，如凭证文件损坏）：无旧值时它
+              就是本区的主要状态（不再永远「查询中」），有旧值时叠加在配额卡
+              上方——旧数据照常展示，但用户必须知道它已不再新鲜。kimi / dsh
+              的额度卡只在本区渲染（renderQuotaCards），错误卡同样只在这里出
+              现（opencodego / minimax 的额度块在面板顶部已渲染，本区不重复）。
+              凭证文件损坏时本卡内嵌「重置凭证文件」自愈入口（见组件注释） */
+          renderQuotaCards && (
+            <ProviderQuotaErrorBanner
+              provider={provider}
+              className="mt-1.5"
+            />
+          )}
 
           {/* 额度查询中提示（有凭证但条目未返回；空 entries 时收敛展示） */}
           {renderQuotaCards && quotaEntries.length === 0 && refreshing && (
