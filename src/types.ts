@@ -1421,13 +1421,13 @@ export interface RequestLogRow {
   duration_ms: number | null;
   /** 首字延迟 ms（仅 zcode / dsh 有真实数据） */
   ttft_ms: number | null;
-  /** 单笔输出速度 tok/s（后端 token_speed 行级判定的唯一真源：含思考感知
-   *  窗口与 [200ms, 1h] 样本窗口边界；缺列 / 时序无效 / 窗口越界为 null）。
-   *  可选：旧版本后端不下发该字段，此时 speedOf 回退本地公式。 */
+  /** 后端校验的单笔输出速度 tok/s，缺少有效计时时为 null。 */
   speed_tps?: number | null;
   /** 速度口径质量标记（与 SpeedQuality 契约一致）：request_average = 请求
    *  平均近似，界面带 ≈ 前缀；generation = 真实生成窗口。无速度为 null。 */
   speed_quality?: SpeedQuality | null;
+  /** 本机 ZCode 工具轮在缺少完整流式证据时的数据库首字估算。 */
+  first_token_estimated_tps?: number;
   /** 远端行的设备 id（「全部设备」口径下从服务端明细带回；本机行无该字段）。
    *  远端行耗时 / 首字 / 速度恒 null（服务端明细不含这些列）。 */
   device?: string;

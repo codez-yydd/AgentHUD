@@ -2089,11 +2089,17 @@ export const en: typeof zh = {
     "dashboard.logs.detailPerf": "Performance",
     "dashboard.logs.detailDuration": "Duration",
     "dashboard.logs.detailTtft": "TTFT",
-    "dashboard.logs.detailSpeed": "Speed",
+    "dashboard.logs.speedRequestAverage": "Request avg.",
+    "dashboard.logs.speedStream": "Stream rate",
+    "dashboard.logs.speedFirstTokenEstimate": "TTFT estimate",
+    "dashboard.logs.speedFirstTokenEstimateHint":
+      "Divides output tokens by the time from the database’s first token to request completion. Some tool arguments may have streamed before that timestamp.",
     "dashboard.logs.speedApproxHint":
-      "Request-average speed: output tokens divided by total request duration, including TTFT. Not mixed with stream speeds.",
+      "Stream timing is unavailable. The request average divides output tokens by total request time, including the wait for the first output.",
     "dashboard.logs.speedStreamHint":
-      "Client-observed stream speed: includes generated text, reasoning and tool arguments from the first output to completion. Affected by chunking and buffering; not server decode speed.",
+      "Measured from the first observed output to request completion. Includes text, reasoning and tool arguments. Chunking and buffering affect the observed rate.",
+    "dashboard.logs.speedDshStreamHint":
+      "Measured between the first and last stream events recorded by DSH. The wait before the first stream event is excluded.",
 
     // ===== Custom time range (shared range control of the three pages) =====
     // Trigger shows the active preset name, or the "MM-DD ~ MM-DD" summary when

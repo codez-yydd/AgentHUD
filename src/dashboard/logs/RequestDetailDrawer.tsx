@@ -12,21 +12,21 @@
  *
  * 数值口径：token 紧凑值沿用表格的 locale 格式（万/亿、K/M/B），精确整数放
  * title（Kv 的 title 参数）；首字延迟 2 位小数秒（百毫秒量级），耗时 1 位；
- * 耗时只显示来源库的真实值，缺失时与速度同为「—」（不显示估算态）。
- * 速度与表格同走 model.speedOf 两层结构（后端 token_speed 真源优先、本地
- * 公式回退），近似态带 ≈ 前缀并以 title 说明原因。
+ * 耗时显示来源库的真实值。速度与表格共用后端校验过的数值及其计时口径。
  */
 import { useEffect } from "react";
 import { useI18n } from "../../i18n";
-import { formatCost, formatTokensLocale, formatTps } from "../../format";
+import { formatCost, formatTokensLocale } from "../../format";
 import { costOf } from "../overview/derive";
 import type { Currency, RequestLogRow } from "../../types";
 import {
   durationText,
   exactCount,
+  formatLogSpeed,
   logTimeFull,
   sourceLabel,
-  speedApproxHintKey,
+  speedHintKey,
+  speedLabelKey,
   speedOf,
   ttftText,
 } from "./model";
@@ -90,7 +90,6 @@ export function RequestDetailDrawer({
 
   const speed = speedOf(row);
   const duration = durationText(row.duration_ms);
-  const speedHintKey = speed ? speedApproxHintKey(speed.approximate) : null;
   const ttft = ttftText(row.ttft_ms);
   const mainCost = costOf(row.cost_usd, row.cost_cny, currency);
   const otherCurrency: Currency = currency === "cny" ? "usd" : "cny";
@@ -212,8 +211,7 @@ export function RequestDetailDrawer({
             )}
           </section>
 
-          {/* ---- 性能（耗时 / 首字全缺失时整节省略） ---- */}
-          {row.duration_ms != null || row.ttft_ms != null ? (
+          {duration != null || ttft != null || speed ? (
             <section className="db-drawer__section">
               <h3 className="db-drawer__section-title">
                 {t("dashboard.logs.detailPerf")}
@@ -225,13 +223,13 @@ export function RequestDetailDrawer({
               />
               <Kv label={t("dashboard.logs.detailTtft")} value={ttft ?? "—"} mono />
               <Kv
-                label={t("dashboard.logs.detailSpeed")}
+                label={t(speed ? speedLabelKey(speed.basis) : "dashboard.logs.colSpeed")}
                 value={
                   speed
-                    ? `${speed.approximate ? "≈" : ""}${formatTps(speed.tps)} t/s`
+                    ? `${formatLogSpeed(speed.tps, speed.basis)} t/s`
                     : "—"
                 }
-                title={speedHintKey ? t(speedHintKey) : undefined}
+                title={t(speed ? speedHintKey(speed.basis, row.source) : "dashboard.logs.noSpeedTitle")}
                 mono
               />
             </section>

@@ -355,8 +355,15 @@ const rejectedLog = { output_tokens: 87, duration_ms: 6444, ttft_ms: 6339,
 check(speedOf(rejectedLog) === null, "rejected 105ms sample stays unavailable");
 check(speedOf({ ...rejectedLog, speed_tps: 0 }) === null, "zero is not a speed sample");
 check(speedOf({ ...rejectedLog, speed_tps: Infinity }) === null, "infinite rate rejected");
-check(speedOf({ ...rejectedLog, speed_tps: 25, speed_quality: "request_average" })?.approximate === true,
+check(speedOf({ ...rejectedLog, speed_tps: 25, speed_quality: "request_average" })?.basis === "request_average",
   "request-average quality is preserved");
+const estimatedLog = { ...rejectedLog, source: "zcode", speed_tps: 157 / 2.710,
+  speed_quality: "request_average", first_token_estimated_tps: 157 / 0.778 } as const;
+check(speedOf(estimatedLog)?.basis === "first_token_estimate" &&
+  speedOf(estimatedLog)?.tps.toFixed(1) === "201.8", "validated first-token estimate is displayed");
+check(speedOf({ ...estimatedLog, speed_quality: "generation" })?.basis === "generation",
+  "verified stream timing outranks a first-token estimate");
+check(speedOf({ ...estimatedLog, speed_tps: null }) === null, "an estimate cannot revive a rejected request");
 
 // Additive timing weights must retain approximate quality after alias folding.
 const approxTimed = foldModelStatRows([

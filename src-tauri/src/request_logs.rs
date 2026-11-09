@@ -77,13 +77,15 @@ pub struct RequestLogRow {
     pub duration_ms: Option<f64>,
     /// 首字延迟（毫秒；无该列或 <= 0 → None）
     pub ttft_ms: Option<f64>,
-    /// 单笔输出速度（tok/s；唯一真源 = token_speed 行级判定，缺列 / 时序
-    /// 无效 / 样本窗口越界 → None，前端自行回退）
+    /// 单笔输出速度（tok/s），由 token_speed 校验。
     pub speed_tps: Option<f64>,
     /// 速度口径质量标记（serde 序列化为 "generation" | "request_average"，
     /// 与前端 SpeedQuality 契约一致）：request_average = 请求平均近似，
     /// 界面带 ≈ 前缀；无速度为 None
     pub speed_quality: Option<crate::token_speed::SpeedQuality>,
+    /// 本机 ZCode 工具轮的数据库首字估算，只用于请求日志展示。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub first_token_estimated_tps: Option<f64>,
     /// 远端行的设备 id（scope = "all" 时从服务端明细带回，供前端展示「设备」
     /// 归属）；本机行恒 None，序列化时省略该字段（与 DeviceInfo.record_count
     /// 同款 skip 风格，旧前端契约不受影响）
@@ -381,6 +383,11 @@ fn select_list(conn: &Connection, source: &str) -> String {
     // 行级速度原料（绝对事件时刻；缺失列按 NULL，正负 / 时序校验交给
     // token_speed 行级判定，SQL 侧不做过滤）
     let first_token = crate::db::zcode_first_token_expr(conn);
+    let raw_first_token = if source == "zcode" && crate::db::has_column(conn, "model_usage", "first_token_at") {
+        "first_token_at"
+    } else {
+        "NULL"
+    };
     let completed = if crate::db::has_column(conn, "model_usage", "completed_at") {
         "completed_at"
     } else {
@@ -393,39 +400,57 @@ fn select_list(conn: &Connection, source: &str) -> String {
          COALESCE(input_tokens,0), COALESCE(output_tokens,0), \
          COALESCE(cache_read_input_tokens,0), COALESCE(cache_creation_input_tokens,0), \
          COALESCE(reasoning_tokens,0), COALESCE(computed_total_tokens,0), \
-         {session}, {project}, {duration}, {ttft}, {first_token}, {completed}, {status}"
+         {session}, {project}, {duration}, {ttft}, {first_token}, {completed}, {status}, {raw_first_token}"
     )
 }
 
 /// Read one request and keep backend validation authoritative for the UI.
 fn row_to_log(row: &rusqlite::Row<'_>, source: &str) -> rusqlite::Result<RequestLogRow> {
+    use crate::token_speed::{
+        duration_quality, duration_speed, is_completed_status, request_speed_at, RequestTiming,
+        SpeedQuality,
+    };
+
     let started_at: i64 = row.get(0)?;
     let model_id: String = row.get(1)?;
     let output_tokens: i64 = row.get(4)?;
     let reasoning_tokens: i64 = row.get(7)?;
     let duration_ms: Option<f64> = row.get(11)?;
     let status: Option<String> = row.get(15)?;
-    let speed = if !crate::token_speed::is_completed_status(status.as_deref()) { None } else if source != "zcode" {
-        duration_ms.and_then(|duration| crate::token_speed::duration_speed(output_tokens, duration, crate::token_speed::duration_quality(source), started_at))
-    } else { crate::token_speed::request_speed_at(
-        &crate::token_speed::RequestTiming {
+    let (speed, first_token_estimated_tps) = if !is_completed_status(status.as_deref()) {
+        (None, None)
+    } else if source != "zcode" {
+        let speed = duration_ms.and_then(|duration| {
+            duration_speed(output_tokens, duration, duration_quality(source), started_at)
+        });
+        (speed, None)
+    } else {
+        let timing = RequestTiming {
             output_tokens,
             started_at: Some(started_at),
             first_token_at: row.get(13)?,
             completed_at: row.get(14)?,
-            // 真实耗时只作 request_average 近似窗口的兜底（无事件时刻的
-            // 来源，如 claude / kimi 导入库），绝不参与生成口径分母
-            duration_ms: duration_ms
-                .filter(|value| *value > 0.0)
-                .map(|value| value as i64),
-            request_id: None,
-            // 思考感知窗口信号：零值按 None（缺列已 COALESCE 0，同款降级）；
-            // 模型名原样透传（claude 系按名识别，大小写不敏感）
-            reasoning_tokens: (reasoning_tokens > 0).then_some(reasoning_tokens),
-            model_id: (!model_id.is_empty()).then(|| model_id.clone()),
-        },
-        chrono::Utc::now().timestamp_millis(),
-    ) };
+            duration_ms: duration_ms.map(|value| value as i64),
+            ..Default::default()
+        };
+        let now = chrono::Utc::now().timestamp_millis();
+        let speed = request_speed_at(&timing, now);
+        // Keep the database timestamp as a display-only estimate after the shared
+        // validator has selected the request-average fallback.
+        let estimate = if speed.as_ref().is_some_and(|s| s.quality == SpeedQuality::RequestAverage) {
+            let raw_first_token: Option<i64> = row.get(16)?;
+            raw_first_token.and_then(|first| {
+                let estimate = RequestTiming {
+                    first_token_at: Some(first),
+                    ..timing
+                };
+                request_speed_at(&estimate, now).map(|s| s.value)
+            })
+        } else {
+            None
+        };
+        (speed, estimate)
+    };
     Ok(RequestLogRow {
         source: source.to_string(),
         started_at,
@@ -445,6 +470,7 @@ fn row_to_log(row: &rusqlite::Row<'_>, source: &str) -> rusqlite::Result<Request
         ttft_ms: row.get(12)?,
         speed_tps: speed.as_ref().map(|snapshot| snapshot.value),
         speed_quality: speed.map(|snapshot| snapshot.quality),
+        first_token_estimated_tps,
         device: None,
     })
 }
@@ -1016,10 +1042,8 @@ fn query_source_models(
 /// 远端单条明细 → 请求日志行：按真实 source 归并进对应来源路，因此 source /
 /// model / token 各字段与本地行同语义直接透传；耗时 / 首字自 proto 8 起
 /// 透传（服务端回传来源库真实 duration_ms / time_to_first_token_ms；
-/// 旧服务端不返回 → None，前端显示「—」，不做估算回退）。速度原料
-/// （first_token_at / completed_at）远端不上传，speed_tps / speed_quality
-/// 恒 None——前端 speedOf 走第二层公式（生成段 = duration − ttft，按
-/// output 推导，带 ≈ 近似标记）。project 取 project_display、退回
+/// 旧服务端不返回 → None）。速度优先使用同步证据，旧记录按来源耗时口径计算。
+/// ZCode 的数据库首字估算需要本机的绝对时刻。project 取 project_display、退回
 /// project_key；花费由调用方对当前页统一折算，此置 0；
 /// device 带回设备 id 供前端展示归属。
 fn remote_row_to_log(record: &crate::sync::RemoteUsageRecord) -> RequestLogRow {
@@ -1050,6 +1074,7 @@ fn remote_row_to_log(record: &crate::sync::RemoteUsageRecord) -> RequestLogRow {
         ttft_ms: record.time_to_first_token_ms.filter(|value| *value > 0.0),
         speed_tps: speed.as_ref().map(|s| s.value),
         speed_quality: speed.map(|s| s.quality),
+        first_token_estimated_tps: None,
         device: Some(record.device_id.clone()),
     }
 }
@@ -1505,11 +1530,18 @@ mod tests {
             let synced = remote_row_to_log(&remote);
             assert_eq!(local.speed_quality, synced.speed_quality);
             assert_eq!(local.speed_tps, synced.speed_tps);
+            assert!(synced.first_token_estimated_tps.is_none());
             (local,remote)
         };
         let (tool,mut remote) = compare();
         assert_eq!(tool.speed_quality,Some(crate::token_speed::SpeedQuality::RequestAverage));
         assert!((tool.speed_tps.unwrap()-69.8452530322041).abs()<1e-9);
+        assert!((tool.first_token_estimated_tps.unwrap() - 334000.0 / 867.0).abs() < 1e-9);
+        conn.execute_batch("UPDATE model_usage SET first_token_at=completed_at-199").unwrap();
+        let (short, _) = compare();
+        assert_eq!(short.speed_tps, tool.speed_tps);
+        assert!(short.first_token_estimated_tps.is_none());
+        conn.execute_batch("UPDATE model_usage SET first_token_at=1793520719719").unwrap();
         remote.speed_evidence = None; // Legacy server remains conservative.
         assert_eq!(remote_row_to_log(&remote).speed_tps,tool.speed_tps);
         let mut lines = Vec::new();
@@ -1527,9 +1559,11 @@ mod tests {
         let (stream,_) = compare();
         assert_eq!(stream.speed_quality,Some(crate::token_speed::SpeedQuality::Generation));
         assert!((stream.speed_tps.unwrap()-334000.0/868.0).abs()<1e-9);
+        assert!(stream.first_token_estimated_tps.is_none());
         conn.execute_batch("UPDATE model_usage SET status='error'").unwrap();
         let (invalid,_) = compare();
         assert!(invalid.speed_tps.is_none());
+        assert!(invalid.first_token_estimated_tps.is_none());
         drop(conn);
         assert!(std::fs::canonicalize(&dir).unwrap().starts_with(std::fs::canonicalize(std::env::temp_dir()).unwrap()));
         std::fs::remove_dir_all(&dir).unwrap();
@@ -2118,6 +2152,7 @@ mod tests {
             ttft_ms: None,
             speed_tps: None,
             speed_quality: None,
+            first_token_estimated_tps: None,
             device: None,
         };
         let (totals, rows, failed) =
@@ -2468,6 +2503,7 @@ mod tests {
             ttft_ms: None,
             speed_tps: None,
             speed_quality: None,
+            first_token_estimated_tps: None,
             device: device.map(String::from),
         };
         let mut merged = vec![

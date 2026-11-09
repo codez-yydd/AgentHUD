@@ -2911,6 +2911,12 @@ body {
   color: var(--db-text-dim);
 }
 
+.db-logs__speed-basis {
+  display: block;
+  font-size: 10px;
+  color: var(--db-text-dim);
+}
+
 .db-logs__model {
   display: block;
   overflow: hidden;

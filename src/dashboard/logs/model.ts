@@ -11,8 +11,9 @@
  *    展示币种取一列（costOf）。
  */
 import type { RequestLogSource } from "../../types";
+import type { RequestLogSpeedBasis } from "../../requestSpeed";
 import type { MessageKey } from "../../i18n";
-import { formatSeconds } from "../../format";
+import { formatSeconds, formatTps } from "../../format";
 import {
   addLocalDays,
   agentLabel,
@@ -151,7 +152,18 @@ export function exactCount(n: number, locale: "zh" | "en"): string {
 
 export { speedOf } from "../../requestSpeed";
 
-/** Both speed bases have an explanation; stream observations are not GPU benchmarks. */
-export function speedApproxHintKey(approximate: boolean): MessageKey {
-  return approximate ? "dashboard.logs.speedApproxHint" : "dashboard.logs.speedStreamHint";
+export function formatLogSpeed(tps: number, basis: RequestLogSpeedBasis): string {
+  if (basis === "first_token_estimate") return `≈${tps.toFixed(1)}`;
+  return `${basis === "request_average" ? "≈" : ""}${formatTps(tps)}`;
+}
+
+export function speedLabelKey(basis: RequestLogSpeedBasis): MessageKey {
+  if (basis === "first_token_estimate") return "dashboard.logs.speedFirstTokenEstimate";
+  return basis === "request_average" ? "dashboard.logs.speedRequestAverage" : "dashboard.logs.speedStream";
+}
+
+export function speedHintKey(basis: RequestLogSpeedBasis, source: RequestLogSource): MessageKey {
+  if (basis === "first_token_estimate") return "dashboard.logs.speedFirstTokenEstimateHint";
+  if (basis === "request_average") return "dashboard.logs.speedApproxHint";
+  return source === "dsh" ? "dashboard.logs.speedDshStreamHint" : "dashboard.logs.speedStreamHint";
 }

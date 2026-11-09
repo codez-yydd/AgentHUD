@@ -825,11 +825,17 @@ export const dashboard = {
   "dashboard.logs.detailPerf": "性能",
   "dashboard.logs.detailDuration": "耗时",
   "dashboard.logs.detailTtft": "首字",
-  "dashboard.logs.detailSpeed": "速度",
+  "dashboard.logs.speedRequestAverage": "请求均速",
+  "dashboard.logs.speedStream": "流式速度",
+  "dashboard.logs.speedFirstTokenEstimate": "首字估算",
+  "dashboard.logs.speedFirstTokenEstimateHint":
+    "按输出 Token ÷ 数据库首字到请求完成的时间估算。部分工具参数可能在数据库记录的首字之前就已输出。",
   "dashboard.logs.speedApproxHint":
-    "请求平均速度：没有可信流式时间，按输出 Token ÷ 请求总耗时计算，包含首字等待；不与流式速度混算",
+    "缺少可信的流式计时。请求均速按输出 Token ÷ 请求总耗时计算，包含首字等待。",
   "dashboard.logs.speedStreamHint":
-    "客户端流式观测速度：按首内容至请求完成计时，输出包含正文、思考与工具参数；受分块和缓冲影响，不代表服务端解码速度",
+    "按客户端观测的首输出到请求完成计时，输出包含正文、思考和工具参数，速率受分块和缓冲影响。",
+  "dashboard.logs.speedDshStreamHint":
+    "按 DSH 日志中首末流式事件之间的耗时计算，分母已扣除首个流式事件前的等待。",
 
   // ===== 自定义时间范围（总览 / 日志 / 对比三页共用的页头时间范围控件）=====
   // 触发按钮显示当前范围标签：生效的预设名，或自定义区间的「MM-DD ~ MM-DD」
