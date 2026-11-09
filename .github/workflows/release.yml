@@ -83,6 +83,9 @@ jobs:
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # ad-hoc 签名，修复 bundle 层签名缺失导致的"已损坏"提示；
+          # 仅 macOS bundler 读取，Linux/Windows matrix 忽略，无需条件化
+          APPLE_SIGNING_IDENTITY: '-'
         run: |
           ARGS=(--target "${{ matrix.target }}")
           [[ -n "${{ matrix.bundles }}" ]] && ARGS+=(--bundles ${{ matrix.bundles }})
