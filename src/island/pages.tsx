@@ -868,20 +868,27 @@ export function ControlsPage({
   const [brightness, setBrightnessDraft] = useState(Math.round(system.brightness ?? 0));
   const volumeTimer = useRef<number | null>(null);
   const brightnessTimer = useRef<number | null>(null);
+  // 用户刚拖过滑块时压住外部回读：后端每拍回读音量/亮度，回读值可能比
+  // 刚拖到的位置晚一拍（或是按下前的老值），直接灌进 draft 会让滑块来回跳。
+  const localHold = useRef(0);
 
   useEffect(() => {
+    if (performance.now() < localHold.current) return;
     setVolumeDraft(Math.round(system.volume * 100));
   }, [system.volume]);
   useEffect(() => {
+    if (performance.now() < localHold.current) return;
     setBrightnessDraft(Math.round(system.brightness ?? 0));
   }, [system.brightness]);
 
   const changeVolume = (v: number) => {
+    localHold.current = performance.now() + 1200;
     setVolumeDraft(v);
     if (volumeTimer.current != null) window.clearTimeout(volumeTimer.current);
     volumeTimer.current = window.setTimeout(() => onVolume(v / 100), 120);
   };
   const changeBrightness = (v: number) => {
+    localHold.current = performance.now() + 1200;
     setBrightnessDraft(v);
     if (brightnessTimer.current != null) window.clearTimeout(brightnessTimer.current);
     brightnessTimer.current = window.setTimeout(() => onBrightness(v), 120);

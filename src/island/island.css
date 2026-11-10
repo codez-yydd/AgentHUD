@@ -2586,7 +2586,9 @@ html.island-preview .island::after {
   left: 14px;
   top: 50%;
   transform: translateY(-50%);
-  z-index: 2;
+  /* 透明的 range 铺满整行（inset: 0 + z-index 3）才好转，图标按钮必须压在
+     它上面，否则点静音其实是点了滑块（会把音量改成 0%）。 */
+  z-index: 4;
   width: 28px;
   height: 28px;
   display: grid;

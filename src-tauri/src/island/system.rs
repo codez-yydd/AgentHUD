@@ -1,10 +1,12 @@
 //! 灵动岛系统控制：音量 / 静音 / 亮度 / Wi-Fi / 蓝牙。
 //!
-//! - 音量：Windows Core Audio（IAudioEndpointVolume），后台线程每 2 秒读一次，
-//!   外部改音量也会同步到岛里；
-//! - 亮度：WMI `WmiMonitorBrightness`（笔记本可用；台式机通常不支持，返回空）；
+//! - 音量：Windows 走 Core Audio（IAudioEndpointVolume），macOS 走 CoreAudio
+//!   HAL（`kAudioDevicePropertyVolumeScalar` / `Mute`，和系统音量键同一套属性）；
+//!   后台线程定期回读，用系统音量键改了也会同步到岛里；
+//! - 亮度：macOS 用私有框架 DisplayServices（和系统亮度键同一套接口）；
+//!   Windows WMI `WmiMonitorBrightness` + DDC/CI（笔记本/外接屏都能用）；
 //! - Wi-Fi / 蓝牙：WinRT `Windows.Devices.Radios.Radio`（需要系统无线电访问许可，
-//!   首次切换时系统可能弹权限框；被拒绝时前端会提示改走系统设置）。
+//!   首次切换时系统可能弹权限框；被拒绝时前端会提示改走系统设置）。macOS 暂不支持。
 
 use serde::Serialize;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -87,7 +89,12 @@ fn read_volume() -> Result<(f64, bool), String> {
     }
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "macos")]
+fn read_volume() -> Result<(f64, bool), String> {
+    mac_audio::get().ok_or_else(|| "当前输出设备不提供系统音量".to_string())
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
 fn read_volume() -> Result<(f64, bool), String> {
     Err("当前平台不支持系统音量".into())
 }
@@ -101,7 +108,12 @@ fn set_volume_inner(volume: f64) -> Result<(), String> {
     }
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "macos")]
+fn set_volume_inner(volume: f64) -> Result<(), String> {
+    mac_audio::set_volume(volume)
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
 fn set_volume_inner(_volume: f64) -> Result<(), String> {
     Err("当前平台不支持系统音量".into())
 }
@@ -115,9 +127,228 @@ fn set_mute_inner(muted: bool) -> Result<(), String> {
     }
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "macos")]
+fn set_mute_inner(muted: bool) -> Result<(), String> {
+    mac_audio::set_muted(muted)
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
 fn set_mute_inner(_muted: bool) -> Result<(), String> {
     Err("当前平台不支持系统静音".into())
+}
+
+/// macOS 音量 / 静音：CoreAudio HAL 的 `kAudioDevicePropertyVolumeScalar` /
+/// `kAudioDevicePropertyMute`，和系统音量键、菜单栏滑块改的是同一个属性，
+/// 所以改完立刻能回读，也不需要 AppleScript（不会弹「自动化」授权框，
+/// 单次调用是微秒级，而 `osascript` 每次要起一个进程）。
+///
+/// 内置扬声器 / 耳机 / AirPods 走 element 0（main）；少数 USB DAC 与 HDMI
+/// 只暴露左右声道（element 1、2），按同样的顺序回退。
+#[cfg(target_os = "macos")]
+mod mac_audio {
+    use std::ffi::c_void;
+
+    type OSStatus = i32;
+    type AudioObjectID = u32;
+    type AudioDeviceID = u32;
+
+    #[repr(C)]
+    struct AudioObjectPropertyAddress {
+        selector: u32,
+        scope: u32,
+        element: u32,
+    }
+
+    /// 四字符码（'vmvc' 之类），CoreAudio 的属性选择器/作用域都是这个东西。
+    const fn fourcc(text: &[u8; 4]) -> u32 {
+        u32::from_be_bytes(*text)
+    }
+
+    const SYSTEM_OBJECT: AudioObjectID = 1;
+    const SCOPE_GLOBAL: u32 = fourcc(b"glob");
+    const SCOPE_OUTPUT: u32 = fourcc(b"outp");
+    const ELEMENT_MAIN: u32 = 0;
+    const PROP_DEFAULT_OUTPUT: u32 = fourcc(b"dOut");
+    const PROP_VOLUME: u32 = fourcc(b"vmvc");
+    const PROP_MUTE: u32 = fourcc(b"mute");
+
+    #[link(name = "CoreAudio", kind = "framework")]
+    extern "C" {
+        fn AudioObjectGetPropertyData(
+            object: AudioObjectID,
+            address: *const AudioObjectPropertyAddress,
+            qualifier_size: u32,
+            qualifier: *const c_void,
+            size: *mut u32,
+            data: *mut c_void,
+        ) -> OSStatus;
+        fn AudioObjectSetPropertyData(
+            object: AudioObjectID,
+            address: *const AudioObjectPropertyAddress,
+            qualifier_size: u32,
+            qualifier: *const c_void,
+            size: u32,
+            data: *const c_void,
+        ) -> OSStatus;
+        fn AudioObjectHasProperty(
+            object: AudioObjectID,
+            address: *const AudioObjectPropertyAddress,
+        ) -> u8;
+    }
+
+    /// 默认输出设备；没有输出设备（纯外接显卡且没接音箱等）时为 None。
+    fn default_output() -> Option<AudioDeviceID> {
+        let address = AudioObjectPropertyAddress {
+            selector: PROP_DEFAULT_OUTPUT,
+            scope: SCOPE_GLOBAL,
+            element: ELEMENT_MAIN,
+        };
+        let mut device: AudioDeviceID = 0;
+        let mut size = std::mem::size_of::<AudioDeviceID>() as u32;
+        let rc = unsafe {
+            AudioObjectGetPropertyData(
+                SYSTEM_OBJECT,
+                &address,
+                0,
+                std::ptr::null(),
+                &mut size,
+                &mut device as *mut AudioDeviceID as *mut c_void,
+            )
+        };
+        (rc == 0 && device != 0).then_some(device)
+    }
+
+    fn volume_address(element: u32) -> AudioObjectPropertyAddress {
+        AudioObjectPropertyAddress {
+            selector: PROP_VOLUME,
+            scope: SCOPE_OUTPUT,
+            element,
+        }
+    }
+
+    fn mute_address() -> AudioObjectPropertyAddress {
+        AudioObjectPropertyAddress {
+            selector: PROP_MUTE,
+            scope: SCOPE_OUTPUT,
+            element: ELEMENT_MAIN,
+        }
+    }
+
+    fn has(device: AudioDeviceID, address: &AudioObjectPropertyAddress) -> bool {
+        unsafe { AudioObjectHasProperty(device, address) != 0 }
+    }
+
+    fn read_scalar(device: AudioDeviceID, address: &AudioObjectPropertyAddress) -> Option<f32> {
+        let mut value: f32 = 0.0;
+        let mut size = std::mem::size_of::<f32>() as u32;
+        let rc = unsafe {
+            AudioObjectGetPropertyData(
+                device,
+                address,
+                0,
+                std::ptr::null(),
+                &mut size,
+                &mut value as *mut f32 as *mut c_void,
+            )
+        };
+        (rc == 0).then_some(value)
+    }
+
+    fn write_scalar(device: AudioDeviceID, address: &AudioObjectPropertyAddress, value: f32) -> OSStatus {
+        unsafe {
+            AudioObjectSetPropertyData(
+                device,
+                address,
+                0,
+                std::ptr::null(),
+                std::mem::size_of::<f32>() as u32,
+                &value as *const f32 as *const c_void,
+            )
+        }
+    }
+
+    /// 依次尝试 main / 左 / 右声道，取第一个可读的元素。
+    fn any_volume<F, T>(device: AudioDeviceID, mut f: F) -> Option<T>
+    where
+        F: FnMut(&AudioObjectPropertyAddress) -> Option<T>,
+    {
+        for element in [ELEMENT_MAIN, 1, 2] {
+            let address = volume_address(element);
+            if !has(device, &address) {
+                continue;
+            }
+            if let Some(value) = f(&address) {
+                return Some(value);
+            }
+        }
+        None
+    }
+
+    pub fn get() -> Option<(f64, bool)> {
+        let device = default_output()?;
+        let volume = any_volume(device, |address| read_scalar(device, address))? as f64;
+        let mut muted = false;
+        let address = mute_address();
+        if has(device, &address) {
+            let mut value: u32 = 0;
+            let mut size = std::mem::size_of::<u32>() as u32;
+            let rc = unsafe {
+                AudioObjectGetPropertyData(
+                    device,
+                    &address,
+                    0,
+                    std::ptr::null(),
+                    &mut size,
+                    &mut value as *mut u32 as *mut c_void,
+                )
+            };
+            muted = rc == 0 && value != 0;
+        }
+        Some((volume.clamp(0.0, 1.0), muted))
+    }
+
+    pub fn set_volume(volume: f64) -> Result<(), String> {
+        let device = default_output().ok_or_else(|| "没有默认音频输出设备".to_string())?;
+        let target = volume.clamp(0.0, 1.0) as f32;
+        let mut last = 0;
+        for element in [ELEMENT_MAIN, 1, 2] {
+            let address = volume_address(element);
+            if !has(device, &address) {
+                continue;
+            }
+            last = write_scalar(device, &address, target);
+            if last == 0 {
+                return Ok(());
+            }
+        }
+        Err(format!(
+            "设置音量失败（CoreAudio 返回 {last}）：当前输出设备不支持软件音量"
+        ))
+    }
+
+    pub fn set_muted(muted: bool) -> Result<(), String> {
+        let device = default_output().ok_or_else(|| "没有默认音频输出设备".to_string())?;
+        let address = mute_address();
+        if !has(device, &address) {
+            return Err("当前输出设备不支持静音".into());
+        }
+        let value: u32 = u32::from(muted);
+        let rc = unsafe {
+            AudioObjectSetPropertyData(
+                device,
+                &address,
+                0,
+                std::ptr::null(),
+                std::mem::size_of::<u32>() as u32,
+                &value as *const u32 as *const c_void,
+            )
+        };
+        if rc == 0 {
+            Ok(())
+        } else {
+            Err(format!("设置静音失败（CoreAudio 返回 {rc}）"))
+        }
+    }
 }
 
 fn run_powershell(script: &str) -> Option<String> {
@@ -576,14 +807,14 @@ pub fn start(app: AppHandle) {
                     state.bluetooth_available = radios.bluetooth.is_some();
                     state.bluetooth = radios.bluetooth;
                 }
-                // DDC/CI 读取很快；只对已经确认支持的屏幕每 10s 回读一次，
-                // 让用户用显示器实体按键改亮度后 HUD 也能跟上。不支持时
-                // 不轮询，避免每次走 WMI/PowerShell 拖慢后台线程。
-                if state.brightness_supported && last_brightness.elapsed() >= Duration::from_secs(10)
-                {
+                // macOS 的 DisplayServices 读取是内存级调用，每拍回读一次，
+                // 用亮度键改完立刻同步；Windows 的 DDC/CI / WMI 回读要几百
+                // 毫秒，只对已确认支持的屏幕每 10s 读一次，不支持就不读。
+                if last_brightness.elapsed() >= brightness_interval(state.brightness_supported) {
                     last_brightness = std::time::Instant::now();
                     if let Some(value) = read_brightness() {
                         state.brightness = Some(value);
+                        state.brightness_supported = true;
                     }
                 }
                 let changed = first_tick
@@ -592,6 +823,7 @@ pub fn start(app: AppHandle) {
                     || state.wifi != before.wifi
                     || state.bluetooth != before.bluetooth
                     || state.brightness != before.brightness
+                    || state.brightness_supported != before.brightness_supported
                     || state.wifi_available != before.wifi_available
                     || state.bluetooth_available != before.bluetooth_available;
                 first_tick = false;
@@ -600,13 +832,47 @@ pub fn start(app: AppHandle) {
                         publish(&app, state.clone());
                     }
                 } else if let Ok(mut guard) = state_slot().lock() {
-                    // 内容没变：只刷新 updatedAt，不广播，避免每 1.8s 重渲染整岛
+                    // 内容没变：只刷新 updatedAt，不广播，避免反复重渲染整岛
                     *guard = state;
                 }
-                thread::sleep(Duration::from_millis(1800));
+                thread::sleep(tick_interval());
             }
         })
         .ok();
+}
+
+/// 回读周期。macOS 的亮度和音量都是本地属性读取（微秒级），可以每拍都读，
+/// 用系统快捷键改完 HUD 立刻跟上；Windows 的亮度要走 DDC/CI 或 PowerShell，
+/// 只在已确认支持的屏幕上低频回读。
+fn brightness_interval(supported: bool) -> Duration {
+    #[cfg(target_os = "macos")]
+    {
+        if supported {
+            Duration::ZERO
+        } else {
+            // 首次可能因为屏幕刚唤醒读到失败，低频重试
+            Duration::from_secs(5)
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        if supported {
+            Duration::from_secs(10)
+        } else {
+            Duration::from_secs(3600)
+        }
+    }
+}
+
+fn tick_interval() -> Duration {
+    #[cfg(target_os = "macos")]
+    {
+        Duration::from_millis(800)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Duration::from_millis(1800)
+    }
 }
 
 pub fn stop() {
@@ -672,6 +938,15 @@ pub async fn island_toggle_radio(kind: String, on: bool) -> Result<SystemState, 
 
 #[tauri::command]
 pub fn island_open_system_settings(kind: String) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    let target = match kind.as_str() {
+        "wifi" => "x-apple.systempreferences:com.apple.wifi-settings-extension",
+        "bluetooth" => "x-apple.systempreferences:com.apple.Bluetooth-Settings.extension",
+        "display" => "x-apple.systempreferences:com.apple.Displays-Settings.extension",
+        "sound" => "x-apple.systempreferences:com.apple.Sound-Settings.extension",
+        _ => "x-apple.systempreferences:",
+    };
+    #[cfg(not(target_os = "macos"))]
     let target = match kind.as_str() {
         "wifi" => "ms-settings:network-wifi",
         "bluetooth" => "ms-settings:bluetooth",
@@ -680,6 +955,22 @@ pub fn island_open_system_settings(kind: String) -> Result<(), String> {
         _ => "ms-settings:",
     };
     open::that(target).map_err(|e| format!("打开系统设置失败: {e}"))
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod mac_audio_tests {
+    /// 真机冒烟：读一次当前音量再原样写回，确认 CoreAudio HAL 通路可用。
+    #[test]
+    fn read_then_write_same_volume() {
+        let (volume, _) = super::mac_audio::get().expect("读取音量失败");
+        assert!((0.0..=1.0).contains(&volume), "音量越界: {volume}");
+        super::mac_audio::set_volume(volume).expect("写回音量失败");
+        let (again, _) = super::mac_audio::get().expect("回读音量失败");
+        assert!(
+            (again - volume).abs() <= 0.02,
+            "写回后不一致: {volume} -> {again}"
+        );
+    }
 }
 
 #[cfg(all(test, target_os = "macos"))]

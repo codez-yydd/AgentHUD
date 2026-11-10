@@ -71,7 +71,7 @@ MIT），实现为本项目自写的 Tauri + React 版本。收起态宽 500px�
 | 消息 | 只读 Windows 通知库 `wpndatabase.db`，映射 QQ / 微信 / 邮件 / 飞书 / 钉钉；未读徽标、筛选、全部已读、清空 |
 | 股票 | 腾讯财经 A/港/美股行情、分时、搜索添加、删除、涨跌提醒（阈值可调） |
 | 天气 | Open-Meteo（无需 Key）：城市胶囊、当前天气、8 项指标、5 天温度区间与逐小时（前 8 小时）；设置页用省/市/区县三级联动，支持按公网出口 IP“获取当前位置” |
-| 控制 | 音量/静音（Windows Core Audio）、亮度（**DDC/CI 外接显示器优先**，失败回退 WMI 笔记本内屏；不再一律显示“不支持”）、Wi-Fi/蓝牙（WinRT Radio）；iOS 控制中心式粗滑块 + 2×2 磁贴 |
+| 控制 | 音量/静音（Windows Core Audio / macOS CoreAudio HAL，滑块与系统音量键改的是同一属性）、亮度（macOS DisplayServices；Windows **DDC/CI 外接显示器优先**，失败回退 WMI 笔记本内屏）、Wi-Fi/蓝牙（仅 Windows，WinRT Radio；macOS 暂不支持，磁贴跳到系统设置）；iOS 控制中心式粗滑块 + 2×2 磁贴。滑块左侧图标点一下静音/取消静音 |
 | 剪贴板 | 最近 10 条文本/图片，内存历史，点击写回剪贴板 |
 | 截图 | 区域/窗口/全屏/延时截图、滚动长截图、标注器、贴图窗口、本地 OCR/二维码、8 秒 GIF 录制、PNG/JPG 保存、自动复制/贴图、历史打开/编辑/复制/贴图/删除。抓屏与编辑分离，截图页只做入口和历史；详见下方“截图工作台” |
 | 媒体 | Windows SMTC：标题/歌手/封面/进度/播放状态 + 播放暂停/上一首/下一首 |
@@ -122,8 +122,9 @@ MIT），实现为本项目自写的 Tauri + React 版本。收起态宽 500px�
   `zbar://island-stocks` / `zbar://island-stock-alert`。
 - **媒体**：`island/media.rs` 每 1.5s 读 SMTC；封面转 data URL；
   `zbar://island-media`。
-- **系统**：`island/system.rs` 每 1.8s 读音量、每 5s 读无线电、每 10s 回读
-  已支持的 DDC/CI 亮度；只在变化时广播。
+- **系统**：`island/system.rs` macOS 每 0.8s 回读音量与亮度（都是本地属性，
+  微秒级），用系统音量/亮度键改完 HUD 立刻跟上；Windows 每 1.8s 读音量、
+  每 5s 读无线电、每 10s 回读已支持的 DDC/CI 亮度。只在变化时广播。
 - **剪贴板**：`island/clipboard.rs` 每 0.8s 轮询 arboard；`zbar://island-clipboard`。
 - **消息**：`island/notify.rs` 只读通知数据库，每 2s 增量读取；
   `zbar://island-notify`。
@@ -201,6 +202,9 @@ src-tauri/capabilities/pin.json
   新版邮件 / QQ / 微信 / 飞书 / 钉钉等）。
 - **任务栏闪烁检测**：只读通知库，不挂 Win32 事件钩子。
 - **底部吸附**：目前只吸上/左/右三边，避免与任务栏重叠。
+- **macOS 的 Wi-Fi / 蓝牙**：系统没有公开的开关接口（蓝牙只能靠私有框架），
+  磁贴显示“未检测到 · 打开设置”，点击跳到对应系统设置面板；音量、静音、
+  亮度、显示器亮度都已在 macOS 上可用。
 - **跨平台抓屏**：Windows 走 GDI `BitBlt`/`PrintWindow`；macOS 走系统
   `/usr/sbin/screencapture`（首次使用需在「系统设置 → 隐私与安全性 → 屏幕录制」
   里授予 AgentHUD 权限，否则会给出明确提示）。macOS 的滚动长截图尚未实现，

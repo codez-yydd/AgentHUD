@@ -916,7 +916,7 @@ export default function IslandApp() {
         return (
           <ControlsPage
             system={system}
-            onVolume={(v) => void setVolume(v).then(setSystem).catch(() => {})}
+            onVolume={(v) => void setVolume(v).then(setSystem).catch((e) => showToast(String(e)))}
             onMute={() => void toggleMute().then(setSystem).catch((e) => showToast(String(e)))}
             onBrightness={(v) => void setBrightness(v).then(setSystem).catch((e) => showToast(String(e)))}
             onRadio={(kind, on) =>
