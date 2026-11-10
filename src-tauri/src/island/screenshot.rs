@@ -107,6 +107,21 @@ pub struct ShotRect {
     pub height: f64,
 }
 
+/// 覆盖层里可点选的窗口：坐标与 `shot_session.width/height` 同一套像素
+///（抓屏图上的像素，Retina 上是物理像素），前端直接拿来当选区用。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShotWindow {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+    /// 应用名，如 "Safari"
+    pub app: String,
+    /// 窗口标题（没有屏幕录制权限时可能为空）
+    pub title: String,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ShotSession {
@@ -191,9 +206,9 @@ pub struct ShotSettings {
     pub play_sound: bool,
     pub format: String,
     pub delay_sec: u64,
-    pub hotkey_region: String,
-    pub hotkey_window: String,
-    pub hotkey_full: String,
+    /// 唯一的截图快捷键：呼出覆盖层后在里面切换区域/窗口/全屏。
+    /// 旧版按模式分了三个快捷键，读取时由 store 迁移到这一个。
+    pub hotkey: String,
 }
 
 impl Default for ShotSettings {
@@ -204,12 +219,12 @@ impl Default for ShotSettings {
             play_sound: false,
             format: "png".into(),
             delay_sec: 0,
-            hotkey_region: "Ctrl+Alt+A".into(),
-            hotkey_window: "Ctrl+Alt+Shift+W".into(),
-            hotkey_full: "Ctrl+Alt+Shift+F".into(),
+            hotkey: DEFAULT_SHOT_HOTKEY.into(),
         }
     }
 }
+
+pub const DEFAULT_SHOT_HOTKEY: &str = "Ctrl+Alt+A";
 
 impl ShotSettings {
     pub(crate) fn clamped(mut self) -> Self {
@@ -801,65 +816,237 @@ fn capture_window(hwnd: windows::Win32::Foundation::HWND) -> Result<Captured, St
     })
 }
 
-#[cfg(not(target_os = "windows"))]
-fn capture_window(_hwnd: isize) -> Result<Captured, String> {
-    Err("窗口截图目前仅支持 Windows".into())
-}
-
 #[cfg(target_os = "windows")]
 fn capture_active_window() -> Result<Captured, String> {
     let hwnd = active_window().ok_or_else(|| "没有找到可截图的窗口".to_string())?;
     capture_window(hwnd)
 }
 
-/// macOS 窗口截图：用系统 `screencapture -w` 的交互式选窗（鼠标悬停高亮
-/// 窗口、点击即抓），效果和系统/飞书截图一致。抓完直接进标注器。
-#[cfg(target_os = "macos")]
-fn capture_active_window() -> Result<Captured, String> {
-    use std::process::Command;
-
-    if !mac_screen_recording_ready() {
-        return Err("没有屏幕录制权限：系统设置 → 隐私与安全性 → 屏幕录制，勾选 AgentHUD 后重试".into());
-    }
-    let path = std::env::temp_dir().join(format!(
-        "agenthud-window-{}-{}.png",
-        std::process::id(),
-        now_ms()
-    ));
-    let output = Command::new("/usr/sbin/screencapture")
-        .args(["-x", "-o", "-t", "png", "-w"])
-        .arg(&path)
-        .output()
-        .map_err(|e| format!("调用 screencapture 失败: {e}"))?;
-    if !output.status.success() {
-        let _ = std::fs::remove_file(&path);
-        return Err("已取消窗口截图".into());
-    }
-    let bytes = std::fs::read(&path).map_err(|e| {
-        let _ = std::fs::remove_file(&path);
-        format!("读取窗口截图失败: {e}")
-    });
-    let _ = std::fs::remove_file(&path);
-    let bytes = bytes?;
-    if bytes.len() < 128 {
-        return Err("已取消窗口截图".into());
-    }
-    let (width, height) = image::ImageReader::new(std::io::Cursor::new(&bytes))
-        .with_guessed_format()
-        .map_err(|e| format!("读取窗口截图尺寸失败: {e}"))?
-        .into_dimensions()
-        .map_err(|e| format!("读取窗口截图尺寸失败: {e}"))?;
-    Ok(Captured {
-        png: bytes,
-        width,
-        height,
-        title: "窗口截图".into(),
-    })
-}
-
 #[cfg(not(any(target_os = "windows", target_os = "macos")))]
 fn capture_active_window() -> Result<Captured, String> {
     Err("窗口截图目前仅支持 Windows / macOS".into())
+}
+
+// ============================================================
+// 窗口列表（覆盖层里的"悬停高亮 / 单击选窗"，飞书式）
+// ============================================================
+
+/// macOS：用 CoreGraphics 列出屏幕上的普通窗口（layer 0）。返回顺序是
+/// 从最前面到最后面，前端命中测试取第一个包含鼠标的窗口即可。
+#[cfg(target_os = "macos")]
+mod mac_windows {
+    use std::ffi::c_void;
+
+    type CFTypeRef = *const c_void;
+    type CFArrayRef = *const c_void;
+    type CFDictionaryRef = *const c_void;
+    type CFStringRef = *const c_void;
+
+    #[repr(C)]
+    #[derive(Clone, Copy, Default)]
+    struct CGPoint {
+        x: f64,
+        y: f64,
+    }
+
+    #[repr(C)]
+    #[derive(Clone, Copy, Default)]
+    struct CGSize {
+        width: f64,
+        height: f64,
+    }
+
+    #[repr(C)]
+    #[derive(Clone, Copy, Default)]
+    struct CGRect {
+        origin: CGPoint,
+        size: CGSize,
+    }
+
+    const CF_STRING_ENCODING_UTF8: u32 = 0x0800_0100;
+    const CF_NUMBER_SINT32: i32 = 3;
+    const CF_NUMBER_DOUBLE: i32 = 13;
+    const ON_SCREEN_ONLY: u32 = 1;
+    const EXCLUDE_DESKTOP_ELEMENTS: u32 = 16;
+
+    #[link(name = "CoreGraphics", kind = "framework")]
+    extern "C" {
+        static kCGWindowBounds: CFStringRef;
+        static kCGWindowName: CFStringRef;
+        static kCGWindowOwnerName: CFStringRef;
+        static kCGWindowLayer: CFStringRef;
+        static kCGWindowOwnerPID: CFStringRef;
+        static kCGWindowAlpha: CFStringRef;
+        fn CGWindowListCopyWindowInfo(option: u32, relative_to: u32) -> CFArrayRef;
+        fn CGRectMakeWithDictionaryRepresentation(dict: CFDictionaryRef, rect: *mut CGRect) -> bool;
+    }
+
+    #[link(name = "CoreFoundation", kind = "framework")]
+    extern "C" {
+        fn CFArrayGetCount(array: CFArrayRef) -> isize;
+        fn CFArrayGetValueAtIndex(array: CFArrayRef, index: isize) -> *const c_void;
+        fn CFDictionaryGetValue(dict: CFDictionaryRef, key: *const c_void) -> *const c_void;
+        fn CFNumberGetValue(number: CFTypeRef, the_type: i32, value: *mut c_void) -> bool;
+        fn CFStringGetCString(s: CFStringRef, buffer: *mut i8, size: isize, encoding: u32) -> bool;
+        fn CFRelease(cf: CFTypeRef);
+    }
+
+    pub struct MacWindow {
+        /// 全局逻辑点（主屏左上为原点，和 screencapture 一致）
+        pub x: f64,
+        pub y: f64,
+        pub w: f64,
+        pub h: f64,
+        pub layer: i32,
+        pub pid: i32,
+        pub alpha: f64,
+        pub app: String,
+        pub title: String,
+    }
+
+    unsafe fn number(dict: CFDictionaryRef, key: CFStringRef) -> Option<i32> {
+        let value = CFDictionaryGetValue(dict, key);
+        if value.is_null() {
+            return None;
+        }
+        let mut out: i32 = 0;
+        if CFNumberGetValue(value, CF_NUMBER_SINT32, &mut out as *mut i32 as *mut c_void) {
+            Some(out)
+        } else {
+            None
+        }
+    }
+
+    unsafe fn double(dict: CFDictionaryRef, key: CFStringRef) -> Option<f64> {
+        let value = CFDictionaryGetValue(dict, key);
+        if value.is_null() {
+            return None;
+        }
+        let mut out: f64 = 0.0;
+        if CFNumberGetValue(value, CF_NUMBER_DOUBLE, &mut out as *mut f64 as *mut c_void) {
+            Some(out)
+        } else {
+            None
+        }
+    }
+
+    unsafe fn string(dict: CFDictionaryRef, key: CFStringRef) -> String {
+        let value = CFDictionaryGetValue(dict, key);
+        if value.is_null() {
+            return String::new();
+        }
+        let mut buf = [0i8; 512];
+        if !CFStringGetCString(value, buf.as_mut_ptr(), buf.len() as isize, CF_STRING_ENCODING_UTF8)
+        {
+            return String::new();
+        }
+        let bytes: Vec<u8> = buf
+            .iter()
+            .take_while(|c| **c != 0)
+            .map(|c| *c as u8)
+            .collect();
+        String::from_utf8_lossy(&bytes).to_string()
+    }
+
+    pub fn list() -> Vec<MacWindow> {
+        let mut out = Vec::new();
+        unsafe {
+            let array = CGWindowListCopyWindowInfo(
+                ON_SCREEN_ONLY | EXCLUDE_DESKTOP_ELEMENTS,
+                0, // kCGNullWindowID
+            );
+            if array.is_null() {
+                return out;
+            }
+            let count = CFArrayGetCount(array);
+            for index in 0..count.max(0) {
+                let item = CFArrayGetValueAtIndex(array, index);
+                if item.is_null() {
+                    continue;
+                }
+                let dict = item as CFDictionaryRef;
+                let mut rect = CGRect::default();
+                let bounds = CFDictionaryGetValue(dict, kCGWindowBounds);
+                if bounds.is_null()
+                    || !CGRectMakeWithDictionaryRepresentation(bounds as CFDictionaryRef, &mut rect)
+                {
+                    continue;
+                }
+                out.push(MacWindow {
+                    x: rect.origin.x,
+                    y: rect.origin.y,
+                    w: rect.size.width,
+                    h: rect.size.height,
+                    layer: number(dict, kCGWindowLayer).unwrap_or(0),
+                    pid: number(dict, kCGWindowOwnerPID).unwrap_or(0),
+                    alpha: double(dict, kCGWindowAlpha).unwrap_or(1.0),
+                    app: string(dict, kCGWindowOwnerName),
+                    title: string(dict, kCGWindowName),
+                });
+            }
+            CFRelease(array as CFTypeRef);
+        }
+        out
+    }
+}
+
+/// 把系统窗口坐标换算到抓屏图上，并裁掉屏幕外的部分。
+#[cfg(target_os = "macos")]
+fn screen_windows(monitor: &ShotMonitor, image_w: u32, image_h: u32) -> Vec<ShotWindow> {
+    let scale = monitor.scale_factor.max(1.0);
+    let mon_x = monitor.x as f64 / scale;
+    let mon_y = monitor.y as f64 / scale;
+    let own_pid = std::process::id() as i32;
+    let mut out = Vec::new();
+    for win in mac_windows::list() {
+        // layer 0 = 普通应用窗口；再排掉自己（岛/覆盖层）和全透明窗口。
+        if win.layer != 0 || win.alpha <= 0.01 || win.pid == own_pid {
+            continue;
+        }
+        if win.w < 24.0 || win.h < 24.0 {
+            continue;
+        }
+        let x = (win.x - mon_x) * scale;
+        let y = (win.y - mon_y) * scale;
+        let left = x.max(0.0);
+        let top = y.max(0.0);
+        let right = (x + win.w * scale).min(image_w as f64);
+        let bottom = (y + win.h * scale).min(image_h as f64);
+        if right - left < 16.0 || bottom - top < 16.0 {
+            continue;
+        }
+        out.push(ShotWindow {
+            x: left.round(),
+            y: top.round(),
+            width: (right - left).round(),
+            height: (bottom - top).round(),
+            app: win.app,
+            title: win.title,
+        });
+    }
+    out
+}
+
+/// 非 macOS 暂不枚举窗口（Windows 的"窗口"入口还是抓当前活动窗口）。
+#[cfg(not(target_os = "macos"))]
+fn screen_windows(_monitor: &ShotMonitor, _image_w: u32, _image_h: u32) -> Vec<ShotWindow> {
+    Vec::new()
+}
+
+/// 覆盖层初始化后拉一次窗口列表，用于悬停高亮/单击选窗。
+#[tauri::command]
+pub fn shot_windows(id: u64) -> Vec<ShotWindow> {
+    // 只取几何信息，别把几 MB 的 PNG 一起 clone 出来。
+    let info = session_slot().lock().ok().and_then(|guard| {
+        guard
+            .as_ref()
+            .filter(|s| s.id == id)
+            .map(|s| (s.monitor.clone(), s.width, s.height))
+    });
+    match info {
+        Some((monitor, width, height)) => screen_windows(&monitor, width, height),
+        None => Vec::new(),
+    }
 }
 
 // ============================================================
@@ -1152,6 +1339,9 @@ async fn start_capture_inner(
             if monitors.is_empty() {
                 return Err("没有检测到显示器".into());
             }
+            // Windows 没有覆盖层选窗，直接抓当前活动窗口进标注器；
+            // macOS 则统一抓整屏，由覆盖层里的"窗口"模式选窗。
+            #[cfg(not(target_os = "macos"))]
             if mode == "window" {
                 let captured = capture_active_window()?;
                 // 窗口中心所在显示器
@@ -1184,21 +1374,17 @@ async fn start_capture_inner(
                 width: mon.width as f64,
                 height: mon.height as f64,
             };
-            Ok((
-                captured,
-                mon,
-                Some(origin),
-                if mode == "region" {
-                    "region".to_string()
-                } else {
-                    "edit".to_string()
-                },
-                if mode == "region" {
-                    "区域截图".into()
-                } else {
-                    "全屏截图".into()
-                },
-            ))
+            let final_mode = match mode {
+                "region" => "region",
+                "window" => "window",
+                _ => "edit",
+            };
+            let title = match final_mode {
+                "region" => "区域截图",
+                "window" => "窗口截图",
+                _ => "全屏截图",
+            };
+            Ok((captured, mon, Some(origin), final_mode.to_string(), title.to_string()))
         })
         .await
         .map_err(|e| format!("截图任务失败: {e}"))??;
@@ -1221,10 +1407,10 @@ async fn start_capture_inner(
         height: captured.height,
         origin,
         monitor: monitor.clone(),
-        title: if title == "窗口截图" {
-            captured.title.clone()
-        } else {
+        title: if captured.title.is_empty() {
             title
+        } else {
+            captured.title.clone()
         },
         created_at: now_ms(),
     };
@@ -2386,6 +2572,26 @@ fn gif_filter(image: &image::RgbaImage, max_width: u32) -> image::RgbaImage {
     image::imageops::resize(image, max_width, h, image::imageops::FilterType::Triangle)
 }
 
+/// 抓到的帧 → 固定尺寸的 GIF 帧。帧尺寸必须和编码器完全一致，否则
+/// `from_rgba_speed` 会断言 panic；而 macOS 的 `screencapture -R` 会向外
+/// 取整（请求 401×301 实际拿到 402×302），所以这里统一缩放。
+fn gif_frame(
+    image: image::RgbaImage,
+    width: u32,
+    height: u32,
+    delay: u16,
+) -> gif::Frame<'static> {
+    let fitted = if image.width() == width && image.height() == height {
+        image
+    } else {
+        image::imageops::resize(&image, width, height, image::imageops::FilterType::Triangle)
+    };
+    let mut rgba = fitted.into_raw();
+    let mut frame = gif::Frame::from_rgba_speed(width as u16, height as u16, &mut rgba, 10);
+    frame.delay = delay;
+    frame
+}
+
 /// 框选区域后录制固定时长的 GIF。录屏期间编辑器移出屏幕，HUD 保持隐藏；
 /// 完成后保存到截图目录并把路径返回给前端，由前端提供“打开/打开文件夹”。
 #[tauri::command]
@@ -2396,6 +2602,11 @@ pub async fn shot_record_gif(
     seconds: u64,
 ) -> Result<RecordResult, String> {
     let session = shot_session(id)?;
+    // 只有"屏幕上的某块区域"才能按屏幕坐标重录；窗口/历史图片会话的
+    // rect 是图片内坐标，硬录会拍到不相干的地方。
+    if session.origin.is_none() {
+        return Err("当前截图不是屏幕区域，无法录制：请用区域或窗口模式重新框选后再录".into());
+    }
     #[cfg(target_os = "macos")]
     set_mac_scale(session.monitor.scale_factor);
     let x = rect.x.round() as i32;
@@ -2422,8 +2633,14 @@ pub async fn shot_record_gif(
                 "Recording_{}.gif",
                 chrono::Local::now().format("%Y%m%d_%H%M%S_%3f")
             ));
-            let out_w = w.min(1000).max(2);
-            let out_h = ((h as f64 * out_w as f64 / w as f64).round() as u32).max(2);
+            let started = std::time::Instant::now();
+            let deadline = Duration::from_secs(seconds);
+            let interval = Duration::from_millis(125);
+            // 先抓第一帧，用真实像素尺寸建编码器：macOS 的 screencapture
+            // 会把逻辑矩形向外取整，实际像素常比请求的多 1px。
+            let first = gif_filter(&capture_rect(screen_x, screen_y, w, h)?, 1000);
+            let out_w = first.width().max(2);
+            let out_h = first.height().max(2);
             let mut gif_buf: Vec<u8> = Vec::new();
             let mut encoder = gif::Encoder::new(&mut gif_buf, out_w as u16, out_h as u16, &[])
                 .map_err(|e| format!("初始化 GIF 失败: {e}"))?;
@@ -2431,21 +2648,24 @@ pub async fn shot_record_gif(
                 .set_repeat(gif::Repeat::Infinite)
                 .map_err(|e| format!("设置 GIF 循环失败: {e}"))?;
             let mut encoded = 0u32;
-            let started = std::time::Instant::now();
-            let interval = Duration::from_millis(125);
-            while started.elapsed() < Duration::from_secs(seconds) {
-                let frame_started = std::time::Instant::now();
-                let captured = capture_rect(screen_x, screen_y, w, h)?;
-                let small = gif_filter(&captured, 1000);
-                let mut rgba = small.into_raw();
-                let mut frame =
-                    gif::Frame::from_rgba_speed(out_w as u16, out_h as u16, &mut rgba, 10);
-                frame.delay = 12;
+            let mut last_at = started;
+            let mut next_image = Some(first);
+            while started.elapsed() < deadline {
+                let image = match next_image.take() {
+                    Some(image) => image,
+                    None => gif_filter(&capture_rect(screen_x, screen_y, w, h)?, 1000),
+                };
+                let now = std::time::Instant::now();
+                // 大区域抓一帧要 1s+，帧延时按真实节奏走；固定 12（120ms）
+                // 会把 8 秒录屏回放成 0.6 秒。
+                let delay = (((now - last_at).as_millis() / 10) as u32).clamp(4, 200) as u16;
+                last_at = now;
+                let frame = gif_frame(image, out_w, out_h, delay);
                 encoder
                     .write_frame(&frame)
                     .map_err(|e| format!("写入 GIF 帧失败: {e}"))?;
                 encoded += 1;
-                let elapsed = frame_started.elapsed();
+                let elapsed = now - started;
                 if elapsed < interval {
                     std::thread::sleep(interval - elapsed);
                 }
@@ -2481,41 +2701,35 @@ pub async fn shot_record_gif(
 // ============================================================
 
 /// 注册截图快捷键（与面板/灵动岛共用 global-shortcut 插件）。
+/// 只注册一个键：呼出覆盖层后，区域/窗口/全屏都在覆盖层里切换。
 /// 被占用只记日志，不影响应用启动；设置页修改快捷键后由
 /// `refresh_global_shortcuts` 统一重注册。
 pub fn register_hotkeys(app: &AppHandle) {
     use tauri_plugin_global_shortcut::GlobalShortcutExt;
     let settings = super::store::load_shot_settings();
-    let entries = [
-        ("region", settings.hotkey_region),
-        ("window", settings.hotkey_window),
-        ("full", settings.hotkey_full),
-    ];
+    let key = settings.hotkey;
+    if key.trim().is_empty() {
+        return;
+    }
     let gs = app.global_shortcut();
-    for (mode, key) in entries {
-        if key.trim().is_empty() {
-            continue;
+    if let Err(e) = gs.on_shortcut(key.as_str(), move |app, _shortcut, event| {
+        // macOS 上 global-hotkey 按下/松开各派发一次，这里只认按下，
+        // 否则第二次会撞上 STARTING 守卫，报“截图正在进行中”。
+        if !matches!(
+            event.state(),
+            tauri_plugin_global_shortcut::ShortcutState::Pressed
+        ) {
+            return;
         }
-        let mode = mode.to_string();
-        if let Err(e) = gs.on_shortcut(key.as_str(), move |app, _shortcut, event| {
-            // macOS 上 global-hotkey 按下/松开各派发一次，这里只认按下，
-            // 否则第二次会撞上 STARTING 守卫，报“截图正在进行中”。
-            if !matches!(
-                event.state(),
-                tauri_plugin_global_shortcut::ShortcutState::Pressed
-            ) {
-                return;
+        let app = app.clone();
+        tauri::async_runtime::spawn(async move {
+            // 统一以区域模式呼出：覆盖层里可以切到窗口/全屏。
+            if let Err(e) = start_capture(app, "region".into(), 0, None).await {
+                eprintln!("[zbar-shot] 快捷键截图失败: {e}");
             }
-            let app = app.clone();
-            let mode = mode.clone();
-            tauri::async_runtime::spawn(async move {
-                if let Err(e) = start_capture(app, mode, 0, None).await {
-                    eprintln!("[zbar-shot] 快捷键截图失败: {e}");
-                }
-            });
-        }) {
-            eprintln!("[zbar-shot] 注册截图快捷键 {key} 失败（可能被占用）: {e}");
-        }
+        });
+    }) {
+        eprintln!("[zbar-shot] 注册截图快捷键 {key} 失败（可能被占用）: {e}");
     }
 }
 
@@ -2577,6 +2791,18 @@ mod tests {
         assert_eq!(small.width(), 60);
         assert_eq!(small.height(), 110);
     }
+
+    #[test]
+    fn gif_frame_accepts_off_by_one_capture() {
+        // macOS 上请求 60×110 逻辑矩形可能抓到 61×111 像素，
+        // 直接按 60×110 建帧会 panic，gif_frame 必须自己缩放。
+        let odd = image::RgbaImage::from_pixel(61, 111, image::Rgba([9, 8, 7, 255]));
+        let frame = gif_frame(odd, 60, 110, 12);
+        assert_eq!(frame.width, 60);
+        assert_eq!(frame.height, 110);
+        assert_eq!(frame.buffer.len(), 60 * 110);
+        assert_eq!(frame.delay, 12);
+    }
 }
 
 #[cfg(all(test, target_os = "macos"))]
@@ -2594,5 +2820,29 @@ mod mac_capture_tests {
     fn scale_conversion() {
         super::set_mac_scale(2.0);
         assert_eq!(super::mac_scale(), 2.0);
+    }
+
+    /// 窗口列表换算到抓屏图像素后必须都落在图内，且是正整数尺寸。
+    #[test]
+    fn window_list_stays_inside_capture() {
+        let monitor = super::ShotMonitor {
+            index: 0,
+            name: "test".into(),
+            x: 0,
+            y: 0,
+            width: 2880,
+            height: 1800,
+            scale_factor: 2.0,
+            primary: true,
+        };
+        let wins = super::screen_windows(&monitor, 2880, 1800);
+        // 无窗口的机器（CI/无头）返回空列表也算通过，这里只校验换算结果。
+        eprintln!("[test] 窗口列表 {} 个", wins.len());
+        for win in &wins {
+            assert!(win.x >= 0.0 && win.y >= 0.0);
+            assert!(win.width >= 16.0 && win.height >= 16.0);
+            assert!(win.x + win.width <= 2881.0);
+            assert!(win.y + win.height <= 1801.0);
+        }
     }
 }

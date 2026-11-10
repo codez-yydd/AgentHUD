@@ -11,6 +11,7 @@ import {
   mockScroll,
   mockSession,
   mockShotSettings,
+  mockWindows,
 } from "./mock";
 import type {
   OcrResult,
@@ -23,6 +24,7 @@ import type {
   ShotRect,
   ShotSession,
   ShotSettings,
+  ShotWindow,
 } from "./types";
 
 function delay<T>(value: T, ms = 80): Promise<T> {
@@ -64,15 +66,23 @@ export async function editShotFile(path: string): Promise<number> {
 export async function getShotSession(id: number): Promise<ShotSession> {
   if (!IS_TAURI) {
     const params = new URLSearchParams(window.location.search);
-    return delay(mockSession(params.get("edit") === "1"), 30);
+    const mode =
+      params.get("edit") === "1" ? "edit" : params.get("window") === "1" ? "window" : "region";
+    return delay(mockSession(mode), 30);
   }
   return invoke<ShotSession>("shot_session", { id });
+}
+
+/** 覆盖层里可点选的窗口列表（macOS 走 CoreGraphics，其它平台为空）。 */
+export async function getShotWindows(id: number): Promise<ShotWindow[]> {
+  if (!IS_TAURI) return delay(mockWindows, 20);
+  return invoke<ShotWindow[]>("shot_windows", { id });
 }
 
 /** 原始 PNG 字节；Tauri raw IPC 返回 ArrayBuffer。 */
 export async function getSessionImage(id: number): Promise<ArrayBuffer> {
   if (!IS_TAURI) {
-    const session = mockSession(true);
+    const session = mockSession("edit");
     return fetch(session.image ?? "").then((response) => response.arrayBuffer());
   }
   return invoke<ArrayBuffer>("shot_session_image", { id });

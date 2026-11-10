@@ -26,9 +26,7 @@ const DEFAULT_SETTINGS: ShotSettings = {
   playSound: false,
   format: "png",
   delaySec: 0,
-  hotkeyRegion: "Ctrl+Alt+A",
-  hotkeyWindow: "Ctrl+Alt+Shift+W",
-  hotkeyFull: "Ctrl+Alt+Shift+F",
+  hotkey: "Ctrl+Alt+A",
 };
 
 function fmtAgo(ts: number) {
@@ -150,7 +148,7 @@ export function ScreenshotPage({ onToast }: { onToast: (message: string) => void
     <div className="page shot-page">
       <SectionHead
         title="截图"
-        hint="框选、标注、贴图、文字识别，全部在本地完成"
+        hint="一个快捷键呼出，之后在截图条里切换 区域 / 窗口 / 全屏"
         action={
           <button
             type="button"
@@ -175,10 +173,10 @@ export function ScreenshotPage({ onToast }: { onToast: (message: string) => void
             <Icon name="camera" size={20} />
           </span>
           <span className="shot-launch-text">
-            <b>区域截图</b>
-            <em>拖动框选后标注</em>
+            <b>截图</b>
+            <em>拖动框选，或单击窗口直接选中</em>
           </span>
-          <kbd>{hotkeyText(settings.hotkeyRegion)}</kbd>
+          <kbd>{hotkeyText(settings.hotkey)}</kbd>
         </button>
         <button
           type="button"
@@ -191,9 +189,8 @@ export function ScreenshotPage({ onToast }: { onToast: (message: string) => void
           </span>
           <span className="shot-launch-text">
             <b>窗口</b>
-            <em>当前活动窗口</em>
+            <em>悬停高亮，单击选中</em>
           </span>
-          <kbd>{hotkeyText(settings.hotkeyWindow)}</kbd>
         </button>
         <button
           type="button"
@@ -208,7 +205,6 @@ export function ScreenshotPage({ onToast }: { onToast: (message: string) => void
             <b>全屏</b>
             <em>{currentMonitor ? `${currentMonitor.width}×${currentMonitor.height}` : "当前显示器"}</em>
           </span>
-          <kbd>{hotkeyText(settings.hotkeyFull)}</kbd>
         </button>
         {IS_MAC ? null : (
           <button

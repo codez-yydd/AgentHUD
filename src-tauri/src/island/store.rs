@@ -13,7 +13,7 @@ use rusqlite::{params, Connection};
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 
-use super::screenshot::ShotSettings;
+use super::screenshot::{ShotSettings, DEFAULT_SHOT_HOTKEY};
 use super::IslandConfig;
 
 const DB_NAME: &str = "island.db";
@@ -181,18 +181,8 @@ pub fn load_shot_settings() -> ShotSettings {
             return Ok(ShotSettings::default());
         };
         let payload: String = row.get(0).map_err(|e| format!("读取截图设置失败: {e}"))?;
-        serde_json::from_str::<ShotSettings>(&payload)
-            .map(|mut s| {
-                // 旧默认 Ctrl+Alt+W / Ctrl+Alt+F 常被其它软件占用；只在
-                // 用户仍保留旧默认值时迁移，不覆盖自定义快捷键。
-                if s.hotkey_window == "Ctrl+Alt+W" {
-                    s.hotkey_window = "Ctrl+Alt+Shift+W".into();
-                }
-                if s.hotkey_full == "Ctrl+Alt+F" {
-                    s.hotkey_full = "Ctrl+Alt+Shift+F".into();
-                }
-                s.clamped()
-            })
+        deserialize_shot_settings(&payload)
+            .map(|s| s.clamped())
             .map_err(|e| format!("解析截图设置失败: {e}"))
     })()
     .unwrap_or_default();
@@ -200,6 +190,34 @@ pub fn load_shot_settings() -> ShotSettings {
         *guard = Some(loaded.clone());
     }
     loaded
+}
+
+/// 解析截图设置，并把旧版三个分模式快捷键（`hotkeyRegion` 优先）合并成
+/// 唯一的 `hotkey`。旧字段读出来就丢掉，下次保存时自然清理。
+fn deserialize_shot_settings(payload: &str) -> Result<ShotSettings, serde_json::Error> {
+    let mut value: serde_json::Value = serde_json::from_str(payload)?;
+    if let Some(obj) = value.as_object_mut() {
+        let current = obj
+            .get("hotkey")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        if current.is_empty() {
+            let region = ["hotkeyRegion", "hotkeyWindow", "hotkeyFull"]
+                .iter()
+                .filter_map(|key| obj.get(*key).and_then(|v| v.as_str()))
+                .map(|s| s.trim())
+                .find(|s| !s.is_empty())
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| super::screenshot::DEFAULT_SHOT_HOTKEY.to_string());
+            obj.insert("hotkey".into(), serde_json::Value::String(region));
+        }
+        for key in ["hotkeyRegion", "hotkeyWindow", "hotkeyFull"] {
+            obj.remove(key);
+        }
+    }
+    serde_json::from_value(value)
 }
 
 pub fn save_shot_settings(settings: &ShotSettings) -> Result<(), String> {
@@ -233,5 +251,28 @@ mod tests {
         let cfg =
             deserialize_config(r#"{"enabled":true,"fontSize":14.5,"fontScale":1.25}"#).unwrap();
         assert!((cfg.font_size - 14.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn merges_legacy_shot_hotkeys_into_one() {
+        let s = deserialize_shot_settings(
+            r#"{"autoCopy":true,"hotkeyRegion":"Ctrl+Alt+S","hotkeyWindow":"Ctrl+Alt+Shift+W","hotkeyFull":"Ctrl+Alt+Shift+F"}"#,
+        )
+        .unwrap();
+        assert_eq!(s.hotkey, "Ctrl+Alt+S");
+    }
+
+    #[test]
+    fn single_shot_hotkey_wins_over_legacy_fields() {
+        let s =
+            deserialize_shot_settings(r#"{"hotkey":"Ctrl+Alt+Q","hotkeyRegion":"Ctrl+Alt+S"}"#)
+                .unwrap();
+        assert_eq!(s.hotkey, "Ctrl+Alt+Q");
+    }
+
+    #[test]
+    fn shot_hotkey_falls_back_to_default() {
+        let s = deserialize_shot_settings(r#"{"autoCopy":false}"#).unwrap();
+        assert_eq!(s.hotkey, DEFAULT_SHOT_HOTKEY);
     }
 }

@@ -7,6 +7,7 @@ import type {
   ShotMonitor,
   ShotSession,
   ShotSettings,
+  ShotWindow,
 } from "./types";
 
 export const mockMonitor: ShotMonitor = {
@@ -26,10 +27,14 @@ export const mockShotSettings: ShotSettings = {
   playSound: false,
   format: "png",
   delaySec: 0,
-  hotkeyRegion: "Ctrl+Alt+A",
-  hotkeyWindow: "Ctrl+Alt+Shift+W",
-  hotkeyFull: "Ctrl+Alt+Shift+F",
+  hotkey: "Ctrl+Alt+A",
 };
+
+/** 浏览器预览用的假窗口（和 mockDesktop 里画的窗口对齐，前→后顺序）。 */
+export const mockWindows: ShotWindow[] = [
+  { x: 900, y: 690, width: 560, height: 264, app: "Code", title: "shotOverlay.tsx" },
+  { x: 170, y: 96, width: 980, height: 720, app: "Safari", title: "AgentHUD 截图工作台" },
+];
 
 let cachedDesktop = "";
 
@@ -266,18 +271,18 @@ function rounded(
   ctx.roundRect(x, y, w, h, r);
 }
 
-export function mockSession(edit = false): ShotSession {
+export function mockSession(mode: "region" | "window" | "edit" = "region"): ShotSession {
   const desktop = mockDesktop();
   return {
     id: 1,
-    mode: edit ? "edit" : "region",
+    mode,
     image: desktop,
     backdrop: desktop,
     width: 1600,
     height: 1000,
     origin: { x: 0, y: 0, width: 1600, height: 1000 },
     monitor: mockMonitor,
-    title: "区域截图",
+    title: mode === "edit" ? "窗口截图" : mode === "window" ? "窗口截图" : "区域截图",
     createdAt: Date.now(),
   };
 }

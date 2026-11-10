@@ -61,9 +61,10 @@ MIT），实现为本项目自写的 Tauri + React 版本。收起态最宽 500p
   配置里（`agentOrder`），也可以一键恢复默认。
 - **全局热键**：默认 `Ctrl+Alt+Shift+I` 开关灵动岛（原 wisland 默认
   `Ctrl+Alt+I` 在本机常被输入法占用，故加了 Shift；可在设置页修改）。
-- **截图热键**：`Ctrl+Alt+A` 区域、`Ctrl+Alt+Shift+W` 窗口、`Ctrl+Alt+Shift+F`
-  全屏；截图器内 `Ctrl+C` 复制、`Ctrl+S` 保存、`Ctrl+P` 贴图、`Ctrl+Shift+O`
-  OCR、`Ctrl+Shift+Q` 二维码、`Ctrl+Shift+R` 滚动、`Ctrl+Shift+G` 录 GIF。
+- **截图热键**：只有 `Ctrl+Alt+A` 一个——呼出覆盖层后再在里面切
+  **区域 / 窗口 / 全屏**；截图器内 `Ctrl+C` 复制、`Ctrl+S` 保存、`Ctrl+P` 贴图、
+  `Ctrl+Shift+O` OCR、`Ctrl+Shift+Q` 二维码、`Ctrl+Shift+R` 滚动、`Ctrl+Shift+G`
+  录 GIF。
 
 ## 已实现
 
@@ -90,18 +91,25 @@ MIT），实现为本项目自写的 Tauri + React 版本。收起态最宽 500p
 截图页（标签栏最后的相机）与抓屏器、标注器分离：截图页只负责入口、最近截图
 和设置；真正的框选/标注在覆盖当前显示器的 `shot.html` 窗口里完成。
 
-- **区域截图**：`Ctrl+Alt+A`；拖动框选后可调整八个把手、移动选区，框选完成后可直接
-  「复制」(`Ctrl+C`) 或「另存为…」(`Ctrl+S`)，也可以双击/回车进入标注。
-- **窗口 / 全屏**：`Ctrl+Alt+Shift+W` / `Ctrl+Alt+Shift+F`；Windows 上窗口模式抓当前前台窗口
-  （`PrintWindow`，失败回落屏幕裁剪），macOS 上调系统 `screencapture -w` 进入交互式选窗
-  （鼠标悬停高亮、点击即抓，抓完直接进标注器）；全屏抓选定显示器。
+- **一个快捷键 + 覆盖层切模式**：`Ctrl+Alt+A`（设置项 `hotkey`，可改）统一呼出覆盖层，
+  底部截图条上是 **区域 / 窗口 / 全屏** 三个模式，呼出后随时切换，不再为每种模式各占
+  一个全局热键（旧配置里的 `hotkeyRegion/hotkeyWindow/hotkeyFull` 读取时自动合并成
+  `hotkey`，优先取 `hotkeyRegion`）。
+- **区域**：拖动框选后可调整八个把手、移动选区，框选完成后可直接「复制」(`Ctrl+C`)
+  或「另存为…」(`Ctrl+S`)，也可以双击/回车进入标注。
+- **窗口（飞书式）**：鼠标在覆盖层里移动时，光标所在的窗口会被描边高亮并显示
+  `应用名 · 标题`，**单击就选中整个窗口**；想框选窗口里的局部照样可以拖动。
+  macOS 用 CoreGraphics `CGWindowListCopyWindowInfo` 取窗口矩形（layer 0、排除自身
+  进程、换算成抓屏图像素），替换了原来 `screencapture -w` 的独立选窗交互。
+- **全屏**：点“全屏”把整块显示器选为一个选区，之后同样可以标注/复制/录制。
+  Windows 上窗口模式仍抓当前前台窗口（`PrintWindow`，失败回落屏幕裁剪）。
 - **延时**：0/3/5/10 秒，先隐藏 HUD 与自身窗口再抓屏。
 - **滚动长截图**：框选后按 `Ctrl+Shift+R`（或点“滚动”），编辑器移出屏幕，向选区中心窗口发送真实滚轮消息，逐帧抓取并按行签名拼接；支持网页、聊天记录、文档等常规滚动容器。
 - **标注器**：矩形/椭圆/箭头/画笔/高亮/文字/序号/马赛克/模糊，颜色与线宽、撤销重做、重新框选。
 - **贴图**：`Ctrl+P`，把当前画面钉成无边框置顶窗口，可拖动、按比例缩放、复制、保存。
 - **本地 OCR**：`Ctrl+Shift+O`，走 Windows.Media.Ocr，不联网；结果可直接复制。
 - **二维码**：`Ctrl+Shift+Q`，本地 `rqrr` 解码，结果可复制。
-- **GIF 录制**：选区后点“录制”或 `Ctrl+Shift+G`，固定 8 秒、最高 1000px 宽，保存到截图目录；结果弹窗可直接打开 GIF。
+- **GIF 录制**：选区后点“录制”或 `Ctrl+Shift+G`，固定 8 秒、最高 1000px 宽，保存到截图目录；结果弹窗可直接打开 GIF。帧尺寸以**实际抓到的第一帧**为准（macOS `screencapture -R` 会把逻辑矩形向外取整，按请求尺寸建 GIF 帧会触发 `gif` crate 断言 panic，表现为“录制任务失败: task … panicked”）；帧延时按真实抓帧节奏写，大区域抓一帧要 1s+ 也不会回放成快进。窗口/历史图片会话的 rect 不是屏幕坐标，录制按钮会禁用并提示改用区域/窗口模式。
 - **保存 / 复制**：默认 PNG（可切 JPG），保存到 `图片/AgentHUD Screenshots`；保存后可自动复制/贴图，历史列表支持打开、编辑标注、复制、贴图、二次确认删除。标注器里另有「另存为…」(`Ctrl+Shift+S`)，弹系统保存面板选任意目录。
 - **历史编辑**：历史项铅笔按钮重新进入标注器，不是只能看外部文件。
 - **无外部配置**：截图设置也在 `~/.agenthud/island.db` 内部状态库，不生成 JSON。
@@ -210,8 +218,9 @@ src-tauri/capabilities/pin.json
   亮度、显示器亮度都已在 macOS 上可用。
 - **跨平台抓屏**：Windows 走 GDI `BitBlt`/`PrintWindow`；macOS 走系统
   `/usr/sbin/screencapture`（首次使用需在「系统设置 → 隐私与安全性 → 屏幕录制」
-  里授予 AgentHUD 权限，否则会给出明确提示）。macOS 的滚动长截图尚未实现，
-  框选工具条里不会出现「滚动」。
+  里授予 AgentHUD 权限，否则会给出明确提示）。macOS 的窗口模式用 CoreGraphics
+  窗口列表在覆盖层里选窗（没授权时窗口标题为空，矩形仍可用）；滚动长截图尚未
+  实现，框选工具条里不会出现「滚动」。
 - **跨平台桌面模糊**：抓屏采样目前仅 Windows；macOS 上退化为纯 CSS 深色玻璃。
 - **视频录屏 / 麦克风 / 系统音频**：截图页目前提供 8 秒 GIF 录制；MP4/WebM、
   音频混流和录制控制条尚未接入。

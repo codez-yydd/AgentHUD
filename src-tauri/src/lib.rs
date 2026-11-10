@@ -3457,6 +3457,7 @@ pub fn run() {
             island::notify::island_notify_open_settings,
             // 截图工作台
             island::screenshot::shot_monitors,
+            island::screenshot::shot_windows,
             island::screenshot::shot_settings,
             island::screenshot::shot_set_settings,
             island::screenshot::shot_start,

@@ -18,7 +18,8 @@ export interface ShotRect {
 
 export interface ShotSession {
   id: number;
-  mode: "region" | "edit";
+  /** region = 框选；window = 先选窗口；edit = 直接进入标注 */
+  mode: "region" | "window" | "edit";
   /** 前端从 shot_session_image 取回字节后创建的 blob URL（不在会话 JSON 里） */
   image?: string;
   backdrop?: string;
@@ -45,6 +46,16 @@ export interface PinData {
   image: string;
   width: number;
   height: number;
+}
+
+/** 覆盖层里可点选的窗口，坐标与截图会话的像素坐标一致。 */
+export interface ShotWindow {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  app: string;
+  title: string;
 }
 
 export interface OcrResult {
@@ -81,7 +92,6 @@ export interface ShotSettings {
   playSound: boolean;
   format: "png" | "jpg";
   delaySec: number;
-  hotkeyRegion: string;
-  hotkeyWindow: string;
-  hotkeyFull: string;
+  /** 唯一截图快捷键：呼出覆盖层后在里面切换区域/窗口/全屏 */
+  hotkey: string;
 }

@@ -17,6 +17,7 @@ import {
   getSessionImage,
   getShotSession,
   getShotSettings,
+  getShotWindows,
   ocrShot,
   openShot,
   openShotFolder,
@@ -36,6 +37,7 @@ import type {
   ShotRect,
   ShotSession,
   ShotSettings,
+  ShotWindow,
 } from "./types";
 
 type Tool =
@@ -187,6 +189,9 @@ export default function ShotApp() {
   const viewport = useViewport();
   const [session, setSession] = useState<ShotSession | null>(null);
   const [phase, setPhase] = useState<"loading" | "select" | "edit">("loading");
+  const [selectMode, setSelectMode] = useState<"region" | "window">("region");
+  const [windows, setWindows] = useState<ShotWindow[]>([]);
+  const [hoverWindow, setHoverWindow] = useState<ShotWindow | null>(null);
   const [selection, setSelection] = useState<ShotRect | null>(null);
   const [context, setContext] = useState<Context | null>(null);
   const [origin, setOrigin] = useState<ShotRect | null>(null);
@@ -292,6 +297,7 @@ export default function ShotApp() {
             ]);
           }
         } else {
+          setSelectMode(next.mode === "window" ? "window" : "region");
           setPhase("select");
           if (!IS_TAURI && new URLSearchParams(window.location.search).get("select") === "1") {
             setSelection({ x: 420, y: 250, width: 1000, height: 560 });
@@ -322,6 +328,32 @@ export default function ShotApp() {
     // BEGIN 只在窗口创建时执行一次；beginEdit 是稳定纯函数式的状态写入。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [idFromUrl]);
+
+  const sessionId = session?.id ?? 0;
+
+  // 窗口列表用于悬停高亮 / 单击选窗；切模式时刷新一次。
+  useEffect(() => {
+    if (phase !== "select" || !sessionId) {
+      setWindows([]);
+      setHoverWindow(null);
+      return;
+    }
+    let dead = false;
+    void getShotWindows(sessionId)
+      .then((list) => {
+        if (!dead) setWindows(list);
+      })
+      .catch(() => {
+        if (!dead) setWindows([]);
+      });
+    return () => {
+      dead = true;
+    };
+  }, [phase, sessionId, selectMode]);
+
+  useEffect(() => {
+    if (selection) setHoverWindow(null);
+  }, [selection]);
 
   async function beginEdit(image: string, nextOrigin: ShotRect | null, backdrop?: string) {
     const img = await loadImage(image);
@@ -378,6 +410,16 @@ export default function ShotApp() {
       rect,
     };
   }, [selection, selectScale]);
+
+  const hoverCss = useMemo(() => {
+    if (!hoverWindow || selection) return null;
+    return {
+      left: hoverWindow.x * selectScale,
+      top: hoverWindow.y * selectScale,
+      width: hoverWindow.width * selectScale,
+      height: hoverWindow.height * selectScale,
+    };
+  }, [hoverWindow, selectScale, selection]);
 
   const redraw = useCallback(() => {
     const canvas = canvasRef.current;
@@ -547,6 +589,31 @@ export default function ShotApp() {
     };
   };
 
+  /** 命中测试：窗口列表是从最前面到最后面，第一个包含该点的就是目标窗口。 */
+  const windowAt = (point: Point): ShotWindow | null => {
+    for (const win of windows) {
+      if (
+        point.x >= win.x &&
+        point.x <= win.x + win.width &&
+        point.y >= win.y &&
+        point.y <= win.y + win.height
+      ) {
+        return win;
+      }
+    }
+    return null;
+  };
+
+  const pickWindow = (win: ShotWindow) => {
+    setSelection({
+      x: win.x,
+      y: win.y,
+      width: win.width,
+      height: win.height,
+    });
+    setHoverWindow(null);
+  };
+
   const startSelection = (event: ReactPointerEvent) => {
     if (phase !== "select" || !session) return;
     const target = event.target as HTMLElement;
@@ -599,7 +666,17 @@ export default function ShotApp() {
   };
 
   const moveSelection = (event: ReactPointerEvent) => {
-    if (phase !== "select" || !selectDragRef.current || !session) return;
+    if (phase !== "select" || !session) return;
+    // 没有按住拖动时只做窗口悬停高亮（飞书式：移动即预览要选的窗口）。
+    if (!selectDragRef.current) {
+      const target = event.target as HTMLElement;
+      if (target.closest(".shot-floating") || selection) {
+        setHoverWindow(null);
+        return;
+      }
+      setHoverWindow(windowAt(selectPoint(event)));
+      return;
+    }
     const point = selectPoint(event);
     const drag = selectDragRef.current;
     if (drag.mode === "new") {
@@ -647,10 +724,22 @@ export default function ShotApp() {
   };
 
   const endSelection = (event: ReactPointerEvent) => {
-    if (selectDragRef.current) {
+    const drag = selectDragRef.current;
+    if (drag) {
       selectDragRef.current = null;
       if (stageRef.current?.hasPointerCapture(event.pointerId)) {
         stageRef.current.releasePointerCapture(event.pointerId);
+      }
+      // 单击（没拖动）落在窗口上 = 选中这个窗口，和飞书截图一致。
+      if (drag.mode === "new") {
+        const point = selectPoint(event);
+        const moved =
+          Math.abs(point.x - drag.start.x) + Math.abs(point.y - drag.start.y);
+        const hit = moved < 6 ? windowAt(point) : null;
+        if (hit) {
+          pickWindow(hit);
+          return;
+        }
       }
     }
     setSelection((current) => {
@@ -759,15 +848,17 @@ export default function ShotApp() {
     }
   }
 
+  /** 全屏：整屏作为一个选区，之后照样可以标注/复制/录制。 */
   function selectFull() {
-    if (!session?.image) return;
-    setScrollAvailable(false);
-    void beginEdit(session.image, {
-      x: 0,
-      y: 0,
-      width: session.width,
-      height: session.height,
-    });
+    if (!session) return;
+    setSelection({ x: 0, y: 0, width: session.width, height: session.height });
+    setHoverWindow(null);
+  }
+
+  /** 区域/窗口模式切换：只影响提示与是否预先高亮窗口。 */
+  function switchMode(mode: "region" | "window") {
+    setSelectMode(mode);
+    setHoverWindow(null);
   }
 
   async function finishScroll() {
@@ -811,6 +902,10 @@ export default function ShotApp() {
 
   async function finishRecord() {
     if (!session || !selection || busy) return;
+    if (!session.origin) {
+      showToast("窗口/图片会话不能录制，请用区域或窗口模式重新框选", 3600);
+      return;
+    }
     const rect = normRect(selection);
     setBusy("正在录制 8 秒 GIF…");
     try {
@@ -1196,19 +1291,51 @@ export default function ShotApp() {
               </div>
             </>
           ) : null}
+          {hoverCss ? (
+            <div className="shot-window-hover" style={hoverCss}>
+              <span className="shot-window-tag">
+                {hoverWindow?.app}
+                {hoverWindow?.title ? ` · ${hoverWindow.title}` : ""}
+              </span>
+            </div>
+          ) : null}
           <div className="shot-top-pill">
             <span className="shot-live-dot" />
             <span>{session.title}</span>
             <span className="shot-top-sep" />
             <span>{session.monitor.width} × {session.monitor.height}</span>
             <span className="shot-top-sep" />
-            <span>拖动框选</span>
+            <span>{selectMode === "window" ? "单击选窗" : "拖动框选 · 悬停选窗"}</span>
           </div>
           <div className="shot-floating shot-select-actions" onPointerDown={(e) => e.stopPropagation()}>
+            <div className="shot-mode-switch" role="group" aria-label="截图模式">
+              <button
+                type="button"
+                className={selectMode === "region" ? "active" : ""}
+                title="拖动框选任意区域"
+                onClick={() => switchMode("region")}
+              >
+                <ShotIcon name="crop" size={13} /> 区域
+              </button>
+              <button
+                type="button"
+                className={selectMode === "window" ? "active" : ""}
+                title="鼠标移到窗口上单击即选中整个窗口"
+                onClick={() => switchMode("window")}
+              >
+                <ShotIcon name="window" size={13} /> 窗口
+              </button>
+              <button type="button" title="选中整个屏幕" onClick={selectFull}>
+                <ShotIcon name="full" size={13} /> 全屏
+              </button>
+            </div>
+            <span className="shot-actions-sep" />
             <span className="shot-selection-label">
               {selection
                 ? `${Math.round(normRect(selection).width)} × ${Math.round(normRect(selection).height)}`
-                : "拖动选择区域"}
+                : hoverWindow
+                  ? `${hoverWindow.app} 窗口`
+                  : "拖动选择区域"}
             </span>
             <button
               type="button"
@@ -1231,14 +1358,15 @@ export default function ShotApp() {
             <button
               type="button"
               className="shot-btn record"
-              disabled={!selection}
-              title={`录制 8 秒 GIF（${shortcutText("Ctrl+Shift+G")}）`}
+              disabled={!selection || !session.origin}
+              title={
+                session.origin
+                  ? `录制 8 秒 GIF（${shortcutText("Ctrl+Shift+G")}）`
+                  : "窗口/图片会话不能录制，请用区域或窗口模式重新框选"
+              }
               onClick={() => void finishRecord()}
             >
               <span className="shot-rec-dot" /> 录制
-            </button>
-            <button type="button" className="shot-btn" onClick={selectFull}>
-              <ShotIcon name="full" size={14} /> 全屏
             </button>
             <span className="shot-actions-sep" />
             <button
@@ -1273,7 +1401,9 @@ export default function ShotApp() {
             </button>
           </div>
           <div className="shot-hint">
-            <kbd>拖动</kbd> 选择区域
+            <kbd>拖动</kbd> 框选
+            <span>·</span>
+            <kbd>单击窗口</kbd> 选中整个窗口
             <span>·</span>
             <Shortcut combo="Ctrl+C" /> 复制
             <span>·</span>
@@ -1697,6 +1827,7 @@ type IconName =
   | "undo"
   | "redo"
   | "crop"
+  | "window"
   | "ocr"
   | "qr"
   | "pin"
@@ -1754,6 +1885,12 @@ function ShotIcon({ name, size = 16 }: { name: IconName; size?: number }) {
     undo: <path d="M9 7 4 12l5 5M5 12h8a6 6 0 0 1 6 6" />,
     redo: <path d="m15 7 5 5-5 5M19 12h-8a6 6 0 0 0-6 6" />,
     crop: <path d="M7 3v14h14M3 7h14v14" />,
+    window: (
+      <>
+        <rect x="3" y="5" width="18" height="14" rx="2.4" />
+        <path d="M3 9.5h18" />
+      </>
+    ),
     ocr: (
       <>
         <path d="M4 8V5.5A1.5 1.5 0 0 1 5.5 4H8M16 4h2.5A1.5 1.5 0 0 1 20 5.5V8M20 16v2.5a1.5 1.5 0 0 1-1.5 1.5H16M8 20H5.5A1.5 1.5 0 0 1 4 18.5V16" />
