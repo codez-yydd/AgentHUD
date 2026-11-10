@@ -1,6 +1,7 @@
 #![allow(linker_messages)]
 
 mod accounts;
+mod agent_assets;
 mod agent_quota_history;
 mod agent_theme;
 mod agent_visibility;
@@ -17,6 +18,7 @@ mod dsh;
 mod gemini;
 mod grok;
 mod hud_bar;
+mod island;
 mod kimi;
 mod kimi_oauth;
 mod local_agents;
@@ -2607,12 +2609,19 @@ fn today_usage_totals() -> (f64, i64, bool) {
     // 有用量时动态加回）。放在最后：本拍各来源都已累加完。
     crate::today_usage::store(today_start, by_source);
 
-    (to_display(cost), total, is_usd)
+    let display_cost = to_display(cost);
+    crate::today_usage::store_totals(total, display_cost, is_usd);
+
+    (display_cost, total, is_usd)
 }
 
-/// 计算今日（自然日）的总花费 + 总 token，生成菜单栏标题文字。
-fn today_tray_title(_app: &AppHandle) -> String {
+/// 计算今日（自然日）的总花费 + 总 token，生成菜单栏标题文字；顺带把
+/// 合计推给灵动岛收起态（事件 + 内置缓存两条路，后者服务首帧补拉）。
+fn today_tray_title(app: &AppHandle) -> String {
     let (cost, total, is_usd) = today_usage_totals();
+    if let Some(summary) = crate::today_usage::totals() {
+        let _ = app.emit("zbar://island-today-usage", summary);
+    }
     let sym = if is_usd { "$" } else { "¥" };
     if total > 0 {
         format!("{sym}{:.2}  {}", cost, fmt_tok(total))
@@ -2692,14 +2701,27 @@ fn apply_shortcut(app: &AppHandle, cfg: &shortcut::ShortcutConfig) -> Result<(),
     let gs = app.global_shortcut();
     // 先清掉旧注册，避免重复
     let _ = gs.unregister_all();
-    if !cfg.enabled {
-        return Ok(());
+    let panel_result = if cfg.enabled {
+        gs.on_shortcut(cfg.accelerator.as_str(), move |app, _shortcut, _event| {
+            toggle_panel(app, None);
+        })
+        .map_err(|e| format!("注册快捷键失败（可能被占用或格式非法）: {e}"))
+    } else {
+        Ok(())
+    };
+    // 灵动岛热键与面板热键共用同一个插件。面板快捷键被占用/关闭时也必须
+    // 尝试注册岛的热键，所以放在 panel_result 之后而不是 ? 提前返回。
+    island::register_hotkeys(app);
+    island::screenshot::register_hotkeys(app);
+    panel_result
+}
+
+/// 重新应用面板 + 灵动岛全局快捷键（灵动岛设置页改热键后调用）。
+pub(crate) fn refresh_global_shortcuts(app: &AppHandle) {
+    let sc = shortcut::load_shortcut();
+    if let Err(e) = apply_shortcut(app, &sc) {
+        eprintln!("[zbar-shortcut] {e}");
     }
-    gs.on_shortcut(cfg.accelerator.as_str(), move |app, _shortcut, _event| {
-        toggle_panel(app, None);
-    })
-    .map_err(|e| format!("注册快捷键失败（可能被占用或格式非法）: {e}"))?;
-    Ok(())
 }
 
 /// 后台线程：每 30 秒刷新一次菜单栏标题。
@@ -2743,13 +2765,13 @@ fn spawn_fx_rate_refresher() {
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 fn build_main_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     let open_main_item = MenuItem::with_id(app, "open-main", "打开主窗口", true, None::<&str>)?;
-    // 勾选态读当前配置（enabled 默认 false：未开启即无勾）
+    // 勾选态读当前配置（内部 SQLite 状态库，默认开启；与面板按钮同源）
     let hud_bar_item = CheckMenuItem::with_id(
         app,
         "hud-bar-toggle",
-        "HUD 停靠条",
+        "灵动岛",
         true,
-        hud_bar::load_hud_bar_config().enabled,
+        island::load_config().enabled,
         None::<&str>,
     )?;
     let quit_item = MenuItem::with_id(app, "quit", "退出 AgentHUD", true, None::<&str>)?;
@@ -2825,12 +2847,11 @@ fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
                             eprintln!("[zbar-main-window] 打开主窗口失败: {e}");
                         }
                     }
-                    // HUD 停靠条开关：on_menu_event 本身在主线程回调，可直接
-                    // 走建窗/隐藏主体（toggle_from_tray 内部按新开关落盘并启停
-                    // 数据线程）。切换后重建菜单刷新勾选态（见 refresh_tray_menu）
-                    "hud-bar-toggle" => match hud_bar::toggle_from_tray(app) {
+                    // 灵动岛开关：on_menu_event 本身在主线程回调，可直接
+                    // 走建窗/隐藏主体。切换后重建菜单刷新勾选态
+                    "hud-bar-toggle" => match island::toggle_from_tray(app) {
                         Ok(_) => refresh_tray_menu(app),
-                        Err(e) => eprintln!("[zbar-hud-bar] 切换停靠条失败: {e}"),
+                        Err(e) => eprintln!("[zbar-island] 切换灵动岛失败: {e}"),
                     },
                     _ => {}
                 }
@@ -3068,6 +3089,22 @@ pub fn run() {
                     if window.label() == main_window::MAIN_WINDOW_LABEL {
                         api.prevent_close();
                         let _ = window.hide();
+                    } else if window.label() == island::ISLAND_WINDOW_LABEL {
+                        // 灵动岛「关闭」= 隐藏，不销毁 WebView；再次开启秒开
+                        api.prevent_close();
+                        let _ = window.hide();
+                    } else if window.label() == island::screenshot::SHOT_WINDOW_LABEL {
+                        // 截图编辑器 Alt+F4 / 系统关闭：清理会话并恢复被隐藏的 HUD。
+                        api.prevent_close();
+                        island::screenshot::on_overlay_close_requested(window.app_handle());
+                    } else if window
+                        .label()
+                        .starts_with(island::screenshot::PIN_WINDOW_PREFIX)
+                    {
+                        island::screenshot::on_pin_close_requested(
+                            window.app_handle(),
+                            window.label(),
+                        );
                     }
                 }
                 _ => {}
@@ -3213,7 +3250,12 @@ pub fn run() {
             session_hud::start_if_enabled(app.handle());
             // HUD 停靠条（hud-bar）：配置开启时恢复贴边停靠条并启动额度
             // 数据线程（未开启零开销，与宠物/会话悬浮窗互不依赖）
+            // 灵动岛默认接管 HUD：先把旧停靠条开关落盘关闭，再启动各自的
+            // 恢复逻辑，避免两套 HUD 同时出现。
+            island::prepare_legacy_bar();
             hud_bar::start_if_enabled(app.handle());
+            // 灵动岛 HUD：顶部毛玻璃胶囊 + 多页展开（默认开启）
+            island::start_if_enabled(app.handle());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -3351,6 +3393,81 @@ pub fn run() {
             hud_bar::hud_bar_metrics,
             hud_bar::hud_bar_state,
             hud_bar::hud_bar_set_enabled,
+            // ===== 灵动岛 HUD =====
+            // 窗口/配置：开关、展开收起、首帧额度快照、配置读写、退出
+            island::island_state,
+            island::island_config,
+            island::island_hotkey_registered,
+            island::island_set_config,
+            island::island_set_enabled,
+            island::island_toggle,
+            island::island_set_expanded,
+            island::island_drag_begin,
+            island::island_drag_step,
+            island::island_drag_end,
+            island::island_backdrop,
+            island::island_quota_snapshot,
+            island::island_refresh_quota,
+            island::island_today_usage,
+            island::island_open_path,
+            island::island_set_keyboard,
+            island::island_quit,
+            // 天气（Open-Meteo）
+            island::weather::island_weather,
+            island::weather::island_weather_refresh,
+            island::weather::island_locate,
+            // 股票（腾讯财经）
+            island::stocks::island_stocks,
+            island::stocks::island_stocks_refresh,
+            island::stocks::island_stock_search,
+            island::stocks::island_stock_minute,
+            // 媒体（Windows SMTC）
+            island::media::island_media,
+            island::media::island_media_action,
+            // 歌词（网易云公开接口）
+            island::lyrics::island_lyrics,
+            // 系统（音量/亮度/Wi-Fi/蓝牙）
+            island::system::island_system,
+            island::system::island_set_volume,
+            island::system::island_toggle_mute,
+            island::system::island_set_brightness,
+            island::system::island_toggle_radio,
+            island::system::island_open_system_settings,
+            // 剪贴板
+            island::clipboard::island_clipboard,
+            island::clipboard::island_clipboard_copy,
+            island::clipboard::island_clipboard_clear,
+            // 消息（Windows 通知数据库）
+            island::notify::island_notify,
+            island::notify::island_notify_mark_read,
+            island::notify::island_notify_clear,
+            island::notify::island_notify_open_settings,
+            // 截图工作台
+            island::screenshot::shot_monitors,
+            island::screenshot::shot_settings,
+            island::screenshot::shot_set_settings,
+            island::screenshot::shot_start,
+            island::screenshot::shot_edit_file,
+            island::screenshot::shot_session,
+            island::screenshot::shot_session_image,
+            island::screenshot::shot_ready,
+            island::screenshot::shot_close,
+            island::screenshot::shot_scroll,
+            island::screenshot::shot_record_gif,
+            island::screenshot::shot_save,
+            island::screenshot::shot_copy,
+            island::screenshot::shot_copy_text,
+            island::screenshot::shot_history,
+            island::screenshot::shot_delete,
+            island::screenshot::shot_open,
+            island::screenshot::shot_open_folder,
+            island::screenshot::shot_pin,
+            island::screenshot::shot_pin_file,
+            island::screenshot::shot_pin_data,
+            island::screenshot::shot_pin_close,
+            island::screenshot::shot_copy_file,
+            island::screenshot::shot_ocr,
+            island::screenshot::shot_qr,
             // 主窗口（Dashboard）：托盘菜单与悬浮窗统计页按钮共用的打开入口
             main_window::open_main_window,
             // 自定义托盘右键菜单（macOS/Windows）：轻量状态快照（文件读）+
@@ -3379,7 +3496,23 @@ pub fn run() {
             // 主窗口「凭证与账号管理」页区块二：各源本地凭证静态概览（只读）
             credential_overview::fetch_credential_overview,
             kimi_oauth::start_kimi_device_auth,
-            kimi_oauth::poll_kimi_device_auth
+            kimi_oauth::poll_kimi_device_auth,
+            // 「Agent 与 Skill」页（agent_assets，工作包 A）：本地发现/检查/打包 +
+            // 自托管服务端资源库（列表/上传/更新/版本/下载）。
+            agent_assets::agent_assets_capabilities,
+            agent_assets::agent_assets_server_status,
+            agent_assets::agent_assets_discover,
+            agent_assets::agent_assets_inspect,
+            agent_assets::agent_assets_plan_export,
+            agent_assets::agent_assets_pack,
+            agent_assets::agent_assets_list_remote,
+            agent_assets::agent_assets_upload,
+            agent_assets::agent_assets_update_remote,
+            agent_assets::agent_assets_list_revisions,
+            agent_assets::agent_assets_fetch_bundle,
+            agent_assets::agent_assets_export_to_disk,
+            agent_assets::agent_assets_install,
+            agent_assets::agent_assets_import_files
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

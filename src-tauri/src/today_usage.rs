@@ -58,6 +58,38 @@ impl TodayUsage {
     }
 }
 
+/// 今日合计（托盘标题线程算完顺手缓存；灵动岛收起态直接读这里，
+/// 不再自己跑一遍全部本地库 + 网络）。
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TodayUsageTotals {
+    pub tokens: i64,
+    pub cost: f64,
+    pub currency: String,
+    pub updated_at: i64,
+}
+
+fn totals_slot() -> &'static Mutex<Option<TodayUsageTotals>> {
+    static TOTALS: OnceLock<Mutex<Option<TodayUsageTotals>>> = OnceLock::new();
+    TOTALS.get_or_init(|| Mutex::new(None))
+}
+
+pub(crate) fn store_totals(tokens: i64, cost: f64, is_usd: bool) {
+    let summary = TodayUsageTotals {
+        tokens,
+        cost,
+        currency: if is_usd { "USD" } else { "CNY" }.to_string(),
+        updated_at: now_ms(),
+    };
+    if let Ok(mut guard) = totals_slot().lock() {
+        *guard = Some(summary);
+    }
+}
+
+pub(crate) fn totals() -> Option<TodayUsageTotals> {
+    totals_slot().lock().ok().and_then(|guard| guard.clone())
+}
+
 fn slot() -> &'static Mutex<Option<TodayUsage>> {
     static SLOT: OnceLock<Mutex<Option<TodayUsage>>> = OnceLock::new();
     SLOT.get_or_init(|| Mutex::new(None))

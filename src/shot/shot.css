@@ -1,0 +1,875 @@
+:root {
+  color-scheme: dark;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: #06080d;
+}
+
+body {
+  font-family:
+    "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+    "Microsoft YaHei", sans-serif;
+  font-size: 12px;
+  color: #eef2fb;
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+button,
+textarea {
+  font-family: inherit;
+}
+
+button {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  padding: 0;
+}
+
+.shot-root {
+  position: relative;
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden;
+  background: #06080d;
+  cursor: crosshair;
+}
+
+.shot-root.phase-edit {
+  cursor: default;
+}
+
+.shot-root.phase-edit.tool-rect,
+.shot-root.phase-edit.tool-ellipse,
+.shot-root.phase-edit.tool-arrow,
+.shot-root.phase-edit.tool-pen,
+.shot-root.phase-edit.tool-marker,
+.shot-root.phase-edit.tool-text,
+.shot-root.phase-edit.tool-number,
+.shot-root.phase-edit.tool-mosaic,
+.shot-root.phase-edit.tool-blur {
+  cursor: crosshair;
+}
+
+/* ============ 抓屏画面 / 区域选择 ============ */
+
+.shot-freeze {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: fill;
+  pointer-events: none;
+}
+
+.shot-dim {
+  position: absolute;
+  background: rgba(2, 5, 10, 0.56);
+  pointer-events: none;
+  transition: background 120ms ease;
+}
+
+.shot-dim-full {
+  inset: 0;
+  background:
+    radial-gradient(ellipse 70% 62% at 50% 46%, rgba(4, 8, 15, 0.38), rgba(2, 5, 10, 0.66)),
+    rgba(2, 5, 10, 0.32);
+}
+
+.shot-selection {
+  position: absolute;
+  border: 1.5px solid rgba(255, 255, 255, 0.95);
+  box-shadow:
+    0 0 0 1px rgba(112, 150, 255, 0.8),
+    0 0 34px rgba(93, 133, 255, 0.22);
+  cursor: move;
+}
+
+.shot-selection::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(90deg, rgba(255, 255, 255, 0.035) 1px, transparent 1px),
+    linear-gradient(0deg, rgba(255, 255, 255, 0.035) 1px, transparent 1px);
+  background-size: 24px 24px;
+  pointer-events: none;
+  opacity: 0.7;
+}
+
+.shot-handle {
+  position: absolute;
+  width: 9px;
+  height: 9px;
+  margin: -4.5px 0 0 -4.5px;
+  border-radius: 2.5px;
+  background: #f8fbff;
+  border: 1.5px solid #6f92ff;
+  box-shadow: 0 1px 5px rgba(0, 0, 0, 0.45);
+  z-index: 3;
+}
+
+.shot-handle.handle-nw,
+.shot-handle.handle-se {
+  cursor: nwse-resize;
+}
+.shot-handle.handle-ne,
+.shot-handle.handle-sw {
+  cursor: nesw-resize;
+}
+.shot-handle.handle-n,
+.shot-handle.handle-s {
+  cursor: ns-resize;
+}
+.shot-handle.handle-e,
+.shot-handle.handle-w {
+  cursor: ew-resize;
+}
+
+.shot-size-pill {
+  position: absolute;
+  left: -1.5px;
+  top: -27px;
+  height: 21px;
+  padding: 0 8px;
+  border-radius: 6px;
+  background: rgba(10, 14, 23, 0.92);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: #e8edfa;
+  font-size: 10.5px;
+  line-height: 19px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  pointer-events: none;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+}
+
+.shot-top-pill,
+.shot-edit-top {
+  position: absolute;
+  top: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 12;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 30px;
+  padding: 0 12px;
+  border-radius: 999px;
+  background: rgba(10, 13, 21, 0.78);
+  border: 1px solid rgba(255, 255, 255, 0.11);
+  box-shadow:
+    0 10px 34px rgba(0, 0, 0, 0.32),
+    inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(18px) saturate(1.3);
+  -webkit-backdrop-filter: blur(18px) saturate(1.3);
+  color: rgba(238, 243, 255, 0.88);
+  font-size: 10.5px;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.shot-edit-top {
+  left: 18px;
+  transform: none;
+}
+
+.shot-live-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #7ea6ff;
+  box-shadow: 0 0 9px rgba(126, 166, 255, 0.9);
+}
+
+.shot-top-sep {
+  width: 1px;
+  height: 10px;
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.shot-saved-note {
+  color: #69dda0;
+}
+
+.shot-floating {
+  z-index: 20;
+}
+
+.shot-select-actions {
+  position: absolute;
+  left: 50%;
+  bottom: 64px;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 7px;
+  border-radius: 14px;
+  background: rgba(11, 14, 22, 0.9);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow:
+    0 22px 60px rgba(0, 0, 0, 0.48),
+    inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(24px) saturate(1.3);
+  -webkit-backdrop-filter: blur(24px) saturate(1.3);
+}
+
+.shot-selection-label {
+  padding: 0 8px 0 5px;
+  color: rgba(229, 235, 248, 0.58);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.shot-btn {
+  height: 30px;
+  padding: 0 11px;
+  border-radius: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  background: rgba(255, 255, 255, 0.065);
+  border: 1px solid transparent;
+  color: rgba(238, 243, 255, 0.78);
+  font-size: 10.5px;
+  font-weight: 550;
+  white-space: nowrap;
+  transition:
+    background 140ms ease,
+    color 140ms ease,
+    opacity 140ms ease;
+}
+
+.shot-btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+}
+
+.shot-btn.primary {
+  background: linear-gradient(180deg, #6e91ff, #5171e8);
+  color: #fff;
+  box-shadow:
+    0 6px 18px rgba(70, 105, 230, 0.4),
+    inset 0 1px 0 rgba(255, 255, 255, 0.28);
+}
+
+.shot-btn.primary:hover:not(:disabled) {
+  background: linear-gradient(180deg, #7d9dff, #5b7bf0);
+}
+
+.shot-btn.ghost {
+  background: transparent;
+  color: rgba(224, 231, 245, 0.56);
+}
+
+.shot-btn:disabled {
+  opacity: 0.36;
+  cursor: default;
+}
+
+.shot-btn.record {
+  color: #ffb2bb;
+}
+
+.shot-btn.record:hover:not(:disabled) {
+  background: rgba(255, 92, 112, 0.13);
+  color: #ffc2c9;
+}
+
+.shot-rec-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #ff5d6c;
+  box-shadow: 0 0 8px rgba(255, 93, 108, 0.75);
+}
+
+.shot-hint {
+  position: absolute;
+  left: 50%;
+  bottom: 34px;
+  transform: translateX(-50%);
+  z-index: 11;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: rgba(228, 235, 249, 0.48);
+  font-size: 9.5px;
+  white-space: nowrap;
+}
+
+kbd {
+  display: inline-flex;
+  align-items: center;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.13);
+  background: rgba(255, 255, 255, 0.07);
+  color: rgba(240, 245, 255, 0.68);
+  font-family: inherit;
+  font-size: 8.5px;
+  line-height: 1;
+}
+
+/* ============ 标注编辑器 ============ */
+
+.shot-backdrop {
+  position: absolute;
+  inset: -2%;
+  width: 104%;
+  height: 104%;
+  object-fit: cover;
+  filter: blur(34px) brightness(0.32) saturate(0.9);
+  pointer-events: none;
+  opacity: 0.96;
+}
+
+.shot-backdrop.is-exact {
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: fill;
+  filter: brightness(0.3) saturate(0.92);
+  opacity: 1;
+}
+
+.shot-editor-vignette {
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(ellipse 74% 64% at 50% 46%, transparent 44%, rgba(0, 0, 0, 0.34) 100%),
+    linear-gradient(180deg, rgba(3, 6, 12, 0.20), transparent 18%, transparent 82%, rgba(3, 6, 12, 0.24));
+  pointer-events: none;
+}
+
+.shot-canvas-wrap {
+  position: absolute;
+  z-index: 5;
+  border-radius: 5px;
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.16),
+    0 28px 90px rgba(0, 0, 0, 0.6),
+    0 8px 28px rgba(0, 0, 0, 0.32);
+  overflow: hidden;
+  background: #111;
+}
+
+.shot-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  touch-action: none;
+}
+
+.shot-canvas-badge {
+  position: absolute;
+  right: 7px;
+  bottom: 7px;
+  height: 19px;
+  padding: 0 6px;
+  border-radius: 5px;
+  background: rgba(6, 9, 15, 0.76);
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  color: rgba(234, 240, 253, 0.58);
+  font-size: 8.5px;
+  line-height: 17px;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+  opacity: 0.72;
+}
+
+.shot-text-input {
+  position: absolute;
+  z-index: 7;
+  transform: translateY(-50%);
+  min-height: 34px;
+  padding: 6px 8px;
+  border-radius: 5px;
+  border: 1px solid rgba(255, 255, 255, 0.64);
+  background: rgba(8, 11, 18, 0.82);
+  color: #fff;
+  outline: none;
+  resize: none;
+  line-height: 1.35;
+  font-weight: 600;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.38);
+  backdrop-filter: blur(8px);
+}
+
+.shot-toolbar-wrap {
+  position: absolute;
+  left: 50%;
+  bottom: 64px;
+  transform: translateX(-50%);
+  z-index: 22;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  width: max-content;
+  max-width: calc(100vw - 24px);
+}
+
+.shot-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  width: max-content;
+  max-width: 100%;
+  padding: 6px;
+  border-radius: 15px;
+  background: rgba(10, 13, 21, 0.9);
+  border: 1px solid rgba(255, 255, 255, 0.13);
+  box-shadow:
+    0 24px 70px rgba(0, 0, 0, 0.52),
+    0 2px 10px rgba(0, 0, 0, 0.25),
+    inset 0 1px 0 rgba(255, 255, 255, 0.09);
+  backdrop-filter: blur(26px) saturate(1.35);
+  -webkit-backdrop-filter: blur(26px) saturate(1.35);
+  flex-wrap: nowrap;
+  justify-content: center;
+}
+
+@media (max-width: 980px) {
+  .shot-toolbar {
+    flex-wrap: wrap;
+  }
+}
+
+.shot-tool-group,
+.shot-action-group,
+.shot-color-group,
+.shot-width-group {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.shot-tool,
+.shot-action {
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: rgba(234, 240, 253, 0.62);
+  transition:
+    background 130ms ease,
+    color 130ms ease,
+    transform 130ms ease;
+}
+
+.shot-tool:hover,
+.shot-action:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.09);
+  color: #fff;
+}
+
+.shot-tool.active {
+  background: linear-gradient(180deg, rgba(122, 157, 255, 0.36), rgba(93, 124, 238, 0.25));
+  color: #fff;
+  box-shadow: inset 0 0 0 1px rgba(151, 178, 255, 0.36);
+}
+
+.shot-tool:active {
+  transform: scale(0.94);
+}
+
+.shot-action:disabled {
+  opacity: 0.25;
+  cursor: default;
+}
+
+.shot-divider {
+  width: 1px;
+  height: 19px;
+  margin: 0 3px;
+  background: rgba(255, 255, 255, 0.1);
+  flex: none;
+}
+
+.shot-color-group {
+  padding: 0 3px;
+  gap: 5px;
+}
+
+.shot-color {
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.22),
+    0 1px 4px rgba(0, 0, 0, 0.4);
+  transition: transform 120ms ease;
+}
+
+.shot-color:hover {
+  transform: scale(1.16);
+}
+
+.shot-color.active {
+  box-shadow:
+    0 0 0 2px rgba(9, 12, 20, 0.95),
+    0 0 0 4px rgba(255, 255, 255, 0.76);
+}
+
+.shot-width-group {
+  padding: 0 2px;
+}
+
+.shot-width {
+  width: 23px;
+  height: 26px;
+  border-radius: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.shot-width span {
+  display: block;
+  border-radius: 50%;
+  background: rgba(235, 241, 255, 0.58);
+}
+
+.shot-width:hover span {
+  background: #fff;
+}
+
+.shot-width.active {
+  background: rgba(126, 166, 255, 0.18);
+}
+
+.shot-width.active span {
+  background: #87a8ff;
+  box-shadow: 0 0 7px rgba(126, 166, 255, 0.6);
+}
+
+.shot-btn.save {
+  margin-left: 2px;
+  background: linear-gradient(180deg, #6f92ff, #5474e9);
+  color: #fff;
+  box-shadow:
+    0 5px 16px rgba(73, 107, 233, 0.36),
+    inset 0 1px 0 rgba(255, 255, 255, 0.27);
+}
+
+.shot-btn.save:hover {
+  background: linear-gradient(180deg, #7fa0ff, #5e7ef3);
+}
+
+.shot-close {
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: rgba(232, 238, 251, 0.45);
+  margin-left: 1px;
+}
+
+.shot-close:hover {
+  background: rgba(255, 95, 112, 0.14);
+  color: #ff8894;
+}
+
+.shot-toolbar-hint {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: rgba(226, 234, 249, 0.34);
+  font-size: 8.5px;
+  white-space: nowrap;
+}
+
+.shot-toolbar-hint kbd {
+  height: 14px;
+  font-size: 7.5px;
+  padding: 0 3px;
+  border-color: rgba(255, 255, 255, 0.09);
+  background: rgba(255, 255, 255, 0.045);
+  color: rgba(235, 241, 253, 0.44);
+}
+
+/* ============ 加载 / 提示 / 弹窗 ============ */
+
+.shot-loading {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  background: radial-gradient(ellipse at center, #101728, #06080d);
+  color: rgba(229, 236, 250, 0.66);
+  font-size: 11px;
+  z-index: 30;
+}
+
+.shot-spinner {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.14);
+  border-top-color: #7ea6ff;
+  animation: shot-spin 0.8s linear infinite;
+}
+
+@keyframes shot-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.shot-busy {
+  position: absolute;
+  top: 58px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 32;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 34px;
+  padding: 0 13px;
+  border-radius: 999px;
+  background: rgba(10, 14, 23, 0.92);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.42);
+  color: rgba(239, 244, 255, 0.78);
+  font-size: 10px;
+  white-space: nowrap;
+  backdrop-filter: blur(18px);
+}
+
+.shot-busy .shot-spinner {
+  width: 14px;
+  height: 14px;
+  border-width: 1.5px;
+}
+
+.shot-toast {
+  position: absolute;
+  left: 50%;
+  bottom: 130px;
+  transform: translateX(-50%);
+  z-index: 34;
+  padding: 8px 13px;
+  border-radius: 9px;
+  background: rgba(8, 11, 18, 0.92);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.42);
+  color: rgba(242, 246, 255, 0.88);
+  font-size: 10px;
+  white-space: nowrap;
+  animation: shot-toast-in 0.18s ease;
+}
+
+@keyframes shot-toast-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, 6px);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, 0);
+  }
+}
+
+.shot-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(2, 4, 9, 0.62);
+  backdrop-filter: blur(5px);
+}
+
+.shot-modal {
+  width: min(620px, calc(100vw - 44px));
+  max-height: min(460px, calc(100vh - 90px));
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  border-radius: 16px;
+  background: rgba(14, 18, 28, 0.97);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  box-shadow:
+    0 30px 90px rgba(0, 0, 0, 0.62),
+    inset 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+
+.shot-modal-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.shot-modal-head b {
+  display: block;
+  font-size: 12.5px;
+  font-weight: 650;
+}
+
+.shot-modal-head span {
+  display: block;
+  margin-top: 2px;
+  color: rgba(228, 235, 250, 0.42);
+  font-size: 9px;
+}
+
+.shot-modal-head button {
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: rgba(232, 238, 252, 0.4);
+}
+
+.shot-modal-head button:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
+}
+
+.shot-modal textarea {
+  flex: 1;
+  min-height: 180px;
+  max-height: 300px;
+  resize: none;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  background: rgba(255, 255, 255, 0.045);
+  color: rgba(241, 245, 255, 0.88);
+  padding: 10px 11px;
+  font-size: 11px;
+  line-height: 1.65;
+  outline: none;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.shot-modal textarea {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.shot-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.shot-record-summary {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 13px 12px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.045);
+  border: 1px solid rgba(255, 255, 255, 0.09);
+}
+
+.shot-record-summary .shot-rec-dot {
+  margin-top: 4px;
+  flex: none;
+}
+
+.shot-record-summary div {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.shot-record-summary b {
+  font-size: 11px;
+  font-weight: 650;
+  color: var(--text, #eef2fb);
+}
+
+.shot-record-summary em {
+  font-style: normal;
+  font-size: 9px;
+  line-height: 1.45;
+  color: rgba(228, 235, 250, 0.44);
+  word-break: break-all;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.shot-modal-empty {
+  padding: 28px 10px;
+  text-align: center;
+  color: rgba(229, 236, 250, 0.42);
+  font-size: 10px;
+}
+
+.shot-qr-list {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  overflow-y: auto;
+}
+
+.shot-qr-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 10px;
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: rgba(237, 243, 255, 0.8);
+  text-align: left;
+  font-size: 10px;
+}
+
+.shot-qr-item span {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.shot-qr-item svg {
+  color: rgba(126, 166, 255, 0.8);
+  flex: none;
+}
+
+.shot-qr-item:hover {
+  background: rgba(126, 166, 255, 0.12);
+  border-color: rgba(126, 166, 255, 0.3);
+}
+
+/* 滚动长图时画布可能非常窄长，限制最大高度由 JS display 控制 */

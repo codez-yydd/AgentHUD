@@ -12,6 +12,7 @@
 
 import json
 import math
+import secrets
 import sqlite3
 import threading
 import time
@@ -397,6 +398,7 @@ def init_db():
         _migrate_usage_records_columns(conn)
         _migrate_agent_quota_snapshots(conn)
         _migrate_usage_records_speed_columns(conn)
+        _migrate_agent_assets(conn)
         if not conn.in_transaction:
             # 迁移中的 DROP TABLE 会连带删掉索引（含 agent 快照表上的两个），
             # 这里重放一遍挂回新表
@@ -1840,3 +1842,661 @@ def rename_device(device_id, new_name):
             return n
         finally:
             conn.close()
+
+
+# ===== 资源库（AgentHUD 子代理与 Skill 管理，契约 §8）=====
+#
+# 契约见 doc/agent-assets-contract.md。服务端只存储与校验资源包，不执行、
+# 不渲染任何包内容。存储模型：
+# - agent_assets：资源元数据，asset_id 由服务端分配；(tool, kind, native_id,
+#   origin_scope) 允许同名共存，各自独立 asset_id，内容更新走 PUT 追加版本；
+# - agent_asset_revisions：每个版本的元数据 + 完整 AssetBundle 信封 BLOB
+#   （原样 JSON 字节，下载时整包返回）；版本号在单资源内从 1 递增；
+# - agent_asset_idempotency：POST 幂等键 (device_id, client_request_id) 的
+#   首次响应缓存，至少保留 48 小时（AGENT_ASSET_IDEMPOTENCY_TTL_MS）。
+# 三张表由 _migrate_agent_assets 幂等补建，旧库升级不触碰既有表与数据。
+
+SCHEMA_AGENT_ASSETS = """
+CREATE TABLE IF NOT EXISTS agent_assets (
+    asset_id               TEXT    PRIMARY KEY,
+    tool                   TEXT    NOT NULL,
+    kind                   TEXT    NOT NULL,
+    native_id              TEXT    NOT NULL,
+    origin_scope           TEXT    NOT NULL,
+    native_format          TEXT    NOT NULL,
+    display_name           TEXT    NOT NULL,
+    description            TEXT,
+    latest_version         INTEGER NOT NULL,
+    latest_bundle_sha256   TEXT    NOT NULL,
+    latest_manifest_sha256 TEXT    NOT NULL,
+    total_size             INTEGER NOT NULL DEFAULT 0,
+    entry_count            INTEGER NOT NULL DEFAULT 0,
+    created_at             INTEGER NOT NULL,
+    updated_at             INTEGER NOT NULL,
+    updated_by_device      TEXT    NOT NULL
+)
+"""
+
+SCHEMA_AGENT_ASSET_REVISIONS = """
+CREATE TABLE IF NOT EXISTS agent_asset_revisions (
+    asset_id          TEXT    NOT NULL,
+    version           INTEGER NOT NULL,
+    bundle_sha256     TEXT    NOT NULL,
+    manifest_sha256   TEXT    NOT NULL,
+    total_size        INTEGER NOT NULL DEFAULT 0,
+    entry_count       INTEGER NOT NULL DEFAULT 0,
+    bundle_blob       BLOB    NOT NULL,
+    created_at        INTEGER NOT NULL,
+    created_by_device TEXT    NOT NULL,
+    PRIMARY KEY (asset_id, version)
+)
+"""
+
+SCHEMA_AGENT_ASSET_IDEMPOTENCY = """
+CREATE TABLE IF NOT EXISTS agent_asset_idempotency (
+    device_id         TEXT    NOT NULL,
+    client_request_id TEXT    NOT NULL,
+    result_json       TEXT    NOT NULL,
+    created_at        INTEGER NOT NULL,
+    PRIMARY KEY (device_id, client_request_id)
+)
+"""
+
+# 同名资源按 (tool, kind, native_id, origin_scope) 查重/查去重版本；
+# 幂等结果按 created_at 做过期清理。
+INDEX_AGENT_ASSETS_IDENTITY = (
+    "CREATE INDEX IF NOT EXISTS idx_agent_assets_identity "
+    "ON agent_assets(tool, kind, native_id, origin_scope)"
+)
+INDEX_AGENT_ASSETS_CREATED = (
+    "CREATE INDEX IF NOT EXISTS idx_agent_assets_created "
+    "ON agent_assets(created_at)"
+)
+INDEX_AGENT_ASSET_IDEMPOTENCY_CREATED = (
+    "CREATE INDEX IF NOT EXISTS idx_agent_asset_idempotency_created "
+    "ON agent_asset_idempotency(created_at)"
+)
+
+AGENT_ASSET_SCHEMA = [
+    SCHEMA_AGENT_ASSETS,
+    SCHEMA_AGENT_ASSET_REVISIONS,
+    SCHEMA_AGENT_ASSET_IDEMPOTENCY,
+    INDEX_AGENT_ASSETS_IDENTITY,
+    INDEX_AGENT_ASSETS_CREATED,
+    INDEX_AGENT_ASSET_IDEMPOTENCY_CREATED,
+]
+
+# POST 幂等结果保留期：契约 §8.6 要求至少 48 小时。
+AGENT_ASSET_IDEMPOTENCY_TTL_MS = 48 * 3_600_000
+
+
+class AgentAssetNotFound(Exception):
+    """资源或版本不存在（端点映射为 404 NOT_FOUND）。"""
+
+
+class AgentAssetVersionConflict(Exception):
+    """PUT 的 expected_version 与服务端 latest_version 不一致（409）。"""
+
+    def __init__(self, current_version):
+        super().__init__(f"服务端当前版本为 {current_version}")
+        self.current_version = current_version
+
+
+class AgentAssetQuotaExceeded(Exception):
+    """资源库总容量超限（端点映射为 507 QUOTA_EXCEEDED）。"""
+
+    def __init__(self, used_bytes, quota_bytes, needed_bytes):
+        super().__init__(
+            f"资源库已用 {used_bytes} 字节，上限 {quota_bytes}，"
+            f"本次需要 {needed_bytes}"
+        )
+        self.used_bytes = used_bytes
+        self.quota_bytes = quota_bytes
+        self.needed_bytes = needed_bytes
+
+
+def _migrate_agent_assets(conn):
+    """资源库三张表的幂等建表迁移（旧库升级无损）。
+
+    新表一律 CREATE TABLE IF NOT EXISTS，不修改任何既有表；迁移完顺手清理
+    超过保留期的 POST 幂等缓存。可重复调用，幂等。
+    """
+    for sql in AGENT_ASSET_SCHEMA:
+        conn.execute(sql)
+    conn.commit()
+    purge_expired_agent_asset_idempotency()
+
+
+def _new_agent_asset_id():
+    """生成服务端分配的 asset_id（`a_` + 24 位 hex，碰撞概率可忽略）。"""
+    return "a_" + secrets.token_hex(12)
+
+
+def _agent_asset_to_dict(row):
+    """agent_assets 行 → 契约 §7.1 的 RemoteAsset（仅元数据）。"""
+    return {
+        "asset_id": row["asset_id"],
+        "tool": row["tool"],
+        "kind": row["kind"],
+        "native_id": row["native_id"],
+        "display_name": row["display_name"],
+        "description": row["description"],
+        "origin_scope": row["origin_scope"],
+        "native_format": row["native_format"],
+        "latest_version": row["latest_version"],
+        "latest_bundle_sha256": row["latest_bundle_sha256"],
+        "latest_manifest_sha256": row["latest_manifest_sha256"],
+        "total_size": row["total_size"],
+        "entry_count": row["entry_count"],
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+        "updated_by_device": row["updated_by_device"],
+    }
+
+
+def _agent_asset_revision_to_dict(row):
+    """agent_asset_revisions 行 → 契约 §7.1 的 RemoteRevision（不含内容）。"""
+    return {
+        "asset_id": row["asset_id"],
+        "version": row["version"],
+        "bundle_sha256": row["bundle_sha256"],
+        "manifest_sha256": row["manifest_sha256"],
+        "total_size": row["total_size"],
+        "entry_count": row["entry_count"],
+        "created_at": row["created_at"],
+        "created_by_device": row["created_by_device"],
+    }
+
+
+def _store_agent_asset_idempotent_result(
+    conn, device_id, client_request_id, result, now
+):
+    """在调用方事务内写入 POST 幂等结果缓存（覆盖同键旧值）。"""
+    conn.execute(
+        "INSERT OR REPLACE INTO agent_asset_idempotency "
+        "(device_id, client_request_id, result_json, created_at) "
+        "VALUES (?, ?, ?, ?)",
+        (
+            device_id,
+            client_request_id,
+            json.dumps(result, ensure_ascii=False),
+            now,
+        ),
+    )
+
+
+def purge_expired_agent_asset_idempotency(
+    now=None, ttl_ms=AGENT_ASSET_IDEMPOTENCY_TTL_MS
+):
+    """清理超过保留期的 POST 幂等结果，返回删除条数。"""
+    cutoff = (now_ms() if now is None else now) - ttl_ms
+    with _db_lock:
+        conn = get_conn()
+        try:
+            n = conn.execute(
+                "DELETE FROM agent_asset_idempotency WHERE created_at < ?",
+                (cutoff,),
+            ).rowcount
+            conn.commit()
+            return n
+        finally:
+            conn.close()
+
+
+def get_agent_asset_idempotent_result(device_id, client_request_id, now=None):
+    """查 POST 幂等结果缓存（契约 §8.6）：命中返回首次结果（replayed=True）。
+
+    过期条目视为未命中并顺带清理；缓存 JSON 损坏时删掉该键按未命中处理。
+    """
+    current = now_ms() if now is None else now
+    cutoff = current - AGENT_ASSET_IDEMPOTENCY_TTL_MS
+    with _db_lock:
+        conn = get_conn()
+        try:
+            conn.execute(
+                "DELETE FROM agent_asset_idempotency WHERE created_at < ?",
+                (cutoff,),
+            )
+            row = conn.execute(
+                "SELECT result_json FROM agent_asset_idempotency "
+                "WHERE device_id = ? AND client_request_id = ?",
+                (device_id, client_request_id),
+            ).fetchone()
+            if row is None:
+                conn.commit()
+                return None
+            try:
+                result = json.loads(row["result_json"])
+            except (TypeError, ValueError):
+                conn.execute(
+                    "DELETE FROM agent_asset_idempotency "
+                    "WHERE device_id = ? AND client_request_id = ?",
+                    (device_id, client_request_id),
+                )
+                conn.commit()
+                return None
+            conn.commit()
+            if not isinstance(result, dict):
+                return None
+            result["replayed"] = True
+            return result
+        finally:
+            conn.close()
+
+
+def insert_agent_asset(
+    device_id,
+    asset_meta,
+    revision_meta,
+    bundle_blob,
+    client_request_id,
+    now,
+    library_quota_bytes,
+):
+    """单事务创建资源（契约 §8.3/§8.6）：幂等 → 内容去重 → 新建 + 版本 1。
+
+    asset_meta 含 tool/kind/native_id/origin_scope/native_format/display_name/
+    description；revision_meta 含 manifest_sha256/bundle_sha256/total_size/
+    entry_count；bundle_blob 为已校验的 AssetBundle 信封 JSON（UTF-8 字节）。
+
+    返回 {"asset", "revision", "replayed", "deduplicated"}：幂等键命中时
+    返回首次结果（replayed=True，不写入）；同 (tool,kind,native_id,scope)
+    资源 latest 版本的双指纹与本包完全一致时返回该资源与版本
+    （deduplicated=True，不写新版本）；否则新建 asset_id 并写入版本 1。
+    资源库总容量（全部版本 total_size 之和）超限抛 AgentAssetQuotaExceeded。
+    """
+    with _db_lock:
+        conn = get_conn()
+        conn.isolation_level = None  # 手动事务：查幂等/去重/容量与写入必须原子
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            # 过期幂等结果清理（保留期见 AGENT_ASSET_IDEMPOTENCY_TTL_MS）
+            conn.execute(
+                "DELETE FROM agent_asset_idempotency WHERE created_at < ?",
+                (now - AGENT_ASSET_IDEMPOTENCY_TTL_MS,),
+            )
+            cached = conn.execute(
+                "SELECT result_json FROM agent_asset_idempotency "
+                "WHERE device_id = ? AND client_request_id = ?",
+                (device_id, client_request_id),
+            ).fetchone()
+            if cached is not None:
+                try:
+                    result = json.loads(cached["result_json"])
+                except (TypeError, ValueError):
+                    result = None
+                if isinstance(result, dict):
+                    result["replayed"] = True
+                    conn.execute("COMMIT")
+                    return result
+
+            # 相同内容去重：仅比较同身份资源 latest 版本的双指纹（§8.6）
+            dedup = conn.execute(
+                """
+                SELECT a.asset_id, a.latest_version
+                FROM agent_assets a
+                JOIN agent_asset_revisions r
+                  ON r.asset_id = a.asset_id AND r.version = a.latest_version
+                WHERE a.tool = ? AND a.kind = ? AND a.native_id = ?
+                  AND a.origin_scope = ?
+                  AND r.bundle_sha256 = ? AND r.manifest_sha256 = ?
+                ORDER BY a.created_at ASC, a.asset_id ASC
+                LIMIT 1
+                """,
+                (
+                    asset_meta["tool"],
+                    asset_meta["kind"],
+                    asset_meta["native_id"],
+                    asset_meta["origin_scope"],
+                    revision_meta["bundle_sha256"],
+                    revision_meta["manifest_sha256"],
+                ),
+            ).fetchone()
+            if dedup is not None:
+                asset_row = conn.execute(
+                    "SELECT * FROM agent_assets WHERE asset_id = ?",
+                    (dedup["asset_id"],),
+                ).fetchone()
+                rev_row = conn.execute(
+                    "SELECT * FROM agent_asset_revisions "
+                    "WHERE asset_id = ? AND version = ?",
+                    (dedup["asset_id"], dedup["latest_version"]),
+                ).fetchone()
+                result = {
+                    "asset": _agent_asset_to_dict(asset_row),
+                    "revision": _agent_asset_revision_to_dict(rev_row),
+                    "replayed": False,
+                    "deduplicated": True,
+                }
+                _store_agent_asset_idempotent_result(
+                    conn, device_id, client_request_id, result, now
+                )
+                conn.execute("COMMIT")
+                return result
+
+            used = conn.execute(
+                "SELECT COALESCE(SUM(total_size), 0) FROM agent_asset_revisions"
+            ).fetchone()[0]
+            needed = revision_meta["total_size"]
+            if used + needed > library_quota_bytes:
+                raise AgentAssetQuotaExceeded(used, library_quota_bytes, needed)
+
+            asset_id = _new_agent_asset_id()
+            conn.execute(
+                """
+                INSERT INTO agent_assets
+                    (asset_id, tool, kind, native_id, origin_scope, native_format,
+                     display_name, description, latest_version,
+                     latest_bundle_sha256, latest_manifest_sha256, total_size,
+                     entry_count, created_at, updated_at, updated_by_device)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    asset_id,
+                    asset_meta["tool"],
+                    asset_meta["kind"],
+                    asset_meta["native_id"],
+                    asset_meta["origin_scope"],
+                    asset_meta["native_format"],
+                    asset_meta["display_name"],
+                    asset_meta["description"],
+                    revision_meta["bundle_sha256"],
+                    revision_meta["manifest_sha256"],
+                    revision_meta["total_size"],
+                    revision_meta["entry_count"],
+                    now,
+                    now,
+                    device_id,
+                ),
+            )
+            conn.execute(
+                """
+                INSERT INTO agent_asset_revisions
+                    (asset_id, version, bundle_sha256, manifest_sha256,
+                     total_size, entry_count, bundle_blob, created_at,
+                     created_by_device)
+                VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    asset_id,
+                    revision_meta["bundle_sha256"],
+                    revision_meta["manifest_sha256"],
+                    revision_meta["total_size"],
+                    revision_meta["entry_count"],
+                    sqlite3.Binary(bundle_blob),
+                    now,
+                    device_id,
+                ),
+            )
+            asset_row = conn.execute(
+                "SELECT * FROM agent_assets WHERE asset_id = ?", (asset_id,)
+            ).fetchone()
+            rev_row = conn.execute(
+                "SELECT * FROM agent_asset_revisions "
+                "WHERE asset_id = ? AND version = 1",
+                (asset_id,),
+            ).fetchone()
+            result = {
+                "asset": _agent_asset_to_dict(asset_row),
+                "revision": _agent_asset_revision_to_dict(rev_row),
+                "replayed": False,
+                "deduplicated": False,
+            }
+            _store_agent_asset_idempotent_result(
+                conn, device_id, client_request_id, result, now
+            )
+            conn.execute("COMMIT")
+            return result
+        except Exception:
+            try:
+                conn.execute("ROLLBACK")
+            except sqlite3.Error:
+                pass
+            raise
+        finally:
+            conn.close()
+
+
+def update_agent_asset(
+    asset_id,
+    device_id,
+    expected_version,
+    asset_meta,
+    revision_meta,
+    bundle_blob,
+    now,
+    max_revisions_per_asset,
+    library_quota_bytes,
+):
+    """单事务追加新版本（契约 §8.4）：乐观并发 + 容量核算 + 最旧版本淘汰。
+
+    expected_version 与 latest_version 不一致抛 AgentAssetVersionConflict
+    （携带 current_version）；资源不存在抛 AgentAssetNotFound。新版本
+    latest+1；版本数超过 max_revisions_per_asset 时淘汰最旧若干版本，
+    容量按「已用 - 被淘汰版本字节 + 新版本字节」核算，超限抛
+    AgentAssetQuotaExceeded。返回 RemoteAssetResult（replayed/deduplicated
+    恒为 False）。
+    """
+    with _db_lock:
+        conn = get_conn()
+        conn.isolation_level = None  # 手动事务：版本检查与追加必须原子
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            asset_row = conn.execute(
+                "SELECT * FROM agent_assets WHERE asset_id = ?", (asset_id,)
+            ).fetchone()
+            if asset_row is None:
+                raise AgentAssetNotFound(asset_id)
+            current_version = asset_row["latest_version"]
+            if expected_version != current_version:
+                raise AgentAssetVersionConflict(current_version)
+
+            revisions = conn.execute(
+                "SELECT version, total_size FROM agent_asset_revisions "
+                "WHERE asset_id = ? ORDER BY version ASC",
+                (asset_id,),
+            ).fetchall()
+            keep = max(1, int(max_revisions_per_asset))
+            evict_count = max(0, len(revisions) + 1 - keep)
+            freed = sum(r["total_size"] for r in revisions[:evict_count])
+            used = conn.execute(
+                "SELECT COALESCE(SUM(total_size), 0) FROM agent_asset_revisions"
+            ).fetchone()[0]
+            needed = revision_meta["total_size"] - freed
+            if used + needed > library_quota_bytes:
+                raise AgentAssetQuotaExceeded(used, library_quota_bytes, needed)
+
+            new_version = current_version + 1
+            conn.execute(
+                """
+                INSERT INTO agent_asset_revisions
+                    (asset_id, version, bundle_sha256, manifest_sha256,
+                     total_size, entry_count, bundle_blob, created_at,
+                     created_by_device)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    asset_id,
+                    new_version,
+                    revision_meta["bundle_sha256"],
+                    revision_meta["manifest_sha256"],
+                    revision_meta["total_size"],
+                    revision_meta["entry_count"],
+                    sqlite3.Binary(bundle_blob),
+                    now,
+                    device_id,
+                ),
+            )
+            if evict_count:
+                # 版本号单调递增：删掉最旧的 evict_count 个（version <= 分界）
+                conn.execute(
+                    "DELETE FROM agent_asset_revisions "
+                    "WHERE asset_id = ? AND version <= ?",
+                    (asset_id, revisions[evict_count - 1]["version"]),
+                )
+            conn.execute(
+                """
+                UPDATE agent_assets
+                SET native_format = ?, display_name = ?, description = ?,
+                    latest_version = ?, latest_bundle_sha256 = ?,
+                    latest_manifest_sha256 = ?, total_size = ?, entry_count = ?,
+                    updated_at = ?, updated_by_device = ?
+                WHERE asset_id = ?
+                """,
+                (
+                    asset_meta["native_format"],
+                    asset_meta["display_name"],
+                    asset_meta["description"],
+                    new_version,
+                    revision_meta["bundle_sha256"],
+                    revision_meta["manifest_sha256"],
+                    revision_meta["total_size"],
+                    revision_meta["entry_count"],
+                    now,
+                    device_id,
+                    asset_id,
+                ),
+            )
+            updated_row = conn.execute(
+                "SELECT * FROM agent_assets WHERE asset_id = ?", (asset_id,)
+            ).fetchone()
+            rev_row = conn.execute(
+                "SELECT * FROM agent_asset_revisions "
+                "WHERE asset_id = ? AND version = ?",
+                (asset_id, new_version),
+            ).fetchone()
+            result = {
+                "asset": _agent_asset_to_dict(updated_row),
+                "revision": _agent_asset_revision_to_dict(rev_row),
+                "replayed": False,
+                "deduplicated": False,
+            }
+            conn.execute("COMMIT")
+            return result
+        except Exception:
+            try:
+                conn.execute("ROLLBACK")
+            except sqlite3.Error:
+                pass
+            raise
+        finally:
+            conn.close()
+
+
+def get_agent_asset(asset_id):
+    """按 asset_id 读取资源元数据；不存在返回 None。"""
+    conn = get_conn()
+    try:
+        row = conn.execute(
+            "SELECT * FROM agent_assets WHERE asset_id = ?", (asset_id,)
+        ).fetchone()
+        return _agent_asset_to_dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def query_agent_assets(tool=None, kind=None, scope=None, q=None, page=1, page_size=20):
+    """资源列表（契约 §8.2，仅元数据）。
+
+    tool/kind/scope 精确匹配（None/空不过滤）；q 对 native_id / display_name
+    做大小写不敏感子串匹配（SQLite LOWER 覆盖 ASCII；% 与 _ 按字面量转义）。
+    按 created_at DESC + asset_id ASC 稳定排序，返回
+    {"items", "page", "page_size", "total"}。
+    """
+    clauses = []
+    params = []
+    if tool:
+        clauses.append("tool = ?")
+        params.append(tool)
+    if kind:
+        clauses.append("kind = ?")
+        params.append(kind)
+    if scope:
+        clauses.append("origin_scope = ?")
+        params.append(scope)
+    if q:
+        escaped = (
+            q.lower()
+            .replace("\\", "\\\\")
+            .replace("%", "\\%")
+            .replace("_", "\\_")
+        )
+        pattern = f"%{escaped}%"
+        clauses.append(
+            "(LOWER(native_id) LIKE ? ESCAPE '\\' "
+            "OR LOWER(display_name) LIKE ? ESCAPE '\\')"
+        )
+        params.extend([pattern, pattern])
+    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+
+    conn = get_conn()
+    try:
+        total = conn.execute(
+            f"SELECT COUNT(*) FROM agent_assets {where}", params
+        ).fetchone()[0]
+        offset = (page - 1) * page_size
+        rows = conn.execute(
+            f"""
+            SELECT * FROM agent_assets {where}
+            ORDER BY created_at DESC, asset_id ASC
+            LIMIT ? OFFSET ?
+            """,
+            params + [page_size, offset],
+        ).fetchall()
+        return {
+            "items": [_agent_asset_to_dict(r) for r in rows],
+            "page": page,
+            "page_size": page_size,
+            "total": total,
+        }
+    finally:
+        conn.close()
+
+
+def query_agent_asset_revisions(asset_id):
+    """某资源的全部保留版本（version 降序）；资源不存在返回 None。"""
+    conn = get_conn()
+    try:
+        exists = conn.execute(
+            "SELECT 1 FROM agent_assets WHERE asset_id = ?", (asset_id,)
+        ).fetchone()
+        if exists is None:
+            return None
+        rows = conn.execute(
+            """
+            SELECT asset_id, version, bundle_sha256, manifest_sha256,
+                   total_size, entry_count, created_at, created_by_device
+            FROM agent_asset_revisions
+            WHERE asset_id = ?
+            ORDER BY version DESC
+            """,
+            (asset_id,),
+        ).fetchall()
+        return [_agent_asset_revision_to_dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def get_agent_asset_bundle(asset_id, version):
+    """某版本完整 AssetBundle 信封（原 JSON 字节）；不存在返回 None。"""
+    conn = get_conn()
+    try:
+        row = conn.execute(
+            "SELECT bundle_blob FROM agent_asset_revisions "
+            "WHERE asset_id = ? AND version = ?",
+            (asset_id, version),
+        ).fetchone()
+        return bytes(row["bundle_blob"]) if row else None
+    finally:
+        conn.close()
+
+
+def agent_asset_library_bytes():
+    """资源库当前占用字节数（全部资源全部保留版本的 total_size 之和）。"""
+    conn = get_conn()
+    try:
+        return conn.execute(
+            "SELECT COALESCE(SUM(total_size), 0) FROM agent_asset_revisions"
+        ).fetchone()[0]
+    finally:
+        conn.close()

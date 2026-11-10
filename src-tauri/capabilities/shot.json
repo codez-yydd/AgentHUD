@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "shot",
+  "description": "Screenshot selection/annotation overlay. The window is created by Rust; the frontend only draws and calls custom commands. No filesystem or shell permissions are granted.",
+  "windows": ["shot-overlay"],
+  "permissions": ["core:event:default"]
+}

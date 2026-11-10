@@ -122,6 +122,16 @@ Both repositories have exactly the same content — the latest version can be ob
       <b>Usage report</b> — activity / token heatmap & daily / weekly report export
     </td>
   </tr>
+  <tr>
+    <td width="50%" align="center">
+      <img src="doc/img/island-shot.png" width="320" alt="Island · screenshot workbench"/><br/>
+      <b>Island · Screenshot workbench</b> — region/window/full/scroll, GIF, history
+    </td>
+    <td width="50%" align="center">
+      <img src="doc/img/island-shot-editor.png" width="320" alt="Screenshot annotator"/><br/>
+      <b>Screenshot annotator</b> — shapes, text, steps, mosaic, OCR/QR/pin
+    </td>
+  </tr>
 </table>
 
 ---
@@ -139,6 +149,8 @@ Both repositories have exactly the same content — the latest version can be ob
 - **⌨️ Global hotkey** — summon / hide the panel with `alt+shift+z` by default; customizable or disable-able in settings.
 - **🎨 Dynamic wallpaper** — inject a live video wallpaper into the ZCode desktop app as the conversation background in one click; the original app is backed up automatically before installation and can be restored anytime. The wallpaper is invalidated after a ZCode upgrade and needs to be reinstalled; on macOS, ZCode's built-in updater becomes unavailable after injection (even restoring cannot bring it back) — re-download ZCode from the official site.
 - **🖥 Session token HUD** — an injection-free desktop overlay grouped by agent (ZCode / Claude / Codex / Kimi Code / DeepSeek Harness / OpenCode / MiniMax Code / Cursor) showing live per-session cumulative tokens (input / output / cache / request count), streaming speed (t/s & first-token latency) and a live state dot (sources with a real running signal read generating / idle, the rest stay a neutral grey dot), with per-source × per-model window speed rows at the bottom (true generation window has no ≈, whole-request estimates carry ≈). Agents with no session inside the active window fall back to showing their latest session today, dimmed and labelled, while the group header still shows that agent's today total. Resize freely by dragging edges / corners (size & position remembered); a built-in settings panel (font size / opacity) and a one-click close button live in the title bar; language & theme follow the main panel. Enable it from the "Skins" page.
+- **🫧 Dynamic island HUD (new)** — a liquid-glass capsule inspired by [Misaka273/wisland](https://github.com/Misaka273/wisland). Collapsed state shows **all subscription rings + weather + today's tokens and estimated cost** (no pet/emoji); multiple accounts/credentials of the same provider each get their own ring. Hover or click expands into a glass panel with tabs for Home / Messages / Stocks / Weather / Controls / Clipboard / **Screenshot** / Settings. Quota cards page four at a time with a wheel-driven horizontal slide and thin white page bars. The capsule can be dragged to the top or either side; side edges switch it to a vertical 48×440 layout and remember the position. Includes SMTC media control with NetEase lyrics, Windows toast-history messages, Tencent stock quotes, an Open-Meteo weather layout with a province/city/district cascade and current-location lookup, DDC/CI monitor brightness (WMI fallback), iOS-control-center-style volume/brightness sliders and Wi-Fi / Bluetooth tiles, clipboard history, adjustable dark-glass transparency without outer shadow, custom 10–18px text-only font sizing, right-click menu, wheel cycling, fullscreen auto-hide and a global toggle hotkey (`Ctrl+Alt+Shift+I`). The old exposed `island.json` config and “edit config” menu are gone; settings persist in an internal store. See [doc/island-hud.md](doc/island-hud.md) for the data flow and not-yet-ported wisland features.
+- **📸 Screenshot workbench** — region / focused-window / monitor / delayed capture, scrolling capture with row-signature stitching, an annotation canvas (rect / ellipse / arrow / pen / highlighter / text / numbered steps / mosaic / blur), pin windows, local Windows OCR, local QR decoding (`rqrr`) and 8-second GIF recording. Saves PNG/JPG to `Pictures/AgentHUD Screenshots`, can auto-copy/pin, and keeps recent captures with open / re-annotate / copy / pin / confirmed delete. Capture uses GDI/PrintWindow; raw PNG bytes travel over raw IPC and never leave the machine.
 - **🐶 Desktop pet** — ships with the default Zhipu-chan character and supports Petdex custom imports; a 7-state task-linked animation reacts to ZCode task states in real time; choose between the injected form (embedded in the ZCode UI, draggable) and the floating form, with screen-proportional size tiers; managed on the Skins page.
 - **🖼 Skins hub** — the "Skins" entry (palette icon) is now a category page: injection-free features (session HUD, desktop pet) get their own page and open instantly, while injection-required features (dynamic wallpaper) live on a separate page where the ZCode install is only scanned on entry.
 
@@ -215,6 +227,12 @@ AgentHUD/
 │   ├── SyncPanel.tsx         # Device sync settings (register / data management)
 │   ├── RangePicker.tsx       # Time-range picker
 │   ├── session-hud-main.ts    # Session token HUD entry (standalone injection-free page)
+│   ├── island-main.tsx        # Dynamic island HUD entry (top-center glass capsule)
+│   ├── island/                # Island UI: shell, pages, screenshot launcher, drag, CSS
+│   ├── shot-main.tsx          # Screenshot selection + annotation entry
+│   ├── shot/                  # Capture API, canvas annotations, region select, CSS/mock
+│   ├── pin-main.tsx           # Pinned screenshot window entry
+│   ├── pin/                   # Pin window (drag/resize/copy/save)
 │   ├── pet-main.ts            # Desktop pet floating-form entry
 │   ├── api.ts                # invoke wrappers (Rust commands)
 │   ├── types.ts              # TS types mirroring the Rust structs
@@ -230,6 +248,7 @@ AgentHUD/
 │   │   ├── cursor.rs         # Cursor usage stats (auto credentials / cookie / API)
 │   │   ├── kimi.rs           # Kimi Code usage stats (wire.jsonl parsing + OAuth in-memory renewal for live quotas)
 │   │   ├── session_hud.rs     # Session token HUD (config / open-close / resize memory)
+│   │   ├── island/            # Dynamic island HUD (window/drag snapping/internal config + weather/stocks/media/system/clipboard/notify/lyrics/screenshot)
 │   │   ├── pets.rs            # Desktop pets (built-in character / Petdex import)
 │   │   ├── agent_theme/       # ZCode UI injection (dynamic wallpaper / injected speed aggregates)
 │   │   ├── shortcut.rs       # Global hotkey config

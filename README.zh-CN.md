@@ -6,7 +6,7 @@ AgentHUD 是一个面向 AI 编程 Agent 的开源可观测性看板，统一监
 
 ![Tauri](https://img.shields.io/badge/Tauri-2.0-orange) ![React](https://img.shields.io/badge/React-19-blue) ![TypeScript](https://img.shields.io/badge/TypeScript-5.8-3178c6) ![TailwindCSS](https://img.shields.io/badge/Tailwind-v4-38bdf8) ![Rust](https://img.shields.io/badge/Rust-edition%202021-dea584) ![License](https://img.shields.io/badge/License-MIT-yellow) ![Platform](https://img.shields.io/badge/Platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey) [![GitHub Repo](https://img.shields.io/badge/GitHub-codez--yydd%2FAgentHUD-181717?logo=github)](https://github.com/codez-yydd/AgentHUD) [![Gitee Repo](https://img.shields.io/badge/Gitee-codezwx%2FAgentHUD-C71D23?logo=gitee)](https://gitee.com/codezwx/AgentHUD)
 
-一个常驻系统托盘的轻量监控伴侣，实时统计 [Z.ai（ZCode）](https://z.ai)、Codex、Claude、Cursor、Kimi Code 等多个 CLI Agent 的 Token 用量、订阅额度与花费。托盘唤出毛玻璃悬浮面板查看今日 / 7 天 / 30 天明细并按模型分组；另有主窗口大屏（用量总览 / 请求日志 / 周额度对比 / 价格设置）、会话 Token 悬浮窗、桌面宠物与跨设备同步。
+一个常驻系统托盘的轻量监控伴侣，实时统计 [Z.ai（ZCode）](https://z.ai)、Codex、Claude、Cursor、Kimi Code 等多个 CLI Agent 的 Token 用量、订阅额度与花费。托盘唤出毛玻璃悬浮面板查看今日 / 7 天 / 30 天明细并按模型分组；另有主窗口大屏（用量总览 / 请求日志 / 周额度对比 / 价格设置）、灵动岛 HUD、会话 Token 悬浮窗、桌面宠物与跨设备同步。
 
 > macOS 上的形态：菜单栏标题实时显示「今日花费 + 总 Token」，点击图标弹出贴近菜单栏的 popover 面板；Dock 不显示图标，失焦自动收起。
 
@@ -122,6 +122,16 @@ AgentHUD 是一个面向 AI 编程 Agent 的开源可观测性看板，统一监
       <b>用量报告</b> — 活跃度 / Token 活动热力图与日报周报导出
     </td>
   </tr>
+  <tr>
+    <td width="50%" align="center">
+      <img src="doc/img/island-shot.png" width="320" alt="灵动岛 · 截图工作台"/><br/>
+      <b>灵动岛 · 截图工作台</b> — 区域/窗口/全屏/滚动、GIF 录制与最近截图
+    </td>
+    <td width="50%" align="center">
+      <img src="doc/img/island-shot-editor.png" width="320" alt="截图标注器"/><br/>
+      <b>截图标注器</b> — 框选、箭头/高亮/文字/序号/马赛克、OCR/二维码/贴图
+    </td>
+  </tr>
 </table>
 
 ---
@@ -139,6 +149,8 @@ AgentHUD 是一个面向 AI 编程 Agent 的开源可观测性看板，统一监
 - **⌨️ 全局快捷键** — 默认 `alt+shift+z` 唤起 / 隐藏面板，可在设置中自定义或停用。
 - **🎨 动态壁纸** — 一键把动态视频壁纸注入 ZCode 桌面应用，作为对话背景；安装前自动备份原版、可随时还原。ZCode 升级后壁纸会失效，需重新安装；macOS 上注入后 ZCode 内置更新将不可用（还原也无法恢复），需前往官网重新下载。
 - **🖥 会话 Token 悬浮窗** — 免注入的桌面悬浮窗：按 agent 分组（ZCode / Claude / Codex / Kimi Code / DeepSeek Harness / OpenCode / MiniMax Code / Cursor）实时展示各会话累计 Token（输入 / 输出 / 缓存 / 请求数）、流式生成速度（t/s 与首字延迟）与实时状态点（有运行中信号的来源显示生成中 / 空闲，其余为中性灰点），底部按「来源 × 模型」给出窗口速度行（真生成窗口口径不带 ≈，整请求耗时口径带 ≈）。活跃窗口内无会话的 agent 回退展示「今日最近会话」并淡显标注，组头仍为该 agent 今日合计。支持拖拽边缘 / 四角自由调整大小（尺寸与位置自动记忆），标题栏内置设置面板（字体大小 / 窗口透明度）与一键关闭；语言、主题跟随主面板。在「皮肤」页开启。
+- **🫧 灵动岛 HUD（新增）** — 液态毛玻璃胶囊，视觉与交互参考 [Misaka273/wisland](https://github.com/Misaka273/wisland)。收起态**显示全部订阅的同心额度环 + 天气 + 今日 token / 预估花费**（不做宠物/表情）；同一来源的多账号、多凭证各占一枚环。悬停或点击展开为带标签栏的玻璃面板：主页 / 消息 / 股票 / 天气 / 控制 / 剪贴板 / **截图** / 设置。首页额度卡每页 4 张，滚轮横向滑动，底部用白色细横条指示页码；胶囊可拖到屏幕上缘或左右边，贴边时变成 48×440 竖排并记住位置。功能还含 SMTC 媒体控制与网易云歌词、Windows 通知历史、腾讯行情、Open-Meteo 天气（省/市/区县三级联动 + 获取当前位置）、DDC/CI 外接屏亮度（WMI 内屏回退）、iOS 控制中心式音量/亮度滑块与 Wi-Fi/蓝牙磁贴、剪贴板历史、深色毛玻璃与透明度调节（无外投影）、字体大小 10–18px 自定义（只缩放文字）、右键菜单、滚轮切换、全屏隐藏与全局开关热键（`Ctrl+Alt+Shift+I`）。不再生成/暴露 `island.json`，也没有“编辑配置”入口。数据链路与未移植项见 [doc/island-hud.md](doc/island-hud.md)。
+- **📸 截图工作台** — 截图页支持区域/窗口/全屏/延时截图、滚动长截图（逐帧滚动并按行签名拼接）、标注器（矩形/椭圆/箭头/画笔/高亮/文字/序号/马赛克/模糊）、贴图窗口、本地 OCR（Windows.Media.Ocr）、本地二维码（`rqrr`）与 8 秒 GIF 录制。保存 PNG/JPG 到 `图片/AgentHUD Screenshots`，可自动复制/贴图；最近截图支持打开、重新标注、复制、贴图和二次确认删除。抓屏用 GDI/PrintWindow，PNG 原始字节走 raw IPC，不上传任何图片。
 - **🐶 桌面宠物** — 内置智谱娘默认形象，支持 Petdex 自定义形象导入；七状态任务联动动画随 ZCode 任务状态实时切换；注入版（嵌入 ZCode 界面，可拖拽）与悬浮窗双形态按需选择，按屏幕比例提供尺寸档位，皮肤页统一管理。
 - **🖼 皮肤分类页** — 「皮肤」入口（调色板图标）改为分类导航：会话悬浮窗、桌面宠物等免注入功能独立成页、秒开即用；动态壁纸等需注入功能单独一页，进入时才检测 ZCode 注入环境。
 
@@ -218,6 +230,12 @@ AgentHUD/
 │   ├── SyncPanel.tsx         # 设备同步设置面板（注册 / 数据管理）
 │   ├── RangePicker.tsx       # 时间范围选择器
 │   ├── session-hud-main.ts    # 会话 Token 悬浮窗入口（免注入独立页）
+│   ├── island-main.tsx        # 灵动岛 HUD 入口（顶部毛玻璃胶囊）
+│   ├── island/                # 灵动岛界面：外壳 / 页面 / 截图页 / 拖拽 / 天气三级数据 / CSS
+│   ├── shot-main.tsx          # 截图框选 + 标注器入口
+│   ├── shot/                  # 截图 API / 标注 canvas / 区域选择 / 样式 / mock
+│   ├── pin-main.tsx           # 截图贴图窗口入口
+│   ├── pin/                   # 贴图窗口（拖动/缩放/复制/保存）
 │   ├── pet-main.ts            # 桌面宠物悬浮形态入口
 │   ├── api.ts                # invoke 封装（调用 Rust 命令）
 │   ├── types.ts              # 与 Rust 结构一一对应的 TS 类型
@@ -235,6 +253,7 @@ AgentHUD/
 │   │   ├── claude.rs         # Claude 用量统计（projects 解析 + OAuth 实时额度）
 │   │   ├── kimi.rs           # Kimi Code 用量统计（wire.jsonl 解析 + OAuth 内存续期额度）
 │   │   ├── session_hud.rs     # 会话 Token 悬浮窗（配置 / 建关窗 / 缩放记忆）
+│   │   ├── island/            # 灵动岛 HUD（窗口/拖拽吸附/内部配置 + 天气/股票/媒体/系统/剪贴板/通知/歌词/截图）
 │   │   ├── pets.rs            # 桌面宠物（内置形象 / Petdex 导入）
 │   │   ├── agent_theme/       # ZCode 界面注入（动态壁纸 / 注入版速度聚合）
 │   │   ├── shortcut.rs       # 全局快捷键配置

@@ -18,6 +18,7 @@ import { dashboard } from "./dicts/dashboard";
 import { customize } from "./dicts/customize";
 import { font } from "./dicts/font";
 import { exportImage } from "./dicts/exportImage";
+import { agentAssets } from "./dicts/agentAssets";
 
 export const zh = {
   ...common,
@@ -38,4 +39,5 @@ export const zh = {
   ...customize,
   ...font,
   ...exportImage,
+  ...agentAssets,
 };

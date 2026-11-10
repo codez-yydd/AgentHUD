@@ -207,6 +207,25 @@ Authorization: Bearer <device_token>
 
 ---
 
+## 资源库（子代理 / Skill 同步）
+
+AgentHUD 桌面端把子代理与 Skill 打包成资源包（清单 + 逐文件原始字节）上传到服务端，按版本保存，其他设备可列表、下载与恢复。服务端只做存储与校验（清单 schema、逐文件 size/sha256、双指纹复验、路径安全、容量限制），**不执行、不渲染任何包内容**；纯文本预览由客户端完成。契约见 `doc/agent-assets-contract.md` §8。
+
+| 接口 | 鉴权 | 用途 |
+|------|------|------|
+| `GET /agent-assets/capabilities` | Device Token | 版本探测 + 限额 |
+| `GET /agent-assets` | Device Token | 资源列表（仅元数据，tool/kind/scope 精确筛选 + q 子串 + 分页） |
+| `POST /agent-assets` | Device Token | 上传新资源（`client_request_id` 幂等 + 相同内容去重） |
+| `PUT /agent-assets/<id>` | Device Token | 追加新版本（`expected_version` 乐观并发，冲突返回 409） |
+| `GET /agent-assets/<id>/revisions` | Device Token | 版本列表（version 降序） |
+| `GET /agent-assets/<id>/revisions/<rev>/bundle` | Device Token | 下载指定版本完整资源包 |
+
+默认限额：单文件 8 MiB、单包总内容 16 MiB、单包 200 条、请求体 25 MiB、单资源保留 20 个版本、资源库总容量 256 MiB。可在 `config` 表 `agent_asset_limits`（JSON，同名整数键）中覆盖，即时生效并如实反映在 `/agent-assets/capabilities`；超保留数的版本按最旧优先淘汰。
+
+资源库数据全部存在 `usage.db`（`agent_assets` / `agent_asset_revisions` / `agent_asset_idempotency` 三张表，首次启动自动补建）。备份随 SQLite 库整体备份即可（复制 `zbar-data/`），无需单独处理。
+
+---
+
 ## 数据清理
 
 通过客户端「同步设置 → 数据管理」操作，或直接调 API。

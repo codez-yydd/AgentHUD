@@ -1,0 +1,14 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "shot-pin",
+  "description": "Floating screenshot pin windows: drag, aspect-ratio resize, copy/save via custom commands.",
+  "windows": ["shot-pin-*"],
+  "permissions": [
+    "core:event:default",
+    "core:window:allow-start-dragging",
+    "core:window:allow-set-size",
+    "core:window:allow-inner-size",
+    "core:window:allow-scale-factor",
+    "core:window:allow-close"
+  ]
+}

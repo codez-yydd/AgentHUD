@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AgentHUD Shot</title>
+    <!-- 截图/标注编辑器：Rust 抓屏后创建一个覆盖当前显示器的无边框窗口，
+         前端先绘制冻结画面，再调用 shot_ready 显示，避免白屏闪烁。 -->
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/shot-main.tsx"></script>
+  </body>
+</html>

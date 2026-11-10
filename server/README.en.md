@@ -211,6 +211,25 @@ Authorization: Bearer <device_token>
 
 ---
 
+## Asset Library (sub-agent / Skill sync)
+
+AgentHUD packs sub-agents and Skills into bundles (manifest + raw bytes per file), uploads them to the server and keeps them versioned so other devices can list, download and restore them. The server only stores and validates (manifest schema, per-file size/sha256, both fingerprints, path safety, capacity limits) — it **never executes or renders bundle content**; plain-text preview happens on the client. See `doc/agent-assets-contract.md` §8 for the contract.
+
+| Endpoint | Auth | Purpose |
+|----------|------|---------|
+| `GET /agent-assets/capabilities` | Device Token | Version probe + limits |
+| `GET /agent-assets` | Device Token | Asset list (metadata only; exact tool/kind/scope filter + q substring + pagination) |
+| `POST /agent-assets` | Device Token | Create asset (`client_request_id` idempotency + identical-content dedup) |
+| `PUT /agent-assets/<id>` | Device Token | Append revision (`expected_version` optimistic concurrency, 409 on conflict) |
+| `GET /agent-assets/<id>/revisions` | Device Token | Revision list (version descending) |
+| `GET /agent-assets/<id>/revisions/<rev>/bundle` | Device Token | Download the full bundle of one revision |
+
+Default limits: 8 MiB per file, 16 MiB total content per bundle, 200 entries per bundle, 25 MiB request body, 20 revisions per asset, 256 MiB library quota. Override them via the `config` table key `agent_asset_limits` (JSON object with the same integer keys); changes apply immediately and are reported truthfully by `/agent-assets/capabilities`. Revisions beyond the retention limit are evicted oldest-first.
+
+All asset data lives in `usage.db` (tables `agent_assets` / `agent_asset_revisions` / `agent_asset_idempotency`, created automatically on first start). Back it up together with the SQLite database (copy `zbar-data/`); nothing extra to handle.
+
+---
+
 ## Data Cleanup
 
 Operate via the client "Sync Settings → Data Management", or call the API directly.

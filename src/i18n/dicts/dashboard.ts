@@ -667,9 +667,9 @@ export const dashboard = {
   "dashboard.settings.autoCaptureHint":
     "应用运行时后台每分钟检测 ZCode 新登录并保存为账号快照；关闭后仍可在「凭证与账号」页手动捕获。改完下一分钟内生效，无需重启。",
   // ⑤ HUD 停靠条（与托盘菜单 / 面板按钮同一份配置）
-  "dashboard.settings.hudBar": "HUD 停靠条",
+  "dashboard.settings.hudBar": "灵动岛 HUD",
   "dashboard.settings.hudBarHint":
-    "贴屏幕边缘常驻的额度小条；与托盘右键菜单的开关是同一份配置，两处状态同步。",
+    "顶部居中、悬停展开的灵动岛；与托盘右键菜单、面板顶部按钮共用同一份开关状态。",
 
   // ===== 请求日志页（大窗）：筛选行 / 明细表 / 分页条 / 详情抽屉 =====
   // 时间范围四档与其他主窗口页统一，全部复用 dashboard.overview.range.*

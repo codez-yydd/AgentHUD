@@ -5,7 +5,7 @@
  *
  * 视图切换用组件内 state（对齐面板 App.tsx 的 view 模式，不引路由库）：
  * 用量总览 / 请求日志 / 模型速度 / 周额度对比 / 额度驾驶舱 / 同步与设备 /
- * 凭证与账号 / 价格设置 / 设置 九个页面各自独立取数渲染。
+ * 凭证与账号 / 价格设置 / Agent 与 Skill / 设置 十个页面各自独立取数渲染。
  */
 import { useEffect, useRef, useState } from "react";
 import type { ComponentType } from "react";
@@ -35,6 +35,7 @@ import { QuotaPage } from "./QuotaPage";
 import { PricingPage } from "./PricingPage";
 import { SyncPage } from "./SyncPage";
 import { AccountsPage } from "./AccountsPage";
+import { AgentAssetsPage } from "./AgentAssetsPage";
 import { SettingsPage } from "./SettingsPage";
 
 /** 主区视图（新增页面时在此扩展） */
@@ -47,6 +48,7 @@ type View =
   | "sync"
   | "accounts"
   | "pricing"
+  | "agents"
   | "settings";
 
 /** 面板 → 主窗口跳页事件（Rust 侧 open_main_window(page) 在开窗/聚焦后
@@ -65,6 +67,7 @@ const NAVIGATABLE_VIEWS: readonly string[] = [
   "sync",
   "accounts",
   "pricing",
+  "agents",
   "settings",
 ];
 
@@ -82,6 +85,7 @@ const NAV_ITEMS: {
   { view: "sync", labelKey: "dashboard.sync", Icon: SyncIcon },
   { view: "accounts", labelKey: "dashboard.accounts", Icon: AccountsIcon },
   { view: "pricing", labelKey: "dashboard.pricing", Icon: PricingIcon },
+  { view: "agents", labelKey: "dashboard.agentAssets", Icon: AccountsIcon },
   { view: "settings", labelKey: "dashboard.settings", Icon: SettingsIcon },
 ];
 
@@ -219,6 +223,8 @@ export function DashboardApp() {
             <AccountsPage />
           ) : view === "pricing" ? (
             <PricingPage />
+          ) : view === "agents" ? (
+            <AgentAssetsPage />
           ) : (
             <SettingsPage />
           )}

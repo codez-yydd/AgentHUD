@@ -1077,3 +1077,539 @@ export async function pollKimiDeviceAuth(
 ): Promise<KimiDevicePollResult> {
   return invoke<KimiDevicePollResult>("poll_kimi_device_auth", { sessionId });
 }
+
+// ===== Agent 与 Skill 管理（agent_assets，契约 doc/agent-assets-contract.md）=====
+// 返回结构的字段名一律 snake_case（Rust DTO 无 rename_all，serde 原样序列化，
+// 与契约 §3/§5/§7/§8 逐字段对应）；invoke 的**命令参数名**在 JS 侧用
+// camelCase（Tauri v2 对 Rust snake_case 命令参数的默认映射，与本文件
+// projects / pet 等命令的既有约定一致）。命令错误统一为
+// `{ code, message, details? }` 对象（契约 §4.3），前端 catch 后按 e.code
+// 分支，不能按字符串匹配。
+
+/** 工具 ID（契约 §2.1，固定小写，服务端将来可能新增）。 */
+export type AssetTool =
+  | "zcode"
+  | "codex"
+  | "claude"
+  | "kimi"
+  | "opencode"
+  | "dsh"
+  | "minimax";
+
+/** 资源类型：子代理 / Skill。 */
+export type AssetKind = "agent" | "skill";
+
+/** 作用域：用户级 / 项目级。 */
+export type AssetScope = "user" | "project";
+
+/** 能力条目状态：verified = 已按实际版本验证；pending = 占位待验证（不可操作）。 */
+export type CapabilityStatus = "verified" | "pending";
+
+/**
+ * 单个 工具 × 资源类型 × 作用域 的四档能力声明（契约 §5.2）。
+ * 依赖关系：installable ⊆ native_exportable ⊆ archivable ⊆ scannable。
+ * `status === "pending"` 的条目前端一律不可操作，只显示「待验证」。
+ */
+export interface CapabilityEntry {
+  tool: string;
+  display_name: string;
+  kind: AssetKind;
+  scope: AssetScope;
+  scannable: boolean;
+  archivable: boolean;
+  native_exportable: boolean;
+  installable: boolean;
+  /** 开放词汇（契约 §2.3），未知值必须容忍 */
+  native_format: string;
+  status: CapabilityStatus;
+  verified_versions: string[];
+  notes: string;
+}
+
+/** 本地发现的资源（契约 §7.1 DiscoveredAsset）。 */
+export interface DiscoveredAsset {
+  tool: string;
+  kind: AssetKind;
+  scope: AssetScope;
+  native_id: string;
+  native_format: string;
+  display_name: string;
+  description: string | null;
+  entry_path: string;
+  warnings: string[];
+  source_root: string;
+}
+
+/** 文件简要信息（inspect / plan 的 files 条目）。 */
+export interface AssetFileBrief {
+  path: string;
+  size: number;
+  executable: boolean;
+  binary: boolean;
+}
+
+/** 导出计划里的文件条目（不含 size / sha256，打包时由共用层填充）。 */
+export interface PlannedFile {
+  path: string;
+  executable: boolean;
+  binary: boolean;
+}
+
+/** 解析出的元数据（frontmatter 解析失败时 parsed_ok=false + parse_error）。 */
+export interface AssetMetadata {
+  name: string | null;
+  description: string | null;
+  model: string | null;
+  tools: string[];
+  frontmatter_raw: string | null;
+  parsed_ok: boolean;
+  parse_error: string | null;
+}
+
+/** 敏感字段提示（契约 §9：凭据/私钥类内容只提示，不自动上传）。 */
+export interface SensitiveFieldHint {
+  file: string;
+  field: string;
+  reason: string;
+}
+
+/** 单资源检查报告（契约 §7.1 InspectionReport）。 */
+export interface InspectionReport {
+  asset: DiscoveredAsset;
+  metadata: AssetMetadata;
+  files: AssetFileBrief[];
+  sensitive_fields: SensitiveFieldHint[];
+  warnings: string[];
+  external_references: string[];
+}
+
+/** 导出计划（契约 §7.1 ExportPlan）：上传/导出前展示的完整文件清单。 */
+export interface ExportPlan {
+  tool: string;
+  kind: AssetKind;
+  native_format: string;
+  native_id: string;
+  display_name: string;
+  description: string | null;
+  origin_scope: AssetScope;
+  target_versions: string[];
+  entry_path: string;
+  source_root: string;
+  files: PlannedFile[];
+  sensitive_fields: SensitiveFieldHint[];
+  warnings: string[];
+  external_references: string[];
+}
+
+/**
+ * 手选原生文件/目录导入的单项结果（契约 §7.3 ImportCandidate）。
+ * 成功项 importable=true 且 asset/metadata 非空，字段与 inspect 同构；
+ * 失败项 importable=false、asset=null，原因在 metadata.parse_error 与 error。
+ * 手选导入的 asset.scope 固定为 user。
+ */
+export interface ImportCandidate {
+  tool: string;
+  /** 请求的 kind 原文（合法时为 agent/skill） */
+  kind: string;
+  /** 用户手选路径原文 */
+  path: string;
+  importable: boolean;
+  asset: DiscoveredAsset | null;
+  metadata: AssetMetadata | null;
+  files: AssetFileBrief[];
+  sensitive_fields: SensitiveFieldHint[];
+  warnings: string[];
+  external_references: string[];
+  source_root: string | null;
+  /** 不可导入原因（与 metadata.parse_error 同义） */
+  error: string | null;
+}
+
+/** 清单文件条目（契约 §3.2 ManifestFile）。 */
+export interface ManifestFile {
+  path: string;
+  size: number;
+  sha256: string;
+  executable: boolean;
+  binary: boolean;
+}
+
+/** 资源清单（契约 §3.2 AssetManifest）。 */
+export interface AssetManifest {
+  schema_version: number;
+  tool: string;
+  kind: AssetKind;
+  native_format: string;
+  native_id: string;
+  display_name: string;
+  description: string | null;
+  origin_scope: AssetScope;
+  target_versions: string[];
+  entry_path: string;
+  files: ManifestFile[];
+}
+
+/** 资源包内的单文件内容（标准 base64，含 padding）。 */
+export interface AssetBundleContent {
+  path: string;
+  content_base64: string;
+}
+
+/** 传输信封（契约 §3.1 AssetBundle）：manifest 与 contents 同序一一对应。 */
+export interface AssetBundle {
+  manifest: AssetManifest;
+  manifest_sha256: string;
+  bundle_sha256: string;
+  contents: AssetBundleContent[];
+}
+
+/** 服务端容量限制（契约 §8.1 limits）。 */
+export interface ServerAssetLimits {
+  max_request_bytes: number;
+  max_file_bytes: number;
+  max_bundle_bytes: number;
+  max_entries_per_bundle: number;
+  max_revisions_per_asset: number;
+  library_quota_bytes: number;
+}
+
+/**
+ * 服务端资源库支持状态（命令 agent_assets_server_status 的返回，永不抛错）。
+ * supported=false 时 reason 为 CONFIG_MISSING / OLD_SERVER_UNSUPPORTED /
+ * NETWORK_ERROR / UNAUTHORIZED；detail 为人读补充。
+ */
+export interface ServerAssetStatus {
+  supported: boolean;
+  api_version?: number | null;
+  limits?: ServerAssetLimits | null;
+  reason?: string | null;
+  detail?: string | null;
+  /** 同步地址为非回环的裸 http://（建议改用 HTTPS）。 */
+  insecure_transport: boolean;
+}
+
+/** 远端资源元数据（契约 §7.1 RemoteAsset；tool/kind/origin_scope 为小写字符串透传）。 */
+export interface RemoteAsset {
+  asset_id: string;
+  tool: string;
+  kind: string;
+  native_id: string;
+  display_name: string;
+  description: string | null;
+  origin_scope: string;
+  native_format: string;
+  latest_version: number;
+  latest_bundle_sha256: string;
+  latest_manifest_sha256: string;
+  total_size: number;
+  entry_count: number;
+  created_at: number;
+  updated_at: number;
+  updated_by_device: string;
+}
+
+/** 单个版本元数据（契约 §7.1 RemoteRevision）。 */
+export interface RemoteRevision {
+  asset_id: string;
+  version: number;
+  bundle_sha256: string;
+  manifest_sha256: string;
+  total_size: number;
+  entry_count: number;
+  created_at: number;
+  created_by_device: string;
+}
+
+/** POST / PUT 的返回（契约 §7.1 RemoteAssetResult）。 */
+export interface RemoteAssetResult {
+  asset: RemoteAsset;
+  revision: RemoteRevision;
+  /** 同 client_request_id 幂等重放（未产生新写入） */
+  replayed: boolean;
+  /** 相同内容去重（未写新版本，返回已有资源） */
+  deduplicated: boolean;
+}
+
+/** 远端资源分页（GET /agent-assets）。 */
+export interface RemoteAssetPage {
+  items: RemoteAsset[];
+  page: number;
+  page_size: number;
+  total: number;
+}
+
+/** 导出/安装时被跳过的条目（目标路径已存在且未选择覆盖等）。 */
+export interface AssetSkippedPath {
+  path: string;
+  reason: string;
+}
+
+/**
+ * agent_assets_export_to_disk 返回（契约 §7.2，wire 字段 snake_case）。
+ * 下载 = 把资源包原样还原为原生文件/文件包，不改写内容。
+ */
+export interface DiskExportResult {
+  written: string[];
+  skipped: AssetSkippedPath[];
+  backup_dir: string | null;
+  warnings: string[];
+}
+
+/** agent_assets_install 返回：写入路径 + 备份 + 目标工具的手动注册步骤（§7.2）。 */
+export interface InstallResult {
+  installed_paths: string[];
+  skipped: AssetSkippedPath[];
+  backup_dir: string | null;
+  tool_instructions: string | null;
+  warnings: string[];
+}
+
+/** 统一错误对象的 TS 形状（catch 到的 Tauri 错误；string 形式由 UI 兜底）。 */
+export interface AssetErrorInfo {
+  code: string;
+  message: string;
+  details?: Record<string, unknown>;
+}
+
+/** 远端列表查询（可选参数；page 从 1 起，pageSize ≤ 100）。 */
+export interface RemoteAssetQuery {
+  tool?: string;
+  kind?: AssetKind;
+  scope?: AssetScope;
+  q?: string;
+  page?: number;
+  pageSize?: number;
+}
+
+/** 本地能力矩阵（含 DSH / MiniMax 的 pending 占位）。 */
+export async function getAgentAssetCapabilities(): Promise<CapabilityEntry[]> {
+  return invoke<CapabilityEntry[]>("agent_assets_capabilities");
+}
+
+/** 探测服务端资源库支持状态（命令本身不抛错，失败都折成 supported=false）。 */
+export async function getAgentAssetServerStatus(): Promise<ServerAssetStatus> {
+  return invoke<ServerAssetStatus>("agent_assets_server_status");
+}
+
+/** 只读扫描某工具某作用域下的本机资源（project 作用域必须传项目根）。 */
+export async function discoverAgentAssets(
+  tool: string,
+  kind: AssetKind,
+  scope: AssetScope,
+  projectRoot?: string | null
+): Promise<DiscoveredAsset[]> {
+  return invoke<DiscoveredAsset[]>("agent_assets_discover", {
+    tool,
+    kind,
+    scope,
+    projectRoot: projectRoot ?? null,
+  });
+}
+
+/** 解析单个资源的元数据与文件清单（frontmatter 失败只降级为 warnings）。 */
+export async function inspectAgentAsset(
+  tool: string,
+  kind: AssetKind,
+  scope: AssetScope,
+  nativeId: string,
+  projectRoot?: string | null
+): Promise<InspectionReport> {
+  return invoke<InspectionReport>("agent_assets_inspect", {
+    tool,
+    kind,
+    scope,
+    nativeId,
+    projectRoot: projectRoot ?? null,
+  });
+}
+
+/**
+ * 生成导出计划（只列清单不读内容；上传/导出预览的数据源）。
+ * sourceOverride 仅用于手选导入：传 ImportCandidate.source_root 作为显式资源根，
+ * 后端会校验解析出的 tool/kind/native_id 与请求参数一致；普通 discover 资源传 null。
+ */
+export async function planAgentAssetExport(
+  tool: string,
+  kind: AssetKind,
+  scope: AssetScope,
+  nativeId: string,
+  projectRoot?: string | null,
+  sourceOverride?: string | null
+): Promise<ExportPlan> {
+  return invoke<ExportPlan>("agent_assets_plan_export", {
+    tool,
+    kind,
+    scope,
+    nativeId,
+    projectRoot: projectRoot ?? null,
+    sourceOverride: sourceOverride ?? null,
+  });
+}
+
+/**
+ * 打包：plan_export → 磁盘收集 → 路径检查 → SHA-256（契约 §3）。
+ * sourceOverride 语义同 planAgentAssetExport（手选导入必须传）。
+ */
+export async function packAgentAsset(
+  tool: string,
+  kind: AssetKind,
+  scope: AssetScope,
+  nativeId: string,
+  projectRoot?: string | null,
+  sourceOverride?: string | null
+): Promise<AssetBundle> {
+  return invoke<AssetBundle>("agent_assets_pack", {
+    tool,
+    kind,
+    scope,
+    nativeId,
+    projectRoot: projectRoot ?? null,
+    sourceOverride: sourceOverride ?? null,
+  });
+}
+
+/**
+ * 手选原生文件/目录导入（契约 §7 / §7.3）：逐项解析，单项失败不影响整批。
+ * 命令返回裸数组（整批失败只可能是宿主/命令异常）；成功项字段与 inspect 同构，
+ * 手选导入的 asset.scope 固定为 user；后续 plan/pack 必须传 sourceOverride。
+ */
+export async function importAgentAssetFiles(
+  tool: string,
+  kind: AssetKind,
+  paths: string[]
+): Promise<ImportCandidate[]> {
+  return invoke<ImportCandidate[]>("agent_assets_import_files", {
+    tool,
+    kind,
+    paths,
+  });
+}
+
+/** 远端资源列表（仅元数据，支持 tool/kind/scope/q 筛选与分页）。 */
+export async function listRemoteAgentAssets(
+  query: RemoteAssetQuery = {}
+): Promise<RemoteAssetPage> {
+  return invoke<RemoteAssetPage>("agent_assets_list_remote", {
+    query: {
+      tool: query.tool ?? null,
+      kind: query.kind ?? null,
+      scope: query.scope ?? null,
+      q: query.q ?? null,
+      page: query.page ?? null,
+      page_size: query.pageSize ?? null,
+    },
+  });
+}
+
+/**
+ * 创建远端资源（POST /agent-assets）。
+ * clientRequestId 为幂等键：断网重试必须复用同一个 UUID，且重试内容保持不变；
+ * 需要拿到最新内容重新打包时应改用新请求 ID 或先走预览。
+ */
+export async function uploadAgentAsset(
+  bundle: AssetBundle,
+  clientRequestId: string
+): Promise<RemoteAssetResult> {
+  return invoke<RemoteAssetResult>("agent_assets_upload", {
+    bundle,
+    clientRequestId,
+  });
+}
+
+/**
+ * 更新已有资源产生新版本（PUT /agent-assets/<id>）。
+ * expectedVersion 与各自服务端当前版本不一致时返回 VERSION_CONFLICT（409，
+ * details.current_version），调用方应重新 preview/pack 后再试或改为另存新资源。
+ */
+export async function updateRemoteAgentAsset(
+  assetId: string,
+  expectedVersion: number,
+  bundle: AssetBundle
+): Promise<RemoteAssetResult> {
+  return invoke<RemoteAssetResult>("agent_assets_update_remote", {
+    assetId,
+    expectedVersion,
+    bundle,
+  });
+}
+
+/** 某资源的版本列表（按版本降序）。 */
+export async function listAgentAssetRevisions(
+  assetId: string
+): Promise<RemoteRevision[]> {
+  return invoke<RemoteRevision[]>("agent_assets_list_revisions", { assetId });
+}
+
+/** 下载某版本的资源包信封（下载本身不复验，调用方在预览/安装前复验）。 */
+export async function fetchAgentAssetBundle(
+  assetId: string,
+  version: number
+): Promise<AssetBundle> {
+  return invoke<AssetBundle>("agent_assets_fetch_bundle", { assetId, version });
+}
+
+/**
+ * 把资源包原样导出到本机目录（契约 §7.2）。
+ * 返回写入/跳过清单与备份目录，warnings 为逐条人读提示。
+ * wire 字段为 snake_case（backup_dir）；这里保留对旧 camelCase 实现的兼容，
+ * 避免联调期因 serde 命名差异导致 UI 显示 undefined（不影响调用参数）。
+ */
+export async function exportAgentAssetBundleToDisk(
+  bundle: AssetBundle,
+  destDir: string,
+  overwrite: boolean
+): Promise<DiskExportResult> {
+  const raw = await invoke<{
+    written?: string[];
+    skipped?: AssetSkippedPath[];
+    backupDir?: string | null;
+    backup_dir?: string | null;
+    warnings?: string[];
+  }>("agent_assets_export_to_disk", {
+    bundle,
+    destDir,
+    overwrite,
+  });
+  return {
+    written: raw.written ?? [],
+    skipped: raw.skipped ?? [],
+    backup_dir: raw.backup_dir ?? raw.backupDir ?? null,
+    warnings: raw.warnings ?? [],
+  };
+}
+
+/**
+ * 安装资源包到本机指定作用域（契约 §7.2）。
+ * project 作用域必须传 projectRoot；tool_instructions 为目标工具的手动注册步骤。
+ * 返回字段同样兼容 camelCase / snake_case 两种 serde 命名（同 export 命令）。
+ */
+export async function installAgentAssetBundle(
+  bundle: AssetBundle,
+  targetScope: AssetScope,
+  projectRoot: string | null,
+  overwrite: boolean
+): Promise<InstallResult> {
+  const raw = await invoke<{
+    installedPaths?: string[];
+    installed_paths?: string[];
+    skipped?: AssetSkippedPath[];
+    backupDir?: string | null;
+    backup_dir?: string | null;
+    toolInstructions?: string | null;
+    tool_instructions?: string | null;
+    warnings?: string[];
+  }>("agent_assets_install", {
+    bundle,
+    targetScope,
+    projectRoot: projectRoot ?? null,
+    overwrite,
+  });
+  return {
+    installed_paths: raw.installed_paths ?? raw.installedPaths ?? [],
+    skipped: raw.skipped ?? [],
+    backup_dir: raw.backup_dir ?? raw.backupDir ?? null,
+    tool_instructions:
+      raw.tool_instructions ?? raw.toolInstructions ?? null,
+    warnings: raw.warnings ?? [],
+  };
+}

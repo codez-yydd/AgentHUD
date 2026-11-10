@@ -294,7 +294,7 @@ pub struct TrayMenuState {
 pub fn tray_menu_state(app: AppHandle) -> TrayMenuState {
     TrayMenuState {
         version: app.package_info().version.to_string(),
-        hud_bar_enabled: crate::hud_bar::load_hud_bar_config().enabled,
+        hud_bar_enabled: crate::island::load_config().enabled,
         is_usd: crate::pricing::load_currency() == "usd",
     }
 }
@@ -471,13 +471,11 @@ pub fn tray_menu_action(app: AppHandle, action: String) -> Result<(), String> {
         // toggle 等价于「打开」（无点击位置路径，落到屏幕右上角，同全局
         // 快捷键行为）
         "open-panel" => crate::toggle_panel(&app, None),
-        // HUD 停靠条开关：原生菜单 "hud-bar-toggle" 分支的同款调用
-        // （toggle_from_tray 内部按新开关落盘并启停数据线程，并广播
-        // zbar://hud-bar-state，前端据此同步开关态）
+        // 灵动岛开关：与面板顶部 HUD 按钮同源（内部状态库）
         "hud-toggle" => {
-            if let Err(e) = crate::hud_bar::toggle_from_tray(&app) {
-                eprintln!("[zbar-tray-menu] 切换停靠条失败: {e}");
-                return Err(format!("切换停靠条失败: {e}"));
+            if let Err(e) = crate::island::toggle_from_tray(&app) {
+                eprintln!("[zbar-tray-menu] 切换灵动岛失败: {e}");
+                return Err(format!("切换灵动岛失败: {e}"));
             }
         }
         // 退出应用：原生菜单 "quit" 分支的同款语义（app.exit(0)）

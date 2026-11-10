@@ -6,13 +6,16 @@ Python + Flask 实现。启动自动建库、生成 master token 并打印到日
 所有 API 路径、字段名、鉴权逻辑与 Rust 版完全一致，客户端无需改动。
 """
 
+import base64
+import hashlib
 import json
 import logging
 import math
+import re
 import threading
 import time
 
-from flask import Flask, g, jsonify, request
+from flask import Flask, Response, g, jsonify, request
 
 import db
 from auth import (
@@ -1072,6 +1075,760 @@ def cleanup_config():
 @app.get("/health")
 def health():
     return "ok"
+
+
+# ===== 资源库（AgentHUD 子代理与 Skill 管理，契约 §8）=====
+#
+# 契约见 doc/agent-assets-contract.md：服务端只做存储、结构校验（schema、
+# 条目与内容一一对应、逐文件 size/sha256、双指纹复验）、路径安全与容量
+# 限制，绝不执行/渲染任何包内容。6 个端点全部走设备鉴权；非 2xx 一律用
+# §4.2 统一错误体。
+
+AGENT_ASSET_API_VERSION = 1
+
+# §8.7 默认限额；可由 config 表 key=agent_asset_limits 的同名正整数项覆盖，
+# 并通过 GET /agent-assets/capabilities 如实返回（读取即时生效）。
+AGENT_ASSET_LIMIT_DEFAULTS = {
+    "max_request_bytes": 26_214_400,
+    "max_file_bytes": 8_388_608,
+    "max_bundle_bytes": 16_777_216,
+    "max_entries_per_bundle": 200,
+    "max_revisions_per_asset": 20,
+    "library_quota_bytes": 268_435_456,
+}
+AGENT_ASSET_LIMITS_CONFIG_KEY = "agent_asset_limits"
+
+AGENT_ASSET_HEX_RE = re.compile(r"^[0-9a-f]{64}$")
+AGENT_ASSET_TOOL_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+AGENT_ASSET_SHORT_NAME_RE = re.compile(r"^.*~[0-9]+$", re.IGNORECASE)
+AGENT_ASSET_RESERVED_CHARS = frozenset('<>"|?*')
+AGENT_ASSET_RESERVED_NAMES = frozenset(
+    ["con", "prn", "aux", "nul"]
+    + [f"com{i}" for i in range(1, 10)]
+    + [f"lpt{i}" for i in range(1, 10)]
+)
+
+
+def _asset_error(code, status, message, details=None):
+    """契约 §4.2 统一错误体：{"error": {code, message, details?}}。"""
+    error = {"code": code, "message": message}
+    if details is not None:
+        error["details"] = details
+    return jsonify({"error": error}), status
+
+
+def _asset_validation_error(message, details=None):
+    return _asset_error("VALIDATION_FAILED", 400, message, details)
+
+
+def _asset_path_error(path, reason):
+    """§9 路径违规：details.path 指明违规条目。"""
+    return _asset_error("PATH_UNSAFE", 400, f"包内路径不安全：{reason}", {"path": path})
+
+
+def _agent_asset_storage_available():
+    """当前加载的 db.py 是否支持资源库（宝塔热替换窗口兼容）。"""
+    return all(
+        callable(getattr(db, name, None))
+        for name in (
+            "insert_agent_asset",
+            "update_agent_asset",
+            "query_agent_assets",
+            "query_agent_asset_revisions",
+            "get_agent_asset_bundle",
+            "get_agent_asset",
+        )
+    )
+
+
+def _require_agent_asset_storage():
+    """db.py 缺资源库能力时返回 500 错误响应，否则 None。"""
+    if _agent_asset_storage_available():
+        return None
+    return _asset_error(
+        "INTERNAL", 500, "服务端资源库未初始化（db.py 版本过旧，请同步升级）"
+    )
+
+
+def _agent_asset_limits():
+    """读取资源库限额：默认值 + config 表覆盖（非法值忽略）。"""
+    limits = dict(AGENT_ASSET_LIMIT_DEFAULTS)
+    try:
+        raw = db.get_config(AGENT_ASSET_LIMITS_CONFIG_KEY)
+        overrides = json.loads(raw) if raw else None
+    except (TypeError, ValueError):
+        overrides = None
+    if isinstance(overrides, dict):
+        for key in limits:
+            value = overrides.get(key)
+            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+                continue
+            limits[key] = value
+    # 至少保留 1 个版本、至少 1 条文件，否则资源不可用
+    limits["max_entries_per_bundle"] = max(1, limits["max_entries_per_bundle"])
+    limits["max_revisions_per_asset"] = max(1, limits["max_revisions_per_asset"])
+    return limits
+
+
+def _require_agent_asset_device():
+    """资源库端点鉴权：返回 (错误响应, None) 或 (None, device_id)。
+
+    与 require_device_token 共用同一套设备模型。契约里的 FORBIDDEN（设备
+    已撤销）在当前模型下不可区分：撤销设备会直接删除 devices 行，旧 token
+    表现为无效凭证并返回 401 UNAUTHORIZED（见契约 §4.1 备注）。
+    """
+    err, device_id = require_device_token()
+    if err:
+        return _asset_error("UNAUTHORIZED", 401, "设备凭证缺失或无效"), None
+    return None, device_id
+
+
+def _check_asset_path(path):
+    """契约 §9 规则 1–6：返回 None 表示安全，否则返回人读违规原因。
+
+    大小写折叠碰撞是包级检查（同包内两条路径），不在此函数内。
+    """
+    if not isinstance(path, str) or not path:
+        return "路径为空"
+    try:
+        encoded = path.encode("utf-8")
+    except UnicodeEncodeError:
+        return "路径不是合法 UTF-8"
+    if len(encoded) > 512:
+        return "路径超过 512 字节"
+    if "\\" in path:
+        return "路径只能使用 / 分隔"
+    if path.startswith("/"):
+        return "路径不能是绝对路径"
+    for segment in path.split("/"):
+        if not segment:
+            return "路径包含空段"
+        if segment in (".", ".."):
+            return "路径包含 . 或 .. 段"
+        if ":" in segment:
+            return "路径包含冒号（盘符或 NTFS 数据流）"
+        if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in segment):
+            return "路径包含控制字符"
+        if segment.endswith(".") or segment.endswith(" "):
+            return "路径段不能以点或空格结尾"
+        if any(ch in AGENT_ASSET_RESERVED_CHARS for ch in segment):
+            return "路径包含 Windows 保留字符"
+        # 去掉首个点之前的部分做保留名比较：CON 与 CON.txt 同拒
+        if segment.split(".", 1)[0].lower() in AGENT_ASSET_RESERVED_NAMES:
+            return "路径段是 Windows 保留设备名"
+        # 8.3 短名形态：把路径段按 `.` 切分，任一切分片匹配 `^.*~[0-9]+$`
+        # （仅 ASCII 数字、大小写不敏感）即拒绝。与 Rust safety.rs 逐条一致：
+        # `NAME~1`、`name~1.md`、`a.b~1.md`、`name~1.tar.gz`、`~1` 同拒。
+        for part in segment.split("."):
+            if AGENT_ASSET_SHORT_NAME_RE.fullmatch(part):
+                return "路径段是 8.3 短名形态"
+    return None
+
+
+def _validate_asset_manifest(manifest, limits):
+    """校验 §3.2 清单结构与 §9 路径安全。
+
+    返回 (asset_meta, error)；成功时 error 为 None。路径条目按
+    manifest.files 原始顺序校验，违规即返回 PATH_UNSAFE + details.path。
+    """
+    schema_version = manifest.get("schema_version")
+    # 必须是 JSON 整数：1.0 / "1" / true 一律拒绝（Rust 反序列化 u32 不接受
+    # 浮点；允许它们会让服务端接收 Rust 客户端无法消费的清单）。
+    if type(schema_version) is not int or schema_version != 1:
+        return None, _asset_validation_error(
+            "不支持的 manifest.schema_version（必须是整数 1）"
+        )
+
+    tool = manifest.get("tool")
+    if not isinstance(tool, str) or AGENT_ASSET_TOOL_RE.fullmatch(tool) is None:
+        return None, _asset_validation_error(
+            "manifest.tool 必须是 §2.1 规定的小写工具 ID"
+        )
+    kind = manifest.get("kind")
+    if kind not in ("agent", "skill"):
+        return None, _asset_validation_error("manifest.kind 必须是 agent 或 skill")
+    origin_scope = manifest.get("origin_scope")
+    if origin_scope not in ("user", "project"):
+        return None, _asset_validation_error(
+            "manifest.origin_scope 必须是 user 或 project"
+        )
+    native_format = manifest.get("native_format")
+    if (
+        not isinstance(native_format, str)
+        or not native_format.strip()
+        or len(native_format) > 64
+    ):
+        return None, _asset_validation_error(
+            "manifest.native_format 必须是非空字符串（≤64 字符）"
+        )
+    native_id = manifest.get("native_id")
+    if (
+        not isinstance(native_id, str)
+        or not native_id.strip()
+        or len(native_id) > 255
+    ):
+        return None, _asset_validation_error(
+            "manifest.native_id 必须是非空字符串（≤255 字符）"
+        )
+    display_name = manifest.get("display_name")
+    if (
+        not isinstance(display_name, str)
+        or not display_name.strip()
+        or len(display_name) > 255
+    ):
+        return None, _asset_validation_error(
+            "manifest.display_name 必须是非空字符串（≤255 字符）"
+        )
+    description = manifest.get("description")
+    if description is not None and not isinstance(description, str):
+        return None, _asset_validation_error(
+            "manifest.description 必须是字符串或 null"
+        )
+    target_versions = manifest.get("target_versions")
+    if target_versions is not None and (
+        not isinstance(target_versions, list)
+        or any(not isinstance(item, str) for item in target_versions)
+    ):
+        return None, _asset_validation_error(
+            "manifest.target_versions 必须是字符串数组"
+        )
+
+    files = manifest.get("files")
+    if not isinstance(files, list) or not files:
+        return None, _asset_validation_error("manifest.files 必须是非空数组")
+    if len(files) > limits["max_entries_per_bundle"]:
+        return None, _asset_error(
+            "TOO_MANY_ENTRIES",
+            400,
+            f"文件条目数 {len(files)} 超过上限 "
+            f"{limits['max_entries_per_bundle']}",
+            {
+                "entries": len(files),
+                "limit": limits["max_entries_per_bundle"],
+            },
+        )
+
+    paths = []
+    total_size = 0
+    for index, item in enumerate(files):
+        if not isinstance(item, dict):
+            return None, _asset_validation_error(
+                f"manifest.files[{index}] 必须是对象"
+            )
+        path = item.get("path")
+        if not isinstance(path, str) or not path:
+            return None, _asset_validation_error(
+                f"manifest.files[{index}].path 必须是非空字符串"
+            )
+        problem = _check_asset_path(path)
+        if problem:
+            return None, _asset_path_error(path, problem)
+        size = item.get("size")
+        if isinstance(size, bool) or not isinstance(size, int) or size < 0:
+            return None, _asset_validation_error(
+                f"manifest.files[{index}].size 必须是非负整数",
+                {"path": path},
+            )
+        if size > limits["max_file_bytes"]:
+            return None, _asset_error(
+                "PAYLOAD_TOO_LARGE",
+                413,
+                f"单文件大小 {size} 超过上限 {limits['max_file_bytes']} 字节",
+                {"path": path, "size": size, "limit": limits["max_file_bytes"]},
+            )
+        sha256 = item.get("sha256")
+        if not isinstance(sha256, str) or AGENT_ASSET_HEX_RE.fullmatch(sha256) is None:
+            return None, _asset_validation_error(
+                f"manifest.files[{index}].sha256 必须是 64 位小写 hex",
+                {"path": path},
+            )
+        for flag in ("executable", "binary"):
+            # 五字段全部必填：缺省不能按 false 补默认，否则 Rust 结构体解析
+            # （executable/binary 无 serde default）会拒绝服务端已接受的清单。
+            if flag not in item:
+                return None, _asset_validation_error(
+                    f"manifest.files[{index}].{flag} 必填且必须是布尔值",
+                    {"path": path},
+                )
+            if not isinstance(item[flag], bool):
+                return None, _asset_validation_error(
+                    f"manifest.files[{index}].{flag} 必须是布尔值",
+                    {"path": path},
+                )
+        paths.append(path)
+        total_size += size
+
+    if total_size > limits["max_bundle_bytes"]:
+        return None, _asset_error(
+            "PAYLOAD_TOO_LARGE",
+            413,
+            f"单包总内容 {total_size} 超过上限 "
+            f"{limits['max_bundle_bytes']} 字节",
+            {"size": total_size, "limit": limits["max_bundle_bytes"]},
+        )
+
+    if len(set(paths)) != len(paths):
+        return None, _asset_validation_error("manifest.files 存在重复路径")
+    ordered = sorted(paths, key=lambda p: p.encode("utf-8"))
+    if paths != ordered:
+        return None, _asset_validation_error(
+            "manifest.files 必须按 path 的 UTF-8 字节序升序排列"
+        )
+    folded = set()
+    for path in paths:
+        key = path.lower()
+        if key in folded:
+            return None, _asset_path_error(
+                path, "与包内另一条路径仅大小写不同（大小写不敏感文件系统冲突）"
+            )
+        folded.add(key)
+
+    entry_path = manifest.get("entry_path")
+    if not isinstance(entry_path, str) or not entry_path:
+        return None, _asset_validation_error(
+            "manifest.entry_path 必须是非空字符串"
+        )
+    problem = _check_asset_path(entry_path)
+    if problem:
+        return None, _asset_path_error(entry_path, problem)
+    if entry_path not in paths:
+        return None, _asset_validation_error(
+            "manifest.entry_path 必须出现在 manifest.files 中",
+            {"entry_path": entry_path},
+        )
+
+    return {
+        "tool": tool,
+        "kind": kind,
+        "native_id": native_id,
+        "origin_scope": origin_scope,
+        "native_format": native_format,
+        "display_name": display_name,
+        "description": description,
+    }, None
+
+
+def _parse_asset_bundle(payload, limits):
+    """校验 §3 信封、逐文件 size/sha256、§3.3 双指纹与 §9 路径安全。
+
+    返回 (context, error)：context 含 asset_meta / revision_meta /
+    bundle_blob（原信封 JSON 字节），error 为 None；失败时 context 为 None。
+    """
+    bundle = payload.get("bundle")
+    if not isinstance(bundle, dict):
+        return None, _asset_validation_error("请求体缺少 bundle 对象")
+    manifest = bundle.get("manifest")
+    if not isinstance(manifest, dict):
+        return None, _asset_validation_error("bundle.manifest 必须是对象")
+
+    asset_meta, err = _validate_asset_manifest(manifest, limits)
+    if err:
+        return None, err
+
+    files = manifest["files"]
+    contents = bundle.get("contents")
+    if not isinstance(contents, list) or len(contents) != len(files):
+        return None, _asset_validation_error(
+            "bundle.contents 必须与 manifest.files 一一对应（数量一致）"
+        )
+
+    decoded = []
+    for index, (item, meta) in enumerate(zip(contents, files)):
+        if not isinstance(item, dict):
+            return None, _asset_validation_error(
+                f"bundle.contents[{index}] 必须是对象"
+            )
+        path = meta["path"]
+        if item.get("path") != path:
+            return None, _asset_validation_error(
+                f"bundle.contents[{index}].path 与 manifest.files 不同序/不一致",
+                {"expected": path, "actual": item.get("path")},
+            )
+        encoded = item.get("content_base64")
+        if not isinstance(encoded, str):
+            return None, _asset_validation_error(
+                f"bundle.contents[{index}].content_base64 必须是字符串",
+                {"path": path},
+            )
+        try:
+            raw = base64.b64decode(encoded, validate=True)
+        except (TypeError, ValueError):
+            return None, _asset_validation_error(
+                f"bundle.contents[{index}].content_base64 不是合法 base64",
+                {"path": path},
+            )
+        size = meta["size"]
+        if len(raw) != size:
+            return None, _asset_validation_error(
+                "文件实际大小与清单 size 不一致",
+                {"path": path, "expected": size, "actual": len(raw)},
+            )
+        if hashlib.sha256(raw).hexdigest() != meta["sha256"]:
+            return None, _asset_validation_error(
+                "文件 sha256 复验失败", {"path": path}
+            )
+        decoded.append((path, raw))
+
+    manifest_sha256 = bundle.get("manifest_sha256")
+    bundle_sha256 = bundle.get("bundle_sha256")
+    if (
+        not isinstance(manifest_sha256, str)
+        or AGENT_ASSET_HEX_RE.fullmatch(manifest_sha256) is None
+    ):
+        return None, _asset_validation_error(
+            "bundle.manifest_sha256 必须是 64 位小写 hex"
+        )
+    if (
+        not isinstance(bundle_sha256, str)
+        or AGENT_ASSET_HEX_RE.fullmatch(bundle_sha256) is None
+    ):
+        return None, _asset_validation_error(
+            "bundle.bundle_sha256 必须是 64 位小写 hex"
+        )
+
+    # §3.3：清单规范 JSON（键排序、紧凑分隔符、UTF-8）的 SHA-256。
+    # 对**收到的原始 manifest** 计算（含未知字段、保留缺省形态），客户端解析
+    # 侧按同一原文复验；打包侧的自有清单按结构体序列化，两者逐位一致。
+    try:
+        canonical = json.dumps(
+            manifest, ensure_ascii=False, separators=(",", ":"), sort_keys=True
+        ).encode("utf-8")
+    except (TypeError, ValueError):
+        return None, _asset_validation_error("manifest 包含无法编码的 Unicode 字符")
+    actual_manifest_sha256 = hashlib.sha256(canonical).hexdigest()
+    if actual_manifest_sha256 != manifest_sha256:
+        return None, _asset_validation_error(
+            "manifest_sha256 复验失败",
+            {"expected": manifest_sha256, "actual": actual_manifest_sha256},
+        )
+
+    # §3.3：按 path 升序逐条喂入 path 字节 + 0x00 + 原始内容字节
+    digest = hashlib.sha256()
+    for path, raw in decoded:
+        digest.update(path.encode("utf-8"))
+        digest.update(b"\x00")
+        digest.update(raw)
+    actual_bundle_sha256 = digest.hexdigest()
+    if actual_bundle_sha256 != bundle_sha256:
+        return None, _asset_validation_error(
+            "bundle_sha256 复验失败",
+            {"expected": bundle_sha256, "actual": actual_bundle_sha256},
+        )
+
+    return {
+        "asset_meta": asset_meta,
+        "revision_meta": {
+            "manifest_sha256": manifest_sha256,
+            "bundle_sha256": bundle_sha256,
+            "total_size": sum(len(raw) for _path, raw in decoded),
+            "entry_count": len(files),
+        },
+        # 原信封按收到的键序整体落库，下载时原样返回
+        "bundle_blob": json.dumps(
+            bundle, ensure_ascii=False, separators=(",", ":")
+        ).encode("utf-8"),    }, None
+
+
+def _read_asset_json_body(limits):
+    """读取并解析请求体；超过 max_request_bytes 先拒收（413）。
+
+    content_length 存在时先做前置判断避免读取超大 body；chunked 等无长度
+    场景读取后再校验实际字节数。解析失败一律 VALIDATION_FAILED。
+    """
+    max_bytes = limits["max_request_bytes"]
+    content_length = request.content_length
+    if content_length is not None and content_length > max_bytes:
+        return None, _asset_error(
+            "PAYLOAD_TOO_LARGE",
+            413,
+            f"请求体 {content_length} 超过上限 {max_bytes} 字节",
+            {"size": content_length, "limit": max_bytes},
+        )
+    raw = request.get_data(cache=True)
+    if len(raw) > max_bytes:
+        return None, _asset_error(
+            "PAYLOAD_TOO_LARGE",
+            413,
+            f"请求体 {len(raw)} 超过上限 {max_bytes} 字节",
+            {"size": len(raw), "limit": max_bytes},
+        )
+    try:
+        text = raw.decode("utf-8")
+        payload = json.loads(text)
+        # json.loads 接受 `\ud800` 这类孤立代理项转义，后续 ensure_ascii=False
+        # 落库/复验时会抛 UnicodeEncodeError（Flask 层变成 HTML 500）。这里
+        # 先做一次 UTF-8 编码探测，统一折成 §4.2 的 VALIDATION_FAILED。
+        json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    except (UnicodeDecodeError, ValueError):
+        return None, _asset_validation_error(
+            "请求体必须是合法 UTF-8 JSON（字符串不得包含非法 Unicode）"
+        )
+    if not isinstance(payload, dict):
+        return None, _asset_validation_error("请求体必须是 JSON 对象")
+    return payload, None
+
+
+@app.get("/agent-assets/capabilities")
+def agent_asset_capabilities():
+    """契约 §8.1：能力与限额探测端点（旧服务端无此路由）。"""
+    err, _device_id = _require_agent_asset_device()
+    if err:
+        return err
+    err = _require_agent_asset_storage()
+    if err:
+        return err
+    return jsonify(
+        {"api_version": AGENT_ASSET_API_VERSION, "limits": _agent_asset_limits()}
+    )
+
+
+@app.get("/agent-assets")
+def list_agent_assets():
+    """契约 §8.2：资源列表（仅元数据）+ 精确筛选 + q 子串 + 分页。"""
+    err, _device_id = _require_agent_asset_device()
+    if err:
+        return err
+    err = _require_agent_asset_storage()
+    if err:
+        return err
+
+    tool = (request.args.get("tool") or "").strip() or None
+    kind = (request.args.get("kind") or "").strip() or None
+    scope = (request.args.get("scope") or "").strip() or None
+    q = (request.args.get("q") or "").strip() or None
+    try:
+        page = int(request.args.get("page", "1"))
+        page_size = int(request.args.get("page_size", "20"))
+    except (TypeError, ValueError):
+        return _asset_validation_error("page / page_size 必须是整数")
+    if page < 1:
+        return _asset_validation_error("page 必须 ≥ 1")
+    if page_size < 1 or page_size > 100:
+        return _asset_validation_error("page_size 必须在 1–100 之间")
+    return jsonify(
+        db.query_agent_assets(
+            tool=tool, kind=kind, scope=scope, q=q, page=page, page_size=page_size
+        )
+    )
+
+
+@app.post("/agent-assets")
+def create_agent_asset():
+    """契约 §8.3/§8.6：创建资源（单事务内校验、幂等、去重、写入版本 1）。"""
+    err, device_id = _require_agent_asset_device()
+    if err:
+        return err
+    err = _require_agent_asset_storage()
+    if err:
+        return err
+
+    limits = _agent_asset_limits()
+    payload, err = _read_asset_json_body(limits)
+    if err:
+        return err
+    client_request_id = payload.get("client_request_id")
+    if (
+        not isinstance(client_request_id, str)
+        or not client_request_id.strip()
+        or len(client_request_id) > 128
+    ):
+        return _asset_validation_error(
+            "client_request_id 必须是非空字符串（≤128 字符）"
+        )
+    client_request_id = client_request_id.strip()
+
+    # 先查幂等缓存：断网重试直接返回首次结果，不再做内容校验/写入
+    cached = db.get_agent_asset_idempotent_result(device_id, client_request_id)
+    if cached is not None:
+        return jsonify(cached)
+
+    context, err = _parse_asset_bundle(payload, limits)
+    if err:
+        return err
+    try:
+        result = db.insert_agent_asset(
+            device_id,
+            context["asset_meta"],
+            context["revision_meta"],
+            context["bundle_blob"],
+            client_request_id,
+            db.now_ms(),
+            limits["library_quota_bytes"],
+        )
+    except db.AgentAssetQuotaExceeded as exc:
+        return _asset_error(
+            "QUOTA_EXCEEDED",
+            507,
+            f"资源库总容量超限（已用 {exc.used_bytes} / 上限 "
+            f"{exc.quota_bytes} 字节）",
+            {
+                "used_bytes": exc.used_bytes,
+                "quota_bytes": exc.quota_bytes,
+                "needed_bytes": exc.needed_bytes,
+            },
+        )
+    return jsonify(result)
+
+
+@app.put("/agent-assets/<asset_id>")
+def update_agent_asset(asset_id):
+    """契约 §8.4：expected_version 乐观并发 + 追加新版本 + 最旧版本淘汰。"""
+    err, device_id = _require_agent_asset_device()
+    if err:
+        return err
+    err = _require_agent_asset_storage()
+    if err:
+        return err
+
+    limits = _agent_asset_limits()
+    payload, err = _read_asset_json_body(limits)
+    if err:
+        return err
+    expected_version = payload.get("expected_version")
+    if (
+        isinstance(expected_version, bool)
+        or not isinstance(expected_version, int)
+        or expected_version < 1
+    ):
+        return _asset_validation_error("expected_version 必须是正整数")
+
+    context, err = _parse_asset_bundle(payload, limits)
+    if err:
+        return err
+
+    current = db.get_agent_asset(asset_id)
+    if current is None:
+        return _asset_error(
+            "NOT_FOUND", 404, "资源不存在", {"asset_id": asset_id}
+        )
+    if expected_version != current["latest_version"]:
+        return _asset_error(
+            "VERSION_CONFLICT",
+            409,
+            f"预期版本 {expected_version}，服务端当前为 "
+            f"{current['latest_version']}",
+            {"current_version": current["latest_version"]},
+        )
+    # 身份字段不可变：PUT 只追加版本，不允许借更新改写资源身份
+    for field, label in (
+        ("tool", "工具"),
+        ("kind", "资源类型"),
+        ("native_id", "原生标识"),
+        ("origin_scope", "作用域"),
+    ):
+        if context["asset_meta"][field] != current[field]:
+            return _asset_validation_error(
+                f"更新不能修改资源的{label}（{field}）",
+                {
+                    "field": field,
+                    "current": current[field],
+                    "request": context["asset_meta"][field],
+                },
+            )
+
+    # 相同内容去重（契约 §8.6）：本次信封与该资源当前 latest 的双指纹完全
+    # 一致时不新增版本（避免无意义的版本膨胀挤掉历史）。
+    if (
+        context["revision_meta"]["bundle_sha256"]
+        == current["latest_bundle_sha256"]
+        and context["revision_meta"]["manifest_sha256"]
+        == current["latest_manifest_sha256"]
+    ):
+        revisions = db.query_agent_asset_revisions(asset_id) or []
+        revision = next(
+            (r for r in revisions if r["version"] == current["latest_version"]),
+            None,
+        )
+        if revision is not None:
+            return jsonify(
+                {
+                    "asset": current,
+                    "revision": revision,
+                    "replayed": False,
+                    "deduplicated": True,
+                }
+            )
+
+    try:
+        result = db.update_agent_asset(
+            asset_id,
+            device_id,
+            expected_version,
+            context["asset_meta"],
+            context["revision_meta"],
+            context["bundle_blob"],
+            db.now_ms(),
+            limits["max_revisions_per_asset"],
+            limits["library_quota_bytes"],
+        )
+    except db.AgentAssetNotFound:
+        return _asset_error(
+            "NOT_FOUND", 404, "资源不存在", {"asset_id": asset_id}
+        )
+    except db.AgentAssetVersionConflict as exc:
+        return _asset_error(
+            "VERSION_CONFLICT",
+            409,
+            f"预期版本 {expected_version}，服务端当前为 "
+            f"{exc.current_version}",
+            {"current_version": exc.current_version},
+        )
+    except db.AgentAssetQuotaExceeded as exc:
+        return _asset_error(
+            "QUOTA_EXCEEDED",
+            507,
+            f"资源库总容量超限（已用 {exc.used_bytes} / 上限 "
+            f"{exc.quota_bytes} 字节）",
+            {
+                "used_bytes": exc.used_bytes,
+                "quota_bytes": exc.quota_bytes,
+                "needed_bytes": exc.needed_bytes,
+            },
+        )
+    return jsonify(result)
+
+
+@app.get("/agent-assets/<asset_id>/revisions")
+def list_agent_asset_revisions(asset_id):
+    """契约 §8.5：版本列表（version 降序）。"""
+    err, _device_id = _require_agent_asset_device()
+    if err:
+        return err
+    err = _require_agent_asset_storage()
+    if err:
+        return err
+    items = db.query_agent_asset_revisions(asset_id)
+    if items is None:
+        return _asset_error(
+            "NOT_FOUND", 404, "资源不存在", {"asset_id": asset_id}
+        )
+    return jsonify({"items": items})
+
+
+@app.get("/agent-assets/<asset_id>/revisions/<rev>/bundle")
+def get_agent_asset_bundle(asset_id, rev):
+    """契约 §8.5：返回指定版本完整 AssetBundle 原信封（含内容）。"""
+    err, _device_id = _require_agent_asset_device()
+    if err:
+        return err
+    err = _require_agent_asset_storage()
+    if err:
+        return err
+    try:
+        version = int(rev)
+    except (TypeError, ValueError):
+        return _asset_validation_error("版本号必须是整数")
+    if version < 1:
+        return _asset_validation_error("版本号必须 ≥ 1")
+    blob = db.get_agent_asset_bundle(asset_id, version)
+    if blob is None:
+        return _asset_error(
+            "NOT_FOUND",
+            404,
+            "资源或版本不存在",
+            {"asset_id": asset_id, "version": version},
+        )
+    return Response(blob, mimetype="application/json")
 
 
 # ===== 启动入口 =====

@@ -645,7 +645,14 @@ pub struct HudBarQuota {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HudBarAgent {
+    /// 条目唯一键。同一 source 可以有多条（ZCode 多账号 / 多份 provider
+    /// 凭证），前端列表、React key 与占位判断都必须用它而不是 source。
+    pub id: String,
+    /// 品牌/数据源键（zai/codex/claude/kimi/dsh/opencodego/minimax/cursor）
     pub source: String,
+    /// 账号/凭证备注名（多订阅时显示在品牌名旁，用于区分同一来源）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub account: Option<String>,
     /// 套餐/订阅名（zai "max"、codex "plus"、provider "Pro" 等）；None =
     /// 未知或该来源不提供。详情卡在 Agent 名旁展示为档位徽标。
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -688,12 +695,66 @@ fn push_agent(
         return;
     }
     agents.push(HudBarAgent {
+        id: source.to_string(),
         source: source.to_string(),
+        account: None,
         plan: plan.filter(|value| !value.trim().is_empty()),
         status: None,
         quotas,
         balance: None,
     });
+}
+
+/// 从账号条目组装一个独立 Agent：多账号时 id 必须带指纹/快照 id，否则
+/// 前端会按 source 去重/覆盖，只能看到一个账号。
+fn push_zai_account(
+    agents: &mut Vec<HudBarAgent>,
+    id: String,
+    account: Option<String>,
+    plan: Option<String>,
+    quotas: Vec<HudBarQuota>,
+    status: Option<&str>,
+) {
+    agents.push(HudBarAgent {
+        id,
+        source: "zai".into(),
+        account: account.filter(|value| !value.trim().is_empty()),
+        plan: plan.filter(|value| !value.trim().is_empty()),
+        status: status.map(str::to_string),
+        quotas,
+        balance: None,
+    });
+}
+
+/// 每个 provider 凭证/本地登录条目都变成独立 Agent（OpenCode Go 双 Key、
+/// MiniMax 多凭证等）。兼容旧行为：第一条 id 就是 source，后续带凭证 id。
+fn push_provider_agents(
+    agents: &mut Vec<HudBarAgent>,
+    source: &str,
+    entries: &[ProviderQuotaEntry],
+) {
+    let mut seen = 0usize;
+    for entry in entries {
+        let quotas = provider_entry_windows(entry);
+        if quotas.is_empty() && entry.balance.is_none() {
+            continue;
+        }
+        let id = if seen == 0 {
+            source.to_string()
+        } else {
+            format!("{source}:{}", entry.credential_id)
+        };
+        seen += 1;
+        agents.push(HudBarAgent {
+            id,
+            source: source.to_string(),
+            account: plan_of(Some(entry.label.as_str())),
+            plan: plan_of(entry.plan_name.as_deref()),
+            status: (quotas.is_empty() && entry.balance.is_none()).then(|| "unavailable".into()),
+            quotas,
+            balance: entry.balance.clone(),
+        });
+    }
 }
 
 /// DeepSeek 平台余额 → HUD 条目（source="dsh"）：DeepSeek Harness 自身
@@ -705,7 +766,9 @@ fn dsh_agent(entries: &[ProviderQuotaEntry]) -> Option<HudBarAgent> {
         .iter()
         .find(|e| e.status == "ok" && e.balance.is_some())?;
     Some(HudBarAgent {
+        id: "dsh".into(),
         source: "dsh".into(),
+        account: None,
         plan: plan_of(entry.plan_name.as_deref()),
         status: None,
         quotas: Vec::new(),
@@ -784,7 +847,9 @@ fn fill_placeholders(agents: &mut Vec<HudBarAgent>, evidence: &PlaceholderEviden
             continue;
         }
         agents.push(HudBarAgent {
+            id: (*source).to_string(),
             source: (*source).to_string(),
+            account: None,
             plan: None,
             status: Some(evidence.status(source).to_string()),
             quotas: Vec::new(),
@@ -889,6 +954,8 @@ fn rate_limit_windows(
 
 /// provider 额度条目里挑展示条目（opencodego / minimax 共用）：与总览页
 /// providerQuotaFrom 同规则——第一个非 error/expired 且带百分比窗口的条目。
+/// 只用于单测里的旧口径断言；生产路径已改为全部凭证各出一条。
+#[cfg(test)]
 fn provider_entry(entries: &[ProviderQuotaEntry]) -> Option<&ProviderQuotaEntry> {
     entries.iter().find(|e| {
         e.status != "error"
@@ -980,13 +1047,8 @@ fn build_usage(
         );
     }
     for (source, entries) in [("opencodego", opencodego), ("minimax", minimax)] {
-        if let Some(entry) = entries.and_then(provider_entry) {
-            push_agent(
-                &mut agents,
-                source,
-                entry.plan_name.clone(),
-                provider_entry_windows(entry),
-            );
+        if let Some(entries) = entries {
+            push_provider_agents(&mut agents, source, entries);
         }
     }
     // dsh 走余额口径（不是百分比窗口），单独组装：只含官方余额 + 套餐名
@@ -1029,7 +1091,9 @@ pub(crate) fn cursor_agent() -> Option<HudBarAgent> {
         None
     } else {
         Some(HudBarAgent {
+            id: "cursor".into(),
             source: "cursor".into(),
+            account: None,
             plan: plan_of(snapshot.membership_type.as_deref()),
             status: None,
             quotas,
@@ -1053,6 +1117,9 @@ pub(crate) fn enabled_cursor_agent() -> Option<HudBarAgent> {
 /// 最后一次 Moved 事件的逻辑位置（吸附与扩窗都消费；吸附闭包在主线程
 /// 读取窗口实际几何，此槽主要服务调试与兜底）
 static LAST_POS: OnceLock<Mutex<Option<(f64, f64)>>> = OnceLock::new();
+/// 最后一次广播的额度快照（灵动岛首帧补拉用：窗口可能晚于数据线程启动，
+/// 只靠事件会错过首拍）
+static LAST_USAGE: OnceLock<Mutex<Option<HudBarUsage>>> = OnceLock::new();
 /// 最后一次 Moved 事件时刻（毫秒，0 = 从未）：吸附守护的静默判定锚点
 static LAST_MOVED_AT: AtomicU64 = AtomicU64::new(0);
 /// 程序侧（吸附/扩窗/缩窗）落定的逻辑位置：随后到达的同位置 Moved 事件
@@ -1421,6 +1488,9 @@ fn feed_loop(app: AppHandle) {
     // zai / opencodego / minimax / dsh 的查询结果缓存（单线程访问，局部
     // 变量即可）
     let mut zai_cache: Option<QueryCache<QuotaResult>> = None;
+    // ZCode 多账号：account_quotas 一次查全部快照。缓存 60s，与当前账号
+    // 查询互斥使用（有快照时不再单查当前账号，避免同一账号出现两次）。
+    let mut zai_accounts_cache: Option<QueryCache<Vec<crate::accounts::AccountQuotaEntry>>> = None;
     // Cursor 套餐额度单独缓存：fetch_cursor_snapshot 可能拉 events（较慢），
     // 60s 内复用，且只在该 agent 开启时查询
     let mut cursor_cache: Option<QueryCache<HudBarAgent>> = None;
@@ -1444,6 +1514,7 @@ fn feed_loop(app: AppHandle) {
             if current != zai_account {
                 zai_account = current;
                 zai_cache = None;
+                zai_accounts_cache = None;
                 FORCE_PUSH.store(true, Ordering::Relaxed);
             }
         }
@@ -1453,7 +1524,17 @@ fn feed_loop(app: AppHandle) {
             FORCE_PUSH.store(false, Ordering::Relaxed);
             last_tick = Instant::now();
             // 各源独立容错：失败源缓存 60s（防重试风暴），本轮跳过
-            if !zai_cache.as_ref().is_some_and(|c| c.fresh()) {
+            if !zai_accounts_cache.as_ref().is_some_and(|c| c.fresh()) {
+                zai_accounts_cache = Some(QueryCache {
+                    at: Instant::now(),
+                    value: crate::accounts::account_quotas().ok(),
+                });
+            }
+            let zai_accounts = zai_accounts_cache
+                .as_ref()
+                .and_then(|c| c.value.as_ref())
+                .filter(|entries| !entries.is_empty());
+            if zai_accounts.is_none() && !zai_cache.as_ref().is_some_and(|c| c.fresh()) {
                 zai_cache = crate::quota::query_quota()
                     .ok()
                     .map(|v| QueryCache {
@@ -1525,6 +1606,27 @@ fn feed_loop(app: AppHandle) {
                 mmx_cache.as_ref().and_then(|c| c.value.as_deref()),
                 dsh_cache.as_ref().and_then(|c| c.value.as_deref()),
             );
+            // 有账号快照时用「全部账号」替换单账号结果：每个快照一条，
+            // 查询失败的账号保留弱化占位（用户能看见两个订阅都在）。
+            if let Some(accounts) = zai_accounts {
+                agents.retain(|agent| agent.source != "zai");
+                for entry in accounts {
+                    let quotas = entry
+                        .quota
+                        .as_ref()
+                        .map(zai_windows)
+                        .unwrap_or_default();
+                    let status = if quotas.is_empty() { Some("unavailable") } else { None };
+                    push_zai_account(
+                        &mut agents,
+                        format!("zai:{}", entry.id),
+                        Some(entry.display_name.clone()),
+                        entry.quota.as_ref().map(|q| q.level.clone()),
+                        quotas,
+                        status,
+                    );
+                }
+            }
             if let Some(cursor) = cursor_cache.as_ref().and_then(|c| c.value.as_ref()) {
                 agents.push(cursor.clone());
             }
@@ -1564,13 +1666,17 @@ fn feed_loop(app: AppHandle) {
                 // 广播（不是 emit_to 条窗口）：额度数据两个窗口都要——条页画
                 // 条目，卡片窗口画详情卡（卡片是独立 webview，拿不到 emit_to
                 // 只发给条的 payload，卡里就会是空数据）
-                let _ = app.emit(
-                    HUD_BAR_USAGE_EVENT,
-                    HudBarUsage {
-                        ts,
-                        agents: agents.clone(),
-                    },
-                );
+                let payload = HudBarUsage {
+                    ts,
+                    agents: agents.clone(),
+                };
+                if let Ok(mut guard) = LAST_USAGE
+                    .get_or_init(|| Mutex::new(None))
+                    .lock()
+                {
+                    *guard = Some(payload.clone());
+                }
+                let _ = app.emit(HUD_BAR_USAGE_EVENT, payload);
             }
             // 条目数变化 → 窗口尺寸自适应（拖拽中由 drag_geometry 接管，
             // 这里不插手）。空态占 1 条。
@@ -2080,6 +2186,8 @@ fn set_enabled_on_main(app: &AppHandle, enabled: bool) -> Result<bool, String> {
 
 /// 托盘开关切换（on_menu_event 主线程回调内直接调用，建窗合法上下文）。
 /// 返回切换后的开启态（托盘侧据此更新菜单勾选/面板同步按钮）。
+/// 旧贴边 HUD 已由灵动岛接管，本函数保留给配置文件手动启用旧条的场景。
+#[allow(dead_code)]
 pub fn toggle_from_tray(app: &AppHandle) -> Result<bool, String> {
     let enabled = !load_hud_bar_config().enabled;
     set_enabled_on_main(app, enabled)
@@ -2089,6 +2197,15 @@ pub fn toggle_from_tray(app: &AppHandle) -> Result<bool, String> {
 #[tauri::command]
 pub fn hud_bar_state() -> Result<HudBarState, String> {
     Ok(state_of(&load_hud_bar_config()))
+}
+
+/// 最近一次额度快照（灵动岛窗口启动晚于数据线程时补拉首帧）
+pub fn latest_usage() -> Option<HudBarUsage> {
+    LAST_USAGE
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .ok()
+        .and_then(|g| g.clone())
 }
 
 /// 面板顶部按钮开关 HUD（异步命令：建窗必须投递回主线程；同步命令在主
@@ -3859,7 +3976,9 @@ mod tests {
     /// 造一个"实时额度正常"的条目（用于验证占位不会和真条目重复）。
     fn quota_agent(source: &str) -> HudBarAgent {
         HudBarAgent {
+            id: source.into(),
             source: source.into(),
+            account: None,
             plan: None,
             status: None,
             quotas: vec![HudBarQuota {

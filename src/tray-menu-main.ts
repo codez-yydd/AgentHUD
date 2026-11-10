@@ -155,7 +155,7 @@ const MESSAGES: Record<Locale, Msg> = {
     settings: "设置",
     launchAtLogin: "开机自启",
     about: "本地优先 · 多 Agent 用量监控",
-    hudBar: "HUD 停靠条",
+    hudBar: "灵动岛",
     quit: "退出",
     ranges: { today: "当天", "7d": "近 7 天", "30d": "近 30 天", all: "全部" },
     metrics: { tokens: "Tokens", requests: "请求", cost: "成本" },
@@ -190,7 +190,7 @@ const MESSAGES: Record<Locale, Msg> = {
     settings: "Settings",
     launchAtLogin: "Launch at login",
     about: "Local-first · multi-agent usage",
-    hudBar: "HUD dock bar",
+    hudBar: "Dynamic island",
     quit: "Quit",
     ranges: { today: "Today", "7d": "7 days", "30d": "30 days", all: "All" },
     metrics: { tokens: "Tokens", requests: "Requests", cost: "Cost" },
@@ -1151,9 +1151,9 @@ function main(): void {
     /* 静默：保持启动时读取的语言与主题 */
   });
 
-  // HUD 停靠条开关事件：面板顶部按钮 / 托盘 / 异常销毁都会广播，
+  // 灵动岛开关事件：面板顶部按钮 / 托盘 / 异常销毁都会广播，
   // 打开着菜单时实时同步底栏开关
-  void listen<{ enabled: boolean }>("zbar://hud-bar-state", (event) => {
+  void listen<{ enabled: boolean }>("zbar://island-state", (event) => {
     if (typeof event.payload?.enabled === "boolean") {
       hudEnabled = event.payload.enabled;
       renderState();

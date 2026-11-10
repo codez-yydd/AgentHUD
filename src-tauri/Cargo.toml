@@ -38,8 +38,11 @@ base64 = "0.22"
 # 账号切换：解密 ~/.zcode/v2/credentials.json 的 enc:v1: 凭证（AES-256-GCM）
 aes-gcm = "0.10"
 sha2 = "0.10"
-# 自定义宠物导入：精灵图集尺寸校验/缩略图生成（png + webp 解码与 png 编码）
-image = { version = "0.25", default-features = false, features = ["png", "webp"] }
+# 自定义宠物导入与截图：图片解码/编码（png + jpeg + webp）
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
+# 截图二维码识别（纯 Rust，本地解码）与 GIF 录屏
+rqrr = "0.11"
+gif = "0.14"
 # 自定义宠物导入：Petdex 分发 zip 包（根目录 pet.json + spritesheet）解包；
 # 仅需 DEFLATE 与 STORED，关默认特性减体积
 zip = { version = "2", default-features = false, features = ["deflate"] }
@@ -48,6 +51,9 @@ uuid = { version = "1", features = ["v4"] }
 # DeepSeek Harness 会话日志：session.v4.jsonl.zstd 为多帧串联 zstd，
 # 用纯 Rust 解码器（不引入 C 工具链，Windows 构建无需原生 zstd 依赖）
 ruzstd = "0.8"
+# 灵动岛：剪贴板历史（文本/图片）与股票行情 GBK 解码
+arboard = "3.6"
+encoding_rs = "0.8"
 
 [target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]
 tauri-plugin-autostart = "2.5.1"
@@ -62,3 +68,28 @@ objc2-foundation = { version = "0.3", features = ["NSProcessInfo"] }
 [target.'cfg(windows)'.dependencies]
 # 读取 Windows 系统代理设置（HKCU Internet Settings），wham/usage 实时额度查询用
 winreg = "0.52"
+# 灵动岛：SMTC 媒体会话、Core Audio 音量、Wi-Fi/蓝牙电台、全屏检测
+windows = { version = "0.61", features = [
+  "Foundation",
+  "Foundation_Collections",
+  "Storage_Streams",
+  "Media_Control",
+  "Media_Ocr",
+  "Graphics_Imaging",
+  "Globalization",
+  "Devices_Radios",
+  "Win32_Devices_Display",
+  "Win32_Foundation",
+  "Win32_Graphics_Dwm",
+  "Win32_Graphics_Gdi",
+  "Win32_Media_Audio",
+  "Win32_Media_Audio_Endpoints",
+  "Win32_System_Com",
+  "Win32_System_Com_StructuredStorage",
+  "Win32_System_Threading",
+  "Win32_System_Variant",
+  "Win32_System_WinRT",
+  "Win32_UI_Shell",
+  "Win32_UI_Input_KeyboardAndMouse",
+  "Win32_UI_WindowsAndMessaging",
+] }

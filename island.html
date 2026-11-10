@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AgentHUD Island</title>
+    <!--
+      灵动岛 HUD 入口（island）：顶部居中、贴屏幕上缘的毛玻璃胶囊。
+      - Rust 侧 src-tauri/src/island/ 负责透明置顶窗口、展开/收起改高度、
+        顶部居中定位、全屏隐藏与所有数据服务；
+      - 默认收起态只显示 Agent 额度 + 天气 + 今日 token/花费（不渲染宠物/表情）；
+      - 悬停展开为多页面板：主页 / 消息 / 股票 / 天气 / 控制 / 剪贴板 /
+        截图 / 设置；主题、右键菜单、滚轮切换等见 island.css。
+      - 页面为独立 HTML 入口（vite.config.ts 的 island input），窗口以
+        WebviewUrl::App("island.html") 加载。
+    -->
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/island-main.tsx"></script>
+  </body>
+</html>

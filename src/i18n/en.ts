@@ -20,12 +20,14 @@ import { dashboard } from "./dicts/dashboard";
 import { customizeEn } from "./dicts/customize";
 import { fontEn } from "./dicts/font";
 import { exportImageEn } from "./dicts/exportImage";
+import { agentAssetsEn } from "./dicts/agentAssets";
 import { zh } from "./zh";
 
 export const en: typeof zh = {
   ...customizeEn,
   ...fontEn,
   ...exportImageEn,
+  ...agentAssetsEn,
   ...({
     // 基础状态
     "common.loading": "Loading…",
@@ -120,9 +122,9 @@ export const en: typeof zh = {
     "stats.pin": "Always on top",
     "stats.unpin": "Disable always on top",
     "stats.github": "GitHub repository",
-    "stats.hudBar": "HUD dock bar",
-    "stats.hudBarOn": "HUD dock bar is on (click to hide)",
-    "stats.hudBarOff": "HUD dock bar is off (click to show)",
+    "stats.hudBar": "Dynamic island",
+    "stats.hudBarOn": "Dynamic island is on (click to hide)",
+    "stats.hudBarOff": "Dynamic island is off (click to show)",
     "stats.priceSettings": "Pricing",
     // Title/aria for the "Pricing" footer button: pricing now lives in the main window
     "stats.priceSettingsHint": "Pricing (opens in main window)",
@@ -1930,9 +1932,9 @@ export const en: typeof zh = {
     "dashboard.settings.autoCaptureHint":
       "While the app runs, checks once a minute for a new ZCode login and saves it as an account snapshot; turning it off keeps manual capture on the Credentials page. Takes effect within a minute, no restart needed.",
     // ⑤ HUD bar (same config as the tray menu / panel button)
-    "dashboard.settings.hudBar": "HUD bar",
+    "dashboard.settings.hudBar": "Dynamic island",
     "dashboard.settings.hudBarHint":
-      "The edge-docked quota strip; this toggle shares the same config as the tray menu item and stays in sync.",
+      "The top-center dynamic island that expands on hover; shares its on/off state with the tray menu and the panel header button.",
 
     "dashboard.logs.rangeLabel": "Time range",
     // Header auto-refresh interval (Off / 5s / 10s / 30s / 60s, default 30s):
