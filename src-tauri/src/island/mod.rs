@@ -161,6 +161,9 @@ fn spring_axis(x: &mut f64, v: &mut f64, target: f64, dt: f64) {
 
 static DRAG: std::sync::OnceLock<std::sync::Mutex<Option<DragSession>>> =
     std::sync::OnceLock::new();
+/// 刚结束一次按压/拖拽：悬停守卫先别急着展开，等光标离开胶囊热区再恢复。
+/// 否则「点胶囊收起」会被下一拍悬停立刻重新撑开。
+static DRAG_RELEASED: AtomicBool = AtomicBool::new(false);
 
 fn drag_slot() -> &'static std::sync::Mutex<Option<DragSession>> {
     DRAG.get_or_init(|| std::sync::Mutex::new(None))
@@ -216,8 +219,13 @@ fn start_hover_watcher(app: AppHandle) {
             let mut inside = 0u8;
             let mut entered_fired = false;
             let mut cooldown_ms = 0u64;
+            // ZBAR_ISLAND_DEBUG=1 时把「为什么没判」打出来，排查「岛收不起来」用
+            let debug = std::env::var_os("ZBAR_ISLAND_DEBUG").is_some();
+            let mut tick_no = 0u64;
             loop {
                 thread::sleep(Duration::from_millis(TICK_MS));
+                tick_no += 1;
+                let trace = debug && tick_no % 16 == 0;
                 if cooldown_ms > 0 {
                     cooldown_ms = cooldown_ms.saturating_sub(TICK_MS);
                     continue;
@@ -229,6 +237,9 @@ fn start_hover_watcher(app: AppHandle) {
                     continue;
                 }
                 if drag_slot().lock().map(|g| g.is_some()).unwrap_or(false) {
+                    if trace {
+                        eprintln!("[zbar-island] hover skip: drag session");
+                    }
                     outside = 0;
                     inside = 0;
                     continue;
@@ -236,6 +247,9 @@ fn start_hover_watcher(app: AppHandle) {
                 // 按住左键（准备拖拽）时不要悬停展开/收起：展开会把按住的
                 // 胶囊换掉，拖拽因此中断。
                 if left_button_down() {
+                    if trace {
+                        eprintln!("[zbar-island] hover skip: left button down");
+                    }
                     outside = 0;
                     inside = 0;
                     continue;
@@ -262,6 +276,12 @@ fn start_hover_watcher(app: AppHandle) {
                 let cy = cy * scale;
 
                 let expanded = LAST_EXPANDED.load(Ordering::Relaxed);
+                if trace {
+                    eprintln!(
+                        "[zbar-island] trace pos=({},{}) size={}x{} scale={scale} cursor=({cx:.0},{cy:.0}) expanded={expanded}",
+                        pos.x, pos.y, size.width, size.height
+                    );
+                }
                 // 展开态用整扇窗判定；收起态优先用前端上报的胶囊矩形，
                 // 没上报过就退回整扇窗（透明边距会略大一点）。
                 let reported = hover_rect_slot().lock().ok().and_then(|g| *g);
@@ -295,6 +315,9 @@ fn start_hover_watcher(app: AppHandle) {
                     inside = 0;
                     entered_fired = false;
                     if win.is_focused().unwrap_or(false) {
+                        if trace {
+                            eprintln!("[zbar-island] hover skip: window focused");
+                        }
                         outside = 0; // 正在输入，别收
                         continue;
                     }
@@ -311,6 +334,15 @@ fn start_hover_watcher(app: AppHandle) {
                 } else {
                     outside = 0;
                     if !is_inside {
+                        inside = 0;
+                        entered_fired = false;
+                        // 光标已经离开热区，松手保护可以解除
+                        DRAG_RELEASED.store(false, Ordering::Relaxed);
+                        continue;
+                    }
+                    if DRAG_RELEASED.load(Ordering::Relaxed) {
+                        // 刚点过/拖过：光标还停在胶囊上，先别展开（点胶囊收起
+                        // 不该被悬停立刻重新撑开）；等离开一次再恢复悬停。
                         inside = 0;
                         entered_fired = false;
                         continue;
@@ -485,6 +517,12 @@ pub async fn island_drag_step(app: AppHandle) -> Result<IslandDragStep, String> 
             });
         };
         if !left_button_down() {
+            // 松手就清会话：只按不拖的点击也要清，否则会话永久残留，
+            // 悬停守卫会一直以为还在拖，岛再也收不起来。
+            if let Ok(mut slot) = drag_slot().lock() {
+                *slot = None;
+            }
+            DRAG_RELEASED.store(true, Ordering::Relaxed);
             return Ok(IslandDragStep {
                 active: false,
                 dx: 0.0,
@@ -623,6 +661,7 @@ pub async fn island_drag_end(app: AppHandle) -> Result<IslandDragEnd, String> {
         if let Ok(mut slot) = drag_slot().lock() {
             *slot = None;
         }
+        DRAG_RELEASED.store(true, Ordering::Relaxed);
         let win = ensure_window(&app_main)?;
         let pos = win
             .outer_position()
