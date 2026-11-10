@@ -1,6 +1,6 @@
-//! ZCode 客户端凭证解密（~/.zcode/v2/credentials.json 的 `enc:v1:` 格式）。
+//! ZCode 客户端凭证解密（credentials.json 的 `enc:v1:` / `enc:v2:` 格式）。
 //!
-//! 算法与 ZCode 客户端一致（社区逆向结论，参考实现 Apache 2.0）：
+//! 旧版凭证的算法与 ZCode 客户端一致：
 //! - AES-256-GCM，key = SHA256(secret)
 //! - secret = 环境变量 `ZCODE_CREDENTIAL_SECRET`；未设置时使用
 //!   `zcode-credential-fallback:{platform}:{home}:{username}` 兜底拼接
@@ -8,8 +8,8 @@
 //!   base64url 无 padding（解密兼容带 padding 的变体）
 //! - aes-gcm crate 惯例：解密时把 tag 拼接到 cipher 尾部一起传入
 //!
-//! 本模块只做纯函数解析/解密，不做任何文件 IO；调用方见 accounts.rs。
-//! 注意：额度查询（quota.rs）不依赖本模块，两者互不影响。
+//! `enc:v2:os:` 使用 ZCode 存在系统凭据库里的随机密钥，Windows 按
+//! credentials.json 的绝对路径定位凭据。账号快照沿用原文件的密钥。
 
 use aes_gcm::aead::generic_array::GenericArray;
 use aes_gcm::aead::{Aead, KeyInit};
@@ -19,8 +19,9 @@ use base64::Engine as _;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-/// 凭证密文前缀（非该前缀的值视为明文原样返回）。
+/// 旧版凭证密文前缀。
 const ENC_PREFIX: &str = "enc:v1:";
+const V2_PREFIX: &str = "enc:v2:";
 
 /// 账号指纹：从 JWT 中提取的用户标识，用于区分不同登录账号。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -70,13 +71,95 @@ fn b64url_decode(s: &str) -> Result<Vec<u8>, String> {
         .map_err(|e| format!("base64url 解码失败: {e}"))
 }
 
-/// 解密单个凭证值。
-/// - 非 `enc:v1:` 前缀：视为明文，原样返回（老版本客户端存在明文键）。
-/// - 格式损坏 / 密钥不匹配 / 认证失败：返回 Err。
+/// 按单个值的前缀选择解密方式。迁移中的现场文件和旧账号快照可能混用多种格式。
+/// 旧版明文原样返回，未知的密文格式返回错误。
 pub fn decrypt_value(raw: &str, secret: &[u8]) -> Result<String, String> {
-    let Some(body) = raw.strip_prefix(ENC_PREFIX) else {
-        return Ok(raw.to_string());
+    if let Some(body) = raw.strip_prefix(ENC_PREFIX) {
+        return decrypt_body(body, &Sha256::digest(secret));
+    }
+    if let Some(envelope) = raw.strip_prefix(V2_PREFIX) {
+        let (source, rest) = envelope.split_once(':').ok_or("ZCode v2 凭证格式异常")?;
+        let key = match source {
+            "env" => Sha256::digest(secret).into(),
+            "os" => system_credential_key().ok_or("无法读取 ZCode 系统凭据密钥")?,
+            _ => return Err("ZCode v2 凭证密钥来源未知".into()),
+        };
+        return decrypt_v2_body(rest, &key);
+    }
+    if raw.starts_with("enc:") {
+        return Err("ZCode 凭证加密格式未知".into());
+    }
+    Ok(raw.to_string())
+}
+
+fn decrypt_v2_body(envelope: &str, key: &[u8; 32]) -> Result<String, String> {
+    let (key_id, body) = envelope.split_once(':').ok_or("ZCode v2 凭证格式异常")?;
+    let expected_id = format!("{:x}", Sha256::digest(key));
+    if key_id != &expected_id[..24] {
+        return Err("ZCode v2 凭证与本机密钥不匹配".into());
+    }
+    decrypt_body(body, key)
+}
+
+#[cfg(windows)]
+fn system_credential_key() -> Option<[u8; 32]> {
+    use windows::core::PCWSTR;
+    use windows::Win32::Security::Credentials::{CredFree, CredReadW, CRED_TYPE_GENERIC};
+
+    let path = crate::quota::zcode_v2_dir().ok()?.join("credentials.json");
+    let path = std::path::absolute(path).ok()?;
+    let path = path.to_str()?;
+    let digest = Sha256::digest(path.replace('/', "\\").as_bytes());
+    let target: Vec<u16> = format!("{digest:x}.ZCode Credential Encryption")
+        .encode_utf16()
+        .chain([0])
+        .collect();
+    let mut credential = std::ptr::null_mut();
+    // CredReadW allocates the credential and its blob as a single buffer.
+    unsafe {
+        CredReadW(
+            PCWSTR(target.as_ptr()),
+            CRED_TYPE_GENERIC,
+            None,
+            &mut credential,
+        )
+        .ok()?;
+        let result = decode_windows_key(&*credential);
+        CredFree(credential.cast());
+        result
+    }
+}
+
+#[cfg(windows)]
+fn decode_windows_key(
+    credential: &windows::Win32::Security::Credentials::CREDENTIALW,
+) -> Option<[u8; 32]> {
+    let len = credential.CredentialBlobSize as usize;
+    if credential.CredentialBlob.is_null() || !matches!(len, 43 | 86) {
+        return None;
+    }
+    // The pointer remains valid until CredFree in system_credential_key.
+    let blob = unsafe { std::slice::from_raw_parts(credential.CredentialBlob, len) };
+    let password = if len == 86 {
+        String::from_utf16(
+            &blob
+                .chunks_exact(2)
+                .map(|b| u16::from_le_bytes([b[0], b[1]]))
+                .collect::<Vec<_>>(),
+        )
+        .ok()?
+    } else {
+        std::str::from_utf8(blob).ok()?.to_owned()
     };
+    b64url_decode(&password).ok()?.try_into().ok()
+}
+
+#[cfg(not(windows))]
+fn system_credential_key() -> Option<[u8; 32]> {
+    None
+}
+
+fn decrypt_body(body: &str, key: &[u8]) -> Result<String, String> {
     let parts: Vec<&str> = body.split('.').collect();
     if parts.len() != 3 {
         return Err("凭证密文格式异常（应为 nonce.tag.cipher 三段）".into());
@@ -87,17 +170,12 @@ pub fn decrypt_value(raw: &str, secret: &[u8]) -> Result<String, String> {
     if nonce.len() != 12 {
         return Err(format!("凭证 nonce 长度异常: {}", nonce.len()));
     }
-    // key = SHA256(secret) → AES-256
-    let key = Sha256::digest(secret);
-    let decryptor = Aes256Gcm::new(GenericArray::from_slice(&key));
+    let decryptor = Aes256Gcm::new(GenericArray::from_slice(key));
     // aes-gcm crate 惯例：tag 拼到密文尾部
     let mut cipher_and_tag = cipher;
     cipher_and_tag.extend_from_slice(&tag);
     let plaintext = decryptor
-        .decrypt(
-            GenericArray::from_slice(&nonce),
-            cipher_and_tag.as_slice(),
-        )
+        .decrypt(GenericArray::from_slice(&nonce), cipher_and_tag.as_slice())
         .map_err(|_| "凭证解密失败（认证不通过，secret 可能不匹配）".to_string())?;
     String::from_utf8(plaintext).map_err(|e| format!("凭证明文非 UTF-8: {e}"))
 }
@@ -190,6 +268,13 @@ mod tests {
         )
     }
 
+    fn encrypt_v2_env_value(plain: &str, secret: &[u8]) -> String {
+        let key_id = format!("{:x}", Sha256::digest(Sha256::digest(secret)));
+        let legacy = encrypt_value(plain, secret);
+        let body = legacy.strip_prefix(ENC_PREFIX).unwrap();
+        format!("enc:v2:env:{}:{body}", &key_id[..24])
+    }
+
     /// base64url 编码（造 JWT payload 用）
     fn b64url_encode(bytes: &[u8]) -> String {
         URL_SAFE_NO_PAD.encode(bytes)
@@ -204,6 +289,37 @@ mod tests {
     }
 
     #[test]
+    fn v2_validates_key_id_and_decrypts_ciphertext() {
+        let secret = b"managed-test-secret";
+        let key: [u8; 32] = Sha256::digest(secret).into();
+        let raw = encrypt_v2_env_value("quota-token", secret);
+        let envelope = raw.strip_prefix("enc:v2:env:").unwrap();
+        assert_eq!(decrypt_v2_body(envelope, &key).unwrap(), "quota-token");
+        assert_eq!(decrypt_value(&raw, secret).unwrap(), "quota-token");
+        assert!(decrypt_v2_body(envelope, &[0; 32]).is_err());
+        assert!(decrypt_value("enc:v3:unsupported", secret).is_err());
+    }
+
+    #[test]
+    fn quota_selects_each_accounts_key_in_a_mixed_format_store() {
+        let secret = b"mixed-format-test-secret";
+        let creds = serde_json::json!({
+            "account-provider:coding-plan:account:plaintext:api-key": "plain-token",
+            "account-provider:coding-plan:account:legacy:api-key": encrypt_value("legacy-token", secret),
+            "account-provider:coding-plan:account:current:api-key": encrypt_v2_env_value("current-token", secret),
+        });
+        for (account, expected) in [
+            ("plaintext", "plain-token"),
+            ("legacy", "legacy-token"),
+            ("current", "current-token"),
+        ] {
+            let (_, token) = crate::quota::pick_exact_account_plan_key(&creds, account, secret)
+                .expect("the account's own key should be readable");
+            assert_eq!(token, expected);
+        }
+    }
+
+    #[test]
     fn decrypt_with_wrong_secret_fails() {
         let raw = encrypt_value("secret value", b"secret-a");
         assert!(decrypt_value(&raw, b"secret-b").is_err());
@@ -211,7 +327,7 @@ mod tests {
 
     #[test]
     fn plaintext_passthrough() {
-        // 非 enc:v1: 前缀的明文（如老版客户端的明文键）应原样返回
+        // 老版客户端的明文键应原样返回
         assert_eq!(decrypt_value("plain-value", b"any").unwrap(), "plain-value");
         assert_eq!(decrypt_value("", b"any").unwrap(), "");
     }

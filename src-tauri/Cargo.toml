@@ -35,7 +35,7 @@ time = { version = "0.3", features = ["formatting"] }
 open = "5"
 ureq = { version = "2", features = ["json", "socks-proxy"] }
 base64 = "0.22"
-# 账号切换：解密 ~/.zcode/v2/credentials.json 的 enc:v1: 凭证（AES-256-GCM）
+# 账号切换与额度查询：解密 ZCode 凭证（AES-256-GCM）
 aes-gcm = "0.10"
 sha2 = "0.10"
 # 自定义宠物导入与截图：图片解码/编码（png + jpeg + webp）
@@ -84,6 +84,7 @@ windows = { version = "0.61", features = [
   "Win32_Graphics_Gdi",
   "Win32_Media_Audio",
   "Win32_Media_Audio_Endpoints",
+  "Win32_Security_Credentials",
   "Win32_System_Com",
   "Win32_System_Com_StructuredStorage",
   "Win32_System_Threading",
