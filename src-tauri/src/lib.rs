@@ -3184,6 +3184,18 @@ pub fn run() {
                 eprintln!("[zbar-main-window] 预建主窗口失败: {e}");
             }
             spawn_title_updater(app.handle().clone());
+            // 截图覆盖窗口预热：启动 1.5s 后把隐藏的 shot.html 建好，
+            // 之后无论走热键还是 HUD 按钮，第一次截图都不再冷启动 WebView。
+            {
+                let handle = app.handle().clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_millis(1500));
+                    let app_warm = handle.clone();
+                    let _ = tauri::async_runtime::block_on(
+                        island::screenshot::shot_prewarm(app_warm),
+                    );
+                });
+            }
             spawn_fx_rate_refresher();
             // ZCode 换账号自动捕获：每 60s 轮询现场登录并幂等 upsert 快照
             //（首周期延迟 30s，内容未变零写盘）；捕获到新登录时广播事件，
@@ -3402,6 +3414,7 @@ pub fn run() {
             island::island_set_enabled,
             island::island_toggle,
             island::island_set_expanded,
+            island::island_set_hover_rect,
             island::island_drag_begin,
             island::island_drag_step,
             island::island_drag_end,
@@ -3450,11 +3463,14 @@ pub fn run() {
             island::screenshot::shot_edit_file,
             island::screenshot::shot_session,
             island::screenshot::shot_session_image,
+            island::screenshot::shot_prewarm,
             island::screenshot::shot_ready,
+            island::screenshot::shot_mark_painted,
             island::screenshot::shot_close,
             island::screenshot::shot_scroll,
             island::screenshot::shot_record_gif,
             island::screenshot::shot_save,
+            island::screenshot::shot_save_as,
             island::screenshot::shot_copy,
             island::screenshot::shot_copy_text,
             island::screenshot::shot_history,

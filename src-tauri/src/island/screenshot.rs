@@ -44,6 +44,31 @@ static SESSION_SEQ: AtomicU64 = AtomicU64::new(1);
 static PIN_SEQ: AtomicU64 = AtomicU64::new(1);
 static STARTING: AtomicBool = AtomicBool::new(false);
 
+/// macOS 抓屏比例：Tauri 的显示器几何是物理像素，`screencapture -R` 收的是
+/// 逻辑点，二者相差一个 backingScaleFactor。抓屏前由调用方写入。
+#[cfg(target_os = "macos")]
+static MAC_SCALE_BITS: AtomicU64 = AtomicU64::new(0);
+/// 屏幕录制权限只提示一次，避免反复弹窗
+#[cfg(target_os = "macos")]
+static MAC_PERMISSION_ASKED: AtomicBool = AtomicBool::new(false);
+
+#[cfg(target_os = "macos")]
+fn set_mac_scale(scale: f64) {
+    if scale > 0.0 {
+        MAC_SCALE_BITS.store(scale.to_bits(), Ordering::Relaxed);
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn mac_scale() -> f64 {
+    let bits = MAC_SCALE_BITS.load(Ordering::Relaxed);
+    if bits == 0 {
+        2.0
+    } else {
+        f64::from_bits(bits)
+    }
+}
+
 fn session_slot() -> &'static Mutex<Option<ShotSession>> {
     SESSION.get_or_init(|| Mutex::new(None))
 }
@@ -217,8 +242,14 @@ struct Captured {
 
 fn encode_png(image: &image::RgbaImage) -> Result<Vec<u8>, String> {
     let mut png = Vec::new();
-    image::codecs::png::PngEncoder::new(&mut png)
-        .write_image(
+    // 默认的 Adaptive 过滤在 5MP 截图上要 2 秒以上（debug 构建更慢），
+    // 换成 Sub + Fast：编码快一个数量级，体积只大一点。
+    image::codecs::png::PngEncoder::new_with_quality(
+        &mut png,
+        image::codecs::png::CompressionType::Fast,
+        image::codecs::png::FilterType::Sub,
+    )
+    .write_image(
             image.as_raw(),
             image.width(),
             image.height(),
@@ -412,9 +443,142 @@ fn capture_rect(x: i32, y: i32, width: u32, height: u32) -> Result<image::RgbaIm
     }
 }
 
-#[cfg(not(target_os = "windows"))]
+/// macOS 抓屏：走系统 `screencapture`，一次调用约 100~200ms。
+/// 入参是物理像素（与 Tauri 显示器几何一致），换算成逻辑点后交给系统命令，
+/// 输出仍是 Retina 物理像素图，和覆盖窗口尺寸 1:1 对齐。
+#[cfg(target_os = "macos")]
+fn capture_rect(x: i32, y: i32, width: u32, height: u32) -> Result<image::RgbaImage, String> {
+    let scale = mac_scale().max(1.0);
+    mac_screencapture(
+        x as f64 / scale,
+        y as f64 / scale,
+        (width as f64 / scale).max(1.0),
+        (height as f64 / scale).max(1.0),
+    )
+}
+
+/// 调用 `/usr/sbin/screencapture` 截取逻辑点矩形（全局坐标，原点在主屏左上），
+/// 直接返回 PNG 原始字节与像素尺寸——覆盖窗口只需要字节，省掉一次解码+重编码。
+#[cfg(target_os = "macos")]
+fn mac_screencapture_png(
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+) -> Result<(Vec<u8>, u32, u32), String> {
+    use std::process::Command;
+
+    if width < 1.0 || height < 1.0 {
+        return Err("截图区域过小".into());
+    }
+    if !mac_screen_recording_ready() {
+        return Err("没有屏幕录制权限：系统设置 → 隐私与安全性 → 屏幕录制，勾选 AgentHUD 后重试".into());
+    }
+    let path = std::env::temp_dir().join(format!(
+        "agenthud-shot-{}-{}.png",
+        std::process::id(),
+        now_ms()
+    ));
+    let rect = format!(
+        "{},{},{},{}",
+        x.round() as i64,
+        y.round() as i64,
+        (width.round() as i64).max(1),
+        (height.round() as i64).max(1)
+    );
+    let output = Command::new("/usr/sbin/screencapture")
+        .args(["-x", "-o", "-t", "png", "-R", &rect])
+        .arg(&path)
+        .output()
+        .map_err(|e| format!("调用 screencapture 失败: {e}"))?;
+    if !output.status.success() {
+        let _ = std::fs::remove_file(&path);
+        let err = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(if err.is_empty() {
+            "截屏命令执行失败".into()
+        } else {
+            format!("截屏失败: {err}")
+        });
+    }
+    let bytes = std::fs::read(&path).map_err(|e| {
+        let _ = std::fs::remove_file(&path);
+        format!("读取截图失败: {e}")
+    });
+    let _ = std::fs::remove_file(&path);
+    let bytes = bytes?;
+    if bytes.len() < 128 {
+        return Err("截屏返回空图：请确认已授予 AgentHUD 屏幕录制权限".into());
+    }
+    let (w, h) = image::ImageReader::new(std::io::Cursor::new(&bytes))
+        .with_guessed_format()
+        .map_err(|e| format!("读取截图尺寸失败: {e}"))?
+        .into_dimensions()
+        .map_err(|e| format!("读取截图尺寸失败: {e}"))?;
+    Ok((bytes, w, h))
+}
+
+/// 需要像素的调用方（滚动截图、GIF 录制）在这里解码。
+#[cfg(target_os = "macos")]
+fn mac_screencapture(x: f64, y: f64, width: f64, height: f64) -> Result<image::RgbaImage, String> {
+    let (bytes, _, _) = mac_screencapture_png(x, y, width, height)?;
+    image::load_from_memory(&bytes)
+        .map_err(|e| format!("解码截图失败: {e}"))
+        .map(|img| img.to_rgba8())
+}
+
+/// 抓一整块显示器：macOS 走原始 PNG 快路径，其它平台退回抓像素 + 编码。
+fn capture_monitor_captured(mon: &ShotMonitor) -> Result<Captured, String> {
+    #[cfg(target_os = "macos")]
+    {
+        let scale = mac_scale().max(1.0);
+        let (png, width, height) = mac_screencapture_png(
+            mon.x as f64 / scale,
+            mon.y as f64 / scale,
+            (mon.width as f64 / scale).max(1.0),
+            (mon.height as f64 / scale).max(1.0),
+        )?;
+        return Ok(Captured {
+            png,
+            width,
+            height,
+            title: String::new(),
+        });
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let image = capture_rect(mon.x, mon.y, mon.width, mon.height)?;
+        Ok(Captured {
+            png: encode_png(&image)?,
+            width: image.width(),
+            height: image.height(),
+            title: String::new(),
+        })
+    }
+}
+
+/// 检查（必要时请求）屏幕录制权限。首次调用会触发系统授权弹窗。
+#[cfg(target_os = "macos")]
+fn mac_screen_recording_ready() -> bool {
+    #[link(name = "CoreGraphics", kind = "framework")]
+    extern "C" {
+        fn CGPreflightScreenCaptureAccess() -> bool;
+        fn CGRequestScreenCaptureAccess() -> bool;
+    }
+    unsafe {
+        if CGPreflightScreenCaptureAccess() {
+            return true;
+        }
+        if !MAC_PERMISSION_ASKED.swap(true, Ordering::SeqCst) {
+            // 触发一次系统授权弹窗；用户同意后需要重启应用才生效。
+            let _ = CGRequestScreenCaptureAccess();
+        }
+        false
+    }
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
 fn capture_rect(_x: i32, _y: i32, _width: u32, _height: u32) -> Result<image::RgbaImage, String> {
-    Err("截图目前仅支持 Windows".into())
+    Err("截图目前仅支持 Windows / macOS".into())
 }
 
 #[cfg(target_os = "windows")]
@@ -648,9 +812,54 @@ fn capture_active_window() -> Result<Captured, String> {
     capture_window(hwnd)
 }
 
-#[cfg(not(target_os = "windows"))]
+/// macOS 窗口截图：用系统 `screencapture -w` 的交互式选窗（鼠标悬停高亮
+/// 窗口、点击即抓），效果和系统/飞书截图一致。抓完直接进标注器。
+#[cfg(target_os = "macos")]
 fn capture_active_window() -> Result<Captured, String> {
-    Err("窗口截图目前仅支持 Windows".into())
+    use std::process::Command;
+
+    if !mac_screen_recording_ready() {
+        return Err("没有屏幕录制权限：系统设置 → 隐私与安全性 → 屏幕录制，勾选 AgentHUD 后重试".into());
+    }
+    let path = std::env::temp_dir().join(format!(
+        "agenthud-window-{}-{}.png",
+        std::process::id(),
+        now_ms()
+    ));
+    let output = Command::new("/usr/sbin/screencapture")
+        .args(["-x", "-o", "-t", "png", "-w"])
+        .arg(&path)
+        .output()
+        .map_err(|e| format!("调用 screencapture 失败: {e}"))?;
+    if !output.status.success() {
+        let _ = std::fs::remove_file(&path);
+        return Err("已取消窗口截图".into());
+    }
+    let bytes = std::fs::read(&path).map_err(|e| {
+        let _ = std::fs::remove_file(&path);
+        format!("读取窗口截图失败: {e}")
+    });
+    let _ = std::fs::remove_file(&path);
+    let bytes = bytes?;
+    if bytes.len() < 128 {
+        return Err("已取消窗口截图".into());
+    }
+    let (width, height) = image::ImageReader::new(std::io::Cursor::new(&bytes))
+        .with_guessed_format()
+        .map_err(|e| format!("读取窗口截图尺寸失败: {e}"))?
+        .into_dimensions()
+        .map_err(|e| format!("读取窗口截图尺寸失败: {e}"))?;
+    Ok(Captured {
+        png: bytes,
+        width,
+        height,
+        title: "窗口截图".into(),
+    })
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+fn capture_active_window() -> Result<Captured, String> {
+    Err("窗口截图目前仅支持 Windows / macOS".into())
 }
 
 // ============================================================
@@ -677,10 +886,27 @@ fn restore_own_windows(app: &AppHandle) {
         .lock()
         .map(|mut g| std::mem::take(&mut *g))
         .unwrap_or_default();
-    for label in labels {
-        if let Some(win) = app.get_webview_window(&label) {
+    let island_was_hidden = labels
+        .iter()
+        .any(|label| label == super::ISLAND_WINDOW_LABEL);
+    for label in &labels {
+        if label == super::ISLAND_WINDOW_LABEL {
+            // 截图期间收不到 mouseleave，恢复时先把窗口缩回悬浮条再显示，
+            // 否则会原样贴回展开态，用户鼠标不在岛上也收不起来。
+            // 注意 ensure_window 只复用不显示，这里必须显式 show 回来。
+            let _ = super::set_expanded_on_main(app, false);
+            if let Some(win) = app.get_webview_window(label) {
+                let _ = win.show();
+            }
+            continue;
+        }
+        if let Some(win) = app.get_webview_window(label) {
             let _ = win.show();
         }
+    }
+    if island_was_hidden {
+        // 同步前端状态（open/键盘态），避免 React 仍以为处于展开态。
+        let _ = app.emit(super::ISLAND_COLLAPSE_EVENT, ());
     }
 }
 
@@ -726,6 +952,78 @@ async fn restore_overlay(app: &AppHandle, monitor_x: i32, monitor_y: i32) -> Res
     .await
 }
 
+/// 预先建好隐藏的覆盖窗口：截图页一打开就调用，首次点击截图时 WebView 已经是热的。
+#[tauri::command]
+pub async fn shot_prewarm(app: AppHandle) -> Result<(), String> {
+    let app_inner = app.clone();
+    on_main_thread(&app, move || {
+        if app_inner.get_webview_window(SHOT_WINDOW_LABEL).is_some() {
+            return Ok(()); // 已经有窗口（复用中），无需预热
+        }
+        let monitor = monitor_list(&app_inner)
+            .into_iter()
+            .find(|m| m.primary)
+            .or_else(|| monitor_list(&app_inner).into_iter().next())
+            .ok_or_else(|| "没有检测到显示器".to_string())?;
+        let win = WebviewWindowBuilder::new(
+            &app_inner,
+            SHOT_WINDOW_LABEL,
+            WebviewUrl::App("shot.html?warm=1".into()),
+        )
+        .title("AgentHUD Shot")
+        .inner_size(2.0, 2.0)
+        .decorations(false)
+        .transparent(false)
+        .always_on_top(true)
+        .skip_taskbar(true)
+        .shadow(false)
+        .resizable(false)
+        .maximizable(false)
+        .minimizable(false)
+        .visible(false)
+        .focused(false)
+        .background_throttling(tauri::utils::config::BackgroundThrottlingPolicy::Disabled)
+        .build()
+        .map_err(|e| format!("预热截图窗口失败: {e}"))?;
+        let _ = win.set_background_color(Some(tauri::window::Color(9, 11, 17, 255)));
+        let _ = win.set_position(PhysicalPosition::new(monitor.x, monitor.y));
+        let _ = win.set_size(PhysicalSize::new(monitor.width, monitor.height));
+        Ok(())
+    })
+    .await
+}
+
+/// 覆盖窗口在多次截图之间复用：WebView 进程是热的，比每次重建快 ~100ms。
+/// 复用走 `navigate` 到带新 id 的 `shot.html`，前端照旧按 id 拉会话。
+fn reuse_overlay(app: &AppHandle, monitor: &ShotMonitor, id: u64) -> Result<(), String> {
+    let Some(win) = app.get_webview_window(SHOT_WINDOW_LABEL) else {
+        build_overlay(app, monitor, id)?;
+        return Ok(());
+    };
+    let _ = win.hide();
+    win.set_position(PhysicalPosition::new(monitor.x, monitor.y))
+        .map_err(|e| format!("定位截图窗口失败: {e}"))?;
+    win.set_size(PhysicalSize::new(monitor.width, monitor.height))
+        .map_err(|e| format!("调整截图窗口尺寸失败: {e}"))?;
+    let mut url = win
+        .url()
+        .map_err(|e| format!("读取截图窗口地址失败: {e}"))?;
+    url.set_query(Some(&format!("id={id}")));
+    win.navigate(url)
+        .map_err(|e| format!("刷新截图窗口失败: {e}"))?;
+    let _ = win.show();
+    let _ = win.set_focus();
+    let _ = win.set_position(PhysicalPosition::new(monitor.x, monitor.y));
+    Ok(())
+}
+
+/// 抓屏前把覆盖窗口收起来（复用模式下不能 destroy，否则又变成冷启动）。
+fn hide_overlay(app: &AppHandle) {
+    if let Some(win) = app.get_webview_window(SHOT_WINDOW_LABEL) {
+        let _ = win.hide();
+    }
+}
+
 fn build_overlay(app: &AppHandle, monitor: &ShotMonitor, id: u64) -> Result<WebviewWindow, String> {
     if let Some(old) = app.get_webview_window(SHOT_WINDOW_LABEL) {
         let _ = old.destroy();
@@ -760,6 +1058,13 @@ fn build_overlay(app: &AppHandle, monitor: &ShotMonitor, id: u64) -> Result<Webv
     win.set_size(PhysicalSize::new(monitor.width, monitor.height))
         .map_err(|e| format!("调整截图窗口尺寸失败: {e}"))?;
     let _ = win.set_always_on_top(true);
+    // macOS 会把高于可视区（菜单栏以下）的窗口往下顶 30pt，显示后再钉一次位置，
+    // 让冻结帧和真实屏幕 1:1 对齐。
+    let _ = win.set_position(PhysicalPosition::new(monitor.x, monitor.y));
+    // 抓屏此时已经结束，先显示出去让用户马上看到“正在加载”的暗色遮罩，
+    // 比等图片解码完再显示（shot_ready）快一截。
+    let _ = win.show();
+    let _ = win.set_focus();
     Ok(win)
 }
 
@@ -815,9 +1120,10 @@ async fn start_capture_inner(
         other => return Err(format!("未知截图模式: {other}")),
     };
 
+    let started = std::time::Instant::now();
     let app_main = app.clone();
     let hidden = on_main_thread(&app, move || {
-        destroy_overlay(&app_main);
+        hide_overlay(&app_main);
         let hidden = hide_own_windows(&app_main);
         if let Ok(mut guard) = hidden_slot().lock() {
             *guard = hidden.clone();
@@ -828,9 +1134,12 @@ async fn start_capture_inner(
     let _ = hidden;
     let wait_ms = if delay_sec > 0 {
         delay_sec.min(30) * 1000
-    } else {
+    } else if cfg!(target_os = "windows") {
         // 给 DWM 一拍把岛/贴图真正移出合成画面。
         140
+    } else {
+        // macOS 上窗口隐藏是同步提交的，只留一帧给合成器。
+        32
     };
     tauri::async_runtime::spawn_blocking(move || std::thread::sleep(Duration::from_millis(wait_ms)))
         .await
@@ -866,7 +1175,9 @@ async fn start_capture_inner(
                     .or_else(|| monitors.iter().find(|m| m.primary).cloned()),
             }
             .ok_or_else(|| "无法确定截图显示器".to_string())?;
-            let image = capture_rect(mon.x, mon.y, mon.width, mon.height)?;
+            #[cfg(target_os = "macos")]
+            set_mac_scale(mon.scale_factor);
+            let captured = capture_monitor_captured(&mon)?;
             let origin = ShotRect {
                 x: 0.0,
                 y: 0.0,
@@ -874,16 +1185,7 @@ async fn start_capture_inner(
                 height: mon.height as f64,
             };
             Ok((
-                Captured {
-                    png: encode_png(&image)?,
-                    width: image.width(),
-                    height: image.height(),
-                    title: if mode == "region" {
-                        "区域截图".into()
-                    } else {
-                        "全屏截图".into()
-                    },
-                },
+                captured,
                 mon,
                 Some(origin),
                 if mode == "region" {
@@ -900,6 +1202,15 @@ async fn start_capture_inner(
         })
         .await
         .map_err(|e| format!("截图任务失败: {e}"))??;
+
+    eprintln!(
+        "[zbar-shot] 抓屏+编码完成 {}×{} @({}, {})，耗时 {}ms",
+        captured.width,
+        captured.height,
+        monitor.x,
+        monitor.y,
+        started.elapsed().as_millis()
+    );
 
     let id = SESSION_SEQ.fetch_add(1, Ordering::Relaxed);
     let session = ShotSession {
@@ -925,7 +1236,7 @@ async fn start_capture_inner(
     let mon_build = monitor.clone();
     let id_build = id;
     if let Err(e) = on_main_thread(&app, move || {
-        build_overlay(&app_build, &mon_build, id_build)?;
+        reuse_overlay(&app_build, &mon_build, id_build)?;
         Ok(())
     })
     .await
@@ -961,6 +1272,10 @@ async fn start_capture_inner(
         });
     });
 
+    eprintln!(
+        "[zbar-shot] 截图窗口就绪，端到端 {}ms",
+        started.elapsed().as_millis()
+    );
     Ok(id)
 }
 
@@ -1137,6 +1452,16 @@ pub async fn shot_ready(app: AppHandle, id: u64) -> Result<(), String> {
     if !valid {
         return Err("截图会话已失效".into());
     }
+    if let Some(created) = session_slot()
+        .lock()
+        .ok()
+        .and_then(|g| g.as_ref().map(|s| s.created_at))
+    {
+        eprintln!(
+            "[zbar-shot] 前端就绪（图片解码+首帧），距抓屏开始 {}ms",
+            (now_ms() - created).max(0)
+        );
+    }
     let app_main = app.clone();
     on_main_thread(&app, move || {
         if let Some(win) = app_main.get_webview_window(SHOT_WINDOW_LABEL) {
@@ -1148,6 +1473,21 @@ pub async fn shot_ready(app: AppHandle, id: u64) -> Result<(), String> {
     .await
 }
 
+/// 前端把冻结帧画到屏幕后回调一次，用来量化“点击到真的能框选”的耗时。
+#[tauri::command]
+pub fn shot_mark_painted(id: u64) {
+    if let Some(created) = session_slot()
+        .lock()
+        .ok()
+        .and_then(|g| g.as_ref().filter(|s| s.id == id).map(|s| s.created_at))
+    {
+        eprintln!(
+            "[zbar-shot] 首帧已绘制，距抓屏开始 {}ms",
+            (now_ms() - created).max(0)
+        );
+    }
+}
+
 #[tauri::command]
 pub async fn shot_close(app: AppHandle) -> Result<(), String> {
     close_shot(&app).await
@@ -1156,7 +1496,8 @@ pub async fn shot_close(app: AppHandle) -> Result<(), String> {
 pub async fn close_shot(app: &AppHandle) -> Result<(), String> {
     let app_main = app.clone();
     on_main_thread(app, move || {
-        destroy_overlay(&app_main);
+        // 只隐藏不销毁：下次截图复用同一个 WebView，省掉冷启动。
+        hide_overlay(&app_main);
         if let Ok(mut guard) = session_slot().lock() {
             *guard = None;
         }
@@ -1235,6 +1576,25 @@ fn write_image_file(image: &image::RgbaImage, format: &str) -> Result<PathBuf, S
             .map_err(|e| format!("保存 PNG 失败: {e}"))?;
     }
     Ok(path)
+}
+
+/// 把 RGBA 图编码成目标格式的字节（写文件/另存为共用）。
+fn encode_image_bytes(image: &image::RgbaImage, format: &str) -> Result<Vec<u8>, String> {
+    if format == "jpg" {
+        let rgb = image::DynamicImage::ImageRgba8(image.clone()).to_rgb8();
+        let mut buf = Vec::new();
+        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, 92)
+            .write_image(
+                rgb.as_raw(),
+                rgb.width(),
+                rgb.height(),
+                image::ExtendedColorType::Rgb8,
+            )
+            .map_err(|e| format!("编码 JPG 失败: {e}"))?;
+        Ok(buf)
+    } else {
+        encode_png(image)
+    }
 }
 
 fn history_item(path: &Path) -> Result<ShotHistoryItem, String> {
@@ -1336,6 +1696,46 @@ pub async fn shot_save(
     })
     .await
     .map_err(|e| format!("保存截图任务失败: {e}"))?
+}
+
+/// 另存为：弹系统保存对话框，用户选路径后写盘。返回 `Ok(None)` 表示取消。
+/// 与「保存」不同，它不改截图目录里的历史，适合把挑好的图放到项目目录。
+#[tauri::command]
+pub async fn shot_save_as(
+    app: AppHandle,
+    data_url: String,
+    format: Option<String>,
+) -> Result<Option<ShotHistoryItem>, String> {
+    let fmt = match format.as_deref() {
+        Some("jpg") | Some("jpeg") => "jpg".to_string(),
+        Some("png") | None => "png".to_string(),
+        Some(other) => other.to_string(),
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        use tauri_plugin_dialog::DialogExt;
+
+        let image = decode_data_url(&data_url)?;
+        let ext = if fmt == "jpg" { "jpg" } else { "png" };
+        let filter = if fmt == "jpg" { "JPEG 图片" } else { "PNG 图片" };
+        let picked = app
+            .dialog()
+            .file()
+            .set_title("另存为")
+            .add_filter(filter, &[ext])
+            .set_file_name(timestamp_name(&fmt))
+            .blocking_save_file();
+        let Some(picked) = picked else {
+            return Ok(None); // 用户取消
+        };
+        let path = picked
+            .into_path()
+            .map_err(|e| format!("解析保存路径失败: {e}"))?;
+        let bytes = encode_image_bytes(&image, &fmt)?;
+        std::fs::write(&path, bytes).map_err(|e| format!("写入图片失败: {e}"))?;
+        Ok(Some(history_item(&path)?))
+    })
+    .await
+    .map_err(|e| format!("另存为任务失败: {e}"))?
 }
 
 #[tauri::command]
@@ -1875,6 +2275,8 @@ pub async fn shot_scroll(
     rect: ShotRect,
 ) -> Result<ScrollResult, String> {
     let session = shot_session(id)?;
+    #[cfg(target_os = "macos")]
+    set_mac_scale(session.monitor.scale_factor);
     let x = rect.x.round() as i32;
     let y = rect.y.round() as i32;
     let w = rect.width.round().max(2.0) as u32;
@@ -1994,6 +2396,8 @@ pub async fn shot_record_gif(
     seconds: u64,
 ) -> Result<RecordResult, String> {
     let session = shot_session(id)?;
+    #[cfg(target_os = "macos")]
+    set_mac_scale(session.monitor.scale_factor);
     let x = rect.x.round() as i32;
     let y = rect.y.round() as i32;
     let w = rect.width.round().max(2.0) as u32;
@@ -2093,7 +2497,15 @@ pub fn register_hotkeys(app: &AppHandle) {
             continue;
         }
         let mode = mode.to_string();
-        if let Err(e) = gs.on_shortcut(key.as_str(), move |app, _shortcut, _event| {
+        if let Err(e) = gs.on_shortcut(key.as_str(), move |app, _shortcut, event| {
+            // macOS 上 global-hotkey 按下/松开各派发一次，这里只认按下，
+            // 否则第二次会撞上 STARTING 守卫，报“截图正在进行中”。
+            if !matches!(
+                event.state(),
+                tauri_plugin_global_shortcut::ShortcutState::Pressed
+            ) {
+                return;
+            }
             let app = app.clone();
             let mode = mode.clone();
             tauri::async_runtime::spawn(async move {
@@ -2164,5 +2576,23 @@ mod tests {
         let small = gif_filter(&img, 60);
         assert_eq!(small.width(), 60);
         assert_eq!(small.height(), 110);
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod mac_capture_tests {
+    /// 真机冒烟：走一次 screencapture 并解码，确保命令参数与坐标换算可用。
+    #[test]
+    fn screencapture_roundtrip() {
+        let image = super::mac_screencapture(0.0, 0.0, 120.0, 80.0).expect("capture failed");
+        assert!(image.width() >= 100, "宽度异常: {}", image.width());
+        assert!(image.height() >= 60, "高度异常: {}", image.height());
+    }
+
+    /// 物理像素 → 逻辑点：Retina 2x 时 2880×1800 应换算成 1440×900。
+    #[test]
+    fn scale_conversion() {
+        super::set_mac_scale(2.0);
+        assert_eq!(super::mac_scale(), 2.0);
     }
 }

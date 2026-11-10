@@ -9,11 +9,13 @@ import {
   openShot,
   openShotFolder,
   pinShotFile,
+  prewarmShot,
   onShotSaved,
   setShotSettings,
   startShot,
 } from "../shot/api";
 import type { ShotHistoryItem, ShotMonitor, ShotSettings } from "../shot/types";
+import { IS_MAC, hotkeyText } from "../shortcuts";
 import { Icon, SectionHead } from "./ui";
 
 type StartMode = "region" | "full" | "window" | "scroll";
@@ -60,6 +62,8 @@ export function ScreenshotPage({ onToast }: { onToast: (message: string) => void
   const deleteTimer = useRef<number | null>(null);
 
   useEffect(() => {
+    // 预热覆盖窗口：用户从这一页点“区域截图”时不会再等 WebView 冷启动
+    void prewarmShot();
     void getShotSettings()
       .then(setSettings)
       .catch(() => {});
@@ -174,7 +178,7 @@ export function ScreenshotPage({ onToast }: { onToast: (message: string) => void
             <b>区域截图</b>
             <em>拖动框选后标注</em>
           </span>
-          <kbd>{settings.hotkeyRegion}</kbd>
+          <kbd>{hotkeyText(settings.hotkeyRegion)}</kbd>
         </button>
         <button
           type="button"
@@ -189,7 +193,7 @@ export function ScreenshotPage({ onToast }: { onToast: (message: string) => void
             <b>窗口</b>
             <em>当前活动窗口</em>
           </span>
-          <kbd>{settings.hotkeyWindow}</kbd>
+          <kbd>{hotkeyText(settings.hotkeyWindow)}</kbd>
         </button>
         <button
           type="button"
@@ -204,23 +208,25 @@ export function ScreenshotPage({ onToast }: { onToast: (message: string) => void
             <b>全屏</b>
             <em>{currentMonitor ? `${currentMonitor.width}×${currentMonitor.height}` : "当前显示器"}</em>
           </span>
-          <kbd>{settings.hotkeyFull}</kbd>
+          <kbd>{hotkeyText(settings.hotkeyFull)}</kbd>
         </button>
-        <button
-          type="button"
-          className={`shot-launch ${starting === "scroll" ? "busy" : ""}`}
-          disabled={Boolean(starting)}
-          onClick={() => void start("scroll")}
-        >
-          <span className="shot-launch-icon">
-            <Icon name="scroll" size={19} />
-          </span>
-          <span className="shot-launch-text">
-            <b>滚动长截图</b>
-            <em>框选后自动滚动拼接</em>
-          </span>
-          <kbd>实况</kbd>
-        </button>
+        {IS_MAC ? null : (
+          <button
+            type="button"
+            className={`shot-launch ${starting === "scroll" ? "busy" : ""}`}
+            disabled={Boolean(starting)}
+            onClick={() => void start("scroll")}
+          >
+            <span className="shot-launch-icon">
+              <Icon name="scroll" size={19} />
+            </span>
+            <span className="shot-launch-text">
+              <b>滚动长截图</b>
+              <em>框选后自动滚动拼接</em>
+            </span>
+            <kbd>实况</kbd>
+          </button>
+        )}
       </div>
 
       <div className="shot-options">

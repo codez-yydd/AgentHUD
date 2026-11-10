@@ -31,6 +31,7 @@ import {
   refreshWeather,
   setBrightness,
   setIslandConfig,
+  islandSetHoverRect,
   setIslandEnabled,
   setIslandExpanded,
   setKeyboard,
@@ -310,14 +311,45 @@ export default function IslandApp() {
       onEvent<StockAlert>("zbar://island-stock-alert", (alert) => {
         if (alert?.name) showToast(`${alert.name} ${alert.text}`);
       }),
+      onEvent("zbar://island-expand", () => {
+        // macOS：WebView 收不到 mouseenter，由 Rust 轮询光标后在悬停时广播
+        expand();
+      }),
       onEvent("zbar://island-collapse", () => {
         setOpen(false);
         openRef.current = false;
+        setContextMenu(null);
         void setKeyboard(false);
+        // 窗口也要真的缩回悬浮条：截图恢复、全屏隐藏等路径只会发事件，
+        // 不缩窗口的话会停在展开尺寸，且透明区域仍然算 :hover。
+        if (shrinkTimer.current != null) window.clearTimeout(shrinkTimer.current);
+        shrinkTimer.current = window.setTimeout(() => {
+          void setIslandExpanded(false).catch(() => {});
+        }, 30);
       }),
     ];
     return () => unsubs.forEach((fn) => fn());
   }, []);
+
+  // 收起态把胶囊的实际矩形报给 Rust：macOS 上由 Rust 轮询光标判断悬停展开，
+  // 用整扇窗（含透明边距）当热区会太灵敏，所以以真实胶囊为准。
+  useEffect(() => {
+    if (!IS_TAURI || open) return;
+    const report = () => {
+      const el = islandRef.current;
+      if (!el) return;
+      const rect = el.getBoundingClientRect();
+      if (rect.width < 1 || rect.height < 1) return;
+      void islandSetHoverRect(rect.left, rect.top, rect.width, rect.height);
+    };
+    // 收起动画结束后布局才稳定，延一拍再上报
+    const timer = window.setTimeout(report, 80);
+    window.addEventListener("resize", report);
+    return () => {
+      window.clearTimeout(timer);
+      window.removeEventListener("resize", report);
+    };
+  }, [open, edge]);
 
   // 失去系统焦点（点其它应用）后恢复「不可聚焦」，下次启动/点击不再抢焦点
   useEffect(() => {
@@ -600,12 +632,44 @@ export default function IslandApp() {
 
   const runDragLoop = () => {
     const tick = () => {
-      if (!dragActiveRef.current) return;
+      if (!dragActiveRef.current && !dragStartingRef.current) return;
       void stepIslandDrag()
         .then((step) => {
-          if (!dragActiveRef.current) return;
           if (!step.active) {
-            finishDrag();
+            if (dragActiveRef.current) {
+              finishDrag();
+            } else {
+              // 只是按住没拖：让 click 正常发生，不做吸附
+              dragStartingRef.current = false;
+              pressingRef.current = false;
+              pointerRef.current = null;
+              setDragging(false);
+              stopDragVisual();
+            }
+            return;
+          }
+          if (step.started && !dragActiveRef.current) {
+            // Rust 判定越过阈值，此刻才进入拖动视觉
+            dragActiveRef.current = true;
+            dragStartingRef.current = false;
+            // 拖拽期间窗口会被收成横条：面板必须同时切回收起态，
+            // 否则 React 还在渲染 552 宽的面板，窗口却只有 70 宽（内容被裁花）。
+            if (openRef.current) {
+              openRef.current = false;
+              setOpen(false);
+              setContextMenu(null);
+              void setKeyboard(false);
+              cancelCollapse();
+            }
+            if (edgeRef.current !== "top") {
+              dragOriginEdgeRef.current = edgeRef.current;
+              setEdge("top");
+            }
+            setDragging(true);
+            suppressClickRef.current = true;
+          }
+          if (!dragActiveRef.current) {
+            window.requestAnimationFrame(tick);
             return;
           }
           const speed = Math.min(18, Math.hypot(step.dx, step.dy));
@@ -663,67 +727,26 @@ export default function IslandApp() {
       started: false,
     };
     suppressClickRef.current = false;
-  };
-
-  const movePointerDrag = (event: ReactPointerEvent<HTMLDivElement>) => {
-    const pointer = pointerRef.current;
-    if (!pointer || pointer.id !== event.pointerId) return;
-    if (!pointer.started) {
-      if (Math.hypot(event.screenX - pointer.x, event.screenY - pointer.y) < 4) return;
-      pointer.started = true;
-      // 不捕获指针：窗口会跟着系统光标移动，WebView 一旦因为窗口位移收到
-      // pointercancel，捕获反而会把拖拽提前结束；步进循环直接用 Rust 读到的
-      // 光标与左键状态，不依赖 DOM 的后续 pointermove。
-      dragStartingRef.current = true;
-      setDragging(true);
-      suppressClickRef.current = true;
-      const epoch = ++dragEpochRef.current;
-      const startedEdge = edgeRef.current;
-      void (async () => {
-        // 展开态先收成 HUD：窗口几何由 Rust 的 island_drag_begin 统一切成
-        // 552×70 横条并放到光标下，避免先经过 70×520 竖胶囊再二次跳变。
-        if (openRef.current) {
-          openRef.current = false;
-          setOpen(false);
-          setContextMenu(null);
-          void setKeyboard(false);
-          cancelCollapse();
-        }
-        if (openRef.current || startedEdge !== "top") {
-          dragOriginEdgeRef.current = startedEdge;
-          setEdge("top");
-        }
-        return beginIslandDrag();
-      })()
-        .then((result) => {
-          if (epoch !== dragEpochRef.current) return;
-          if (!result.active) {
-            dragStartingRef.current = false;
-            dragActiveRef.current = false;
-            setDragging(false);
-            if (dragOriginEdgeRef.current) {
-              setEdge(dragOriginEdgeRef.current);
-              dragOriginEdgeRef.current = null;
-            }
-            suppressClickRef.current = false;
-            return;
-          }
+    // 按下就 arm：拖动是否真正开始由 Rust 依据「光标位移 ≥5px」判定。
+    // 这样即使指针在很薄的胶囊上很快移出窗口、收不到 pointermove，
+    // 拖拽依然能启动（macOS 上窗口不跟随鼠标捕获）。
+    const epoch = ++dragEpochRef.current;
+    dragStartingRef.current = true;
+    void beginIslandDrag()
+      .then((result) => {
+        if (epoch !== dragEpochRef.current) return;
+        if (!result.active) {
           dragStartingRef.current = false;
-          dragActiveRef.current = true;
-          runDragLoop();
-        })
-        .catch((e) => {
-          dragStartingRef.current = false;
-          dragActiveRef.current = false;
-          setDragging(false);
-          if (dragOriginEdgeRef.current) {
-            setEdge(dragOriginEdgeRef.current);
-            dragOriginEdgeRef.current = null;
-          }
-          suppressClickRef.current = false;
-          showToast(`拖拽失败: ${String(e)}`);
-        });
-    }
+          pressingRef.current = false;
+          return;
+        }
+        runDragLoop();
+      })
+      .catch((e) => {
+        dragStartingRef.current = false;
+        pressingRef.current = false;
+        showToast(`拖拽失败: ${String(e)}`);
+      });
   };
 
   const endPointerDrag = (event: ReactPointerEvent<HTMLDivElement>) => {
@@ -1005,7 +1028,6 @@ export default function IslandApp() {
           className={`island ${open ? "open" : "collapsed"}`}
           style={islandStyle}
           onPointerDown={beginPointerDrag}
-          onPointerMove={movePointerDrag}
           onPointerUp={endPointerDrag}
           onPointerCancel={cancelPointerDrag}
           onClickCapture={(e) => {
@@ -1088,6 +1110,12 @@ export default function IslandApp() {
 
 function fmtTokens(value: number): string {
   if (!Number.isFinite(value) || value <= 0) return "0";
+  // 顶部横排同样要自动升级单位，否则 1.3B 会一直显示成 1341.4M
+  if (value >= 1_000_000_000) {
+    const billions = value / 1_000_000_000;
+    // 和竖排 fmtTokensSide 保持同样的精度（1.33B，而不是 1.3B）
+    return `${billions >= 100 ? Math.round(billions) : Number(billions.toFixed(2))}B`;
+  }
   if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
   if (value >= 1_000) return `${(value / 1_000).toFixed(value >= 10_000 ? 0 : 1)}K`;
   return String(Math.round(value));

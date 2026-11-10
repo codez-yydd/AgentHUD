@@ -15,6 +15,7 @@ import type {
   SystemState,
   WeatherState,
 } from "./types";
+import { hotkeyText } from "../shortcuts";
 import type { TabKey } from "./types";
 import { citiesOf, districtsOf, findDivisionPath, matchPlace, provinces } from "./china";
 import {
@@ -1562,7 +1563,8 @@ export function SettingsPage({
           </button>
         </div>
         <div className="settings-row-hint">
-          开关灵动岛的全局热键（Tauri accelerator 格式）；被其它软件占用时不会生效。
+          开关灵动岛的全局热键（Tauri accelerator 格式，当前显示为{" "}
+          <b>{hotkeyText(hotkey.trim() || "Ctrl+Alt+Shift+I")}</b>）；被其它软件占用时不会生效。
         </div>
         <div className="settings-action-row">
           <button type="button" onClick={onOpenMain}>

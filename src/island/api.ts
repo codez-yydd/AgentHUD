@@ -86,6 +86,21 @@ export async function setIslandExpanded(expanded: boolean): Promise<void> {
   return invoke("island_set_expanded", { expanded });
 }
 
+/** macOS 悬停展开用：把收起态胶囊的实际矩形（CSS px）告诉 Rust。 */
+export async function islandSetHoverRect(
+  x: number,
+  y: number,
+  width: number,
+  height: number
+): Promise<void> {
+  if (!IS_TAURI) return;
+  try {
+    await invoke("island_set_hover_rect", { x, y, width, height });
+  } catch {
+    /* 上报失败只影响 mac 悬停手感，不影响其它功能 */
+  }
+}
+
 // ===== 拖拽 / 吸附 =====
 
 export async function beginIslandDrag(): Promise<IslandDragBegin> {
@@ -94,7 +109,7 @@ export async function beginIslandDrag(): Promise<IslandDragBegin> {
 }
 
 export async function stepIslandDrag(): Promise<IslandDragStep> {
-  if (!IS_TAURI) return delay({ active: true, dx: 0, dy: 0 }, 10);
+  if (!IS_TAURI) return delay({ active: true, dx: 0, dy: 0, started: true }, 10);
   return invoke<IslandDragStep>("island_drag_step");
 }
 

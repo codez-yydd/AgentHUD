@@ -46,6 +46,8 @@ pub const ISLAND_WINDOW_LABEL: &str = "island";
 pub const ISLAND_CONFIG_EVENT: &str = "zbar://island-config";
 /// Rust 侧强制收起（全屏隐藏 / 关闭灵动岛）时通知前端收敛本地 open 态
 pub const ISLAND_COLLAPSE_EVENT: &str = "zbar://island-collapse";
+/// macOS 上由 Rust 轮询光标后广播的展开事件（WebView 收不到 mouseenter）
+pub const ISLAND_EXPAND_EVENT: &str = "zbar://island-expand";
 
 /// 窗口宽（逻辑 px）。面板 520 + 左右各 16 的投影留白。
 const ISLAND_WINDOW_W: f64 = 552.0;
@@ -62,6 +64,24 @@ static SERVICES_STARTED: AtomicBool = AtomicBool::new(false);
 static FULLSCREEN_WATCHER_STARTED: AtomicBool = AtomicBool::new(false);
 static FULLSCREEN_HIDDEN: AtomicBool = AtomicBool::new(false);
 static LAST_EXPANDED: AtomicBool = AtomicBool::new(false);
+/// 收起态胶囊的悬停热区（CSS px，相对 webview 左上角），由前端上报。
+static HOVER_RECT: std::sync::OnceLock<std::sync::Mutex<Option<(f64, f64, f64, f64)>>> =
+    std::sync::OnceLock::new();
+
+fn hover_rect_slot() -> &'static std::sync::Mutex<Option<(f64, f64, f64, f64)>> {
+    HOVER_RECT.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+/// 前端把胶囊元素的实际矩形上报给 Rust，供 macOS 的悬停判定使用。
+#[tauri::command]
+pub fn island_set_hover_rect(x: f64, y: f64, width: f64, height: f64) {
+    if width <= 0.0 || height <= 0.0 {
+        return;
+    }
+    if let Ok(mut slot) = hover_rect_slot().lock() {
+        *slot = Some((x, y, width, height));
+    }
+}
 
 // ============================================================
 // 拖拽
@@ -86,6 +106,13 @@ struct DragSession {
     last_x: i32,
     last_y: i32,
     last_tick: Instant,
+    /// 是否已越过启动阈值（只按不拖时保持 false，点击语义不受影响）
+    started: bool,
+    /// 按下时的光标位置，用于判断是否真的在拖
+    press_x: i32,
+    press_y: i32,
+    /// 启动时是否需要先收成横条
+    need_bar: bool,
 }
 
 /// 单轴欠阻尼弹簧积分；dt 内按 240Hz 子步进，避免大步长在高速时抖。
@@ -107,8 +134,168 @@ fn drag_slot() -> &'static std::sync::Mutex<Option<DragSession>> {
     DRAG.get_or_init(|| std::sync::Mutex::new(None))
 }
 
+/// macOS 全局光标位置（逻辑点，原点在主屏左上）。窗口几何是物理像素，
+/// 调用方需要乘 `scale_factor` 后再比较。
+#[cfg(target_os = "macos")]
+fn cursor_points_macos() -> Option<(f64, f64)> {
+    #[repr(C)]
+    struct CGPoint {
+        x: f64,
+        y: f64,
+    }
+    #[link(name = "CoreGraphics", kind = "framework")]
+    extern "C" {
+        fn CGEventCreate(source: *const std::ffi::c_void) -> *mut std::ffi::c_void;
+        fn CGEventGetLocation(event: *mut std::ffi::c_void) -> CGPoint;
+    }
+    #[link(name = "CoreFoundation", kind = "framework")]
+    extern "C" {
+        fn CFRelease(cf: *const std::ffi::c_void);
+    }
+    unsafe {
+        let event = CGEventCreate(std::ptr::null());
+        if event.is_null() {
+            return None;
+        }
+        let point = CGEventGetLocation(event);
+        CFRelease(event as *const std::ffi::c_void);
+        Some((point.x, point.y))
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn cursor_points_macos() -> Option<(f64, f64)> {
+    None
+}
+
+/// 悬停兜底：macOS 上灵动岛是不可聚焦窗口，WKWebView 的 tracking area 只对
+/// key window 生效，pointerenter / pointerleave 一律收不到。这里用 150ms 轮询
+/// 光标位置双向补齐：进入胶囊热区展开，离开面板收起。
+fn start_hover_watcher(app: AppHandle) {
+    static HOVER_WATCHER_STARTED: AtomicBool = AtomicBool::new(false);
+    if HOVER_WATCHER_STARTED.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    thread::Builder::new()
+        .name("zbar-island-hoverwatch".into())
+        .spawn(move || {
+            const TICK_MS: u64 = 120;
+            let mut outside = 0u8;
+            let mut inside = 0u8;
+            let mut entered_fired = false;
+            let mut cooldown_ms = 0u64;
+            loop {
+                thread::sleep(Duration::from_millis(TICK_MS));
+                if cooldown_ms > 0 {
+                    cooldown_ms = cooldown_ms.saturating_sub(TICK_MS);
+                    continue;
+                }
+                let cfg = load_config();
+                if !cfg.enabled || cfg.expand_mode != "hover" {
+                    outside = 0;
+                    inside = 0;
+                    continue;
+                }
+                if drag_slot().lock().map(|g| g.is_some()).unwrap_or(false) {
+                    outside = 0;
+                    inside = 0;
+                    continue;
+                }
+                // 按住左键（准备拖拽）时不要悬停展开/收起：展开会把按住的
+                // 胶囊换掉，拖拽因此中断。
+                if left_button_down() {
+                    outside = 0;
+                    inside = 0;
+                    continue;
+                }
+                let Some(win) = app.get_webview_window(ISLAND_WINDOW_LABEL) else {
+                    continue;
+                };
+                if !win.is_visible().unwrap_or(false) {
+                    outside = 0;
+                    inside = 0;
+                    continue;
+                }
+                let Some((cx, cy)) = cursor_points_macos() else {
+                    continue;
+                };
+                let Ok(pos) = win.outer_position() else {
+                    continue;
+                };
+                let Ok(size) = win.outer_size() else {
+                    continue;
+                };
+                let scale = win.scale_factor().unwrap_or(1.0);
+                let cx = cx * scale;
+                let cy = cy * scale;
+
+                let expanded = LAST_EXPANDED.load(Ordering::Relaxed);
+                // 展开态用整扇窗判定；收起态优先用前端上报的胶囊矩形，
+                // 没上报过就退回整扇窗（透明边距会略大一点）。
+                let reported = hover_rect_slot().lock().ok().and_then(|g| *g);
+                let (rx, ry, rw, rh) = match (expanded, reported) {
+                    (true, _) | (false, None) => (
+                        pos.x as f64,
+                        pos.y as f64,
+                        size.width as f64,
+                        size.height as f64,
+                    ),
+                    (false, Some(rect)) => (
+                        pos.x as f64 + rect.0 * scale,
+                        pos.y as f64 + rect.1 * scale,
+                        rect.2 * scale,
+                        rect.3 * scale,
+                    ),
+                };
+                let margin = if expanded { 6.0 } else { 2.0 };
+                let is_inside = cx >= rx - margin
+                    && cx <= rx + rw + margin
+                    && cy >= ry - margin
+                    && cy <= ry + rh + margin;
+
+                if expanded {
+                    inside = 0;
+                    entered_fired = false;
+                    if win.is_focused().unwrap_or(false) {
+                        outside = 0; // 正在输入，别收
+                        continue;
+                    }
+                    if is_inside {
+                        outside = 0;
+                        continue;
+                    }
+                    outside = outside.saturating_add(1);
+                    if outside >= 2 {
+                        outside = 0;
+                        cooldown_ms = 700;
+                        let _ = app.emit(ISLAND_COLLAPSE_EVENT, ());
+                    }
+                } else {
+                    outside = 0;
+                    if !is_inside {
+                        inside = 0;
+                        entered_fired = false;
+                        continue;
+                    }
+                    inside = inside.saturating_add(1);
+                    // 停 2 拍（约 240ms）再展开，和 Windows 上 220ms 的手感一致
+                    if inside >= 2 && !entered_fired {
+                        entered_fired = true;
+                        cooldown_ms = 400;
+                        let _ = app.emit(ISLAND_EXPAND_EVENT, ());
+                    } else if entered_fired && inside >= 12 {
+                        // 事件可能丢了（前端还没就绪 / 状态不同步）：约 1.5s 后允许重试
+                        inside = 0;
+                        entered_fired = false;
+                    }
+                }
+            }
+        })
+        .ok();
+}
+
 #[cfg(target_os = "windows")]
-fn cursor_physical() -> Option<(i32, i32)> {
+fn cursor_physical(_app: &AppHandle) -> Option<(i32, i32)> {
     use windows::Win32::Foundation::POINT;
     use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
     let mut p = POINT::default();
@@ -116,8 +303,31 @@ fn cursor_physical() -> Option<(i32, i32)> {
     Some((p.x, p.y))
 }
 
-#[cfg(not(target_os = "windows"))]
-fn cursor_physical() -> Option<(i32, i32)> {
+/// macOS：CGEventGetLocation 给的是逻辑点，按光标所在屏的 scale 换成物理像素
+/// （tao 的窗口几何就是「点 × 该屏 scale」）。
+#[cfg(target_os = "macos")]
+fn cursor_physical(app: &AppHandle) -> Option<(i32, i32)> {
+    let (px, py) = cursor_points_macos()?;
+    let scale = monitor_areas(app)
+        .into_iter()
+        .find(|area| {
+            let lx = area.x / area.scale;
+            let ly = area.y / area.scale;
+            px >= lx && px < lx + area.w / area.scale && py >= ly && py < ly + area.h / area.scale
+        })
+        .map(|area| area.scale)
+        .or_else(|| {
+            app.primary_monitor()
+                .ok()
+                .flatten()
+                .map(|m| m.scale_factor())
+        })
+        .unwrap_or(1.0);
+    Some(((px * scale).round() as i32, (py * scale).round() as i32))
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+fn cursor_physical(_app: &AppHandle) -> Option<(i32, i32)> {
     None
 }
 
@@ -127,7 +337,19 @@ fn left_button_down() -> bool {
     unsafe { (GetAsyncKeyState(0x01) & 0x8000u16 as i16) != 0 }
 }
 
-#[cfg(not(target_os = "windows"))]
+/// macOS：按 CGEventSource 的按键状态判断左键是否仍按着。
+#[cfg(target_os = "macos")]
+fn left_button_down() -> bool {
+    #[link(name = "CoreGraphics", kind = "framework")]
+    extern "C" {
+        fn CGEventSourceButtonState(state_id: i32, button: u32) -> bool;
+    }
+    const COMBINED_SESSION_STATE: i32 = 0;
+    const LEFT_BUTTON: u32 = 0;
+    unsafe { CGEventSourceButtonState(COMBINED_SESSION_STATE, LEFT_BUTTON) }
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
 fn left_button_down() -> bool {
     false
 }
@@ -144,6 +366,9 @@ pub struct IslandDragStep {
     pub active: bool,
     pub dx: f64,
     pub dy: f64,
+    /// 是否已经真正开始拖动（越过阈值）。只有按没有拖时为 false，
+    /// 前端据此把这次交互留给 click。
+    pub started: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -164,7 +389,7 @@ pub async fn island_drag_begin(app: AppHandle) -> Result<IslandDragBegin, String
     let app_main = app.clone();
     on_main_thread(&app, move || {
         let win = ensure_window(&app_main)?;
-        let (cx, cy) = cursor_physical().ok_or_else(|| "无法读取光标位置".to_string())?;
+        let (cx, cy) = cursor_physical(&app_main).ok_or_else(|| "无法读取光标位置".to_string())?;
         let scale = win.scale_factor().unwrap_or(1.0);
         let cfg = load_config();
         let size = win
@@ -179,35 +404,8 @@ pub async fn island_drag_begin(app: AppHandle) -> Result<IslandDragBegin, String
             || collapsed_side
             || (logical_w - ISLAND_WINDOW_W).abs() > 1.5
             || (logical_h - ISLAND_COLLAPSED_H).abs() > 1.5;
-        if need_bar {
-            // 以光标所在屏为基准，而不是主屏：从主屏往副屏拖时，横条要先
-            // 能落/贴到副屏上，后续 step 的并集夹紧才不会把它拽回主屏。
-            let area = monitor_area_at(&app_main, (cx as f64, cy as f64));
-            let (ax, ay, aw, ah) = (
-                area.x / area.scale,
-                area.y / area.scale,
-                area.w / area.scale,
-                area.h / area.scale,
-            );
-            let lx = cx as f64 / area.scale;
-            let ly = cy as f64 / area.scale;
-            win.set_size(LogicalSize::new(ISLAND_WINDOW_W, ISLAND_COLLAPSED_H))
-                .map_err(|e| format!("调整灵动岛尺寸失败: {e}"))?;
-            // 横条中心放到光标下；靠边时 clamp，光标仍落在窗口内，
-            // 下面的 offset 会自然保留抓取点。
-            let x = (lx - ISLAND_WINDOW_W / 2.0).clamp(
-                ax,
-                (ax + aw - ISLAND_WINDOW_W).max(ax),
-            );
-            let y = (ly - ISLAND_COLLAPSED_H / 2.0)
-                .clamp(ay, (ay + ah - ISLAND_COLLAPSED_H).max(ay));
-            win.set_position(PhysicalPosition::new(
-                (x * area.scale).round() as i32,
-                (y * area.scale).round() as i32,
-            ))
-            .map_err(|e| format!("移动灵动岛失败: {e}"))?;
-            LAST_EXPANDED.store(false, Ordering::Relaxed);
-        }
+        // 这里只记录，不动窗口：按一下没拖动时应该保持点击语义，
+        // 真正越过阈值（island_drag_step）才收条并跟手。
         let pos = win
             .outer_position()
             .map_err(|e| format!("读取窗口位置失败: {e}"))?;
@@ -222,6 +420,10 @@ pub async fn island_drag_begin(app: AppHandle) -> Result<IslandDragBegin, String
                 last_x: pos.x,
                 last_y: pos.y,
                 last_tick: Instant::now(),
+                started: false,
+                press_x: cx,
+                press_y: cy,
+                need_bar,
             });
         }
         Ok(IslandDragBegin { active: true })
@@ -241,6 +443,7 @@ pub async fn island_drag_step(app: AppHandle) -> Result<IslandDragStep, String> 
                 active: false,
                 dx: 0.0,
                 dy: 0.0,
+                started: false,
             });
         };
         if !left_button_down() {
@@ -248,15 +451,67 @@ pub async fn island_drag_step(app: AppHandle) -> Result<IslandDragStep, String> 
                 active: false,
                 dx: 0.0,
                 dy: 0.0,
+                started: false,
             });
         }
-        let Some((cx, cy)) = cursor_physical() else {
+        let Some((cx, cy)) = cursor_physical(&app_main) else {
             return Ok(IslandDragStep {
                 active: false,
                 dx: 0.0,
                 dy: 0.0,
+                started: false,
             });
         };
+        // 只按下没拖动 → 保持点击语义，窗口一动不动。
+        if !session.started {
+            let moved = ((cx - session.press_x).pow(2) + (cy - session.press_y).pow(2)) as f64;
+            if moved < 25.0 {
+                if let Ok(mut slot) = drag_slot().lock() {
+                    *slot = Some(session);
+                }
+                return Ok(IslandDragStep {
+                    active: true,
+                    dx: 0.0,
+                    dy: 0.0,
+                    started: false,
+                });
+            }
+            // 真正开始拖：此刻才把面板收成横条并挪到光标下。
+            if session.need_bar {
+                let win = ensure_window(&app_main)?;
+                let area = monitor_area_at(&app_main, (cx as f64, cy as f64));
+                let (ax, ay, aw, ah) = (
+                    area.x / area.scale,
+                    area.y / area.scale,
+                    area.w / area.scale,
+                    area.h / area.scale,
+                );
+                let lx = cx as f64 / area.scale;
+                let ly = cy as f64 / area.scale;
+                win.set_size(LogicalSize::new(ISLAND_WINDOW_W, ISLAND_COLLAPSED_H))
+                    .map_err(|e| format!("调整灵动岛尺寸失败: {e}"))?;
+                let x = (lx - ISLAND_WINDOW_W / 2.0)
+                    .clamp(ax, (ax + aw - ISLAND_WINDOW_W).max(ax));
+                let y = (ly - ISLAND_COLLAPSED_H / 2.0)
+                    .clamp(ay, (ay + ah - ISLAND_COLLAPSED_H).max(ay));
+                win.set_position(PhysicalPosition::new(
+                    (x * area.scale).round() as i32,
+                    (y * area.scale).round() as i32,
+                ))
+                .map_err(|e| format!("移动灵动岛失败: {e}"))?;
+                LAST_EXPANDED.store(false, Ordering::Relaxed);
+                session.need_bar = false;
+                // 收条后重算抓取偏移，保证跟手不跳
+                session.offset_x = cx - (x * area.scale).round() as i32;
+                session.offset_y = cy - (y * area.scale).round() as i32;
+                session.x = x * area.scale;
+                session.y = y * area.scale;
+                session.last_x = session.x.round() as i32;
+                session.last_y = session.y.round() as i32;
+            }
+            session.started = true;
+            session.last_tick = Instant::now();
+        }
         let win = ensure_window(&app_main)?;
         // 多屏：夹到所有显示器工作区的并集，而不是主屏。这样窗口可以
         // 从左屏跨到负坐标的副屏（或右侧副屏），不会被 primary 边界卡住。
@@ -314,6 +569,7 @@ pub async fn island_drag_step(app: AppHandle) -> Result<IslandDragStep, String> 
             active: true,
             dx,
             dy,
+            started: true,
         })
     })
     .await
@@ -899,7 +1155,7 @@ pub fn ensure_window(app: &AppHandle) -> Result<WebviewWindow, String> {
     Ok(win)
 }
 
-fn set_expanded_on_main(app: &AppHandle, expanded: bool) -> Result<(), String> {
+pub(crate) fn set_expanded_on_main(app: &AppHandle, expanded: bool) -> Result<(), String> {
     let win = ensure_window(app)?;
     let cfg = load_config();
     let (x, y, w, h) = island_geometry(app, &cfg.edge, expanded, cfg.pos_frac);
@@ -942,6 +1198,7 @@ fn start_services(app: &AppHandle) {
     clipboard::start(app.clone());
     notify::start(app.clone());
     start_fullscreen_watcher(app.clone());
+    start_hover_watcher(app.clone());
     // 额度复用 hud_bar 数据线程；start_feed 幂等，首次会立即推送一拍。
     crate::hud_bar::start_feed(app.clone());
     crate::hud_bar::hud_bar_refresh(app.clone());
@@ -1029,7 +1286,14 @@ pub fn register_hotkeys(app: &AppHandle) {
         return;
     }
     let gs = app.global_shortcut();
-    if let Err(e) = gs.on_shortcut(cfg.hotkey_toggle.as_str(), move |app, _shortcut, _event| {
+    if let Err(e) = gs.on_shortcut(cfg.hotkey_toggle.as_str(), move |app, _shortcut, event| {
+        // 同截图热键：macOS 按下/松开各派发一次，只认按下，否则会“开→关”。
+        if !matches!(
+            event.state(),
+            tauri_plugin_global_shortcut::ShortcutState::Pressed
+        ) {
+            return;
+        }
         let app_main = app.clone();
         let _ = app.run_on_main_thread(move || {
             if let Err(e) = toggle_from_tray(&app_main) {

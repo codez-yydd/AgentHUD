@@ -108,6 +108,8 @@ export interface IslandDragStep {
   active: boolean;
   dx: number;
   dy: number;
+  /** 是否已越过拖动阈值；false 表示只是按住（点击语义交给 click） */
+  started: boolean;
 }
 
 export interface IslandDragEnd {

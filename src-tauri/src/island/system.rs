@@ -136,6 +136,12 @@ fn run_powershell(script: &str) -> Option<String> {
     Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
+#[cfg(target_os = "macos")]
+pub fn read_brightness() -> Option<f64> {
+    mac_brightness::get()
+}
+
+#[cfg(not(target_os = "macos"))]
 pub fn read_brightness() -> Option<f64> {
     #[cfg(target_os = "windows")]
     if let Some(value) = ddc::read() {
@@ -149,6 +155,12 @@ pub fn read_brightness() -> Option<f64> {
         .filter(|v| (0.0..=100.0).contains(v))
 }
 
+#[cfg(target_os = "macos")]
+fn set_brightness_inner(value: f64) -> Result<f64, String> {
+    mac_brightness::set(value.clamp(0.0, 100.0).round())
+}
+
+#[cfg(not(target_os = "macos"))]
 fn set_brightness_inner(value: f64) -> Result<f64, String> {
     let value = value.clamp(0.0, 100.0).round();
     #[cfg(target_os = "windows")]
@@ -161,6 +173,110 @@ fn set_brightness_inner(value: f64) -> Result<f64, String> {
     run_powershell(&script)
         .ok_or_else(|| "设置亮度失败（显示器未启用 DDC/CI，且系统没有 WMI 亮度接口）".to_string())?;
     Ok(value)
+}
+
+/// macOS 亮度：走私有框架 DisplayServices（和系统亮度键同一套接口），
+/// dlopen 在运行时加载，拿不到符号就退化为「不支持」。
+/// 内置屏 / Apple 显示器可用；第三方外接屏若不支持会返回错误码。
+#[cfg(target_os = "macos")]
+mod mac_brightness {
+    use std::ffi::{c_char, c_void, CString};
+    use std::sync::OnceLock;
+
+    type CGDirectDisplayID = u32;
+    type GetFn = unsafe extern "C" fn(CGDirectDisplayID, *mut f32) -> i32;
+    type SetFn = unsafe extern "C" fn(CGDirectDisplayID, f32) -> i32;
+
+    #[link(name = "CoreGraphics", kind = "framework")]
+    extern "C" {
+        fn CGMainDisplayID() -> CGDirectDisplayID;
+        fn CGGetOnlineDisplayList(max: u32, displays: *mut CGDirectDisplayID, count: *mut u32)
+            -> i32;
+    }
+
+    #[link(name = "System", kind = "dylib")]
+    extern "C" {
+        fn dlopen(filename: *const c_char, flag: i32) -> *mut c_void;
+        fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *mut c_void;
+    }
+
+    const RTLD_LAZY: i32 = 1;
+    const FRAMEWORK: &str = "/System/Library/PrivateFrameworks/DisplayServices.framework/DisplayServices";
+
+    struct Api {
+        get: GetFn,
+        set: SetFn,
+    }
+
+    // 只存函数指针，进程内常量，跨线程只读安全。
+    unsafe impl Send for Api {}
+    unsafe impl Sync for Api {}
+
+    fn api() -> Option<&'static Api> {
+        static API: OnceLock<Option<Api>> = OnceLock::new();
+        API.get_or_init(|| unsafe {
+            let path = CString::new(FRAMEWORK).ok()?;
+            let handle = dlopen(path.as_ptr(), RTLD_LAZY);
+            if handle.is_null() {
+                return None;
+            }
+            let get_name = CString::new("DisplayServicesGetBrightness").ok()?;
+            let set_name = CString::new("DisplayServicesSetBrightness").ok()?;
+            let get_ptr = dlsym(handle, get_name.as_ptr());
+            let set_ptr = dlsym(handle, set_name.as_ptr());
+            if get_ptr.is_null() || set_ptr.is_null() {
+                return None;
+            }
+            Some(Api {
+                get: std::mem::transmute::<*mut c_void, GetFn>(get_ptr),
+                set: std::mem::transmute::<*mut c_void, SetFn>(set_ptr),
+            })
+        })
+        .as_ref()
+    }
+
+    /// 主屏优先；主屏不支持时依次试其它在线显示器（外接 Apple 屏）。
+    fn displays() -> Vec<CGDirectDisplayID> {
+        let mut list = [0u32; 8];
+        let mut count: u32 = 0;
+        let rc = unsafe { CGGetOnlineDisplayList(list.len() as u32, list.as_mut_ptr(), &mut count) };
+        let mut out = vec![unsafe { CGMainDisplayID() }];
+        if rc == 0 {
+            for id in list.iter().take(count as usize) {
+                if !out.contains(id) {
+                    out.push(*id);
+                }
+            }
+        }
+        out
+    }
+
+    pub fn get() -> Option<f64> {
+        let api = api()?;
+        for id in displays() {
+            let mut value: f32 = 0.0;
+            if unsafe { (api.get)(id, &mut value) } == 0 {
+                return Some((value as f64 * 100.0).clamp(0.0, 100.0));
+            }
+        }
+        None
+    }
+
+    pub fn set(value: f64) -> Result<f64, String> {
+        let api = api().ok_or_else(|| "系统亮度接口不可用".to_string())?;
+        let target = (value / 100.0).clamp(0.0, 1.0) as f32;
+        let mut last_code = 0;
+        for id in displays() {
+            let rc = unsafe { (api.set)(id, target) };
+            if rc == 0 {
+                return Ok((target as f64 * 100.0).round());
+            }
+            last_code = rc;
+        }
+        Err(format!(
+            "设置亮度失败（返回码 {last_code}）：当前显示器可能不支持系统亮度控制"
+        ))
+    }
 }
 
 /// DDC/CI 亮度：外接显示器最通用的控制面。读取优先 `GetMonitorBrightness`
@@ -564,4 +680,19 @@ pub fn island_open_system_settings(kind: String) -> Result<(), String> {
         _ => "ms-settings:",
     };
     open::that(target).map_err(|e| format!("打开系统设置失败: {e}"))
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod mac_brightness_tests {
+    /// 真机冒烟：读一次当前亮度，再把它原样写回去，确认私有框架调用可用。
+    #[test]
+    fn read_then_write_same_value() {
+        let current = super::mac_brightness::get().expect("读取亮度失败");
+        assert!((0.0..=100.0).contains(&current), "亮度越界: {current}");
+        let written = super::mac_brightness::set(current).expect("写回亮度失败");
+        assert!(
+            (written - current).abs() <= 2.0,
+            "写回后不一致: {current} -> {written}"
+        );
+    }
 }

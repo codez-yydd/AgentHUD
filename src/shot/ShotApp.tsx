@@ -1,4 +1,5 @@
 import {
+  Fragment,
   useCallback,
   useEffect,
   useMemo,
@@ -8,6 +9,7 @@ import {
   type ReactElement,
 } from "react";
 import { IS_TAURI } from "../island/api";
+import { IS_MAC, shortcutParts, shortcutText } from "../shortcuts";
 import {
   closeShot,
   copyShot,
@@ -22,6 +24,8 @@ import {
   qrShot,
   recordGif,
   saveShot,
+  saveShotAs,
+  markPainted,
   scrollShot,
   shotReady,
 } from "./api";
@@ -253,6 +257,12 @@ export default function ShotApp() {
 
   useEffect(() => {
     let dead = false;
+    // ?warm=1：HUD 截图页预热的空窗口，等真正的截图会话再导航过来
+    if (new URLSearchParams(window.location.search).get("warm") === "1") {
+      return () => {
+        dead = true;
+      };
+    }
     void (async () => {
       try {
         if (!idFromUrl) throw new Error("截图会话参数缺失");
@@ -262,7 +272,8 @@ export default function ShotApp() {
         const imageUrl = makeImageUrl(bytes);
         const hydrated = { ...next, image: imageUrl, backdrop: imageUrl };
         setSession(hydrated);
-        setScrollAvailable(next.mode === "region");
+        // 滚动截图靠注入真实滚轮事件，目前只有 Windows 后端。
+        setScrollAvailable(next.mode === "region" && !IS_MAC);
         setContext({
           backdrop: imageUrl,
           width: next.width,
@@ -288,6 +299,14 @@ export default function ShotApp() {
         }
         await new Promise((resolve) => window.setTimeout(resolve, 40));
         await shotReady(idFromUrl);
+        // 第一次请求动画帧后再统计一次，保留“真的画上屏”的量化埋点
+        if (IS_TAURI) {
+          window.requestAnimationFrame(() => {
+            window.requestAnimationFrame(() => {
+              void markPainted(idFromUrl).catch(() => {});
+            });
+          });
+        }
         if (settings?.playSound) playTone();
       } catch (error) {
         if (!dead) {
@@ -437,7 +456,38 @@ export default function ShotApp() {
         void finishRecord();
         return;
       }
+      if (
+        phase === "select" &&
+        (event.ctrlKey || event.metaKey) &&
+        !event.shiftKey &&
+        event.key.toLowerCase() === "c" &&
+        selection
+      ) {
+        event.preventDefault();
+        void copySelection();
+        return;
+      }
+      if (
+        phase === "select" &&
+        (event.ctrlKey || event.metaKey) &&
+        !event.shiftKey &&
+        event.key.toLowerCase() === "s" &&
+        selection
+      ) {
+        event.preventDefault();
+        void saveSelectionAs();
+        return;
+      }
       if (phase !== "edit") return;
+      if (
+        (event.ctrlKey || event.metaKey) &&
+        event.shiftKey &&
+        event.key.toLowerCase() === "s"
+      ) {
+        event.preventDefault();
+        void finishSaveAs();
+        return;
+      }
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z") {
         event.preventDefault();
         if (event.shiftKey) redoStep();
@@ -611,32 +661,101 @@ export default function ShotApp() {
     });
   };
 
-  async function cropSelection() {
-    if (!session?.image || !selection) return;
+  /** 把当前选区按原图像素裁出来（不进入标注器）。 */
+  async function renderSelection(): Promise<{ data: string; rect: ShotRect } | null> {
+    if (!session?.image || !selection) return null;
     const rect = normRect(selection);
-    if (rect.width < 2 || rect.height < 2) return;
+    if (rect.width < 2 || rect.height < 2) return null;
+    const img = await loadImage(session.image);
+    const canvas = document.createElement("canvas");
+    const size = displaySize(rect);
+    canvas.width = size.w;
+    canvas.height = size.h;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) throw new Error("创建截图画布失败");
+    ctx.drawImage(
+      img,
+      Math.round(rect.x),
+      Math.round(rect.y),
+      size.w,
+      size.h,
+      0,
+      0,
+      size.w,
+      size.h
+    );
+    return { data: canvas.toDataURL("image/png"), rect };
+  }
+
+  async function cropSelection() {
     try {
-      const img = await loadImage(session.image);
-      const canvas = document.createElement("canvas");
-      const size = displaySize(rect);
-      canvas.width = size.w;
-      canvas.height = size.h;
-      const ctx = canvas.getContext("2d");
-      if (!ctx) throw new Error("创建截图画布失败");
-      ctx.drawImage(
-        img,
-        Math.round(rect.x),
-        Math.round(rect.y),
-        size.w,
-        size.h,
-        0,
-        0,
-        size.w,
-        size.h
-      );
-      await beginEdit(canvas.toDataURL("image/png"), rect);
+      const rendered = await renderSelection();
+      if (!rendered) return;
+      await beginEdit(rendered.data, rendered.rect);
     } catch (error) {
       showToast(String(error));
+    }
+  }
+
+  /** 框选后直接复制，不用先进标注器。 */
+  async function copySelection() {
+    if (busy || !selection) return;
+    setBusy("正在复制到剪贴板…");
+    try {
+      const rendered = await renderSelection();
+      if (!rendered) {
+        setBusy("");
+        return;
+      }
+      await copyShot(rendered.data);
+      showToast("已复制到剪贴板", 900);
+      window.setTimeout(() => void closeShot(), 320);
+    } catch (error) {
+      showToast(String(error), 3600);
+      setBusy("");
+    }
+  }
+
+  /** 框选后直接「另存为」，走系统保存对话框。 */
+  async function saveSelectionAs() {
+    if (busy || !selection) return;
+    setBusy("正在保存…");
+    try {
+      const rendered = await renderSelection();
+      if (!rendered) {
+        setBusy("");
+        return;
+      }
+      const item = await saveShotAs(rendered.data, settings?.format ?? "png");
+      if (!item) {
+        setBusy("");
+        return;
+      }
+      showToast(`已另存为 ${item.name}`, 1100);
+      window.setTimeout(() => void closeShot(), 420);
+    } catch (error) {
+      showToast(String(error), 3600);
+      setBusy("");
+    }
+  }
+
+  /** 标注器里的「另存为」。 */
+  async function finishSaveAs() {
+    if (busy) return;
+    setBusy("正在保存…");
+    try {
+      const data = exportImage();
+      const item = await saveShotAs(data, settings?.format ?? "png");
+      if (!item) {
+        setBusy("");
+        return;
+      }
+      setHistoryNote(`已另存为 ${item.name}`);
+      showToast(`已另存为 ${item.name}`, 1100);
+      window.setTimeout(() => void closeShot(), 460);
+    } catch (error) {
+      showToast(String(error), 3600);
+      setBusy("");
     }
   }
 
@@ -1113,7 +1232,7 @@ export default function ShotApp() {
               type="button"
               className="shot-btn record"
               disabled={!selection}
-              title="录制 8 秒 GIF（Ctrl+Shift+G）"
+              title={`录制 8 秒 GIF（${shortcutText("Ctrl+Shift+G")}）`}
               onClick={() => void finishRecord()}
             >
               <span className="shot-rec-dot" /> 录制
@@ -1121,18 +1240,54 @@ export default function ShotApp() {
             <button type="button" className="shot-btn" onClick={selectFull}>
               <ShotIcon name="full" size={14} /> 全屏
             </button>
-            <button type="button" className="shot-btn ghost" onClick={() => void closeShot()}>
-              取消
+            <span className="shot-actions-sep" />
+            <button
+              type="button"
+              className="shot-btn icon"
+              disabled={!selection}
+              title={`复制到剪贴板（${shortcutText("Ctrl+C")}）`}
+              aria-label="复制到剪贴板"
+              onClick={() => void copySelection()}
+            >
+              <ShotIcon name="copy" size={15} />
+            </button>
+            <button
+              type="button"
+              className="shot-btn icon"
+              disabled={!selection}
+              title={`另存为…（${shortcutText("Ctrl+S")}）`}
+              aria-label="另存为"
+              onClick={() => void saveSelectionAs()}
+            >
+              <ShotIcon name="download" size={15} />
+            </button>
+            <span className="shot-actions-sep" />
+            <button
+              type="button"
+              className="shot-btn icon ghost"
+              title="取消（Esc）"
+              aria-label="取消"
+              onClick={() => void closeShot()}
+            >
+              <ShotIcon name="close" size={15} />
             </button>
           </div>
           <div className="shot-hint">
             <kbd>拖动</kbd> 选择区域
             <span>·</span>
+            <Shortcut combo="Ctrl+C" /> 复制
+            <span>·</span>
+            <Shortcut combo="Ctrl+S" /> 另存为
+            <span>·</span>
             <kbd>双击</kbd> 进入标注
             <span>·</span>
-            <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>R</kbd> 滚动
-            <span>·</span>
-            <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>G</kbd> 录制
+            {IS_MAC ? null : (
+              <>
+                <Shortcut combo="Ctrl+Shift+R" /> 滚动
+                <span>·</span>
+              </>
+            )}
+            <Shortcut combo="Ctrl+Shift+G" /> 录制
             <span>·</span>
             <kbd>Esc</kbd> 取消
           </div>
@@ -1256,10 +1411,10 @@ export default function ShotApp() {
               </div>
               <span className="shot-divider" />
               <div className="shot-action-group">
-                <button type="button" className="shot-action" title="撤销 (Ctrl+Z)" onClick={undoStep} disabled={!ops.length}>
+                <button type="button" className="shot-action" title={`撤销 (${shortcutText("Ctrl+Z")})`} onClick={undoStep} disabled={!ops.length}>
                   <ShotIcon name="undo" size={15} />
                 </button>
-                <button type="button" className="shot-action" title="重做 (Ctrl+Y)" onClick={redoStep} disabled={!redo.length}>
+                <button type="button" className="shot-action" title={`重做 (${shortcutText("Ctrl+Y")})`} onClick={redoStep} disabled={!redo.length}>
                   <ShotIcon name="redo" size={15} />
                 </button>
                 <button type="button" className="shot-action" title="重新框选" onClick={reselect} disabled={!session}>
@@ -1268,21 +1423,35 @@ export default function ShotApp() {
               </div>
               <span className="shot-divider" />
               <div className="shot-action-group">
-                <button type="button" className="shot-action" title="提取文字（Ctrl+Shift+O）" onClick={() => void runOcr()}>
+                <button type="button" className="shot-action" title={`提取文字（${shortcutText("Ctrl+Shift+O")}）`} onClick={() => void runOcr()}>
                   <ShotIcon name="ocr" size={15} />
                 </button>
-                <button type="button" className="shot-action" title="识别二维码（Ctrl+Shift+Q）" onClick={() => void runQr()}>
+                <button type="button" className="shot-action" title={`识别二维码（${shortcutText("Ctrl+Shift+Q")}）`} onClick={() => void runQr()}>
                   <ShotIcon name="qr" size={15} />
                 </button>
-                <button type="button" className="shot-action" title="贴到桌面（Ctrl+P）" onClick={() => void finishPin()}>
+                <button type="button" className="shot-action" title={`贴到桌面（${shortcutText("Ctrl+P")}）`} onClick={() => void finishPin()}>
                   <ShotIcon name="pin" size={15} />
                 </button>
-                <button type="button" className="shot-action" title="复制 (Ctrl+C)" onClick={() => void finishCopy()}>
+                <button type="button" className="shot-action" title={`复制 (${shortcutText("Ctrl+C")})`} onClick={() => void finishCopy()}>
                   <ShotIcon name="copy" size={15} />
+                </button>
+                <button
+                  type="button"
+                  className="shot-action"
+                  title={`另存为…（${shortcutText("Ctrl+Shift+S")}）`}
+                  aria-label="另存为"
+                  onClick={() => void finishSaveAs()}
+                >
+                  <ShotIcon name="download" size={15} />
                 </button>
               </div>
               <span className="shot-divider" />
-              <button type="button" className="shot-btn save" onClick={() => void finishSave()}>
+              <button
+                type="button"
+                className="shot-btn save"
+                title="保存到截图文件夹（按设置自动复制/贴图）"
+                onClick={() => void finishSave()}
+              >
                 <ShotIcon name="save" size={15} /> 保存
               </button>
               <button type="button" className="shot-close" title="关闭 (Esc)" onClick={() => void closeShot()}>
@@ -1290,11 +1459,11 @@ export default function ShotApp() {
               </button>
             </div>
             <div className="shot-toolbar-hint">
-              <kbd>Ctrl</kbd>+<kbd>C</kbd> 复制
+              <Shortcut combo="Ctrl+C" /> 复制
               <span>·</span>
-              <kbd>Ctrl</kbd>+<kbd>S</kbd> 保存
+              <Shortcut combo="Ctrl+S" /> 保存
               <span>·</span>
-              <kbd>Ctrl</kbd>+<kbd>Z</kbd> 撤销
+              <Shortcut combo="Ctrl+Z" /> 撤销
               <span>·</span>
               <kbd>⌫</kbd> 重选
             </div>
@@ -1533,9 +1702,25 @@ type IconName =
   | "pin"
   | "copy"
   | "save"
+  | "download"
   | "close"
   | "scroll"
   | "full";
+
+/** 按平台渲染一段快捷键：macOS 连写 ⌘C，其它平台 Ctrl + C 分键显示。 */
+function Shortcut({ combo }: { combo: string }) {
+  const parts = shortcutParts(combo);
+  return (
+    <>
+      {parts.map((part, index) => (
+        <Fragment key={`${part}-${index}`}>
+          {index > 0 ? "+" : null}
+          <kbd>{part}</kbd>
+        </Fragment>
+      ))}
+    </>
+  );
+}
 
 function ShotIcon({ name, size = 16 }: { name: IconName; size?: number }) {
   const paths: Record<IconName, ReactElement> = {
@@ -1594,6 +1779,13 @@ function ShotIcon({ name, size = 16 }: { name: IconName; size?: number }) {
       <>
         <path d="M5 4h11l3 3v13H5z" />
         <path d="M8 4v6h8V4M8 20v-6h8v6" />
+      </>
+    ),
+    download: (
+      <>
+        <path d="M12 4v10" />
+        <path d="m8 10.5 4 4 4-4" />
+        <path d="M5 19h14" />
       </>
     ),
     close: <path d="m6 6 12 12M18 6 6 18" />,

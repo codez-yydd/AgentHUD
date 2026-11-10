@@ -241,6 +241,22 @@ button {
   white-space: nowrap;
 }
 
+.shot-btn.icon {
+  width: 30px;
+  padding: 0;
+}
+
+.shot-btn.icon svg {
+  pointer-events: none;
+}
+
+.shot-actions-sep {
+  width: 1px;
+  height: 20px;
+  margin: 0 2px;
+  background: rgba(255, 255, 255, 0.12);
+}
+
 .shot-btn {
   height: 30px;
   padding: 0 11px;

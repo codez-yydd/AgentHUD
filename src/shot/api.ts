@@ -83,6 +83,21 @@ export async function shotReady(id: number): Promise<void> {
   return invoke("shot_ready", { id });
 }
 
+export async function markPainted(id: number): Promise<void> {
+  if (!IS_TAURI) return;
+  return invoke("shot_mark_painted", { id });
+}
+
+/** 打开截图页时预热覆盖窗口（WebView 提前建好，首次截图不再冷启动）。 */
+export async function prewarmShot(): Promise<void> {
+  if (!IS_TAURI) return;
+  try {
+    await invoke("shot_prewarm");
+  } catch {
+    /* 预热失败不影响后续正常截图 */
+  }
+}
+
 export async function closeShot(): Promise<void> {
   if (!IS_TAURI) return delay(undefined, 10);
   return invoke("shot_close");
@@ -118,6 +133,17 @@ export async function saveShot(dataUrl: string, format?: string): Promise<ShotHi
     return delay(item, 220);
   }
   return invoke<ShotHistoryItem>("shot_save", { dataUrl, format: format ?? null });
+}
+
+/** 另存为：弹系统保存对话框；用户取消返回 null。 */
+export async function saveShotAs(
+  dataUrl: string,
+  format?: string
+): Promise<ShotHistoryItem | null> {
+  if (!IS_TAURI) {
+    return delay(mockHistory()[0], 220);
+  }
+  return invoke<ShotHistoryItem | null>("shot_save_as", { dataUrl, format: format ?? null });
 }
 
 export async function copyShot(dataUrl: string): Promise<void> {
