@@ -43,6 +43,8 @@ export interface IslandConfig {
   hideFullscreen: boolean;
   hiddenTabs: string[];
   launcher: LauncherItem[];
+  /** 收起胶囊环 / 主页额度卡的顺序（agent id）；空 = 数据源默认顺序 */
+  agentOrder?: string[];
 }
 
 export interface IslandState {

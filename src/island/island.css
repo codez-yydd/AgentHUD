@@ -3072,6 +3072,80 @@ html.island-preview .island::after {
   flex: none;
 }
 
+/* 设置页「排序」：每个账号一行，右侧上下移动 */
+.agent-order {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.agent-order-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 26px;
+  padding: 3px 4px 3px 6px;
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.agent-order-copy {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+  min-width: 0;
+  flex: 1;
+}
+
+.agent-order-copy b {
+  font-size: calc(9.5px * var(--fs-scale, 1));
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.agent-order-copy span {
+  font-size: calc(8px * var(--fs-scale, 1));
+  color: var(--faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-order-btn {
+  width: 22px;
+  height: 22px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  border-radius: 7px;
+  color: var(--text-soft);
+  background: rgba(255, 255, 255, 0.06);
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.agent-order-btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.13);
+  color: var(--text);
+}
+
+.agent-order-btn:disabled {
+  opacity: 0.28;
+  cursor: default;
+}
+
+.agent-order-reset {
+  align-self: flex-start;
+  font-size: calc(8.5px * var(--fs-scale, 1));
+  color: var(--accent);
+  padding: 2px 4px;
+  border-radius: 6px;
+}
+
+.agent-order-reset:hover {
+  background: var(--accent-soft);
+}
+
 /* 自定义字号：预设 + −/输入/+/恢复默认，和托盘菜单的字号控件同口径（基准 13px） */
 .font-size-row {
   display: flex;

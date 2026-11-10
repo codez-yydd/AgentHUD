@@ -854,6 +854,10 @@ pub struct IslandConfig {
     pub hide_fullscreen: bool,
     pub hidden_tabs: Vec<String>,
     pub launcher: Vec<LauncherItem>,
+    /// 收起胶囊的环 / 主页额度卡的展示顺序（agent id 列表）。空数组 =
+    /// 按数据源默认顺序；不在这里的条目按原顺序排在后面。
+    #[serde(default)]
+    pub agent_order: Vec<String>,
 }
 
 impl Default for IslandConfig {
@@ -879,6 +883,7 @@ impl Default for IslandConfig {
             hide_fullscreen: true,
             hidden_tabs: Vec::new(),
             launcher: default_launcher(),
+            agent_order: Vec::new(),
         }
     }
 }
@@ -940,6 +945,15 @@ impl IslandConfig {
         if c.launcher.is_empty() {
             c.launcher = default_launcher();
         }
+        // 排序表：去空、去重、限长（防止前端手滑塞进成千上万个 id）
+        let mut seen_agents = std::collections::HashSet::new();
+        c.agent_order = c
+            .agent_order
+            .iter()
+            .map(|id| id.trim().to_string())
+            .filter(|id| !id.is_empty() && seen_agents.insert(id.clone()))
+            .take(64)
+            .collect();
         c
     }
 }
@@ -1744,6 +1758,24 @@ mod tests {
         }
         assert!((x - 240.0).abs() < 1.0, "x={x}");
         assert!(v.abs() < 20.0, "v={v}");
+    }
+
+    #[test]
+    fn agent_order_is_trimmed_and_deduped() {
+        let cfg = IslandConfig {
+            agent_order: vec![
+                " zai:1 ".into(),
+                "".into(),
+                "zai:1".into(),
+                "dsh".into(),
+                "  ".into(),
+            ],
+            ..IslandConfig::default()
+        }
+        .clamped();
+        assert_eq!(cfg.agent_order, vec!["zai:1".to_string(), "dsh".to_string()]);
+        // 默认（空数组）= 数据源自己的顺序，不写死任何账号
+        assert!(IslandConfig::default().clamped().agent_order.is_empty());
     }
 
     #[test]

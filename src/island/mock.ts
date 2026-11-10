@@ -331,6 +331,7 @@ export const mockConfig: IslandConfig = {
   weatherLon: 121.46,
   edge: "top",
   posFrac: 0.5,
+  agentOrder: [],
   stocks: mockStocks.quotes.map((q) => q.code),
   stockIntervalSec: 5,
   stockAlertPct: 3,

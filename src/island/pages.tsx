@@ -1258,6 +1258,7 @@ function FontSizeField({
 
 export function SettingsPage({
   config,
+  agents,
   onChange,
   onOpenMain,
   onQuit,
@@ -1265,6 +1266,8 @@ export function SettingsPage({
   onToast,
 }: {
   config: IslandConfig;
+  /** 当前读到的账号（已按用户的顺序排好），用于「排序」一栏 */
+  agents: HudBarAgent[];
   onChange: (patch: Partial<IslandConfig>) => void;
   onOpenMain: () => void;
   onQuit: () => void;
@@ -1358,9 +1361,72 @@ export function SettingsPage({
     }
   };
 
+  // 上移 / 下移一个账号：把当前顺序整份落盘（不在表里的新账号自然排在后面）
+  const moveAgent = (index: number, delta: number) => {
+    const to = index + delta;
+    if (to < 0 || to >= agents.length) return;
+    const ids = agents.map((agent) => agent.id);
+    const [moving] = ids.splice(index, 1);
+    ids.splice(to, 0, moving);
+    save({ agentOrder: ids }, "顺序已保存");
+  };
+  const agentSub = (agent: HudBarAgent) =>
+    [agent.account, agent.plan].filter((part) => Boolean(part && part.trim())).join(" · ");
+
   return (
     <div className="page settings-page">
       <SectionHead title="设置" hint="所有改动即时生效，只保存在应用内部状态中" />
+
+      <div className="settings-block">
+        <div className="settings-label">排序</div>
+        <div className="settings-row-hint">
+          收起胶囊里的环和主页额度卡按这里的顺序排列；新出现的账号排到最后
+        </div>
+        {agents.length === 0 ? (
+          <div className="settings-row-hint">还没读到账号数据</div>
+        ) : (
+          <div className="agent-order">
+            {agents.map((agent, index) => (
+              <div className="agent-order-row" key={agent.id}>
+                <BrandMark source={agent.source} size={18} />
+                <span className="agent-order-copy">
+                  <b>{agentLabel(agent.source)}</b>
+                  {agentSub(agent) ? <span>{agentSub(agent)}</span> : null}
+                </span>
+                <button
+                  type="button"
+                  className="agent-order-btn"
+                  disabled={index === 0}
+                  onClick={() => moveAgent(index, -1)}
+                  title="上移"
+                  aria-label={`${agentLabel(agent.source)} 上移`}
+                >
+                  <Icon name="arrowUp" size={12} />
+                </button>
+                <button
+                  type="button"
+                  className="agent-order-btn"
+                  disabled={index === agents.length - 1}
+                  onClick={() => moveAgent(index, 1)}
+                  title="下移"
+                  aria-label={`${agentLabel(agent.source)} 下移`}
+                >
+                  <Icon name="arrowDown" size={12} />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+        {agents.length > 0 && (config.agentOrder?.length ?? 0) > 0 ? (
+          <button
+            type="button"
+            className="agent-order-reset"
+            onClick={() => save({ agentOrder: [] }, "已恢复默认顺序")}
+          >
+            恢复默认顺序
+          </button>
+        ) : null}
+      </div>
 
       <div className="settings-block">
         <div className="settings-label">深色毛玻璃</div>

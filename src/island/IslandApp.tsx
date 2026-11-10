@@ -1,6 +1,6 @@
 /** 灵动岛外壳：收起胶囊 / 展开面板 / 标签导航 / 右键菜单 / 深色玻璃与事件桥 */
 
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
 import {
   clearClipboard,
   clearNotify,
@@ -40,6 +40,9 @@ import {
   toggleMute,
   toggleRadio,
 } from "./api";
+/** 收起胶囊的最大宽度（内容少时可以更窄，窗口本身仍是 552）。 */
+const MAX_PILL_W = 500;
+
 import type {
   ClipItem,
   CompactView,
@@ -166,8 +169,28 @@ export default function IslandApp() {
   const [dragging, setDragging] = useState(false);
   const [snapHiding, setSnapHiding] = useState(false);
 
+  // 用户自定义顺序（设置页里上下挪）：不在表里的条目保持数据源原顺序排在后面。
+  // 必须放在 config 的早退分支之前——hooks 不能有条件地跳过。
+  const orderedUsage = useMemo(() => {
+    if (!usage?.agents?.length) return usage;
+    const order = config?.agentOrder ?? [];
+    if (!order.length) return usage;
+    const rank = new Map(order.map((id, index) => [id, index]));
+    const agents = [...usage.agents].sort((a, b) => {
+      const ra = rank.get(a.id);
+      const rb = rank.get(b.id);
+      if (ra == null && rb == null) return 0;
+      if (ra == null) return 1;
+      if (rb == null) return -1;
+      return ra - rb;
+    });
+    return { ...usage, agents };
+  }, [usage, config]);
+
   const rootRef = useRef<HTMLDivElement | null>(null);
   const islandRef = useRef<HTMLDivElement | null>(null);
+  // 收起胶囊的实际宽度由胶囊自己量出来（内容自适应），窗口宽度不变
+  const [pillWidth, setPillWidth] = useState(MAX_PILL_W);
   const collapseTimer = useRef<number | null>(null);
   const hoverTimer = useRef<number | null>(null);
   const shrinkTimer = useRef<number | null>(null);
@@ -375,7 +398,7 @@ export default function IslandApp() {
       alive = false;
       window.cancelAnimationFrame(raf);
     };
-  }, [open, edge]);
+  }, [open, edge, pillWidth]);
 
   // 失去系统焦点（点其它应用）后恢复「不可聚焦」，下次启动/点击不再抢焦点
   useEffect(() => {
@@ -825,6 +848,9 @@ export default function IslandApp() {
   const islandStyle = {
     "--glass-tint": glassTint.toFixed(3),
     "--backdrop-brightness": backdropBrightness.toFixed(3),
+    // 收起态宽度跟着内容走（胶囊自己量），展开态交回 CSS 的 520；
+    // 左右吸附时胶囊是固定 48 宽的竖条，也不接管。
+    width: open || edge !== "top" ? undefined : pillWidth,
   } as CSSProperties;
   // 字号倍率挂在最外层，右键菜单 / toast 也一起缩放；面板和胶囊都继承。
   const rootFontStyle = { "--fs-scale": fontScale.toFixed(3) } as CSSProperties;
@@ -838,7 +864,7 @@ export default function IslandApp() {
       case "home":
         return (
           <HomePage
-            usage={usage}
+            usage={orderedUsage}
             weather={weather}
             media={media}
             lyrics={lyrics}
@@ -947,6 +973,7 @@ export default function IslandApp() {
         return (
           <SettingsPage
             config={config}
+            agents={orderedUsage?.agents ?? []}
             onChange={(patch) => updateConfig(patch)}
             onOpenMain={() => void openMainWindow().catch((e) => showToast(String(e)))}
             onQuit={() => void quitApp()}
@@ -1079,7 +1106,7 @@ export default function IslandApp() {
           <div className="pill-wrap" aria-hidden={open}>
             <CollapsedPill
               config={config}
-              usage={usage}
+              usage={orderedUsage}
               todayUsage={todayUsage}
               weather={weather}
               media={media}
@@ -1090,6 +1117,7 @@ export default function IslandApp() {
                 if (suppressClickRef.current) return;
                 toggleOpen();
               }}
+              onWidth={setPillWidth}
             />
           </div>
           <div className="island-panel" aria-hidden={!open}>
@@ -1181,6 +1209,7 @@ function CollapsedPill({
   system,
   edge,
   onOpen,
+  onWidth,
 }: {
   config: IslandConfig;
   usage: HudBarUsage | null;
@@ -1191,6 +1220,8 @@ function CollapsedPill({
   system: SystemState;
   edge: IslandEdge;
   onOpen: () => void;
+  /** 把收起胶囊的实际宽度报给外壳，窗口里的胶囊才会贴着内容收窄 */
+  onWidth: (width: number) => void;
 }) {
   const clockNow = useNow();
   const view = config.compactView;
@@ -1199,8 +1230,22 @@ function CollapsedPill({
     return currentLyricLine(parseLyrics(lyrics.lrc, lyrics.translation), media.position);
   }, [lyrics, media.position]);
   const agents = usage?.agents ?? [];
-  const limit = edge === "top" ? (agents.length > 6 ? 5 : 6) : 7;
-  const shown = agents.slice(0, limit);
+  // 收起态宽度按内容自适应：窗口仍是 552 宽（左右各 16 投影留白），但胶囊
+  // 只占内容需要的宽度，账号少时不会被撑成一条 500px 的空条。环放不下时
+  // 折成「+N」，N 由实测宽度算出来，不再写死 5/6 条。
+  const pillRef = useRef<HTMLButtonElement | null>(null);
+  const weatherRef = useRef<HTMLSpanElement | null>(null);
+  const dividerRef = useRef<HTMLSpanElement | null>(null);
+  const usageRef = useRef<HTMLSpanElement | null>(null);
+  const tailRef = useRef<HTMLSpanElement | null>(null);
+  const emptyRef = useRef<HTMLSpanElement | null>(null);
+  const [fit, setFit] = useState<{ shown: number; width: number } | null>(null);
+  const reportedWidth = useRef(500);
+  const showPlans = useMemo(
+    () => agents.some((agent) => Boolean(planTag(agent))),
+    [agents]
+  );
+  const shown = agents.slice(0, Math.min(fit?.shown ?? agents.length, agents.length));
   const extra = agents.length - shown.length;
   const todayLabel = todayUsage
     ? `${todayUsage.currency === "USD" ? "$" : "¥"}${
@@ -1212,6 +1257,77 @@ function CollapsedPill({
       ? fmtTokens(todayUsage.tokens)
       : fmtTokensSide(todayUsage.tokens)
     : "--";
+
+  // 量一次「除环以外」的固定宽度，算出胶囊该多宽、能放几枚环。放在
+  // layoutEffect 里，首帧就按结果渲染，不会先闪一下撑满 500px 的胶囊。
+  const ringKey = agents.map((agent) => agent.id).join("|");
+  useLayoutEffect(() => {
+    const quotaView = !(view === "clock" || (view === "music" && media.hasSession));
+    const report = (width: number) => {
+      if (reportedWidth.current === width) return;
+      reportedWidth.current = width;
+      onWidth(width);
+    };
+    if (edge !== "top" || !quotaView) {
+      report(MAX_PILL_W);
+      return;
+    }
+    const pill = pillRef.current;
+    if (!pill) return;
+    const style = window.getComputedStyle(pill);
+    const pad =
+      (parseFloat(style.paddingLeft) || 0) + (parseFloat(style.paddingRight) || 0);
+    const gap = parseFloat(style.columnGap || style.gap || "") || 7;
+    const widthOf = (el: HTMLElement | null) => el?.getBoundingClientRect().width ?? 0;
+    const fixed =
+      pad +
+      widthOf(weatherRef.current) +
+      widthOf(dividerRef.current) +
+      widthOf(usageRef.current) +
+      widthOf(tailRef.current) +
+      gap * 4;
+    const ringGap = showPlans ? 9 : 5;
+    const area = (n: number) => {
+      if (!agents.length) return widthOf(emptyRef.current);
+      const rings = n > 0 ? RING_SIZE * n + ringGap * (n - 1) : 0;
+      // 还有环放不下时末尾补一枚「+N」（CSS 固定 28px）
+      const chip = n < agents.length ? (n > 0 ? ringGap : 0) + 28 : 0;
+      return rings + chip;
+    };
+    let count = agents.length;
+    let total = fixed + area(count);
+    if (total > MAX_PILL_W) {
+      count = 1;
+      total = Math.min(MAX_PILL_W, fixed + area(1));
+      for (let n = agents.length - 1; n >= 1; n -= 1) {
+        const candidate = fixed + area(n);
+        if (candidate <= MAX_PILL_W) {
+          count = n;
+          total = candidate;
+          break;
+        }
+      }
+    }
+    const next = { shown: count, width: Math.round(total) };
+    setFit((prev) =>
+      prev && prev.shown === next.shown && prev.width === next.width ? prev : next
+    );
+    report(next.width);
+  }, [
+    view,
+    edge,
+    ringKey,
+    showPlans,
+    media.hasSession,
+    config.fontSize,
+    weather?.city,
+    weather?.temp,
+    todayUsage?.tokens,
+    todayUsage?.cost,
+    todayUsage?.currency,
+    system.muted,
+    onWidth,
+  ]);
 
   if (view === "clock") {
     return (
@@ -1261,19 +1377,22 @@ function CollapsedPill({
     );
   }
 
-  const showPlans = shown.some((agent) => Boolean(planTag(agent)));
-
   return (
-    <button type="button" className={`pill pill-quota edge-${edge}`} onClick={onOpen}>
-      <span className="pill-weather">
+    <button
+      type="button"
+      ref={pillRef}
+      className={`pill pill-quota edge-${edge}`}
+      onClick={onOpen}
+    >
+      <span className="pill-weather" ref={weatherRef}>
         <WeatherGlyph icon={weather?.icon ?? "cloudy"} size={edge === "top" ? 24 : 22} />
         <span className="pill-weather-temp">{weather ? `${Math.round(weather.temp)}°` : "--°"}</span>
         <span className="pill-weather-city">{weather?.city ?? config.weatherCity}</span>
       </span>
-      <span className="pill-divider" />
+      <span className="pill-divider" ref={dividerRef} />
       <span className={`pill-agents ${showPlans ? "has-plans" : ""}`}>
         {shown.length === 0 ? (
-          <span className="pill-agent-empty">
+          <span className="pill-agent-empty" ref={emptyRef}>
             <span className="pill-pulse" /> 额度查询中
           </span>
         ) : (
@@ -1281,11 +1400,11 @@ function CollapsedPill({
         )}
         {extra > 0 ? <span className="pill-more">+{extra}</span> : null}
       </span>
-      <span className="pill-usage">
+      <span className="pill-usage" ref={usageRef}>
         <span className="pill-usage-tokens">{tokensLabel}</span>
         <span className="pill-usage-cost">≈{todayLabel}</span>
       </span>
-      <span className="pill-tail">
+      <span className="pill-tail" ref={tailRef}>
         {system.muted ? <Icon name="volumeOff" size={12} /> : null}
         <span className="pill-chevron">
           <Icon name="chevron" size={12} />
