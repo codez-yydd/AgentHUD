@@ -13,7 +13,7 @@ use rusqlite::{params, Connection};
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 
-use super::screenshot::{ShotSettings, DEFAULT_SHOT_HOTKEY};
+use super::screenshot::ShotSettings;
 use super::IslandConfig;
 
 const DB_NAME: &str = "island.db";
@@ -273,6 +273,6 @@ mod tests {
     #[test]
     fn shot_hotkey_falls_back_to_default() {
         let s = deserialize_shot_settings(r#"{"autoCopy":false}"#).unwrap();
-        assert_eq!(s.hotkey, DEFAULT_SHOT_HOTKEY);
+        assert_eq!(s.hotkey, crate::island::screenshot::DEFAULT_SHOT_HOTKEY);
     }
 }

@@ -15,10 +15,10 @@ import {
   startShot,
 } from "../shot/api";
 import type { ShotHistoryItem, ShotMonitor, ShotSettings } from "../shot/types";
-import { IS_MAC, hotkeyText } from "../shortcuts";
+import { hotkeyText } from "../shortcuts";
 import { Icon, SectionHead } from "./ui";
 
-type StartMode = "region" | "full" | "window" | "scroll";
+type StartMode = "shot" | "scroll" | "record";
 
 const DEFAULT_SETTINGS: ShotSettings = {
   autoCopy: true,
@@ -99,8 +99,9 @@ export function ScreenshotPage({ onToast }: { onToast: (message: string) => void
     if (starting) return;
     setStarting(mode);
     try {
+      // 三个分类都走同一个覆盖层，进去后还能再切。
       await startShot(
-        mode === "scroll" ? "region" : mode,
+        mode === "shot" ? "region" : mode,
         settings.delaySec,
         currentMonitor ? currentMonitor.index : undefined
       );
@@ -148,7 +149,7 @@ export function ScreenshotPage({ onToast }: { onToast: (message: string) => void
     <div className="page shot-page">
       <SectionHead
         title="截图"
-        hint="一个快捷键呼出，之后在截图条里切换 区域 / 窗口 / 全屏"
+        hint="一个快捷键呼出，之后在截图条里切换 截图 / 滚动截图 / 录屏"
         action={
           <button
             type="button"
@@ -165,64 +166,47 @@ export function ScreenshotPage({ onToast }: { onToast: (message: string) => void
       <div className="shot-launch-grid">
         <button
           type="button"
-          className={`shot-launch primary ${starting === "region" ? "busy" : ""}`}
+          className={`shot-launch primary wide ${starting === "shot" ? "busy" : ""}`}
           disabled={Boolean(starting)}
-          onClick={() => void start("region")}
+          onClick={() => void start("shot")}
         >
           <span className="shot-launch-icon">
             <Icon name="camera" size={20} />
           </span>
           <span className="shot-launch-text">
             <b>截图</b>
-            <em>拖动框选，或单击窗口直接选中</em>
+            <em>拖动框选 · 单击选窗口 · 桌面单击整屏</em>
           </span>
           <kbd>{hotkeyText(settings.hotkey)}</kbd>
         </button>
         <button
           type="button"
-          className={`shot-launch ${starting === "window" ? "busy" : ""}`}
+          className={`shot-launch ${starting === "scroll" ? "busy" : ""}`}
           disabled={Boolean(starting)}
-          onClick={() => void start("window")}
+          onClick={() => void start("scroll")}
         >
           <span className="shot-launch-icon">
-            <Icon name="window" size={19} />
+            <Icon name="scroll" size={19} />
           </span>
           <span className="shot-launch-text">
-            <b>窗口</b>
-            <em>悬停高亮，单击选中</em>
+            <b>滚动截图</b>
+            <em>框选后自动滚动拼接</em>
           </span>
         </button>
         <button
           type="button"
-          className={`shot-launch ${starting === "full" ? "busy" : ""}`}
+          className={`shot-launch record ${starting === "record" ? "busy" : ""}`}
           disabled={Boolean(starting)}
-          onClick={() => void start("full")}
+          onClick={() => void start("record")}
         >
           <span className="shot-launch-icon">
-            <Icon name="monitor" size={19} />
+            <span className="shot-launch-rec" />
           </span>
           <span className="shot-launch-text">
-            <b>全屏</b>
-            <em>{currentMonitor ? `${currentMonitor.width}×${currentMonitor.height}` : "当前显示器"}</em>
+            <b>录屏 GIF</b>
+            <em>框选后录 8 秒</em>
           </span>
         </button>
-        {IS_MAC ? null : (
-          <button
-            type="button"
-            className={`shot-launch ${starting === "scroll" ? "busy" : ""}`}
-            disabled={Boolean(starting)}
-            onClick={() => void start("scroll")}
-          >
-            <span className="shot-launch-icon">
-              <Icon name="scroll" size={19} />
-            </span>
-            <span className="shot-launch-text">
-              <b>滚动长截图</b>
-              <em>框选后自动滚动拼接</em>
-            </span>
-            <kbd>实况</kbd>
-          </button>
-        )}
       </div>
 
       <div className="shot-options">
@@ -295,22 +279,6 @@ export function ScreenshotPage({ onToast }: { onToast: (message: string) => void
           提示音
         </button>
       </div>
-
-      <button
-        type="button"
-        className="shot-record-strip"
-        disabled={Boolean(starting)}
-        onClick={() => void start("region")}
-      >
-        <span className="shot-record-icon">
-          <span />
-        </span>
-        <span className="shot-record-copy">
-          <b>录屏 GIF</b>
-          <em>框选区域后点“录制”，固定 8 秒，自动保存</em>
-        </span>
-        <span className="shot-record-pill">REC</span>
-      </button>
 
       <div className="shot-history-head">
         <div className="shot-history-title">

@@ -189,7 +189,7 @@ export default function ShotApp() {
   const viewport = useViewport();
   const [session, setSession] = useState<ShotSession | null>(null);
   const [phase, setPhase] = useState<"loading" | "select" | "edit">("loading");
-  const [selectMode, setSelectMode] = useState<"region" | "window">("region");
+  const [tab, setTab] = useState<"shot" | "scroll" | "record">("shot");
   const [windows, setWindows] = useState<ShotWindow[]>([]);
   const [hoverWindow, setHoverWindow] = useState<ShotWindow | null>(null);
   const [selection, setSelection] = useState<ShotRect | null>(null);
@@ -214,7 +214,7 @@ export default function ShotApp() {
   >(null);
   const [settings, setSettings] = useState<ShotSettings | null>(null);
   const [historyNote, setHistoryNote] = useState("");
-  const [scrollAvailable, setScrollAvailable] = useState(true);
+
 
   const stageRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -277,8 +277,6 @@ export default function ShotApp() {
         const imageUrl = makeImageUrl(bytes);
         const hydrated = { ...next, image: imageUrl, backdrop: imageUrl };
         setSession(hydrated);
-        // 滚动截图靠注入真实滚轮事件，目前只有 Windows 后端。
-        setScrollAvailable(next.mode === "region" && !IS_MAC);
         setContext({
           backdrop: imageUrl,
           width: next.width,
@@ -297,7 +295,7 @@ export default function ShotApp() {
             ]);
           }
         } else {
-          setSelectMode(next.mode === "window" ? "window" : "region");
+          setTab(next.mode === "scroll" ? "scroll" : next.mode === "record" ? "record" : "shot");
           setPhase("select");
           if (!IS_TAURI && new URLSearchParams(window.location.search).get("select") === "1") {
             setSelection({ x: 420, y: 250, width: 1000, height: 560 });
@@ -349,7 +347,7 @@ export default function ShotApp() {
     return () => {
       dead = true;
     };
-  }, [phase, sessionId, selectMode]);
+  }, [phase, sessionId]);
 
   useEffect(() => {
     if (selection) setHoverWindow(null);
@@ -480,8 +478,7 @@ export default function ShotApp() {
         (event.ctrlKey || event.metaKey) &&
         event.shiftKey &&
         event.key.toLowerCase() === "r" &&
-        selection &&
-        scrollAvailable
+        selection
       ) {
         event.preventDefault();
         void finishScroll();
@@ -604,6 +601,21 @@ export default function ShotApp() {
     return null;
   };
 
+  /** 悬停命中：优先光标下的窗口；没有窗口时把整块屏幕当成一个目标。 */
+  const hoverAt = (point: Point): ShotWindow | null => {
+    const hit = windowAt(point);
+    if (hit) return hit;
+    if (!session) return null;
+    return {
+      x: 0,
+      y: 0,
+      width: session.width,
+      height: session.height,
+      app: "整个屏幕",
+      title: "",
+    };
+  };
+
   const pickWindow = (win: ShotWindow) => {
     setSelection({
       x: win.x,
@@ -628,7 +640,10 @@ export default function ShotApp() {
         point.x <= rect.x + rect.width &&
         point.y >= rect.y &&
         point.y <= rect.y + rect.height;
-      if (inside) {
+      // 整屏选区不做"拖着移动"：否则整屏都被选中后没法再拖一个新区域。
+      const fullScreen =
+        rect.width >= session.width - 2 && rect.height >= session.height - 2;
+      if (inside && !fullScreen) {
         selectDragRef.current = {
           mode: "move",
           handle: "",
@@ -674,7 +689,7 @@ export default function ShotApp() {
         setHoverWindow(null);
         return;
       }
-      setHoverWindow(windowAt(selectPoint(event)));
+      setHoverWindow(hoverAt(selectPoint(event)));
       return;
     }
     const point = selectPoint(event);
@@ -735,7 +750,7 @@ export default function ShotApp() {
         const point = selectPoint(event);
         const moved =
           Math.abs(point.x - drag.start.x) + Math.abs(point.y - drag.start.y);
-        const hit = moved < 6 ? windowAt(point) : null;
+        const hit = moved < 6 ? hoverAt(point) : null;
         if (hit) {
           pickWindow(hit);
           return;
@@ -848,17 +863,9 @@ export default function ShotApp() {
     }
   }
 
-  /** 全屏：整屏作为一个选区，之后照样可以标注/复制/录制。 */
-  function selectFull() {
-    if (!session) return;
-    setSelection({ x: 0, y: 0, width: session.width, height: session.height });
-    setHoverWindow(null);
-  }
-
-  /** 区域/窗口模式切换：只影响提示与是否预先高亮窗口。 */
-  function switchMode(mode: "region" | "window") {
-    setSelectMode(mode);
-    setHoverWindow(null);
+  /** 切换分类：截图 / 滚动截图 / 录屏。选区在三个分类间共用。 */
+  function switchTab(next: "shot" | "scroll" | "record") {
+    setTab(next);
   }
 
   async function finishScroll() {
@@ -888,7 +895,6 @@ export default function ShotApp() {
             }
           : current
       );
-      setScrollAvailable(false);
       setContext({ backdrop: imageUrl, width: result.width, height: result.height });
       await beginEdit(imageUrl, null, imageUrl);
       setSelection(null);
@@ -1299,34 +1305,39 @@ export default function ShotApp() {
               </span>
             </div>
           ) : null}
-          <div className="shot-top-pill">
+          <div className="shot-top-pill shot-edit-top">
             <span className="shot-live-dot" />
             <span>{session.title}</span>
             <span className="shot-top-sep" />
             <span>{session.monitor.width} × {session.monitor.height}</span>
             <span className="shot-top-sep" />
-            <span>{selectMode === "window" ? "单击选窗" : "拖动框选 · 悬停选窗"}</span>
+            <span>拖动框选 · 悬停选窗 · 桌面单击整屏</span>
           </div>
           <div className="shot-floating shot-select-actions" onPointerDown={(e) => e.stopPropagation()}>
-            <div className="shot-mode-switch" role="group" aria-label="截图模式">
+            <div className="shot-mode-switch" role="group" aria-label="截图分类">
               <button
                 type="button"
-                className={selectMode === "region" ? "active" : ""}
-                title="拖动框选任意区域"
-                onClick={() => switchMode("region")}
+                className={tab === "shot" ? "active" : ""}
+                title="截一张图（拖动框选 / 单击选窗 / 桌面单击整屏）"
+                onClick={() => switchTab("shot")}
               >
-                <ShotIcon name="crop" size={13} /> 区域
+                <ShotIcon name="crop" size={13} /> 截图
               </button>
               <button
                 type="button"
-                className={selectMode === "window" ? "active" : ""}
-                title="鼠标移到窗口上单击即选中整个窗口"
-                onClick={() => switchMode("window")}
+                className={tab === "scroll" ? "active" : ""}
+                title="框选滚动区域后自动滚动拼接成长图"
+                onClick={() => switchTab("scroll")}
               >
-                <ShotIcon name="window" size={13} /> 窗口
+                <ShotIcon name="scroll" size={13} /> 滚动截图
               </button>
-              <button type="button" title="选中整个屏幕" onClick={selectFull}>
-                <ShotIcon name="full" size={13} /> 全屏
+              <button
+                type="button"
+                className={tab === "record" ? "active" : ""}
+                title="框选区域录 8 秒 GIF"
+                onClick={() => switchTab("record")}
+              >
+                <span className="shot-rec-dot" /> 录屏
               </button>
             </div>
             <span className="shot-actions-sep" />
@@ -1334,61 +1345,66 @@ export default function ShotApp() {
               {selection
                 ? `${Math.round(normRect(selection).width)} × ${Math.round(normRect(selection).height)}`
                 : hoverWindow
-                  ? `${hoverWindow.app} 窗口`
+                  ? hoverWindow.app
                   : "拖动选择区域"}
             </span>
-            <button
-              type="button"
-              className="shot-btn primary"
-              disabled={!selection}
-              onClick={() => void cropSelection()}
-            >
-              <ShotIcon name="pen" size={14} /> 标注
-            </button>
-            {scrollAvailable ? (
+            {tab === "shot" ? (
+              <>
+                <button
+                  type="button"
+                  className="shot-btn primary"
+                  disabled={!selection}
+                  onClick={() => void cropSelection()}
+                >
+                  <ShotIcon name="pen" size={14} /> 标注
+                </button>
+                <span className="shot-actions-sep" />
+                <button
+                  type="button"
+                  className="shot-btn icon"
+                  disabled={!selection}
+                  title={`复制到剪贴板（${shortcutText("Ctrl+C")}）`}
+                  aria-label="复制到剪贴板"
+                  onClick={() => void copySelection()}
+                >
+                  <ShotIcon name="copy" size={15} />
+                </button>
+                <button
+                  type="button"
+                  className="shot-btn icon"
+                  disabled={!selection}
+                  title={`另存为…（${shortcutText("Ctrl+S")}）`}
+                  aria-label="另存为"
+                  onClick={() => void saveSelectionAs()}
+                >
+                  <ShotIcon name="download" size={15} />
+                </button>
+              </>
+            ) : tab === "scroll" ? (
               <button
                 type="button"
-                className="shot-btn"
-                disabled={!selection}
+                className="shot-btn primary"
+                disabled={!selection || busy !== ""}
+                title="选区里的页面会自动滚动并拼接成长图"
                 onClick={() => void finishScroll()}
               >
-                <ShotIcon name="scroll" size={14} /> 滚动
+                <ShotIcon name="scroll" size={14} /> 开始滚动
               </button>
-            ) : null}
-            <button
-              type="button"
-              className="shot-btn record"
-              disabled={!selection || !session.origin}
-              title={
-                session.origin
-                  ? `录制 8 秒 GIF（${shortcutText("Ctrl+Shift+G")}）`
-                  : "窗口/图片会话不能录制，请用区域或窗口模式重新框选"
-              }
-              onClick={() => void finishRecord()}
-            >
-              <span className="shot-rec-dot" /> 录制
-            </button>
-            <span className="shot-actions-sep" />
-            <button
-              type="button"
-              className="shot-btn icon"
-              disabled={!selection}
-              title={`复制到剪贴板（${shortcutText("Ctrl+C")}）`}
-              aria-label="复制到剪贴板"
-              onClick={() => void copySelection()}
-            >
-              <ShotIcon name="copy" size={15} />
-            </button>
-            <button
-              type="button"
-              className="shot-btn icon"
-              disabled={!selection}
-              title={`另存为…（${shortcutText("Ctrl+S")}）`}
-              aria-label="另存为"
-              onClick={() => void saveSelectionAs()}
-            >
-              <ShotIcon name="download" size={15} />
-            </button>
+            ) : (
+              <button
+                type="button"
+                className="shot-btn record"
+                disabled={!selection || !session.origin || busy !== ""}
+                title={
+                  session.origin
+                    ? `录制 8 秒 GIF（${shortcutText("Ctrl+Shift+G")}）`
+                    : "窗口/图片会话不能录制，请框选屏幕区域后再录"
+                }
+                onClick={() => void finishRecord()}
+              >
+                <span className="shot-rec-dot" /> 录制 8 秒
+              </button>
+            )}
             <span className="shot-actions-sep" />
             <button
               type="button"
@@ -1401,23 +1417,38 @@ export default function ShotApp() {
             </button>
           </div>
           <div className="shot-hint">
-            <kbd>拖动</kbd> 框选
-            <span>·</span>
-            <kbd>单击窗口</kbd> 选中整个窗口
-            <span>·</span>
-            <Shortcut combo="Ctrl+C" /> 复制
-            <span>·</span>
-            <Shortcut combo="Ctrl+S" /> 另存为
-            <span>·</span>
-            <kbd>双击</kbd> 进入标注
-            <span>·</span>
-            {IS_MAC ? null : (
+            {tab === "shot" ? (
               <>
-                <Shortcut combo="Ctrl+Shift+R" /> 滚动
+                <kbd>拖动</kbd> 框选
                 <span>·</span>
+                <kbd>单击窗口</kbd> 选中整个窗口
+                <span>·</span>
+                <kbd>桌面单击</kbd> 整屏
+                <span>·</span>
+                <Shortcut combo="Ctrl+C" /> 复制
+                <span>·</span>
+                <Shortcut combo="Ctrl+S" /> 另存为
+                <span>·</span>
+                <kbd>双击</kbd> 进入标注
+              </>
+            ) : tab === "scroll" ? (
+              <>
+                <kbd>拖动</kbd> 框选滚动区域
+                <span>·</span>
+                <kbd>单击窗口</kbd> 选中整个窗口
+                <span>·</span>
+                <Shortcut combo="Ctrl+Shift+R" /> 开始滚动
+                {IS_MAC ? <span>· 首次需在「辅助功能」里授权</span> : null}
+              </>
+            ) : (
+              <>
+                <kbd>拖动</kbd> 框选录制区域
+                <span>·</span>
+                <kbd>单击窗口</kbd> 选中整个窗口
+                <span>·</span>
+                <Shortcut combo="Ctrl+Shift+G" /> 录制 8 秒
               </>
             )}
-            <Shortcut combo="Ctrl+Shift+G" /> 录制
             <span>·</span>
             <kbd>Esc</kbd> 取消
           </div>

@@ -69,6 +69,108 @@ fn mac_scale() -> f64 {
     }
 }
 
+/// macOS 合成输入事件（滚动截图要往鼠标下的窗口投滚轮事件）与光标读写。
+#[cfg(target_os = "macos")]
+mod mac_events {
+    use std::ffi::c_void;
+
+    #[repr(C)]
+    #[derive(Clone, Copy, Default)]
+    pub struct CGPoint {
+        pub x: f64,
+        pub y: f64,
+    }
+
+    const HID_EVENT_TAP: u32 = 0;
+    /// kCGScrollEventUnitPixel
+    pub const SCROLL_UNIT_PIXEL: u32 = 0;
+
+    #[link(name = "CoreGraphics", kind = "framework")]
+    extern "C" {
+        fn CGEventCreate(source: *const c_void) -> *const c_void;
+        fn CGEventGetLocation(event: *const c_void) -> CGPoint;
+        fn CGWarpMouseCursorPosition(point: CGPoint) -> i32;
+        fn CGEventCreateScrollWheelEvent(
+            source: *const c_void,
+            units: u32,
+            wheel_count: u32,
+            ...
+        ) -> *const c_void;
+        fn CGEventSetLocation(event: *const c_void, location: CGPoint);
+        fn CGEventPost(tap: u32, event: *const c_void);
+        fn CGPreflightPostEventAccess() -> bool;
+        fn CGRequestPostEventAccess() -> bool;
+    }
+
+    #[link(name = "CoreFoundation", kind = "framework")]
+    extern "C" {
+        fn CFRelease(cf: *const c_void);
+    }
+
+    /// 当前光标位置（全局逻辑点）。
+    pub fn cursor_location() -> Option<CGPoint> {
+        unsafe {
+            let event = CGEventCreate(std::ptr::null());
+            if event.is_null() {
+                return None;
+            }
+            let point = CGEventGetLocation(event);
+            CFRelease(event);
+            Some(point)
+        }
+    }
+
+    pub fn warp_cursor(point: CGPoint) {
+        unsafe {
+            let _ = CGWarpMouseCursorPosition(point);
+        }
+    }
+
+    /// 向系统投递滚轮事件。需要「辅助功能」权限，没有权限时事件会被丢弃。
+    pub fn post_scroll(point: CGPoint, delta_px: i32) -> bool {
+        unsafe {
+            let event = CGEventCreateScrollWheelEvent(
+                std::ptr::null(),
+                SCROLL_UNIT_PIXEL,
+                1,
+                delta_px,
+            );
+            if event.is_null() {
+                return false;
+            }
+            CGEventSetLocation(event, point);
+            CGEventPost(HID_EVENT_TAP, event);
+            CFRelease(event);
+        }
+        true
+    }
+
+    pub fn post_event_access() -> bool {
+        unsafe { CGPreflightPostEventAccess() }
+    }
+
+    pub fn request_post_event_access() {
+        unsafe {
+            let _ = CGRequestPostEventAccess();
+        }
+    }
+}
+
+/// 发送滚动事件的权限只提示一次，避免反复弹窗。
+#[cfg(target_os = "macos")]
+static MAC_EVENT_ACCESS_ASKED: AtomicBool = AtomicBool::new(false);
+
+#[cfg(target_os = "macos")]
+fn mac_post_event_ready() -> bool {
+    if mac_events::post_event_access() {
+        return true;
+    }
+    if !MAC_EVENT_ACCESS_ASKED.swap(true, Ordering::SeqCst) {
+        mac_events::request_post_event_access();
+    }
+    false
+}
+
 fn session_slot() -> &'static Mutex<Option<ShotSession>> {
     SESSION.get_or_init(|| Mutex::new(None))
 }
@@ -138,6 +240,9 @@ pub struct ShotSession {
     pub origin: Option<ShotRect>,
     pub monitor: ShotMonitor,
     pub title: String,
+    /// 抓屏那一刻的窗口快照（覆盖层里悬停/单击选窗），只给 shot_windows 用
+    #[serde(skip)]
+    pub windows: Vec<ShotWindow>,
     pub created_at: i64,
 }
 
@@ -376,7 +481,15 @@ fn cursor_position() -> Option<(i32, i32)> {
         unsafe { GetCursorPos(&mut p).ok()? };
         return Some((p.x, p.y));
     }
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(target_os = "macos")]
+    {
+        // CGEvent 给的是全局逻辑点（主屏左上为原点），换成物理像素后
+        // 才能和 Tauri 的显示器几何对齐。
+        let point = mac_events::cursor_location()?;
+        let scale = mac_scale().max(1.0);
+        return Some(((point.x * scale).round() as i32, (point.y * scale).round() as i32));
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     {
         None
     }
@@ -999,8 +1112,10 @@ fn screen_windows(monitor: &ShotMonitor, image_w: u32, image_h: u32) -> Vec<Shot
     let own_pid = std::process::id() as i32;
     let mut out = Vec::new();
     for win in mac_windows::list() {
-        // layer 0 = 普通应用窗口；再排掉自己（岛/覆盖层）和全透明窗口。
-        if win.layer != 0 || win.alpha <= 0.01 || win.pid == own_pid {
+        // 普通窗口 layer 为 0；灵动岛是置顶窗口（layer 非 0），所以自家进程
+        // 不按 layer 过滤——抓屏时其它自家窗口都已隐藏，列表里只会剩岛。
+        // 别的进程的菜单栏/Dock/通知等仍按 layer 0 过滤掉。
+        if win.alpha <= 0.01 || (win.pid != own_pid && win.layer != 0) {
             continue;
         }
         if win.w < 24.0 || win.h < 24.0 {
@@ -1034,29 +1149,35 @@ fn screen_windows(_monitor: &ShotMonitor, _image_w: u32, _image_h: u32) -> Vec<S
 }
 
 /// 覆盖层初始化后拉一次窗口列表，用于悬停高亮/单击选窗。
+/// 用的是抓屏那一刻的快照，所以和冻住的画面严格对应（包括灵动岛）。
 #[tauri::command]
 pub fn shot_windows(id: u64) -> Vec<ShotWindow> {
-    // 只取几何信息，别把几 MB 的 PNG 一起 clone 出来。
-    let info = session_slot().lock().ok().and_then(|guard| {
-        guard
-            .as_ref()
-            .filter(|s| s.id == id)
-            .map(|s| (s.monitor.clone(), s.width, s.height))
-    });
-    match info {
-        Some((monitor, width, height)) => screen_windows(&monitor, width, height),
-        None => Vec::new(),
-    }
+    session_slot()
+        .lock()
+        .ok()
+        .and_then(|guard| {
+            guard
+                .as_ref()
+                .filter(|s| s.id == id)
+                .map(|s| s.windows.clone())
+        })
+        .unwrap_or_default()
 }
 
 // ============================================================
 // 窗口管理：隐藏自身窗口 / 创建编辑器
 // ============================================================
 
-fn hide_own_windows(app: &AppHandle) -> Vec<String> {
+/// 隐藏 AgentHUD 自己的窗口。`keep_island = true` 时保留灵动岛：
+/// 抓屏时岛要留在画面里（用户希望 HUD 也能被截到），抓完再单独藏起来，
+/// 免得它浮在截图覆盖层上面。
+fn hide_own_windows(app: &AppHandle, keep_island: bool) -> Vec<String> {
     let mut hidden = Vec::new();
     for (label, win) in app.webview_windows() {
         if label == SHOT_WINDOW_LABEL {
+            continue;
+        }
+        if keep_island && label == super::ISLAND_WINDOW_LABEL {
             continue;
         }
         if win.is_visible().unwrap_or(false) {
@@ -1137,6 +1258,41 @@ async fn restore_overlay(app: &AppHandle, monitor_x: i32, monitor_y: i32) -> Res
         Ok(())
     })
     .await
+}
+
+/// 冻住的画面里有灵动岛（抓屏时刻意没藏它），真正去录屏/滚动时把它放回
+/// 屏幕，录出来的结果才和用户看到的选区一致。用完再藏起来。
+async fn show_island_for_capture(app: &AppHandle) {
+    let app_main = app.clone();
+    let _ = on_main_thread(app, move || {
+        let was_hidden = hidden_slot()
+            .lock()
+            .map(|g| g.iter().any(|label| label == super::ISLAND_WINDOW_LABEL))
+            .unwrap_or(false);
+        if was_hidden {
+            let _ = super::set_expanded_on_main(&app_main, false);
+            if let Some(win) = app_main.get_webview_window(super::ISLAND_WINDOW_LABEL) {
+                if !win.is_visible().unwrap_or(true) {
+                    let _ = win.show();
+                }
+            }
+        }
+        Ok(())
+    })
+    .await;
+}
+
+async fn hide_island_for_capture(app: &AppHandle) {
+    let app_main = app.clone();
+    let _ = on_main_thread(app, move || {
+        if let Some(win) = app_main.get_webview_window(super::ISLAND_WINDOW_LABEL) {
+            if win.is_visible().unwrap_or(false) {
+                let _ = win.hide();
+            }
+        }
+        Ok(())
+    })
+    .await;
 }
 
 /// 预先建好隐藏的覆盖窗口：截图页一打开就调用，首次点击截图时 WebView 已经是热的。
@@ -1304,6 +1460,9 @@ async fn start_capture_inner(
         "region" => "region",
         "full" | "monitor" => "full",
         "window" => "window",
+        // 覆盖层里的三个分类：截图 / 滚动截图 / 录屏
+        "scroll" => "scroll",
+        "record" => "record",
         other => return Err(format!("未知截图模式: {other}")),
     };
 
@@ -1311,7 +1470,8 @@ async fn start_capture_inner(
     let app_main = app.clone();
     let hidden = on_main_thread(&app, move || {
         hide_overlay(&app_main);
-        let hidden = hide_own_windows(&app_main);
+        // 灵动岛先留着：抓屏画面里要有 HUD，用户才能截到它。
+        let hidden = hide_own_windows(&app_main, true);
         if let Ok(mut guard) = hidden_slot().lock() {
             *guard = hidden.clone();
         }
@@ -1333,7 +1493,7 @@ async fn start_capture_inner(
         .map_err(|e| format!("等待截图延时失败: {e}"))?;
 
     let app_cap = app.clone();
-    let (captured, monitor, origin, final_mode, title) =
+    let (captured, monitor, origin, final_mode, title, windows) =
         tauri::async_runtime::spawn_blocking(move || -> Result<_, String> {
             let monitors = monitor_list(&app_cap);
             if monitors.is_empty() {
@@ -1356,6 +1516,7 @@ async fn start_capture_inner(
                     None,
                     "edit".to_string(),
                     "窗口截图".to_string(),
+                    Vec::new(),
                 ));
             }
             let mon = match monitor_index {
@@ -1368,6 +1529,9 @@ async fn start_capture_inner(
             #[cfg(target_os = "macos")]
             set_mac_scale(mon.scale_factor);
             let captured = capture_monitor_captured(&mon)?;
+            // 窗口列表要和这一帧对应：此刻灵动岛还可见（抓屏时没藏它），
+            // 所以列表里能选到 HUD，其它自家窗口此时已隐藏。
+            let windows = screen_windows(&mon, captured.width, captured.height);
             let origin = ShotRect {
                 x: 0.0,
                 y: 0.0,
@@ -1377,14 +1541,25 @@ async fn start_capture_inner(
             let final_mode = match mode {
                 "region" => "region",
                 "window" => "window",
+                "scroll" => "scroll",
+                "record" => "record",
                 _ => "edit",
             };
             let title = match final_mode {
                 "region" => "区域截图",
                 "window" => "窗口截图",
+                "scroll" => "滚动截图",
+                "record" => "录屏",
                 _ => "全屏截图",
             };
-            Ok((captured, mon, Some(origin), final_mode.to_string(), title.to_string()))
+            Ok((
+                captured,
+                mon,
+                Some(origin),
+                final_mode.to_string(),
+                title.to_string(),
+                windows,
+            ))
         })
         .await
         .map_err(|e| format!("截图任务失败: {e}"))??;
@@ -1397,6 +1572,17 @@ async fn start_capture_inner(
         monitor.y,
         started.elapsed().as_millis()
     );
+
+    // 画面已经抓到（里面有灵动岛），现在把岛藏起来，免得它浮在覆盖层上。
+    let app_island = app.clone();
+    let _ = on_main_thread(&app, move || {
+        let hidden = hide_own_windows(&app_island, false);
+        if let Ok(mut guard) = hidden_slot().lock() {
+            guard.extend(hidden);
+        }
+        Ok(())
+    })
+    .await;
 
     let id = SESSION_SEQ.fetch_add(1, Ordering::Relaxed);
     let session = ShotSession {
@@ -1412,6 +1598,7 @@ async fn start_capture_inner(
         } else {
             captured.title.clone()
         },
+        windows,
         created_at: now_ms(),
     };
     if let Ok(mut guard) = session_slot().lock() {
@@ -1531,7 +1718,7 @@ pub async fn shot_edit_file(app: AppHandle, path: String) -> Result<u64, String>
         let app_main = app.clone();
         on_main_thread(&app, move || {
             destroy_overlay(&app_main);
-            let hidden = hide_own_windows(&app_main);
+            let hidden = hide_own_windows(&app_main, false);
             if let Ok(mut guard) = hidden_slot().lock() {
                 *guard = hidden;
             }
@@ -1552,6 +1739,7 @@ pub async fn shot_edit_file(app: AppHandle, path: String) -> Result<u64, String>
             origin: None,
             monitor: monitor.clone(),
             title,
+            windows: Vec::new(),
             created_at: now_ms(),
         };
         if let Ok(mut guard) = session_slot().lock() {
@@ -2449,9 +2637,32 @@ fn scroll_once(screen_x: i32, screen_y: i32, amount: i32) -> Result<(), String> 
     Ok(())
 }
 
-#[cfg(not(target_os = "windows"))]
+/// macOS：把光标挪到区域中心，再投递像素级滚轮事件（和飞书/系统滚动
+/// 截图同一套思路）。需要「辅助功能」权限，没授权时事件会被系统丢掉。
+#[cfg(target_os = "macos")]
+fn scroll_once(screen_x: i32, screen_y: i32, amount: i32) -> Result<(), String> {
+    if !mac_post_event_ready() {
+        return Err(
+            "没有辅助功能权限：系统设置 → 隐私与安全性 → 辅助功能，勾选 AgentHUD 后重试".into(),
+        );
+    }
+    let scale = mac_scale().max(1.0);
+    let point = mac_events::CGPoint {
+        x: screen_x as f64 / scale,
+        y: screen_y as f64 / scale,
+    };
+    mac_events::warp_cursor(point);
+    std::thread::sleep(Duration::from_millis(40));
+    // 负值 = 向下滚（看后面/下面的内容）。
+    if !mac_events::post_scroll(point, -(amount * 110)) {
+        return Err("创建滚轮事件失败".into());
+    }
+    Ok(())
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
 fn scroll_once(_x: i32, _y: i32, _amount: i32) -> Result<(), String> {
-    Err("滚动截图目前仅支持 Windows".into())
+    Err("滚动截图目前仅支持 Windows / macOS".into())
 }
 
 #[tauri::command]
@@ -2473,6 +2684,7 @@ pub async fn shot_scroll(
         return Err("滚动区域超出屏幕范围".into());
     }
     park_overlay(&app).await?;
+    show_island_for_capture(&app).await;
     tauri::async_runtime::spawn_blocking(move || std::thread::sleep(Duration::from_millis(650)))
         .await
         .map_err(|e| format!("准备滚动截图失败: {e}"))?;
@@ -2515,6 +2727,14 @@ pub async fn shot_scroll(
         unsafe {
             let _ = windows::Win32::UI::WindowsAndMessaging::SetCursorPos(cx, cy);
         }
+        #[cfg(target_os = "macos")]
+        {
+            let scale = mac_scale().max(1.0);
+            mac_events::warp_cursor(mac_events::CGPoint {
+                x: cx as f64 / scale,
+                y: cy as f64 / scale,
+            });
+        }
     }
 
     // 无论拼接成功还是失败，都要把编辑器重新显示出来；否则用户会只看到
@@ -2555,6 +2775,7 @@ pub async fn shot_scroll(
         }
     }
 
+    hide_island_for_capture(&app).await;
     restore_overlay(&app, monitor_x, monitor_y).await?;
     outcome.map(|(result, _, _, _)| result)
 }
@@ -2622,6 +2843,7 @@ pub async fn shot_record_gif(
     let screen_y = session.monitor.y + y;
     let seconds = seconds.clamp(3, 20);
     park_overlay(&app).await?;
+    show_island_for_capture(&app).await;
     tauri::async_runtime::spawn_blocking(move || std::thread::sleep(Duration::from_millis(550)))
         .await
         .map_err(|e| format!("准备录屏失败: {e}"))?;
@@ -2688,6 +2910,7 @@ pub async fn shot_record_gif(
     )
     .await;
 
+    hide_island_for_capture(&app).await;
     let _ = restore_overlay(&app, monitor_x, monitor_y).await;
     match result {
         Ok(Ok(record)) => Ok(record),

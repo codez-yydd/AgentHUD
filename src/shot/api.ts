@@ -50,7 +50,7 @@ export async function setShotSettings(settings: ShotSettings): Promise<ShotSetti
 }
 
 export async function startShot(
-  mode: "region" | "full" | "window",
+  mode: "region" | "full" | "window" | "scroll" | "record",
   delaySec: number,
   monitor?: number
 ): Promise<number> {

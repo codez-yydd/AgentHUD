@@ -3986,88 +3986,20 @@ html.island-preview .island::after {
   opacity: 0.65;
 }
 
-.shot-record-strip {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-height: 38px;
-  padding: 6px 9px;
-  border-radius: 10px;
-  border: 1px solid var(--hairline);
-  background:
-    linear-gradient(90deg, rgba(255, 93, 108, 0.07), transparent 52%),
-    var(--panel);
-  text-align: left;
-  flex: none;
-  transition:
-    border-color 0.14s ease,
-    background 0.14s ease;
+/* 主卡片占满一行，下面两个分类并排 */
+.shot-launch.primary.wide {
+  grid-column: 1 / -1;
+  height: 62px;
 }
 
-.shot-record-strip:hover:not(:disabled) {
-  border-color: rgba(255, 93, 108, 0.3);
-  background:
-    linear-gradient(90deg, rgba(255, 93, 108, 0.12), transparent 58%),
-    var(--panel-strong);
-}
-
-.shot-record-strip:disabled {
-  opacity: 0.5;
-}
-
-.shot-record-icon {
-  width: 25px;
-  height: 25px;
-  border-radius: 50%;
+.shot-launch.record .shot-launch-icon {
   background: rgba(255, 93, 108, 0.12);
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex: none;
 }
 
-.shot-record-icon span {
-  width: 9px;
-  height: 9px;
+.shot-launch-rec {
+  width: 11px;
+  height: 11px;
   border-radius: 50%;
   background: #ff5d6c;
-  box-shadow: 0 0 9px rgba(255, 93, 108, 0.65);
-}
-
-.shot-record-copy {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-}
-
-.shot-record-copy b {
-  font-size: calc(9px * var(--fs-scale, 1));
-  font-weight: 650;
-  color: var(--text-soft);
-}
-
-.shot-record-copy em {
-  font-style: normal;
-  font-size: calc(7.4px * var(--fs-scale, 1));
-  color: var(--faint);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.shot-record-pill {
-  height: 15px;
-  padding: 0 6px;
-  border-radius: 8px;
-  border: 1px solid rgba(255, 93, 108, 0.28);
-  background: rgba(255, 93, 108, 0.1);
-  color: #ff8995;
-  font-size: calc(6.8px * var(--fs-scale, 1));
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  display: inline-flex;
-  align-items: center;
-  flex: none;
+  box-shadow: 0 0 10px rgba(255, 93, 108, 0.62);
 }

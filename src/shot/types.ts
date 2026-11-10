@@ -18,8 +18,8 @@ export interface ShotRect {
 
 export interface ShotSession {
   id: number;
-  /** region = 框选；window = 先选窗口；edit = 直接进入标注 */
-  mode: "region" | "window" | "edit";
+  /** region/window/scroll/record = 覆盖层选区分支；edit = 直接进入标注 */
+  mode: "region" | "window" | "scroll" | "record" | "edit";
   /** 前端从 shot_session_image 取回字节后创建的 blob URL（不在会话 JSON 里） */
   image?: string;
   backdrop?: string;
