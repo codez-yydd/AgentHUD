@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "rec",
+  "description": "Screen recording bar / preview window (created by Rust). Only event listening and window dragging are granted; all recording work goes through custom commands.",
+  "windows": ["shot-recorder"],
+  "permissions": ["core:event:default", "core:window:allow-start-dragging"]
+}

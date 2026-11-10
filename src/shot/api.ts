@@ -8,6 +8,10 @@ import {
   mockOcr,
   mockPin,
   mockQr,
+  mockRecordExport,
+  mockRecordMedia,
+  mockRecordStart,
+  mockRecordState,
   mockScroll,
   mockSession,
   mockShotSettings,
@@ -17,7 +21,9 @@ import type {
   OcrResult,
   PinData,
   QrResult,
-  RecordResult,
+  RecordOptions,
+  RecordStarted,
+  RecordState,
   ScrollResult,
   ShotHistoryItem,
   ShotMonitor,
@@ -123,18 +129,89 @@ export async function scrollShot(id: number, rect: ShotRect): Promise<ScrollResu
   return invoke<ScrollResult>("shot_scroll", { id, rect });
 }
 
-export async function recordGif(id: number, rect: ShotRect, seconds = 8): Promise<RecordResult> {
-  if (!IS_TAURI) {
-    return delay({
-      path: "C:\\Users\\admin\\Pictures\\AgentHUD Screenshots\\Recording_preview.gif",
-      width: Math.min(1000, Math.round(rect.width)),
-      height: Math.round(rect.height),
-      frames: Math.round(seconds * 8),
-      durationMs: seconds * 1000,
-      size: 2_400_000,
-    }, 900);
-  }
-  return invoke<RecordResult>("shot_record_gif", { id, rect, seconds });
+/** 开始录屏：覆盖层会被挪出屏幕，右下角浮出录制条。 */
+export async function startRecord(
+  id: number,
+  rect: ShotRect,
+  options: RecordOptions
+): Promise<RecordStarted> {
+  if (!IS_TAURI) return mockRecordStart(options.format);
+  return invoke<RecordStarted>("shot_record_start", { id, rect, options });
+}
+
+/** 录制条轮询：已录时长 / 是否结束 / 结果。 */
+export async function getRecordState(recordId: number): Promise<RecordState> {
+  if (!IS_TAURI) return mockRecordState(recordId);
+  return invoke<RecordState>("shot_record_state", { recordId });
+}
+
+export async function stopRecord(recordId: number): Promise<void> {
+  if (!IS_TAURI) return delay(undefined, 10);
+  return invoke("shot_record_stop", { recordId });
+}
+
+/** 录制结束后把录制条原地放大成预览窗。 */
+export async function previewRecord(recordId: number): Promise<void> {
+  if (!IS_TAURI) return delay(undefined, 10);
+  return invoke("shot_record_preview", { recordId });
+}
+
+/** 预览窗要播放的媒体路径（已放进 asset 协议白名单）。 */
+export async function recordSrc(recordId: number): Promise<string> {
+  if (!IS_TAURI) return delay("");
+  return invoke<string>("shot_record_src", { recordId });
+}
+
+/** asset 协议播不了时的兜底：直接拿字节做 blob URL。 */
+export async function recordMedia(recordId: number): Promise<ArrayBuffer> {
+  if (!IS_TAURI) return mockRecordMedia();
+  return invoke<ArrayBuffer>("shot_record_media", { recordId });
+}
+
+/** GIF 改帧率：后端按新帧率重新编码，返回最新状态。 */
+export async function setGifFps(recordId: number, fps: number): Promise<RecordState> {
+  if (!IS_TAURI) return delay({ ...(await mockRecordState(recordId)), gifFps: fps }, 60);
+  return invoke<RecordState>("shot_record_gif_fps", { recordId, fps });
+}
+
+/** 复制 / 下载，`startMs`~`endMs` 是裁剪区间。 */
+export async function exportRecord(
+  recordId: number,
+  startMs: number,
+  endMs: number,
+  action: "copy" | "save"
+): Promise<string | null> {
+  if (!IS_TAURI) return mockRecordExport(action);
+  return invoke<string | null>("shot_record_export", { recordId, startMs, endMs, action });
+}
+
+/** 关闭预览窗并收掉截图会话。 */
+export async function closeRecord(recordId: number): Promise<void> {
+  if (!IS_TAURI) return delay(undefined, 10);
+  return invoke("shot_record_close", { recordId });
+}
+
+/** 取消录制（或录制出错）：收起录制窗，覆盖层回到原位并提示原因。 */
+export async function cancelRecord(recordId: number, message = ""): Promise<void> {
+  if (!IS_TAURI) return delay(undefined, 10);
+  return invoke("shot_record_cancel", { recordId, message });
+}
+
+/** 录制中出错：后端把原因推回覆盖层，由它弹提示。 */
+export function onRecordError(handler: (message: string) => void): () => void {
+  if (!IS_TAURI) return () => {};
+  let unlisten: UnlistenFn | null = null;
+  let dead = false;
+  listen<string>("zbar://shot-record-error", (event) => handler(event.payload))
+    .then((fn) => {
+      if (dead) fn();
+      else unlisten = fn;
+    })
+    .catch(() => {});
+  return () => {
+    dead = true;
+    if (unlisten) unlisten();
+  };
 }
 
 export async function saveShot(dataUrl: string, format?: string): Promise<ShotHistoryItem> {

@@ -203,8 +203,8 @@ export function ScreenshotPage({ onToast }: { onToast: (message: string) => void
             <span className="shot-launch-rec" />
           </span>
           <span className="shot-launch-text">
-            <b>录屏 GIF</b>
-            <em>框选后录 8 秒</em>
+            <b>录屏</b>
+            <em>MP4 / GIF，最长 5 分钟</em>
           </span>
         </button>
       </div>
@@ -358,7 +358,7 @@ export function ScreenshotPage({ onToast }: { onToast: (message: string) => void
 
       <div className="shot-page-foot">
         <Icon name="camera" size={10} />
-        <span>{monitors.length || 1} 个显示器 · 本地 OCR / 二维码 / GIF 录制</span>
+        <span>{monitors.length || 1} 个显示器 · 本地 OCR / 二维码 / 录屏</span>
         <span>·</span>
         <span>保存到 图片/AgentHUD Screenshots</span>
       </div>

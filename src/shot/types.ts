@@ -84,6 +84,36 @@ export interface RecordResult {
   frames: number;
   durationMs: number;
   size: number;
+  /** "mp4" | "gif" */
+  format: string;
+  recordId: number;
+}
+
+/** 开始录制后返回的信息（录制条据此显示上限和格式） */
+export interface RecordStarted {
+  recordId: number;
+  format: string;
+  width: number;
+  height: number;
+  maxSeconds: number;
+}
+
+/** 录制中/结束后的状态，录制条轮询它 */
+export interface RecordState {
+  running: boolean;
+  elapsedMs: number;
+  format: string;
+  result: RecordResult | null;
+  error: string | null;
+  /** GIF 当前帧率与重编码进度（MP4 为 0） */
+  gifFps: number;
+  progress: number;
+}
+
+export interface RecordOptions {
+  format: "mp4" | "gif";
+  /** 是否把鼠标指针画进画面 */
+  cursor: boolean;
 }
 
 export interface ShotSettings {

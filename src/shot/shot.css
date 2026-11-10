@@ -233,6 +233,97 @@ button {
   color: #eef3ff;
 }
 
+/* 录屏分类里的格式切换 / 鼠标开关 */
+.shot-rec-format {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.05);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.07);
+}
+
+.shot-rec-format button {
+  height: 26px;
+  min-width: 42px;
+  padding: 0 10px;
+  border-radius: 7px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: rgba(226, 233, 247, 0.7);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  cursor: pointer;
+}
+
+.shot-rec-format button:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
+}
+
+.shot-rec-format button.active {
+  background: rgba(110, 140, 255, 0.22);
+  border-color: rgba(126, 166, 255, 0.42);
+  color: #eef3ff;
+}
+
+.shot-rec-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 9px 0 7px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  background: rgba(255, 255, 255, 0.04);
+  color: rgba(226, 233, 247, 0.62);
+  font-size: 11px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.shot-rec-toggle:hover {
+  background: rgba(255, 255, 255, 0.09);
+  color: #fff;
+}
+
+.shot-rec-switch {
+  position: relative;
+  width: 22px;
+  height: 13px;
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.18);
+  transition: background 0.16s ease;
+  flex: none;
+}
+
+.shot-rec-switch::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #fff;
+  transition: transform 0.16s ease;
+}
+
+.shot-rec-toggle.on {
+  color: #cfe0ff;
+  background: rgba(110, 140, 255, 0.14);
+}
+
+.shot-rec-toggle.on .shot-rec-switch {
+  background: rgba(110, 140, 255, 0.85);
+}
+
+.shot-rec-toggle.on .shot-rec-switch::after {
+  transform: translateX(9px);
+}
+
 .shot-top-pill,
 .shot-edit-top {
   position: absolute;

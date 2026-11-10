@@ -33,6 +33,13 @@ pub const SHOT_WINDOW_LABEL: &str = "shot-overlay";
 pub const PIN_WINDOW_PREFIX: &str = "shot-pin-";
 /// 新截图保存完成事件（HUD 截图页刷新历史）
 pub const SHOT_SAVED_EVENT: &str = "zbar://shot-saved";
+/// 录屏中途失败：覆盖层据此弹提示
+pub const SHOT_RECORD_ERROR_EVENT: &str = "zbar://shot-record-error";
+
+mod record;
+// 命令宏会生成同名的 `__cmd__*` 辅助项，必须整体 re-export 才能被
+// `generate_handler!` 找到。
+pub use record::*;
 
 const MAX_HISTORY: usize = 40;
 const THUMB_WIDTH: u32 = 168;
@@ -301,6 +308,9 @@ pub struct RecordResult {
     pub frames: u32,
     pub duration_ms: u64,
     pub size: u64,
+    /// "mp4" | "gif"
+    pub format: String,
+    pub record_id: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -985,6 +995,7 @@ mod mac_windows {
     #[link(name = "CoreGraphics", kind = "framework")]
     extern "C" {
         static kCGWindowBounds: CFStringRef;
+        static kCGWindowNumber: CFStringRef;
         static kCGWindowName: CFStringRef;
         static kCGWindowOwnerName: CFStringRef;
         static kCGWindowLayer: CFStringRef;
@@ -1015,6 +1026,7 @@ mod mac_windows {
         pub alpha: f64,
         pub app: String,
         pub title: String,
+        pub number: u32,
     }
 
     unsafe fn number(dict: CFDictionaryRef, key: CFStringRef) -> Option<i32> {
@@ -1061,6 +1073,15 @@ mod mac_windows {
         String::from_utf8_lossy(&bytes).to_string()
     }
 
+    /// 自己进程里标题匹配的窗口号：录屏时以它为界取「它下方的画面」，
+    /// 录制条就不会被录进去。
+    pub fn window_number(pid: i32, title: &str) -> Option<u32> {
+        list()
+            .into_iter()
+            .find(|win| win.pid == pid && win.title == title)
+            .map(|win| win.number)
+    }
+
     pub fn list() -> Vec<MacWindow> {
         let mut out = Vec::new();
         unsafe {
@@ -1095,6 +1116,7 @@ mod mac_windows {
                     alpha: double(dict, kCGWindowAlpha).unwrap_or(1.0),
                     app: string(dict, kCGWindowOwnerName),
                     title: string(dict, kCGWindowName),
+                    number: number(dict, kCGWindowNumber).unwrap_or(0) as u32,
                 });
             }
             CFRelease(array as CFTypeRef);
@@ -1449,6 +1471,15 @@ async fn start_capture_inner(
     delay_sec: u64,
     monitor_index: Option<usize>,
 ) -> Result<u64, String> {
+    if record::is_recording() {
+        return Err("录屏进行中，结束录制后再截图".into());
+    }
+    if app
+        .get_webview_window(record::REC_WINDOW_LABEL)
+        .is_some()
+    {
+        return Err("录屏预览窗还开着，先关掉它再截图".into());
+    }
     if let Ok(guard) = session_slot().lock() {
         if let Some(session) = guard.as_ref() {
             let visible = app
@@ -2787,145 +2818,6 @@ pub async fn shot_scroll(
 }
 
 // ============================================================
-// GIF 录屏
-// ============================================================
-
-fn gif_filter(image: &image::RgbaImage, max_width: u32) -> image::RgbaImage {
-    if image.width() <= max_width {
-        return image.clone();
-    }
-    let ratio = max_width as f64 / image.width() as f64;
-    let h = (image.height() as f64 * ratio).round().max(2.0) as u32;
-    image::imageops::resize(image, max_width, h, image::imageops::FilterType::Triangle)
-}
-
-/// 抓到的帧 → 固定尺寸的 GIF 帧。帧尺寸必须和编码器完全一致，否则
-/// `from_rgba_speed` 会断言 panic；而 macOS 的 `screencapture -R` 会向外
-/// 取整（请求 401×301 实际拿到 402×302），所以这里统一缩放。
-fn gif_frame(
-    image: image::RgbaImage,
-    width: u32,
-    height: u32,
-    delay: u16,
-) -> gif::Frame<'static> {
-    let fitted = if image.width() == width && image.height() == height {
-        image
-    } else {
-        image::imageops::resize(&image, width, height, image::imageops::FilterType::Triangle)
-    };
-    let mut rgba = fitted.into_raw();
-    let mut frame = gif::Frame::from_rgba_speed(width as u16, height as u16, &mut rgba, 10);
-    frame.delay = delay;
-    frame
-}
-
-/// 框选区域后录制固定时长的 GIF。录屏期间编辑器移出屏幕，HUD 保持隐藏；
-/// 完成后保存到截图目录并把路径返回给前端，由前端提供“打开/打开文件夹”。
-#[tauri::command]
-pub async fn shot_record_gif(
-    app: AppHandle,
-    id: u64,
-    rect: ShotRect,
-    seconds: u64,
-) -> Result<RecordResult, String> {
-    let session = shot_session(id)?;
-    // 只有"屏幕上的某块区域"才能按屏幕坐标重录；窗口/历史图片会话的
-    // rect 是图片内坐标，硬录会拍到不相干的地方。
-    if session.origin.is_none() {
-        return Err("当前截图不是屏幕区域，无法录制：请用区域或窗口模式重新框选后再录".into());
-    }
-    #[cfg(target_os = "macos")]
-    set_mac_scale(session.monitor.scale_factor);
-    let x = rect.x.round() as i32;
-    let y = rect.y.round() as i32;
-    let w = rect.width.round().max(2.0) as u32;
-    let h = rect.height.round().max(2.0) as u32;
-    if x < 0 || y < 0 || x as u32 + w > session.width || y as u32 + h > session.height {
-        return Err("录制区域超出屏幕范围".into());
-    }
-    let monitor_x = session.monitor.x;
-    let monitor_y = session.monitor.y;
-    let screen_x = session.monitor.x + x;
-    let screen_y = session.monitor.y + y;
-    let seconds = seconds.clamp(3, 20);
-    park_overlay(&app).await?;
-    show_island_for_capture(&app).await;
-    tauri::async_runtime::spawn_blocking(move || std::thread::sleep(Duration::from_millis(550)))
-        .await
-        .map_err(|e| format!("准备录屏失败: {e}"))?;
-
-    let result = tauri::async_runtime::spawn_blocking(
-        move || -> Result<RecordResult, String> {
-            let dir = shot_dir()?;
-            let path = dir.join(format!(
-                "Recording_{}.gif",
-                chrono::Local::now().format("%Y%m%d_%H%M%S_%3f")
-            ));
-            let started = std::time::Instant::now();
-            let deadline = Duration::from_secs(seconds);
-            let interval = Duration::from_millis(125);
-            // 先抓第一帧，用真实像素尺寸建编码器：macOS 的 screencapture
-            // 会把逻辑矩形向外取整，实际像素常比请求的多 1px。
-            let first = gif_filter(&capture_rect(screen_x, screen_y, w, h)?, 1000);
-            let out_w = first.width().max(2);
-            let out_h = first.height().max(2);
-            let mut gif_buf: Vec<u8> = Vec::new();
-            let mut encoder = gif::Encoder::new(&mut gif_buf, out_w as u16, out_h as u16, &[])
-                .map_err(|e| format!("初始化 GIF 失败: {e}"))?;
-            encoder
-                .set_repeat(gif::Repeat::Infinite)
-                .map_err(|e| format!("设置 GIF 循环失败: {e}"))?;
-            let mut encoded = 0u32;
-            let mut last_at = started;
-            let mut next_image = Some(first);
-            while started.elapsed() < deadline {
-                let image = match next_image.take() {
-                    Some(image) => image,
-                    None => gif_filter(&capture_rect(screen_x, screen_y, w, h)?, 1000),
-                };
-                let now = std::time::Instant::now();
-                // 大区域抓一帧要 1s+，帧延时按真实节奏走；固定 12（120ms）
-                // 会把 8 秒录屏回放成 0.6 秒。
-                let delay = (((now - last_at).as_millis() / 10) as u32).clamp(4, 200) as u16;
-                last_at = now;
-                let frame = gif_frame(image, out_w, out_h, delay);
-                encoder
-                    .write_frame(&frame)
-                    .map_err(|e| format!("写入 GIF 帧失败: {e}"))?;
-                encoded += 1;
-                let elapsed = now - started;
-                if elapsed < interval {
-                    std::thread::sleep(interval - elapsed);
-                }
-            }
-            drop(encoder);
-            if encoded == 0 {
-                return Err("没有抓到任何录制帧".into());
-            }
-            std::fs::write(&path, &gif_buf).map_err(|e| format!("保存 GIF 失败: {e}"))?;
-            let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-            Ok(RecordResult {
-                path: path.to_string_lossy().to_string(),
-                width: out_w,
-                height: out_h,
-                frames: encoded,
-                duration_ms: seconds * 1000,
-                size,
-            })
-        },
-    )
-    .await;
-
-    hide_island_for_capture(&app).await;
-    let _ = restore_overlay(&app, monitor_x, monitor_y).await;
-    match result {
-        Ok(Ok(record)) => Ok(record),
-        Ok(Err(e)) => Err(e),
-        Err(e) => Err(format!("录制任务失败: {e}")),
-    }
-}
-
-// ============================================================
 // 全局快捷键 / 注册挂点
 // ============================================================
 
@@ -3013,25 +2905,6 @@ mod tests {
         assert_eq!(decoded.get_pixel(12, 34), img.get_pixel(12, 34));
     }
 
-    #[test]
-    fn gif_filter_limits_width() {
-        let img = test_frame(0);
-        let small = gif_filter(&img, 60);
-        assert_eq!(small.width(), 60);
-        assert_eq!(small.height(), 110);
-    }
-
-    #[test]
-    fn gif_frame_accepts_off_by_one_capture() {
-        // macOS 上请求 60×110 逻辑矩形可能抓到 61×111 像素，
-        // 直接按 60×110 建帧会 panic，gif_frame 必须自己缩放。
-        let odd = image::RgbaImage::from_pixel(61, 111, image::Rgba([9, 8, 7, 255]));
-        let frame = gif_frame(odd, 60, 110, 12);
-        assert_eq!(frame.width, 60);
-        assert_eq!(frame.height, 110);
-        assert_eq!(frame.buffer.len(), 60 * 110);
-        assert_eq!(frame.delay, 12);
-    }
 }
 
 #[cfg(all(test, target_os = "macos"))]

@@ -33,6 +33,7 @@ export default defineConfig(async () => ({
         island: fileURLToPath(new URL("./island.html", import.meta.url)),
         shot: fileURLToPath(new URL("./shot.html", import.meta.url)),
         pin: fileURLToPath(new URL("./pin.html", import.meta.url)),
+        rec: fileURLToPath(new URL("./rec.html", import.meta.url)),
         "tray-menu": fileURLToPath(
           new URL("./tray-menu.html", import.meta.url)
         ),

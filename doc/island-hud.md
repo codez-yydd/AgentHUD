@@ -64,7 +64,7 @@ MIT），实现为本项目自写的 Tauri + React 版本。收起态最宽 500p
 - **截图热键**：只有 `Ctrl+Alt+A` 一个——呼出覆盖层后再在里面切
   **区域 / 窗口 / 全屏**；截图器内 `Ctrl+C` 复制、`Ctrl+S` 保存、`Ctrl+P` 贴图、
   `Ctrl+Shift+O` OCR、`Ctrl+Shift+Q` 二维码、`Ctrl+Shift+R` 滚动、`Ctrl+Shift+G`
-  录 GIF。
+  录屏（MP4 / GIF，最长 5 分钟）。
 
 ## 已实现
 
@@ -77,7 +77,7 @@ MIT），实现为本项目自写的 Tauri + React 版本。收起态最宽 500p
 | 天气 | Open-Meteo（无需 Key）：城市胶囊、当前天气、8 项指标、5 天温度区间与逐小时（前 8 小时）；设置页用省/市/区县三级联动，支持按公网出口 IP“获取当前位置” |
 | 控制 | 音量/静音（Windows Core Audio / macOS CoreAudio HAL，滑块与系统音量键改的是同一属性）、亮度（macOS DisplayServices；Windows **DDC/CI 外接显示器优先**，失败回退 WMI 笔记本内屏）、Wi-Fi/蓝牙（仅 Windows，WinRT Radio；macOS 暂不支持，磁贴跳到系统设置）；iOS 控制中心式粗滑块 + 2×2 磁贴。滑块左侧图标点一下静音/取消静音 |
 | 剪贴板 | 最近 10 条文本/图片，内存历史，点击写回剪贴板 |
-| 截图 | 区域/窗口/全屏/延时截图、滚动长截图、标注器、贴图窗口、本地 OCR/二维码、8 秒 GIF 录制、PNG/JPG 保存、自动复制/贴图、历史打开/编辑/复制/贴图/删除。抓屏与编辑分离，截图页只做入口和历史；详见下方“截图工作台” |
+| 截图 | 区域/窗口/全屏/延时截图、滚动长截图、标注器、贴图窗口、本地 OCR/二维码、录屏（MP4 / GIF，最长 5 分钟，可裁剪）、PNG/JPG 保存、自动复制/贴图、历史打开/编辑/复制/贴图/删除。抓屏与编辑分离，截图页只做入口和历史；详见下方“截图工作台” |
 | 媒体 | Windows SMTC：标题/歌手/封面/进度/播放状态 + 播放暂停/上一首/下一首 |
 | 歌词 | 网易云公开接口按曲名+歌手取 LRC 与翻译；主页媒体条与收起音乐视图显示当前句 |
 | 玻璃 | 固定深色毛玻璃，不再提供主题切换；右键菜单和设置页调“透明度”（0–90%）。越高越透出桌面，底图同时按比例压暗，保证白底上白字仍可读。**没有外投影**，透明窗口四周不再出现暗边 |
@@ -106,15 +106,37 @@ MIT），实现为本项目自写的 Tauri + React 版本。收起态最宽 500p
   把它截进来；抓完才把岛藏起来，免得它浮在覆盖层上。窗口快照同时包含
   `AgentHUD Island`，所以也能直接单击选中 HUD 窗口本身。录屏时会把岛放回屏幕再录，
   结果和选区预览一致。
-- **分类动作**：`截图` → 标注 / 复制 / 另存为；`滚动截图` → 开始滚动拼接；`录屏` →
-  录制 8 秒 GIF。选区在三个分类之间共用，切换分类不会丢选区。
+- **分类动作**：`截图` → 选完直接进标注器；`滚动截图` → 开始滚动拼接；`录屏` →
+  先选 MP4 / GIF 与是否录鼠标，再点「开始录制」。选区在三个分类之间共用，
+  切换分类/点工具条按钮都不会丢选区。
 - **延时**：0/3/5/10 秒，先隐藏 HUD 与自身窗口再抓屏。
 - **滚动长截图**：框选后按 `Ctrl+Shift+R`（或点“开始滚动”），编辑器移出屏幕，向选区中心窗口发送真实滚轮消息，逐帧抓取并按行签名拼接；支持网页、聊天记录、文档等常规滚动容器。Windows 走 `PostMessage`+`mouse_event`，macOS 用 CoreGraphics `CGEventCreateScrollWheelEvent` 投像素级滚轮事件（首次使用需在「系统设置 → 隐私与安全性 → 辅助功能」里勾选 AgentHUD，未授权会给出明确提示）。
 - **标注器**：矩形/椭圆/箭头/画笔/高亮/文字/序号/马赛克/模糊，颜色与线宽、撤销重做、重新框选。
 - **贴图**：`Ctrl+P`，把当前画面钉成无边框置顶窗口，可拖动、按比例缩放、复制、保存。
 - **本地 OCR**：`Ctrl+Shift+O`，走 Windows.Media.Ocr，不联网；结果可直接复制。
 - **二维码**：`Ctrl+Shift+Q`，本地 `rqrr` 解码，结果可复制。
-- **GIF 录制**：选区后点“录制”或 `Ctrl+Shift+G`，固定 8 秒、最高 1000px 宽，保存到截图目录；结果弹窗可直接打开 GIF。帧尺寸以**实际抓到的第一帧**为准（macOS `screencapture -R` 会把逻辑矩形向外取整，按请求尺寸建 GIF 帧会触发 `gif` crate 断言 panic，表现为“录制任务失败: task … panicked”）；帧延时按真实抓帧节奏写，大区域抓一帧要 1s+ 也不会回放成快进。窗口/历史图片会话的 rect 不是屏幕坐标，录制按钮会禁用并提示改用区域/窗口模式。
+- **录屏**（飞书式）：框选后选 `MP4` / `GIF`、是否画鼠标，点「开始录制」或
+  `Ctrl+Shift+G`。覆盖层挪出屏幕，屏幕右下角浮出录制条（`rec.html`），显示
+  已录时长 / 5 分钟上限和「结束」；点「结束」后录制条原地放大成预览窗：
+  `<video>` 播放、时间轴两端拖动裁剪、复制（文件写到剪贴板）/ 下载（另存为）。
+  - 抓帧走 CoreGraphics `CGWindowListCreateImage`（`dlsym`，约 15~30ms/帧），
+    抓不到时退回 `screencapture -R`；以录制条窗口号为界用
+    `kCGWindowListOptionOnScreenBelowWindow` 抓帧，录制条自己不会入画。
+  - MP4（macOS 15+）：走 ScreenCaptureKit `SCStream` + `SCRecordingOutput`，
+    系统负责抓帧/系统声音/编码/封装，**60fps + 系统声音**，几乎不占 CPU。
+    `SCStreamConfiguration` 里配 `sourceRect`（相对显示器）、`minimumFrameInterval
+    = 1/60`、`showsCursor`、`capturesAudio`；停流后等 `recordingOutputDidFinishRecording`
+    回调才算文件收尾。起流失败（老系统/没权限）会回退到逐帧抓屏 + VideoToolbox
+    H.264 + 纯 Rust `mp4` 封装（那条路没有声音，帧率受抓屏速度限制 ~20fps）。
+  - 裁剪用系统 `/usr/bin/avconvert`（`PresetPassthrough`，失败再退
+    `PresetHighestQuality`）。
+  - GIF：帧先按 JPEG 落到临时目录，停止时统一编码；宽度上限 1000px。
+    量化按核数并行（每批 核数×2 帧），5 秒的 GIF 大约 2 秒出片；抓帧节奏按
+    30fps 起（录久了自动降到 15/10fps 控制临时目录体积）。预览窗里可以改帧率
+    （5/10/15/20/30），后端按新帧率重新挑帧编码并原子替换文件，录制条/预览窗
+    显示百分比进度。
+  - 鼠标指针用白色箭头多边形画在每帧上（CoreGraphics 抓帧本身不含光标）。
+  - 窗口/历史图片会话的 rect 不是屏幕坐标，录制入口会拦截并提示改用区域模式。
 - **保存 / 复制**：默认 PNG（可切 JPG），保存到 `图片/AgentHUD Screenshots`；保存后可自动复制/贴图，历史列表支持打开、编辑标注、复制、贴图、二次确认删除。标注器里另有「另存为…」(`Ctrl+Shift+S`)，弹系统保存面板选任意目录。
 - **历史编辑**：历史项铅笔按钮重新进入标注器，不是只能看外部文件。
 - **无外部配置**：截图设置也在 `~/.agenthud/island.db` 内部状态库，不生成 JSON。
@@ -151,7 +173,8 @@ MIT），实现为本项目自写的 Tauri + React 版本。收起态最宽 500p
 - **截图**：`island/screenshot.rs` 用 GDI `BitBlt` / `PrintWindow` 抓屏，
   PNG 原始字节走 `shot_session_image` raw IPC（不塞 base64 会话）；滚动截图
   用 `PostMessage(WM_MOUSEWHEEL)` + 真实输入补发，按行签名搜索重叠区拼接；
-  OCR 用 WinRT `Windows.Media.Ocr`；二维码用 `rqrr`；GIF 用 `gif` crate。
+  OCR 用 WinRT `Windows.Media.Ocr`；二维码用 `rqrr`；GIF 用 `gif` crate；
+  MP4 用 VideoToolbox（H.264）+ `mp4` crate。
   截图设置存在 `island.db` 的 `shot_settings` 表。
 
 所有后台线程都有 generation 计数：关闭灵动岛时旧线程退出，重新开启不会
@@ -173,7 +196,8 @@ src/island/island.css             # 深色玻璃、圆环、横竖排、页面�
 src-tauri/src/island/mod.rs       # 窗口/配置/展开收起/拖拽吸附/全屏/命令
 src-tauri/src/island/store.rs     # 内部 SQLite 配置库 + 旧 JSON 迁移
 src-tauri/src/island/backdrop.rs  # 桌面缩略图抓取（WDA 排除自身 + GDI + PNG）
-src-tauri/src/island/screenshot.rs # 抓屏/选区窗口/滚动拼接/OCR/二维码/贴图/GIF
+src-tauri/src/island/screenshot.rs # 抓屏/选区窗口/滚动拼接/OCR/二维码/贴图
+src-tauri/src/island/screenshot/record.rs # 录屏：抓帧/MP4 编码/录制条/预览裁剪
 src-tauri/src/island/{weather,stocks,media,system,clipboard,notify,lyrics}.rs
 shot.html / src/shot/             # 全屏框选 + 标注器（shot.css / api / mock）
 pin.html / src/pin/               # 贴图窗口
@@ -227,8 +251,8 @@ src-tauri/capabilities/pin.json
   窗口列表在覆盖层里选窗（没授权时窗口标题为空，矩形仍可用）；滚动注入在 macOS
   上需要「辅助功能」权限。
 - **跨平台桌面模糊**：抓屏采样目前仅 Windows；macOS 上退化为纯 CSS 深色玻璃。
-- **视频录屏 / 麦克风 / 系统音频**：截图页目前提供 8 秒 GIF 录制；MP4/WebM、
-  音频混流和录制控制条尚未接入。
+- **录屏音频**：MP4 默认就录系统声音（SCK `capturesAudio`，没有单独开关），
+  麦克风混音与 WebM 输出还没接；GIF 本身没有声音。
 - **云翻译 / 表格识别 / AI 图片转换**：本地 OCR 与二维码已实现；需要外部
   服务或大模型的图片翻译、表格结构化、AI 重写暂未接入。
 - **贴图跨重启恢复**：贴图窗口在当前运行期有效，退出后不自动恢复。

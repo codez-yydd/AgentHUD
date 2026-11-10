@@ -61,6 +61,13 @@ tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
+# 录屏 MP4 封装：VideoToolbox 出 H.264 裸流，mp4 crate 写容器（纯 Rust）
+mp4 = "0.14"
+# 录屏：ScreenCaptureKit 流式抓屏（60fps + 系统声音），macOS 15+ 走 SCRecordingOutput
+objc2-screen-capture-kit = "0.3"
+block2 = "0.6"
+objc2-core-foundation = "0.3"
+objc2-core-media = "0.3"
 objc2 = "0.6"
 objc2-app-kit = "0.3"
 objc2-foundation = { version = "0.3", features = ["NSProcessInfo"] }

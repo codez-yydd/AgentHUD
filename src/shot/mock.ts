@@ -2,6 +2,8 @@ import type {
   OcrResult,
   PinData,
   QrResult,
+  RecordStarted,
+  RecordState,
   ScrollResult,
   ShotHistoryItem,
   ShotMonitor,
@@ -325,4 +327,90 @@ export function mockQr(): QrResult {
 
 export function mockScroll(_image: string, width: number, height: number): ScrollResult {
   return { width, height: Math.round(height * 1.55), frames: 5 };
+}
+
+// ------------------------------------------------------------
+// 录屏（浏览器预览用假状态机）
+// ------------------------------------------------------------
+
+interface MockRecord {
+  startedAt: number;
+  running: boolean;
+  format: string;
+}
+
+const mockRecords = new Map<number, MockRecord>();
+let mockRecordSeq = 1;
+
+export function mockRecordStart(format: string): Promise<RecordStarted> {
+  const id = mockRecordSeq++;
+  mockRecords.set(id, { startedAt: performance.now(), running: true, format });
+  return new Promise((resolve) =>
+    window.setTimeout(
+      () =>
+        resolve({
+          recordId: id,
+          format,
+          width: 960,
+          height: 600,
+          maxSeconds: 300,
+        }),
+      120
+    )
+  );
+}
+
+export function mockRecordState(recordId: number): Promise<RecordState> {
+  const entry = mockRecords.get(recordId);
+  if (!entry) {
+    return Promise.resolve({
+      running: false,
+      elapsedMs: 0,
+      format: "gif",
+      result: null,
+      error: "录屏会话已失效",
+      gifFps: 10,
+      progress: 0,
+    });
+  }
+  const elapsed = performance.now() - entry.startedAt;
+  if (elapsed > 3200) entry.running = false;
+  const duration = Math.min(3200, elapsed);
+  const state: RecordState = {
+    running: entry.running,
+    elapsedMs: Math.round(duration),
+    format: entry.format,
+    result: entry.running
+      ? null
+      : {
+          path: `/tmp/AgentHUD-Recording-preview.${entry.format}`,
+          width: 960,
+          height: 600,
+          frames: 64,
+          durationMs: 3200,
+          size: 1_820_000,
+          format: entry.format,
+          recordId,
+        },
+    error: null,
+    gifFps: 10,
+    progress: 0,
+  };
+  return new Promise((resolve) => window.setTimeout(() => resolve(state), 40));
+}
+
+export function mockRecordExport(action: "copy" | "save"): Promise<string | null> {
+  return new Promise((resolve) =>
+    window.setTimeout(() => resolve(action === "save" ? "/tmp/Recording_trimmed.gif" : null), 240)
+  );
+}
+
+/** 1×1 透明 GIF：浏览器预览里够占位就行。 */
+export async function mockRecordMedia(): Promise<ArrayBuffer> {
+  const base64 =
+    "R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+  return bytes.buffer;
 }

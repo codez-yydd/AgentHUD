@@ -19,21 +19,19 @@ import {
   getShotSettings,
   getShotWindows,
   ocrShot,
-  openShot,
-  openShotFolder,
+  onRecordError,
   pinShot,
   qrShot,
-  recordGif,
   saveShot,
   saveShotAs,
   markPainted,
   scrollShot,
   shotReady,
+  startRecord,
 } from "./api";
 import type {
   OcrResult,
   QrResult,
-  RecordResult,
   ShotRect,
   ShotSession,
   ShotSettings,
@@ -207,13 +205,13 @@ export default function ShotApp() {
   const [toast, setToast] = useState("");
   const [busy, setBusy] = useState("");
   const [modal, setModal] = useState<
-    | { kind: "ocr"; result: OcrResult }
-    | { kind: "qr"; result: QrResult }
-    | { kind: "record"; result: RecordResult }
-    | null
+    { kind: "ocr"; result: OcrResult } | { kind: "qr"; result: QrResult } | null
   >(null);
   const [settings, setSettings] = useState<ShotSettings | null>(null);
   const [historyNote, setHistoryNote] = useState("");
+  // 录屏设置：格式与鼠标指针，选完区域后直接在截图条里调
+  const [recFormat, setRecFormat] = useState<"mp4" | "gif">(IS_MAC ? "mp4" : "gif");
+  const [recCursor, setRecCursor] = useState(true);
 
 
   const stageRef = useRef<HTMLDivElement | null>(null);
@@ -254,6 +252,16 @@ export default function ShotApp() {
   useEffect(() => {
     void getShotSettings().then(setSettings).catch(() => {});
   }, []);
+
+  // 录屏中途失败：录制窗收起后把原因提示在覆盖层里。
+  useEffect(
+    () =>
+      onRecordError((message) => {
+        setBusy("");
+        showToast(message, 5200);
+      }),
+    [showToast]
+  );
 
   const idFromUrl = useMemo(() => {
     const id = Number(new URLSearchParams(window.location.search).get("id"));
@@ -732,11 +740,12 @@ export default function ShotApp() {
 
   const endSelection = (event: ReactPointerEvent) => {
     const drag = selectDragRef.current;
-    if (drag) {
-      selectDragRef.current = null;
-      if (stageRef.current?.hasPointerCapture(event.pointerId)) {
-        stageRef.current.releasePointerCapture(event.pointerId);
-      }
+    // 没从画布上按下过（比如点在悬浮工具条的按钮上）就不要动选区，
+    // 否则切换格式/开始录制这类点击会把用户刚框好的区域清掉。
+    if (!drag) return;
+    selectDragRef.current = null;
+    if (stageRef.current?.hasPointerCapture(event.pointerId)) {
+      stageRef.current.releasePointerCapture(event.pointerId);
     }
     const point = selectPoint(event);
     let next: ShotRect | null = null;
@@ -904,13 +913,14 @@ export default function ShotApp() {
   async function finishRecord() {
     if (!session || !selection || busy) return;
     if (!session.origin) {
-      showToast("窗口/图片会话不能录制，请用区域或窗口模式重新框选", 3600);
+      showToast("窗口/图片会话不能录制，请框选屏幕区域后再录", 3600);
       return;
     }
     const rect = normRect(selection);
-    setBusy("正在录制 8 秒 GIF…");
+    setBusy("正在准备录屏…");
     try {
-      const result = await recordGif(
+      // 后端会挪走覆盖层并在屏幕右下角浮出录制条，这里只负责把选区传过去。
+      await startRecord(
         session.id,
         {
           x: Math.round(rect.x),
@@ -918,9 +928,8 @@ export default function ShotApp() {
           width: Math.round(rect.width),
           height: Math.round(rect.height),
         },
-        8
+        { format: recFormat, cursor: recCursor }
       );
-      setModal({ kind: "record", result });
     } catch (error) {
       showToast(String(error), 4200);
     } finally {
@@ -1329,7 +1338,7 @@ export default function ShotApp() {
               <button
                 type="button"
                 className={tab === "record" ? "active" : ""}
-                title="框选区域录 8 秒 GIF"
+                title="框选区域录屏（MP4 / GIF，最长 5 分钟）"
                 onClick={() => switchTab("record")}
               >
                 <span className="shot-rec-dot" /> 录屏
@@ -1357,19 +1366,50 @@ export default function ShotApp() {
                 <ShotIcon name="scroll" size={14} /> 开始滚动
               </button>
             ) : (
-              <button
-                type="button"
-                className="shot-btn record"
-                disabled={!selection || !session.origin || busy !== ""}
-                title={
-                  session.origin
-                    ? `录制 8 秒 GIF（${shortcutText("Ctrl+Shift+G")}）`
-                    : "窗口/图片会话不能录制，请框选屏幕区域后再录"
-                }
-                onClick={() => void finishRecord()}
-              >
-                <span className="shot-rec-dot" /> 录制 8 秒
-              </button>
+              <>
+                <div className="shot-rec-format" role="group" aria-label="录屏格式">
+                  {IS_MAC ? (
+                    <button
+                      type="button"
+                      className={recFormat === "mp4" ? "active" : ""}
+                      title="MP4 视频：画面流畅、体积适中，支持裁剪"
+                      onClick={() => setRecFormat("mp4")}
+                    >
+                      MP4
+                    </button>
+                  ) : null}
+                  <button
+                    type="button"
+                    className={recFormat === "gif" ? "active" : ""}
+                    title="GIF 动图：体积小，适合贴到聊天窗口"
+                    onClick={() => setRecFormat("gif")}
+                  >
+                    GIF
+                  </button>
+                </div>
+                <button
+                  type="button"
+                  className={recCursor ? "shot-rec-toggle on" : "shot-rec-toggle"}
+                  title="录制时是否把鼠标指针画进画面"
+                  onClick={() => setRecCursor((value) => !value)}
+                >
+                  <span className="shot-rec-switch" />
+                  鼠标
+                </button>
+                <button
+                  type="button"
+                  className="shot-btn record"
+                  disabled={!selection || !session.origin || busy !== ""}
+                  title={
+                    session.origin
+                      ? `开始录屏，最长 5 分钟（${shortcutText("Ctrl+Shift+G")}）`
+                      : "窗口/图片会话不能录制，请框选屏幕区域后再录"
+                  }
+                  onClick={() => void finishRecord()}
+                >
+                  <span className="shot-rec-dot" /> 开始录制
+                </button>
+              </>
             )}
             <span className="shot-actions-sep" />
             <button
@@ -1408,7 +1448,7 @@ export default function ShotApp() {
                 <span>·</span>
                 <kbd>单击窗口</kbd> 选中整个窗口
                 <span>·</span>
-                <Shortcut combo="Ctrl+Shift+G" /> 录制 8 秒
+                <Shortcut combo="Ctrl+Shift+G" /> 开始录制（最长 5 分钟）
               </>
             )}
             <span>·</span>
@@ -1609,59 +1649,22 @@ export default function ShotApp() {
           <div className="shot-modal" onPointerDown={(event) => event.stopPropagation()}>
             <div className="shot-modal-head">
               <div>
-                <b>
-                  {modal.kind === "ocr"
-                    ? "提取文字"
-                    : modal.kind === "qr"
-                      ? "二维码识别"
-                      : "GIF 已保存"}
-                </b>
+                <b>{modal.kind === "ocr" ? "提取文字" : "二维码识别"}</b>
                 <span>
                   {modal.kind === "ocr"
                     ? modal.result.ok
                       ? `${modal.result.lines.length} 行 · 本地识别`
                       : "未识别到文字"
-                    : modal.kind === "qr"
-                      ? modal.result.ok
-                        ? `${modal.result.texts.length} 个结果`
-                        : "未识别到二维码"
-                      : `${modal.result.width} × ${modal.result.height} · ${modal.result.frames} 帧 · ${(modal.result.size / 1024 / 1024).toFixed(1)} MB`}
+                    : modal.result.ok
+                      ? `${modal.result.texts.length} 个结果`
+                      : "未识别到二维码"}
                 </span>
               </div>
               <button type="button" onClick={() => setModal(null)}>
                 <ShotIcon name="close" size={15} />
               </button>
             </div>
-            {modal.kind === "record" ? (
-              <>
-                <div className="shot-record-summary">
-                  <span className="shot-rec-dot" />
-                  <div>
-                    <b>录制完成 · {Math.round(modal.result.durationMs / 1000)} 秒</b>
-                    <em>{modal.result.path}</em>
-                  </div>
-                </div>
-                <div className="shot-modal-actions">
-                  <button
-                    type="button"
-                    className="shot-btn"
-                    onClick={() => void openShotFolder().catch((e) => showToast(String(e)))}
-                  >
-                    打开文件夹
-                  </button>
-                  <button
-                    type="button"
-                    className="shot-btn"
-                    onClick={() => void openShot(modal.result.path).catch((e) => showToast(String(e)))}
-                  >
-                    打开 GIF
-                  </button>
-                  <button type="button" className="shot-btn primary" onClick={() => setModal(null)}>
-                    完成
-                  </button>
-                </div>
-              </>
-            ) : modal.kind === "ocr" ? (
+            {modal.kind === "ocr" ? (
               modal.result.ok ? (
                 <>
                   <textarea readOnly value={modal.result.text} />
