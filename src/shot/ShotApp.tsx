@@ -429,7 +429,8 @@ export default function ShotApp() {
     ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
     const unit = 1 / Math.max(0.05, display.scale);
     for (const op of ops) drawOp(ctx, op, unit);
-    if (draft) drawOp(ctx, draft, unit);
+    // 拖动中的草稿用快模式（大选区逐帧做真模糊太慢），松手后再出精细结果。
+    if (draft) drawOp(ctx, draft, unit, true);
   }, [display, draft, ops]);
 
   useEffect(() => {
@@ -616,14 +617,48 @@ export default function ShotApp() {
     };
   };
 
-  const pickWindow = (win: ShotWindow) => {
-    setSelection({
-      x: win.x,
-      y: win.y,
-      width: win.width,
-      height: win.height,
-    });
-    setHoverWindow(null);
+  /** 根据当前拖拽状态算出选区（移动/缩放/新建三种）。 */
+  const rectForDrag = (drag: SelectDrag, point: Point): ShotRect => {
+    if (!session) return { x: 0, y: 0, width: 0, height: 0 };
+    if (drag.mode === "new") {
+      return normRect({
+        x: drag.start.x,
+        y: drag.start.y,
+        width: point.x - drag.start.x,
+        height: point.y - drag.start.y,
+      });
+    }
+    if (drag.mode === "move") {
+      const dx = point.x - drag.start.x;
+      const dy = point.y - drag.start.y;
+      const width = drag.origin.width;
+      const height = drag.origin.height;
+      return {
+        x: clamp(drag.origin.x + dx, 0, session.width - width),
+        y: clamp(drag.origin.y + dy, 0, session.height - height),
+        width,
+        height,
+      };
+    }
+    const rect = { ...drag.origin };
+    const minSize = 8;
+    if (drag.handle.includes("w")) {
+      const nx = clamp(point.x, 0, rect.x + rect.width - minSize);
+      rect.width += rect.x - nx;
+      rect.x = nx;
+    }
+    if (drag.handle.includes("e")) {
+      rect.width = clamp(point.x - rect.x, minSize, session.width - rect.x);
+    }
+    if (drag.handle.includes("n")) {
+      const ny = clamp(point.y, 0, rect.y + rect.height - minSize);
+      rect.height += rect.y - ny;
+      rect.y = ny;
+    }
+    if (drag.handle.includes("s")) {
+      rect.height = clamp(point.y - rect.y, minSize, session.height - rect.y);
+    }
+    return rect;
   };
 
   const startSelection = (event: ReactPointerEvent) => {
@@ -692,50 +727,7 @@ export default function ShotApp() {
       setHoverWindow(hoverAt(selectPoint(event)));
       return;
     }
-    const point = selectPoint(event);
-    const drag = selectDragRef.current;
-    if (drag.mode === "new") {
-      const rect = normRect({
-        x: drag.start.x,
-        y: drag.start.y,
-        width: point.x - drag.start.x,
-        height: point.y - drag.start.y,
-      });
-      setSelection(rect);
-      return;
-    }
-    if (drag.mode === "move") {
-      const dx = point.x - drag.start.x;
-      const dy = point.y - drag.start.y;
-      const width = drag.origin.width;
-      const height = drag.origin.height;
-      setSelection({
-        x: clamp(drag.origin.x + dx, 0, session.width - width),
-        y: clamp(drag.origin.y + dy, 0, session.height - height),
-        width,
-        height,
-      });
-      return;
-    }
-    const rect = { ...drag.origin };
-    const minSize = 8;
-    if (drag.handle.includes("w")) {
-      const nx = clamp(point.x, 0, rect.x + rect.width - minSize);
-      rect.width += rect.x - nx;
-      rect.x = nx;
-    }
-    if (drag.handle.includes("e")) {
-      rect.width = clamp(point.x - rect.x, minSize, session.width - rect.x);
-    }
-    if (drag.handle.includes("n")) {
-      const ny = clamp(point.y, 0, rect.y + rect.height - minSize);
-      rect.height += rect.y - ny;
-      rect.y = ny;
-    }
-    if (drag.handle.includes("s")) {
-      rect.height = clamp(point.y - rect.y, minSize, session.height - rect.y);
-    }
-    setSelection(rect);
+    setSelection(rectForDrag(selectDragRef.current, selectPoint(event)));
   };
 
   const endSelection = (event: ReactPointerEvent) => {
@@ -745,30 +737,33 @@ export default function ShotApp() {
       if (stageRef.current?.hasPointerCapture(event.pointerId)) {
         stageRef.current.releasePointerCapture(event.pointerId);
       }
-      // 单击（没拖动）落在窗口上 = 选中这个窗口，和飞书截图一致。
-      if (drag.mode === "new") {
-        const point = selectPoint(event);
-        const moved =
-          Math.abs(point.x - drag.start.x) + Math.abs(point.y - drag.start.y);
-        const hit = moved < 6 ? hoverAt(point) : null;
-        if (hit) {
-          pickWindow(hit);
-          return;
-        }
+    }
+    const point = selectPoint(event);
+    let next: ShotRect | null = null;
+    if (drag) {
+      // 单击（几乎没移动）落在窗口/桌面上 = 直接选中窗口或整屏。
+      const moved = Math.abs(point.x - drag.start.x) + Math.abs(point.y - drag.start.y);
+      const hit = drag.mode === "new" && moved < 6 ? hoverAt(point) : null;
+      if (hit) {
+        next = { x: hit.x, y: hit.y, width: hit.width, height: hit.height };
+      } else {
+        const rect = rectForDrag(drag, point);
+        if (rect.width >= 6 && rect.height >= 6) next = rect;
       }
     }
-    setSelection((current) => {
-      if (!current) return null;
-      const rect = normRect(current);
-      if (rect.width < 6 || rect.height < 6) return null;
-      return rect;
-    });
+    setSelection(next);
+    setHoverWindow(null);
+    // 截图分类：选完直接进标注器，不用再点"标注"。
+    if (next && tab === "shot") void cropSelection(next);
   };
 
-  /** 把当前选区按原图像素裁出来（不进入标注器）。 */
-  async function renderSelection(): Promise<{ data: string; rect: ShotRect } | null> {
-    if (!session?.image || !selection) return null;
-    const rect = normRect(selection);
+  /** 把选区按原图像素裁出来（不进入标注器）。不传 rect 时用当前选区。 */
+  async function renderSelection(
+    rectArg?: ShotRect
+  ): Promise<{ data: string; rect: ShotRect } | null> {
+    const target = rectArg ?? selection;
+    if (!session?.image || !target) return null;
+    const rect = normRect(target);
     if (rect.width < 2 || rect.height < 2) return null;
     const img = await loadImage(session.image);
     const canvas = document.createElement("canvas");
@@ -791,9 +786,9 @@ export default function ShotApp() {
     return { data: canvas.toDataURL("image/png"), rect };
   }
 
-  async function cropSelection() {
+  async function cropSelection(rectArg?: ShotRect) {
     try {
-      const rendered = await renderSelection();
+      const rendered = await renderSelection(rectArg);
       if (!rendered) return;
       await beginEdit(rendered.data, rendered.rect);
     } catch (error) {
@@ -1349,37 +1344,8 @@ export default function ShotApp() {
                   : "拖动选择区域"}
             </span>
             {tab === "shot" ? (
-              <>
-                <button
-                  type="button"
-                  className="shot-btn primary"
-                  disabled={!selection}
-                  onClick={() => void cropSelection()}
-                >
-                  <ShotIcon name="pen" size={14} /> 标注
-                </button>
-                <span className="shot-actions-sep" />
-                <button
-                  type="button"
-                  className="shot-btn icon"
-                  disabled={!selection}
-                  title={`复制到剪贴板（${shortcutText("Ctrl+C")}）`}
-                  aria-label="复制到剪贴板"
-                  onClick={() => void copySelection()}
-                >
-                  <ShotIcon name="copy" size={15} />
-                </button>
-                <button
-                  type="button"
-                  className="shot-btn icon"
-                  disabled={!selection}
-                  title={`另存为…（${shortcutText("Ctrl+S")}）`}
-                  aria-label="另存为"
-                  onClick={() => void saveSelectionAs()}
-                >
-                  <ShotIcon name="download" size={15} />
-                </button>
-              </>
+              // 截图分类：选完自动进标注器，不在这里放“标注”按钮。
+              <span className="shot-mode-note">松开即进入标注</span>
             ) : tab === "scroll" ? (
               <button
                 type="button"
@@ -1425,11 +1391,7 @@ export default function ShotApp() {
                 <span>·</span>
                 <kbd>桌面单击</kbd> 整屏
                 <span>·</span>
-                <Shortcut combo="Ctrl+C" /> 复制
-                <span>·</span>
-                <Shortcut combo="Ctrl+S" /> 另存为
-                <span>·</span>
-                <kbd>双击</kbd> 进入标注
+                松开鼠标直接进入标注
               </>
             ) : tab === "scroll" ? (
               <>
@@ -1609,11 +1571,12 @@ export default function ShotApp() {
               <span className="shot-divider" />
               <button
                 type="button"
-                className="shot-btn save"
-                title="保存到截图文件夹（按设置自动复制/贴图）"
+                className="shot-btn save icon"
+                title={`保存到截图文件夹（${shortcutText("Ctrl+S")}，按设置自动复制/贴图）`}
+                aria-label="保存"
                 onClick={() => void finishSave()}
               >
-                <ShotIcon name="save" size={15} /> 保存
+                <ShotIcon name="save" size={15} />
               </button>
               <button type="button" className="shot-close" title="关闭 (Esc)" onClick={() => void closeShot()}>
                 <ShotIcon name="close" size={15} />
@@ -1763,7 +1726,75 @@ function drawArrow(
   ctx.fill();
 }
 
-function drawOp(ctx: CanvasRenderingContext2D, op: Op, unit: number) {
+/** 分离式箱式模糊（横竖各一遍），落在新数组里。 */
+function boxBlur(
+  src: Uint8ClampedArray,
+  w: number,
+  h: number,
+  radius: number
+): Uint8ClampedArray {
+  const r = Math.max(1, Math.round(radius));
+  const win = r * 2 + 1;
+  const tmp = new Uint8ClampedArray(src.length);
+  const out = new Uint8ClampedArray(src.length);
+  for (let y = 0; y < h; y++) {
+    const row = y * w * 4;
+    let s0 = 0;
+    let s1 = 0;
+    let s2 = 0;
+    let s3 = 0;
+    for (let k = -r; k <= r; k += 1) {
+      const i = row + Math.min(w - 1, Math.max(0, k)) * 4;
+      s0 += src[i];
+      s1 += src[i + 1];
+      s2 += src[i + 2];
+      s3 += src[i + 3];
+    }
+    for (let x = 0; x < w; x += 1) {
+      const i = row + x * 4;
+      tmp[i] = s0 / win;
+      tmp[i + 1] = s1 / win;
+      tmp[i + 2] = s2 / win;
+      tmp[i + 3] = s3 / win;
+      const leave = row + Math.max(0, x - r) * 4;
+      const enter = row + Math.min(w - 1, x + r + 1) * 4;
+      s0 += src[enter] - src[leave];
+      s1 += src[enter + 1] - src[leave + 1];
+      s2 += src[enter + 2] - src[leave + 2];
+      s3 += src[enter + 3] - src[leave + 3];
+    }
+  }
+  for (let x = 0; x < w; x += 1) {
+    const col = x * 4;
+    let s0 = 0;
+    let s1 = 0;
+    let s2 = 0;
+    let s3 = 0;
+    for (let k = -r; k <= r; k += 1) {
+      const i = Math.min(h - 1, Math.max(0, k)) * w * 4 + col;
+      s0 += tmp[i];
+      s1 += tmp[i + 1];
+      s2 += tmp[i + 2];
+      s3 += tmp[i + 3];
+    }
+    for (let y = 0; y < h; y += 1) {
+      const i = y * w * 4 + col;
+      out[i] = s0 / win;
+      out[i + 1] = s1 / win;
+      out[i + 2] = s2 / win;
+      out[i + 3] = s3 / win;
+      const leave = Math.max(0, y - r) * w * 4 + col;
+      const enter = Math.min(h - 1, y + r + 1) * w * 4 + col;
+      s0 += tmp[enter] - tmp[leave];
+      s1 += tmp[enter + 1] - tmp[leave + 1];
+      s2 += tmp[enter + 2] - tmp[leave + 2];
+      s3 += tmp[enter + 3] - tmp[leave + 3];
+    }
+  }
+  return out;
+}
+
+function drawOp(ctx: CanvasRenderingContext2D, op: Op, unit: number, quick = false) {
   ctx.save();
   ctx.lineCap = "round";
   ctx.lineJoin = "round";
@@ -1817,17 +1848,17 @@ function drawOp(ctx: CanvasRenderingContext2D, op: Op, unit: number) {
       ctx.restore();
       return;
     }
-    const data = ctx.getImageData(x, y, w, h);
-    const temp = document.createElement("canvas");
-    temp.width = w;
-    temp.height = h;
-    const tctx = temp.getContext("2d");
-    if (!tctx) {
-      ctx.restore();
-      return;
-    }
-    tctx.putImageData(data, 0, 0);
     if (op.type === "mosaic") {
+      const data = ctx.getImageData(x, y, w, h);
+      const temp = document.createElement("canvas");
+      temp.width = w;
+      temp.height = h;
+      const tctx = temp.getContext("2d");
+      if (!tctx) {
+        ctx.restore();
+        return;
+      }
+      tctx.putImageData(data, 0, 0);
       const block = Math.max(4, Math.round(14 * unit));
       const sw = Math.max(1, Math.ceil(w / block));
       const sh = Math.max(1, Math.ceil(h / block));
@@ -1843,11 +1874,59 @@ function drawOp(ctx: CanvasRenderingContext2D, op: Op, unit: number) {
       sctx.drawImage(temp, 0, 0, sw, sh);
       ctx.imageSmoothingEnabled = false;
       ctx.drawImage(small, 0, 0, sw, sh, x, y, w, h);
+    } else if (quick) {
+      // 拖动中的草稿：整图缩小再放大，几毫秒出效果（和最终结果会有细微差别）。
+      const source = ctx.canvas;
+      const cw = source.width;
+      const ch = source.height;
+      const factor = Math.max(4, Math.min(12, Math.round(10 * unit)));
+      const small = document.createElement("canvas");
+      small.width = Math.max(1, Math.round(cw / factor));
+      small.height = Math.max(1, Math.round(ch / factor));
+      const sctx = small.getContext("2d");
+      const big = document.createElement("canvas");
+      big.width = cw;
+      big.height = ch;
+      const bctx = big.getContext("2d");
+      if (sctx && bctx) {
+        sctx.imageSmoothingEnabled = true;
+        sctx.imageSmoothingQuality = "high";
+        sctx.drawImage(source, 0, 0, cw, ch, 0, 0, small.width, small.height);
+        bctx.imageSmoothingEnabled = true;
+        bctx.imageSmoothingQuality = "high";
+        bctx.drawImage(small, 0, 0, small.width, small.height, 0, 0, cw, ch);
+        ctx.drawImage(big, x, y, w, h, x, y, w, h);
+      }
     } else {
-      ctx.save();
-      ctx.filter = `blur(${Math.max(3, 9 * unit)}px)`;
-      ctx.drawImage(temp, x, y);
-      ctx.restore();
+      // 模糊：不用 ctx.filter —— 部分 WKWebView 直接忽略它，画出来和原图
+      // 一模一样（用户看到的"模糊没用"）。改成自己算两轮箱式模糊（近似
+      // 高斯），再裁剪回选区；往外多取一圈像素，边缘也不会发虚。
+      const radius = Math.max(3, Math.min(28, Math.round(8 * unit)));
+      const pad = Math.ceil(radius);
+      const cw = ctx.canvas.width;
+      const ch = ctx.canvas.height;
+      const sx = Math.max(0, x - pad);
+      const sy = Math.max(0, y - pad);
+      const sw = Math.min(cw - sx, w + pad * 2);
+      const sh = Math.min(ch - sy, h + pad * 2);
+      if (sw >= 2 && sh >= 2) {
+        const img = ctx.getImageData(sx, sy, sw, sh);
+        const once = boxBlur(img.data, sw, sh, radius);
+        const twice = boxBlur(once, sw, sh, radius);
+        const temp = document.createElement("canvas");
+        temp.width = sw;
+        temp.height = sh;
+        const tctx = temp.getContext("2d");
+        if (tctx) {
+          tctx.putImageData(new ImageData(twice, sw, sh), 0, 0);
+          ctx.save();
+          ctx.beginPath();
+          ctx.rect(x, y, w, h);
+          ctx.clip();
+          ctx.drawImage(temp, sx, sy);
+          ctx.restore();
+        }
+      }
     }
   }
   ctx.restore();

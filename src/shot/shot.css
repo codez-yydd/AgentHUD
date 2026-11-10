@@ -313,6 +313,14 @@ button {
   white-space: nowrap;
 }
 
+/* 截图分类没有确认按钮：松开鼠标就进标注器，这里只提示一下 */
+.shot-mode-note {
+  padding: 0 8px;
+  color: rgba(200, 213, 240, 0.46);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
 .shot-btn.icon {
   width: 30px;
   padding: 0;

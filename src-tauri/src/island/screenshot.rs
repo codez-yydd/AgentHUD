@@ -1449,12 +1449,18 @@ async fn start_capture_inner(
     delay_sec: u64,
     monitor_index: Option<usize>,
 ) -> Result<u64, String> {
-    if session_slot()
-        .lock()
-        .map(|g| g.is_some())
-        .unwrap_or(false)
-    {
-        return Err("截图窗口已经打开".into());
+    if let Ok(guard) = session_slot().lock() {
+        if let Some(session) = guard.as_ref() {
+            let visible = app
+                .get_webview_window(SHOT_WINDOW_LABEL)
+                .map(|w| w.is_visible().unwrap_or(false))
+                .unwrap_or(false);
+            eprintln!(
+                "[zbar-shot] 会话占用中 id={} mode={} 覆盖层可见={visible}",
+                session.id, session.mode
+            );
+            return Err("截图窗口已经打开".into());
+        }
     }
     let mode = match mode.as_str() {
         "region" => "region",
