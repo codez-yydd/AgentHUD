@@ -333,21 +333,47 @@ export default function IslandApp() {
 
   // 收起态把胶囊的实际矩形报给 Rust：macOS 上由 Rust 轮询光标判断悬停展开，
   // 用整扇窗（含透明边距）当热区会太灵敏，所以以真实胶囊为准。
+  //
+  // 关键：`width/height` 有 500ms 过渡，收起刚开始时量到的是**展开面板的尺寸**
+  // （约 500×450），拿去当热区会让鼠标还没靠近胶囊就把面板重新撑开。所以这里
+  // 用 rAF 连续取帧，等矩形连续几帧不再变化（动画真正结束）才上报。
   useEffect(() => {
     if (!IS_TAURI || open) return;
-    const report = () => {
-      const el = islandRef.current;
-      if (!el) return;
-      const rect = el.getBoundingClientRect();
-      if (rect.width < 1 || rect.height < 1) return;
+    let alive = true;
+    let last = "";
+    let stable = 0;
+    const deadline = performance.now() + 1500;
+    const push = (rect: DOMRect) => {
       void islandSetHoverRect(rect.left, rect.top, rect.width, rect.height);
     };
-    // 收起动画结束后布局才稳定，延一拍再上报
-    const timer = window.setTimeout(report, 80);
-    window.addEventListener("resize", report);
+    const tick = () => {
+      if (!alive) return;
+      const el = islandRef.current;
+      const rect = el?.getBoundingClientRect();
+      if (rect && rect.width >= 1 && rect.height >= 1) {
+        const key = `${rect.left.toFixed(1)},${rect.top.toFixed(1)},${rect.width.toFixed(1)},${rect.height.toFixed(1)}`;
+        if (key === last) {
+          stable += 1;
+        } else {
+          last = key;
+          stable = 0;
+        }
+        // 连续 3 帧不变 ≈ 过渡已经落定
+        if (stable >= 2) {
+          push(rect);
+          return;
+        }
+      }
+      if (performance.now() > deadline) {
+        if (rect && rect.width >= 1 && rect.height >= 1) push(rect);
+        return;
+      }
+      window.requestAnimationFrame(tick);
+    };
+    const raf = window.requestAnimationFrame(tick);
     return () => {
-      window.clearTimeout(timer);
-      window.removeEventListener("resize", report);
+      alive = false;
+      window.cancelAnimationFrame(raf);
     };
   }, [open, edge]);
 

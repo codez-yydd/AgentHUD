@@ -78,9 +78,41 @@ pub fn island_set_hover_rect(x: f64, y: f64, width: f64, height: f64) {
     if width <= 0.0 || height <= 0.0 {
         return;
     }
+    if std::env::var_os("ZBAR_ISLAND_DEBUG").is_some() {
+        eprintln!("[zbar-island] hover rect {x:.0},{y:.0} {width:.0}x{height:.0}");
+    }
     if let Ok(mut slot) = hover_rect_slot().lock() {
         *slot = Some((x, y, width, height));
     }
+}
+
+/// 收起态窗口的逻辑尺寸（前端上报的热区按此裁剪）。
+fn collapsed_window_size(edge: &str) -> (f64, f64) {
+    match edge {
+        "left" | "right" => (ISLAND_SIDE_W, ISLAND_SIDE_H),
+        _ => (ISLAND_WINDOW_W, ISLAND_COLLAPSED_H),
+    }
+}
+
+/// 把前端上报的胶囊热区（相对窗口左上角的逻辑 px）裁进收起态窗口内。
+///
+/// 收起动画刚开始时 `.island` 仍然带着展开时的尺寸（约 500×450），如果原样
+/// 采信，鼠标离胶囊还有几百 px 就会触发展开。裁进窗口后最坏情况也只是整扇
+/// 窗口大小，不会再“提前亮”。裁完太小（数据明显不对）返回 None，调用方回退
+/// 到整窗判定。
+fn clamp_hover_rect(rect: (f64, f64, f64, f64), edge: &str) -> Option<(f64, f64, f64, f64)> {
+    let (cw, ch) = collapsed_window_size(edge);
+    if !rect.0.is_finite() || !rect.1.is_finite() || !rect.2.is_finite() || !rect.3.is_finite() {
+        return None;
+    }
+    let x0 = rect.0.clamp(0.0, cw);
+    let y0 = rect.1.clamp(0.0, ch);
+    let x1 = (rect.0 + rect.2).clamp(x0, cw);
+    let y1 = (rect.1 + rect.3).clamp(y0, ch);
+    if x1 - x0 < 8.0 || y1 - y0 < 8.0 {
+        return None;
+    }
+    Some((x0, y0, x1 - x0, y1 - y0))
 }
 
 // ============================================================
@@ -240,12 +272,18 @@ fn start_hover_watcher(app: AppHandle) {
                         size.width as f64,
                         size.height as f64,
                     ),
-                    (false, Some(rect)) => (
-                        pos.x as f64 + rect.0 * scale,
-                        pos.y as f64 + rect.1 * scale,
-                        rect.2 * scale,
-                        rect.3 * scale,
-                    ),
+                    (false, Some(rect)) => match clamp_hover_rect(rect, &cfg.edge) {
+                        Some((x, y, w, h)) => (
+                            pos.x as f64 + x * scale,
+                            pos.y as f64 + y * scale,
+                            w * scale,
+                            h * scale,
+                        ),
+                        None => {
+                            let (cw, ch) = collapsed_window_size(&cfg.edge);
+                            (pos.x as f64, pos.y as f64, cw * scale, ch * scale)
+                        }
+                    },
                 };
                 let margin = if expanded { 6.0 } else { 2.0 };
                 let is_inside = cx >= rx - margin
@@ -1667,5 +1705,26 @@ mod tests {
         }
         assert!((x - 240.0).abs() < 1.0, "x={x}");
         assert!(v.abs() < 20.0, "v={v}");
+    }
+
+    #[test]
+    fn collapsed_hot_zone_keeps_pill_rect() {
+        // 顶部吸附：胶囊 500×48，位于窗口 (26,6)。
+        let r = clamp_hover_rect((26.0, 6.0, 500.0, 48.0), "top").unwrap();
+        assert_eq!(r, (26.0, 6.0, 500.0, 48.0));
+        // 左右吸附：竖胶囊 48×440，窗口 70×520。
+        let r = clamp_hover_rect((11.0, 40.0, 48.0, 440.0), "right").unwrap();
+        assert_eq!(r, (11.0, 40.0, 48.0, 440.0));
+    }
+
+    #[test]
+    fn expanded_size_report_is_clamped() {
+        // 收起动画中途量到的展开尺寸（约 500×450）不能原样当热区，
+        // 否则鼠标离胶囊几百 px 就展开。
+        let r = clamp_hover_rect((26.0, 6.0, 494.0, 450.0), "top").unwrap();
+        assert_eq!(r, (26.0, 6.0, 494.0, 64.0));
+        // 整个越界的报告回退给调用方处理。
+        assert_eq!(clamp_hover_rect((600.0, 6.0, 500.0, 48.0), "top"), None);
+        assert_eq!(clamp_hover_rect((f64::NAN, 6.0, 500.0, 48.0), "top"), None);
     }
 }
