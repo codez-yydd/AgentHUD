@@ -65,6 +65,7 @@ static FULLSCREEN_WATCHER_STARTED: AtomicBool = AtomicBool::new(false);
 static FULLSCREEN_HIDDEN: AtomicBool = AtomicBool::new(false);
 static LAST_EXPANDED: AtomicBool = AtomicBool::new(false);
 /// 收起态胶囊的悬停热区（CSS px，相对 webview 左上角），由前端上报。
+/// macOS 的悬停展开判定、Windows 的透明留白穿透都按这块矩形算。
 static HOVER_RECT: std::sync::OnceLock<std::sync::Mutex<Option<(f64, f64, f64, f64)>>> =
     std::sync::OnceLock::new();
 
@@ -72,7 +73,8 @@ fn hover_rect_slot() -> &'static std::sync::Mutex<Option<(f64, f64, f64, f64)>> 
     HOVER_RECT.get_or_init(|| std::sync::Mutex::new(None))
 }
 
-/// 前端把胶囊元素的实际矩形上报给 Rust，供 macOS 的悬停判定使用。
+/// 前端把胶囊元素的实际矩形上报给 Rust：macOS 用它判悬停展开，Windows 用它
+/// 判「光标是不是落在透明留白里」。
 #[tauri::command]
 pub fn island_set_hover_rect(x: f64, y: f64, width: f64, height: f64) {
     if width <= 0.0 || height <= 0.0 {
@@ -443,6 +445,182 @@ fn left_button_down() -> bool {
 #[cfg(not(any(target_os = "windows", target_os = "macos")))]
 fn left_button_down() -> bool {
     false
+}
+
+// ============================================================
+// 透明留白穿透（Windows）
+// ============================================================
+
+/// 「这一刻是否要让灵动岛窗口对鼠标透明」——纯函数，单测覆盖。
+///
+/// 灵动岛窗口按「展开面板 + 投影留白」建窗（顶部吸附 552×70），可见胶囊只占
+/// 中间一块，四周是纯透明像素。Win32 的命中测试按窗口矩形算，这圈留白会把
+/// 点击吃掉：看着是空的，点下面的应用却没反应。
+///
+/// 只有「窗口正好是收起态几何 + 有可信的胶囊矩形 + 光标不在胶囊内」三条同时
+/// 成立才穿透；窗口尺寸对不上（展开态 / 展开收起动画途中）一律保持整窗可交互
+/// ——那 500ms 里热区必然滞后，宁可多挡十几 px 也不能让面板上的点击漏到下面。
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn should_mouse_through(
+    edge: &str,
+    window: (i32, i32, u32, u32),
+    scale: f64,
+    pill: Option<(f64, f64, f64, f64)>,
+    cursor: (i32, i32),
+) -> bool {
+    if !scale.is_finite() || scale <= 0.0 {
+        return false;
+    }
+    let (wx, wy, ww, wh) = window;
+    let (cw, ch) = collapsed_window_size(edge);
+    if (ww as f64 / scale - cw).abs() > 1.5 || (wh as f64 / scale - ch).abs() > 1.5 {
+        return false;
+    }
+    let Some((rx, ry, rw, rh)) = pill.and_then(|rect| clamp_hover_rect(rect, edge)) else {
+        return false;
+    };
+    // 胶囊边缘给几 px 容错：光标贴着边抖动不会反复切样式，贴边点击也仍
+    // 落回胶囊上。
+    const MARGIN: f64 = 4.0;
+    let x0 = wx as f64 + (rx - MARGIN) * scale;
+    let y0 = wy as f64 + (ry - MARGIN) * scale;
+    let x1 = wx as f64 + (rx + rw + MARGIN) * scale;
+    let y1 = wy as f64 + (ry + rh + MARGIN) * scale;
+    let (cx, cy) = (cursor.0 as f64, cursor.1 as f64);
+    !(cx >= x0 && cx <= x1 && cy >= y0 && cy <= y1)
+}
+
+/// 按光标位置动态开关 `WS_EX_TRANSPARENT`：光标在胶囊上可交互，落在透明留白
+/// 或窗口外时点击穿到下面的应用。
+///
+/// Tauri 的 set_ignore_cursor_events 在 Windows 上会连带置上 WS_EX_LAYERED
+/// （与 Electron setIgnoreMouseEvents 同款），实测渲染不受影响；但穿不穿透
+/// 只由这个 ex-style 位决定，所以只能自己轮询光标来算——窗口一旦穿透，
+/// WebView 就再也收不到鼠标事件了。
+///
+/// 轮询里除「解析句柄 / 取缩放因子」外全部直接调 Win32：tauri 的
+/// outer_position / is_visible / scale_factor 都是同步派发到事件循环再等回复
+/// 的，16ms 一拍地调会把主线程吵死。
+#[cfg(target_os = "windows")]
+fn start_mouse_through_watcher(app: AppHandle) {
+    use windows::Win32::Foundation::{HWND, RECT};
+    use windows::Win32::UI::WindowsAndMessaging::{GetWindowRect, IsWindow, IsWindowVisible};
+
+    static STARTED: AtomicBool = AtomicBool::new(false);
+    if STARTED.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    // 16ms ≈ 一次光标刷新的节奏：移开就能点到下面的应用，移回胶囊也能立刻
+    // 恢复可交互；几十 px 的判定不值得更密。
+    const TICK_MS: u64 = 16;
+    // 缩放因子只在窗口尺寸变化或约 1s 后重取（DPI 只随窗口换屏而变）。
+    const SCALE_TICKS: u32 = 60;
+
+    thread::Builder::new()
+        .name("zbar-island-passthrough".into())
+        .spawn(move || {
+            let debug = std::env::var_os("ZBAR_ISLAND_DEBUG").is_some();
+            let mut through = false;
+            let mut hwnd: Option<HWND> = None;
+            let mut scale = 0.0f64;
+            let mut rect = (0i32, 0i32, 0u32, 0u32);
+            let mut scale_age = SCALE_TICKS;
+            let mut outside_ticks = 0u8;
+
+            loop {
+                thread::sleep(Duration::from_millis(TICK_MS));
+
+                // 句柄失效（关掉灵动岛 / 窗口重建）就重新解析一次
+                let alive = hwnd
+                    .map(|h| unsafe { IsWindow(Some(h)) }.as_bool())
+                    .unwrap_or(false);
+                if !alive {
+                    hwnd = app
+                        .get_webview_window(ISLAND_WINDOW_LABEL)
+                        .and_then(|win| win.hwnd().ok());
+                    through = false;
+                    outside_ticks = 0;
+                    scale = 0.0;
+                    scale_age = SCALE_TICKS;
+                    if hwnd.is_none() {
+                        continue;
+                    }
+                }
+                let Some(h) = hwnd else { continue };
+
+                if !unsafe { IsWindowVisible(h) }.as_bool() {
+                    continue;
+                }
+                let mut raw = RECT::default();
+                if unsafe { GetWindowRect(h, &mut raw) }.is_err() {
+                    continue;
+                }
+                let now_rect = (
+                    raw.left,
+                    raw.top,
+                    (raw.right - raw.left).max(0) as u32,
+                    (raw.bottom - raw.top).max(0) as u32,
+                );
+                let resized = now_rect.2 != rect.2 || now_rect.3 != rect.3;
+                rect = now_rect;
+                if scale <= 0.0 || resized || scale_age >= SCALE_TICKS {
+                    if let Some(value) = app
+                        .get_webview_window(ISLAND_WINDOW_LABEL)
+                        .and_then(|win| win.scale_factor().ok())
+                        .filter(|value| value.is_finite() && *value > 0.0)
+                    {
+                        scale = value;
+                    }
+                    scale_age = 0;
+                } else {
+                    scale_age = scale_age.saturating_add(1);
+                }
+                if scale <= 0.0 {
+                    continue;
+                }
+
+                let cfg = load_config();
+                if !cfg.enabled {
+                    continue;
+                }
+                let dragging = drag_slot()
+                    .lock()
+                    .map(|slot| slot.is_some())
+                    .unwrap_or(false);
+                let Some(cursor) = cursor_physical(&app) else {
+                    continue;
+                };
+                let pill = hover_rect_slot().lock().ok().and_then(|slot| *slot);
+                // 拖拽期间保持可交互：拖拽由 Rust 轮询光标推进，但松手和点击
+                // 语义还留在窗口上，中间切成穿透会丢掉 pointerup。
+                let outside = !dragging
+                    && should_mouse_through(&cfg.edge, now_rect, scale, pill, cursor);
+
+                // 光标移进胶囊：立刻恢复可交互（宁可慢一拍穿透，也不能让用户
+                // 点胶囊时把点击漏给下面的应用）。移出去要连续两拍才真正穿透，
+                // 快速掠过留白时不至于一闪一闪。
+                outside_ticks = if outside {
+                    outside_ticks.saturating_add(1)
+                } else {
+                    0
+                };
+                let want = outside && outside_ticks >= 2;
+                if want == through {
+                    continue;
+                }
+                let applied = app
+                    .get_webview_window(ISLAND_WINDOW_LABEL)
+                    .map(|win| win.set_ignore_cursor_events(want).is_ok())
+                    .unwrap_or(false);
+                if applied {
+                    through = want;
+                    if debug {
+                        eprintln!("[zbar-island] mouse-through {through}");
+                    }
+                }
+            }
+        })
+        .ok();
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1311,6 +1489,9 @@ fn start_services(app: &AppHandle) {
     notify::start(app.clone());
     start_fullscreen_watcher(app.clone());
     start_hover_watcher(app.clone());
+    // 透明留白穿透：不启动的话胶囊四周那圈透明像素会吃掉下面的点击
+    #[cfg(target_os = "windows")]
+    start_mouse_through_watcher(app.clone());
     // 额度复用 hud_bar 数据线程；start_feed 幂等，首次会立即推送一拍。
     crate::hud_bar::start_feed(app.clone());
     crate::hud_bar::hud_bar_refresh(app.clone());
@@ -1818,5 +1999,28 @@ mod tests {
         // 整个越界的报告回退给调用方处理。
         assert_eq!(clamp_hover_rect((600.0, 6.0, 500.0, 48.0), "top"), None);
         assert_eq!(clamp_hover_rect((f64::NAN, 6.0, 500.0, 48.0), "top"), None);
+    }
+
+    #[test]
+    fn mouse_through_follows_pill_rect() {
+        // 顶部吸附、缩放 125%：窗口物理 690×88，胶囊 500×48 在 (26,6)。
+        let win = (1000, 0, 690, 88);
+        let pill = Some((26.0, 6.0, 500.0, 48.0));
+        let s = 1.25;
+        // 胶囊正中可交互；左右留白、胶囊下方的留白穿透。
+        assert!(!should_mouse_through("top", win, s, pill, (1345, 37)));
+        assert!(should_mouse_through("top", win, s, pill, (1010, 40)));
+        assert!(should_mouse_through("top", win, s, pill, (1345, 80)));
+        // 没上报过胶囊矩形：保持整窗可交互（宁可挡着也别乱穿透）。
+        assert!(!should_mouse_through("top", win, s, None, (1010, 40)));
+        // 展开态（窗口已长到 520）和动画途中：整窗可交互。
+        assert!(!should_mouse_through("top", (1000, 0, 690, 650), s, pill, (1010, 40)));
+        // 左右吸附的竖胶囊（70×520 窗口里 48×440）。
+        let side = (0, 300, 88, 650);
+        let side_pill = Some((11.0, 40.0, 48.0, 440.0));
+        assert!(!should_mouse_through("left", side, s, side_pill, (50, 400)));
+        assert!(should_mouse_through("left", side, s, side_pill, (5, 400)));
+        // 非法缩放：不动样式。
+        assert!(!should_mouse_through("top", win, f64::NAN, pill, (1010, 40)));
     }
 }
