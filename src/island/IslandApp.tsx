@@ -1147,7 +1147,7 @@ export default function IslandApp() {
                 <Icon name="settings" size={15} />
               </button>
             </nav>
-            <div className="island-content">{renderPage()}</div>
+            <div className={`island-content tab-${activeTab}`}>{renderPage()}</div>
           </div>
         </div>
         {contextMenu ? (

@@ -1,6 +1,6 @@
 /** 灵动岛各页面：主页 / 消息 / 股票 / 天气 / 控制 / 剪贴板 / 设置 */
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { getStockMinute, locateCurrentPlace, mediaAction as runMediaAction, searchStock } from "./api";
 import type {
   ClipItem,
@@ -136,6 +136,7 @@ export function HomePage({
 }) {
   const now = useNow();
   const agents = usage?.agents ?? [];
+  const pageRef = useRef<HTMLDivElement>(null);
   const [page, setPage] = useState(0);
   const wheelAt = useRef(0);
   const pageCount = Math.max(1, Math.ceil(agents.length / 4));
@@ -160,8 +161,46 @@ export function HomePage({
     if (!lyrics?.ok || !media.hasSession) return null;
     return currentLyricLine(parseLyrics(lyrics.lrc, lyrics.translation), media.position);
   }, [lyrics, media.hasSession, media.position]);
+
+  // 面板高度固定（492），媒体条 / 3 行额度卡 / 大字号都可能把主页顶出滚动条。
+  // 这里按实际可用高度把整页等比缩到刚好放下：不出现滚动条，也不裁内容；
+  // 宽度按 100/scale 补偿，缩完仍铺满面板内容区。
+  // 不写依赖数组：账号数量 / 媒体条 / 字号 / 可用高度任一变化都要重新量。
+  useLayoutEffect(() => {
+    const pageEl = pageRef.current;
+    const contentEl = pageEl?.parentElement;
+    if (!pageEl || !contentEl) return;
+    const cs = getComputedStyle(contentEl);
+    const available =
+      contentEl.clientHeight -
+      (parseFloat(cs.paddingTop) || 0) -
+      (parseFloat(cs.paddingBottom) || 0);
+    // 量自然高度前先还原成 1:1，否则会把上一轮的补偿宽度量进去
+    pageEl.style.width = "";
+    const natural = pageEl.offsetHeight;
+    // 只差 1px 以内不缩，避免亚像素来回抖
+    if (available <= 0 || natural <= available + 1) {
+      pageEl.style.width = "";
+      pageEl.style.scale = "";
+      pageEl.style.transform = "";
+      return;
+    }
+    const scale = Math.max(0.65, available / natural);
+    pageEl.style.transformOrigin = "top left";
+    pageEl.style.width = `${(100 / scale).toFixed(3)}%`;
+    // 优先用独立的 scale 属性：它和页面入场动画的 transform 互不覆盖，
+    // 老 WebView 不支持时再退回 transform。
+    if (typeof CSS === "undefined" || CSS.supports("scale", "0.9")) {
+      pageEl.style.scale = scale.toFixed(4);
+      pageEl.style.transform = "";
+    } else {
+      pageEl.style.scale = "";
+      pageEl.style.transform = `scale(${scale.toFixed(4)})`;
+    }
+  });
+
   return (
-    <div className="page home-page">
+    <div className="page home-page" ref={pageRef}>
       <div className="home-hero">
         <div className="home-weather">
           <div className="home-weather-glyph">

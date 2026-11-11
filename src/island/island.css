@@ -1019,6 +1019,12 @@ html.island-preview .island::after {
   scrollbar-color: var(--hairline) transparent;
 }
 
+/* 主页由 HomePage 按可用高度整体缩放（见 fit 逻辑），不再需要滚动条；
+   其他页面（消息 / 设置等）内容天然不定长，保留滚动。 */
+.island-content.tab-home {
+  overflow: hidden;
+}
+
 .island-content::-webkit-scrollbar {
   width: 4px;
 }
