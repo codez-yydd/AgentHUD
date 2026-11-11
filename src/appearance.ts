@@ -195,3 +195,50 @@ export function persistPanelAlpha(a: number): void {
     /* 忽略：QuotaExceededError、隐私模式等（对齐 cache.ts） */
   }
 }
+
+// ===== 托盘右键菜单透明度（tray-menu 独立小窗，见 src-tauri/src/tray_menu.rs）=====
+
+/** 托盘菜单底色透明度持久化键 */
+export const TRAY_MENU_ALPHA_KEY = "zbar-tray-menu-alpha";
+/** 托盘菜单透明度缺省值（亮色）：与 tray-menu.html 中 --m-bg-alpha 的亮色缺省一致 */
+export const DEFAULT_TRAY_MENU_ALPHA = 0.76;
+/** 托盘菜单透明度缺省值（暗色）：暗底略实一点，浅色壁纸上更稳 */
+export const DEFAULT_TRAY_MENU_ALPHA_DARK = 0.82;
+/** 托盘菜单透明度可调下限（40%）：再低文字在花壁纸上会糊 */
+export const MIN_TRAY_MENU_ALPHA = 0.4;
+
+/** 当前主题下的托盘菜单缺省透明度（口径同 loadTheme：仅 .dark 类算暗色） */
+export function defaultTrayMenuAlpha(): number {
+  return document.documentElement.classList.contains("dark")
+    ? DEFAULT_TRAY_MENU_ALPHA_DARK
+    : DEFAULT_TRAY_MENU_ALPHA;
+}
+
+/** 读取托盘菜单透明度：未设置或超出 [0.4, 1] 回退当前主题缺省值 */
+export function loadTrayMenuAlpha(): number {
+  try {
+    const v = parseFloat(localStorage.getItem(TRAY_MENU_ALPHA_KEY) ?? "");
+    if (!isNaN(v) && v >= MIN_TRAY_MENU_ALPHA && v <= 1) return v;
+  } catch {
+    /* localStorage 不可用：用缺省值 */
+  }
+  return defaultTrayMenuAlpha();
+}
+
+/** 应用托盘菜单透明度：写 #menu-root 的 --m-bg-alpha 内联变量（就地压住
+ *  亮/暗两套缺省值；纯 DOM，不写盘）。变量必须落在 #menu-root 而不是
+ *  <html>：两套缺省值就声明在 #menu-root 上，声明会盖住继承值 */
+export function applyTrayMenuAlpha(a: number): void {
+  document
+    .getElementById("menu-root")
+    ?.style.setProperty("--m-bg-alpha", String(a));
+}
+
+/** 持久化托盘菜单透明度 */
+export function persistTrayMenuAlpha(a: number): void {
+  try {
+    localStorage.setItem(TRAY_MENU_ALPHA_KEY, String(a));
+  } catch {
+    /* 忽略：QuotaExceededError、隐私模式等（对齐 persistPanelAlpha） */
+  }
+}

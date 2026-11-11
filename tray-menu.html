@@ -12,15 +12,15 @@
 
       信息架构（参考 CC Switch 的托盘面板）：
       - 头部：品牌 + 设置（主窗口设置页）
-      - 两个标签页：快捷（入口 / 开机自启）· 用量（汇总 / 趋势）
+      - 两个标签页：快捷（入口 / 开机自启 / 菜单透明度）· 用量（汇总 / 趋势）
       - 底栏：HUD 停靠条开关 + 打开主窗口 / 退出
       - /src/tray-menu-main.ts：宿主壳。状态流（tray_menu_state /
         tray_menu_usage / 开机自启状态）、动作流（tray_menu_action /
         autostart 插件）、主题与语言同步、Esc/方向键、图表渲染都在这里。
         失焦自动收起由 Rust 侧完成（Focused(false) → hide）。
 
-      尺寸栅格：窗口 340×580（逻辑 px，与 Rust tray_menu.rs 一一对应）：
-      头部 54 + 标签页 42 + 内容区自适应（约 394，可滚动）+ 底栏 90。
+      尺寸栅格：窗口 340×600（逻辑 px，与 Rust tray_menu.rs 一一对应）：
+      头部 54 + 标签页 42 + 内容区自适应（约 414，可滚动）+ 底栏 90。
       小屏时 Rust 侧只缩窗口高度，内容区滚动、底栏常驻。改任一端必须
       同步另一端。
 
@@ -31,8 +31,10 @@
       运行时。
 
       毛玻璃：窗口 transparent + Rust 侧 popover 材质（同 panel 的
-      windowEffects 配置），内容底色半透明实底 + backdrop-filter，
-      双层叠加玻璃观感。
+      windowEffects 配置），内容底色是「RGB + 透明度」分离的半透明实底，
+      双层叠加玻璃观感。透明度由快捷页「透明度」行调节（写 CSS 变量
+      --m-bg-alpha，只调底色、文字与图标始终不透明），偏好存
+      localStorage（zbar-tray-menu-alpha，见 appearance.ts）。
     -->
     <style>
       *,
@@ -66,10 +68,14 @@
       svg {
         display: block;
       }
-      /* 根容器：窗口 340×580，与 Rust tray_menu.rs 同栅格。纵向三段：
+      /* 根容器：窗口 340×600，与 Rust tray_menu.rs 同栅格。纵向三段：
          头部（54）/ 标签页（42）/ 内容（flex:1）/ 底栏（90）。 */
       #menu-root {
-        --m-bg: rgba(246, 246, 248, 0.76);
+        /* 底色 = RGB 三元组 + 透明度分离：透明度由快捷页滑块经
+           --m-bg-alpha 即时改写（内联变量落本元素，压住下面两套缺省值），
+           文字/图标不受影响 */
+        --m-bg-rgb: 246 246 248;
+        --m-bg-alpha: 0.76;
         --m-card: rgba(15, 23, 42, 0.045);
         --m-card-hover: rgba(15, 23, 42, 0.065);
         --m-border: rgba(15, 23, 42, 0.11);
@@ -94,7 +100,7 @@
         display: flex;
         flex-direction: column;
         overflow: hidden;
-        background: var(--m-bg);
+        background: rgb(var(--m-bg-rgb) / var(--m-bg-alpha));
         /* CSS 圆角 12 与 Rust 侧 popover 材质 radius=12 对齐，边角一致 */
         border-radius: 12px;
         box-shadow: inset 0 0 0 0.5px var(--m-border);
@@ -107,7 +113,8 @@
         -webkit-font-smoothing: antialiased;
       }
       html.dark #menu-root {
-        --m-bg: rgba(28, 28, 32, 0.82);
+        --m-bg-rgb: 28 28 32;
+        --m-bg-alpha: 0.82;
         --m-card: rgba(255, 255, 255, 0.06);
         --m-card-hover: rgba(255, 255, 255, 0.09);
         --m-border: rgba(255, 255, 255, 0.14);
@@ -261,9 +268,11 @@
         animation: panel-in 150ms ease-out;
       }
       @keyframes panel-in {
+        /* 起点向上偏移而不是向下：快捷页纵向内容已接近内容区上限，向下 3px
+           会让面板底部短暂越过内容区，滚动容器在动画期间闪一下滚动条 */
         from {
           opacity: 0;
-          transform: translateY(3px);
+          transform: translateY(-3px);
         }
       }
       @media (prefers-reduced-motion: reduce) {
@@ -399,6 +408,38 @@
       }
       .row[aria-checked="true"] .row-icon {
         color: var(--m-accent);
+      }
+
+      /* ===== 透明度行（快捷页 · 通用）=====
+         标签 + 原生 range + 百分比读数；非可点行，去掉 .row 的 hover 底。
+         刻度 40~100 由 HTML 的 min/max 定，与 appearance.ts 的
+         MIN_TRAY_MENU_ALPHA=0.4 一一对应 */
+      .row-alpha {
+        gap: 10px;
+        cursor: default;
+      }
+      /* 标签不吃剩余宽度（.row-label 默认 flex:1），让滑块铺满中段 */
+      .row-alpha .row-label {
+        flex: none;
+      }
+      .row-alpha:hover {
+        background: transparent;
+      }
+      .alpha-range {
+        flex: 1;
+        min-width: 0;
+        height: 16px;
+        margin: 0;
+        accent-color: #0ea5e9;
+        cursor: pointer;
+      }
+      html.dark .alpha-range {
+        accent-color: #38bdf8;
+      }
+      .alpha-value {
+        flex: none;
+        min-width: 30px;
+        text-align: right;
       }
 
       /* ===== 用量页 ===== */
@@ -978,6 +1019,21 @@
             <span class="row-label" id="row-autostart-label">开机自启</span>
             <span class="switch" aria-hidden="true"></span>
           </button>
+
+          <!-- 菜单底色透明度：拖动即时生效，松手落盘（见 tray-menu-main.ts） -->
+          <div class="row row-alpha" id="row-alpha">
+            <span class="row-label" id="row-alpha-label">透明度</span>
+            <input
+              type="range"
+              id="alpha-range"
+              class="alpha-range"
+              min="40"
+              max="100"
+              step="1"
+              aria-labelledby="row-alpha-label"
+            />
+            <span class="row-meta alpha-value" id="alpha-value">76%</span>
+          </div>
 
           <div class="about">
             <span class="about-version" id="about-version">v–</span>

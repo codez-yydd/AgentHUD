@@ -43,8 +43,8 @@
 //!   toggle_from_tray 注释），直接调用即可——与 lib.rs on_menu_event
 //!   原生菜单回调同款上下文。
 //!
-//! 尺寸栅格：窗口 340×580（逻辑 px），与 tray-menu.html 的内容栅格
-//! 一一对应：头部 54、标签页 42、内容区自适应滚动（设计值 394）、底栏 90。窗口内边距
+//! 尺寸栅格：窗口 340×600（逻辑 px），与 tray-menu.html 的内容栅格
+//! 一一对应：头部 54、标签页 42、内容区自适应滚动（设计值 414）、底栏 90。窗口内边距
 //! 为 0（系统材质铺满窗口（仅 macOS Popover；Windows 不挂材质、页面底色即背景），圆角 12），
 //! 改任何一端必须同步另一端（见 tray-menu.html 顶部注释）。
 
@@ -60,10 +60,10 @@ pub(crate) const TRAY_MENU_WINDOW_LABEL: &str = "tray-menu";
 
 /// 窗口宽度（逻辑 px，与 tray-menu.html 的 #menu-root 宽度一致）
 const TRAY_MENU_WIDTH: f64 = 340.0;
-/// 窗口总高（逻辑 px）：54(header) + 42(tabs) + 394(content) + 90(footer)
-/// = 580（与 tray-menu.html 的尺寸栅格注释一一对应）。小屏显示时
+/// 窗口总高（逻辑 px）：54(header) + 42(tabs) + 414(content) + 90(footer)
+/// = 600（与 tray-menu.html 的尺寸栅格注释一一对应）。小屏显示时
 /// show_tray_menu 会按屏幕可用高度夹取，内容区滚动、底栏常驻。
-const TRAY_MENU_HEIGHT: f64 = 580.0;
+const TRAY_MENU_HEIGHT: f64 = 600.0;
 /// 菜单窗口顶部起点（逻辑 px，macOS 专用口径）：菜单栏底部约 25pt，与
 /// lib.rs toggle_panel 的 macOS y=25 同口径。Windows 走点击点锚定，
 /// 不以本常量为顶部起点（仅无显示器信息的兜底分支沿用）
@@ -102,7 +102,7 @@ pub(crate) fn ensure_tray_menu_window(app: &AppHandle) -> Result<(), String> {
         WebviewUrl::App("tray-menu.html".into()),
     )
     .title("AgentHUD Menu")
-    // 尺寸栅格见模块注释：340×580 与 tray-menu.html 一一对应
+    // 尺寸栅格见模块注释：340×600 与 tray-menu.html 一一对应
     .inner_size(TRAY_MENU_WIDTH, TRAY_MENU_HEIGHT)
     .decorations(false)
     .transparent(true)
@@ -128,8 +128,8 @@ pub(crate) fn ensure_tray_menu_window(app: &AppHandle) -> Result<(), String> {
     // - Windows：不挂系统材质——Mica/Acrylic 是矩形材质不裁圆角（macOS
     //   Popover 带 radius 才会裁），CSS 把内容裁成 12px 圆角后四个角外侧
     //   会露出材质方角残影（2026-11-08 Windows 实测反馈）；透明窗口 +
-    //   页面自身半透明实底（tray-menu.html --m-bg）即得干净圆角，观感
-    //   与系统材质几乎一致。
+    //   页面自身半透明实底（tray-menu.html --m-bg-rgb / --m-bg-alpha，
+    //   快捷页滑块可调）即得干净圆角，观感与系统材质几乎一致。
     #[cfg(target_os = "macos")]
     let builder = builder.effects(
         tauri::window::EffectsBuilder::new()

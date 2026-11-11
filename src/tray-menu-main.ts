@@ -25,6 +25,11 @@
  *   zbar://appearance-changed（APPEARANCE_CHANGED_EVENT，主面板
  *   setLocale/applyTheme 发出，无 payload）即时跟随：语言变化全量重
  *   渲染文案，主题变化纯 CSS 生效无需重渲染。
+ * - 菜单透明度：快捷页「透明度」滑块调节窗口底色不透明度（40%~100%，
+ *   只调 --m-bg-alpha 玻璃底、文字不受影响），拖动即时生效、松手写
+ *   localStorage（zbar-tray-menu-alpha，读写在 appearance.ts），亮/暗
+ *   两套缺省值分别在 tray-menu.html 的 --m-bg-alpha 里，用户值落成
+ *   #menu-root 的内联变量压住两者。
  *
  * 取舍说明：菜单窗口每次显示都要最新数据（用量与 HUD 开关态随时在变），
  * 后端 show 前没有专门的"即将显示"事件，改用 window focus——set_focus
@@ -32,7 +37,7 @@
  * hide/show 不一定派发 visibilitychange）。每次 focus 清空用量缓存并
  * 强制重取当前档位；打开菜单期间每 60s 静默刷新一次。
  *
- * 尺寸栅格：Rust 侧窗口 340×580（逻辑 px），页面内容栅格见
+ * 尺寸栅格：Rust 侧窗口 340×600（逻辑 px），页面内容栅格见
  * tray-menu.html 顶部注释（两端账目一一对应：头部 54、标签页 42、内容
  * 区自适应、底栏 90；小屏由 Rust 缩窗，内容区滚动、底栏常驻）。
  */
@@ -44,7 +49,13 @@ import {
   enable as enableAutostart,
   isEnabled as isAutostartEnabled,
 } from "@tauri-apps/plugin-autostart";
-import { APPEARANCE_CHANGED_EVENT, THEME_KEY } from "./appearance";
+import {
+  APPEARANCE_CHANGED_EVENT,
+  THEME_KEY,
+  applyTrayMenuAlpha,
+  loadTrayMenuAlpha,
+  persistTrayMenuAlpha,
+} from "./appearance";
 import { LOCALE_KEY } from "./i18n/locale";
 
 // ===== 后端契约（与 src-tauri/src/tray_menu.rs 同构，camelCase） =====
@@ -116,6 +127,7 @@ interface Msg {
   pricing: string;
   settings: string;
   launchAtLogin: string;
+  opacity: string;
   about: string;
   hudBar: string;
   quit: string;
@@ -154,6 +166,7 @@ const MESSAGES: Record<Locale, Msg> = {
     pricing: "价格设置",
     settings: "设置",
     launchAtLogin: "开机自启",
+    opacity: "透明度",
     about: "本地优先 · 多 Agent 用量监控",
     hudBar: "灵动岛",
     quit: "退出",
@@ -189,6 +202,7 @@ const MESSAGES: Record<Locale, Msg> = {
     pricing: "Pricing",
     settings: "Settings",
     launchAtLogin: "Launch at login",
+    opacity: "Opacity",
     about: "Local-first · multi-agent usage",
     hudBar: "Dynamic island",
     quit: "Quit",
@@ -309,6 +323,8 @@ const btnOpenMainEl = byId<HTMLButtonElement>("btn-open-main");
 const btnQuitEl = byId<HTMLButtonElement>("btn-quit");
 const rowAutostartEl = byId<HTMLButtonElement>("row-autostart");
 const rowHudEl = byId<HTMLButtonElement>("row-hud");
+const alphaRangeEl = byId<HTMLInputElement>("alpha-range");
+const alphaValueEl = byId<HTMLElement>("alpha-value");
 
 const rangeGroupEl = byId<HTMLElement>("range-group");
 const metricGroupEl = byId<HTMLElement>("metric-group");
@@ -431,6 +447,7 @@ function applyStaticText(): void {
   setText("act-pricing-label", msg.pricing);
   setText("act-settings-label", msg.settings);
   setText("row-autostart-label", msg.launchAtLogin);
+  setText("row-alpha-label", msg.opacity);
   setText("row-hud-label", msg.hudBar);
   setText("btn-open-main-label", msg.openMain);
   setText("btn-quit-label", msg.quit);
@@ -523,6 +540,25 @@ function selectMetric(next: MetricKey): void {
   applyMetricState();
   hideChartTooltip();
   renderChart();
+}
+
+// ===== 菜单透明度（快捷页 · 通用）=====
+
+/** 滑块位置 + 百分比读数：range 刻度是 40~100 的整数（见 tray-menu.html，
+ *  与 appearance.ts 的 MIN_TRAY_MENU_ALPHA = 0.4 一一对应） */
+function paintMenuAlpha(alpha: number): void {
+  const pct = Math.round(alpha * 100);
+  alphaRangeEl.value = String(pct);
+  alphaValueEl.textContent = `${pct}%`;
+  alphaRangeEl.setAttribute("aria-valuetext", `${pct}%`);
+}
+
+/** 读偏好 → 写 --m-bg-alpha + 刷滑块。启动 / 每次显示 / 主题切换后各调一次
+ *  （主题切换会换缺省值：亮 76% / 暗 82%，用户存过值则两套都用用户值） */
+function syncMenuAlpha(): void {
+  const alpha = loadTrayMenuAlpha();
+  applyTrayMenuAlpha(alpha);
+  paintMenuAlpha(alpha);
 }
 
 // ===== 状态 / 开关 =====
@@ -1049,6 +1085,16 @@ function bindEvents(): void {
   rowAutostartEl.addEventListener("click", () => void toggleAutostart());
   rowHudEl.addEventListener("click", toggleHud);
 
+  // 透明度滑块：拖动即时生效（input），松手才落盘（change，一次拖动只写一次）
+  alphaRangeEl.addEventListener("input", () => {
+    const alpha = Number(alphaRangeEl.value) / 100;
+    applyTrayMenuAlpha(alpha);
+    paintMenuAlpha(alpha);
+  });
+  alphaRangeEl.addEventListener("change", () => {
+    persistTrayMenuAlpha(Number(alphaRangeEl.value) / 100);
+  });
+
   contentEl.addEventListener("scroll", hideChartTooltip, { passive: true });
 
   document.addEventListener("keydown", (event) => {
@@ -1057,6 +1103,8 @@ function bindEvents(): void {
       hideWindow();
       return;
     }
+    // 透明度滑块自己吃方向键（range 原生调值），不参与菜单的焦点导航
+    if (event.target instanceof HTMLInputElement) return;
     if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
     const items = visibleNavItems();
     if (items.length === 0) return;
@@ -1102,6 +1150,8 @@ function startRefreshTimer(): void {
 function onShown(): void {
   // 事件可能因窗口隐藏/页面重载错过：每次显示再校一次主题与语言偏好
   applyHudTheme();
+  // 主题可能换了（亮/暗缺省透明度不同），同时兜住其他窗口写入的新值
+  syncMenuAlpha();
   const nextLocale = detectLocale();
   if (nextLocale !== locale) {
     locale = nextLocale;
@@ -1133,6 +1183,7 @@ function onShown(): void {
 
 function main(): void {
   applyHudTheme();
+  syncMenuAlpha();
   applyStaticText();
   bindEvents();
 
@@ -1141,6 +1192,8 @@ function main(): void {
   // + 全量重渲染；主题变化：applyHudTheme 切 .dark，纯 CSS 生效。
   void listen(APPEARANCE_CHANGED_EVENT, () => {
     applyHudTheme();
+    // 主题切换会换裸缺省透明度（亮 76% / 暗 82%），同步重算一次
+    syncMenuAlpha();
     const next = detectLocale();
     if (next !== locale) {
       locale = next;
