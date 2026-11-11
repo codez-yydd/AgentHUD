@@ -27,8 +27,11 @@
 }
 
 :root {
-  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI",
-    "PingFang SC", "Microsoft YaHei", sans-serif;
+  /* 字体栈：Windows 11 优先 Segoe UI Variable（圆润、字重分布更细），
+     Win10 退回 Segoe UI；中文仍走苹方 / 微软雅黑 */
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text",
+    "Segoe UI Variable Text", "Segoe UI", "PingFang SC", "Microsoft YaHei",
+    sans-serif;
   font-size: 13px;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
@@ -39,60 +42,115 @@
      等比缩放全部字号 / 行高 / 控件，保持标题、核心数字、辅助文字的层级。 */
   --ui-scale: 1;
 
-  /* 主窗口页面变量（面板的 --panel-* 是玻璃面板专用，不复用）：
-     亮色 = slate-100 底 + 白色侧栏；暗色在 .dark 覆盖为 slate-900 系 */
-  --db-bg: #f1f5f9;
-  --db-sidebar-bg: #ffffff;
-  --db-border: rgba(15, 23, 42, 0.08);
-  --db-text: #1f2937;
-  --db-text-dim: rgba(51, 65, 85, 0.62);
-  --db-hover: rgba(15, 23, 42, 0.05);
-  --db-active-bg: rgba(14, 165, 233, 0.12);
-  --db-active-text: #0284c7;
-  /* 自绘标题栏（TitleBar.tsx）：底与侧栏同源（直接复用 --db-sidebar-bg），
-     按钮 hover 比通用 --db-hover 略重——46px 宽的整高命中区需要更明确的
-     反馈，press 再重一档给出按下反馈；关闭按钮 hover 的 Windows 惯例红
-     #e81123 亮暗一致，只在 :root 定义一次（暗色段不重复）。
+  /* 主窗口页面变量（面板的 --panel-* 是玻璃面板专用，不复用）。
+     视觉语言对齐灵动岛 HUD / 托盘菜单：品牌蓝紫（periwinkle → violet）
+     环境光 + 半透明玻璃壳（标题栏 / 侧栏）+ 浮起的圆角卡片；亮色是带
+     蓝紫冷调的近白，暗色在 .dark 覆盖为深靛蓝（见文件尾部）。 */
+  --db-bg: #f4f5ff;
+  /* 环境光：body 的三层径向渐变（见下方 body 规则）。亮色用品牌蓝紫
+     淡晕，主区仍是近白底，保证正文对比度 */
+  --db-glow-cyan: rgba(76, 99, 245, 0.16);
+  --db-glow-violet: rgba(139, 92, 246, 0.15);
+  --db-glow-mint: rgba(56, 189, 248, 0.08);
+  /* 玻璃壳（标题栏 + 侧栏）：半透明白 + backdrop-filter 毛玻璃。
+     --db-shell-blur 单独抽出来，方便低性能场景统一降级（见 @supports 段） */
+  --db-shell-bg: rgba(255, 255, 255, 0.76);
+  --db-shell-border: rgba(43, 63, 180, 0.09);
+  --db-shell-blur: saturate(180%) blur(18px);
+  /* 吸顶表头 / 吸顶页头需要不透明底（内容从下面滚过）：玻璃壳的半透明
+     值在这两处会透字，故单列一档接近实底的表面色 */
+  --db-sticky-bg: rgba(255, 255, 255, 0.94);
+  /* 侧栏底（沿用旧变量名：侧栏、价格表吸顶表头等仍引用） */
+  --db-sidebar-bg: var(--db-shell-bg);
+  --db-border: rgba(43, 63, 180, 0.1);
+  --db-text: #131a33;
+  --db-text-dim: rgba(56, 70, 120, 0.7);
+  --db-hover: rgba(43, 63, 180, 0.06);
+  --db-active-bg: rgba(76, 99, 245, 0.13);
+  --db-active-text: #2b3fc4;
+  /* 品牌渐变 + 强调色：灵动岛同源的 periwinkle → violet（--db-accent-2 是
+     渐变另一端）；--db-brand-grad-text 是文字安全的加深档 */
+  --db-accent: #4c63f5;
+  --db-accent-2: #8b5cf6;
+  --db-brand-grad: linear-gradient(135deg, #4c63f5 0%, #8b5cf6 100%);
+  --db-brand-grad-text: linear-gradient(120deg, #2b3fc4 0%, #6d3ee0 100%);
+  /* 主按钮（实心渐变）与它的文字色 / 柔光：亮色用饱和蓝紫 + 白字；
+     暗色反过来用亮 periwinkle + 深靛蓝字（亮底白字在深色界面里发灰，
+     与 HUD 强调色的用法一致，见 .dark 段） */
+  --db-btn-primary-bg: linear-gradient(135deg, #4c63f5 0%, #8b5cf6 100%);
+  --db-btn-primary-text: #ffffff;
+  --db-btn-primary-glow: rgba(76, 99, 245, 0.55);
+  /* 卡片：白面 + 一圈极淡蓝紫描边 + 两层投影（1px 贴地阴影给边缘定形，
+     大模糊长投影给浮起感）；inset 高光是玻璃质感的来源 */
+  --db-card-border: rgba(43, 63, 180, 0.1);
+  --db-card-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.92);
+  --db-card-elevation: 0 1px 2px rgba(36, 52, 130, 0.05),
+    0 18px 44px -26px rgba(43, 63, 180, 0.32);
+  /* 卡片实底色：吸顶表头 / 吸顶控件需要"盖住下方内容"的不透明底，
+     半透明的 --db-card-bg 会透出滚过去的行 */
+  --db-card-solid: #ffffff;
+  /* 控件（按钮 / 下拉 / 分段 / 搜索框）：浅蓝灰玻璃底 + 细描边 */
+  --db-control-bg: rgba(43, 63, 180, 0.05);
+  --db-control-bg-hover: rgba(43, 63, 180, 0.085);
+  --db-control-border: rgba(43, 63, 180, 0.11);
+  /* 侧栏导航激活项：品牌双色淡底 + 内描边 + 蓝紫投影 */
+  --db-nav-active-bg: linear-gradient(
+    135deg,
+    rgba(76, 99, 245, 0.17),
+    rgba(139, 92, 246, 0.15)
+  );
+  --db-nav-active-text: #2b3fc4;
+  --db-nav-active-ring: rgba(76, 99, 245, 0.32);
+  --db-nav-active-shadow: 0 8px 20px -14px rgba(76, 99, 245, 0.65);
+  /* 表格：表头淡底 + 行悬停淡蓝紫底（比通用 hover 更有方向感） */
+  --db-table-head-bg: rgba(43, 63, 180, 0.03);
+  --db-row-hover: rgba(76, 99, 245, 0.06);
+  /* 焦点环（键盘可见性）：统一走品牌蓝紫，替代各控件零散的 outline */
+  --db-focus-ring: 0 0 0 3px rgba(76, 99, 245, 0.24);
+  /* 自绘标题栏（TitleBar.tsx）：玻璃壳底（与侧栏同源 --db-shell-bg），
+     窗口控制按钮改成 30×30 圆角块（不再整高 46px 命中区，对齐 Windows 11 /
+     macOS 的圆角控制钮），故 hover / press 底比通用 --db-hover 略重一档
+     就够；关闭按钮 hover 的 Windows 惯例红 #e81123 亮暗一致，只在 :root
+     定义一次（暗色段不重复）。
      栏高抽成变量：抽屉遮罩 / 抽屉面板（fixed 定位）顶部让位引用同一值，
      以后调栏高只动这一处 */
-  --db-titlebar-h: 40px;
-  --db-titlebar-hover: rgba(15, 23, 42, 0.09);
-  --db-titlebar-press: rgba(15, 23, 42, 0.14);
+  --db-titlebar-h: 44px;
+  --db-titlebar-hover: rgba(43, 63, 180, 0.075);
+  --db-titlebar-press: rgba(43, 63, 180, 0.13);
   --db-titlebar-close-hover: #e81123;
-  --scrollbar-thumb: rgba(15, 23, 42, 0.18);
-  --scrollbar-thumb-hover: rgba(15, 23, 42, 0.28);
+  --scrollbar-thumb: rgba(43, 63, 180, 0.2);
+  --scrollbar-thumb-hover: rgba(43, 63, 180, 0.34);
 
   /* 用量总览页（首页）内容面变量：卡片/分段控件/骨架/热力色阶/浮层提示 */
-  --db-card-bg: #ffffff;
-  --db-card-shadow: 0 1px 3px rgba(15, 23, 42, 0.05);
-  --db-seg-bg: rgba(15, 23, 42, 0.05);
+  --db-card-bg: rgba(255, 255, 255, 0.92);
+  --db-card-shadow: var(--db-card-highlight), var(--db-card-elevation);
+  --db-seg-bg: rgba(43, 63, 180, 0.06);
   --db-seg-active-bg: #ffffff;
-  --db-seg-active-text: #0284c7;
-  --db-row-border: rgba(15, 23, 42, 0.05);
-  --db-skeleton: rgba(15, 23, 42, 0.07);
-  --db-track: rgba(15, 23, 42, 0.08);
+  --db-seg-active-text: #2b3fc4;
+  --db-row-border: rgba(43, 63, 180, 0.06);
+  --db-skeleton: rgba(43, 63, 180, 0.08);
+  --db-track: rgba(43, 63, 180, 0.09);
   --db-chip-bg: rgba(16, 185, 129, 0.12);
   --db-chip-text: #047857;
   --db-tip-bg: rgba(15, 23, 42, 0.94);
   --db-tip-text: #ffffff;
   --db-tip-border: transparent;
-  --db-accent-sky: #0284c7;
+  --db-accent-sky: #3b5bdb;
   --db-accent-emerald: #059669;
-  --db-accent-violet: #7c3aed;
+  --db-accent-violet: #6d3ee0;
   --db-accent-amber: #b45309;
-  /* 热力图色阶（0 = 无数据 / 空位中性底，1..4 强调色渐进）。
-     格子为 52 周流式网格（aspect-square 自适应边长），有数据的格子带 1px
-     同族细边框，悬停放大并提亮边框；暗色两套变量见文件尾部 .dark 段 */
-  --db-heat-0: #eef2f6;
-  --db-heat-1: #d8ebfb;
-  --db-heat-2: #a5d3f5;
-  --db-heat-3: #5aaeea;
-  --db-heat-4: #1786cd;
-  --db-heat-edge: rgba(23, 134, 205, 0.3);
-  --db-heat-edge-strong: rgba(23, 134, 205, 0.75);
+  /* 热力图色阶（0 = 无数据 / 空位中性底，1..4 强调色渐进）。品牌
+     periwinkle 系；暗色两套变量见文件尾部 .dark 段 */
+  --db-heat-0: #eceefa;
+  --db-heat-1: #dfe4fd;
+  --db-heat-2: #b9c4fb;
+  --db-heat-3: #7f93f8;
+  --db-heat-4: #4c63f5;
+  --db-heat-edge: rgba(76, 99, 245, 0.3);
+  --db-heat-edge-strong: rgba(76, 99, 245, 0.75);
   /* 每日模式「未来格」虚线（这一格还没到）：比数据格描边略重，保证在白卡
      底色上可辨，又不与色阶 / 无数据灰格抢眼 */
-  --db-heat-future: rgba(23, 134, 205, 0.5);
+  --db-heat-future: rgba(76, 99, 245, 0.5);
   --db-heat-gap: 2px;
   /* 星期标签列宽（底部月份标签行以同一宽度对齐网格） */
   --db-heat-label-w: 26px;
@@ -106,24 +164,25 @@
      不能复用半透明的 --db-card-bg（下层卡片 / 表格内容会透出来）；暗色值见
      .dark 段 */
   --db-pop-bg: #ffffff;
-  --db-pop-shadow: 0 10px 30px rgba(15, 23, 42, 0.18);
+  --db-pop-shadow: 0 2px 6px rgba(15, 23, 42, 0.06),
+    0 24px 60px -24px rgba(15, 23, 42, 0.45);
 
-  /* 时间范围控件（触发按钮 / 面板预设行 / 起止字段卡 / 自绘日历格）：主色沿用
-     项目 sky 系，与 --db-seg-active-text 同源（亮 = sky-600）；暗色整体提亮
-     一档，见 .dark 段。solid = 起止日实心块与「应用」按钮底 */
-  --db-cal-accent-text: #0284c7;
-  --db-cal-accent-bg: rgba(2, 132, 199, 0.08);
-  --db-cal-accent-border: rgba(2, 132, 199, 0.55);
-  --db-cal-accent-border-soft: rgba(2, 132, 199, 0.32);
-  --db-cal-accent-ring: rgba(2, 132, 199, 0.16);
-  --db-cal-solid: #0284c7;
+  /* 时间范围控件（触发按钮 / 面板预设行 / 起止字段卡 / 自绘日历格）：主色
+     与页头强调同源（亮 = 品牌蓝紫）；暗色整体提亮一档，见 .dark 段。
+     solid = 起止日实心块与「应用」按钮底 */
+  --db-cal-accent-text: #2b3fc4;
+  --db-cal-accent-bg: rgba(76, 99, 245, 0.08);
+  --db-cal-accent-border: rgba(76, 99, 245, 0.55);
+  --db-cal-accent-border-soft: rgba(76, 99, 245, 0.32);
+  --db-cal-accent-ring: rgba(76, 99, 245, 0.16);
+  --db-cal-solid: #4c63f5;
   --db-cal-solid-text: #ffffff;
-  --db-cal-range-bg: rgba(2, 132, 199, 0.12);
-  --db-cal-range-text: #075985;
-  --db-cal-hover-bg: rgba(15, 23, 42, 0.06);
-  --db-cal-outside: rgba(51, 65, 85, 0.3);
-  --db-cal-today-ring: rgba(2, 132, 199, 0.75);
-  --db-cal-field-bg: rgba(15, 23, 42, 0.03);
+  --db-cal-range-bg: rgba(76, 99, 245, 0.12);
+  --db-cal-range-text: #2b3fbc;
+  --db-cal-hover-bg: rgba(43, 63, 180, 0.07);
+  --db-cal-outside: rgba(56, 70, 120, 0.32);
+  --db-cal-today-ring: rgba(76, 99, 245, 0.75);
+  --db-cal-field-bg: rgba(43, 63, 180, 0.04);
 }
 
 /* 不透明普通窗：页面自己铺满，滚动交给主区（.db-main）单一容器，
@@ -147,11 +206,44 @@ body,
   overflow: hidden;
 }
 
+/* 环境光背景：主窗口整体铺一层冷色（青 / 紫）径向渐变，玻璃壳与半透明
+   卡片浮在这层光上才有层次。用 background-attachment: fixed 让光斑相对
+   窗口固定（不随主区滚动），观感接近 HUD 的桌面壁纸磨砂。
+   只画在 body 上：主区 / 侧栏都是透明或半透明，光能透出来。 */
 body {
-  background: var(--db-bg);
+  background-color: var(--db-bg);
+  background-image: radial-gradient(
+      1200px 640px at 86% -12%,
+      var(--db-glow-violet),
+      transparent 70%
+    ),
+    radial-gradient(
+      1000px 560px at 4% -8%,
+      var(--db-glow-cyan),
+      transparent 68%
+    ),
+    radial-gradient(
+      900px 520px at 50% 108%,
+      var(--db-glow-mint),
+      transparent 72%
+    );
+  background-attachment: fixed;
+  background-repeat: no-repeat;
   color: var(--db-text);
   color-scheme: light;
   overflow: hidden;
+}
+
+/* 文本选中：品牌蓝浅底（系统默认的高饱和蓝在浅色卡片上过于抢眼） */
+::selection {
+  background: rgba(14, 165, 233, 0.24);
+  color: inherit;
+}
+
+/* 通用键盘焦点环：各控件仍可自带更贴合的样式，这里只兜底 */
+:focus-visible {
+  outline: 2px solid var(--db-accent);
+  outline-offset: 2px;
 }
 
 /* 等宽数字（与 index.css 的 .num 同源） */
@@ -178,48 +270,79 @@ body {
   min-height: 0;
 }
 
-/* ---- 自绘标题栏（高 40px，见 --db-titlebar-h；替代系统标题栏） ---- */
+/* ---- 自绘标题栏（高 44px，见 --db-titlebar-h；替代系统标题栏） ----
+   玻璃壳：半透明底 + 毛玻璃（模糊 body 的环境光），底部一条 hairline
+   与主区分层。标题栏与侧栏同色同材质，读作一块 L 形"应用壳"面。 */
 .db-titlebar {
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: space-between;
   flex: none;
   height: var(--db-titlebar-h);
-  padding-left: 12px;
-  /* 底与侧栏同源：标题栏 + 侧栏读作同一块"应用壳"面（L 形），主区页面底
-     与之分层；壳面分隔线不画在标题栏下缘，改由 .db-main 的 border-top 只
-     落在主区一侧（避免横线切断 L 形壳面） */
-  background: var(--db-sidebar-bg);
+  padding: 0 8px 0 14px;
+  background: var(--db-shell-bg);
+  -webkit-backdrop-filter: var(--db-shell-blur);
+  backdrop-filter: var(--db-shell-blur);
+  border-bottom: 1px solid var(--db-shell-border);
   /* 整栏不可选中：拖拽 / 双击最大化时不会误选到品牌文本 */
   user-select: none;
   cursor: default;
 }
 
+/* 标题栏下缘的品牌渐变线：一条 1px 的蓝紫光带，是"这扇窗属于 AgentHUD"
+   最省地方的标记（HUD 胶囊的描边光同源） */
+.db-titlebar::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -1px;
+  height: 1px;
+  background-image: var(--db-brand-grad);
+  opacity: 0.55;
+  pointer-events: none;
+}
+
 .db-titlebar__brand {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 9px;
   /* min-width: 0 + tagline 省略号：窗口窄到极限时先收副标题，名称与图标不挤 */
   min-width: 0;
 }
 
-/* 软件 logo（原侧栏 db-brand__logo-img 28px 上移到标题栏：缩到 18px 适配
-   40px 栏高；128px 满底不透明 PNG 由 Vite 打包，5px 圆角避免直角色块） */
+/* 软件 logo（128px 满底不透明 PNG 由 Vite 打包）：20px + 6px 圆角，
+   底部一点点投影让白底 logo 从玻璃面上"浮"起来 */
 .db-titlebar__logo {
-  width: 18px;
-  height: 18px;
+  width: 20px;
+  height: 20px;
   flex: none;
-  border-radius: 5px;
+  border-radius: 6px;
   object-fit: contain;
   user-select: none;
+  filter: drop-shadow(0 1px 2px rgba(2, 6, 23, 0.18));
 }
 
+/* 品牌名：取 logo 的青 → 蓝 → 紫渐变做文字（background-clip）。
+   亮色用加深档（--db-brand-grad-text），保证小字号下的对比度 */
 .db-titlebar__name {
-  font-size: 12.5px;
-  font-weight: 700;
-  color: var(--db-text);
+  font-size: 13px;
+  font-weight: 800;
   letter-spacing: 0.01em;
   white-space: nowrap;
+  background-image: var(--db-brand-grad-text);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  /* 极旧内核不支持 background-clip: text 时回退为普通文字色（见下） */
+}
+
+@supports not ((background-clip: text) or (-webkit-background-clip: text)) {
+  .db-titlebar__name {
+    background-image: none;
+    color: var(--db-text);
+  }
 }
 
 /* 产品副标题（原侧栏 tagline 随品牌上移）：小号弱色，与名称同行 */
@@ -232,10 +355,11 @@ body {
   color: var(--db-text-dim);
 }
 
-/* 窗口控制按钮组：align-self: stretch 让三枚按钮占满 40px 栏高 */
+/* 窗口控制按钮组：三枚 30×30 圆角块，垂直居中（不再整高命中区） */
 .db-titlebar__controls {
   display: flex;
-  align-self: stretch;
+  align-items: center;
+  gap: 2px;
   flex: none;
 }
 
@@ -243,13 +367,15 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 46px;
+  width: 30px;
+  height: 30px;
   padding: 0;
   border: none;
+  border-radius: 8px;
   background: transparent;
   color: var(--db-text-dim);
   cursor: default;
-  transition: background 0.12s ease, color 0.12s ease;
+  transition: background 0.12s ease, color 0.12s ease, transform 0.12s ease;
 }
 
 .db-titlebar__btn:hover:not(:disabled) {
@@ -267,6 +393,7 @@ body {
    见 .dark 段）；声明在 hover 之后，同特异性下覆盖悬停底色 */
 .db-titlebar__btn:active:not(:disabled) {
   background: var(--db-titlebar-press);
+  transform: scale(0.94);
 }
 
 /* 关闭按钮按下：保持红底只压暗一档（brightness），不用灰色 press 底破坏
@@ -279,8 +406,8 @@ body {
 
 /* 键盘焦点圈（:focus-visible 只对键盘生效，鼠标点击不出现） */
 .db-titlebar__btn:focus-visible {
-  outline: 2px solid var(--db-active-text);
-  outline-offset: -2px;
+  outline: none;
+  box-shadow: var(--db-focus-ring);
 }
 
 /* 非 Tauri 宿主（浏览器直接开 dev server）下窗口句柄为空：按钮只降透明度 */
@@ -288,44 +415,84 @@ body {
   opacity: 0.5;
 }
 
+/* ---- 侧栏：与标题栏同材质的玻璃面 ---- */
 .db-sidebar {
+  position: relative;
   display: flex;
   flex-direction: column;
   /* 固定宽侧栏：窗口拉伸时只有主区变化（对齐 1100×720 大窗的信息层级） */
-  width: 200px;
+  width: 208px;
   flex: none;
-  /* 品牌块已上移到自绘标题栏：导航顶部留 10px 呼吸位（此前由 db-brand
-     的 16px 上留白承担，删除后导航会直接贴住标题栏） */
-  padding-top: 10px;
-  background: var(--db-sidebar-bg);
-  border-right: 1px solid var(--db-border);
+  /* 品牌块已上移到自绘标题栏：导航顶部留一点呼吸位 */
+  padding-top: 12px;
+  background: var(--db-shell-bg);
+  -webkit-backdrop-filter: var(--db-shell-blur);
+  backdrop-filter: var(--db-shell-blur);
+  border-right: 1px solid var(--db-shell-border);
+  overflow: hidden;
 }
 
-/* ---- 导航 ---- */
+/* 侧栏顶部的一团品牌光：让导航区上部有 HUD 那种"被光照到"的层次，
+   向下渐隐到透明，不影响文字对比 */
+.db-sidebar::before {
+  content: "";
+  position: absolute;
+  top: -70px;
+  left: -60px;
+  width: 280px;
+  height: 260px;
+  border-radius: 50%;
+  background: radial-gradient(
+    circle at center,
+    color-mix(in srgb, var(--db-accent) 22%, transparent),
+    transparent 68%
+  );
+  pointer-events: none;
+}
+
+/* 毛玻璃降级：内核不支持 backdrop-filter 时玻璃壳退回卡片实底色，
+   避免"半透明却没有模糊"导致文字与背景糊在一起（WebView2 正常路径
+   不会走到这里，仅老内核 / 特殊环境兜底） */
+@supports not (backdrop-filter: blur(1px)) {
+  .db-titlebar,
+  .db-sidebar,
+  .db-page__header--sticky {
+    background: var(--db-card-solid);
+  }
+}
+
+/* ---- 导航：36px 行高 + 双色淡底激活项 ---- */
 .db-nav {
+  position: relative;
+  z-index: 1;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 3px;
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: 4px 8px;
+  padding: 2px 10px;
 }
 
 .db-nav__item {
+  position: relative;
   display: flex;
   align-items: center;
-  gap: 9px;
+  gap: 10px;
   width: 100%;
-  padding: 8px 10px;
-  border: none;
-  border-radius: 10px;
+  height: 36px;
+  padding: 0 11px;
+  border: 1px solid transparent;
+  border-radius: 11px;
   background: transparent;
-  font-size: 12px;
+  font-family: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
   color: var(--db-text-dim);
   text-align: left;
   cursor: pointer;
-  transition: background 0.15s ease, color 0.15s ease;
+  transition: background 0.16s ease, color 0.16s ease, box-shadow 0.16s ease,
+    border-color 0.16s ease;
 }
 
 .db-nav__item:hover {
@@ -333,15 +500,37 @@ body {
   color: var(--db-text);
 }
 
-.db-nav__item--active {
-  background: var(--db-active-bg);
-  color: var(--db-active-text);
+/* 激活项：品牌双色淡底 + 内描边 + 冷色投影；文字与图标走加深的品牌蓝 */
+.db-nav__item--active,
+.db-nav__item--active:hover {
+  background: var(--db-nav-active-bg);
+  border-color: var(--db-nav-active-ring);
+  color: var(--db-nav-active-text);
   font-weight: 600;
+  box-shadow: var(--db-nav-active-shadow);
+}
+
+/* 激活项左侧的 3px 品牌色短条（只在激活时出现，圆角与大圆角面板贴合） */
+.db-nav__item--active::before {
+  content: "";
+  position: absolute;
+  left: 5px;
+  top: 50%;
+  width: 3px;
+  height: 16px;
+  border-radius: 999px;
+  background-image: var(--db-brand-grad);
+  transform: translateY(-50%);
 }
 
 .db-nav__icon {
   display: flex;
   flex: none;
+  opacity: 0.9;
+}
+
+.db-nav__item--active .db-nav__icon {
+  opacity: 1;
 }
 
 /* ---- 侧栏底部：语言 / 主题快捷切换 ---- */
@@ -350,30 +539,33 @@ body {
   align-items: center;
   gap: 6px;
   padding: 10px 12px;
-  border-top: 1px solid var(--db-border);
+  border-top: 1px solid var(--db-shell-border);
 }
 
-/* 图标按钮（LanguageToggle / ThemeToggle 经 className 复用；
-   面板的 .toolbar-btn 是 22px 小圆角按钮，大窗用 28px 更顺手） */
+/* 图标按钮（LanguageToggle / ThemeToggle 经 className 复用）：
+   30px 圆角块 + 透明描边，hover 时浮出一层浅玻璃底 */
 .db-icon-btn {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 28px;
-  height: 28px;
-  border: none;
-  border-radius: 8px;
+  width: 30px;
+  height: 30px;
+  border: 1px solid transparent;
+  border-radius: 9px;
   background: transparent;
+  font-family: inherit;
   font-size: 12px;
   line-height: 1;
   color: var(--db-text-dim);
   cursor: pointer;
-  transition: all 0.15s ease;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease,
+    transform 0.12s ease;
 }
 
 .db-icon-btn:hover {
   color: var(--db-text);
-  background: var(--db-hover);
+  background: var(--db-control-bg-hover);
+  border-color: var(--db-control-border);
 }
 
 .db-icon-btn:active {
@@ -390,10 +582,9 @@ body {
   display: flex;
   flex-direction: column;
   overflow-y: auto;
-  /* 壳面分隔线只出现在主区一侧：标题栏与侧栏同底色连成 L 形壳面，这条
-     border-top 同时隔开标题栏与滚过的主区内容（.db-titlebar 不再画
-     border-bottom） */
-  border-top: 1px solid var(--db-border);
+  /* 壳面分隔线由标题栏的 border-bottom / 侧栏的 border-right 画好，
+     主区不再额外叠一条横线；主区本身透出 body 的环境光背景 */
+  background: transparent;
 }
 
 .db-page {
@@ -402,7 +593,7 @@ body {
   gap: 18px;
   flex: 1;
   min-height: 100%;
-  padding: 26px 30px 30px;
+  padding: 28px 32px 36px;
   /* 超宽约束：1920/2560 最大化时卡片与表格不再拉满全宽（内容列 1280 居中，
      两侧留白）；窗口较窄时 width:100% 生效，布局与原来一致 */
   width: 100%;
@@ -410,15 +601,42 @@ body {
   margin: 0 auto;
 }
 
+/* 页标题：22px + 品牌渐变文字（蓝紫渐进）。大窗下标题是视线的第一落点，
+   渐变让每页的"页头"都有 HUD 的品牌感，而不是一行普通黑字 */
 .db-page__title {
-  font-size: 18px;
+  font-size: 22px;
   font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1.25;
   color: var(--db-text);
-  letter-spacing: -0.01em;
+  background-image: var(--db-brand-grad-text);
+  -webkit-background-clip: text;
+  background-clip: text;
+  width: fit-content;
+}
+
+@supports not ((background-clip: text) or (-webkit-background-clip: text)) {
+  .db-page__title {
+    background-image: none;
+    color: var(--db-text);
+  }
+}
+
+/* 页标题下的品牌短条：给页头一个明确的"品牌标记"（与 HUD 卡片的强调线
+   同源）。伪元素挂在标题上，落在标题与说明之间 */
+.db-page__title::after {
+  content: "";
+  display: block;
+  width: 30px;
+  height: 3px;
+  margin-top: 9px;
+  border-radius: 999px;
+  background-image: var(--db-brand-grad);
+  opacity: 0.9;
 }
 
 .db-page__desc {
-  margin-top: 5px;
+  margin-top: 6px;
   font-size: 12px;
   line-height: 1.6;
   color: var(--db-text-dim);
@@ -433,16 +651,16 @@ body {
 /* ---- 页头：标题 + 范围分段 + 刷新 ---- */
 .db-page__header {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
-  gap: 18px;
+  gap: 16px;
   flex-wrap: wrap;
 }
 
 .db-page__actions {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   flex-wrap: wrap;
 }
 
@@ -467,11 +685,13 @@ body {
   color: var(--db-text-dim);
 }
 
-/* ---- 卡片 ---- */
+/* ---- 卡片：20px 大圆角 + 发丝描边 + 双层投影（inset 高光是玻璃质感的
+   来源，见 :root 的 --db-card-shadow） ---- */
 .db-card {
+  position: relative;
   background: var(--db-card-bg);
-  border: 1px solid var(--db-border);
-  border-radius: 16px;
+  border: 1px solid var(--db-card-border);
+  border-radius: 20px;
   box-shadow: var(--db-card-shadow);
 }
 
@@ -480,7 +700,7 @@ body {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 15px 18px 0;
+  padding: 16px 20px 0;
 }
 
 .db-card__headline {
@@ -492,7 +712,7 @@ body {
 
 .db-card__title {
   font-size: 13px;
-  font-weight: 600;
+  font-weight: 650;
   color: var(--db-text);
   letter-spacing: 0.01em;
   white-space: nowrap;
@@ -514,28 +734,30 @@ body {
 }
 
 .db-card__body {
-  padding: 14px 18px 16px;
+  padding: 15px 20px 18px;
 }
 
-/* ---- 分段控件（时间范围） ---- */
+/* ---- 分段控件（时间范围）：浅玻璃槽 + 白底浮起的选中块 ---- */
 .db-seg {
   display: inline-flex;
   gap: 2px;
   padding: 3px;
-  border-radius: 11px;
+  border-radius: 12px;
   background: var(--db-seg-bg);
+  /* 内阴影让"槽"有凹陷感，选中的白块才像浮在上面 */
+  box-shadow: inset 0 1px 2px rgba(15, 23, 42, 0.045);
 }
 
 .db-seg__btn {
   padding: 5px 12px;
   border: none;
-  border-radius: 8px;
+  border-radius: 9px;
   background: transparent;
   font-family: inherit;
   font-size: 12px;
   color: var(--db-text-dim);
   cursor: pointer;
-  transition: background 0.15s ease, color 0.15s ease;
+  transition: background 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
 }
 
 .db-seg__btn:hover {
@@ -547,6 +769,8 @@ body {
   background: var(--db-seg-active-bg);
   color: var(--db-seg-active-text);
   font-weight: 600;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.1),
+    0 4px 10px -6px rgba(15, 23, 42, 0.28);
 }
 
 /* 禁用态（总览页「全部设备」在未启用同步时不可选）：保留激活高亮，
@@ -594,7 +818,9 @@ body {
   min-width: 0;
 }
 
-/* 触发按钮：与 .db-btn 同档高度与圆角，单行省略，超长摘要不撑破页头 */
+/* 触发按钮：与 .db-btn 同档高度与圆角，单行省略，超长摘要不撑破页头.
+   观感对齐 DropdownMenu 触发器：浅玻璃底 + 发丝描边（不再白底实心，
+   页头一排控件才是同一个材质） */
 .db-range-trigger {
   display: inline-flex;
   align-items: center;
@@ -602,18 +828,25 @@ body {
   height: 32px;
   max-width: 240px;
   padding: 0 9px 0 12px;
-  border: 1px solid var(--db-border);
+  border: 1px solid var(--db-control-border);
   border-radius: 10px;
-  background: var(--db-card-bg);
+  background: var(--db-control-bg);
   font-family: inherit;
   font-size: 12px;
   color: var(--db-text);
   cursor: pointer;
-  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease,
+    box-shadow 0.15s ease;
 }
 
 .db-range-trigger:hover {
-  background: var(--db-hover);
+  background: var(--db-control-bg-hover);
+}
+
+.db-range-trigger:focus-visible {
+  outline: none;
+  border-color: var(--db-cal-accent-border);
+  box-shadow: var(--db-focus-ring);
 }
 
 /* 自定义生效：主色描边 + 浅底 + 主色文字（与预设档的「无描边」形态区分） */
@@ -930,29 +1163,40 @@ body {
   box-shadow: none;
 }
 
-/* ---- 通用按钮（刷新 / 重新加载） ---- */
+/* ---- 通用按钮（刷新 / 重新加载） ----
+   浅玻璃底 + 发丝描边（与页头下拉、时间范围触发器同一材质）；hover 加深
+   一档并带一点点上浮，press 回弹——微交互让操作有"按下去"的实感 */
 .db-btn {
   display: inline-flex;
   align-items: center;
   gap: 6px;
   height: 32px;
   padding: 0 13px;
-  border: 1px solid var(--db-border);
+  border: 1px solid var(--db-control-border);
   border-radius: 10px;
-  background: var(--db-card-bg);
+  background: var(--db-control-bg);
   font-family: inherit;
   font-size: 12px;
+  font-weight: 500;
   color: var(--db-text);
   cursor: pointer;
-  transition: background 0.15s ease, opacity 0.15s ease;
+  transition: background 0.15s ease, border-color 0.15s ease,
+    box-shadow 0.15s ease, transform 0.12s ease, opacity 0.15s ease;
 }
 
 .db-btn:hover:not(:disabled) {
-  background: var(--db-hover);
+  background: var(--db-control-bg-hover);
+  border-color: var(--db-border);
 }
 
 .db-btn:active:not(:disabled) {
-  transform: scale(0.98);
+  transform: scale(0.97);
+}
+
+.db-btn:focus-visible {
+  outline: none;
+  border-color: var(--db-cal-accent-border);
+  box-shadow: var(--db-focus-ring);
 }
 
 .db-btn:disabled {
@@ -971,19 +1215,30 @@ body {
 }
 
 /* ---- 弱提示条（对比页：汇总模式远端降级）----
-   比 AlertBanner 轻一档：不抢主数据，只说明口径变化 */
+   比 AlertBanner 轻一档：不抢主数据，只说明口径变化；淡青底 + 左侧
+   一道品牌色短条，读作"附注"而不是"错误" */
 .db-hintbar {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   margin-top: -6px;
-  padding: 7px 11px;
-  border: 1px solid var(--db-border);
-  border-radius: 10px;
-  background: var(--db-hover);
+  padding: 8px 12px 8px 13px;
+  border: 1px solid color-mix(in srgb, var(--db-accent-sky) 20%, transparent);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--db-accent-sky) 6%, transparent);
   font-size: 11px;
   line-height: 1.6;
   color: var(--db-text-dim);
+}
+
+.db-hintbar::before {
+  content: "";
+  flex: none;
+  width: 3px;
+  align-self: stretch;
+  min-height: 14px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--db-accent-sky) 62%, transparent);
 }
 
 /* ---- 专用错误态（总览页全部 Agent 取数失败）----
@@ -997,7 +1252,7 @@ body {
   gap: 8px;
   padding: 34px 20px;
   border: 1px solid rgba(244, 63, 94, 0.24);
-  border-radius: 16px;
+  border-radius: 18px;
   background: rgba(244, 63, 94, 0.06);
   text-align: center;
 }
@@ -1030,8 +1285,38 @@ body {
    起信息层级——用容器查询把这两档连续插值，中间任何窗口尺寸都落在一个
    舒服的比例上（不同 DPI/缩放也不用另调）。 */
 .db-metric {
-  padding: 15px 17px 16px;
+  padding: 16px 18px 17px;
   container-type: inline-size;
+  /* 右上角一抹品牌冷光：四张指标卡不再是一排"白方块"，而是统一从
+     右上角受光；每张卡的光色不同（蓝 / 紫 / 青绿 / 琥珀），排在一起像
+     一排 HUD 仪表；hover 时描边提一档 + 微上浮，呼应 HUD 卡片的悬停反馈 */
+  --db-metric-glow: color-mix(in srgb, var(--db-accent) 12%, transparent);
+  background-image: radial-gradient(
+    130% 110% at 100% -20%,
+    var(--db-metric-glow),
+    transparent 64%
+  );
+  transition: border-color 0.18s ease, box-shadow 0.18s ease,
+    transform 0.18s ease;
+}
+
+.db-metrics > .db-metric:nth-child(2) {
+  --db-metric-glow: color-mix(in srgb, var(--db-accent-violet) 12%, transparent);
+}
+
+.db-metrics > .db-metric:nth-child(3) {
+  --db-metric-glow: color-mix(in srgb, var(--db-accent-emerald) 11%, transparent);
+}
+
+.db-metrics > .db-metric:nth-child(4) {
+  --db-metric-glow: color-mix(in srgb, var(--db-accent-amber) 11%, transparent);
+}
+
+.db-metric:hover {
+  border-color: color-mix(in srgb, var(--db-accent-sky) 28%, transparent);
+  transform: translateY(-1px);
+  box-shadow: var(--db-card-highlight),
+    0 18px 40px -26px color-mix(in srgb, var(--db-accent-sky) 55%, transparent);
 }
 
 .db-metric__label {
@@ -1039,6 +1324,8 @@ body {
   align-items: center;
   gap: 7px;
   font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
   color: var(--db-text-dim);
 }
 
@@ -1046,11 +1333,11 @@ body {
   display: flex;
   align-items: baseline;
   gap: 3px;
-  margin-top: 10px;
+  margin-top: 11px;
   /* 兜底（不支持容器查询的旧内核）在前，流体档在后；cqw 非法时整条忽略，
      旧内核仍拿到 27px */
-  font-size: 27px;
-  font-size: clamp(22px, 13.6cqw, 27px);
+  font-size: 28px;
+  font-size: clamp(22px, 14cqw, 28px);
   font-weight: 700;
   line-height: 1;
   letter-spacing: -0.02em;
@@ -1062,8 +1349,23 @@ body {
   text-overflow: ellipsis;
 }
 
+/* 主指标数值：品牌渐变文字（加深档，亮暗各自有定义）；旧内核回退纯色 */
 .db-metric__value--primary {
   color: var(--db-accent-sky);
+}
+
+.db-metric__value--primary > .num:first-child {
+  background-image: var(--db-brand-grad-text);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+@supports not ((background-clip: text) or (-webkit-background-clip: text)) {
+  .db-metric__value--primary > .num:first-child {
+    background-image: none;
+    color: var(--db-accent-sky);
+  }
 }
 
 .db-metric__unit {
@@ -1710,11 +2012,14 @@ body {
   font-size: 12px;
 }
 
+/* 表头：11px 弱色 + 字距，底下一层极淡的分隔；数值列右对齐由 __num 负责。
+   表头不铺底色（卡片本身是白底，铺一层灰反而显脏），只用分隔线与字重区分 */
 .db-table th {
   padding: 0 10px 9px;
   border-bottom: 1px solid var(--db-border);
   font-size: 11px;
-  font-weight: 500;
+  font-weight: 600;
+  letter-spacing: 0.02em;
   color: var(--db-text-dim);
   text-align: left;
 }
@@ -1730,8 +2035,10 @@ body {
   border-bottom: none;
 }
 
+/* 行悬停：淡青底（--db-row-hover）——比中性灰更能提示"这一行是当前读数"，
+   与 HUD 卡片的悬停反馈同一套色感 */
 .db-table tbody tr:hover {
-  background: var(--db-hover);
+  background: var(--db-row-hover);
 }
 
 .db-table__num,
@@ -1953,17 +2260,25 @@ body {
 /* 单个额度系列块：三行紧凑结构（块头 / 进度条 / 重置与 5 小时） */
 .db-qcell {
   min-width: 0;
-  padding: 11px 12px 10px;
-  border: 1px solid var(--db-border);
-  border-radius: 12px;
-  background: var(--db-hover);
+  padding: 12px 13px 11px;
+  border: 1px solid var(--db-card-border);
+  border-radius: 14px;
+  background: var(--db-control-bg);
+  transition: background 0.16s ease, border-color 0.16s ease,
+    transform 0.16s ease;
 }
 
-/* 额度块加载骨架：与真实额度块同轮廓（约 78px 高、12px 圆角），
+.db-qcell:hover {
+  background: var(--db-control-bg-hover);
+  border-color: color-mix(in srgb, var(--db-accent-sky) 26%, transparent);
+  transform: translateY(-1px);
+}
+
+/* 额度块加载骨架：与真实额度块同轮廓（约 78px 高、14px 圆角），
    底色与脉冲沿用 .db-skeleton；容器复用 .db-matrix 同一网格模板 */
 .db-qcell--skeleton {
   height: 78px;
-  border-radius: 12px;
+  border-radius: 14px;
 }
 
 /* 块头一行放下：品牌图标 + 系列名（左）与窗口措辞 + 剩余大数（右） */
@@ -2235,15 +2550,24 @@ body {
  * ============================================================ */
 
 /* ---- 按钮补充变体 ---- */
+/* 主操作：品牌蓝紫渐变实底 + 同色系柔光投影（页头 / 表单里一屏最多一个，
+   留给真正的"前进"动作）。文字色按主题走 --db-btn-primary-text：
+   亮色白字、暗色深靛蓝字（亮色渐变配白字在深色界面里发灰） */
 .db-btn--primary {
   border-color: transparent;
-  background: var(--db-active-text);
-  color: #fff;
+  background-image: var(--db-btn-primary-bg);
+  color: var(--db-btn-primary-text);
+  box-shadow: 0 8px 20px -12px var(--db-btn-primary-glow),
+    inset 0 1px 0 rgba(255, 255, 255, 0.3);
 }
 
 .db-btn--primary:hover:not(:disabled) {
-  background: var(--db-active-text);
-  filter: brightness(1.08);
+  background-image: var(--db-btn-primary-bg);
+  border-color: transparent;
+  color: var(--db-btn-primary-text);
+  filter: brightness(1.05) saturate(1.04);
+  box-shadow: 0 10px 24px -12px var(--db-btn-primary-glow),
+    inset 0 1px 0 rgba(255, 255, 255, 0.34);
 }
 
 .db-btn--badge {
@@ -2318,8 +2642,8 @@ body {
 }
 
 /* 价格设置页页头吸顶：页头内含「保存」，长价格表滚动时保存动作始终可见。
-   负外边距抵消顶部内边距，静态布局与其它页头保持一致；背景用页面底色，
-   内容从下方滚过时不透出 */
+   负外边距抵消顶部内边距，静态布局与其它页头保持一致；背景用近实底的
+   --db-sticky-bg + 毛玻璃（内容从下方滚过时不透字，但仍有玻璃质感） */
 .db-page__header--sticky {
   position: sticky;
   top: 0;
@@ -2328,7 +2652,10 @@ body {
   padding-top: 10px;
   padding-bottom: 6px;
   margin-bottom: -6px;
-  background: var(--db-bg);
+  background: var(--db-sticky-bg);
+  -webkit-backdrop-filter: var(--db-shell-blur);
+  backdrop-filter: var(--db-shell-blur);
+  border-radius: 0 0 12px 12px;
 }
 
 /* 未保存改动提示（dirty 时紧贴保存按钮左侧） */
@@ -2358,26 +2685,34 @@ body {
   cursor: default;
 }
 
-/* ---- 搜索框（价格表卡片右上） ---- */
+/* ---- 搜索框（价格表卡片右上）：浅玻璃底，聚焦时主色描边 + 焦点环 ---- */
 .db-search {
   width: 220px;
   height: 30px;
   padding: 0 10px;
-  border: 1px solid var(--db-border);
+  border: 1px solid var(--db-control-border);
   border-radius: 9px;
-  background: var(--db-card-bg);
+  background: var(--db-control-bg);
   font-family: inherit;
   font-size: 12px;
   color: var(--db-text);
   outline: none;
+  transition: border-color 0.15s ease, background 0.15s ease,
+    box-shadow 0.15s ease;
 }
 
 .db-search::placeholder {
   color: var(--db-text-dim);
 }
 
+.db-search:hover {
+  background: var(--db-control-bg-hover);
+}
+
 .db-search:focus {
-  border-color: var(--db-active-text);
+  border-color: var(--db-cal-accent-border);
+  background: var(--db-card-bg);
+  box-shadow: var(--db-focus-ring);
 }
 
 /* ---- 价格表首屏骨架行高 ----
@@ -2410,8 +2745,9 @@ body {
   position: sticky;
   top: 0;
   z-index: 2;
-  /* 吸顶需要不透明底：--db-sidebar-bg 就是亮/暗两套的实底色（白 / slate-800） */
-  background: var(--db-sidebar-bg);
+  /* 吸顶需要不透明底：--db-card-solid 是亮/暗两套的卡片实底色（白 / 深蓝），
+     滚过去的行不会从表头后面透出来 */
+  background: var(--db-card-solid);
 }
 
 .db-price-name {
@@ -2442,16 +2778,22 @@ body {
   display: flex;
   align-items: center;
   height: 26px;
-  padding: 0 6px;
-  border: 1px solid var(--db-border);
-  border-radius: 7px;
-  background: var(--db-card-bg);
-  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  padding: 0 7px;
+  border: 1px solid var(--db-control-border);
+  border-radius: 8px;
+  background: var(--db-control-bg);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease,
+    background 0.15s ease;
+}
+
+.db-price-input:hover {
+  background: var(--db-control-bg-hover);
 }
 
 .db-price-input:focus-within {
-  border-color: var(--db-active-text);
-  box-shadow: 0 0 0 2px var(--db-active-bg);
+  border-color: var(--db-cal-accent-border);
+  background: var(--db-card-bg);
+  box-shadow: var(--db-focus-ring);
 }
 
 .db-price-input__symbol {
@@ -2523,11 +2865,23 @@ body {
   width: 320px;
   max-width: calc(100vw - 48px);
   margin: 0 16px;
-  padding: 14px 16px;
+  padding: 16px 18px;
   background: var(--db-drawer-bg);
-  border: 1px solid var(--db-border);
-  border-radius: 12px;
-  box-shadow: 0 18px 48px rgba(15, 23, 42, 0.22);
+  border: 1px solid var(--db-card-border);
+  border-radius: 16px;
+  box-shadow: var(--db-pop-shadow);
+  animation: db-confirm-in 0.16s ease-out;
+}
+
+@keyframes db-confirm-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
 }
 
 .db-confirm__title {
@@ -2558,15 +2912,18 @@ body {
 }
 
 /* 危险操作键（删除确认）：与 .db-btn--primary 同构的红底白字变体，
-   色相沿用行内删除按钮的 rose 系 */
+   色相沿用行内删除按钮的 rose 系；同样带一层同色柔光，与主按钮对称 */
 .db-btn--danger {
   border-color: transparent;
   background: #f43f5e;
   color: #fff;
+  box-shadow: 0 6px 16px -10px rgba(244, 63, 94, 0.8),
+    inset 0 1px 0 rgba(255, 255, 255, 0.24);
 }
 
 .db-btn--danger:hover:not(:disabled) {
   background: #e11d48;
+  border-color: transparent;
 }
 
 /* ---- 来源 / 差异 小标签 ---- */
@@ -3019,7 +3376,7 @@ body {
   position: sticky;
   top: 0;
   z-index: 1;
-  background: var(--db-card-bg);
+  background: var(--db-card-solid);
   border-bottom: 1px solid var(--db-border);
 }
 
@@ -3046,9 +3403,9 @@ body {
   gap: 6px;
   min-width: 0;
   padding: 5px 10px;
-  border: 1px solid var(--db-border);
+  border: 1px solid var(--db-control-border);
   border-radius: 10px;
-  background: var(--db-card-bg);
+  background: var(--db-control-bg);
   white-space: nowrap;
   overflow: hidden;
 }
@@ -3134,8 +3491,8 @@ body {
   width: 400px;
   max-width: 92vw;
   background: var(--db-drawer-bg);
-  border-left: 1px solid var(--db-border);
-  box-shadow: -12px 0 32px rgba(15, 23, 42, 0.22);
+  border-left: 1px solid var(--db-card-border);
+  box-shadow: -18px 0 50px -18px rgba(2, 6, 23, 0.45);
   animation: db-drawer-in 0.18s ease-out;
 }
 
@@ -3438,17 +3795,22 @@ body {
 .db-sync-mode__interval input {
   width: 64px;
   padding: 3px 7px;
-  border: 1px solid var(--db-border);
-  border-radius: 6px;
-  background: var(--db-card-bg);
+  border: 1px solid var(--db-control-border);
+  border-radius: 7px;
+  background: var(--db-control-bg);
   color: var(--db-text);
+  font-family: inherit;
   font-size: 12px;
   text-align: right;
   outline: none;
+  transition: border-color 0.15s ease, background 0.15s ease,
+    box-shadow 0.15s ease;
 }
 
 .db-sync-mode__interval input:focus {
   border-color: var(--db-cal-accent-border);
+  background: var(--db-card-bg);
+  box-shadow: var(--db-focus-ring);
 }
 
 /* 状态卡操作行 */
@@ -3491,17 +3853,30 @@ body {
 
 .db-sync-field input {
   width: 100%;
-  padding: 5px 9px;
-  border: 1px solid var(--db-border);
-  border-radius: 6px;
-  background: var(--db-card-bg);
+  padding: 6px 10px;
+  border: 1px solid var(--db-control-border);
+  border-radius: 9px;
+  background: var(--db-control-bg);
   color: var(--db-text);
+  font-family: inherit;
   font-size: 12px;
   outline: none;
+  transition: border-color 0.15s ease, background 0.15s ease,
+    box-shadow 0.15s ease;
+}
+
+.db-sync-field input::placeholder {
+  color: var(--db-text-dim);
+}
+
+.db-sync-field input:hover {
+  background: var(--db-control-bg-hover);
 }
 
 .db-sync-field input:focus {
   border-color: var(--db-cal-accent-border);
+  background: var(--db-card-bg);
+  box-shadow: var(--db-focus-ring);
 }
 
 /* 带显隐切换的输入（master token / 注册 token）：右内嵌小按钮 */
@@ -3722,18 +4097,23 @@ body {
 /* 改名弹层的名称输入 + 字数计数 */
 .db-sync-rename-input {
   width: 100%;
-  padding: 6px 9px;
-  border: 1px solid var(--db-border);
-  border-radius: 6px;
-  background: var(--db-card-bg);
+  padding: 7px 10px;
+  border: 1px solid var(--db-control-border);
+  border-radius: 9px;
+  background: var(--db-control-bg);
   color: var(--db-text);
+  font-family: inherit;
   font-size: 12.5px;
   outline: none;
   margin-bottom: 3px;
+  transition: border-color 0.15s ease, background 0.15s ease,
+    box-shadow 0.15s ease;
 }
 
 .db-sync-rename-input:focus {
   border-color: var(--db-cal-accent-border);
+  background: var(--db-card-bg);
+  box-shadow: var(--db-focus-ring);
 }
 
 .db-sync-rename-count {
@@ -3890,17 +4270,22 @@ body {
 
 .db-acc-rename input {
   width: 180px;
-  padding: 3px 8px;
-  border: 1px solid var(--db-border);
-  border-radius: 6px;
-  background: var(--db-card-bg);
+  padding: 4px 9px;
+  border: 1px solid var(--db-control-border);
+  border-radius: 8px;
+  background: var(--db-control-bg);
   color: var(--db-text);
+  font-family: inherit;
   font-size: 12px;
+  outline: none;
+  transition: border-color 0.15s ease, background 0.15s ease,
+    box-shadow 0.15s ease;
 }
 
 .db-acc-rename input:focus {
-  outline: none;
-  border-color: var(--db-seg-active-text);
+  border-color: var(--db-cal-accent-border);
+  background: var(--db-card-bg);
+  box-shadow: var(--db-focus-ring);
 }
 
 .db-acc-rename__count {
@@ -4000,20 +4385,24 @@ body {
   }
 }
 
-/* 滚动条（与 index.css 同款细条；本窗是普通窗，无热区避让需求） */
+/* 滚动条（与 index.css 同款细条；本窗是普通窗，无热区避让需求）。
+   圆角拇指 + 2px 透明边框做内缩，滚槽不再是一根贴边的深色棍 */
 ::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+  width: 10px;
+  height: 10px;
 }
 ::-webkit-scrollbar-track {
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
   background: var(--scrollbar-thumb);
-  border-radius: 4px;
+  background-clip: padding-box;
+  border: 2px solid transparent;
+  border-radius: 999px;
 }
 ::-webkit-scrollbar-thumb:hover {
   background: var(--scrollbar-thumb-hover);
+  background-clip: padding-box;
 }
 
 /* ============================================================
@@ -4061,79 +4450,112 @@ body {
   --color-red-700: #fca5a5;
   --color-rose-600: #fb7185;
 
-  /* 主窗口页面变量：slate-900 系底 + slate-800 侧栏 */
-  --db-bg: #0f172a;
-  --db-sidebar-bg: #1e293b;
-  --db-border: rgba(226, 232, 240, 0.1);
-  --db-text: #e5e7eb;
-  --db-text-dim: rgba(203, 213, 225, 0.66);
-  --db-hover: rgba(226, 232, 240, 0.08);
-  --db-active-bg: rgba(56, 189, 248, 0.16);
-  --db-active-text: #7dd3fc;
+  /* 主窗口页面变量（暗色）：深靛蓝底 + 玻璃壳 + 玻璃卡片（对齐灵动岛
+     的深色玻璃语言：底色不是中性 slate，而是带蓝紫的夜空） */
+  --db-bg: #080c1e;
+  --db-glow-cyan: rgba(99, 135, 255, 0.32);
+  --db-glow-violet: rgba(168, 112, 255, 0.3);
+  --db-glow-mint: rgba(80, 200, 255, 0.1);
+  --db-shell-bg: rgba(13, 18, 38, 0.68);
+  --db-shell-border: rgba(255, 255, 255, 0.1);
+  --db-sticky-bg: rgba(12, 17, 36, 0.95);
+  --db-sidebar-bg: var(--db-shell-bg);
+  --db-border: rgba(255, 255, 255, 0.11);
+  --db-text: #eef2ff;
+  --db-text-dim: rgba(200, 210, 245, 0.66);
+  --db-hover: rgba(255, 255, 255, 0.075);
+  --db-active-bg: rgba(143, 176, 255, 0.18);
+  --db-active-text: #c7d6ff;
+  /* 品牌渐变（暗色）：periwinkle → violet，文字档提亮一档 */
+  --db-accent: #8fb0ff;
+  --db-accent-2: #c6a8ff;
+  --db-brand-grad: linear-gradient(135deg, #7f9dff 0%, #c0a8ff 100%);
+  --db-brand-grad-text: linear-gradient(120deg, #dfe7ff 0%, #e9dcff 100%);
+  --db-btn-primary-bg: linear-gradient(135deg, #9db4ff 0%, #c9b0ff 100%);
+  --db-btn-primary-text: #0b1128;
+  --db-btn-primary-glow: rgba(157, 180, 255, 0.4);
+  /* 卡片（暗色）：白色低透明玻璃面（透出环境光）+ 浅色发丝边 + 上缘反光 */
+  --db-card-border: rgba(255, 255, 255, 0.1);
+  --db-card-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.09);
+  --db-card-elevation: 0 24px 60px -30px rgba(0, 0, 0, 0.9);
+  --db-card-solid: #131a33;
+  --db-control-bg: rgba(255, 255, 255, 0.07);
+  --db-control-bg-hover: rgba(255, 255, 255, 0.12);
+  --db-control-border: rgba(255, 255, 255, 0.14);
+  --db-nav-active-bg: linear-gradient(
+    135deg,
+    rgba(126, 166, 255, 0.34),
+    rgba(192, 168, 255, 0.28)
+  );
+  --db-nav-active-text: #ffffff;
+  --db-nav-active-ring: rgba(255, 255, 255, 0.18);
+  --db-nav-active-shadow: 0 10px 24px -14px rgba(126, 166, 255, 0.9);
+  --db-table-head-bg: rgba(255, 255, 255, 0.045);
+  --db-row-hover: rgba(126, 166, 255, 0.1);
+  --db-focus-ring: 0 0 0 3px rgba(126, 166, 255, 0.3);
   /* 自绘标题栏（暗色）：hover 提为亮色低透明（略重于 --db-hover），press
      再重一档；--db-titlebar-close-hover（Windows 惯例红）亮暗一致，只在
      :root 定义 */
-  --db-titlebar-hover: rgba(226, 232, 240, 0.12);
-  --db-titlebar-press: rgba(226, 232, 240, 0.16);
-  --scrollbar-thumb: rgba(226, 232, 240, 0.18);
-  --scrollbar-thumb-hover: rgba(226, 232, 240, 0.28);
+  --db-titlebar-hover: rgba(255, 255, 255, 0.12);
+  --db-titlebar-press: rgba(255, 255, 255, 0.17);
+  --scrollbar-thumb: rgba(190, 205, 255, 0.22);
+  --scrollbar-thumb-hover: rgba(190, 205, 255, 0.34);
 
-  /* 用量总览页内容面：卡片用 slate-800 半透明，浮层提示加一圈浅边 */
-  --db-card-bg: rgba(30, 41, 59, 0.72);
-  --db-card-shadow: none;
-  --db-seg-bg: rgba(226, 232, 240, 0.08);
-  --db-seg-active-bg: rgba(56, 189, 248, 0.2);
-  --db-seg-active-text: #7dd3fc;
-  --db-row-border: rgba(226, 232, 240, 0.07);
-  --db-skeleton: rgba(226, 232, 240, 0.09);
-  --db-track: rgba(226, 232, 240, 0.12);
+  /* 用量总览页内容面：玻璃卡片（透出环境光），浮层提示加一圈浅边 */
+  --db-card-bg: rgba(255, 255, 255, 0.055);
+  --db-card-shadow: var(--db-card-highlight), var(--db-card-elevation);
+  --db-seg-bg: rgba(255, 255, 255, 0.075);
+  --db-seg-active-bg: rgba(255, 255, 255, 0.15);
+  --db-seg-active-text: #ffffff;
+  --db-row-border: rgba(255, 255, 255, 0.07);
+  --db-skeleton: rgba(255, 255, 255, 0.09);
+  --db-track: rgba(255, 255, 255, 0.12);
   --db-chip-bg: rgba(52, 211, 153, 0.16);
   --db-chip-text: #34d399;
-  --db-tip-bg: rgba(15, 23, 42, 0.96);
+  --db-tip-bg: rgba(10, 14, 30, 0.96);
   --db-tip-text: #f1f5f9;
-  --db-tip-border: rgba(226, 232, 240, 0.14);
+  --db-tip-border: rgba(255, 255, 255, 0.14);
   /* 下拉弹层（暗色）：见 src/DropdownMenu.tsx —— 组件已提升为两窗口共用并
      改用 Tailwind 工具类（弹层底走 bg-elevated，暗色自动翻到 slate-800 档） */
-  --db-accent-sky: #38bdf8;
+  --db-accent-sky: #8fb0ff;
   --db-accent-emerald: #34d399;
-  --db-accent-violet: #a78bfa;
+  --db-accent-violet: #c0a8ff;
   --db-accent-amber: #fbbf24;
-  /* 热力色阶（暗色）：格子为 52 周流式网格（边长随列宽自适应），0/1/2/3 档
-     在 slate-800 卡片底上按亮度逐档可辨，4 档为实底品牌蓝 #38bdf8（与 3 档
-     区分明显）；有数据的格子带一档亮蓝细边框 */
+  /* 热力色阶（暗色）：periwinkle 系四档渐进，4 档为实底亮蓝紫 */
   --db-heat-0: rgba(148, 163, 184, 0.14);
-  --db-heat-1: rgba(56, 189, 248, 0.22);
-  --db-heat-2: rgba(56, 189, 248, 0.42);
-  --db-heat-3: rgba(56, 189, 248, 0.66);
-  --db-heat-4: #38bdf8;
-  --db-heat-edge: rgba(56, 189, 248, 0.34);
-  --db-heat-edge-strong: #7dd3fc;
-  /* 未来格虚线（暗色）：在 slate-800 卡片底上比数据格描边略亮，保持可辨 */
-  --db-heat-future: rgba(56, 189, 248, 0.45);
+  --db-heat-1: rgba(126, 166, 255, 0.22);
+  --db-heat-2: rgba(126, 166, 255, 0.44);
+  --db-heat-3: rgba(126, 166, 255, 0.68);
+  --db-heat-4: #8fb0ff;
+  --db-heat-edge: rgba(126, 166, 255, 0.34);
+  --db-heat-edge-strong: #c7d6ff;
+  /* 未来格虚线（暗色）：比数据格描边略亮，保持可辨 */
+  --db-heat-future: rgba(126, 166, 255, 0.45);
 
-  /* 请求日志页（详情抽屉）：暗色实底 slate-800 档 + 更重的遮罩 */
-  --db-drawer-bg: #1e293b;
-  --db-mask: rgba(2, 6, 23, 0.6);
+  /* 请求日志页（详情抽屉）：暗色实底（与卡片同色系再亮一档）+ 更重的遮罩 */
+  --db-drawer-bg: #141a33;
+  --db-mask: rgba(2, 6, 23, 0.64);
 
-  /* 自定义时间范围面板：暗色实底 slate-800 档（与抽屉同档）+ 更重的投影 */
-  --db-pop-bg: #1e293b;
-  --db-pop-shadow: 0 10px 30px rgba(2, 6, 23, 0.55);
+  /* 自定义时间范围面板：暗色实底（与抽屉同档）+ 更重的投影 */
+  --db-pop-bg: #171e3b;
+  --db-pop-shadow: 0 2px 8px rgba(2, 6, 23, 0.5),
+    0 28px 70px -28px rgba(0, 0, 0, 0.85);
 
-  /* 时间范围控件（暗色）：主色提亮为 sky-400 档；起止实心块配深字保证对比
-     （亮蓝底 + 白字在深色界面里反而发灰），范围浅底 / 描边 / 环同步提亮 */
-  --db-cal-accent-text: #7dd3fc;
-  --db-cal-accent-bg: rgba(56, 189, 248, 0.12);
-  --db-cal-accent-border: rgba(56, 189, 248, 0.55);
-  --db-cal-accent-border-soft: rgba(56, 189, 248, 0.3);
-  --db-cal-accent-ring: rgba(56, 189, 248, 0.22);
-  --db-cal-solid: #38bdf8;
-  --db-cal-solid-text: #0f172a;
-  --db-cal-range-bg: rgba(56, 189, 248, 0.18);
-  --db-cal-range-text: #bae6fd;
-  --db-cal-hover-bg: rgba(226, 232, 240, 0.1);
-  --db-cal-outside: rgba(203, 213, 225, 0.25);
-  --db-cal-today-ring: rgba(56, 189, 248, 0.8);
-  --db-cal-field-bg: rgba(226, 232, 240, 0.05);
+  /* 时间范围控件（暗色）：主色提亮为浅蓝紫；起止实心块配深字保证对比
+     （亮底 + 白字在深色界面里反而发灰），范围浅底 / 描边 / 环同步提亮 */
+  --db-cal-accent-text: #c7d6ff;
+  --db-cal-accent-bg: rgba(126, 166, 255, 0.12);
+  --db-cal-accent-border: rgba(126, 166, 255, 0.55);
+  --db-cal-accent-border-soft: rgba(126, 166, 255, 0.3);
+  --db-cal-accent-ring: rgba(126, 166, 255, 0.22);
+  --db-cal-solid: #8fb0ff;
+  --db-cal-solid-text: #0b1128;
+  --db-cal-range-bg: rgba(126, 166, 255, 0.18);
+  --db-cal-range-text: #dfe7ff;
+  --db-cal-hover-bg: rgba(255, 255, 255, 0.1);
+  --db-cal-outside: rgba(200, 210, 245, 0.25);
+  --db-cal-today-ring: rgba(126, 166, 255, 0.8);
+  --db-cal-field-bg: rgba(255, 255, 255, 0.05);
 }
 
 /* ---- 模型速度页（SpeedPage）：列宽 / 排序表头 / 第一名标识 ----
@@ -5456,38 +5878,42 @@ body {
   flex: none;
 }
 
-/* 胶囊滑动开关（36×20 轨道 + 14 圆钮）：
+/* 胶囊滑动开关（38×22 轨道 + 16 圆钮）：
  * - 关：--db-track 轨道 + 近白圆钮（--db-tip-text，亮暗各有定义）+
- *   --db-border 细描边防浅底上融没；
- * - 开：--db-accent-emerald 轨道（亮=深绿/暗=亮绿，圆钮近白，两侧都有对比）。
+ *   内阴影让轨道有凹陷感；
+ * - 开：--db-accent-emerald 轨道（亮=深绿/暗=亮绿，圆钮近白，两侧都有对比）
+ *   + 同色柔光，扫一眼就能看出状态。
  * 钮位平移 + 轨道底色 0.15s 过渡；禁用态降透明度（读取中/未知） */
 .db-set-switch {
   position: relative;
   flex: none;
-  width: 36px;
-  height: 20px;
+  width: 38px;
+  height: 22px;
   padding: 0;
   border: none;
   border-radius: 999px;
   background: var(--db-track);
+  box-shadow: inset 0 1px 2px rgba(15, 23, 42, 0.12);
   cursor: pointer;
-  transition: background 0.15s ease;
+  transition: background 0.15s ease, box-shadow 0.15s ease;
 }
 
 .db-set-switch__knob {
   position: absolute;
   top: 3px;
   left: 3px;
-  width: 14px;
-  height: 14px;
+  width: 16px;
+  height: 16px;
   border-radius: 50%;
   background: var(--db-tip-text);
-  box-shadow: inset 0 0 0 1px var(--db-border);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.28);
   transition: transform 0.15s ease;
 }
 
 .db-set-switch--on {
   background: var(--db-accent-emerald);
+  box-shadow: inset 0 1px 2px rgba(15, 23, 42, 0.12),
+    0 0 0 3px color-mix(in srgb, var(--db-accent-emerald) 18%, transparent);
 }
 
 .db-set-switch--on .db-set-switch__knob {
@@ -5759,9 +6185,9 @@ body.card-resizing * {
   height: 28px;
   flex: none;
   padding: 0;
-  border: 1px solid var(--db-border);
+  border: 1px solid var(--db-control-border);
   border-radius: 8px;
-  background: var(--db-card-bg);
+  background: var(--db-control-bg);
   color: var(--db-text-dim);
   font-family: inherit;
   font-size: 15px;
@@ -5770,7 +6196,7 @@ body.card-resizing * {
   transition: background 0.12s ease, color 0.12s ease;
 }
 .font-size-control__step:hover:not(:disabled) {
-  background: var(--db-hover);
+  background: var(--db-control-bg-hover);
   color: var(--db-text);
 }
 .font-size-control__step:disabled {
@@ -5787,9 +6213,9 @@ body.card-resizing * {
   gap: 5px;
   height: 32px;
   padding: 0 12px;
-  border: 1px solid var(--db-border);
+  border: 1px solid var(--db-control-border);
   border-radius: 10px;
-  background: var(--db-card-bg);
+  background: var(--db-control-bg);
   color: var(--db-text-dim);
   font-family: inherit;
   font-size: 12px;
@@ -5856,9 +6282,9 @@ body.card-resizing * {
 .layout-editor__btn {
   height: 28px;
   padding: 0 10px;
-  border: 1px solid var(--db-border);
+  border: 1px solid var(--db-control-border);
   border-radius: 8px;
-  background: var(--db-card-bg);
+  background: var(--db-control-bg);
   color: var(--db-text);
   font-family: inherit;
   font-size: 11px;
@@ -5866,7 +6292,7 @@ body.card-resizing * {
   cursor: pointer;
 }
 .layout-editor__btn:hover {
-  background: var(--db-hover);
+  background: var(--db-control-bg-hover);
 }
 .layout-editor__btn--primary {
   border-color: transparent;
@@ -5976,9 +6402,9 @@ body.card-resizing * {
 .layout-editor__select {
   height: 24px;
   padding: 0 4px;
-  border: 1px solid var(--db-border);
-  border-radius: 6px;
-  background: var(--db-card-bg);
+  border: 1px solid var(--db-control-border);
+  border-radius: 7px;
+  background: var(--db-control-bg);
   color: var(--db-text);
   font-family: inherit;
   font-size: 10px;
@@ -5986,8 +6412,8 @@ body.card-resizing * {
 .layout-editor__mini {
   height: 24px;
   padding: 0 7px;
-  border: 1px solid var(--db-border);
-  border-radius: 6px;
+  border: 1px solid var(--db-control-border);
+  border-radius: 7px;
   background: transparent;
   color: var(--db-text-dim);
   font-family: inherit;
@@ -5997,6 +6423,7 @@ body.card-resizing * {
 .layout-editor__mini:hover:not(:disabled) {
   color: var(--db-active-text);
   border-color: var(--db-cal-accent-border-soft);
+  background: var(--db-control-bg);
 }
 .layout-editor__mini:disabled {
   opacity: 0.35;

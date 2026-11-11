@@ -2491,9 +2491,9 @@ const dimText: CSSProperties = { color: "var(--db-text-dim)" };
 
 /** 表单控件统一外观（复用 --db-* 变量，亮暗自动翻转）。 */
 const selectClass =
-  "h-[30px] rounded-[9px] border border-[var(--db-border)] bg-[var(--db-card-bg)] px-2 text-[12px] text-[var(--db-text)] outline-none focus:border-[var(--db-active-text)]";
+  "h-[30px] rounded-[9px] border border-[var(--db-control-border)] bg-[var(--db-control-bg)] px-2 text-[12px] text-[var(--db-text)] outline-none transition-colors hover:bg-[var(--db-control-bg-hover)] focus:border-[var(--db-cal-accent-border)] focus:bg-[var(--db-card-bg)]";
 const inputClass =
-  "h-[30px] rounded-[9px] border border-[var(--db-border)] bg-[var(--db-card-bg)] px-2 text-[12px] text-[var(--db-text)] outline-none focus:border-[var(--db-active-text)]";
+  "h-[30px] rounded-[9px] border border-[var(--db-control-border)] bg-[var(--db-control-bg)] px-2 text-[12px] text-[var(--db-text)] outline-none transition-colors hover:bg-[var(--db-control-bg-hover)] focus:border-[var(--db-cal-accent-border)] focus:bg-[var(--db-card-bg)]";
 
 /** 能力四档小徽标：开 = 绿色实义；关 = 灰底删除线（title 说明不可用）。 */
 function CapChip({ on, label }: { on: boolean; label: string }) {
