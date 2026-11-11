@@ -306,3 +306,22 @@ export function CloseIcon({ className }: IconProps) {
     </svg>
   );
 }
+
+/** 会话：圆角会话框里一条抬头的心跳线（"这个会话还活着、还在跑"的语义） */
+export function SessionsIcon({ className }: IconProps) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden
+    >
+      <rect x="2.5" y="4" width="19" height="16" rx="3.5" />
+      <path d="M6 12h2.2l1.6-3.6 2.6 7.2 1.6-3.6H18" />
+    </svg>
+  );
+}

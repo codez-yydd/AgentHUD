@@ -45,6 +45,9 @@ mod quota;
 mod quota_history;
 mod request_logs;
 mod session_hud;
+// 主窗口「会话」页取数：实时会话账本 + 单会话上下文水位（复用 request_logs
+// 的来源查询，只按会话重新分组，见模块注释）
+mod session_inspect;
 mod shortcut;
 mod stepfun;
 mod sync;
@@ -2619,8 +2622,44 @@ fn today_usage_totals() -> (f64, i64, bool) {
 fn refresh_today_usage(app: &AppHandle) {
     let _ = today_usage_totals();
     if let Some(summary) = crate::today_usage::totals() {
+        update_tray_tooltip(app, &summary);
         let _ = app.emit("zbar://island-today-usage", summary);
     }
+}
+
+/// token 紧凑格式（亿 / 万；不足一万给原值）：tooltip 只有一行，量级比精确值更有用
+fn compact_tokens(tokens: i64) -> String {
+    let value = tokens as f64;
+    if value >= 100_000_000.0 {
+        format!("{:.2}亿", value / 100_000_000.0)
+    } else if value >= 10_000.0 {
+        format!("{:.1}万", value / 10_000.0)
+    } else {
+        tokens.to_string()
+    }
+}
+
+/// 托盘 tooltip：把今日花费 / token 挂到图标上，不点开也能看到。
+/// 菜单栏文字是刻意去掉的（macOS 上常驻文字会占菜单栏宽度），tooltip 是
+/// 零占位的替代；今日还没用量时回落到静态文案，避免「今日 ¥0.00」的噪音。
+fn update_tray_tooltip(app: &AppHandle, summary: &crate::today_usage::TodayUsageTotals) {
+    let Some(tray) = app.tray_by_id("main") else {
+        return;
+    };
+    if summary.tokens <= 0 {
+        let _ = tray.set_tooltip(Some("AgentHUD · 多 Agent 用量监控"));
+        return;
+    }
+    let cost = if summary.currency == "USD" {
+        format!("${:.2}", summary.cost)
+    } else {
+        format!("¥{:.2}", summary.cost)
+    };
+    let _ = tray.set_tooltip(Some(&format!(
+        "AgentHUD · 今日 {} · {} tokens",
+        cost,
+        compact_tokens(summary.tokens)
+    )));
 }
 
 /// 阻止 App Nap：菜单栏常驻应用的面板窗口长期隐藏时，macOS 会判定应用空闲并
@@ -3370,6 +3409,9 @@ pub fn run() {
             // 悬浮窗热区拖拽尺寸会话："用户调整中"标志置位/清除 + 结束即时落盘核校
             session_hud::session_hud_resize_begin,
             session_hud::session_hud_resize_end,
+            // 主窗口「会话」页：近 N 小时实时会话账本 + 单会话上下文水位序列
+            session_inspect::get_live_sessions,
+            session_inspect::get_session_context,
             // HUD 详情卡（独立窗口）：开卡登记锚点 → 卡片页量尺寸后摆窗口
             // 并 show（此时内容仍是隐藏态，不会被看见）→ 播完退出动画再真
             // 隐藏。条窗口全程不动，hover 期间没有任何窗口几何变化

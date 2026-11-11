@@ -74,8 +74,10 @@ import type {
   DeviceInfo,
   RequestLogRow,
   RequestLogScope,
+  RequestLogSource,
   RequestLogSummary,
 } from "../../types";
+import { getRequestLogs, saveReport } from "../../api";
 import { LogTable, LogTableSkeleton } from "./LogTable";
 import { RequestDetailDrawer } from "./RequestDetailDrawer";
 import { useLogsData } from "./useLogsData";
@@ -84,6 +86,7 @@ import {
   LOG_SOURCES,
   LOGS_RANGES,
   exactCount,
+  rangeWindow,
   sourceLabel,
   type LogsRange,
 } from "./model";
@@ -93,6 +96,84 @@ function timeText(ms: number): string {
   const d = new Date(ms);
   const p = (n: number) => String(n).padStart(2, "0");
   return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+
+/** 导出单次上限（100 条/页 × 50 页）：防误点导出整天数据时长时间占用 IPC */
+const EXPORT_MAX_ROWS = 5_000;
+/** 导出分页大小（后端单页上限就是 100） */
+const EXPORT_PAGE_SIZE = 100;
+
+/** 本地时间 "YYYY-MM-DD HH:mm:ss"（CSV 的可读时间列） */
+function stampText(ms: number): string {
+  const d = new Date(ms);
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(
+    d.getHours()
+  )}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+
+/** CSV 字段转义：含分隔符 / 引号 / 换行时用双引号包裹并转义内部引号 */
+function csvCell(value: string | number | null | undefined): string {
+  const text = value == null ? "" : String(value);
+  return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+}
+
+/**
+ * 导出 CSV 全文。
+ *
+ * 表头固定英文（数据文件要比界面更稳定，Excel / Numbers / pandas 都认），
+ * 时间给「本地可读串 + epoch 毫秒」两列：前者给人看，后者给二次处理对齐时区。
+ * 带 UTF-8 BOM，避免 Excel 打开中文项目名 / 模型名乱码。
+ */
+function buildCsv(rows: RequestLogRow[]): string {
+  const header = [
+    "time",
+    "epoch_ms",
+    "source",
+    "device",
+    "model",
+    "project",
+    "session_id",
+    "input_tokens",
+    "output_tokens",
+    "cache_read_tokens",
+    "cache_write_tokens",
+    "reasoning_tokens",
+    "total_tokens",
+    "cost_usd",
+    "cost_cny",
+    "duration_ms",
+    "ttft_ms",
+    "speed_tps",
+  ];
+  const lines = [header.join(",")];
+  for (const row of rows) {
+    lines.push(
+      [
+        stampText(row.started_at),
+        row.started_at,
+        row.source,
+        row.device ?? "",
+        row.model_id,
+        row.project ?? "",
+        row.session_id ?? "",
+        row.input_tokens,
+        row.output_tokens,
+        row.cache_read_tokens,
+        row.cache_write_tokens,
+        row.reasoning_tokens,
+        row.total_tokens,
+        row.cost_usd,
+        row.cost_cny,
+        row.duration_ms ?? "",
+        row.ttft_ms ?? "",
+        row.speed_tps ?? "",
+      ]
+        .map(csvCell)
+        .join(",")
+    );
+  }
+  return `\ufeff${lines.join("\r\n")}\r\n`;
 }
 
 /**
@@ -316,6 +397,10 @@ export function LogsPage() {
   const [active, setActive] = useState<RequestLogRow | null>(null);
   /** 自动刷新间隔（毫秒，0 = 关闭）；偏好懒初始化，只在挂载时读一次 */
   const [refreshMs, setRefreshMs] = useState<number>(() => loadRefreshMs());
+  /** 正在导出的格式（null = 空闲）：导出期间禁用下拉，避免并发翻页抢 IPC */
+  const [exporting, setExporting] = useState<"csv" | "json" | null>(null);
+  /** 导出结果提示（写盘路径 / 失败原因 / 截断说明；null = 不显示） */
+  const [exportStatus, setExportStatus] = useState<string | null>(null);
 
   // 同步配置读一次（走两页共享缓存：总览页已读过则立即 resolve、不发 IPC；
   // 未命中发 IPC，失败 / 超时按未启用处理并置 ready——口径固定本机，不卡
@@ -454,6 +539,84 @@ export function LogsPage() {
     if (!REFRESH_MS_OPTIONS.includes(next)) return;
     setRefreshMs(next);
     saveRefreshMs(next);
+  }
+
+  /**
+   * 导出当前筛选条件下的全量明细（CSV / JSON）。
+   *
+   * 页面表格只持有当前页（最多 100 行），所以这里按 100 条一页往后翻，直到
+   * 取满上限或没有更多；口径（来源 / 模型 / 设备 / 时间范围 / scope）与表格
+   * 完全一致，导出的就是"眼前这份筛选"的全量。
+   * 写盘复用 save_report：落到 ~/.agenthud/reports/ 并打开所在目录。
+   */
+  async function handleExport(format: "csv" | "json") {
+    if (exporting) return;
+    setExporting(format);
+    setExportStatus(null);
+    try {
+      const { fromMs, toMs } = customRange ?? rangeWindow(range, Date.now());
+      const collected: RequestLogRow[] = [];
+      let totalRows = 0;
+      for (
+        let index = 0;
+        collected.length < EXPORT_MAX_ROWS;
+        index += 1
+      ) {
+        const result = await getRequestLogs(
+          fromMs,
+          toMs,
+          index,
+          EXPORT_PAGE_SIZE,
+          {
+            agent: source ? (source as RequestLogSource) : undefined,
+            model: model || undefined,
+            scope,
+            device: selectedDevice ?? "",
+          }
+        );
+        totalRows = result.total;
+        collected.push(...result.rows);
+        if (result.rows.length < EXPORT_PAGE_SIZE) break;
+      }
+      const rowsToWrite = collected.slice(0, EXPORT_MAX_ROWS);
+      // 只有"确实还有没导出的行"才提示截断（刚好整页取满不算）
+      const truncated =
+        collected.length >= EXPORT_MAX_ROWS && totalRows > rowsToWrite.length;
+      const stamp = stampText(Date.now()).replace(/[: ]/g, "-");
+      const content =
+        format === "csv"
+          ? buildCsv(rowsToWrite)
+          : JSON.stringify(
+              {
+                exported_at: Date.now(),
+                from_ms: fromMs,
+                to_ms: toMs,
+                filters: {
+                  source: source || null,
+                  model: model || null,
+                  scope,
+                  device: selectedDevice ?? null,
+                },
+                total: totalRows,
+                rows: rowsToWrite,
+              },
+              null,
+              2
+            );
+      const path = await saveReport(content, `请求日志-${stamp}.${format}`);
+      const base = t("dashboard.logs.exported", { path });
+      setExportStatus(
+        truncated
+          ? `${base} ${t("dashboard.logs.exportTruncated", {
+              n: EXPORT_MAX_ROWS,
+            })}`
+          : base
+      );
+    } catch (e) {
+      setExportStatus(t("dashboard.logs.exportFailed", { msg: String(e) }));
+    } finally {
+      setExporting(null);
+    }
   }
 
   // 页码越界回收：数据变少（刷新 / 清筛选后总条数下降）时把页码收进范围。
@@ -702,6 +865,20 @@ export function LogsPage() {
             <RefreshIcon className={`h-3.5 w-3.5 ${loading ? "db-spin" : ""}`} />
             {t("common.refresh")}
           </button>
+          {/* 明细导出：CSV / JSON 两种格式，口径与当前筛选完全一致 */}
+          <DropdownMenu
+            label={
+              exporting ? t("dashboard.logs.exporting") : t("dashboard.logs.export")
+            }
+            ariaLabel={t("dashboard.logs.export")}
+            options={[
+              { value: "csv", label: t("dashboard.logs.exportCsv") },
+              { value: "json", label: t("dashboard.logs.exportJson") },
+            ]}
+            value=""
+            onChange={(next) => void handleExport(next === "json" ? "json" : "csv")}
+            disabled={exporting != null}
+          />
           <span className="db-page__updated num">
             {lastUpdatedAt != null
               ? t("dashboard.overview.lastUpdated", { time: timeText(lastUpdatedAt) })
@@ -709,6 +886,13 @@ export function LogsPage() {
           </span>
         </div>
       </header>
+
+      {/* 导出结果提示：写盘路径 / 失败原因 / 截断说明（有内容才出现） */}
+      {exportStatus && (
+        <div className="db-hintbar" title={exportStatus}>
+          {exportStatus}
+        </div>
+      )}
 
       {/* 筛选行：来源 + 模型（模型选项带条数，随来源 / 范围刷新） */}
       <div className="db-logs-filters">

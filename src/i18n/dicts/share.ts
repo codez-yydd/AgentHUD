@@ -17,4 +17,13 @@ export const share = {
   "share.saved": "已保存 ✓ {path}",
   "share.saveFail": "保存失败：{msg}",
   "share.close": "关闭",
+  "share.standard": "标准卡",
+  "share.wrapped": "Wrapped 长图",
+  "share.wrappedTitle": "用量 Wrapped",
+  "share.highlightsTitle": "高光时刻",
+  "share.hiBusiest": "最忙的一天",
+  "share.hiPriciest": "最贵的一天",
+  "share.hiStreak": "最长连续活跃",
+  "share.streakUnit": " 天",
+  "share.hiEmpty": "—",
 };

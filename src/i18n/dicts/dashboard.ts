@@ -770,6 +770,14 @@ export const dashboard = {
     "无耗时数据，或该行样本无效（时长越界 / 时序异常被拒收），无法计算速度",
   "dashboard.logs.unpriced": "未定价",
   "dashboard.logs.unpricedHint": "该模型未配置价格，花费按 0 计",
+  // 明细导出（CSV / JSON）：写盘走既有的 save_report（~/.agenthud/reports/）
+  "dashboard.logs.export": "导出",
+  "dashboard.logs.exporting": "导出中…",
+  "dashboard.logs.exportCsv": "导出 CSV",
+  "dashboard.logs.exportJson": "导出 JSON",
+  "dashboard.logs.exported": "已导出：{path}",
+  "dashboard.logs.exportTruncated": "（单次上限 {n} 条，仅导出前 {n} 条）",
+  "dashboard.logs.exportFailed": "导出失败：{msg}",
   "dashboard.logs.emptyTitle": "该时间范围内没有请求记录",
   "dashboard.logs.emptyHint":
     "换个时间范围或来源试试。\n未安装 / 未使用过的来源不会出现在这里。",

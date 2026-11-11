@@ -21,6 +21,7 @@ import { customizeEn } from "./dicts/customize";
 import { fontEn } from "./dicts/font";
 import { exportImageEn } from "./dicts/exportImage";
 import { agentAssetsEn } from "./dicts/agentAssets";
+import { sessionsEn } from "./dicts/sessions";
 import { zh } from "./zh";
 
 export const en: typeof zh = {
@@ -28,6 +29,7 @@ export const en: typeof zh = {
   ...fontEn,
   ...exportImageEn,
   ...agentAssetsEn,
+  ...sessionsEn,
   ...({
     // 基础状态
     "common.loading": "Loading…",
@@ -1026,6 +1028,15 @@ export const en: typeof zh = {
     "share.saved": "Saved ✓ {path}",
     "share.saveFail": "Save failed: {msg}",
     "share.close": "Close",
+    "share.standard": "Standard",
+    "share.wrapped": "Wrapped",
+    "share.wrappedTitle": "Usage Wrapped",
+    "share.highlightsTitle": "Highlights",
+    "share.hiBusiest": "Busiest day",
+    "share.hiPriciest": "Priciest day",
+    "share.hiStreak": "Longest streak",
+    "share.streakUnit": "d",
+    "share.hiEmpty": "—",
   } satisfies typeof share),
 
   ...({
@@ -2042,6 +2053,14 @@ export const en: typeof zh = {
     "dashboard.logs.unpriced": "Unpriced",
     "dashboard.logs.unpricedHint":
       "This model has no price configured; cost counted as 0",
+    "dashboard.logs.export": "Export",
+    "dashboard.logs.exporting": "Exporting…",
+    "dashboard.logs.exportCsv": "Export CSV",
+    "dashboard.logs.exportJson": "Export JSON",
+    "dashboard.logs.exported": "Exported: {path}",
+    "dashboard.logs.exportTruncated":
+      "(capped at {n} rows; only the first {n} were exported)",
+    "dashboard.logs.exportFailed": "Export failed: {msg}",
     "dashboard.logs.emptyTitle": "No requests in this time range",
     "dashboard.logs.emptyHint":
       "Try another time range or source.\nSources that are not installed or never used do not appear here.",

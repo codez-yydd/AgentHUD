@@ -19,6 +19,7 @@ import { customize } from "./dicts/customize";
 import { font } from "./dicts/font";
 import { exportImage } from "./dicts/exportImage";
 import { agentAssets } from "./dicts/agentAssets";
+import { sessions } from "./dicts/sessions";
 
 export const zh = {
   ...common,
@@ -40,4 +41,5 @@ export const zh = {
   ...font,
   ...exportImage,
   ...agentAssets,
+  ...sessions,
 };

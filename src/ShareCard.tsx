@@ -108,6 +108,19 @@ interface ShareView {
   models: ShareModelRow[];
   /** 热力图：列=周（周一起），cells 固定 7 槽（周一~周日），范围外为 null */
   heat: { cells: ({ dayMs: number; tokens: number } | null)[] }[];
+  /** Wrapped 长图才展示的高光数据（标准卡不渲染，但仍照常算好） */
+  highlights: ShareHighlights;
+}
+
+/** Wrapped 长图的「高光时刻」：最忙 / 最贵的一天、最长连续活跃 */
+interface ShareHighlights {
+  busiestDayMs: number | null;
+  busiestDayTokens: number;
+  priciestDayMs: number | null;
+  priciestDayCost: number;
+  longestStreak: number;
+  /** 范围内自然日总数（连续活跃的分母） */
+  daysInRange: number;
 }
 
 function buildView(data: ShareReportData, pricing: PricingConfig): ShareView {
@@ -169,6 +182,39 @@ function buildView(data: ShareReportData, pricing: PricingConfig): ShareView {
     cursor = addDays(cursor, 7);
   }
 
+  // Wrapped 高光：按当前报告范围切片算最忙 / 最贵的一天与最长连续活跃。
+  // daily 已按 dayMs 升序，逐日扫一遍即可；token 为 0 的日子视为断档。
+  let busiestDayMs: number | null = null;
+  let busiestDayTokens = 0;
+  let priciestDayMs: number | null = null;
+  let priciestDayCost = 0;
+  let longestStreak = 0;
+  let streak = 0;
+  for (const d of daily) {
+    if (d.tokens > busiestDayTokens) {
+      busiestDayTokens = d.tokens;
+      busiestDayMs = d.dayMs;
+    }
+    const dayCost = currency === "cny" ? d.costCny : d.costUsd;
+    if (dayCost > priciestDayCost) {
+      priciestDayCost = dayCost;
+      priciestDayMs = d.dayMs;
+    }
+    if (d.tokens > 0) {
+      streak += 1;
+      if (streak > longestStreak) longestStreak = streak;
+    } else {
+      streak = 0;
+    }
+  }
+  // 范围的自然日总数（连续活跃的展示分母；跨时区按本地日取整）
+  const daysInRange = Math.max(
+    1,
+    Math.round(
+      (startOfLocalDay(data.toMs) - startOfLocalDay(data.fromMs)) / 86_400_000
+    ) + 1
+  );
+
   return {
     fromMs: data.fromMs,
     toMs: data.toMs,
@@ -180,6 +226,14 @@ function buildView(data: ShareReportData, pricing: PricingConfig): ShareView {
     agents: agentRows,
     models: modelRows,
     heat: weeks,
+    highlights: {
+      busiestDayMs,
+      busiestDayTokens,
+      priciestDayMs,
+      priciestDayCost,
+      longestStreak,
+      daysInRange,
+    },
   };
 }
 
@@ -320,6 +374,13 @@ interface ShareTexts {
   topModels: string;
   heatTitle: string;
   footer: string;
+  /** Wrapped 长图专属文案（标准卡不渲染这些区块） */
+  highlightsTitle: string;
+  hiBusiest: string;
+  hiPriciest: string;
+  hiStreak: string;
+  streakUnit: string;
+  hiEmpty: string;
 }
 
 /**
@@ -330,7 +391,8 @@ function drawShareCard(
   canvas: HTMLCanvasElement,
   view: ShareView,
   texts: ShareTexts,
-  locale: "zh" | "en"
+  locale: "zh" | "en",
+  wrapped: boolean
 ): number {
   const ctx = canvas.getContext("2d");
   if (!ctx) return 0;
@@ -350,7 +412,11 @@ function drawShareCard(
   const HEAT_GAP = 8;
   const heatRows = view.heat.length;
   const heatGridH = 7 * HEAT_CELL_H + 6 * HEAT_GAP;
+  /** Wrapped 长图的高光区（三块并排的数字卡） */
+  const HIGHLIGHT_H = 132;
+  const HIGHLIGHT_GAP = 24;
   let contentH = CARD_PAD + HEADER_H + METRICS_H;
+  if (wrapped) contentH += SECTION_GAP + 44 + HIGHLIGHT_H + 18;
   if (showAgents)
     contentH += SECTION_GAP + 44 + view.agents.length * ROW_H + 18;
   if (showModels)
@@ -444,9 +510,17 @@ function drawShareCard(
     setFont(ctx, 20, 500);
     ctx.fillStyle = TEXT_SECONDARY;
     ctx.fillText(label, cx + 24, metricY + 46);
-    setFont(ctx, 46, 700);
+    // 数值过长先缩字号再截断：五位数花费（¥1120.35）会撑破单列宽度，
+    // 直接 fitText 会变成「¥1120…」丢掉小数，缩一档就能整串显示
+    const maxW = colW - 44;
+    let size = 46;
+    setFont(ctx, size, 700);
+    while (size > 30 && ctx.measureText(value).width > maxW) {
+      size -= 2;
+      setFont(ctx, size, 700);
+    }
     ctx.fillStyle = col === 1 ? ACCENT : TEXT_PRIMARY;
-    ctx.fillText(fitText(ctx, value, colW - 44), cx + 24, metricY + 102);
+    ctx.fillText(fitText(ctx, value, maxW), cx + 24, metricY + 102);
   };
   metricCell(0, texts.totalTokens, formatTokensLocale(view.tokens, locale));
   metricCell(1, texts.totalCost, formatCost(view.cost, view.currency));
@@ -461,6 +535,61 @@ function drawShareCard(
     `${view.activeDays}${texts.activeDaysUnit}`
   );
   y += METRICS_H;
+
+  // ===== Wrapped 高光：最忙的一天 / 最贵的一天 / 最长连续活跃 =====
+  // 只在长图变体出现；三块并排，无数据时给「—」（不臆造 0 值）
+  if (wrapped) {
+    y += SECTION_GAP;
+    drawSectionTitle(ctx, texts.highlightsTitle, y + 30);
+    y += 44;
+    const tileW = (CARD_W - CARD_PAD * 2 - HIGHLIGHT_GAP * 2) / 3;
+    const highlights = view.highlights;
+    const tiles: { label: string; value: string; sub: string }[] = [
+      {
+        label: texts.hiBusiest,
+        value:
+          highlights.busiestDayMs == null
+            ? texts.hiEmpty
+            : formatTokensLocale(highlights.busiestDayTokens, locale),
+        sub:
+          highlights.busiestDayMs == null
+            ? ""
+            : mdLabel(highlights.busiestDayMs),
+      },
+      {
+        label: texts.hiPriciest,
+        value:
+          highlights.priciestDayMs == null
+            ? texts.hiEmpty
+            : formatCost(highlights.priciestDayCost, view.currency),
+        sub:
+          highlights.priciestDayMs == null
+            ? ""
+            : mdLabel(highlights.priciestDayMs),
+      },
+      {
+        label: texts.hiStreak,
+        value: `${highlights.longestStreak}${texts.streakUnit}`,
+        sub: `${view.activeDays}/${highlights.daysInRange}`,
+      },
+    ];
+    tiles.forEach((tile, index) => {
+      const x = CARD_PAD + index * (tileW + HIGHLIGHT_GAP);
+      roundRectPath(ctx, x, y, tileW, HIGHLIGHT_H, 20);
+      ctx.fillStyle = "rgba(148, 163, 184, 0.08)";
+      ctx.fill();
+      setFont(ctx, 20, 500);
+      ctx.fillStyle = TEXT_SECONDARY;
+      ctx.fillText(tile.label, x + 24, y + 42);
+      setFont(ctx, 40, 700);
+      ctx.fillStyle = TEXT_PRIMARY;
+      ctx.fillText(fitText(ctx, tile.value, tileW - 48), x + 24, y + 88);
+      setFont(ctx, 20, 400);
+      ctx.fillStyle = TEXT_FAINT;
+      ctx.fillText(tile.sub, x + 24, y + 116);
+    });
+    y += HIGHLIGHT_H + 18;
+  }
 
   // ===== Agent 分布横条 =====
   if (showAgents) {
@@ -596,13 +725,15 @@ export function ShareCardModal({
   const { t, locale } = useI18n();
   const [saving, setSaving] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
+  /** 卡片变体：标准卡 / Wrapped 长图（长图多一段「高光时刻」） */
+  const [wrapped, setWrapped] = useState(false);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
   const view = useMemo(() => buildView(report, pricing), [report, pricing]);
 
   const texts = useMemo<ShareTexts>(
     () => ({
-      title: t("report.title"),
+      title: wrapped ? t("share.wrappedTitle") : t("report.title"),
       totalCost: t("share.totalCost"),
       totalTokens: t("share.totalTokens"),
       totalRequests: t("share.totalRequests"),
@@ -612,16 +743,22 @@ export function ShareCardModal({
       topModels: t("share.topModels"),
       heatTitle: t("share.heatTitle"),
       footer: t("share.footer"),
+      highlightsTitle: t("share.highlightsTitle"),
+      hiBusiest: t("share.hiBusiest"),
+      hiPriciest: t("share.hiPriciest"),
+      hiStreak: t("share.hiStreak"),
+      streakUnit: t("share.streakUnit"),
+      hiEmpty: t("share.hiEmpty"),
     }),
-    [t]
+    [t, wrapped]
   );
 
   // 数据/文案就绪后重绘（数据同步来自 props，打开即出图）
   useEffect(() => {
     if (canvasRef.current) {
-      drawShareCard(canvasRef.current, view, texts, locale);
+      drawShareCard(canvasRef.current, view, texts, locale, wrapped);
     }
-  }, [view, texts, locale]);
+  }, [view, texts, locale, wrapped]);
 
   const handleSave = () => {
     const canvas = canvasRef.current;
@@ -636,7 +773,7 @@ export function ShareCardModal({
       try {
         const buf = await blob.arrayBuffer();
         const bytes = Array.from(new Uint8Array(buf));
-        const name = `zbar-share-${ymdLabel(Date.now())}.png`;
+        const name = `${wrapped ? "agenthud-wrapped" : "zbar-share"}-${ymdLabel(Date.now())}.png`;
         const path = await saveShareImage(bytes, name);
         // 用户取消（返回 null）静默处理；成功提示保存路径
         if (path) setStatus(t("share.saved", { path }));
@@ -655,13 +792,36 @@ export function ShareCardModal({
           <span className="text-[12px] font-semibold text-slate-900">
             {t("share.title")}
           </span>
-          <button
-            onClick={onClose}
-            className="toolbar-btn"
-            title={t("share.close")}
-          >
-            ×
-          </button>
+          <div className="flex items-center gap-1">
+            {/* 变体切换：标准卡 / Wrapped 长图（长图多「高光时刻」一段） */}
+            {(
+              [
+                [false, "share.standard"],
+                [true, "share.wrapped"],
+              ] as const
+            ).map(([value, key]) => (
+              <button
+                key={key}
+                type="button"
+                onClick={() => setWrapped(value)}
+                aria-pressed={wrapped === value}
+                className={`px-2 py-1 rounded-md text-[10px] border ${
+                  wrapped === value
+                    ? "bg-slate-900/10 border-slate-900/15 text-slate-900"
+                    : "border-transparent text-slate-500 hover:bg-slate-900/5"
+                }`}
+              >
+                {t(key)}
+              </button>
+            ))}
+            <button
+              onClick={onClose}
+              className="toolbar-btn"
+              title={t("share.close")}
+            >
+              ×
+            </button>
+          </div>
         </div>
         <div className="flex-1 min-h-0 overflow-y-auto rounded-xl bg-slate-950/85 p-2 overscroll-contain">
           <canvas

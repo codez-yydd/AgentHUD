@@ -174,7 +174,7 @@ pub struct UsageOverview {
 
 /// 单来源聚合的原始形态（区间内全部行；成本另按 by_model 分组折算）
 #[derive(Debug, Clone, Default, PartialEq)]
-struct SourceTotals {
+pub(crate) struct SourceTotals {
     requests: i64,
     input_tokens: i64,
     output_tokens: i64,
@@ -188,7 +188,7 @@ struct SourceTotals {
 
 /// 按模型分组的 token 三项（成本折算用；Billable 载体）
 #[derive(Debug, Clone, PartialEq)]
-struct ModelTokens {
+pub(crate) struct ModelTokens {
     model_id: String,
     input_tokens: i64,
     output_tokens: i64,
@@ -976,7 +976,10 @@ pub fn collect_usage_overview(from_ms: i64, to_ms: i64, bucket: &str) -> UsageOv
 
 /// 单来源查询：(该来源区间内的全范围聚合, 按 started_at DESC 的前 limit 行)。
 /// 库不存在返回 (空聚合, 空)；其余错误上报给调用方记录并跳过。
-fn query_source(
+///
+/// pub(crate)：session_inspect（会话页）复用同一批来源、同一套 SQL 与行契约，
+/// 只是把行按会话重新分组——不另写一份 per-source 查询，口径不分叉。
+pub(crate) fn query_source(
     source: &str,
     from_ms: i64,
     to_ms: i64,

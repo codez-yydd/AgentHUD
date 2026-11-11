@@ -1468,3 +1468,77 @@ export interface RequestLogModelCount {
   model_id: string;
   count: number;
 }
+
+// ===== 会话页（实时会话账本 + 上下文健康）=====
+
+/** 一个会话的账本行：同来源同 session_id 的全部请求聚合（窗口内）。
+ *  单个会话的累计值覆盖整个查询窗口，不是只算"活跃那几分钟"。 */
+export interface LiveSession {
+  source: RequestLogSource;
+  /** 会话 id；来源库没有该列（老库 / 部分 CLI）时为空串，界面显示「未标注会话」 */
+  session_id: string;
+  project: string | null;
+  /** 最近一次请求的模型 */
+  model_id: string;
+  started_at: number;
+  last_at: number;
+  requests: number;
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+  cache_write_tokens: number;
+  total_tokens: number;
+  cost_usd: number;
+  cost_cny: number;
+  /** 最近一次请求的 prompt 侧 token（≈ 当前上下文占用） */
+  context_last: number;
+  context_peak: number;
+  /** 水位骤降次数（≡ 上下文被压缩 / 清空；由后端从水位序列推断） */
+  compactions: number;
+  /** 会话内缓存命中率（0-1；分母为 0 为 null） */
+  cache_hit_rate: number | null;
+  /** 会话内按输出加权的平均输出速度（tok/s；无样本为 null） */
+  speed_tps: number | null;
+  avg_ttft_ms: number | null;
+  /** running = 最近 3 分钟内有请求；idle = 窗口内活跃过但已停 */
+  state: "running" | "idle";
+  /** 模型上下文窗口（只收录已知值；未收录为 null，界面不画占比） */
+  context_limit: number | null;
+}
+
+/** 实时会话账本的一次取数结果 */
+export interface SessionFeed {
+  sessions: LiveSession[];
+  /** 查询失败的来源名（库损坏 / 权限；未安装不算） */
+  failed_sources: string[];
+  /** 取数时刻（毫秒） */
+  generated_at: number;
+  /** 本次生效的窗口小时数（后端夹取后的真实值） */
+  window_hours: number;
+}
+
+/** 上下文曲线上的一个点（一次请求） */
+export interface ContextPoint {
+  ts: number;
+  /** 这一轮模型看到的上下文（prompt 侧 token） */
+  prompt_tokens: number;
+  output_tokens: number;
+  /** 这一轮的缓存读占比（0-1；无有效分母为 null） */
+  cache_ratio: number | null;
+  model_id: string;
+}
+
+/** 单会话上下文健康视图 */
+export interface SessionContext {
+  source: RequestLogSource;
+  session_id: string;
+  project: string | null;
+  model_id: string;
+  points: ContextPoint[];
+  peak: number;
+  last: number;
+  compactions: number;
+  /** 模型窗口上限（未知为 null） */
+  context_limit: number | null;
+  window_hours: number;
+}

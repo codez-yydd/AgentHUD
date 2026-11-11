@@ -7,7 +7,7 @@
  * 用量总览 / 请求日志 / 模型速度 / 周额度对比 / 额度驾驶舱 / 同步与设备 /
  * 凭证与账号 / 价格设置 / Agent 与 Skill / 设置 十个页面各自独立取数渲染。
  */
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { ComponentType } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { LanguageToggle, ThemeToggle } from "../layout";
@@ -22,17 +22,20 @@ import {
   OverviewIcon,
   PricingIcon,
   QuotaIcon,
+  SessionsIcon,
   SettingsIcon,
   SpeedIcon,
   SyncIcon,
 } from "./icons";
 import { TitleBar } from "./TitleBar";
+import { CommandPalette, type CommandPaletteItem } from "./CommandPalette";
 import { OverviewPage } from "./OverviewPage";
 import { LogsPage } from "./logs/LogsPage";
 import { SpeedPage } from "./SpeedPage";
 import { ComparePage } from "./ComparePage";
 import { QuotaPage } from "./QuotaPage";
 import { PricingPage } from "./PricingPage";
+import { SessionsPage } from "./sessions/SessionsPage";
 import { SyncPage } from "./SyncPage";
 import { AccountsPage } from "./AccountsPage";
 import { AgentAssetsPage } from "./AgentAssetsPage";
@@ -42,6 +45,7 @@ import { SettingsPage } from "./SettingsPage";
 type View =
   | "overview"
   | "logs"
+  | "sessions"
   | "speed"
   | "compare"
   | "quota"
@@ -61,6 +65,7 @@ const DASHBOARD_NAVIGATE_EVENT = "zbar://dashboard-navigate";
 const NAVIGATABLE_VIEWS: readonly string[] = [
   "overview",
   "logs",
+  "sessions",
   "speed",
   "compare",
   "quota",
@@ -79,6 +84,7 @@ const NAV_ITEMS: {
 }[] = [
   { view: "overview", labelKey: "dashboard.overview", Icon: OverviewIcon },
   { view: "logs", labelKey: "dashboard.logs", Icon: LogsIcon },
+  { view: "sessions", labelKey: "dashboard.sessions", Icon: SessionsIcon },
   { view: "speed", labelKey: "dashboard.speed", Icon: SpeedIcon },
   { view: "compare", labelKey: "dashboard.compare", Icon: CompareIcon },
   { view: "quota", labelKey: "dashboard.quota", Icon: QuotaIcon },
@@ -105,6 +111,8 @@ export function DashboardApp() {
   // 主题只用于给 ThemeToggle 换 key（见下方）：组件自身状态由 layout.tsx
   // 管理，这里记录"当前应显示的主题"以便外部切换后强制重读
   const [theme, setTheme] = useState<Theme>(() => loadTheme());
+  /** 命令面板开关（Ctrl/⌘ + K）：只做页面跳转 */
+  const [paletteOpen, setPaletteOpen] = useState(false);
 
   // 外观同步流：面板切换主题（applyTheme）/ 语言（setLocale）后广播
   // zbar://appearance-changed（无 payload，接收方重读 localStorage 自行
@@ -171,10 +179,44 @@ export function DashboardApp() {
     };
   }, []);
 
+  // 命令面板快捷键：Ctrl/⌘ + K 开关（面板里再按一次即收起）。必须
+  // preventDefault——Chromium 默认把 Ctrl+K 当成地址栏搜索，不拦会让焦点跑掉
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        setPaletteOpen((open) => !open);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
+
+  // 面板条目：导航项 + 「当前页」标记（按当前 view 动态给 hint）
+  const paletteItems = useMemo<CommandPaletteItem[]>(
+    () =>
+      NAV_ITEMS.map(({ view: itemView, labelKey, Icon }) => ({
+        id: itemView,
+        label: t(labelKey),
+        hint: itemView === view ? t("dashboard.cmdk.current") : undefined,
+        icon: <Icon className="h-4 w-4" />,
+      })),
+    [t, view]
+  );
+
   return (
     <div className="db-shell">
       <TitleBar />
 
+      <CommandPalette
+        open={paletteOpen}
+        onClose={() => setPaletteOpen(false)}
+        items={paletteItems}
+        onRun={(id) => {
+          setView(id as View);
+          setPaletteOpen(false);
+        }}
+      />
       {/* 标题栏之下的主体行：左侧固定侧栏 + 右侧主区 */}
       <div className="db-body">
         <aside className="db-sidebar">
@@ -211,6 +253,8 @@ export function DashboardApp() {
             <OverviewPage />
           ) : view === "logs" ? (
             <LogsPage />
+          ) : view === "sessions" ? (
+            <SessionsPage />
           ) : view === "speed" ? (
             <SpeedPage />
           ) : view === "compare" ? (

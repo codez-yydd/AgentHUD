@@ -50,6 +50,8 @@ import type {
   RequestLogScope,
   RequestLogSource,
   RequestLogsPage,
+  SessionContext,
+  SessionFeed,
   SessionsPage,
   PetConfig,
   CustomPetEntry,
@@ -696,6 +698,32 @@ export async function getRequestLogModels(
     fromMs,
     toMs,
     scope: options.scope ?? null,
+  });
+}
+
+// ===== 会话页（实时会话账本 + 上下文健康）=====
+
+/** 实时会话账本：近 windowHours 小时内出现过的会话（按最近活动倒序）。
+ *  单个会话的累计值覆盖整个窗口；state 只表示「最近 3 分钟内有请求」。
+ *  windowHours 缺省 / 非法由后端夹到 1~72，默认 6。 */
+export async function getLiveSessions(
+  windowHours?: number
+): Promise<SessionFeed> {
+  return invoke<SessionFeed>("get_live_sessions", {
+    windowHours: windowHours ?? null,
+  });
+}
+
+/** 单会话上下文水位序列（近 hours 小时，缺省 6；超长会话后端等距抽样）。 */
+export async function getSessionContext(
+  source: RequestLogSource,
+  sessionId: string,
+  hours?: number
+): Promise<SessionContext> {
+  return invoke<SessionContext>("get_session_context", {
+    source,
+    sessionId,
+    hours: hours ?? null,
   });
 }
 
