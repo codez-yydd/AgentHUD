@@ -2112,6 +2112,19 @@ export const en: typeof zh = {
     "dashboard.logs.detailReasoning": "Reasoning",
     "dashboard.logs.detailTotal": "Total",
     "dashboard.logs.detailCost": "Cost",
+    "dashboard.logs.detailEquivalent": "Equivalent cost (reference)",
+    "dashboard.logs.detailEquivalentHint":
+      "What the same tokens would cost on other models; defaults to the most-used models in the current range and can be edited. Built-in reference prices, estimate only and not part of local billing",
+    "dashboard.logs.detailEquivalentAdd": "Add comparison model",
+    "dashboard.logs.detailEquivalentRemove": "Remove comparison model",
+    "dashboard.logs.detailEquivalentEmpty":
+      "No comparison models yet — add one below",
+    "dashboard.logs.detailEquivalentSearch": "Search models…",
+    "dashboard.logs.detailEquivalentNoMatch": "No matching models",
+    "dashboard.logs.detailEquivalentFresh":
+      "Reference prices: models.dev live table · synced {time}",
+    "dashboard.logs.detailEquivalentStale":
+      "Reference prices: built-in snapshot (never synced online)",
     "dashboard.logs.detailPerf": "Performance",
     "dashboard.logs.detailDuration": "Duration",
     "dashboard.logs.detailTtft": "TTFT",

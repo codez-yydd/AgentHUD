@@ -7066,3 +7066,144 @@ body.card-resizing * {
   font-size: 10px;
   color: var(--db-text-dim);
 }
+/* ---- 请求详情：等价花费（对比模型可增删） ---- */
+
+.db-drawer__eq-k {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.db-drawer__eq-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.db-drawer__eq-x {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  font-size: 12px;
+  line-height: 1;
+  color: var(--db-text-dim);
+  cursor: pointer;
+}
+
+.db-drawer__eq-x:hover {
+  background: var(--db-control-bg-hover);
+  color: var(--db-text);
+}
+
+.db-drawer__eq-empty {
+  margin: 4px 0 0;
+  font-size: 11px;
+  color: var(--db-text-dim);
+}
+
+.db-drawer__eq-add {
+  margin-top: 8px;
+}
+.db-drawer__eq-note {
+  margin: 6px 0 0;
+  font-size: 10px;
+  color: var(--db-text-dim);
+}
+/* ---- 模型搜索选择器（请求详情 · 等价花费） ---- */
+
+.db-model-picker {
+  position: relative;
+  display: inline-block;
+}
+
+.db-model-picker__trigger {
+  white-space: nowrap;
+}
+
+/* 向上展开：抽屉正文是滚动容器，向下弹容易被裁掉 */
+.db-model-picker__pop {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  z-index: 40;
+  /* 固定宽度：父级 .db-model-picker 是 inline-block（宽度=触发器宽），
+     不能写 max-width:100%，否则弹层会被压成触发器那么窄、模型名全截断 */
+  width: 320px;
+  max-width: none;
+  overflow: hidden;
+  border: 1px solid var(--db-border);
+  border-radius: 10px;
+  background: var(--db-pop-bg);
+  box-shadow: var(--db-pop-shadow);
+}
+
+.db-model-picker__input {
+  width: 100%;
+  padding: 8px 10px;
+  border: none;
+  border-bottom: 1px solid var(--db-border);
+  outline: none;
+  background: transparent;
+  font-size: 12px;
+  color: var(--db-text);
+}
+
+.db-model-picker__input::placeholder {
+  color: var(--db-text-dim);
+}
+
+.db-model-picker__list {
+  max-height: 220px;
+  padding: 4px;
+  overflow-y: auto;
+}
+
+.db-model-picker__item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 8px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  font-size: 11px;
+  color: var(--db-text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.db-model-picker__item--active {
+  background: var(--db-active-bg);
+  color: var(--db-active-text);
+}
+
+.db-model-picker__name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.db-model-picker__hint {
+  flex: none;
+  font-size: 10px;
+  color: var(--db-text-dim);
+}
+
+.db-model-picker__empty {
+  margin: 0;
+  padding: 14px;
+  text-align: center;
+  font-size: 11px;
+  color: var(--db-text-dim);
+}

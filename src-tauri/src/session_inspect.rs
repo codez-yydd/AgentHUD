@@ -201,22 +201,21 @@ fn cache_ratio_of(row: &RequestLogRow) -> Option<f64> {
     (denominator > 0).then(|| row.cache_read_tokens.max(0) as f64 / denominator as f64)
 }
 
-/// 模型上下文窗口：只收录明确已知的一档，未收录返回 None。
+/// 模型上下文窗口：只收录明确已知的档位，未收录返回 None。
 ///
-/// 刻意做得很保守——宁可不显示百分比，也不要给出错误的水位。新增模型时
-/// 在这里补一行即可（按小写子串匹配，先命中先用）。
+/// **按模型家族匹配，不追具体版本号**（"claude-*" 全族、glm 全族……）：
+/// 窗口是厂家规格而不是价格，同一家族内基本一致；追版本号既写不完也很快过时。
+/// 宁可认不出（None，界面不画百分比）也不猜一个错的。
 fn context_limit_of(model: &str) -> Option<i64> {
     let model = model.to_lowercase();
-    const TABLE: [(&str, i64); 9] = [
+    const TABLE: [(&str, i64); 7] = [
         ("claude", 200_000),
         ("gpt-5", 272_000),
         ("codex", 272_000),
         ("gemini", 1_000_000),
-        ("glm-4.6", 200_000),
-        ("glm-5", 200_000),
+        ("glm", 200_000),
         ("kimi", 256_000),
         ("deepseek", 128_000),
-        ("minimax", 200_000),
     ];
     TABLE
         .iter()

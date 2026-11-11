@@ -571,14 +571,14 @@ function QuotaMiniRow({
   const display = useResetDisplay();
   const remain = Math.max(0, 100 - usedPct);
   const showReset = resetAt != null && resetAt > now;
-  // 重置时间三态同行文本：双开「↻ 45m · 08-30 14:37」；窄行放不下时只留
-  // 倒计时（title 里给完整时间），避免把进度条压到看不见
+  // 重置时间四态同行文本：双开「↻ 08-30 14:37 · 45m」（时间点在前——窄行
+  // 触发 CSS 截断时先保住绝对时刻），仅时间点 / 仅倒计时各一项，都关则不渲染
   const stamp = showReset ? formatResetStamp(resetAt) : "";
   const countdown = showReset ? formatCountdownCore(resetAt - now) : "";
   const resetText = !showReset
     ? ""
     : display.countdown && display.datetime
-      ? `↻ ${countdown}`
+      ? `↻ ${stamp} · ${countdown}`
       : display.datetime
         ? `↻ ${stamp}`
         : display.countdown
@@ -590,39 +590,51 @@ function QuotaMiniRow({
       : null;
 
   return (
-    <div className="p-quota">
-      <span className="p-quota__label" title={label}>
-        {label}
-      </span>
-      <div className="p-quota__track">
-        <div
-          className="p-quota__fill"
-          style={{
-            width: `${remain}%`,
-            background: remainingGradient(remain),
-          }}
-        />
-      </div>
-      {deltaText && (
-        <span className="p-quota__delta" title={deltaText}>
-          {deltaText}
+    <div className="p-quota p-quota--stacked">
+      <div className="p-quota__main">
+        <span className="p-quota__label" title={label}>
+          {label}
         </span>
-      )}
-      {resetText && (
+        <div className="p-quota__track">
+          <div
+            className="p-quota__fill"
+            style={{
+              width: `${remain}%`,
+              background: remainingGradient(remain),
+            }}
+          />
+        </div>
         <span
-          className="p-quota__reset"
-          title={display.countdown && display.datetime ? `↻ ${countdown} · ${stamp}` : resetText}
+          className="p-quota__pct num"
+          style={{ color: remainingTextColor(remain) }}
+          title={t("common.remaining", { pct: Math.round(remain) })}
         >
-          {resetText}
+          {Math.round(remain)}%
         </span>
+      </div>
+      {/* 第二行：重置时间 + 今日增量。原来三者挤在一行、文案被压到 8px；
+          分行后两处都能放大到 10px，进度条也不再被挤窄 */}
+      {(resetText || deltaText) && (
+        <div className="p-quota__meta">
+          {resetText && (
+            <span
+              className="p-quota__reset"
+              title={
+                display.countdown && display.datetime
+                  ? `↻ ${countdown} · ${stamp}`
+                  : resetText
+              }
+            >
+              {resetText}
+            </span>
+          )}
+          {deltaText && (
+            <span className="p-quota__delta" title={deltaText}>
+              {deltaText}
+            </span>
+          )}
+        </div>
       )}
-      <span
-        className="p-quota__pct num"
-        style={{ color: remainingTextColor(remain) }}
-        title={t("common.remaining", { pct: Math.round(remain) })}
-      >
-        {Math.round(remain)}%
-      </span>
     </div>
   );
 }

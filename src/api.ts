@@ -46,7 +46,10 @@ import type {
   RemoteSnapshot,
   RemoteAgentQuotaSnapshot,
   RemoteUsage,
+  EquivalentCost,
+  ReferenceTable,
   RequestLogModelCount,
+  RequestLogRow,
   RequestLogScope,
   RequestLogSource,
   RequestLogsPage,
@@ -699,6 +702,33 @@ export async function getRequestLogModels(
     toMs,
     scope: options.scope ?? null,
   });
+}
+
+/** 请求详情「等价花费」：同样一组 token 在指定参考模型上各要多少钱。
+ *  `modelIds` 由调用方决定（日志页默认给当前范围内最常用的模型，用户也可改选）；
+ *  参考价取自**编译期内置表**，与用户本地价格表无关；内置表里没有的 id 会被
+ *  后端跳过（返回里就没有它，界面据此不渲染该行）。 */
+export async function getEquivalentCosts(
+  row: RequestLogRow,
+  modelIds: string[]
+): Promise<EquivalentCost[]> {
+  return invoke<EquivalentCost[]>("get_equivalent_costs", {
+    source: row.source,
+    modelIds,
+    inputTokens: row.input_tokens,
+    outputTokens: row.output_tokens,
+    cacheReadTokens: row.cache_read_tokens,
+    cacheWriteTokens: row.cache_write_tokens,
+    totalTokens: row.total_tokens,
+  });
+}
+
+/** 参考价表（「等价花费」的模型选择器用）：编译期快照 + models.dev 在线缓存 +
+ *  本地价格表合并后的结果，按输入价降序。`fetched_at` 说明数据新鲜度
+ *  （null = 从未联网同步成功，当前只有内置快照）。在线缓存由后端每天后台刷新，
+ *  新模型发布后无需更新应用即可出现在选择器里。 */
+export async function getReferenceTable(): Promise<ReferenceTable> {
+  return invoke<ReferenceTable>("get_reference_models");
 }
 
 // ===== 会话页（实时会话账本 + 上下文健康）=====

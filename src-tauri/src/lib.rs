@@ -43,6 +43,8 @@ mod provider_quota_history;
 mod qoder;
 mod quota;
 mod quota_history;
+// 额度重置提醒：额度窗口临近重置时弹系统通知（只读内存登记表，不发网络请求）
+mod quota_reminder;
 mod request_logs;
 mod session_hud;
 // 主窗口「会话」页取数：实时会话账本 + 单会话上下文水位（复用 request_logs
@@ -140,18 +142,17 @@ pub(crate) fn cost_for<B: Billable>(s: &B, map: &BTreeMap<String, ModelPrice>) -
 
 pub(crate) fn cost_for_source<B: Billable>(s: &B, map: &BTreeMap<String, ModelPrice>, source: &str) -> f64 {
     let separate = matches!(source, "claude" | "kimi");
+    // 计费公式本体在 pricing::price_cost（与「等价花费」共用同一份，避免两处算歪）
     let lookup = |p: &ModelPrice| {
-        let cache_write = if separate {
-            (s.total_tokens() - s.input_tokens() - s.output_tokens() - s.cache_read_tokens()).max(s.cache_write_tokens()).max(0)
-        } else { s.cache_write_tokens().max(0) };
-        let non_cache_input = if separate { s.input_tokens().max(0) } else {
-            (s.input_tokens() - s.cache_read_tokens() - cache_write).max(0)
-        } as f64;
-        (non_cache_input * p.input
-            + s.output_tokens() as f64 * p.output
-            + s.cache_read_tokens() as f64 * p.cache_read
-            + cache_write as f64 * p.cache_write.unwrap_or(p.input))
-            / 1_000_000.0
+        pricing::price_cost(
+            separate,
+            p,
+            s.input_tokens(),
+            s.output_tokens(),
+            s.cache_read_tokens(),
+            s.cache_write_tokens(),
+            s.total_tokens(),
+        )
     };
     for cand in pricing::model_id_candidates(s.model_id()) {
         if let Some(p) = map.get(cand) {
@@ -3009,15 +3010,53 @@ async fn check_update(
     }
 }
 
-// ===== 系统通知（无人值守自动切换结果提醒） =====
+// ===== 系统通知（无人值守自动切换 / 额度重置提醒） =====
 
-/// 弹系统通知（用于额度用满自动切换的结果提醒，非关键路径）。
+/// 等价花费：同样一组 token 在**前端指定的**参考模型上各要多少钱。
+///
+/// 参考价取自编译期内置表（public/pricing-defaults.json），**不读用户本地
+/// 价格表**——这条命令回答的是「换模型要多少钱」，用用户自己配的价反过来算
+/// 没有意义。要对比哪些模型由调用方决定（日志页默认取当前范围内最常用的
+/// 几个，用户可改选）；内置表里没有的 id 直接跳过。只做展示估算，不参与计费。
+#[tauri::command]
+fn get_equivalent_costs(
+    source: String,
+    model_ids: Vec<String>,
+    input_tokens: i64,
+    output_tokens: i64,
+    cache_read_tokens: i64,
+    cache_write_tokens: i64,
+    total_tokens: i64,
+) -> Vec<pricing::EquivalentCost> {
+    let separate = matches!(source.as_str(), "claude" | "kimi");
+    pricing::equivalent_costs(
+        &model_ids,
+        separate,
+        input_tokens,
+        output_tokens,
+        cache_read_tokens,
+        cache_write_tokens,
+        total_tokens,
+        load_fx_rate(),
+    )
+}
+
+/// 参考价表（「等价花费」的模型选择器用，按输入价降序）。
+///
+/// 返回的是**运行时合并表**：编译期快照 + models.dev 在线缓存 + 本地价格表，
+/// 另带在线表抓取时间（前端据此说明数据新鲜度）。在线缓存由
+/// `pricing::spawn_reference_refresher` 每天刷新，新模型发布无需发版即可出现。
+#[tauri::command]
+fn get_reference_models() -> pricing::ReferenceTable {
+    pricing::reference_table()
+}
+
+/// 弹系统通知（用于额度用满自动切换 / 额度重置提醒，非关键路径）。
 /// macOS 用 osascript display notification；Windows 用 PowerShell toast
 /// （app id 借用 PowerShell 自身的 AUMID，任意字符串在部分系统上不弹）；
-/// Linux 桌面通知差异大，直接跳过。任何失败都静默返回 Ok——通知只锦上添花，
-/// 绝不影响自动切换主流程。放线程里执行，PowerShell 冷启动较慢也不阻塞 IPC。
-#[tauri::command]
-async fn show_notification(title: String, body: String) -> Result<(), String> {
+/// Linux 桌面通知差异大，直接跳过。任何失败都静默——通知只锦上添花，
+/// 绝不影响主流程。放线程里执行，PowerShell 冷启动较慢也不阻塞 IPC。
+pub(crate) fn notify(title: String, body: String) {
     std::thread::spawn(move || {
         #[cfg(target_os = "macos")]
         {
@@ -3066,6 +3105,12 @@ async fn show_notification(title: String, body: String) -> Result<(), String> {
             let _ = (&title, &body);
         }
     });
+}
+
+/// 前端 invoke 入口：与内部 notify 同一实现（异步命令，立刻返回）。
+#[tauri::command]
+async fn show_notification(title: String, body: String) -> Result<(), String> {
+    notify(title, body);
     Ok(())
 }
 
@@ -3213,6 +3258,8 @@ pub fn run() {
                 eprintln!("[zbar-main-window] 预建主窗口失败: {e}");
             }
             spawn_today_usage_updater(app.handle().clone());
+            // 额度重置提醒后台线程：每 30s 读一次内存登记表，不额外发请求
+            quota_reminder::spawn();
             // 截图覆盖窗口预热：启动 1.5s 后把隐藏的 shot.html 建好，
             // 之后无论走热键还是 HUD 按钮，第一次截图都不再冷启动 WebView。
             {
@@ -3226,6 +3273,9 @@ pub fn run() {
                 });
             }
             spawn_fx_rate_refresher();
+            // 参考价表后台刷新（models.dev）：新模型发布后「等价花费」选择器
+            // 自动跟上，编译期内置表只作离线兜底
+            pricing::spawn_reference_refresher();
             // ZCode 换账号自动捕获：每 60s 轮询现场登录并幂等 upsert 快照
             //（首周期延迟 30s，内容未变零写盘）；捕获到新登录时广播事件，
             // 打开着的设置页账号卡片立即刷新（见 accounts::spawn_auto_capture）
@@ -3314,6 +3364,10 @@ pub fn run() {
             compute_cost,
             get_trend,
             save_report,
+            // 请求详情「等价花费」：同一组 token 换成参考模型要多少钱（只读内置表）
+            get_equivalent_costs,
+            // 等价花费的模型选择器：内置参考表全量模型（id + 单价）
+            get_reference_models,
             get_sync_config,
             set_sync_config,
             register_device,

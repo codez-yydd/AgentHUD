@@ -605,6 +605,10 @@ pub fn fetch_quota() -> Result<QuotaResult, String> {
         }
     }
 
+    // 额度重置提醒：登记三个窗口的 next_reset_time（后台线程按 5 分钟提前量
+    // 弹一次系统通知）。只登记不查询，不增加任何网络请求。
+    crate::quota_reminder::record(&result);
+
     Ok(result)
 }
 

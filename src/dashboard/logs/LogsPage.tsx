@@ -1055,6 +1055,8 @@ export function LogsPage() {
           row={active}
           currency={currency}
           deviceLabel={deviceLabel}
+          /* 当前范围里出现过的模型（按请求数降序）：等价花费的默认对比集 */
+          modelIds={models?.map((item) => item.model_id) ?? []}
           onClose={() => setActive(null)}
         />
       )}

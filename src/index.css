@@ -2245,8 +2245,13 @@ html[data-font-tier="xl"] .page-stack {
   border-radius: inherit;
   transition: width 0.45s cubic-bezier(0.2, 0.9, 0.2, 1);
 }
+/* 双开「时间点 · 倒计时」会变长：允许收缩并省略尾部，避免把进度条挤没
+   （时间点在前，被省略的是倒计时尾巴，绝对时刻始终可见） */
 .p-quota__reset {
-  flex: none;
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   font-family: "SF Mono", ui-monospace, monospace;
   font-size: 8px;
   color: var(--p-text-3);
@@ -2265,6 +2270,61 @@ html[data-font-tier="xl"] .page-stack {
   font-size: 8px;
   color: var(--p-text-3);
   white-space: nowrap;
+}
+
+/* 两行版额度行（汇总页「额度监控」/ Z.ai 页三个窗口）：上行「标签 + 条 + 剩余%」，
+ * 下行「重置时间 + 今日增量」。原来重置文案、今日增量与进度条挤在同一行，
+ * 字号只能压到 8px；分行后重置/增量 10px、剩余百分比 12px，进度条也不再被挤窄。 */
+.p-quota--stacked {
+  flex-direction: column;
+  align-items: stretch;
+  height: auto;
+  gap: 2px;
+}
+
+.p-quota__main {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  height: 18px;
+}
+
+.p-quota__meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  height: 15px;
+  /* 与上行进度条左缘对齐（label 40px + gap 6px） */
+  padding-left: 46px;
+}
+
+.p-quota--stacked .p-quota__label {
+  width: 40px;
+  font-size: 10px;
+}
+
+.p-quota--stacked .p-quota__pct {
+  font-size: 12px;
+}
+
+.p-quota--stacked .p-quota__reset,
+.p-quota--stacked .p-quota__delta {
+  font-size: 10px;
+}
+
+/* 第二行两项都可收缩：极窄窗口下先省略倒计时/增量尾部，绝不把整行撑宽 */
+.p-quota--stacked .p-quota__reset,
+.p-quota--stacked .p-quota__delta {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.p-quota--stacked .p-quota__meta {
+  overflow: hidden;
 }
 
 /* 额度区的单个来源块 */

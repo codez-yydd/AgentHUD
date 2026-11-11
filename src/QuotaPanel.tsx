@@ -289,11 +289,10 @@ function AccountQuotaRow({
 }
 
 /** 额度条行内的重置时间（QuotaBar / McpBar 共用；原独立列 ResetSpan 已并入行内）：
- *  三态按 useResetDisplay——倒计时开启（双开或仅倒计时）显示精简倒计时「↻ 3h48m」，
- *  双开时时间点移入 title；仅时间点显示「↻ 10-15 05:17」；两者都关返回 null
- *  （不渲染空节点，避免 flex gap 白占宽）。
- *  完整文案（含「后刷新 / 重置于」本地化后缀）统一由 title 悬浮兜底；
- *  260px 窄窗下行内空间不足时按 min-w-0 + truncate 省略。 */
+ *  四态按 useResetDisplay——双开显示「↻ 10-15 05:17 · 3h48m」（时间点在前：行内
+ *  放不下被截断时，用户最想看的绝对时刻不会被截尾巴），仅倒计时「↻ 3h48m」，
+ *  仅时间点「↻ 10-15 05:17」，两者都关返回 null（不渲染空节点，避免 flex gap 白占宽）。
+ *  完整文案（含「后刷新 / 重置于」本地化后缀）仍由 title 悬浮兜底。 */
 function ResetInline({ resetAt, now }: { resetAt: number; now: number }) {
   const { t } = useI18n();
   const display = useResetDisplay();
@@ -304,9 +303,15 @@ function ResetInline({ resetAt, now }: { resetAt: number; now: number }) {
     "common.resetAt",
     { time: stamp }
   )}`;
+  const text =
+    display.countdown && display.datetime
+      ? `↻ ${stamp} · ${countdown}`
+      : display.datetime
+        ? `↻ ${stamp}`
+        : `↻ ${countdown}`;
   return (
     <span className="p-quota__reset" title={title}>
-      {display.countdown ? `↻ ${countdown}` : `↻ ${stamp}`}
+      {text}
     </span>
   );
 }
@@ -339,38 +344,44 @@ function QuotaBar({
   const hasDelta = delta != null && delta[1] >= 2 && deltaPct > 0;
 
   return (
-    <div className={`p-quota ${className}`}>
-      <span className="p-quota__label" title={label}>
-        {label}
-      </span>
-      <div className="p-quota__track">
-        <div
-          className="p-quota__fill"
-          style={{
-            width: `${remaining}%`,
-            background: remainingGradient(remaining),
-          }}
-        />
-      </div>
-      {/* 今日增量：紧凑「↑N%」，完整本地化文案 title 兜底 */}
-      {hasDelta && (
-        <span
-          className="p-quota__delta"
-          title={t("quota.todayDelta", { pct: deltaPct })}
-        >
-          ↑{deltaPct}%
+    <div className={`p-quota p-quota--stacked ${className}`}>
+      <div className="p-quota__main">
+        <span className="p-quota__label" title={label}>
+          {label}
         </span>
+        <div className="p-quota__track">
+          <div
+            className="p-quota__fill"
+            style={{
+              width: `${remaining}%`,
+              background: remainingGradient(remaining),
+            }}
+          />
+        </div>
+        <span
+          className="p-quota__pct num"
+          style={{ color: remainingTextColor(remaining) }}
+          title={t("common.remaining", { pct: Math.round(remaining) })}
+        >
+          {Math.round(remaining)}%
+        </span>
+      </div>
+      {/* 第二行：重置时间 + 今日增量（紧凑「↑N%」，完整本地化文案 title 兜底） */}
+      {(hasDelta || (resetAt != null && resetAt > now)) && (
+        <div className="p-quota__meta">
+          {resetAt != null && resetAt > now && (
+            <ResetInline resetAt={resetAt} now={now} />
+          )}
+          {hasDelta && (
+            <span
+              className="p-quota__delta"
+              title={t("quota.todayDelta", { pct: deltaPct })}
+            >
+              ↑{deltaPct}%
+            </span>
+          )}
+        </div>
       )}
-      {resetAt != null && resetAt > now && (
-        <ResetInline resetAt={resetAt} now={now} />
-      )}
-      <span
-        className="p-quota__pct num"
-        style={{ color: remainingTextColor(remaining) }}
-        title={t("common.remaining", { pct: Math.round(remaining) })}
-      >
-        {Math.round(remaining)}%
-      </span>
     </div>
   );
 }
@@ -413,32 +424,38 @@ function McpBar({
       : null;
 
   return (
-    <div className={`p-quota ${className}`}>
-      <span className="p-quota__label">MCP</span>
-      <div className="p-quota__track">
-        <div
-          className="p-quota__fill"
-          style={{
-            width: `${remaining}%`,
-            background: remainingGradient(remaining),
-          }}
-        />
-      </div>
-      {resetAt != null && resetAt > now && (
-        <ResetInline resetAt={resetAt} now={now} />
-      )}
-      {abs && (
-        <span className="p-quota__reset" title={abs.title}>
-          {abs.text}
+    <div className={`p-quota p-quota--stacked ${className}`}>
+      <div className="p-quota__main">
+        <span className="p-quota__label">MCP</span>
+        <div className="p-quota__track">
+          <div
+            className="p-quota__fill"
+            style={{
+              width: `${remaining}%`,
+              background: remainingGradient(remaining),
+            }}
+          />
+        </div>
+        <span
+          className="p-quota__pct num"
+          style={{ color: remainingTextColor(remaining) }}
+          title={t("common.remaining", { pct: Math.round(remaining) })}
+        >
+          {Math.round(remaining)}%
         </span>
+      </div>
+      {(abs || (resetAt != null && resetAt > now)) && (
+        <div className="p-quota__meta">
+          {resetAt != null && resetAt > now && (
+            <ResetInline resetAt={resetAt} now={now} />
+          )}
+          {abs && (
+            <span className="p-quota__reset" title={abs.title}>
+              {abs.text}
+            </span>
+          )}
+        </div>
       )}
-      <span
-        className="p-quota__pct num"
-        style={{ color: remainingTextColor(remaining) }}
-        title={t("common.remaining", { pct: Math.round(remaining) })}
-      >
-        {Math.round(remaining)}%
-      </span>
     </div>
   );
 }

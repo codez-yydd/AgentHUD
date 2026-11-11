@@ -830,6 +830,19 @@ export const dashboard = {
   "dashboard.logs.detailReasoning": "思考",
   "dashboard.logs.detailTotal": "合计",
   "dashboard.logs.detailCost": "花费",
+  // 等价花费：同样 token 换成参考模型（GPT-5.1 / Claude Sonnet 4.5 / GLM-4.6）
+  // 要多少钱，价格取自编译期内置参考表，只做估算、不参与计费
+  "dashboard.logs.detailEquivalent": "等价花费（参考价）",
+  "dashboard.logs.detailEquivalentHint":
+    "同样这组 token 换成其他模型要花多少：默认对比当前范围内最常用的模型，可自行增删；价格取自内置参考表，仅估算，不参与本机计费",
+  "dashboard.logs.detailEquivalentAdd": "添加对比模型",
+  "dashboard.logs.detailEquivalentRemove": "移除对比模型",
+  "dashboard.logs.detailEquivalentEmpty": "还没有对比模型，从下方添加一个",
+  "dashboard.logs.detailEquivalentSearch": "搜索模型…",
+  "dashboard.logs.detailEquivalentNoMatch": "没有匹配的模型",
+  "dashboard.logs.detailEquivalentFresh":
+    "参考价：models.dev 在线表 · 同步于 {time}",
+  "dashboard.logs.detailEquivalentStale": "参考价：内置快照（还没联网同步过）",
   "dashboard.logs.detailPerf": "性能",
   "dashboard.logs.detailDuration": "耗时",
   "dashboard.logs.detailTtft": "首字",

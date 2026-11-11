@@ -14,11 +14,19 @@
  * title（Kv 的 title 参数）；首字延迟 2 位小数秒（百毫秒量级），耗时 1 位；
  * 耗时显示来源库的真实值。速度与表格共用后端校验过的数值及其计时口径。
  */
-import { useEffect } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useI18n } from "../../i18n";
 import { formatCost, formatTokensLocale } from "../../format";
+import { getEquivalentCosts, getReferenceTable } from "../../api";
+import { displayModelName } from "../../modelName";
+import { ModelSearchPicker } from "./ModelSearchPicker";
 import { costOf } from "../overview/derive";
-import type { Currency, RequestLogRow } from "../../types";
+import type {
+  Currency,
+  EquivalentCost,
+  ReferenceTable,
+  RequestLogRow,
+} from "../../types";
 import {
   durationText,
   exactCount,
@@ -31,9 +39,45 @@ import {
   ttftText,
 } from "./model";
 
+/** 「等价花费」对比模型选择的持久化键（与日志页其它偏好同款用 localStorage） */
+const EQUIVALENT_KEY = "zbar-equivalent-models";
+/** 对比模型数量上限：再多，详情抽屉就变成价目表了 */
+const EQUIVALENT_MAX = 6;
+
+/** 读取已保存的对比模型；没存过 → null（由「当前范围最常用」的默认值接管） */
+function loadEquivalentSelection(): string[] | null {
+  try {
+    const raw = localStorage.getItem(EQUIVALENT_KEY);
+    if (raw == null) return null;
+    const parsed: unknown = JSON.parse(raw);
+    return Array.isArray(parsed)
+      ? parsed.filter((item): item is string => typeof item === "string")
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+/** 持久化对比模型：空数组也写入——表示用户明确清空，不再回落到默认值 */
+function saveEquivalentSelection(ids: string[]): void {
+  try {
+    localStorage.setItem(EQUIVALENT_KEY, JSON.stringify(ids));
+  } catch {
+    /* 忽略：隐私模式 / 配额满，选择只在本次会话生效 */
+  }
+}
+
+/** 时间戳 → 本地 "MM-DD HH:mm"（参考价表的同步时刻，只到分钟足够） */
+function syncTimeText(ms: number): string {
+  const date = new Date(ms);
+  const pad = (value: number) => String(value).padStart(2, "0");
+  return `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(
+    date.getHours()
+  )}:${pad(date.getMinutes())}`;
+}
+
 /** 一列键值（值单行截断 + title 给全文，长模型名 / 会话 id 不撑破面板；
- *  title 缺省用 value，token 等有紧凑格式的字段显式传精确整数） */
-function Kv({
+ *  title 缺省用 value，token 等有紧凑格式的字段显式传精确整数） */function Kv({
   label,
   value,
   title,
@@ -61,12 +105,16 @@ export function RequestDetailDrawer({
   row,
   currency,
   deviceLabel,
+  modelIds = [],
   onClose,
 }: {
   row: RequestLogRow;
   currency: Currency;
   /** 设备 id → 展示名（页面统一维护）：设备行显示「设备名 + 完整 id」 */
   deviceLabel: (deviceId: string) => string;
+  /** 当前日志范围里出现过的模型 id（按请求数降序）：等价花费的默认对比集。
+   *  页面不传就给空数组，此时只能由用户手动挑模型。 */
+  modelIds?: string[];
   onClose: () => void;
 }) {
   const { locale, t } = useI18n();
@@ -94,6 +142,78 @@ export function RequestDetailDrawer({
   const mainCost = costOf(row.cost_usd, row.cost_cny, currency);
   const otherCurrency: Currency = currency === "cny" ? "usd" : "cny";
   const otherCost = costOf(row.cost_usd, row.cost_cny, otherCurrency);
+  /**
+   * 等价花费（参考价估算）。
+   *
+   * 对比哪些模型**不写死**：默认取当前日志范围里最常用的几个（页面通过
+   * `modelIds` 传进来，已按请求数降序），并排除本行自己的模型；用户还可以
+   * 在下拉里从内置参考表任意增删，选择存 localStorage 下次沿用（清空也算
+   * 明确选择，不再回落到默认值）。
+   */
+  const [storedSelection] = useState(() => loadEquivalentSelection());
+  const selectionTouched = useRef(storedSelection != null);
+  const [compareIds, setCompareIds] = useState<string[]>(storedSelection ?? []);
+  const [equivalents, setEquivalents] = useState<EquivalentCost[]>([]);
+  /** 参考价表（模型的候选集 + 在线表新鲜度）：抽屉打开时取一次 */
+  const [referenceTable, setReferenceTable] = useState<ReferenceTable | null>(
+    null
+  );
+
+  /** 默认对比集：当前范围内最常用的 3 个模型（不含本行模型） */
+  const candidates = useMemo(
+    () => modelIds.filter((id) => id !== row.model_id).slice(0, 3),
+    [modelIds, row.model_id]
+  );
+
+  // 没存过选择时跟随候选默认值（用户手动改过之后就不再覆盖）
+  useEffect(() => {
+    if (!selectionTouched.current) setCompareIds(candidates);
+  }, [candidates]);
+
+  // 参考价表：选择器候选 + 在线表抓取时间，抽屉打开时取一次
+  useEffect(() => {
+    let cancelled = false;
+    getReferenceTable()
+      .then((table) => {
+        if (!cancelled) setReferenceTable(table);
+      })
+      .catch(() => {
+        /* 静默：选择器退化为只能移除已选项，不影响已选模型的折算 */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // 折算：当前行或对比集变化就重算（对比集为空则不请求）
+  useEffect(() => {
+    if (compareIds.length === 0) {
+      setEquivalents([]);
+      return;
+    }
+    let cancelled = false;
+    getEquivalentCosts(row, compareIds)
+      .then((list) => {
+        if (!cancelled) setEquivalents(list);
+      })
+      .catch(() => {
+        // 参考表缺失 / IPC 异常：静默降级为不显示，详情其它信息照常
+        if (!cancelled) setEquivalents([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [row, compareIds]);
+
+  /** 改选对比模型：去重 + 截断上限，并落盘（清空同样落盘，表示"就要空"） */
+  const applySelection = (next: string[]) => {
+    const unique = next
+      .filter((id, index) => next.indexOf(id) === index)
+      .slice(0, EQUIVALENT_MAX);
+    selectionTouched.current = true;
+    setCompareIds(unique);
+    saveEquivalentSelection(unique);
+  };
   // token 明细：紧凑值 + 精确整数 title
   const tokens: { label: string; value: number }[] = [
     { label: t("dashboard.logs.detailInput"), value: row.input_tokens },
@@ -103,6 +223,9 @@ export function RequestDetailDrawer({
     { label: t("dashboard.logs.detailReasoning"), value: row.reasoning_tokens },
     { label: t("dashboard.logs.detailTotal"), value: row.total_tokens },
   ];
+
+  /** 选择器候选：合并表（快照 ← models.dev ← 本地价表）里的全部模型 */
+  const referenceModels = referenceTable?.models ?? [];
 
   return (
     <>
@@ -210,6 +333,76 @@ export function RequestDetailDrawer({
               </div>
             )}
           </section>
+
+          {/* ---- 等价花费（参考价估算）：对比模型由用户决定，不写死 ---- */}
+          {row.total_tokens > 0 && (
+            <section className="db-drawer__section">
+              <h3
+                className="db-drawer__section-title"
+                title={t("dashboard.logs.detailEquivalentHint")}
+              >
+                {t("dashboard.logs.detailEquivalent")}
+              </h3>
+              {equivalents.map((item) => (
+                <div className="db-drawer__kv" key={item.model_id}>
+                  <span className="db-drawer__k db-drawer__eq-k">
+                    <button
+                      type="button"
+                      className="db-drawer__eq-x"
+                      title={t("dashboard.logs.detailEquivalentRemove")}
+                      aria-label={t("dashboard.logs.detailEquivalentRemove")}
+                      onClick={() =>
+                        applySelection(
+                          compareIds.filter((id) => id !== item.model_id)
+                        )
+                      }
+                    >
+                      ×
+                    </button>
+                    <span className="db-drawer__eq-name" title={item.model_id}>
+                      {displayModelName(item.model_id)}
+                    </span>
+                  </span>
+                  <span
+                    className="db-drawer__v num"
+                    title={formatCost(item.usd, "usd")}
+                  >
+                    {formatCost(costOf(item.usd, item.cny, currency), currency)}
+                  </span>
+                </div>
+              ))}
+              {compareIds.length === 0 && (
+                <p className="db-drawer__eq-empty">
+                  {t("dashboard.logs.detailEquivalentEmpty")}
+                </p>
+              )}
+              {referenceModels.length > 0 && compareIds.length < EQUIVALENT_MAX && (
+                <div className="db-drawer__eq-add">
+                  {/* 候选来自运行时合并表（models.dev 每天后台刷新），按输入价降序；
+                      几百个模型靠滚动找不现实，用带模糊搜索的选择器 */}
+                  <ModelSearchPicker
+                    label={t("dashboard.logs.detailEquivalentAdd")}
+                    options={referenceModels
+                      .filter((model) => !compareIds.includes(model.model_id))
+                      .map((model) => ({
+                        value: model.model_id,
+                        label: displayModelName(model.model_id),
+                        hint: `$${model.input}/M`,
+                      }))}
+                    onPick={(id) => applySelection([...compareIds, id])}
+                  />
+                </div>
+              )}
+              {/* 数据新鲜度：在线表同步过就报时间，没有就说清是内置快照 */}
+              <p className="db-drawer__eq-note">
+                {referenceTable?.fetched_at != null
+                  ? t("dashboard.logs.detailEquivalentFresh", {
+                      time: syncTimeText(referenceTable.fetched_at),
+                    })
+                  : t("dashboard.logs.detailEquivalentStale")}
+              </p>
+            </section>
+          )}
 
           {duration != null || ttft != null || speed ? (
             <section className="db-drawer__section">

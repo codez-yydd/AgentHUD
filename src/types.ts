@@ -1528,6 +1528,32 @@ export interface ContextPoint {
   model_id: string;
 }
 
+/** 「等价花费」参考模型折算结果：同一组 token 在各参考模型上的估算价。
+ *  参考价来自编译期内置表（public/pricing-defaults.json），与用户本地价格表无关；
+ *  未命中内置表的参考模型不会出现在结果里。 */
+export interface EquivalentCost {
+  model_id: string;
+  usd: number;
+  /** 同 USD × 当前汇率 */
+  cny: number;
+}
+
+/** 内置参考价表里的一个模型（「等价花费」的选择器用；单价为 USD / 百万 token） */
+export interface ReferenceModel {
+  model_id: string;
+  input: number;
+  output: number;
+  cache_read: number;
+}
+
+/** 参考价表（「等价花费」选择器用）：合并后的模型清单 + 在线表新鲜度。
+ *  合并顺序 = 编译期快照 ← models.dev 在线缓存 ← 本地价格表（后者覆盖前者）。 */
+export interface ReferenceTable {
+  models: ReferenceModel[];
+  /** models.dev 在线表最近抓取时间（ms）；null = 从未同步成功，当前只有内置快照 */
+  fetched_at: number | null;
+}
+
 /** 单会话上下文健康视图 */
 export interface SessionContext {
   source: RequestLogSource;

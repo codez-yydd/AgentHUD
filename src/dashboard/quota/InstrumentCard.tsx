@@ -8,8 +8,9 @@
 import { useMemo } from "react";
 import type { CSSProperties } from "react";
 import { BrandIcon } from "../../BrandIcon";
-import { levelLabel } from "../../format";
+import { formatResetStamp, levelLabel } from "../../format";
 import type { TFn } from "../../i18n";
+import { useResetDisplay } from "../../resetDisplay";
 import { QuotaDial } from "./QuotaDial";
 import {
   countdownCore,
@@ -104,6 +105,8 @@ export function InstrumentCard({
   const worst = worstRemainingOf(series);
   const risk = riskOf(worst ?? 100);
   const primaryKey = primaryWindowOf(series);
+  /** 重置时间展示偏好（设置页「重置时间展示」）：与面板额度行同一套三态 */
+  const resetDisplay = useResetDisplay();
   // 曲线数据按 series 身份缓存：页面每 30s 只更新 nowMs，不该为此重新映射
   // 整个 90 天采样序列（可能上万点 × 每张卡）
   const primaryPoints = useMemo(
@@ -167,6 +170,19 @@ export function InstrumentCard({
           const tone = quotaTone(row.remainingPct, dark);
           const countdown =
             row.resetAt != null ? countdownCore(row.resetAt, nowMs) : null;
+          const stamp = row.resetAt != null ? formatResetStamp(row.resetAt) : null;
+          // 三态：双开「↻ 10-15 05:17 · 3h48m」，仅时间点 / 仅倒计时各一项，
+          // 都关则不显示重置文案（有重置时刻时仍保留 title 提示）
+          const resetText =
+            row.resetAt == null
+              ? t("dashboard.quota.windowNoReset")
+              : resetDisplay.countdown && resetDisplay.datetime && stamp
+                ? `↻ ${stamp} · ${countdown}`
+                : resetDisplay.datetime && stamp
+                  ? `↻ ${stamp}`
+                  : resetDisplay.countdown && countdown
+                    ? `↻ ${t("dashboard.quota.resetIn", { time: countdown })}`
+                    : "";
           return (
             <div className="db-qc-gauge" key={`${series.id}:${row.windowKey}`}>
               <QuotaDial
@@ -187,9 +203,7 @@ export function InstrumentCard({
                     row.resetAt != null ? formatDateTime(row.resetAt) : undefined
                   }
                 >
-                  {countdown
-                    ? `↻ ${t("dashboard.quota.resetIn", { time: countdown })}`
-                    : t("dashboard.quota.windowNoReset")}
+                  {resetText}
                 </span>
               </span>
             </div>

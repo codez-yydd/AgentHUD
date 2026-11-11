@@ -280,6 +280,244 @@ fn load_defaults() -> PricingDefaults {
     })
 }
 
+/// 按单价折算一次请求的花费（USD；单价是「每百万 token」）。
+///
+/// `separate` 指该来源的 `input_tokens` 是否**不含**缓存读写（claude / kimi）：
+/// - included 源（zcode / codex / dsh / opencode / minimaxcode）：input 已含
+///   缓存读，非缓存输入 = input − cache_read − cache_write；
+/// - separate 源：input 本身就是非缓存输入，缓存写取「总量差」与显式列的大者。
+///
+/// 抽成自由函数是为了让计费公式只有一处定义：`cost_for_source` 折算本地价格表
+/// 用它、`equivalent_costs` 折算内置参考价也用它，两边不会算歪。
+pub(crate) fn price_cost(
+    separate: bool,
+    price: &ModelPrice,
+    input_tokens: i64,
+    output_tokens: i64,
+    cache_read_tokens: i64,
+    cache_write_tokens: i64,
+    total_tokens: i64,
+) -> f64 {
+    let cache_write = if separate {
+        (total_tokens - input_tokens - output_tokens - cache_read_tokens)
+            .max(cache_write_tokens)
+            .max(0)
+    } else {
+        cache_write_tokens.max(0)
+    };
+    let non_cache_input = if separate {
+        input_tokens.max(0)
+    } else {
+        (input_tokens - cache_read_tokens - cache_write).max(0)
+    } as f64;
+    (non_cache_input * price.input
+        + output_tokens as f64 * price.output
+        + cache_read_tokens as f64 * price.cache_read
+        + cache_write as f64 * price.cache_write.unwrap_or(price.input))
+        / 1_000_000.0
+}
+
+/// 等价花费：同一组 token 在**调用方指定**的参考模型上的折算价。
+#[derive(Debug, Clone, Serialize)]
+pub struct EquivalentCost {
+    /// 参考表里的模型 id（未命中内置表时不会出现在结果里）
+    pub model_id: String,
+    pub usd: f64,
+    /// 同 USD × 当前汇率，前端按币种偏好直接取用（免去再传汇率）
+    pub cny: f64,
+}
+
+/// 内置参考表里的一个模型（「等价花费」的模型选择器用）。
+#[derive(Debug, Clone, Serialize)]
+pub struct ReferenceModel {
+    pub model_id: String,
+    pub input: f64,
+    pub output: f64,
+    pub cache_read: f64,
+}
+
+/// 参考价表 + 新鲜度（前端据此说明「这些价是哪来的」）。
+#[derive(Debug, Clone, Serialize)]
+pub struct ReferenceTable {
+    /// 可选模型（按输入价降序）
+    pub models: Vec<ReferenceModel>,
+    /// models.dev 在线表最近一次抓取时间（ms）；None = 从未同步成功，
+    /// 当前只有编译期快照 + 本地价格表兜底
+    pub fetched_at: Option<i64>,
+}
+
+/// models.dev 缓存的有效期：超过就由后台线程重新拉一次
+const REFERENCE_MAX_AGE_MS: i64 = 24 * 60 * 60 * 1000;
+
+/// 合并后的参考价表：**编译期快照打底 → models.dev 缓存覆盖 → 本地价格表覆盖**。
+///
+/// 优先级理由：
+/// - 快照保证离线 / 首次启动就有条目（不能因为没网就一条都选不了）；
+/// - models.dev 缓存是**运行时数据**，后台每天刷新一次——新模型发布后自动出现，
+///   不需要发新版，这就是「内置表会过时」的解法；
+/// - 用户自己在价格页配过的价最贴近实际账单（可能是折扣价），优先采信。
+fn reference_usd() -> (BTreeMap<String, ModelPrice>, Option<i64>) {
+    let mut map = load_defaults().usd;
+    let mut fetched_at = None;
+    if let Ok(cache) = load_modelsdev_cache() {
+        if !cache.usd.is_empty() {
+            fetched_at = Some(cache.fetched_at);
+            for (key, price) in cache.usd {
+                merge_price(&mut map, &key, price);
+            }
+        }
+    }
+    if let Ok(user) = load_pricing() {
+        for (key, price) in user.usd {
+            // 用户表里三项全 0 的条目是「还没定价」的占位，不能当成免费参考价
+            if price.input <= 0.0 && price.output <= 0.0 && price.cache_read <= 0.0 {
+                continue;
+            }
+            merge_price(&mut map, &key, price);
+        }
+    }
+    (map, fetched_at)
+}
+
+/// 按 key 写入参考表：大小写 / 点号归一后同名时**覆盖已有条目**而不是并存，
+/// 否则选择器里会出现「GLM-4.6」和「glm-4.6」两条同一个模型。
+fn merge_price(map: &mut BTreeMap<String, ModelPrice>, key: &str, price: ModelPrice) {
+    if map.contains_key(key) {
+        map.insert(key.to_string(), price);
+        return;
+    }
+    let target = normalize_dots(&key.to_lowercase());
+    let existing = map
+        .keys()
+        .find(|candidate| normalize_dots(&candidate.to_lowercase()) == target)
+        .cloned();
+    match existing {
+        Some(existing) => {
+            map.insert(existing, price);
+        }
+        None => {
+            map.insert(key.to_string(), price);
+        }
+    }
+}
+
+/// 在参考表里查单价：复用 `model_id_candidates`（原始 → 去 provider 前缀）与
+/// 点号归一兜底，与 `cost_for_source` 的查找口径一致——否则「CLAUDE-SONNET-4.5」
+/// 这类写法在参考表里永远查不到。
+fn reference_price<'a>(
+    map: &'a BTreeMap<String, ModelPrice>,
+    model_id: &str,
+) -> Option<&'a ModelPrice> {
+    for candidate in model_id_candidates(model_id) {
+        if let Some(price) = map.get(candidate) {
+            return Some(price);
+        }
+        let target = normalize_dots(&candidate.to_lowercase());
+        if let Some((_, price)) = map
+            .iter()
+            .find(|(key, _)| normalize_dots(&key.to_lowercase()) == target)
+        {
+            return Some(price);
+        }
+    }
+    None
+}
+
+/// 参考表全量模型（选择器用）：按输入价降序，同价按 id 稳定排序。
+///
+/// 刻意**不内置任何「推荐模型」清单**：谁值得对比由调用方决定——日志页拿
+/// 当前范围内最常用的模型作默认，用户也可从这张表里改选。
+pub fn reference_table() -> ReferenceTable {
+    let (map, fetched_at) = reference_usd();
+    let mut models: Vec<ReferenceModel> = map
+        .into_iter()
+        .map(|(model_id, price)| ReferenceModel {
+            model_id,
+            input: price.input,
+            output: price.output,
+            cache_read: price.cache_read,
+        })
+        .collect();
+    models.sort_by(|a, b| {
+        b.input
+            .partial_cmp(&a.input)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.model_id.cmp(&b.model_id))
+    });
+    ReferenceTable { models, fetched_at }
+}
+
+/// models.dev 参考价后台刷新：启动 3 分钟后首刷，之后每 6 小时检查一次，
+/// 缓存超过 24 小时才真正联网（一次约 5MB JSON）。失败只记日志，下轮再试。
+///
+/// 这条链路让「新模型发布」不再需要发版：模型一旦进入 models.dev 白名单厂商，
+/// 当天下一次刷新就会出现在选择器与折算里；编译期快照退化为离线兜底。
+pub fn spawn_reference_refresher() {
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_secs(180));
+        loop {
+            let stale = load_modelsdev_cache()
+                .map(|cache| {
+                    chrono::Utc::now().timestamp_millis() - cache.fetched_at
+                        > REFERENCE_MAX_AGE_MS
+                })
+                .unwrap_or(true);
+            if stale {
+                match fetch_modelsdev_diff() {
+                    Ok((_, fetched_at, from_cache)) => eprintln!(
+                        "[zbar-pricing] 参考价表刷新完成（{}，fetched_at={fetched_at}）",
+                        if from_cache { "网络失败，沿用缓存" } else { "在线" }
+                    ),
+                    Err(e) => eprintln!("[zbar-pricing] 参考价表后台刷新失败: {e}"),
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_secs(6 * 60 * 60));
+        }
+    });
+}
+
+/// 一组 token 在指定参考模型上的折算价（估算用，不参与任何计费）。
+///
+/// `model_ids` 由前端给：不在内置参考表里的 id **直接跳过**，绝不返回 0 值占位
+/// （那会被误读成「免费」）；重复 id 只算一次，结果顺序跟随入参。
+pub fn equivalent_costs(
+    model_ids: &[String],
+    separate: bool,
+    input_tokens: i64,
+    output_tokens: i64,
+    cache_read_tokens: i64,
+    cache_write_tokens: i64,
+    total_tokens: i64,
+    fx: f64,
+) -> Vec<EquivalentCost> {
+    let (map, _) = reference_usd();
+    let mut out: Vec<EquivalentCost> = Vec::with_capacity(model_ids.len());
+    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    for model_id in model_ids {
+        if !seen.insert(model_id.as_str()) {
+            continue;
+        }
+        let Some(price) = reference_price(&map, model_id) else {
+            continue;
+        };
+        let usd = price_cost(
+            separate,
+            price,
+            input_tokens,
+            output_tokens,
+            cache_read_tokens,
+            cache_write_tokens,
+            total_tokens,
+        );
+        out.push(EquivalentCost {
+            model_id: model_id.clone(),
+            usd,
+            cny: usd * fx,
+        });
+    }
+    out
+}
+
 /// 单条差异（模型级）：判定基准 = 内置表 USD 原始价。
 /// new_models = 参考有、用户未配置；changed = 用户已配但三项不等。
 #[derive(Debug, Clone, Serialize)]
@@ -1646,4 +1884,47 @@ pub fn fetch_modelsdev_diff() -> Result<(PricingDiff, i64, bool), String> {
     let relevant = crate::collect_relevant_models(&user)?;
     let diff = diff_with_reference(&user, &relevant, &ref_usd, MODELSDEV_VERSION);
     Ok((diff, fetched_at, from_cache))
+}
+
+#[cfg(test)]
+mod reference_table_tests {
+    use super::*;
+
+    fn price(input: f64, output: f64, cache_read: f64) -> ModelPrice {
+        ModelPrice {
+            input,
+            output,
+            cache_read,
+            cache_write: None,
+        }
+    }
+
+    /// 大小写 / 点号归一后同名要覆盖：否则选择器里会出现两条同一个模型
+    #[test]
+    fn merge_price_overrides_case_variant() {
+        let mut map = BTreeMap::new();
+        map.insert("glm-4.6".to_string(), price(0.6, 2.2, 0.11));
+        merge_price(&mut map, "GLM-4.6", price(0.5, 2.0, 0.1));
+        assert_eq!(map.len(), 1, "归一后同名应覆盖而不是并存");
+        assert_eq!(map["glm-4.6"].input, 0.5, "后写入的价表优先");
+        merge_price(&mut map, "brand-new-model", price(1.0, 2.0, 0.1));
+        assert_eq!(map.len(), 2, "真正的新模型正常追加");
+    }
+
+    /// 查找口径要与计费一致：带 provider 前缀、点号写法都要能命中
+    #[test]
+    fn reference_price_matches_prefixed_and_dotted_ids() {
+        let mut map = BTreeMap::new();
+        map.insert("claude-sonnet-4-5".to_string(), price(3.0, 15.0, 0.3));
+        assert!(reference_price(&map, "claude-sonnet-4-5").is_some());
+        assert!(
+            reference_price(&map, "anthropic/claude-sonnet-4.5").is_some(),
+            "去前缀 + 点号归一后应命中"
+        );
+        assert!(
+            reference_price(&map, "CLAUDE-SONNET-4-5").is_some(),
+            "大小写不敏感"
+        );
+        assert!(reference_price(&map, "unknown-model").is_none());
+    }
 }
