@@ -242,6 +242,8 @@ export interface NotifyItem {
   body: string;
   time: number;
   read: boolean;
+  /** 来源进程名（小写，可能为空），点消息时优先用它定位应用 */
+  exe: string;
 }
 
 export interface NotifyState {

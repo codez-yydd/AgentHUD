@@ -1854,10 +1854,24 @@ html.island-preview .island::after {
   display: flex;
   align-items: flex-start;
   gap: 8px;
+  width: 100%;
   padding: 8px 4px;
+  border: 0;
   border-bottom: 1px solid var(--hairline);
   position: relative;
   border-radius: 8px;
+  /* 整行是 <button>：清掉浏览器默认外观，点击打开来源应用 */
+  appearance: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.message-item:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
 }
 
 .message-item:hover {

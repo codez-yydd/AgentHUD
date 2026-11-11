@@ -22,6 +22,7 @@ import {
   markNotifyRead,
   onEvent,
   openMainWindow,
+  openNotifyApp,
   openNotifySettings,
   openPath,
   openSystemSettings,
@@ -889,6 +890,11 @@ export default function IslandApp() {
             }}
             onClear={(kind) => {
               void clearNotify(kind).then(setNotify).catch(() => {});
+            }}
+            onOpenItem={(item) => {
+              void openNotifyApp(item.kind, item.exe)
+                .then(setNotify)
+                .catch((e) => showToast(String(e)));
             }}
             onOpenSettings={() => {
               void openNotifySettings().catch(() => showToast("无法打开通知设置"));

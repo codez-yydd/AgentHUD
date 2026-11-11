@@ -3440,10 +3440,11 @@ pub fn run() {
             island::clipboard::island_clipboard,
             island::clipboard::island_clipboard_copy,
             island::clipboard::island_clipboard_clear,
-            // 消息（Windows 通知数据库）
+            // 消息（Windows 通知数据库 + 飞书 / 钉钉通知浮窗）
             island::notify::island_notify,
             island::notify::island_notify_mark_read,
             island::notify::island_notify_clear,
+            island::notify::island_notify_open,
             island::notify::island_notify_open_settings,
             // 截图工作台
             island::screenshot::shot_monitors,

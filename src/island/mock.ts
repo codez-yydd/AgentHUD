@@ -287,6 +287,7 @@ export const mockNotify: NotifyState = {
       body: "",
       time: now - 300_000,
       read: false,
+      exe: "weixin.exe",
     },
     {
       id: 3,
@@ -296,6 +297,7 @@ export const mockNotify: NotifyState = {
       body: "[AgentHUD] New issue #128: HUD island request",
       time: now - 1_200_000,
       read: false,
+      exe: "olk.exe",
     },
     {
       id: 2,
@@ -305,6 +307,7 @@ export const mockNotify: NotifyState = {
       body: "v1.8.1 已发布到 Windows / macOS",
       time: now - 3_600_000,
       read: true,
+      exe: "feishu.exe",
     },
     {
       id: 1,
@@ -314,6 +317,7 @@ export const mockNotify: NotifyState = {
       body: "",
       time: now - 7_200_000,
       read: true,
+      exe: "qq.exe",
     },
   ],
 };

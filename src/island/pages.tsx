@@ -9,6 +9,7 @@ import type {
   IslandConfig,
   LyricsState,
   MediaState,
+  NotifyItem,
   NotifyState,
   StockMinute,
   StocksState,
@@ -395,11 +396,13 @@ export function MessagesPage({
   notify,
   onMarkRead,
   onClear,
+  onOpenItem,
   onOpenSettings,
 }: {
   notify: NotifyState;
   onMarkRead: () => void;
   onClear: (kind?: string) => void;
+  onOpenItem: (item: NotifyItem) => void;
   onOpenSettings: () => void;
 }) {
   const now = useNow();
@@ -425,7 +428,7 @@ export function MessagesPage({
     <div className="page messages-page">
       <SectionHead
         title="消息"
-        hint={`${notify.unread} 条未读 · 只读取 Windows 系统通知`}
+        hint={`${notify.unread} 条未读 · 系统通知 + 飞书 / 钉钉浮窗`}
         action={
           <div className="head-actions">
             <button type="button" className="mini-text-btn" onClick={onMarkRead}>
@@ -465,12 +468,18 @@ export function MessagesPage({
       </div>
       <div className="message-list">
         {visible.length === 0 ? (
-          <EmptyState icon="message" title="没有新消息" hint="QQ / 微信 / 邮件 / 飞书 / 钉钉的系统通知会出现在这里" />
+          <EmptyState icon="message" title="没有新消息" hint="QQ / 微信 / 邮件读系统通知，飞书 / 钉钉读右下角通知浮窗" />
         ) : (
           visible.map((item) => {
             const meta = MODULE_META[item.kind] ?? { label: item.name, icon: "message" as IconName, tone: "#8fa3c8" };
             return (
-              <div key={item.id} className={`message-item ${item.read ? "read" : "unread"}`}>
+              <button
+                key={item.id}
+                type="button"
+                className={`message-item ${item.read ? "read" : "unread"}`}
+                onClick={() => onOpenItem(item)}
+                title={`打开${item.name}`}
+              >
                 <span className="message-icon" style={{ background: `${meta.tone}20`, color: meta.tone }}>
                   <Icon name={meta.icon} size={16} />
                 </span>
@@ -483,7 +492,7 @@ export function MessagesPage({
                   <div className="message-body">{item.body || "新消息"}</div>
                 </div>
                 {!item.read ? <span className="unread-dot" /> : null}
-              </div>
+              </button>
             );
           })
         )}

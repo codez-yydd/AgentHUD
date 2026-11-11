@@ -370,6 +370,11 @@ export async function clearNotify(kind?: string): Promise<NotifyState> {
   return invoke<NotifyState>("island_notify_clear", { kind: kind ?? null });
 }
 
+export async function openNotifyApp(kind: string, exe?: string): Promise<NotifyState> {
+  if (!IS_TAURI) return delay(clone(mockNotify), 20);
+  return invoke<NotifyState>("island_notify_open", { kind, exe: exe || null });
+}
+
 export async function openNotifySettings(): Promise<void> {
   if (!IS_TAURI) return delay(undefined, 20);
   return invoke("island_notify_open_settings");
