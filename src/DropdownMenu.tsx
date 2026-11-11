@@ -71,10 +71,13 @@ interface DropdownMenuProps {
   /** 弹层水平贴边：start（默认）左缘对齐触发器；end 右缘对齐
    *  （触发器靠面板右端时用，避免弹层探出面板被裁） */
   align?: "start" | "end";
+  /** 紧凑触发器（26px 高、更小字号）：面板顶栏的设备筛选胶囊用，
+   *  与同行的分段控件等高；默认 false 保持既有 32px 观感 */
+  compact?: boolean;
 }
 
 /** 下拉箭头（展开时旋转 180°，由 Tailwind 过渡类驱动） */
-function CaretIcon({ open }: { open: boolean }) {
+function CaretIcon({ open, compact = false }: { open: boolean; compact?: boolean }) {
   return (
     <svg
       viewBox="0 0 24 24"
@@ -84,7 +87,9 @@ function CaretIcon({ open }: { open: boolean }) {
       strokeLinecap="round"
       strokeLinejoin="round"
       aria-hidden
-      className={`h-3.5 w-3.5 shrink-0 text-slate-500 transition-transform ${
+      className={`${
+        compact ? "h-2.5 w-2.5" : "h-3.5 w-3.5"
+      } shrink-0 text-slate-500 transition-transform ${
         open ? "rotate-180" : ""
       }`}
     >
@@ -122,6 +127,7 @@ export function DropdownMenu({
   active = false,
   className = "",
   align = "start",
+  compact = false,
 }: DropdownMenuProps) {
   const [open, setOpen] = useState(false);
   // 弹层展开方向：down 正常向下；up 下方空间不足时翻到触发器上方
@@ -250,11 +256,17 @@ export function DropdownMenu({
         // （对齐 .db-range-trigger--active 的三段色值 sky-600/55、sky-600/8，
         //  两态类同属性互斥，必须三元切换而不能叠加）；hover 灰底在激活态
         // 依然生效（瞬时反馈覆盖激活浅底，与 CustomRangeMenu 的 CSS 同款行为）
-        className={`inline-flex w-full items-center gap-1.5 h-8 px-2.5 rounded-lg border ${
-          active
-            ? "border-sky-600/55 bg-sky-600/8"
-            : "border-slate-900/10 bg-slate-900/5"
-        } text-[11px] text-left cursor-pointer select-none transition-colors hover:bg-slate-900/10 disabled:opacity-40 disabled:cursor-not-allowed focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-600`}
+        className={
+          compact
+            ? // 紧凑态：与面板顶栏的 p-seg / p-chip-btn 同高同圆角，无边框、
+              // 同款浅色底，视觉上并入筛选行
+              `inline-flex w-full items-center gap-1 h-[26px] px-2 rounded-[9px] bg-slate-900/5 text-[9.5px] font-medium text-left cursor-pointer select-none transition-colors hover:bg-slate-900/10 disabled:opacity-40 disabled:cursor-not-allowed focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-600`
+            : `inline-flex w-full items-center gap-1.5 h-8 px-2.5 rounded-lg border ${
+                active
+                  ? "border-sky-600/55 bg-sky-600/8"
+                  : "border-slate-900/10 bg-slate-900/5"
+              } text-[11px] text-left cursor-pointer select-none transition-colors hover:bg-slate-900/10 disabled:opacity-40 disabled:cursor-not-allowed focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-600`
+        }
         aria-haspopup="listbox"
         aria-expanded={open}
         // 有可见 label 时由「label + 当前值」拼出可访问名（把选中项也读出来）；
@@ -271,13 +283,13 @@ export function DropdownMenu({
         {/* 当前选中项文案：设备名可能较长，单行省略（宽上限与原有下拉一致）；
             激活态换主色文字（暗色下 --color-sky-600 翻亮蓝，与勾选/焦点同源） */}
         <span
-          className={`min-w-0 flex-1 max-w-[220px] truncate text-left ${
-            active ? "text-sky-600" : "text-slate-900"
-          }`}
+          className={`min-w-0 flex-1 truncate text-left ${
+            compact ? "max-w-[64px]" : "max-w-[220px]"
+          } ${active ? "text-sky-600" : "text-slate-900"}`}
         >
           {selectedLabel}
         </span>
-        <CaretIcon open={open} />
+        <CaretIcon open={open} compact={compact} />
       </button>
       {open && (
         <div

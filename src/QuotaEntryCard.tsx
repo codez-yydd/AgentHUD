@@ -14,7 +14,7 @@ import { useDataCache } from "./DataCache";
 import type { ProviderQuotaEntry } from "./types";
 import { resetProviderCredentials } from "./api";
 import { notifyCredentialsChanged } from "./agentVisibility";
-import { ProgressBar, remainingGradient, remainingTextColor } from "./widgets";
+import { remainingGradient, remainingTextColor } from "./widgets";
 import { formatCountdownCore, formatResetStamp } from "./format";
 
 /** 凭证状态 → 徽章文案与配色（ok 为正常态，不渲染徽章） */
@@ -415,37 +415,52 @@ function QuotaWindowBar({
         })
       : "";
 
+  const resetText =
+    resetsAt != null && resetsAt > now
+      ? [
+          resetDisplay.countdown
+            ? `↻ ${formatCountdownCore(resetsAt - now)}`
+            : "",
+          resetDisplay.datetime ? formatResetStamp(resetsAt) : "",
+        ]
+          .filter(Boolean)
+          .join(" · ")
+      : "";
+
   return (
     <div>
-      <div className="flex items-center justify-between gap-2 mb-0.5">
-        <span className="text-[9px] text-slate-600/70">{title}</span>
+      <div className="p-quota">
+        <span className="p-quota__label" title={title}>
+          {title}
+        </span>
+        {hasBar && (
+          <div className="p-quota__track">
+            <div
+              className="p-quota__fill"
+              style={{
+                width: `${remain}%`,
+                background: remainingGradient(remain),
+              }}
+            />
+          </div>
+        )}
+        {resetText && (
+          <span className="p-quota__reset" title={resetText}>
+            {resetText}
+          </span>
+        )}
         {numText && (
           <span
-            className="num text-[10px] font-semibold shrink-0"
+            className="p-quota__pct num"
             style={{ color: remainingTextColor(remain) }}
+            title={numText}
           >
-            {numText}
+            {hasBar ? `${Math.round(remain)}%` : numText}
           </span>
         )}
       </div>
-      {hasBar && (
-        <ProgressBar pct={remain / 100} gradient={remainingGradient(remain)} />
-      )}
-      {/* 绝对值行：已用 / 总量（与右侧「剩 X%」互为补充，语义在文案里写明） */}
-      {absText && (
-        <div className="num text-[8px] text-slate-500/70 mt-0.5">{absText}</div>
-      )}
-      {/* 重置时间：倒计时 / 具体时间点（两项可同时开，跟随设置页偏好） */}
-      {resetsAt != null && resetsAt > now && (
-        <div className="num text-[8px] text-slate-500/70 mt-0.5">
-          {resetDisplay.countdown &&
-            t("common.refreshIn", {
-              time: formatCountdownCore(resetsAt - now),
-            })}
-          {resetDisplay.countdown && resetDisplay.datetime && " · "}
-          {resetDisplay.datetime && formatResetStamp(resetsAt)}
-        </div>
-      )}
+      {/* 绝对值行：已用 / 总量（与「剩 X%」互为补充，语义在文案里写明） */}
+      {absText && <div className="p-quota-meta">{absText}</div>}
     </div>
   );
 }

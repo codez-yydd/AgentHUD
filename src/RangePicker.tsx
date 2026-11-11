@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import type { RangePreset } from "./types";
 import { dateStr, rangeToMs } from "./format";
 import { DatePicker } from "./DatePicker";
@@ -10,6 +10,8 @@ interface Props {
   /** 可选：from 下限（如数据保留期），不传则不限 */
   min?: string;
   onChange: (preset: RangePreset, custom: { from: string; to: string }) => void;
+  /** 同一行右侧的附加控件（悬浮面板放设备筛选小胶囊），不传则只渲染分段控件 */
+  trailing?: ReactNode;
 }
 
 // 模式 A：常量表存词典键，渲染时查（label 跟随 UI 语言）
@@ -21,29 +23,55 @@ const PRESETS: { value: RangePreset; labelKey: MessageKey }[] = [
   { value: "custom", labelKey: "range.custom" },
 ];
 
-export function RangePicker({ preset, custom, min, onChange }: Props) {
+/**
+ * 时间范围分段控件（悬浮面板 / 主窗口共用观感语言）。
+ *
+ * 选中态用一枚滑动的「胶囊滑块」（p-seg__thumb）而不是给按钮本身刷底色：
+ * 滑块是绝对定位的单个元素，宽度 = 1/N、transform 按索引步进，切换时有一段
+ * 位移过渡，视觉上比逐个按钮换色更连贯；按钮只负责文字颜色与命中区。
+ * `trailing` 让设备筛选胶囊与分段控件同行（面板只有 300px 宽，单独一行会
+ * 白吃 30px 高度）。
+ */
+export function RangePicker({ preset, custom, min, onChange, trailing }: Props) {
   const [showCustom, setShowCustom] = useState(preset === "custom");
   const { t } = useI18n();
+  const index = Math.max(
+    0,
+    PRESETS.findIndex((p) => p.value === preset)
+  );
 
   return (
-    <div className="panel-range space-y-2">
-      <div className="panel-range__presets flex gap-1 p-0.5 rounded-xl bg-slate-900/4">
-        {PRESETS.map((p) => (
-          <button
-            key={p.value}
-            onClick={() => {
-              onChange(p.value, custom);
-              setShowCustom(p.value === "custom");
+    <div className="panel-range flex flex-col gap-2">
+      <div className="p-row">
+        <div
+          className="p-seg"
+          role="group"
+          aria-label={t("dashboard.overview.rangeLabel")}
+        >
+          <span
+            className="p-seg__thumb"
+            aria-hidden
+            style={{
+              width: `calc((100% - 4px) / ${PRESETS.length})`,
+              transform: `translateX(${index * 100}%)`,
             }}
-            className={`flex-1 px-1.5 py-1 rounded-lg text-[10px] font-medium transition-all duration-150 ${
-              preset === p.value
-                ? "bg-sky-500 text-white shadow-sm"
-                : "text-slate-600/70 hover:text-slate-800 hover:bg-slate-900/5"
-            }`}
-          >
-            {t(p.labelKey)}
-          </button>
-        ))}
+          />
+          {PRESETS.map((p) => (
+            <button
+              key={p.value}
+              type="button"
+              aria-pressed={preset === p.value}
+              onClick={() => {
+                onChange(p.value, custom);
+                setShowCustom(p.value === "custom");
+              }}
+              className="p-seg__item"
+            >
+              {t(p.labelKey)}
+            </button>
+          ))}
+        </div>
+        {trailing}
       </div>
       {showCustom && (
         <div className="flex items-center gap-1.5 text-[11px]">

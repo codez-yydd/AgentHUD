@@ -19,7 +19,14 @@ import {
  * ============================================================ */
 
 /** 主题快捷切换（主界面 / 子页面顶栏一键切换亮暗色） */
-export function ThemeToggle({ className = "toolbar-btn" }: { className?: string }) {
+export function ThemeToggle({
+  className = "toolbar-btn",
+  accent = true,
+}: {
+  className?: string;
+  /** 暗色下是否把图标染成琥珀色（面板顶栏用中性色，与相邻图标一致） */
+  accent?: boolean;
+}) {
   const [theme, setTheme] = useState<Theme>(() => loadTheme());
   const { t } = useI18n();
 
@@ -50,7 +57,9 @@ export function ThemeToggle({ className = "toolbar-btn" }: { className?: string 
     <button
       type="button"
       onClick={() => setTheme((t) => flipTheme(t))}
-      className={`${className} ${theme === "dark" ? "text-amber-500!" : ""}`}
+      className={`${className} ${
+        accent && theme === "dark" ? "text-amber-500!" : ""
+      }`}
       title={theme === "dark" ? t("layout.themeLight") : t("layout.themeDark")}
       aria-label={theme === "dark" ? t("layout.themeLight") : t("layout.themeDark")}
     >
@@ -244,7 +253,10 @@ export function SectionCard({
   );
 }
 
-/** 英雄指标卡：大数字 + 副指标（参考 DeepSeek 余额卡） */
+/** 英雄指标卡：大数字 + 副指标。
+ *
+ * 观感与汇总页的新英雄卡同源（.p-hero）：中性卡片 + 品牌色只出现在顶部
+ * 径向光晕与大数字上；不再整卡铺一层品牌渐变，暗色下也不会发灰。 */
 export function HeroMetric({
   label,
   value,
@@ -259,27 +271,13 @@ export function HeroMetric({
   accent?: "sky" | "emerald" | "orange" | "violet" | "indigo";
   badge?: ReactNode;
   footer?: ReactNode;
-  /** 接入统一卡片外框（汇总页「合计花费」可调高度 / 折叠 / 排序） */
+  /** 接入统一卡片外框（可调高度 / 折叠 / 排序） */
   card?: CardFrameRef;
   cardSummary?: ReactNode;
 }) {
-  const accentMap = {
-    sky: "hero-sky",
-    emerald: "hero-emerald",
-    orange: "hero-orange",
-    violet: "hero-violet",
-    indigo: "hero-indigo",
-  };
-  const valueColor = {
-    sky: "text-sky-600",
-    emerald: "text-emerald-600",
-    orange: "text-orange-600",
-    violet: "text-violet-600",
-    indigo: "text-indigo-600",
-  };
   const head = (controls?: ReactNode) => (
-    <div className="flex items-center justify-between gap-1 mb-1.5">
-      <span className="section-title">{label}</span>
+    <div className="p-hero__head">
+      <span className="p-eyebrow">{label}</span>
       <div className="flex items-center gap-1 shrink-0">
         {badge}
         {controls}
@@ -288,42 +286,31 @@ export function HeroMetric({
   );
   const body = (
     <>
-      {/* 大号数值（26px）单行截断：260px 窄窗 + 1.25 字号档下长金额（如
-          「约 ¥123,456.78」）不折行顶破英雄卡；完整值由 title 悬浮兜底 */}
-      <div
-        className={`num text-[26px] font-bold leading-none tracking-tight truncate ${valueColor[accent]}`}
-        title={value}
-      >
+      {/* 大号数值单行截断：260px 窄窗 + 大字号档下长金额不折行顶破卡片；
+          完整值由 title 悬浮兜底 */}
+      <div className="p-hero__value num" title={value}>
         {value}
       </div>
-      {footer && (
-        <div className="mt-2.5 pt-2 border-t border-current/8 opacity-80">
-          {footer}
-        </div>
-      )}
+      {footer && <div className="p-hero__foot p-hero__foot--stack">{footer}</div>}
     </>
   );
+  const cls = `p-hero p-hero--brand p-hero--${accent}`;
   if (card) {
     return (
-      <CardFrame
-        frame={card}
-        className={`${accentMap[accent]} rounded-2xl px-3.5 py-3`}
-        summary={cardSummary}
-        head={head}
-      >
+      <CardFrame frame={card} className={cls} summary={cardSummary} head={head}>
         {body}
       </CardFrame>
     );
   }
   return (
-    <div className={`${accentMap[accent]} rounded-2xl px-3.5 py-3`}>
+    <div className={cls}>
       {head()}
       {body}
     </div>
   );
 }
 
-/** 胶囊切换组 */
+/** 胶囊切换组（与面板分段控件同款玻璃底 + 白色滑块） */
 export function PillGroup({
   children,
   className = "",
@@ -331,11 +318,7 @@ export function PillGroup({
   children: ReactNode;
   className?: string;
 }) {
-  return (
-    <div className={`flex gap-1 p-0.5 rounded-xl bg-slate-900/4 ${className}`}>
-      {children}
-    </div>
-  );
+  return <div className={`p-pillgroup ${className}`}>{children}</div>;
 }
 
 export function PillButton({
@@ -355,48 +338,36 @@ export function PillButton({
     <button
       onClick={onClick}
       disabled={disabled}
-      className={`flex-1 px-2 py-1 rounded-lg text-[10px] font-medium transition-all duration-150 disabled:opacity-40 ${
-        active
-          ? "bg-sky-500 text-white shadow-sm"
-          : "text-slate-600/70 hover:text-slate-800 hover:bg-slate-900/5"
-      } ${className}`}
+      aria-pressed={active}
+      className={`p-pill ${active ? "is-active" : ""} ${className}`}
     >
       {children}
     </button>
   );
 }
 
-/** 排序/筛选切换（小尺寸） */
+/** 排序/筛选切换（小尺寸）：与面板分段控件同一套观感（浅底 + 白色滑块），
+ *  只是压到 16px 高，塞得进卡片标题行。 */
 export function SortToggle<T extends string>({
   options,
   value,
   onChange,
-  accent = "sky",
 }: {
   options: { key: T; label: string }[];
   value: T;
   onChange: (v: T) => void;
+  /** 兼容旧调用方的强调色参数（新版观感不再按品牌染色，占位保留） */
   accent?: "sky" | "emerald" | "orange" | "violet" | "indigo" | "teal";
 }) {
-  const activeClass = {
-    sky: "bg-sky-500/15 text-sky-700 font-medium",
-    emerald: "bg-emerald-500/15 text-emerald-700 font-medium",
-    orange: "bg-orange-500/15 text-orange-700 font-medium",
-    violet: "bg-violet-500/15 text-violet-700 font-medium",
-    indigo: "bg-indigo-500/15 text-indigo-700 font-medium",
-    teal: "bg-teal-500/15 text-teal-700 font-medium",
-  };
   return (
-    <div className="flex gap-0.5 p-0.5 rounded-lg bg-slate-900/4">
+    <div className="p-sort">
       {options.map((opt) => (
         <button
           key={opt.key}
           onClick={() => onChange(opt.key)}
-          className={`px-1.5 py-0.5 rounded-md text-[9px] transition-all duration-150 ${
-            value === opt.key
-              ? activeClass[accent]
-              : "text-slate-500 hover:text-slate-700"
-          }`}
+          type="button"
+          aria-pressed={value === opt.key}
+          className="p-sort__item"
         >
           {opt.label}
         </button>
@@ -537,7 +508,7 @@ export function InputBox({
   );
 }
 
-/** 双栏副指标（英雄卡底部用） */
+/** 双栏副指标（英雄卡底部用）：小标签 + 等宽数字，与新卡片系统一致 */
 export function MetricPair({
   left,
   right,
@@ -548,16 +519,16 @@ export function MetricPair({
   return (
     <div className="grid grid-cols-2 gap-3">
       <div className="min-w-0">
-        <div className="text-[9px] text-slate-500 truncate">{left.label}</div>
+        <div className="p-label truncate">{left.label}</div>
         <div
-          className="num text-[13px] font-semibold text-slate-800 mt-0.5 truncate"
+          className="num mt-0.5 text-[13px] font-semibold text-slate-900 truncate"
           title={left.value}
         >
           {left.value}
         </div>
       </div>
       <div className="min-w-0">
-        <div className="text-[9px] text-slate-500 truncate">{right.label}</div>
+        <div className="p-label truncate">{right.label}</div>
         {/* 右侧值是 ReactNode：字符串（百分比/请求数）加截断保护，组件
             （如占比条）原样渲染，避免把弹性条截成固定宽 */}
         <div className="mt-1 min-w-0">

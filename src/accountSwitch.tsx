@@ -142,7 +142,7 @@ export function SwitchAccountButton({
     <button
       onClick={onClick}
       disabled={disabled}
-      className="shrink-0 text-[9px] px-1.5 py-0.5 rounded bg-sky-500/10 text-sky-700/80 hover:bg-sky-500/20 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+      className="p-mini-btn disabled:opacity-40 disabled:cursor-not-allowed"
     >
       {t("settings.accountsSwitch")}
     </button>

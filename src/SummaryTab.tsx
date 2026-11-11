@@ -29,13 +29,12 @@ import {
   type FoldedModelStat,
 } from "./modelName";
 import {
-  ProgressBar,
   TrendChart,
   remainingGradient,
   remainingTextColor,
 } from "./widgets";
 import { useDataCache } from "./DataCache";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { useI18n } from "./i18n";
 import { ModelUsageExportModal } from "./ModelUsageExport";
 import type { AgentId, AgentVisibility } from "./agentVisibility";
@@ -43,18 +42,14 @@ import { AGENT_COLOR } from "./agentVisibility";
 import { useResetDisplay } from "./resetDisplay";
 import { BrandIcon, type BrandIconName } from "./BrandIcon";
 import { QuotaEntryCard } from "./QuotaEntryCard";
+import { CardFrame } from "./cardFrame";
+import { LAYOUT_EDIT_REQUEST_EVENT } from "./layoutEditor";
 import {
   SwitchAccountButton,
   SwitchConfirmOverlay,
   useAccountSwitch,
 } from "./accountSwitch";
-import {
-  HeroMetric,
-  MetricPair,
-  SectionCard,
-  SortToggle,
-  StatusBadge,
-} from "./layout";
+import { SectionCard, SortToggle } from "./layout";
 import {
   LayoutEditorBar,
   LayoutEntryButton,
@@ -160,7 +155,11 @@ interface AgentSummary {
   cycleResetDate?: string | null;
 }
 
-/** Agent 花费卡片：品牌图标 + Token 大数字 + 花费进度条 */
+/** 来源花费卡：品牌图标 + Token + 花费 + 占比条。
+ *
+ * 视觉走面板新卡片系统（.p-agent）：中性底 + 品牌色只出现在图标底、角标、
+ * 占比条上，比整卡铺一层品牌淡色更安静；右上是花费、第二行是 Token，扫视
+ * 顺序与「花了多少 → 用了多少」一致。 */
 function AgentCostCard({
   agent,
   currency,
@@ -204,7 +203,7 @@ function AgentCostCard({
   // 被挤宽——truncate 单行省略，完整文案 + TTFT 提示由 title 悬浮兜底。
   const speedText =
     agent.avgTps != null
-      ? `⚡ ${speedLocal ? t("common.avgSpeedLocal") : t("common.avgSpeed")} ` +
+      ? `${speedLocal ? t("common.avgSpeedLocal") : t("common.avgSpeed")} ` +
         `${agent.speedQuality === "request_average" ? "≈" : ""}${formatTps(agent.avgTps)} t/s`
       : null;
   const speedTitle =
@@ -213,98 +212,100 @@ function AgentCostCard({
       : agent.avgTtftMs != null
         ? `${speedText} · ${t("common.ttft")} ${formatMs(agent.avgTtftMs)}`
         : speedText;
+  const cacheText =
+    agent.cacheHitPct != null && agent.cacheHitPct > 0
+      ? t("common.cacheHit", { pct: `${Math.round(agent.cacheHitPct)}%` })
+      : null;
+  const costText = formatCost(agent.cost, currency);
+  const tokenText = formatTokens(agent.tokens);
 
   return (
     <div
-      className="rounded-xl px-2.5 py-2 border shrink-0"
-      style={{
-        background: agent.tintBg,
-        borderColor: `${agent.color}22`,
-      }}
+      className="p-agent"
+      style={{ "--accent": agent.color } as CSSProperties}
     >
-      <div className="flex items-start gap-2">
-        {/* 左侧：图标 + 名称 + Token */}
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-1.5 mb-1">
-            {brand && (
-              <span style={{ color: agent.color }}>
-                <BrandIcon brand={brand} className="h-3.5 w-3.5 shrink-0" />
+      <span className="p-agent__icon" aria-hidden>
+        {brand && <BrandIcon brand={brand} className="h-3.5 w-3.5" />}
+      </span>
+      <div className="p-agent__body">
+        <div className="p-agent__top">
+          <span className="p-agent__name" title={agent.name}>
+            {agent.name}
+          </span>
+          {agent.badge && <span className="p-tag">{agent.badge}</span>}
+          <span className="p-agent__cost num" title={costText}>
+            {costText}
+          </span>
+        </div>
+        <div className="p-agent__mid">
+          <span className="p-agent__tokens num" title={tokenText}>
+            {tokenText}
+          </span>
+          <span className="p-agent__unit">Token</span>
+          <span className="p-agent__share num">
+            {Math.round(costPct * 100)}%
+          </span>
+        </div>
+        <div className="p-agent__bar">
+          <div
+            className="p-agent__fill"
+            style={{
+              width: `${Math.max(costPct * 100, agent.cost > 0 ? 4 : 0)}%`,
+            }}
+          />
+        </div>
+        {(cacheText || speedText) && (
+          <div className="p-chips">
+            {cacheText && <span className="p-chip">{cacheText}</span>}
+            {speedText && (
+              <span className="p-chip" title={speedTitle}>
+                ⚡ {speedText}
               </span>
             )}
-            <span className={`text-[11px] font-semibold ${agent.nameClass}`}>
-              {agent.name}
-            </span>
-            {agent.badge && (
-              <span
-                className={`shrink-0 px-1 py-px rounded text-[8px] font-medium ${agent.badgeClass}`}
-              >
-                {agent.badge}
-              </span>
-            )}
           </div>
-          <div className="num text-[15px] font-bold text-slate-900 leading-none">
-            {formatTokens(agent.tokens)}
-          </div>
-          {agent.cacheHitPct != null && agent.cacheHitPct > 0 && (
-            <div
-              className="text-[9px] font-medium mt-0.5"
-              style={{ color: agent.color }}
-            >
-              {t("common.cacheHit", { pct: `${Math.round(agent.cacheHitPct)}%` })}
-            </div>
-          )}
-          {speedText && (
-            <div
-              className="num text-[9px] font-medium mt-0.5 truncate"
-              style={{ color: agent.color }}
-              title={speedTitle}
-            >
-              {speedText}
-            </div>
-          )}
-        </div>
-        {/* 右侧：花费 + 占比条 */}
-        <div className="w-[72px] shrink-0 pt-0.5">
-          <div className="num text-[12px] font-semibold text-slate-800 text-right mb-1">
-            {formatCost(agent.cost, currency)}
-          </div>
-          <div className="h-1.5 rounded-full bg-slate-900/8 overflow-hidden">
-            <div
-              className="h-full rounded-full transition-all duration-500"
-              style={{
-                width: `${Math.max(costPct * 100, agent.cost > 0 ? 4 : 0)}%`,
-                background: `linear-gradient(90deg, ${agent.color}cc, ${agent.color})`,
-              }}
-            />
-          </div>
-        </div>
+        )}
       </div>
     </div>
   );
 }
 
-/** 花费占比条：用 gradient 硬切色段，避免 flex/width 舍入露出底色 */
-function CompositionBar({ agents }: { agents: AgentSummary[] }) {
+/** 花费分布条：按来源花费比例切段（flex-grow = 花费），段间留 2px 缝隙。 */
+function CostBar({ agents }: { agents: AgentSummary[] }) {
   const total = agents.reduce((s, a) => s + a.cost, 0);
-  if (total <= 0) {
-    return <div className="h-1.5 rounded-full bg-slate-900/8" />;
-  }
-
-  let acc = 0;
-  const stops: string[] = [];
-  for (const a of agents) {
-    if (a.cost <= 0) continue;
-    const start = (acc / total) * 100;
-    acc += a.cost;
-    const end = (acc / total) * 100;
-    stops.push(`${a.color} ${start}%`, `${a.color} ${end}%`);
-  }
-
+  if (total <= 0) return <div className="p-dist" aria-hidden />;
   return (
-    <div
-      className="h-1.5 rounded-full"
-      style={{ background: `linear-gradient(90deg, ${stops.join(", ")})` }}
-    />
+    <div className="p-dist">
+      {agents
+        .filter((a) => a.cost > 0)
+        .sort((a, b) => b.cost - a.cost)
+        .map((a) => (
+          <i
+            key={a.id}
+            style={{ flex: a.cost, background: a.color }}
+            title={`${a.name} ${Math.round((a.cost / total) * 100)}%`}
+          />
+        ))}
+    </div>
+  );
+}
+
+/** 花费图例：列出花费最高的三个来源，其余合并成「+N」（整行宽度，窄窗也不换行）。 */
+function CostLegend({ agents }: { agents: AgentSummary[] }) {
+  const total = agents.reduce((s, a) => s + a.cost, 0);
+  const visible = agents
+    .filter((a) => a.cost > 0)
+    .sort((a, b) => b.cost - a.cost);
+  if (total <= 0) return null;
+  return (
+    <div className="p-legend">
+      {visible.slice(0, 3).map((a) => (
+        <span key={a.id} title={a.name}>
+          <b style={{ background: a.color }} />
+          {a.name} {Math.round((a.cost / total) * 100)}%
+        </span>
+      ))}
+      {visible.length > 3 && <span>+{visible.length - 3}</span>}
+    </div>
   );
 }
 
@@ -570,44 +571,58 @@ function QuotaMiniRow({
   const display = useResetDisplay();
   const remain = Math.max(0, 100 - usedPct);
   const showReset = resetAt != null && resetAt > now;
-  // 重置时间三态同行文本：双开「↻ 45m · 08-30 14:37」；truncate 截断时 title 兜底
-  let resetText = "";
-  if (showReset) {
-    if (display.countdown && display.datetime) {
-      resetText = `↻ ${formatCountdownCore(resetAt - now)} · ${formatResetStamp(resetAt)}`;
-    } else if (display.datetime) {
-      resetText = `↻ ${t("common.resetAt", { time: formatResetStamp(resetAt) })}`;
-    } else if (display.countdown) {
-      resetText = `↻ ${formatCountdownCore(resetAt - now)}`;
-    }
-  }
+  // 重置时间三态同行文本：双开「↻ 45m · 08-30 14:37」；窄行放不下时只留
+  // 倒计时（title 里给完整时间），避免把进度条压到看不见
+  const stamp = showReset ? formatResetStamp(resetAt) : "";
+  const countdown = showReset ? formatCountdownCore(resetAt - now) : "";
+  const resetText = !showReset
+    ? ""
+    : display.countdown && display.datetime
+      ? `↻ ${countdown}`
+      : display.datetime
+        ? `↻ ${stamp}`
+        : display.countdown
+          ? `↻ ${countdown}`
+          : "";
+  const deltaText =
+    delta && delta.samples >= 2 && delta.pct > 0
+      ? t("quota.todayDelta", { pct: Math.round(delta.pct) })
+      : null;
+
   return (
-    <div>
-      <div className="flex items-center gap-1 mb-0.5">
-        <span className="text-[9px] text-slate-500 w-10 shrink-0 whitespace-nowrap">{label}</span>
+    <div className="p-quota">
+      <span className="p-quota__label" title={label}>
+        {label}
+      </span>
+      <div className="p-quota__track">
+        <div
+          className="p-quota__fill"
+          style={{
+            width: `${remain}%`,
+            background: remainingGradient(remain),
+          }}
+        />
+      </div>
+      {deltaText && (
+        <span className="p-quota__delta" title={deltaText}>
+          {deltaText}
+        </span>
+      )}
+      {resetText && (
         <span
-          className="num text-[8px] text-slate-400 flex-1 text-right truncate min-w-0"
-          title={display.datetime ? resetText : undefined}
+          className="p-quota__reset"
+          title={display.countdown && display.datetime ? `↻ ${countdown} · ${stamp}` : resetText}
         >
           {resetText}
         </span>
-        <span
-          className="num text-[9px] font-medium text-right shrink-0 whitespace-nowrap"
-          style={{ color: remainingTextColor(remain) }}
-        >
-          {t("common.remaining", { pct: Math.round(remain) })}
-        </span>
-      </div>
-      <ProgressBar
-        pct={remain / 100}
-        height="h-1"
-        gradient={remainingGradient(remain)}
-      />
-      {delta && delta.samples >= 2 && delta.pct > 0 && (
-        <div className="text-[9px] mt-0.5 num text-slate-700/50">
-          {t("quota.todayDelta", { pct: Math.round(delta.pct) })}
-        </div>
       )}
+      <span
+        className="p-quota__pct num"
+        style={{ color: remainingTextColor(remain) }}
+        title={t("common.remaining", { pct: Math.round(remain) })}
+      >
+        {Math.round(remain)}%
+      </span>
     </div>
   );
 }
@@ -643,27 +658,27 @@ function AccountQuotaGroup({
         const q = e.quota;
         return (
           <div key={e.id}>
-            <div className="flex items-center gap-1.5 mb-1 min-w-0">
-              <span className="flex items-center gap-1.5 min-w-0 flex-1">
-                <span className="text-[9px] font-medium text-slate-600 truncate">
-                  {e.display_name}
-                </span>
-                {e.is_current && (
-                  <span className="shrink-0 text-[8px] px-1 py-px rounded-full bg-violet-500/10 text-violet-600">
-                    {t("settings.accountsCurrent")}
-                  </span>
-                )}
-                {q?.level && (
-                  <span className="shrink-0 px-1 py-px rounded text-[8px] font-medium bg-sky-500/12 text-sky-700">
-                    {levelLabel(q.level)}
-                  </span>
-                )}
+            <div className="p-quota-account">
+              <span className="p-quota-account__name" title={e.display_name}>
+                {e.display_name}
               </span>
+              {e.is_current && (
+                <span className="p-tag" style={{ "--accent": "#8b5cf6" } as CSSProperties}>
+                  {t("settings.accountsCurrent")}
+                </span>
+              )}
+              {q?.level && (
+                <span className="p-tag" style={{ "--accent": "#0ea5e9" } as CSSProperties}>
+                  {levelLabel(q.level)}
+                </span>
+              )}
               {!e.is_current && (
-                <SwitchAccountButton
-                  onClick={() => onSwitch(e)}
-                  disabled={switchDisabled}
-                />
+                <span className="ml-auto shrink-0">
+                  <SwitchAccountButton
+                    onClick={() => onSwitch(e)}
+                    disabled={switchDisabled}
+                  />
+                </span>
               )}
             </div>
             {q ? (
@@ -767,6 +782,15 @@ export function SummaryTab({
   const { t } = useI18n();
   const resetDisplay = useResetDisplay();
   const editor = usePageLayoutEditor("panel", "summary");
+  // 头部「更多 → 调整显示」在 StatsPanel 里派发窗口事件；页面挂载时监听并
+  // 打开本页的编辑态（ref 保证监听只注册一次，不受 editor 身份变化影响）
+  const editorRef = useRef(editor);
+  editorRef.current = editor;
+  useEffect(() => {
+    const open = () => editorRef.current.openEditor();
+    window.addEventListener(LAYOUT_EDIT_REQUEST_EVENT, open);
+    return () => window.removeEventListener(LAYOUT_EDIT_REQUEST_EVENT, open);
+  }, []);
   const [exportOpen, setExportOpen] = useState(false);
   const [trendMetric, setTrendMetric] = useState<"cost" | "token">("cost");
   const [sortBy, setSortBy] = useState<"cost" | "token" | "requests">("cost");
@@ -1561,13 +1585,8 @@ export function SummaryTab({
   }));
 
   return (
-    <div className="flex-1 min-h-0 overflow-y-auto px-3 py-2.5 page-stack">
+    <div className="panel-body">
       <PageLayoutEditProvider editor={editor}>
-        {!editor.editing && (
-          <div className="flex justify-end shrink-0" style={{ order: -2 }}>
-            <LayoutEntryButton onClick={editor.openEditor} />
-          </div>
-        )}
         {editor.editing && <LayoutEditorBar editor={editor} />}
 
         {editor.allHidden && !editor.editing && (
@@ -1591,26 +1610,48 @@ export function SummaryTab({
           </div>
         )}
 
-        <HeroMetric
-          label={t("summary.totalCost")}
-          value={formatCost(totalCost, currency)}
-          accent="sky"
-          card={{ window: "panel", page: "summary", id: "summary.hero" }}
-          cardSummary={heroCardSummary}
-          badge={
-            <StatusBadge color="emerald">
-              {t("summary.sources", { count: activeAgents.length })}
-            </StatusBadge>
-          }
-          footer={
-            <MetricPair
-              left={{ label: t("summary.totalTokens"), value: formatTokens(totalTokens) }}
-              /* 花费分布条与总花费/costPct 同口径：传全量来源（不按展示
-                 开关过滤），否则隐藏高花费来源后同屏两处"占比"语义分叉 */
-              right={{ label: t("summary.costDist"), value: <CompositionBar agents={allAgents} /> }}
-            />
-          }
-        />
+        <CardFrame
+          frame={{ window: "panel", page: "summary", id: "summary.hero" }}
+          className="p-hero"
+          summary={heroCardSummary}
+          head={(controls) => (
+            <div className="p-hero__head">
+              <span className="p-eyebrow">{t("summary.totalCost")}</span>
+              <div className="flex items-center gap-1 shrink-0">
+                <span className="p-badge">
+                  <i />
+                  {t("summary.sources", { count: activeAgents.length })}
+                </span>
+                {controls}
+              </div>
+            </div>
+          )}
+        >
+          <div
+            className="p-hero__value num"
+            title={formatCost(totalCost, currency)}
+          >
+            {formatCost(totalCost, currency)}
+          </div>
+          <div className="p-hero__foot">
+            <div className="min-w-0">
+              <div className="p-label">{t("summary.totalTokens")}</div>
+              <div
+                className="p-hero__tokens num"
+                title={formatTokens(totalTokens)}
+              >
+                {formatTokens(totalTokens)}
+              </div>
+            </div>
+            <div className="min-w-0">
+              <div className="p-label">{t("summary.costDist")}</div>
+              {/* 分布条与总花费同口径：传全量来源（不按展示开关过滤），否则
+                  隐藏高花费来源后同屏两处"占比"语义分叉 */}
+              <CostBar agents={allAgents} />
+            </div>
+          </div>
+          <CostLegend agents={allAgents} />
+        </CardFrame>
 
         <SimpleSpeedCard agents={speedAgents} speedLocal={speedLocalLabel} />
         <SimpleUsageCard
@@ -1648,30 +1689,36 @@ export function SummaryTab({
           title={t("summary.quotaMonitor")}
           card={{ window: "panel", page: "summary", id: "summary.quota" }}
           cardSummary={quotaCardSummary}
+          className="p-card--frame"
         >
-          <div className="divide-y divide-slate-900/6 -mx-1">
+          <div>
             {agents.map((a) => (
               <div
                 key={a.id}
-                className={`px-1 py-2 first:pt-0 last:pb-0 ${
+                className={`p-quota-agent ${
                   a.id === "zai" ? "relative" : ""
                 }`}
               >
-                <div className="flex items-center justify-between gap-1 mb-1.5">
-                  <div className="flex items-center gap-1.5 min-w-0 flex-1">
-                    <span className="w-2 h-2 rounded-full shrink-0" style={{ background: a.color }} />
+                <div className="p-quota-agent__head">
+                  <span
+                    className="p-quota-agent__dot"
+                    style={{ background: a.color }}
+                  />
+                  <span className="p-quota-agent__name" title={a.name}>
+                    {a.name}
+                  </span>
+                  {a.badge && (
                     <span
-                      className="text-[10px] font-semibold text-slate-700 truncate"
-                      title={a.name}
+                      className="p-tag"
+                      style={{ "--accent": a.color } as CSSProperties}
+                      title={a.badge}
                     >
-                      {a.name}
+                      {a.badge}
                     </span>
-                    {a.badge && (
-                      <span className={`shrink-0 px-1 py-px rounded text-[8px] font-medium ${a.badgeClass}`}>{a.badge}</span>
-                    )}
-                    {a.currentModel && (
-                      <span
-                        className="text-[9px] text-slate-500/90 truncate min-w-0"
+                  )}
+                  {a.currentModel && (
+                    <span
+                      className="p-quota-agent__model"
                         title={
                           // 默认 tooltip 是「当前模型」标签；标签被缩短（去掉了
                           // provider 配置名前缀）时补上完整 id
@@ -1682,27 +1729,26 @@ export function SummaryTab({
                       >
                         {displayModelName(a.currentModel.model_id)}
                       </span>
-                    )}
-                  </div>
+                  )}
                   {a.cycleResetAt != null && a.cycleResetAt > now ? (
                     // Cursor 的 billing_cycle_end 只有日期精度：时间点仅出 MM-DD，
                     // 禁止显示由 ISO 日期解析出的假时分；双开「↻ 5d · 09-01」
                     resetDisplay.datetime ? (
-                      <span className="num text-[8px] text-slate-400 shrink-0 whitespace-nowrap">
+                      <span className="p-quota-agent__meta">
                         ↻{" "}
                         {resetDisplay.countdown
                           ? `${formatCountdownCore(a.cycleResetAt - now)} · ${formatResetStamp(a.cycleResetAt, { withTime: false })}`
                           : formatResetStamp(a.cycleResetAt, { withTime: false })}
                       </span>
                     ) : resetDisplay.countdown ? (
-                      <span className="num text-[8px] text-slate-400 shrink-0 whitespace-nowrap">
+                      <span className="p-quota-agent__meta">
                         ↻ {formatCountdownCore(a.cycleResetAt - now)}
                       </span>
                     ) : (
                       <span />
                     )
                   ) : a.cycleResetDate ? (
-                    <span className="num text-[8px] text-slate-400 shrink-0 whitespace-nowrap">
+                    <span className="p-quota-agent__meta">
                       {t("summary.resetDate", { date: a.cycleResetDate })}
                     </span>
                   ) : null}
@@ -1744,7 +1790,7 @@ export function SummaryTab({
                   // 无凭证时 entries 为空，不进本分支、走原有指标/空文案
                   <>
                     {a.metrics.length > 0 && (
-                      <div className="space-y-1.5 mb-2">
+                      <div className="flex flex-col gap-0.5 mb-1">
                         {a.metrics.map((m) => (
                           <QuotaMiniRow
                             key={m.label}
@@ -1763,7 +1809,7 @@ export function SummaryTab({
                     />
                   </>
                 ) : a.metrics.length > 0 ? (
-                  <div className="space-y-1.5">
+                  <div className="flex flex-col gap-0.5">
                     {a.metrics.map((m) => (
                       <QuotaMiniRow
                         key={m.label}
@@ -1776,7 +1822,7 @@ export function SummaryTab({
                     ))}
                   </div>
                 ) : (
-                  <div className="text-[10px] text-slate-500">{a.empty}</div>
+                  <div className="p-quota-agent__empty">{a.empty}</div>
                 )}
               </div>
             ))}
@@ -1804,6 +1850,7 @@ export function SummaryTab({
           title={t("common.modelUsage")}
           card={{ window: "panel", page: "summary", id: "summary.models" }}
           cardSummary={modelCardSummary}
+          className="p-card--frame"
           list={{ total: sortedModels.length, collapsedCount: 4 }}
           action={
             <div className="flex items-center gap-1">
@@ -1824,7 +1871,20 @@ export function SummaryTab({
                 aria-label={t("export.entry")}
                 onClick={() => setExportOpen(true)}
               >
-                ⤓
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.9"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  className="h-3 w-3"
+                  aria-hidden
+                >
+                  <path d="M12 4v10" />
+                  <path d="m8 11 4 4 4-4" />
+                  <path d="M5 20h14" />
+                </svg>
               </button>
             </div>
           }
@@ -1847,58 +1907,52 @@ export function SummaryTab({
               const pct =
                 maxModelVal > 0 ? Math.max(sortVal / maxModelVal, 0.02) : 0;
               return (
-                <div
-                  key={m.key}
-                  className="relative rounded-lg hover:bg-slate-900/4 transition-colors py-1.5 px-1.5 overflow-hidden min-w-0"
-                >
+                <div key={m.key} className="p-model-row">
                   <div
-                    className={`absolute inset-y-0 left-0 ${m.barBg} rounded-lg pointer-events-none`}
+                    className={`p-model-row__bar ${m.barBg}`}
                     style={{ width: `${pct * 100}%` }}
                   />
-                  <div className="relative flex items-center gap-1.5 text-xs min-w-0">
-                    <div className="flex items-center gap-1.5 min-w-0 flex-1">
-                      <span
-                        className="w-1.5 h-1.5 rounded-full shrink-0"
-                        style={{ background: m.color }}
-                        title={m.source}
-                      />
-                      <span
-                        className="font-medium text-slate-900/90 truncate text-[11px]"
-                        title={
-                          m.mergedNote
-                            ? `${m.source} · ${m.name}（${m.mergedNote}）`
-                            : `${m.source} · ${m.name}`
-                        }
-                      >
-                        {displayModelName(m.name)}
-                      </span>
-                      {!m.hasPrice && (
-                        <span
-                          className="text-[10px] text-amber-600/90 shrink-0"
-                          title={t("common.noPrice")}
-                        >
-                          ⚠
-                        </span>
-                      )}
-                    </div>
-                    <div className="flex items-center gap-1 num shrink-0 whitespace-nowrap text-[10px]">
-                      {/* 请求/Token/花费三列深浅递进（浅→中→深），便于扫视区分 */}
-                      <span className="min-w-[1.5rem] text-right text-slate-500/80" title={t("common.requestCount")}>
-                        {formatTokens(m.requests)}
-                      </span>
-                      <span className="min-w-[2rem] text-right text-slate-700" title={t("common.totalTokens")}>
-                        {formatTokens(m.tokens)}
-                      </span>
-                      <span
-                        className={`min-w-[2.5rem] text-right font-medium ${
-                          m.hasPrice
-                            ? "text-slate-900/90"
-                            : "text-slate-500/50"
-                        }`}
-                      >
-                        {m.hasPrice ? formatCost(m.cost, currency) : "—"}
-                      </span>
-                    </div>
+                  <span
+                    className="p-model-row__dot"
+                    style={{ background: m.color }}
+                    title={m.source}
+                  />
+                  <span
+                    className="p-model-row__name"
+                    title={
+                      m.mergedNote
+                        ? `${m.source} · ${m.name}（${m.mergedNote}）`
+                        : `${m.source} · ${m.name}`
+                    }
+                  >
+                    {displayModelName(m.name)}
+                  </span>
+                  {!m.hasPrice && (
+                    <span className="p-chip p-chip--warn" title={t("common.noPrice")}>
+                      ⚠
+                    </span>
+                  )}
+                  <div className="p-model-row__nums">
+                    {/* 请求/Token/花费三列深浅递进（浅→中→深），便于扫视区分 */}
+                    <span
+                      className="p-model-row__req"
+                      title={t("common.requestCount")}
+                    >
+                      {formatTokens(m.requests)}
+                    </span>
+                    <span
+                      className="p-model-row__tok"
+                      title={t("common.totalTokens")}
+                    >
+                      {formatTokens(m.tokens)}
+                    </span>
+                    <span
+                      className={`p-model-row__cost ${
+                        m.hasPrice ? "" : "p-model-row__cost--none"
+                      }`}
+                    >
+                      {m.hasPrice ? formatCost(m.cost, currency) : "—"}
+                    </span>
                   </div>
                 </div>
               );

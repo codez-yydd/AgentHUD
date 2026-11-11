@@ -8,7 +8,7 @@ AgentHUD is an open-source observability dashboard for AI coding agents, providi
 
 A lightweight tray-resident monitoring companion that tracks Token usage, subscription quotas and spending across multiple CLI agents in real time — [Z.ai (ZCode)](https://z.ai), Codex, Claude, Cursor, Kimi Code, and more. Summon a vibrancy floating panel from the tray for today / 7-day / 30-day breakdowns grouped by model; a full dashboard window (usage overview / request logs / weekly quota compare / pricing settings), a session token HUD, a desktop pet and cross-device sync are also included.
 
-> On macOS: the menu-bar title shows today's cost + total tokens in real time; clicking the icon pops a popover panel hugging the menu bar; the Dock icon is hidden, and the panel auto-dismisses on blur.
+> On macOS: the menu bar shows the app icon only (no text, to save menu-bar space); clicking it pops a popover panel hugging the menu bar; the Dock icon is hidden, and the panel auto-dismisses on blur.
 
 ---
 
@@ -140,7 +140,7 @@ Both repositories have exactly the same content — the latest version can be ob
 
 **🖥 Core experience**
 
-- **Live menu-bar title** — lives in the macOS menu bar, refreshing every 30s, showing today's total cost (`¥xx.xx`, or `$xx.xx` in USD mode) and total tokens (e.g. `3.7M`).
+- **Icon-only menu-bar entry** — lives in the macOS menu bar with no text; today's cost / tokens / quota details are in the popover panel (a background job still collects every 30s for the collapsed island).
 - **Floating stats panel** — summoned by clicking the tray icon; supports **today / 24h / 7d / 30d / custom** time ranges.
 - **🖥 Dashboard main window** — a standalone large window with sidebar tabs: usage overview (cross-service tokens / cost / trends / activity heatmap), request logs, weekly quota compare and pricing settings.
 - **📜 Request logs** — per-request details (time, source, model, token breakdown, cost, duration & speed) with source / model filters and auto refresh.
@@ -504,7 +504,7 @@ cost = non_cache_input * input_rate
         (per-million-token rates; result in the chosen currency)
 ```
 
-The panel and the menu-bar title share the same Rust calculation logic, so the numbers always match.
+The panel and the collapsed island share the same Rust today-usage calculation, so the numbers always match.
 
 ---
 

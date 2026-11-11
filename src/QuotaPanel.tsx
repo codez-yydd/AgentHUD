@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type CSSProperties } from "react";
 import { useDataCache } from "./DataCache";
 import {
   formatCountdownCore,
@@ -36,9 +36,9 @@ export function QuotaPanel() {
   // 注意：正则匹配 Rust 后端返回的中文错误串（quota.rs 的固定前缀文案），仅做布尔分支，不能翻译
   if (quotaError && quotaError.includes("未找到 ZCode Coding Plan 凭证")) {
     return (
-      <div className="mb-1 rounded-lg bg-sky-500/10 border border-sky-500/20 px-2.5 py-1.5">
-        <span className="text-[11px] text-sky-700/80">{t("quota.title")}</span>
-        <p className="text-[10px] text-slate-700/50 mt-0.5">
+      <div className="p-card--frame px-3 py-2.5">
+        <div className="p-card__title">{t("quota.title")}</div>
+        <p className="mt-1 text-[9.5px] leading-relaxed text-slate-600/80">
           {t("quota.configHint")}
         </p>
       </div>
@@ -50,8 +50,8 @@ export function QuotaPanel() {
   const quotaFailed = quotaError != null || !quota;
   if (quotaFailed && accountQuotas.length < 2) {
     return (
-      <div className="mb-1 rounded-lg bg-amber-500/10 border border-amber-500/20 px-2.5 py-1.5">
-        <span className="text-[10px] text-amber-700/80">
+      <div className="p-card--frame px-3 py-2.5">
+        <span className="text-[9.5px] leading-relaxed text-amber-700/90">
           {quotaError ? t("quota.failed", { msg: quotaError }) : t("common.loading")}
         </span>
       </div>
@@ -61,29 +61,43 @@ export function QuotaPanel() {
   const planBadge = quota?.level ? levelLabel(quota.level) : "—";
 
   return (
-    <div className="relative mb-1 card-base rounded-2xl px-3 py-2">
-      {/* 标题行 */}
-      <div className="flex items-center justify-between mb-1">
-        <div className="flex items-center gap-1.5">
-          <span className="text-[10px] uppercase tracking-wide text-slate-700/55">
-            Coding Plan
-          </span>
-          <span className="px-1.5 py-0 rounded text-[9px] font-semibold bg-violet-500/15 text-violet-700">
+    <div className="relative p-card--frame px-3 py-2.5">
+      {/* 标题行：与汇总页卡片同一套小标题 + 品红等级徽标 */}
+      <div className="p-card__head">
+        <div className="flex items-center gap-1.5 min-w-0">
+          <span className="p-card__title">Coding Plan</span>
+          <span
+            className="p-tag"
+            style={{ "--accent": "#8b5cf6" } as CSSProperties}
+          >
             {planBadge}
           </span>
         </div>
         <button
           onClick={refreshQuota}
-          className="text-slate-700/40 hover:text-slate-900/70 text-[11px] transition-colors"
+          className="card-frame__control"
           title={t("quota.refresh")}
+          aria-label={t("quota.refresh")}
         >
-          ↻
+          <svg
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.9"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className="h-3 w-3"
+            aria-hidden
+          >
+            <path d="M20.5 11.5a8.5 8.5 0 1 0-2.6 6.1" />
+            <path d="M20.5 4.5v6.2h-6.2" />
+          </svg>
         </button>
       </div>
 
       {/* 当前账号额度（失败时此处留空，下方"全部账号"区当前账号行显示错误） */}
       {quotaFailed && (
-        <p className="text-[10px] text-amber-700/80">
+        <p className="mb-1.5 text-[9.5px] leading-relaxed text-amber-700/90">
           {quotaError ? t("quota.failed", { msg: quotaError }) : t("common.loading")}
         </p>
       )}
@@ -127,11 +141,9 @@ export function QuotaPanel() {
           列表限高内滚：账号多时不能把 zai 标签的统计主内容挤出可视区。
           非当前账号行带「切换」按钮（确认后退出并重启 ZCode）。 */}
       {accountQuotas.length >= 2 && (
-        <div className="mt-2 pt-1.5 border-t border-slate-900/6">
-          <div className="text-[9px] uppercase tracking-wide text-slate-700/45 mb-1">
-            {t("quota.allAccounts")}
-          </div>
-          <div className="max-h-36 overflow-y-auto overscroll-contain space-y-1.5">
+        <div className="mt-2 pt-2 border-t border-slate-900/6">
+          <div className="p-label mb-1.5">{t("quota.allAccounts")}</div>
+          <div className="max-h-36 overflow-y-auto overscroll-contain space-y-2">
             {accountQuotas.map((e) => (
               <AccountQuotaRow
                 key={e.id}
@@ -185,17 +197,15 @@ function AccountQuotaRow({
 
   if (!quota) {
     return (
-      <div className="flex items-center justify-between gap-2" title={error ?? undefined}>
-        <span className="flex items-center gap-1.5 min-w-0">
-          <span className="text-[10px] text-slate-900/80 truncate">{display_name}</span>
-          {is_current && (
-            <span className="shrink-0 text-[8px] px-1 py-px rounded-full bg-violet-500/10 text-violet-600">
-              {t("settings.accountsCurrent")}
-            </span>
-          )}
-        </span>
-        <span className="text-[9px] text-rose-500/90 shrink-0">
-          ⚠ {t("quota.quotaFail")}
+      <div className="p-quota-account" title={error ?? undefined}>
+        <span className="p-quota-account__name">{display_name}</span>
+        {is_current && (
+          <span className="p-tag" style={{ "--accent": "#8b5cf6" } as CSSProperties}>
+            {t("settings.accountsCurrent")}
+          </span>
+        )}
+        <span className="ml-auto shrink-0 text-[8.5px] text-rose-500/90">
+          {t("quota.quotaFail")}
         </span>
       </div>
     );
@@ -215,36 +225,39 @@ function AccountQuotaRow({
 
   return (
     <div>
-      <div className="flex items-center justify-between gap-2 mb-0.5">
-        <span className="flex items-center gap-1.5 min-w-0">
-          <span className="text-[10px] text-slate-900/80 truncate">{display_name}</span>
-          {is_current && (
-            <span className="shrink-0 text-[8px] px-1 py-px rounded-full bg-violet-500/10 text-violet-600">
-              {t("settings.accountsCurrent")}
-            </span>
-          )}
-          {quota.level && (
-            <span className="shrink-0 px-1 py-px rounded text-[8px] font-semibold bg-sky-500/12 text-sky-700">
-              {levelLabel(quota.level)}
-            </span>
-          )}
-        </span>
+      <div className="p-quota-account">
+        <span className="p-quota-account__name">{display_name}</span>
+        {is_current && (
+          <span className="p-tag" style={{ "--accent": "#8b5cf6" } as CSSProperties}>
+            {t("settings.accountsCurrent")}
+          </span>
+        )}
+        {quota.level && (
+          <span className="p-tag" style={{ "--accent": "#0ea5e9" } as CSSProperties}>
+            {levelLabel(quota.level)}
+          </span>
+        )}
         {onSwitch && (
-          <SwitchAccountButton onClick={onSwitch} disabled={switchDisabled} />
+          <span className="ml-auto shrink-0">
+            <SwitchAccountButton onClick={onSwitch} disabled={switchDisabled} />
+          </span>
         )}
         {weeklyRemain != null && (
           <span
-            className="num text-[10px] font-semibold shrink-0 whitespace-nowrap"
+            className={`num text-[9.5px] font-semibold shrink-0 whitespace-nowrap ${
+              onSwitch ? "ml-1.5" : "ml-auto"
+            }`}
             style={{ color: remainingTextColor(weeklyRemain) }}
+            title={t("common.remaining", { pct: Math.round(weeklyRemain) })}
           >
             {t("quota.weekShort")} {Math.round(weeklyRemain)}%
           </span>
         )}
       </div>
       {weeklyRemain != null && (
-        <div className="h-1 rounded-full bg-slate-900/8 overflow-hidden">
+        <div className="p-quota__track mt-1">
           <div
-            className="h-full rounded-full transition-all duration-500"
+            className="p-quota__fill"
             style={{
               width: `${weeklyRemain}%`,
               background: remainingGradient(weeklyRemain),
@@ -252,7 +265,7 @@ function AccountQuotaRow({
           />
         </div>
       )}
-      <div className="num text-[9px] text-slate-700/45 mt-0.5 flex items-center gap-2 flex-wrap">
+      <div className="p-quota-meta">
         {hour5RemainPct != null && (
           <span>
             {t("quota.hour5Short")} {Math.round(hour5RemainPct)}%
@@ -268,9 +281,7 @@ function AccountQuotaRow({
           </span>
         )}
         {hasDelta && (
-          <span className="text-slate-700/50">
-            {t("quota.todayDelta", { pct: delta[0] })}
-          </span>
+          <span>{t("quota.todayDelta", { pct: delta[0] })}</span>
         )}
       </div>
     </div>
@@ -294,10 +305,7 @@ function ResetInline({ resetAt, now }: { resetAt: number; now: number }) {
     { time: stamp }
   )}`;
   return (
-    <span
-      className="num text-[8px] text-slate-700/45 min-w-0 truncate"
-      title={title}
-    >
+    <span className="p-quota__reset" title={title}>
       {display.countdown ? `↻ ${countdown}` : `↻ ${stamp}`}
     </span>
   );
@@ -331,42 +339,38 @@ function QuotaBar({
   const hasDelta = delta != null && delta[1] >= 2 && deltaPct > 0;
 
   return (
-    <div className={`flex items-center gap-1.5 ${className}`}>
-      {/* 标签固定 w-9（36px，中英文标签都放得下）单行截断，完整文本 title 兜底 */}
-      <span
-        className="text-[10px] text-slate-700/60 w-9 shrink-0 truncate"
-        title={label}
-      >
+    <div className={`p-quota ${className}`}>
+      <span className="p-quota__label" title={label}>
         {label}
       </span>
-      {/* 进度条吃掉剩余宽度。轨道仍用原 bg-slate-900/8：widgets 的共用 ProgressBar
-          轨道是 /10，换用会改动配色，故继续就地渲染 */}
-      <div className="flex-1 min-w-0 h-1.5 rounded-full bg-slate-900/8 overflow-hidden">
+      <div className="p-quota__track">
         <div
-          className="h-full rounded-full transition-all duration-500"
+          className="p-quota__fill"
           style={{
             width: `${remaining}%`,
             background: remainingGradient(remaining),
           }}
         />
       </div>
-      {/* 剩余口径与配色不变（remainingTextColor） */}
-      <span
-        className="num text-[10px] font-semibold shrink-0"
-        style={{ color: remainingTextColor(remaining) }}
-      >
-        {t("common.remaining", { pct: Math.round(remaining) })}
-      </span>
-      {resetAt != null && resetAt > now && <ResetInline resetAt={resetAt} now={now} />}
-      {/* 今日增量：原独立副行并入本行（8px 紧凑「↑N%」，完整本地化文案 title 兜底） */}
+      {/* 今日增量：紧凑「↑N%」，完整本地化文案 title 兜底 */}
       {hasDelta && (
         <span
-          className="num text-[8px] text-slate-700/45 shrink-0"
+          className="p-quota__delta"
           title={t("quota.todayDelta", { pct: deltaPct })}
         >
           ↑{deltaPct}%
         </span>
       )}
+      {resetAt != null && resetAt > now && (
+        <ResetInline resetAt={resetAt} now={now} />
+      )}
+      <span
+        className="p-quota__pct num"
+        style={{ color: remainingTextColor(remaining) }}
+        title={t("common.remaining", { pct: Math.round(remaining) })}
+      >
+        {Math.round(remaining)}%
+      </span>
     </div>
   );
 }
@@ -409,34 +413,32 @@ function McpBar({
       : null;
 
   return (
-    <div className={`flex items-center gap-1.5 ${className}`}>
-      <span className="text-[10px] text-slate-700/60 w-9 shrink-0 truncate">
-        MCP
-      </span>
-      <div className="flex-1 min-w-0 h-1.5 rounded-full bg-slate-900/8 overflow-hidden">
+    <div className={`p-quota ${className}`}>
+      <span className="p-quota__label">MCP</span>
+      <div className="p-quota__track">
         <div
-          className="h-full rounded-full transition-all duration-500"
+          className="p-quota__fill"
           style={{
             width: `${remaining}%`,
             background: remainingGradient(remaining),
           }}
         />
       </div>
-      <span
-        className="num text-[10px] font-semibold shrink-0"
-        style={{ color: remainingTextColor(remaining) }}
-      >
-        {t("common.remaining", { pct: Math.round(remaining) })}
-      </span>
-      {resetAt != null && resetAt > now && <ResetInline resetAt={resetAt} now={now} />}
+      {resetAt != null && resetAt > now && (
+        <ResetInline resetAt={resetAt} now={now} />
+      )}
       {abs && (
-        <span
-          className="num text-[8px] text-slate-700/45 shrink-0"
-          title={abs.title}
-        >
+        <span className="p-quota__reset" title={abs.title}>
           {abs.text}
         </span>
       )}
+      <span
+        className="p-quota__pct num"
+        style={{ color: remainingTextColor(remaining) }}
+        title={t("common.remaining", { pct: Math.round(remaining) })}
+      >
+        {Math.round(remaining)}%
+      </span>
     </div>
   );
 }

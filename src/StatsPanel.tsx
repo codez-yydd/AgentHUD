@@ -49,13 +49,117 @@ import {
   type AgentVisibility,
   type CredentialAgentId,
 } from "./agentVisibility";
-import { LanguageToggle, ThemeToggle } from "./layout";
+import { ThemeToggle } from "./layout";
+import { requestLayoutEdit } from "./layoutEditor";
 import { useI18n, type TFn } from "./i18n";
 import { dateLocale } from "./i18n/locale";
 
 /** GitHub 仓库地址：托盘工具栏 GitHub 按钮用系统浏览器打开（openUrl
  *  失败时退化为 window.open，参照 UpdaterCard 的 DOWNLOAD_PAGE） */
 const GITHUB_REPO = "https://github.com/codez-yydd/AgentHUD";
+
+/* ===== 顶栏 / 菜单图标（24 视口、currentColor 描边，与主窗口图标集同款；
+        面板窄窗内不再用 emoji 字符，避免不同系统渲染成彩色方块） ===== */
+const ICON_REFRESH = (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+    <path d="M20.5 11.5a8.5 8.5 0 1 0-2.6 6.1" />
+    <path d="M20.5 4.5v6.2h-6.2" />
+  </svg>
+);
+
+const ICON_MORE = (
+  <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden>
+    <circle cx="5" cy="12" r="1.7" />
+    <circle cx="12" cy="12" r="1.7" />
+    <circle cx="19" cy="12" r="1.7" />
+  </svg>
+);
+
+const ICON_REPORTS = (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+    <path d="M4 20V10" />
+    <path d="M10 20V4" />
+    <path d="M16 20v-7" />
+    <path d="M21 20H3" />
+  </svg>
+);
+
+const ICON_SYNC = (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+    <path d="M4 8h13l-3-3" />
+    <path d="M20 16H7l3 3" />
+  </svg>
+);
+
+const ICON_MONITOR = (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+    <rect x="2" y="3" width="20" height="14" rx="2.5" />
+    <path d="M8.5 21h7" />
+    <path d="M12 17v4" />
+  </svg>
+);
+
+const ICON_SLIDERS = (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+    <path d="M5 4v6M5 14v6M12 4v3M12 11v9M19 4v9M19 17v3" />
+    <circle cx="5" cy="12" r="1.6" />
+    <circle cx="12" cy="9" r="1.6" />
+    <circle cx="19" cy="15" r="1.6" />
+  </svg>
+);
+
+const ICON_PALETTE = (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+    <path d="M12 3a9 9 0 0 0 0 18c.9 0 1.6-.7 1.6-1.6 0-.4-.2-.8-.4-1.1-.3-.3-.4-.7-.4-1.1a1.6 1.6 0 0 1 1.7-1.7h1.9A5.6 5.6 0 0 0 22 11.6C22 6.7 17.5 3 12 3Z" />
+    <circle cx="8" cy="9" r=".9" fill="currentColor" stroke="none" />
+    <circle cx="12" cy="7" r=".9" fill="currentColor" stroke="none" />
+    <circle cx="16" cy="9" r=".9" fill="currentColor" stroke="none" />
+    <circle cx="7.5" cy="13" r=".9" fill="currentColor" stroke="none" />
+  </svg>
+);
+
+const ICON_ISLAND = (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+    <rect x="5" y="3" width="14" height="18" rx="4" />
+    <path d="M9.5 8h5" />
+    <path d="M9.5 12h5" />
+    <path d="M9.5 16h2.5" />
+  </svg>
+);
+
+const ICON_GLOBE = (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+    <circle cx="12" cy="12" r="9" />
+    <path d="M3.5 9h17M3.5 15h17" />
+    <path d="M12 3c2.4 2.4 3.6 5.4 3.6 9s-1.2 6.6-3.6 9c-2.4-2.4-3.6-5.4-3.6-9S9.6 5.4 12 3Z" />
+  </svg>
+);
+
+const ICON_GITHUB = (
+  <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden>
+    <path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12" />
+  </svg>
+);
+
+const ICON_GEAR = (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+    <circle cx="12" cy="12" r="3.2" />
+    <path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1A1.7 1.7 0 0 0 4.6 9a1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1Z" />
+  </svg>
+);
+
+const ICON_PIN = (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+    <path d="M9 3h6l-1 6 4 3v2H6v-2l4-3-1-6Z" />
+    <path d="M12 14v7" />
+  </svg>
+);
+
+const ICON_PLUS = (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" aria-hidden>
+    <path d="M12 5v14M5 12h14" />
+  </svg>
+);
 
 /** 区分国内/国际站的 provider：录入凭证时提供 region 下拉（与后端
  *  host_for_region 的站点路由一致，Cookie/Key 归属站点必须匹配）。
@@ -142,7 +246,7 @@ export function StatsPanel({
   onInitialAddConsumed,
 }: Props) {
   const cache = useDataCache();
-  const { locale, t } = useI18n();
+  const { locale, setLocale, t } = useI18n();
   const {
     preset,
     custom,
@@ -383,6 +487,21 @@ export function StatsPanel({
     return () => el.removeEventListener("wheel", onWheel);
   }, []);
 
+  // 选中 tab 滚动进可视区：来源变多后右侧 tab 藏在渐隐后面，点开后应自动露出
+  useEffect(() => {
+    const el = tabScrollRef.current;
+    if (!el) return;
+    const active = el.querySelector<HTMLElement>('[aria-pressed="true"]');
+    if (!active) return;
+    const box = el.getBoundingClientRect();
+    const rect = active.getBoundingClientRect();
+    if (rect.left < box.left) {
+      el.scrollLeft -= box.left - rect.left + 8;
+    } else if (rect.right > box.right) {
+      el.scrollLeft += rect.right - box.right + 8;
+    }
+  }, [tab, visibleTabs.length]);
+
   // ===== 窗口置顶常驻（仅 Windows）=====
   const isWindows =
     typeof navigator !== "undefined" &&
@@ -542,183 +661,258 @@ export function StatsPanel({
               : t("stats.deviceAll");
           })();
 
+  // ===== 顶栏「更多」菜单 =====
+  // 窄窗放不下的入口（报表 / 同步 / 主窗口 / 皮肤 / 设置）与语言、灵动岛
+  // 开关收在这一层，头部只留 刷新 / 主题 / 更多 三个动作。
+  const [moreOpen, setMoreOpen] = useState(false);
+  const moreAnchorRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!moreOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (
+        moreAnchorRef.current &&
+        e.target instanceof Node &&
+        !moreAnchorRef.current.contains(e.target)
+      ) {
+        setMoreOpen(false);
+      }
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setMoreOpen(false);
+    };
+    document.addEventListener("mousedown", onDown, true);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown, true);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [moreOpen]);
+  /** 菜单项点击：先收起菜单再执行（避免动作弹窗与菜单叠在一起） */
+  const menuAction = (fn: () => void) => () => {
+    setMoreOpen(false);
+    fn();
+  };
+
+  // 头部副标题：最近一次成功刷新的时刻（与底栏原来显示的是同一个值）
+  const updatedText = lastUpdate
+    ? t("dashboard.overview.lastUpdated", {
+        time: new Date(lastUpdate).toLocaleTimeString(dateLocale(locale), {
+          hour: "2-digit",
+          minute: "2-digit",
+        }),
+      })
+    : t("common.loading");
+
+  // 设备筛选选项：紧凑胶囊的 options 与 title 共用一份，避免两处拼装
+  const deviceOptions = [
+    { value: "all", label: t("stats.deviceAll") },
+    {
+      value: "local",
+      label: syncConfig?.device_name
+        ? t("stats.deviceLocalName", { name: syncConfig.device_name })
+        : t("stats.deviceLocal"),
+    },
+    // 过滤口径见 selectableRemoteDevices：排除本机 + 零记录设备
+    ...selectableRemoteDevices(remoteDevices, syncConfig?.device_id).map((d) => ({
+      value: d.device_id,
+      label: t("common.deviceOption", {
+        name: d.device_name,
+        id: d.device_id.slice(0, 6),
+      }),
+    })),
+  ];
+
+  // 底栏左侧状态：未开同步 = 只读本机库；开了则标出本机 + 命中数据的远端设备数
+  const syncedDevices =
+    1 + selectableRemoteDevices(remoteDevices, syncConfig?.device_id).length;
+
   return (
     // relative：承载「＋添加服务」的添加凭证全卡弹层（CredentialFormDialog
     // 的 absolute inset-0 以最近定位祖先为界）
     <div className="relative flex flex-col h-full">
-      {/* 顶部 */}
-      <div className="px-3 pt-2.5 pb-2 border-b border-slate-900/8">
-        {/* Windows 无边框窗口拖动 */}
-        <div
-          className={`panel-topbar flex items-center justify-between mb-2 ${
-            isWindows ? "cursor-default" : ""
-          }`}
-          onMouseDown={
-            isWindows
-              ? (e) => {
-                  if (!(e.target as HTMLElement).closest("button")) {
-                    getCurrentWindow().startDragging();
-                  }
+      {/* 顶部：品牌 + 刷新时间 + 三个入口。窄窗（300px）容不下 10 个图标，
+          其余视图/设置入口收进「更多」菜单（与托盘菜单同一套语言） */}
+      <div
+        className="panel-head"
+        onMouseDown={
+          // Windows 无边框窗口：头部空白处可拖动（按钮与菜单项豁免）
+          isWindows
+            ? (e) => {
+                if (!(e.target as HTMLElement).closest("button, a, input")) {
+                  getCurrentWindow().startDragging();
                 }
-              : undefined
-          }
-        >
-          <div className="flex items-center gap-1.5 select-none min-w-0">
-            <h1 className="text-[13px] font-bold text-slate-900/90 tracking-tight truncate">
-              AgentHUD
-            </h1>
-          </div>
-          {/* shrink-0：窗口压到 300px 时标题先让位（truncate），按钮组不压缩。
-              含主窗口入口/HUD 开关共 11 个 button（Windows 下；非 Windows 无
-              置顶按钮为 10 个）：11×22px + 10×2px 间距 = 262px ≤ 300 −
-              24(px-3) = 276px 可用宽度，按钮不换行也不裁切；标题压到约
-              14px 由 truncate 收尾 */}
-          <div className="panel-toolbar flex items-center gap-0.5 shrink-0">
-            <button
-              onClick={onGoReports}
-              className="toolbar-btn"
-              title={t("stats.reports")}
-            >
-              📊
-            </button>
-            <button
-              onClick={onGoSync}
-              className={`toolbar-btn ${
-                syncEnabled ? "text-emerald-600!" : ""
-              }`}
-              title={syncEnabled ? t("stats.syncOn") : t("stats.syncOff")}
-            >
-              ⇅
-            </button>
-            {/* 主窗口（Dashboard 大窗）入口：显示器图标，与相邻工具按钮同款
-                尺寸/悬停样式。放大窗分析（与托盘标题同口径）是「去别的窗口」
-                的导航，与 ⇅（同步）这类入口同组；不带 page（停留在上次页面） */}
-            <button
-              onClick={() => openMainWindowWithToast()}
-              className="toolbar-btn"
-              title={t("dashboard.openMainWindow")}
-              aria-label={t("dashboard.openMainWindow")}
-            >
-              <svg
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                className="h-3.5 w-3.5"
-                aria-hidden
-              >
-                <rect x="2" y="3" width="20" height="14" rx="2" />
-                <path d="M8 21h8" />
-                <path d="M12 17v4" />
-              </svg>
-            </button>
-            {/* HUD 停靠条开关：与主窗口入口同组（都是"另一个常驻视图"）。
-                开启时高亮为翠绿，悬停 title 说明当前状态与点击动作；托盘
-                右键菜单仍保留同一开关，两处状态经 zbar://hud-bar-state 同步 */}
-            <button
-              onClick={toggleHudBar}
-              disabled={hudBusy}
-              className={`toolbar-btn ${
-                hudEnabled ? "text-emerald-600!" : ""
-              } ${hudBusy ? "opacity-40" : ""}`}
-              title={
-                hudEnabled ? t("stats.hudBarOn") : t("stats.hudBarOff")
               }
-              aria-label={t("stats.hudBar")}
-              aria-pressed={hudEnabled}
-            >
-              <svg
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                className="h-3.5 w-3.5"
-                aria-hidden
-              >
-                <rect x="5" y="3" width="14" height="18" rx="3.5" />
-                <path d="M9 8h.01M9 12h.01M9 16h.01" />
-              </svg>
-            </button>
-            <ThemeToggle />
-            <LanguageToggle />
+            : undefined
+        }
+      >
+        <span className="panel-mark" aria-hidden>
+          <svg viewBox="0 0 16 16" fill="none">
+            <rect x="2" y="7" width="3" height="7" rx="1" fill="currentColor" opacity=".72" />
+            <rect x="6.5" y="4" width="3" height="10" rx="1" fill="currentColor" />
+            <rect x="11" y="6" width="3" height="8" rx="1" fill="currentColor" opacity=".86" />
+          </svg>
+        </span>
+        <div className="panel-head__text">
+          <span className="panel-head__name">AgentHUD</span>
+          <span className="panel-head__sub" title={updatedText}>
+            {updatedText}
+          </span>
+        </div>
+        <div className="panel-head__actions">
+          <button
+            onClick={() => {
+              refresh();
+              setSpeedRefresh((v) => v + 1);
+            }}
+            disabled={refreshing}
+            className={`p-icon ${refreshing ? "p-icon--spin" : ""}`}
+            title={t("common.refresh")}
+            aria-label={t("common.refresh")}
+          >
+            {ICON_REFRESH}
+          </button>
+          <ThemeToggle className="p-icon" accent={false} />
+          <div ref={moreAnchorRef} className="relative">
             <button
-              onClick={onGoTheme}
-              className="toolbar-btn"
-              title={t("theme.toolbarEntry")}
+              onClick={() => setMoreOpen((v) => !v)}
+              className={`p-icon ${moreOpen ? "is-on" : ""}`}
+              title={t("stats.more")}
+              aria-label={t("stats.more")}
+              aria-haspopup="menu"
+              aria-expanded={moreOpen}
             >
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-3.5 w-3.5" aria-hidden>
-                <circle cx="13.5" cy="6.5" r=".5" fill="currentColor" />
-                <circle cx="17.5" cy="10.5" r=".5" fill="currentColor" />
-                <circle cx="8.5" cy="7.5" r=".5" fill="currentColor" />
-                <circle cx="6.5" cy="12.5" r=".5" fill="currentColor" />
-                <path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.926 0 1.648-.746 1.648-1.688 0-.437-.18-.835-.437-1.125-.29-.289-.438-.652-.438-1.125a1.64 1.64 0 0 1 1.668-1.668h1.996c3.051 0 5.555-2.503 5.555-5.554C21.965 6.012 17.461 2 12 2z" />
-              </svg>
+              {ICON_MORE}
+              {updateReady && <span className="p-icon__dot" />}
             </button>
-            <button
-              onClick={onGoSettings}
-              className="toolbar-btn relative"
-              title={t("stats.settings")}
-            >
-              ⚙
-              {updateReady && (
-                <span className="absolute top-0 right-0 w-1.5 h-1.5 rounded-full bg-rose-500" />
-              )}
-            </button>
-            {isWindows && (
-              <button
-                onClick={() => {
-                  const next = !pinned;
-                  setPinned(next);
-                  setPin(next).catch(() => setPinned(!next));
-                }}
-                className={`toolbar-btn ${pinned ? "text-sky-600!" : ""}`}
-                title={pinned ? t("stats.unpin") : t("stats.pin")}
-              >
-                📌
-              </button>
+            {moreOpen && (
+              <div className="p-menu" role="menu" aria-label={t("stats.more")}>
+                <div className="p-menu__label">{t("stats.menuViews")}</div>
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="p-menu__item"
+                  onClick={menuAction(onGoReports)}
+                >
+                  <span className="p-menu__icon">{ICON_REPORTS}</span>
+                  {t("stats.reports")}
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="p-menu__item"
+                  onClick={menuAction(onGoSync)}
+                >
+                  <span className="p-menu__icon">{ICON_SYNC}</span>
+                  {syncEnabled ? t("stats.syncOn") : t("stats.syncOff")}
+                  {syncEnabled && (
+                    <span className="p-menu__hint" style={{ color: "var(--p-ok)" }}>
+                      ●
+                    </span>
+                  )}
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="p-menu__item"
+                  onClick={menuAction(() => openMainWindowWithToast())}
+                >
+                  <span className="p-menu__icon">{ICON_MONITOR}</span>
+                  {t("dashboard.openMainWindow")}
+                </button>
+                {/* 「调整显示」只在汇总页有意义：其他 tab 的卡片注册表不同 */}
+                {tab === "summary" && (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="p-menu__item"
+                    onClick={menuAction(requestLayoutEdit)}
+                  >
+                    <span className="p-menu__icon">{ICON_SLIDERS}</span>
+                    {t("customize.entry")}
+                  </button>
+                )}
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="p-menu__item"
+                  onClick={menuAction(onGoTheme)}
+                >
+                  <span className="p-menu__icon">{ICON_PALETTE}</span>
+                  {t("theme.toolbarEntry")}
+                </button>
+                <div className="p-menu__sep" />
+                <div className="p-menu__label">{t("stats.menuGeneral")}</div>
+                <button
+                  type="button"
+                  role="menuitemcheckbox"
+                  aria-checked={hudEnabled}
+                  className="p-menu__item"
+                  onClick={() => toggleHudBar()}
+                  disabled={hudBusy}
+                >
+                  <span className="p-menu__icon">{ICON_ISLAND}</span>
+                  {t("stats.hudBar")}
+                  <span className="p-switch" data-on={hudEnabled ? "true" : "false"} />
+                </button>
+                {isWindows && (
+                  <button
+                    type="button"
+                    role="menuitemcheckbox"
+                    aria-checked={pinned}
+                    className="p-menu__item"
+                    onClick={() => {
+                      const next = !pinned;
+                      setPinned(next);
+                      setPin(next).catch(() => setPinned(!next));
+                    }}
+                  >
+                    <span className="p-menu__icon">{ICON_PIN}</span>
+                    {pinned ? t("stats.unpin") : t("stats.pin")}
+                    <span className="p-switch" data-on={pinned ? "true" : "false"} />
+                  </button>
+                )}
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="p-menu__item"
+                  onClick={menuAction(() => setLocale(locale === "zh" ? "en" : "zh"))}
+                >
+                  <span className="p-menu__icon">{ICON_GLOBE}</span>
+                  {locale === "zh" ? "English" : "中文"}
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="p-menu__item"
+                  onClick={menuAction(() =>
+                    openUrl(GITHUB_REPO).catch(() => window.open(GITHUB_REPO, "_blank"))
+                  )}
+                >
+                  <span className="p-menu__icon">{ICON_GITHUB}</span>
+                  {t("stats.github")}
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="p-menu__item"
+                  onClick={menuAction(onGoSettings)}
+                >
+                  <span className="p-menu__icon">
+                    {ICON_GEAR}
+                    {updateReady && (
+                      <span className="p-icon__dot" style={{ top: -2, right: -2 }} />
+                    )}
+                  </span>
+                  {t("stats.settings")}
+                </button>
+              </div>
             )}
-            <button
-              onClick={() => {
-                refresh();
-                setSpeedRefresh((v) => v + 1);
-              }}
-              disabled={refreshing}
-              className={`toolbar-btn ${refreshing ? "opacity-40" : ""}`}
-              title={t("common.refresh")}
-            >
-              ↻
-            </button>
-            {/* GitHub 仓库入口：系统浏览器打开项目主页，与相邻工具按钮同款
-                尺寸/悬停样式（openUrl 失败退化为 window.open，参照 UpdaterCard） */}
-            <button
-              onClick={() =>
-                openUrl(GITHUB_REPO).catch(() =>
-                  window.open(GITHUB_REPO, "_blank")
-                )
-              }
-              className="toolbar-btn"
-              title={t("stats.github")}
-              aria-label={t("stats.github")}
-            >
-              <svg
-                viewBox="0 0 24 24"
-                fill="currentColor"
-                className="h-3.5 w-3.5"
-                aria-hidden
-              >
-                <path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12" />
-              </svg>
-            </button>
           </div>
         </div>
-        {/* 速度 tab 自管时间范围（面板标题栏「今日 / 7天」小切换），全局
-            RangePicker 对它无输入（面板不消费 preset/custom，点了没反应）；
-            设备筛选同理（面板查询不走 DataCache 的设备过滤）。两者在 speed
-            tab 激活时一并隐藏；此时 tab 栏回到 mt-2 顶距，布局不塌陷 */}
+      </div>
+
+      {/* 导航：时间范围 + 设备筛选同行；数据源标签单独一行 */}
+      <div className="panel-nav">
         {tab !== "speed" && (
           <RangePicker
             preset={preset}
@@ -727,103 +921,49 @@ export function StatsPanel({
               setPreset(p);
               setCustom(c);
             }}
-          />        )}
-        {/* 设备筛选单独占一行，标签保持完整名称；未来新增 Agent 时横向滚动。 */}
-        {tab !== "speed" && syncEnabled && (
-          <div className="mt-2 flex items-center">
-            {/* 设备筛选：改用共用 DropdownMenu（原生弹层在 WebView2 暗色下
-                选中项灰底难读）；title/文案与原 select 一致 */}
-            <DropdownMenu
-              className="w-[4.75rem] shrink-0"
-              title={t("stats.deviceFilter")}
-              ariaLabel={t("stats.deviceFilter")}
-              options={[
-                { value: "all", label: t("stats.deviceAll") },
-                {
-                  value: "local",
-                  label: syncConfig?.device_name
-                    ? t("stats.deviceLocalName", { name: syncConfig.device_name })
-                    : t("stats.deviceLocal"),
-                },
-                // 过滤口径见 selectableRemoteDevices：排除本机 + 零记录设备
-                ...selectableRemoteDevices(remoteDevices, syncConfig?.device_id).map(
-                  (d) => ({
-                    value: d.device_id,
-                    label: t("common.deviceOption", {
-                      name: d.device_name,
-                      id: d.device_id.slice(0, 6),
-                    }),
-                  }),
-                ),
-              ]}
-              value={deviceFilter}
-              onChange={setDeviceFilter}
-            />
-          </div>
+            trailing={
+              syncEnabled ? (
+                // 紧凑设备筛选：与分段控件同高、同款浅底，占位约 66px
+                <DropdownMenu
+                  compact
+                  className="w-[66px] shrink-0"
+                  align="end"
+                  title={`${t("stats.deviceFilter")}：${summaryDeviceLabel}`}
+                  ariaLabel={t("stats.deviceFilter")}
+                  options={deviceOptions}
+                  value={deviceFilter}
+                  onChange={setDeviceFilter}
+                />
+              ) : undefined
+            }
+          />
         )}
         {/* tab 栏：横向滚动区 + 右侧固定「＋添加服务」入口。渐隐遮罩只盖
             滚动区；「＋」在遮罩之外始终可见——新 provider 的 tab 默认隐藏，
             这是新用户添加第一个凭证服务的唯一常驻入口 */}
-        <div className={`${tab !== "speed" && syncEnabled ? "mt-1.5" : "mt-2"} flex items-stretch gap-1 min-w-0`}>
+        <div className="p-tabs">
           <div
             ref={tabScrollRef}
-            className={`min-w-0 overflow-x-auto ${
-              tabOverflow ? "tab-fade-right" : ""
-            }`}
+            className={`p-tabs__scroll ${tabOverflow ? "p-tabs--fade" : ""}`}
             aria-label={t("stats.sourcesAria")}
           >
-            <div className="flex w-max min-w-full gap-1 p-0.5 rounded-xl bg-slate-900/4">
-              {visibleTabs.map((item) => {
-              const tabId = item.id;
-              const activeColors: Record<string, string> = {
-                cursor: "bg-violet-500/12 text-violet-700 shadow-sm",
-                claude: "bg-orange-500/12 text-orange-700 shadow-sm",
-                codex: "bg-emerald-500/12 text-emerald-700 shadow-sm",
-                kimi: "bg-indigo-500/12 text-indigo-700 shadow-sm",
-                zai: "bg-sky-500/12 text-sky-700 shadow-sm",
-                summary: "bg-sky-500/15 text-sky-700 shadow-sm",
-                projects: "bg-amber-500/12 text-amber-700 shadow-sm",
-                speed: "bg-teal-500/12 text-teal-700 shadow-sm",
-                // 凭证驱动的新 provider：激活色贴近各自品牌色
-                gemini: "bg-blue-500/12 text-blue-700 shadow-sm",
-                grok: "bg-sky-500/12 text-sky-700 shadow-sm",
-                qoder: "bg-violet-500/12 text-violet-700 shadow-sm",
-                opencodego: "bg-orange-500/12 text-orange-700 shadow-sm",
-                minimax: "bg-emerald-500/12 text-emerald-700 shadow-sm",
-                moonshot: "bg-indigo-500/12 text-indigo-700 shadow-sm",
-                deepseek: "bg-blue-600/12 text-blue-700 shadow-sm",
-                longcat: "bg-yellow-400/20 text-yellow-700 shadow-sm",
-                mimo: "bg-orange-500/12 text-orange-700 shadow-sm",
-                alibaba: "bg-orange-600/12 text-orange-700 shadow-sm",
-                alibabatoken: "bg-orange-400/15 text-orange-700 shadow-sm",
-                stepfun: "bg-blue-500/12 text-blue-700 shadow-sm",
-                doubao: "bg-teal-500/12 text-teal-700 shadow-sm",
-                // DeepSeek Harness：与 deepseek 同品牌蓝（本地采集型）
-                dsh: "bg-blue-600/12 text-blue-700 shadow-sm",
-              };
-              return (
-                <button
-                  key={tabId}
-                  onClick={() => setTab(tabId)}
-                  type="button"
-                  aria-pressed={tab === tabId}
-                  className={`flex shrink-0 items-center justify-center gap-1 whitespace-nowrap rounded-lg px-2.5 py-1 text-[10px] font-medium transition-all duration-150 ${
-                    tab === tabId
-                      ? activeColors[tabId] ?? "bg-surface text-slate-900 shadow-sm"
-                      : "text-slate-600/60 hover:text-slate-800 hover:bg-slate-900/4"
-                  }`}
-                >
-                  {item.brand && (
-                    <BrandIcon brand={item.brand} className="h-3 w-3 shrink-0" />
-                  )}
-                  <span>{item.label}</span>
-                </button>
-              );
-            })}
-            </div>
+            {visibleTabs.map((item) => (
+              <button
+                key={item.id}
+                onClick={() => setTab(item.id)}
+                type="button"
+                aria-pressed={tab === item.id}
+                className="p-tab"
+              >
+                {item.brand && (
+                  <span className="p-tab__ico">
+                    <BrandIcon brand={item.brand} className="h-3 w-3" />
+                  </span>
+                )}
+                <span>{item.label}</span>
+              </button>
+            ))}
           </div>
-          {/* 「＋添加服务」：锚容器含按钮本体（点击外部关闭时豁免按钮，
-              再次点击「＋」可切换浮层）；浮层 absolute 挂在按钮下方 */}
           <div ref={addAnchorRef} className="relative shrink-0">
             <button
               type="button"
@@ -831,19 +971,9 @@ export function StatsPanel({
               title={t("credentials.addService")}
               aria-label={t("credentials.addService")}
               aria-expanded={addMenuOpen}
-              className="flex h-full w-7 items-center justify-center rounded-xl bg-slate-900/4 text-slate-600/60 hover:text-slate-800 hover:bg-slate-900/8 transition-all duration-150"
+              className="p-tab-add"
             >
-              <svg
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2.5"
-                strokeLinecap="round"
-                className="h-3 w-3"
-                aria-hidden
-              >
-                <path d="M12 5v14M5 12h14" />
-              </svg>
+              {ICON_PLUS}
             </button>
             {addMenuOpen && (
               <AddServiceMenu
@@ -857,12 +987,11 @@ export function StatsPanel({
           </div>
         </div>
       </div>
-
       {/* 标签内容（zai：额度卡与统计内容同处一个滚动流，额度卡不再固定置顶
           挤压统计区高度，向下滚动时随内容滚出视野。
           额度采样由 DataProvider 全局定时器负责，与组件挂载无关。 */}
       {tab === "zai" ? (
-        <div className="flex-1 min-h-0 overflow-y-auto px-3 py-2.5 page-stack">
+        <div className="panel-body">
           <QuotaPanel />
           {error && (
             <div className="mb-2 px-2.5 py-1.5 rounded-lg bg-red-500/15 text-red-700 text-xs">
@@ -1013,37 +1142,45 @@ export function StatsPanel({
         />
       )}
 
-      {/* 底部：刷新时刻 + 价格设置入口（窄窗二期减负：面板不再有价格页，
-          入口改为打开主窗口并直达定价页，跳页走 Rust 侧
-          zbar://dashboard-navigate）。主窗口入口已回到标题栏图标按钮
-          （见上方工具条），打开失败的轻提示仍留在这一行——工具条内没有放
-          文字胶囊的位置，底部行有富余空间 */}
-      <div className="px-3 py-1.5 border-t border-slate-900/8 flex items-center justify-between gap-2 text-[10px] text-slate-600/50">
-        <span className="num">
-          {lastUpdate
-            ? new Date(lastUpdate).toLocaleTimeString(dateLocale(locale), {
-                hour: "2-digit",
-                minute: "2-digit",
-              })
-            : ""}
+      {/* 底部状态条：同步状态 + 「调整显示 / 价格设置」两个轻入口。
+          刷新时刻已上移到头部副标题，这一行只留操作；打开主窗口失败的
+          轻提示仍在这里（2.4s 自动消失的红色小胶囊） */}
+      <div className="panel-foot">
+        <span className="panel-foot__live" title={updatedText}>
+          <i />
+          {syncEnabled
+            ? t("stats.footSynced", { count: syncedDevices })
+            : t("stats.footLocal")}
         </span>
-        <div className="flex items-center gap-2 shrink-0">
-          {/* 打开失败的行内轻提示：与面板既有错误提示同色（bg-red-500/15 +
-              text-red-700），只是压成底部行里的一个小胶囊，2.4s 后自动消失 */}
+        <span className="panel-foot__links">
           {mainOpenFailed && (
-            <span className="px-1.5 py-0.5 rounded bg-red-500/15 text-red-700 whitespace-nowrap">
+            <span className="p-chip p-chip--warn">
               {t("dashboard.openMainWindowFailed")}
             </span>
           )}
+          {tab === "summary" && (
+            <>
+              <button
+                type="button"
+                className="panel-foot__link"
+                onClick={requestLayoutEdit}
+                title={t("customize.entryHint")}
+              >
+                {t("customize.entry")}
+              </button>
+              <span className="panel-foot__sep" />
+            </>
+          )}
           <button
+            type="button"
+            className="panel-foot__link"
             onClick={() => openMainWindowWithToast("pricing")}
-            className="hover:text-sky-600 transition-colors font-medium"
             title={t("stats.priceSettingsHint")}
             aria-label={t("stats.priceSettingsHint")}
           >
             {t("stats.priceSettings")}
           </button>
-        </div>
+        </span>
       </div>
 
       {/* 「＋添加服务」→ 该服务的添加凭证弹层（复用 CredentialsCard 表单，

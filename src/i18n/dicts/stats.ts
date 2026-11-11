@@ -14,6 +14,13 @@ export const stats = {
   "stats.pin": "常驻置顶",
   "stats.unpin": "取消常驻",
   "stats.github": "GitHub 仓库",
+  // 顶栏「更多」菜单（视图 / 布局 / 通用 三组）
+  "stats.more": "更多",
+  "stats.menuViews": "视图",
+  "stats.menuGeneral": "通用",
+  // 底栏同步状态：未开启同步 = 只看本机库
+  "stats.footLocal": "本地数据",
+  "stats.footSynced": "已同步 {count} 台设备",
   // HUD 停靠条开关按钮（点击托盘图标弹出的悬浮面板顶部）
   "stats.hudBar": "灵动岛",
   "stats.hudBarOn": "灵动岛已开启（点击关闭）",

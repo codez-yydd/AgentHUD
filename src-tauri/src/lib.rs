@@ -274,10 +274,10 @@ fn currency_lock() -> &'static std::sync::Mutex<()> {
     CURRENCY_LOCK.get_or_init(|| std::sync::Mutex::new(()))
 }
 
-/// set_currency：保存货币偏好。前端切换货币时同步给后端，菜单栏标题据此显示。
-/// 保存后立即刷新一次菜单栏标题，避免用户切换后还要等 30 秒后台周期。
-/// 标题刷新含 SQLite 查询（开启同步后还有 HTTP 请求），必须卸载到阻塞线程池，
-/// 否则同步 command 在主线程执行会阻塞 UI（与 spawn_title_updater 同款模式）。
+/// set_currency：保存货币偏好。前端切换货币时同步给后端，面板 / 主窗口的
+/// 花费口径据此刷新（菜单栏已不显示文字，不再刷新标题）。
+/// 今日用量刷新含 SQLite 查询（开启同步后还有 HTTP 请求），必须卸载到阻塞
+/// 线程池，否则同步 command 在主线程执行会阻塞 UI。
 #[tauri::command]
 fn set_currency(currency: String, app: AppHandle) -> Result<(), String> {
     // 持 CURRENCY_LOCK 罩住「读→改→写」临界区，与 set_currency_mode 串行化；
@@ -287,15 +287,14 @@ fn set_currency(currency: String, app: AppHandle) -> Result<(), String> {
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     pricing::save_currency(&currency)?;
     let _ = tauri::async_runtime::spawn_blocking(move || {
-        let title = today_tray_title(&app);
-        let _ = app.tray_by_id("main").map(|t| t.set_title(Some(title)));
+        refresh_today_usage(&app);
     });
     Ok(())
 }
 
 /// 币种来源变化事件（set_currency_mode 落盘后广播）：payload =
 /// { mode, currency }。面板与主窗口各窗监听后同步本地展示——主窗口改了
-/// 币种，面板的花费口径、菜单栏标题（load_currency）跟着变。事件名风格
+/// 币种，面板的花费口径与灵动岛上的金额跟着变。事件名风格
 /// 沿 zbar://pricing-updated。
 const CURRENCY_CHANGED_EVENT: &str = "zbar://currency-changed";
 
@@ -307,8 +306,8 @@ fn get_currency_setting() -> Result<pricing::CurrencySetting, String> {
 }
 
 /// set_currency_mode：设置币种来源（follow / cny / usd，主窗口设置页入口）。
-/// 落盘后广播币种变化事件（面板 + 主窗口各窗同步），并立即刷新一次菜单栏
-/// 标题（生效币种可能已切换，标题里的 ¥/$ 不等 30s 周期）。标题刷新含
+/// 落盘后广播币种变化事件（面板 + 主窗口各窗同步），并立即刷新一次今日
+/// 用量（生效币种可能已切换，灵动岛上的花费不必等 30s 周期）。刷新含
 /// SQLite 查询，卸载到阻塞线程池（与 set_currency 同款模式）。
 #[tauri::command]
 fn set_currency_mode(mode: String, app: AppHandle) -> Result<pricing::CurrencySetting, String> {
@@ -324,8 +323,7 @@ fn set_currency_mode(mode: String, app: AppHandle) -> Result<pricing::CurrencySe
     });
     let _ = app.emit(CURRENCY_CHANGED_EVENT, payload);
     let _ = tauri::async_runtime::spawn_blocking(move || {
-        let title = today_tray_title(&app);
-        let _ = app.tray_by_id("main").map(|t| t.set_title(Some(title)));
+        refresh_today_usage(&app);
     });
     Ok(setting)
 }
@@ -2432,6 +2430,15 @@ fn toggle_panel(app: &AppHandle, click_pos: Option<(f64, f64)>) {
 
     let _ = window.show();
     let _ = window.set_focus();
+    // 面板与灵动岛在屏幕上缘重叠：面板打开时若岛正展开，它会盖在面板前面。
+    // 主动收起一次；岛的悬停判定在面板可见期间也会被暂停（见
+    // island::start_hover_watcher 的 top_popup_visible），否则鼠标在面板
+    // 顶部移动会被岛当成悬停而反复撑开 / 收起。
+    if crate::island::island_state().expanded {
+        if let Err(e) = crate::island::set_expanded_on_main(app, false) {
+            eprintln!("[zbar-island] 收起灵动岛失败: {e}");
+        }
+    }
     // WKWebView 已知问题：长期隐藏的窗口 show 后首帧可能不立即重绘（白屏）。
     // 微调窗口尺寸强制触发 layer 重新提交（Tauri 社区验证的解法，见 issue #5170）。
     // 偏移方向动态选择：窗口高已达 maxHeight 760（与 tauri.conf.json 一致）时
@@ -2449,19 +2456,8 @@ fn toggle_panel(app: &AppHandle, click_pos: Option<(f64, f64)>) {
     }
 }
 
-/// 格式化 token：3.7M / 1280
-fn fmt_tok(n: i64) -> String {
-    if n >= 1_000_000 {
-        format!("{:.1}M", n as f64 / 1_000_000.0)
-    } else if n >= 1_000 {
-        format!("{:.1}K", n as f64 / 1_000.0)
-    } else {
-        n.to_string()
-    }
-}
-
 /// 计算今日（自然日）的总花费（已按币种偏好折算成展示币种的数值）+
-/// 总 token + 币种是否美元，供菜单栏标题使用。副作用：写今日用量快照
+/// 总 token + 币种是否美元，供今日用量快照与灵动岛推送使用。副作用：写今日用量快照
 /// （HUD 停靠条消费），幂等可重复调用。
 fn today_usage_totals() -> (f64, i64, bool) {
     // 当地时间今日 0 点
@@ -2478,7 +2474,7 @@ fn today_usage_totals() -> (f64, i64, bool) {
 
     let stats = db::query_stats(today_start, now_ms);
     let pricing = load_pricing().unwrap_or_default();
-    // 货币偏好决定菜单栏显示 ¥ 还是 $；人民币花费 = 美元花费 × 当前汇率
+    // 货币偏好决定面板 / 灵动岛显示 ¥ 还是 $；人民币花费 = 美元花费 × 当前汇率
     let is_usd = pricing::load_currency() == "usd";
     let fx = load_fx_rate();
     let to_display = |cost_usd: f64| if is_usd { cost_usd } else { cost_usd * fx };
@@ -2495,7 +2491,7 @@ fn today_usage_totals() -> (f64, i64, bool) {
         })
         .unwrap_or(0.0);
 
-    // 今日各来源 token（键 = HUD source）。标题只消费合计，停靠条消费
+    // 今日各来源 token（键 = HUD source）。停靠条消费
     // 分来源明细（判断「既没有订阅额度、今日也没有用量」的 agent 该不该
     // 出现在条上，见 today_usage 模块）。本机直读与远端都往这里累加，
     // 查询失败的来源不写键 = 0，语义正好是"今日没用过"。
@@ -2615,18 +2611,15 @@ fn today_usage_totals() -> (f64, i64, bool) {
     (display_cost, total, is_usd)
 }
 
-/// 计算今日（自然日）的总花费 + 总 token，生成菜单栏标题文字；顺带把
-/// 合计推给灵动岛收起态（事件 + 内置缓存两条路，后者服务首帧补拉）。
-fn today_tray_title(app: &AppHandle) -> String {
-    let (cost, total, is_usd) = today_usage_totals();
+/// 刷新今日（自然日）用量：算一遍总花费 / 总 token（顺带写入今日用量快照），
+/// 再把合计推给灵动岛收起态（事件 + 内置缓存两条路，后者服务首帧补拉）。
+///
+/// 菜单栏不再显示任何文字（只有图标），所以这里不返回标题、也不调用
+/// `set_title`；函数保留是因为「采集 + 推岛」这套副作用仍需要 30 秒一轮。
+fn refresh_today_usage(app: &AppHandle) {
+    let _ = today_usage_totals();
     if let Some(summary) = crate::today_usage::totals() {
         let _ = app.emit("zbar://island-today-usage", summary);
-    }
-    let sym = if is_usd { "$" } else { "¥" };
-    if total > 0 {
-        format!("{sym}{:.2}  {}", cost, fmt_tok(total))
-    } else {
-        "AgentHUD".to_string()
     }
 }
 
@@ -2724,11 +2717,11 @@ pub(crate) fn refresh_global_shortcuts(app: &AppHandle) {
     }
 }
 
-/// 后台线程：每 30 秒刷新一次菜单栏标题。
-fn spawn_title_updater(app: AppHandle) {
+/// 后台线程：每 30 秒刷新一次今日用量（写快照 + 推灵动岛）。
+/// 菜单栏已改成纯图标，这个线程不再改任何托盘文字。
+fn spawn_today_usage_updater(app: AppHandle) {
     std::thread::spawn(move || loop {
-        let title = today_tray_title(&app);
-        let _ = app.tray_by_id("main").map(|t| t.set_title(Some(title)));
+        refresh_today_usage(&app);
         std::thread::sleep(std::time::Duration::from_secs(30));
     });
 }
@@ -2804,15 +2797,12 @@ pub(crate) fn refresh_tray_menu(app: &AppHandle) {
 
 /// 初始化托盘图标
 fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
-    // 初始标题只用占位文字：真实标题（今日花费 + token）的生成依次做
-    // SQLite 查询、开启同步后的远程 HTTP、Cursor events 冷缓存全量分页拉取，
-    // 冷启动网络慢时会把主线程卡数十秒。spawn_title_updater 启动后会在
-    // 后台线程立即执行一次刷新（先刷新再 sleep），占位很快被真实标题替换。
-    let title = "AgentHUD".to_string();
+    // 菜单栏只显示图标，不再挂文字标题（花费 / token 都去掉了）：macOS 上
+    // 常驻文字会占掉菜单栏宝贵宽度，数值明细在悬浮面板与灵动岛里看。
+    // 今日用量的采集与灵动岛推送仍由 spawn_today_usage_updater 负责。
     let builder = TrayIconBuilder::with_id("main")
         .icon(app.default_window_icon().unwrap().clone())
-        .tooltip("AgentHUD · 多 Agent 用量监控")
-        .title(title);
+        .tooltip("AgentHUD · 多 Agent 用量监控");
 
     // 平台分叉（行为隔离的边界线，改托盘逻辑前先读这段）：
     // - Linux：与历史版本完全一致——原生右键菜单（打开主窗口 /
@@ -3183,7 +3173,7 @@ pub fn run() {
             if let Err(e) = main_window::prebuild_main_window(app.handle()) {
                 eprintln!("[zbar-main-window] 预建主窗口失败: {e}");
             }
-            spawn_title_updater(app.handle().clone());
+            spawn_today_usage_updater(app.handle().clone());
             // 截图覆盖窗口预热：启动 1.5s 后把隐藏的 shot.html 建好，
             // 之后无论走热键还是 HUD 按钮，第一次截图都不再冷启动 WebView。
             {

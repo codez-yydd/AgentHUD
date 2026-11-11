@@ -417,7 +417,7 @@ export function ProjectsPanel({ preset, custom, currency, fxRate }: Props) {
       )}
 
       <div
-        className={`flex-1 min-h-0 overflow-y-auto px-3 py-2.5 page-stack ${
+        className={`panel-body ${
           sel ? "pt-2.5" : ""
         }`}
       >

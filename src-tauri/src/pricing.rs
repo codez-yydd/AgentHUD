@@ -1310,7 +1310,7 @@ fn collapse_insert(map: &mut BTreeMap<String, ModelPrice>, model_id: &str, price
     map.insert(model_id.to_string(), price);
 }
 
-// ===== 货币偏好（菜单栏标题据此显示 ¥ / $；主窗口设置页可手动指定）=====
+// ===== 货币偏好（面板 / 灵动岛据此显示 ¥ / $；主窗口设置页可手动指定）=====
 
 /// 币种偏好文件（~/.agenthud/currency.json）。
 ///

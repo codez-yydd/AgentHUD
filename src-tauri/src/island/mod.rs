@@ -203,6 +203,19 @@ fn cursor_points_macos() -> Option<(f64, f64)> {
     None
 }
 
+/// 顶栏浮层（悬浮面板 / 托盘菜单）是否可见。
+///
+/// 两者与灵动岛共用屏幕上缘那一块区域：浮层打开后光标落在浮层上，坐标却
+/// 可能仍压在（被浮层盖住的）岛的胶囊矩形里。不把这种情况排除，用户在面板
+/// 顶部移动鼠标就会触发岛的悬停展开 / 收起，表现为「岛在乱闪」。
+fn top_popup_visible(app: &AppHandle) -> bool {
+    ["panel", "tray-menu"].iter().any(|label| {
+        app.get_webview_window(label)
+            .and_then(|win| win.is_visible().ok())
+            .unwrap_or(false)
+    })
+}
+
 /// 悬停兜底：macOS 上灵动岛是不可聚焦窗口，WKWebView 的 tracking area 只对
 /// key window 生效，pointerenter / pointerleave 一律收不到。这里用 150ms 轮询
 /// 光标位置双向补齐：进入胶囊热区展开，离开面板收起。
@@ -234,6 +247,14 @@ fn start_hover_watcher(app: AppHandle) {
                 if !cfg.enabled || cfg.expand_mode != "hover" {
                     outside = 0;
                     inside = 0;
+                    continue;
+                }
+                // 面板 / 托盘菜单可见时暂停悬停判定：它们与岛在屏幕上缘
+                // 重叠，光标在浮层上移动不应把岛撑开（见 top_popup_visible）
+                if top_popup_visible(&app) {
+                    outside = 0;
+                    inside = 0;
+                    entered_fired = false;
                     continue;
                 }
                 if drag_slot().lock().map(|g| g.is_some()).unwrap_or(false) {

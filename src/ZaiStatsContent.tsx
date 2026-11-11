@@ -70,7 +70,7 @@ export function ZaiStatsContent({
   if (!stats) return <StatsSkeleton />;
 
   return (
-    <div className="page-stack">
+    <div className="flex flex-col gap-2">
       <HeroMetric
         label={t("common.totalCost")}
         value={formatCost(totalCost, currency)}
@@ -110,7 +110,10 @@ export function ZaiStatsContent({
 
       <SpeedMetricsGrid overall={stats.overall} mergedRemote={mergedRemote} />
 
-      <SectionCard title={t("common.tokenComposition")}>
+      <SectionCard
+        title={t("common.tokenComposition")}
+        className="p-card--frame"
+      >
         <div className="space-y-1.5">
           <DetailRow
             label={t("common.input")}
@@ -144,6 +147,7 @@ export function ZaiStatsContent({
       {stats.by_model.length > 0 && (
         <SectionCard
           title={t("common.modelUsage")}
+          className="p-card--frame"
           action={
             <SortToggle
               options={[
@@ -219,45 +223,60 @@ function ModelRankList({
             : undefined;
         })();
         return (
-          <div
-            key={m.provider_id + m.model_id}
-            className="relative rounded-lg hover:bg-slate-900/4 transition-colors py-1.5 px-1.5 overflow-hidden"
-          >
+          <div key={m.provider_id + m.model_id} className="p-model-row">
             <div
-              className="absolute inset-y-0 left-0 bg-sky-500/10 rounded-lg pointer-events-none"
+              className="p-model-row__bar bg-sky-500/10"
               style={{ width: `${pct * 100}%` }}
             />
-            <div className="relative flex items-center justify-between text-xs min-w-0">
-              <div className="flex items-center gap-1 min-w-0 flex-1">
+            <span
+              className="p-model-row__name"
+              title={
+                // 标签只显示模型名，完整 id（含第三方 CLI 的 provider 配置名
+                // 前缀）放在 tooltip 里
+                [displayModelName(m.model_id) !== m.model_id ? m.model_id : null, variantTitle]
+                  .filter(Boolean)
+                  .join(" · ") || undefined
+              }
+            >
+              {displayModelName(m.model_id)}
+            </span>
+            {!hasPrice && (
+              <span className="p-chip p-chip--warn" title={t("common.noPrice")}>
+                ⚠
+              </span>
+            )}
+            <div className="p-model-row__nums">
+              {/* 请求/Token/花费三列深浅递进；速度列插在 Token 与花费之间 */}
+              <span
+                className="p-model-row__req"
+                title={t("common.requestCount")}
+              >
+                {formatTokens(m.requests)}
+              </span>
+              <span
+                className="p-model-row__tok"
+                title={t("common.totalTokens")}
+              >
+                {formatTokens(m.total_tokens)}
+              </span>
+              {hasSpeedCol && (
                 <span
-                  className="font-medium text-slate-900/90 truncate text-[11px]"
-                  title={
-                    // 标签只显示模型名，完整 id（含第三方 CLI 的 provider 配置名
-                    // 前缀）放在 tooltip 里
-                    [displayModelName(m.model_id) !== m.model_id ? m.model_id : null, variantTitle]
-                      .filter(Boolean)
-                      .join(" · ") || undefined
-                  }
+                  className="p-model-row__req"
+                  style={{ color: "var(--p-accent)" }}
+                  title={t("common.avgSpeed")}
                 >
-                  {displayModelName(m.model_id)}
+                  {m.avg_tps != null
+                    ? `${m.speedQuality === "request_average" ? "≈" : ""}${formatTps(m.avg_tps)} t/s`
+                    : "—"}
                 </span>
-                {!hasPrice && <span className="text-[10px] text-amber-600/90 shrink-0" title={t("common.noPrice")}>⚠</span>}
-              </div>
-              <div className="flex items-center gap-1 num shrink-0 text-[10px]">
-                {/* 请求/Token/花费三列深浅递进（浅→中→深），便于扫视区分；速度列插在 Token 与花费之间 */}
-                <span className="min-w-[1.5rem] text-right text-slate-500/80" title={t("common.requestCount")}>{formatTokens(m.requests)}</span>
-                <span className="min-w-[2rem] text-right text-slate-700" title={t("common.totalTokens")}>{formatTokens(m.total_tokens)}</span>
-                {hasSpeedCol && (
-                  <span className="min-w-[2.25rem] text-right text-sky-700/80" title={t("common.avgSpeed")}>
-                    {m.avg_tps != null
-                      ? `${m.speedQuality === "request_average" ? "≈" : ""}${formatTps(m.avg_tps)} t/s`
-                      : "—"}
-                  </span>
-                )}
-                <span className={`min-w-[2.5rem] text-right font-medium ${hasPrice ? "text-slate-900/90" : "text-slate-500/50"}`}>
-                  {hasPrice ? formatCost(costVal, currency) : "—"}
-                </span>
-              </div>
+              )}
+              <span
+                className={`p-model-row__cost ${
+                  hasPrice ? "" : "p-model-row__cost--none"
+                }`}
+              >
+                {hasPrice ? formatCost(costVal, currency) : "—"}
+              </span>
             </div>
           </div>
         );
@@ -269,8 +288,8 @@ function ModelRankList({
 function StatsSkeleton() {
   const barHeights = [38, 55, 42, 70, 48, 62, 35, 58];
   return (
-    <div className="page-stack">
-      <div className="hero-sky rounded-2xl px-3.5 py-3 animate-pulse">
+    <div className="flex flex-col gap-2">
+      <div className="p-hero animate-pulse">
         <div className="h-2.5 w-12 rounded bg-slate-900/15 mb-2" />
         <div className="h-7 w-28 rounded bg-slate-900/15" />
       </div>

@@ -550,3 +550,16 @@ export function LayoutEditorBar({ editor }: { editor: PageLayoutEditor }) {
     </section>
   );
 }
+
+/** 顶栏「更多」菜单请求打开当前页面的「调整显示」编辑态。
+ *
+ * 编辑态由页面自己的 usePageLayoutEditor 持有（SummaryTab），而入口按钮现在
+ * 挂在 StatsPanel 的头部菜单里——两层组件之间隔着一个渲染边界，直接把
+ * editor 往上提会让页面注册表的作用域变模糊。用一个窗口级事件解耦：页面
+ * 挂载时监听并调用 editor.openEditor，头部只管派发。
+ * 事件不携带 detail：一次点击对应当前页面的编辑器，页面切走后自然无人响应。 */
+export const LAYOUT_EDIT_REQUEST_EVENT = "zbar://layout-edit-request";
+
+export function requestLayoutEdit() {
+  window.dispatchEvent(new CustomEvent(LAYOUT_EDIT_REQUEST_EVENT));
+}

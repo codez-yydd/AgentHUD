@@ -283,7 +283,7 @@ pub struct TrayMenuState {
     pub version: String,
     /// HUD 停靠条当前开启态（底栏开关）
     pub hud_bar_enabled: bool,
-    /// 当前展示币种是否美元（true = $ / false = ¥），与菜单栏标题同源
+    /// 当前展示币种是否美元（true = $ / false = ¥），与面板 / 今日用量同源
     pub is_usd: bool,
 }
 

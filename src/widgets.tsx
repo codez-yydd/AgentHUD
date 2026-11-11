@@ -101,14 +101,12 @@ export function Metric({
   title?: string;
 }) {
   return (
-    <div className="card-base rounded-xl py-2 text-center" title={title}>
+    <div className="p-stat" title={title}>
       {/* 标签与数值均单行截断：260px 窄窗 + 1.25 字号档下值（如「≈ 99.9 t/s」）
           在空格处折行会顶破卡片；截断后的完整值由 title 悬浮兜底 */}
-      <div className="text-[9px] text-slate-500 truncate">{label}</div>
+      <div className="p-stat__label truncate">{label}</div>
       <div
-        className={`num text-[13px] font-semibold mt-0.5 truncate ${
-          accent || "text-slate-900/85"
-        }`}
+        className={`p-stat__value num truncate ${accent ?? ""}`}
         title={value}
       >
         {value}
@@ -130,21 +128,18 @@ export function DetailRow({
   color: string;
 }) {
   return (
-    <div className="flex items-center gap-2 text-[11px]">
-      {/* 标签/数值列宽由 w-14（3.5rem）加宽到 w-16（4rem）：中文标签与
-          「999.99万」级数值不再被挤成两行；两列均单行截断，完整文本由
-          title 悬浮兜底 */}
-      <span className="text-slate-700/60 w-16 shrink-0 truncate">{label}</span>
-      <div className="flex-1 h-1 rounded-full bg-slate-900/8 overflow-hidden">
+    <div className="p-detail">
+      {/* 标签/数值列固定宽 + 单行截断，完整文本由 title 悬浮兜底 */}
+      <span className="p-detail__label" title={label}>
+        {label}
+      </span>
+      <div className="p-detail__track">
         <div
-          className={`h-full rounded-full ${color} opacity-70`}
+          className={`p-detail__fill ${color}`}
           style={{ width: `${Math.min(pct * 100, 100)}%` }}
         />
       </div>
-      <span
-        className="num text-slate-900/85 font-medium w-16 shrink-0 text-right truncate"
-        title={value}
-      >
+      <span className="p-detail__value num" title={value}>
         {value}
       </span>
     </div>
@@ -230,16 +225,12 @@ export function CurrentModelBar({ model }: { model?: CurrentModel | null }) {
             ? t("common.daysAgo", { n: Math.floor(min / 1440) })
             : dateStr(model.last_used_ms);
   return (
-    <div className="card-base rounded-xl px-2.5 py-1.5 flex items-center justify-between gap-2">
-      <div className="flex items-center gap-1.5 min-w-0">
-        <span className="text-[9px] text-slate-500 shrink-0">
-          {t("common.currentModel")}
-        </span>
-        <span className="text-[11px] font-medium text-slate-900/85 truncate" title={model.model_id}>
-          {displayModelName(model.model_id)}
-        </span>
-      </div>
-      <span className="num text-[9px] text-slate-400 shrink-0">{rel}</span>
+    <div className="p-inline">
+      <span className="p-inline__label">{t("common.currentModel")}</span>
+      <span className="p-inline__value" title={model.model_id}>
+        {displayModelName(model.model_id)}
+      </span>
+      <span className="p-inline__meta num">{rel}</span>
     </div>
   );
 }
@@ -324,6 +315,23 @@ export function TrendChart<M extends TrendMetric>({
   // n<=8 全显示；否则向上取整到合适的步长。
   const labelStep =
     n <= 8 ? 1 : Math.max(2, Math.ceil(n / 7));
+  // 实际渲染的刻度下标：先按步进取首/尾与阶梯位，再从右往左剔掉与右侧标签
+  // 过近的（间距 < 图宽 11%，约一个 "00:00" 的宽度）——否则末段两个标签叠字。
+  const labelIdx: number[] = [];
+  for (let i = 0; i < n; i++) {
+    const farFromLast = n - 1 - i >= Math.max(1, Math.ceil(labelStep / 2));
+    if (i === 0 || i === n - 1 || (i % labelStep === 0 && farFromLast)) {
+      labelIdx.push(i);
+    }
+  }
+  const shownLabels: number[] = [];
+  for (let k = labelIdx.length - 1; k >= 0; k--) {
+    const i = labelIdx[k];
+    const right = shownLabels[0];
+    if (right == null || (right - i) / Math.max(1, n - 1) >= 0.11) {
+      shownLabels.unshift(i);
+    }
+  }
 
   const fillHeight = fill || card != null;
 
@@ -336,9 +344,9 @@ export function TrendChart<M extends TrendMetric>({
         </div>
         {deltaText && (
           <span
-            className={`text-[9px] num px-1 py-px rounded ${
+            className={`num text-[8.5px] font-semibold px-1.5 py-px rounded-full ${
               deltaKind !== "pct"
-                ? "text-slate-500 bg-slate-900/5"
+                ? "text-slate-600 bg-slate-900/6"
                 : deltaUp
                   ? "text-rose-600 bg-rose-500/10"
                   : "text-emerald-600 bg-emerald-500/10"
@@ -352,16 +360,14 @@ export function TrendChart<M extends TrendMetric>({
       <div className="flex items-center gap-1 shrink-0">
         {/* 指标切换：按钮组按 metrics 渲染 */}
         {showMetricToggle && onMetricChange && (
-          <div className="flex gap-0.5 p-0.5 rounded-lg bg-slate-900/4">
+          <div className="p-sort">
             {metricOptions.map((m) => (
               <button
                 key={m}
+                type="button"
+                aria-pressed={metric === m}
                 onClick={() => onMetricChange(m)}
-                className={`px-2 py-0.5 rounded-md text-[9px] font-medium transition-all duration-150 ${
-                  metric === m
-                    ? "bg-sky-500 text-white shadow-sm"
-                    : "text-slate-500 hover:text-slate-700"
-                }`}
+                className="p-sort__item"
               >
                 {m === "cost"
                   ? t("common.cost")
@@ -418,12 +424,12 @@ export function TrendChart<M extends TrendMetric>({
                 </div>
               )}
               <div
-                className={`w-full rounded-t-md transition-all duration-300 ${
+                className={`w-full ${
                   isLast
-                    ? "bg-gradient-to-t from-sky-600 to-sky-400"
+                    ? "p-bar p-bar--last"
                     : isHover
-                      ? "bg-gradient-to-t from-slate-600 to-slate-400"
-                      : "bg-gradient-to-t from-slate-500/70 to-slate-400/50"
+                      ? "p-bar p-bar--hover"
+                      : "p-bar"
                 }`}
                 style={{
                   height: `${Math.max(h, v > 0 ? 4 : 0)}%`,
@@ -435,24 +441,30 @@ export function TrendChart<M extends TrendMetric>({
         })}
       </div>
 
-      {/* 标签：柱子多时隔几个显示一个；靠近末柱的步进标签去掉，避免与「始终显示的最后一根」挤在一起 */}
-      <div className={`flex ${barGap} mt-1 shrink-0`}>
-        {points.map((d, i) => {
+      {/* 标签：按柱位百分比绝对定位，而不是「每根柱一个 flex-1 格子」——
+          格子宽 = 图宽/N，13 个小时桶时只有 ~14px，标签（"12:00" 约 24px）
+          会被裁成「12:0(」。隔 labelStep 显示一个、首尾必显，绝对定位让
+          标签可以越过自己那一格居中，也不会彼此挤压变形。 */}
+      <div className="relative mt-1 h-3 shrink-0">
+        {shownLabels.map((i) => {
+          const d = points[i];
           const isFirst = i === 0;
           const isLast = i === n - 1;
-          const farFromLast = n - 1 - i >= Math.max(1, Math.ceil(labelStep / 2));
-          const showLabel =
-            isFirst || isLast || (i % labelStep === 0 && farFromLast);
+          const left = n > 1 ? (i / (n - 1)) * 100 : 0;
           return (
             <span
               key={d.label}
-              className={`flex-1 text-[8px] num min-w-0 overflow-hidden whitespace-nowrap ${
-                isFirst ? "text-left" : isLast ? "text-right" : "text-center"
-              } ${
-                isLast
-                  ? "text-sky-600 font-medium"
-                  : "text-slate-500/80"
-              } ${showLabel ? "" : "invisible"}`}
+              className={`p-chart-label absolute top-0 ${
+                isLast ? "p-chart-label--last" : ""
+              }`}
+              style={{
+                left: `${left}%`,
+                transform: isFirst
+                  ? "none"
+                  : isLast
+                    ? "translateX(-100%)"
+                    : "translateX(-50%)",
+              }}
             >
               {d.label}
             </span>
@@ -466,7 +478,7 @@ export function TrendChart<M extends TrendMetric>({
     return (
       <CardFrame
         frame={card}
-        className="card-base rounded-2xl px-3 pt-2.5 pb-2"
+        className="p-card--frame px-3 pt-2.5 pb-2"
         bodyClassName="flex flex-col"
         summary={cardSummary}
         head={titleRow}
@@ -478,7 +490,7 @@ export function TrendChart<M extends TrendMetric>({
 
   return (
     <div
-      className={`card-base rounded-2xl px-3 pt-2.5 pb-2 ${
+      className={`p-card--frame px-3 pt-2.5 pb-2 ${
         fill ? "flex-1 min-h-0 flex flex-col" : ""
       }`}
     >

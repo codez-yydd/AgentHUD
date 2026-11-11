@@ -59,6 +59,7 @@ export function SimpleSpeedCard({
       title={t("customize.card.speed")}
       card={{ window: "panel", page: "summary", id: "summary.speed" }}
       cardSummary={summary}
+      className="p-card--frame"
     >
       {({ detail }) =>
         top ? (
@@ -152,6 +153,7 @@ export function SimpleUsageCard({
       title={t("customize.card.usage")}
       card={{ window: "panel", page: "summary", id: "summary.usage" }}
       cardSummary={summary}
+      className="p-card--frame"
       action={
         onRangeChange ? (
           <div className="flex gap-0.5 p-0.5 rounded-lg bg-slate-900/4">

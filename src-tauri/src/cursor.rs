@@ -1303,7 +1303,7 @@ pub fn fetch_cursor_snapshot(from_ms: i64, to_ms: i64) -> Result<CursorSnapshot,
     })
 }
 
-/// 轻量拉取 Cursor 用量合计（菜单栏标题合并用）。
+/// 轻量拉取 Cursor 用量合计（今日用量合并用）。
 /// 只走 events（带 120s 缓存），不拉 summary/auth，避免 30s 定时器狂发请求。
 /// 返回 (API 标价花费 USD, 总 token)。未配置/未登录/网络失败时返回 Err，调用方静默降级。
 pub fn fetch_cursor_usage_totals(from_ms: i64, to_ms: i64) -> Result<(f64, i64), String> {

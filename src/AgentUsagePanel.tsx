@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type CSSProperties } from "react";
 import type {
   AgentQuotaDelta,
   Currency,
@@ -14,7 +14,6 @@ import {
   CurrentModelBar,
   DetailRow,
   Metric,
-  ProgressBar,
   SpeedMetricsGrid,
   TrendChart,
   remainingGradient,
@@ -79,6 +78,15 @@ export interface AgentPanelTheme {
   /** 英雄卡 accent */
   accent: "sky" | "emerald" | "orange" | "violet" | "indigo";
 }
+
+/** 品牌 accent → 十六进制（.p-tag 的品牌底色用；与 .p-hero--* 同色） */
+const ACCENT_HEX: Record<AgentPanelTheme["accent"], string> = {
+  sky: "#0ea5e9",
+  emerald: "#10b981",
+  orange: "#f97316",
+  violet: "#8b5cf6",
+  indigo: "#6366f1",
+};
 
 /** 无数据空态文案（未安装对应 CLI 时展示）。
  *  title/hint 由品牌皮肤组件查词典传入；name 为品牌名（不进词典，加载文案插值用）。 */
@@ -145,37 +153,41 @@ function AgentQuotaRow({
       resetText = `↻ ${formatCountdownCore(resetAt - now)}`;
     }
   }
+  const deltaText =
+    delta && delta.samples >= 2 && delta.pct > 0
+      ? t("quota.todayDelta", { pct: Math.round(delta.pct) })
+      : null;
   return (
-    <div>
-      <div className="flex items-center justify-between gap-2 mb-0.5">
-        <span className="text-[10px] text-slate-600 truncate">
-          {label}
-          {resetText && (
-            <span
-              className="ml-1 text-[8px] text-slate-400 num"
-              title={display.datetime ? resetText : undefined}
-            >
-              {resetText}
-            </span>
-          )}
-        </span>
-        <span
-          className="num text-[10px] font-semibold shrink-0 whitespace-nowrap"
-          style={{ color: remainingTextColor(remain) }}
-        >
-          {t("common.remaining", { pct: Math.round(remain) })}
-        </span>
+    <div className="p-quota">
+      <span className="p-quota__label" title={label}>
+        {label}
+      </span>
+      <div className="p-quota__track">
+        <div
+          className="p-quota__fill"
+          style={{ width: `${remain}%`, background: remainingGradient(remain) }}
+        />
       </div>
-      <ProgressBar
-        pct={remain / 100}
-        height="h-1.5"
-        gradient={remainingGradient(remain)}
-      />
-      {delta && delta.samples >= 2 && delta.pct > 0 && (
-        <div className="text-[9px] mt-0.5 num text-slate-700/50">
-          {t("quota.todayDelta", { pct: Math.round(delta.pct) })}
-        </div>
+      {deltaText && (
+        <span className="p-quota__delta" title={deltaText}>
+          {deltaText}
+        </span>
       )}
+      {resetText && (
+        <span
+          className="p-quota__reset"
+          title={display.datetime ? resetText : undefined}
+        >
+          {resetText}
+        </span>
+      )}
+      <span
+        className="p-quota__pct num"
+        style={{ color: remainingTextColor(remain) }}
+        title={t("common.remaining", { pct: Math.round(remain) })}
+      >
+        {Math.round(remain)}%
+      </span>
     </div>
   );
 }
@@ -266,12 +278,12 @@ export function AgentUsagePanel({
       rate.monthly_pct != null);
 
   return (
-    <div className="flex-1 overflow-y-auto px-3 py-2.5 page-stack">
+    <div className="panel-body">
       {/* 授权类失败明确提示（仅 Claude 产出：OAuth 凭证缺失 / token 失效）：
           有额度行时以额度卡正常展示（该字段必为 null），此处覆盖失败态，
           区别于网络类失败的静默不渲染 */}
       {!hasRateRow && snapshot.rate_limits_error && (
-        <SectionCard title={t("stats.rateLimits")}>
+        <SectionCard title={t("stats.rateLimits")} className="p-card--frame">
           <p
             className="text-[10px] text-amber-700/90 leading-relaxed break-all"
             title={snapshot.rate_limits_error}
@@ -284,9 +296,13 @@ export function AgentUsagePanel({
       {hasRateRow && rate && (
         <SectionCard
           title={t("stats.rateLimits")}
+          className="p-card--frame"
           action={
             rate.plan_type ? (
-              <span className={`shrink-0 px-1.5 py-0.5 rounded text-[9px] font-medium capitalize ${theme.badge}`}>
+              <span
+                className="p-tag capitalize"
+                style={{ "--accent": ACCENT_HEX[theme.accent] } as CSSProperties}
+              >
                 {rate.plan_type}
               </span>
             ) : undefined
@@ -326,11 +342,12 @@ export function AgentUsagePanel({
             {/* 超额消费金额行（仅 Claude extra_usage：月度超额金额，美元计价；
                 上限缺失时只展示已用金额） */}
             {(rate.extra_used != null || rate.extra_limit != null) && (
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-[10px] text-slate-600">
+              <div className="p-quota">
+                <span className="p-quota__label" title={t("stats.claudeExtraUsage")}>
                   {t("stats.claudeExtraUsage")}
                 </span>
-                <span className="num text-[10px] text-slate-700">
+                <span className="p-quota__track" />
+                <span className="p-quota__reset">
                   ${formatUsd(rate.extra_used)}
                   {rate.extra_limit != null && ` / $${formatUsd(rate.extra_limit)}`}
                 </span>
@@ -381,7 +398,10 @@ export function AgentUsagePanel({
 
       <SpeedMetricsGrid overall={stats.overall} mergedRemote={mergedRemote} />
 
-      <SectionCard title={t("common.tokenComposition")}>
+      <SectionCard
+        title={t("common.tokenComposition")}
+        className="p-card--frame"
+      >
         <div className="space-y-1.5">
           <DetailRow label={t("common.input")} value={formatTokens(stats.overall.input_tokens)} pct={stats.overall.total_tokens > 0 ? stats.overall.input_tokens / stats.overall.total_tokens : 0} color="bg-sky-500" />
           <DetailRow label={t("common.cache")} value={formatTokens(stats.overall.cache_read_tokens)} pct={cacheRate} color="bg-emerald-500" />
@@ -395,6 +415,7 @@ export function AgentUsagePanel({
       {stats.by_model.length > 0 && (
         <SectionCard
           title={t("common.modelUsage")}
+          className="p-card--frame"
           action={
             <SortToggle
               options={[
@@ -435,28 +456,51 @@ export function AgentUsagePanel({
                     .filter(Boolean)
                     .join(" · ") || undefined;
                 return (
-                  <div key={m.provider_id + m.model_id} className="relative rounded-lg hover:bg-slate-900/4 transition-colors py-1.5 px-1.5 overflow-hidden">
-                    <div className={`absolute inset-y-0 left-0 rounded-lg pointer-events-none ${theme.rowBar}`} style={{ width: `${pct * 100}%` }} />
-                    <div className="relative flex items-center justify-between text-xs min-w-0">
-                      <div className="flex items-center gap-1 min-w-0 flex-1">
-                        <span className="font-medium text-slate-900/90 truncate text-[11px]" title={title}>{label}</span>
-                        {!hasPrice && <span className="text-[10px] text-amber-600/90 shrink-0" title={t("common.noPrice")}>⚠</span>}
-                      </div>
-                      <div className="flex items-center gap-1 num shrink-0 text-[10px]">
-                        {/* 请求/Token/花费三列深浅递进（浅→中→深），便于扫视区分；速度列插在 Token 与花费之间 */}
-                        <span className="min-w-[1.5rem] text-right text-slate-500/80" title={t("common.requestCount")}>{formatTokens(m.requests)}</span>
-                        <span className="min-w-[2rem] text-right text-slate-700" title={t("common.totalTokens")}>{formatTokens(m.total_tokens)}</span>
-                        {hasSpeedCol && (
-                          <span className="min-w-[2.25rem] text-right text-sky-700/80" title={t("common.avgSpeed")}>
-                            {m.avg_tps != null
-                              ? `${m.speedQuality === "request_average" ? "≈" : ""}${formatTps(m.avg_tps)} t/s`
-                              : "—"}
-                          </span>
-                        )}
-                        <span className={`min-w-[2.5rem] text-right font-medium ${hasPrice ? "text-slate-900/90" : "text-slate-500/50"}`}>
-                          {hasPrice ? formatCost(costVal, currency) : "—"}
+                  <div key={m.provider_id + m.model_id} className="p-model-row">
+                    <div
+                      className={`p-model-row__bar ${theme.rowBar}`}
+                      style={{ width: `${pct * 100}%` }}
+                    />
+                    <span className="p-model-row__name" title={title}>
+                      {label}
+                    </span>
+                    {!hasPrice && (
+                      <span className="p-chip p-chip--warn" title={t("common.noPrice")}>
+                        ⚠
+                      </span>
+                    )}
+                    <div className="p-model-row__nums">
+                      {/* 请求/Token/花费三列深浅递进；速度列插在 Token 与花费之间 */}
+                      <span
+                        className="p-model-row__req"
+                        title={t("common.requestCount")}
+                      >
+                        {formatTokens(m.requests)}
+                      </span>
+                      <span
+                        className="p-model-row__tok"
+                        title={t("common.totalTokens")}
+                      >
+                        {formatTokens(m.total_tokens)}
+                      </span>
+                      {hasSpeedCol && (
+                        <span
+                          className="p-model-row__req"
+                          style={{ color: "var(--p-accent)" }}
+                          title={t("common.avgSpeed")}
+                        >
+                          {m.avg_tps != null
+                            ? `${m.speedQuality === "request_average" ? "≈" : ""}${formatTps(m.avg_tps)} t/s`
+                            : "—"}
                         </span>
-                      </div>
+                      )}
+                      <span
+                        className={`p-model-row__cost ${
+                          hasPrice ? "" : "p-model-row__cost--none"
+                        }`}
+                      >
+                        {hasPrice ? formatCost(costVal, currency) : "—"}
+                      </span>
                     </div>
                   </div>
                 );

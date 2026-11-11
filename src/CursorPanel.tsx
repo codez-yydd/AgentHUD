@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type CSSProperties } from "react";
 import type {
   AgentQuotaDelta,
   CursorSnapshot,
@@ -14,6 +14,7 @@ import {
   remainingGradient,
   remainingTextColor,
 } from "./widgets";
+import { SortToggle } from "./layout";
 import { useI18n } from "./i18n";
 import { useDataCache, PROVIDER_QUOTA_STALE_MS } from "./DataCache";
 import { CredentialsCard } from "./CredentialsCard";
@@ -50,32 +51,33 @@ function PlanQuotaRow({
 }) {
   const { t } = useI18n();
   const remain = Math.max(0, 100 - usedPct);
+  const deltaText =
+    delta && delta.samples >= 2 && delta.pct > 0
+      ? t("quota.todayDelta", { pct: Math.round(delta.pct) })
+      : null;
   return (
-    <div>
-      <div className="flex items-center justify-between gap-2 mb-0.5">
-        <span className="text-[10px] text-slate-600 truncate">
-          {label}
-          {hint && (
-            <span className="ml-1 text-[8px] text-slate-400">{hint}</span>
-          )}
-        </span>
-        <span
-          className="num text-[10px] font-semibold shrink-0 whitespace-nowrap"
-          style={{ color: remainingTextColor(remain) }}
-        >
-          {t("common.remaining", { pct: Math.round(remain) })}
-        </span>
+    <div className="p-quota">
+      <span className="p-quota__label" title={hint ? `${label} · ${hint}` : label}>
+        {label}
+      </span>
+      <div className="p-quota__track">
+        <div
+          className="p-quota__fill"
+          style={{ width: `${remain}%`, background: remainingGradient(remain) }}
+        />
       </div>
-      <ProgressBar
-        pct={remain / 100}
-        height="h-1.5"
-        gradient={remainingGradient(remain)}
-      />
-      {delta && delta.samples >= 2 && delta.pct > 0 && (
-        <div className="text-[9px] mt-0.5 num text-slate-700/50">
-          {t("quota.todayDelta", { pct: Math.round(delta.pct) })}
-        </div>
+      {deltaText && (
+        <span className="p-quota__delta" title={deltaText}>
+          {deltaText}
+        </span>
       )}
+      <span
+        className="p-quota__pct num"
+        style={{ color: remainingTextColor(remain) }}
+        title={t("common.remaining", { pct: Math.round(remain) })}
+      >
+        {Math.round(remain)}%
+      </span>
     </div>
   );
 }
@@ -169,17 +171,18 @@ function CursorPanelContent({
   }));
 
   return (
-    <div className="flex-1 overflow-y-auto px-3.5 py-3 space-y-3">
+    <div className="panel-body">
       {/* 账户信息 */}
-      <div className="flex items-center justify-between text-[10px]">
-        <div className="min-w-0">
-          <span className="text-slate-700/55">{t("cursor.account")} </span>
-          <span className="text-slate-900/80 font-medium truncate">
-            {snapshot.account_email || snapshot.account_name || t("cursor.unknown")}
-          </span>
-        </div>
+      <div className="p-inline">
+        <span className="p-inline__label">{t("cursor.account")}</span>
+        <span className="p-inline__value">
+          {snapshot.account_email || snapshot.account_name || t("cursor.unknown")}
+        </span>
         {snapshot.membership_type && (
-          <span className="shrink-0 px-1.5 py-0.5 rounded bg-violet-500/15 text-violet-700 text-[9px] font-medium capitalize">
+          <span
+            className="p-tag capitalize"
+            style={{ "--accent": "#8b5cf6" } as CSSProperties}
+          >
             {snapshot.membership_type}
           </span>
         )}
@@ -195,33 +198,31 @@ function CursorPanelContent({
 
       {/* 套餐额度：与 Cursor 客户端一致，只展示 Auto / API（本计费周期，不随时间范围变化） */}
       {plan && (
-        <div className="rounded-lg bg-surface/25 border border-surface/30 px-2.5 py-2 space-y-2">
+        <div className="p-card--frame px-2.5 py-2">
+          <div className="p-card__head">
+            <span className="p-card__title">{t("cursor.planQuota")}</span>
+          </div>
           {plan.auto_pct != null || plan.api_pct != null ? (
-            <>
+            <div className="flex flex-col gap-0.5">
               {plan.auto_pct != null && (
                 <PlanQuotaRow label="Auto" usedPct={plan.auto_pct} delta={autoQuotaDelta} />
               )}
               {plan.api_pct != null && (
                 <PlanQuotaRow label="API" usedPct={plan.api_pct} delta={apiQuotaDelta} />
               )}
-            </>
+            </div>
           ) : (
-            <>
-              <div className="text-[10px] text-slate-600">{t("cursor.planQuota")}</div>
-              <div className="text-[10px] text-slate-700/40">{t("cursor.noQuotaData")}</div>
-            </>
+            <div className="p-quota-agent__empty">{t("cursor.noQuotaData")}</div>
           )}
         </div>
       )}
 
       {/* 按需用量 */}
       {onDemand && onDemand.enabled !== false && (
-        <div className="rounded-lg bg-surface/25 border border-surface/30 px-2.5 py-2 space-y-1.5">
-          <div className="flex items-center justify-between">
-            <span className="text-[10px] uppercase tracking-wide text-slate-700/55">
-              {t("cursor.onDemand")}
-            </span>
-            <span className="num text-[10px] text-slate-700/60">
+        <div className="p-card--frame px-2.5 py-2">
+          <div className="p-card__head">
+            <span className="p-card__title">{t("cursor.onDemand")}</span>
+            <span className="p-chart-label">
               {odUsedUsd != null
                 ? formatCost(
                     currency === "cny" ? odUsedUsd * fxRate : odUsedUsd,
@@ -251,7 +252,7 @@ function CursorPanelContent({
 
       {/* 计费周期 */}
       {(snapshot.billing_cycle_start || snapshot.billing_cycle_end) && (
-        <div className="flex items-center justify-between text-[10px] text-slate-700/50">
+        <div className="flex items-center justify-between gap-2 p-faint-text">
           <span>
             {snapshot.billing_cycle_start
               ? t("cursor.cycle", { date: snapshot.billing_cycle_start.slice(0, 10) })
@@ -268,28 +269,18 @@ function CursorPanelContent({
       {/* events 概览（所选时间范围内的 Token 使用明细） */}
       {events && (
         <>
-          <div className="flex items-end justify-between gap-2">
-            <div className="min-w-0">
-              <div className="text-[10px] uppercase tracking-wide text-slate-700/55 truncate">
-                {t("cursor.tokenSpend")}
-                <span className="ml-1 text-[8px] text-sky-600/50 normal-case">
-                  {t("cursor.selectedRange")}
-                </span>
-              </div>
-              <div
-                className="num text-[26px] font-bold text-slate-900 leading-none mt-0.5 truncate"
-                title={eventsCostText}
-              >
-                {eventsCostText}
-              </div>
+          <div className="p-hero p-hero--brand p-hero--violet">
+            <div className="p-hero__head">
+              <span className="p-eyebrow">
+                {t("cursor.tokenSpend")} · {t("cursor.selectedRange")}
+              </span>
+              <span className="p-badge">
+                <i />
+                {t("common.totalTokens")} {formatTokens(events.total_tokens)}
+              </span>
             </div>
-            <div className="text-right shrink-0">
-              <div className="text-[10px] uppercase tracking-wide text-slate-700/55">
-                {t("common.totalTokens")}
-              </div>
-              <div className="num text-[15px] font-semibold text-slate-900/70 leading-none mt-1">
-                {formatTokens(events.total_tokens)}
-              </div>
+            <div className="p-hero__value num" title={eventsCostText}>
+              {eventsCostText}
             </div>
           </div>
 
@@ -324,28 +315,20 @@ function CursorPanelContent({
 
           {/* 按模型排行 */}
           {snapshot.by_model.length > 0 && (
-            <div>
-              <div className="flex items-center justify-between mb-1.5 mt-1">
-                <span className="text-[10px] uppercase tracking-wide text-slate-700/55">
-                  {t("cursor.byModel")}
-                </span>
-                <div className="flex gap-0.5 text-[10px]">
-                  {(["cost", "token", "requests"] as const).map((s) => (
-                    <button
-                      key={s}
-                      onClick={() => setSortBy(s)}
-                      className={`px-1.5 py-0.5 rounded transition-colors ${
-                        sortBy === s
-                          ? "bg-violet-500/20 text-violet-700"
-                          : "text-slate-700/45 hover:text-slate-900/70"
-                      }`}
-                    >
-                      {s === "cost" ? t("common.cost") : s === "token" ? "Token" : t("common.requests")}
-                    </button>
-                  ))}
-                </div>
+            <div className="p-card--frame px-2.5 py-2">
+              <div className="p-card__head">
+                <span className="p-card__title">{t("cursor.byModel")}</span>
+                <SortToggle
+                  options={[
+                    { key: "cost", label: t("common.cost") },
+                    { key: "token", label: "Token" },
+                    { key: "requests", label: t("common.requests") },
+                  ]}
+                  value={sortBy}
+                  onChange={setSortBy}
+                />
               </div>
-              <div className="space-y-1">
+              <div className="flex flex-col gap-0.5">
                 {(() => {
                   const rows = snapshot.by_model.map((m) => ({
                     m,
@@ -362,35 +345,30 @@ function CursorPanelContent({
                     const pct =
                       maxVal > 0 ? Math.max(sortVal / maxVal, 0.02) : 0;
                     return (
-                      <div
-                        key={m.model}
-                        className="relative rounded-lg hover:bg-slate-900/5 transition-colors py-1.5 px-2 -mx-2 overflow-hidden"
-                      >
+                      <div key={m.model} className="p-model-row">
                         <div
-                          className="absolute inset-y-0 left-0 bg-violet-500/10 rounded-lg pointer-events-none"
+                          className="p-model-row__bar bg-violet-500/10"
                           style={{ width: `${pct * 100}%` }}
                         />
-                        <div className="relative flex items-center justify-between text-xs">
-                          <span className="font-medium text-slate-900/90 truncate">
-                            {m.model}
+                        <span className="p-model-row__name" title={m.model}>
+                          {m.model}
+                        </span>
+                        <div className="p-model-row__nums">
+                          {/* 请求/Token/花费三列深浅递进（浅→中→深） */}
+                          <span className="p-model-row__req" title={t("common.requestCount")}>
+                            {m.requests}
                           </span>
-                          {/* 请求/Token/花费三列深浅递进（浅→中→深），便于扫视区分 */}
-                          <div className="flex items-center gap-2 num shrink-0">
-                            <span className="text-slate-500/80">{m.requests}</span>
-                            <span className="text-slate-700/25">·</span>
-                            <span className="text-slate-700">{formatTokens(m.total_tokens)}</span>
-                            {/* 行尾花费列：自然宽 + shrink-0，金额随内容撑开，
-                                长金额（如 ¥1234.56）不再被固定 w-12 挤出列外；
-                                右端对齐由父级 justify-between 保证，与原先一致 */}
-                            <span className="shrink-0 whitespace-nowrap text-right text-slate-900/90">
-                              {formatCost(
-                                currency === "cny"
-                                  ? m.cost_usd * fxRate
-                                  : m.cost_usd,
-                                currency
-                              )}
-                            </span>
-                          </div>
+                          <span className="p-model-row__tok" title={t("common.totalTokens")}>
+                            {formatTokens(m.total_tokens)}
+                          </span>
+                          <span className="p-model-row__cost">
+                            {formatCost(
+                              currency === "cny"
+                                ? m.cost_usd * fxRate
+                                : m.cost_usd,
+                              currency
+                            )}
+                          </span>
                         </div>
                       </div>
                     );
@@ -404,10 +382,12 @@ function CursorPanelContent({
 
       {/* 无 events 数据但已登录 */}
       {!events && (
-        <div className="rounded-lg bg-surface/25 border border-surface/30 px-3 py-6 text-center text-[10px] text-slate-700/40">
-          {snapshot.events_error
-            ? t("cursor.eventsFailed", { msg: snapshot.events_error })
-            : t("cursor.noEvents")}
+        <div className="p-card--frame px-3 py-6 text-center">
+          <p className="text-[9.5px] leading-relaxed text-slate-600/80">
+            {snapshot.events_error
+              ? t("cursor.eventsFailed", { msg: snapshot.events_error })
+              : t("cursor.noEvents")}
+          </p>
         </div>
       )}
     </div>
