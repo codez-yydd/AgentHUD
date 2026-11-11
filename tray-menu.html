@@ -145,23 +145,17 @@
         gap: 9px;
         padding: 10px 14px 6px;
       }
+      /* 软件 logo：项目里的真图（/src/assets/logo.png，构建时由 Vite 改写成
+         带哈希的 /assets/logo-*.png）。此前是自绘的三根"信号柱" SVG + 渐变
+         底，跟主窗口标题栏、面板头部不一致，现统一用真图 */
       .brand-mark {
         flex: none;
         width: 22px;
         height: 22px;
         border-radius: 7px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        background: linear-gradient(145deg, #0ea5e9, #6366f1);
-        box-shadow:
-          inset 0 0 0 0.5px rgba(255, 255, 255, 0.4),
-          0 1px 4px rgba(14, 165, 233, 0.28);
-        color: #fff;
-      }
-      .brand-mark svg {
-        width: 14px;
-        height: 14px;
+        object-fit: contain;
+        user-select: none;
+        filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.32));
       }
       .brand-name {
         font-size: 15px;
@@ -863,13 +857,13 @@
     <div id="menu-root">
       <!-- ===== 头部 ===== -->
       <header class="header">
-        <span class="brand-mark" aria-hidden="true">
-          <svg viewBox="0 0 16 16" fill="none">
-            <rect x="2" y="7" width="3" height="7" rx="1" fill="currentColor" opacity="0.75" />
-            <rect x="6.5" y="4" width="3" height="10" rx="1" fill="currentColor" />
-            <rect x="11" y="1.5" width="3" height="12.5" rx="1" fill="currentColor" opacity="0.75" />
-          </svg>
-        </span>
+        <img
+          class="brand-mark"
+          src="/src/assets/logo.png"
+          alt=""
+          aria-hidden="true"
+          draggable="false"
+        />
         <span class="brand-name">AgentHUD</span>
         <button
           type="button"

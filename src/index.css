@@ -1483,22 +1483,17 @@ html[data-font-tier="xl"] .page-stack {
   gap: 8px;
   padding: 10px 12px 9px;
 }
+/* 软件 logo（128px 满底 PNG 由 Vite 打包）：22px + 7px 圆角，底部一点点
+   投影让深底 logo 从玻璃面板上"浮"起来。此前是自绘的三根"信号柱" SVG，
+   与标题栏/托盘菜单不一致，现统一用真图 */
 .panel-mark {
   width: 22px;
   height: 22px;
   flex: none;
   border-radius: 7px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: #fff;
-  background: linear-gradient(145deg, #0ea5e9, #6366f1);
-  box-shadow: inset 0 0 0 0.5px rgba(255, 255, 255, 0.4),
-    0 1px 4px rgba(14, 165, 233, 0.28);
-}
-.panel-mark svg {
-  width: 13px;
-  height: 13px;
+  object-fit: contain;
+  user-select: none;
+  filter: drop-shadow(0 1px 2px rgba(2, 6, 23, 0.28));
 }
 .panel-head__text {
   display: flex;

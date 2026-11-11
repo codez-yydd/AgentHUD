@@ -53,6 +53,10 @@ import { ThemeToggle } from "./layout";
 import { requestLayoutEdit } from "./layoutEditor";
 import { useI18n, type TFn } from "./i18n";
 import { dateLocale } from "./i18n/locale";
+// 软件 logo：与主窗口标题栏（dashboard/TitleBar.tsx）、dashboard.html 的窗口
+// 图标同源，Vite 打包成带哈希的资源 URL。面板头部曾自绘三根"信号柱" SVG
+// 顶替 logo，现统一换成真图
+import logo from "./assets/logo.png";
 
 /** GitHub 仓库地址：托盘工具栏 GitHub 按钮用系统浏览器打开（openUrl
  *  失败时退化为 window.open，参照 UpdaterCard 的 DOWNLOAD_PAGE） */
@@ -745,13 +749,10 @@ export function StatsPanel({
             : undefined
         }
       >
-        <span className="panel-mark" aria-hidden>
-          <svg viewBox="0 0 16 16" fill="none">
-            <rect x="2" y="7" width="3" height="7" rx="1" fill="currentColor" opacity=".72" />
-            <rect x="6.5" y="4" width="3" height="10" rx="1" fill="currentColor" />
-            <rect x="11" y="6" width="3" height="8" rx="1" fill="currentColor" opacity=".86" />
-          </svg>
-        </span>
+        {/* 品牌区：软件 logo + 产品名 + 更新时间。logo 用项目里的真图
+            （128px 满底 PNG），不再自绘信号柱 SVG；alt 留空——产品名就在
+            旁边，读屏不重复播报 */}
+        <img className="panel-mark" src={logo} alt="" aria-hidden draggable={false} />
         <div className="panel-head__text">
           <span className="panel-head__name">AgentHUD</span>
           <span className="panel-head__sub" title={updatedText}>
