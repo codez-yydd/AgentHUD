@@ -2069,26 +2069,66 @@ fn list_history(limit: usize) -> Vec<ShotHistoryItem> {
         .collect()
 }
 
+/// 写图片到系统剪贴板。
+///
+/// Windows 的剪贴板是进程独占的：`OpenClipboard` 撞上别的程序（或本进程
+/// 的剪贴板轮询线程）就会报 `ClipboardOccupied`，用户看到的是「写入剪贴板
+/// 失败」。这里做两件事：写之前先让后台轮询停一拍（`begin_write`），失败
+/// 后按递增间隔重试，尽量把短时的占用熬过去。
 fn write_clipboard(image: &image::RgbaImage) -> Result<(), String> {
-    let data = arboard::ImageData {
-        width: image.width() as usize,
-        height: image.height() as usize,
-        bytes: std::borrow::Cow::Owned(image.clone().into_raw()),
-    };
+    const ATTEMPTS: usize = 8;
+    let _writing = super::clipboard::begin_write();
+    let (width, height) = (image.width() as usize, image.height() as usize);
     let mut last_err = String::new();
-    for attempt in 0..3 {
+    for attempt in 0..ATTEMPTS {
+        // 借用原始 RGBA，不在每次重试时复制几十 MB 的像素
+        let data = arboard::ImageData {
+            width,
+            height,
+            bytes: std::borrow::Cow::Borrowed(image.as_raw()),
+        };
         match arboard::Clipboard::new() {
-            Ok(mut clip) => match clip.set_image(data.clone()) {
+            Ok(mut clip) => match clip.set_image(data) {
                 Ok(()) => return Ok(()),
                 Err(e) => last_err = format!("写入剪贴板失败: {e}"),
             },
             Err(e) => last_err = format!("剪贴板不可用: {e}"),
         }
-        if attempt < 2 {
-            std::thread::sleep(Duration::from_millis(60));
+        if attempt + 1 < ATTEMPTS {
+            // 40 / 80 / 120 … / 280ms，累计约 1.1s：常见的剪贴板管理器
+            // 占用都在这个量级内释放。
+            std::thread::sleep(Duration::from_millis(40 * (attempt as u64 + 1)));
         }
     }
-    Err(last_err)
+    // arboard 整条写路径失败后，Windows 上再试一次只写 PNG。
+    #[cfg(target_os = "windows")]
+    {
+        if write_clipboard_png_fallback(image).is_ok() {
+            return Ok(());
+        }
+    }
+    Err(format!(
+        "{last_err}（已重试 {ATTEMPTS} 次，剪贴板可能正被其他程序占用）"
+    ))
+}
+
+/// Windows 兜底：arboard 的 `set_image` 先写 PNG、再写 CF_DIBV5，大图或
+/// 系统剪贴板历史介入时 DIB 那一步会失败并整体报错，但 PNG 其实已经进了
+/// 剪贴板。这里直接用 clipboard-win 只写注册格式 `PNG`（Chromium 系浏览器 /
+/// 微信 / QQ / 飞书都优先读它），写成功就不再把这次复制当失败。
+#[cfg(target_os = "windows")]
+fn write_clipboard_png_fallback(image: &image::RgbaImage) -> Result<(), String> {
+    use clipboard_win::{raw, Clipboard};
+
+    let mut png = std::io::Cursor::new(Vec::new());
+    image
+        .write_to(&mut png, image::ImageFormat::Png)
+        .map_err(|e| format!("截图转 PNG 失败: {e}"))?;
+    let png = png.into_inner();
+    let format =
+        raw::register_format("PNG").ok_or_else(|| "无法注册 PNG 剪贴板格式".to_string())?;
+    let _clip = Clipboard::new_attempts(10).map_err(|e| format!("剪贴板被占用: {e}"))?;
+    raw::set(format.get(), &png).map_err(|e| format!("写入 PNG 剪贴板失败: {e}"))
 }
 
 #[tauri::command]
@@ -2161,6 +2201,7 @@ pub async fn shot_copy(data_url: String) -> Result<(), String> {
 
 #[tauri::command]
 pub fn shot_copy_text(text: String) -> Result<(), String> {
+    let _writing = super::clipboard::begin_write();
     let mut clip = arboard::Clipboard::new().map_err(|e| format!("剪贴板不可用: {e}"))?;
     clip.set_text(text)
         .map_err(|e| format!("复制文字失败: {e}"))

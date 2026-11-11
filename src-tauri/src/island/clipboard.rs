@@ -8,7 +8,7 @@ use serde::Serialize;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::io::Cursor;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::Duration;
@@ -22,6 +22,29 @@ static GEN: AtomicU64 = AtomicU64::new(0);
 static APP: OnceLock<Mutex<Option<AppHandle>>> = OnceLock::new();
 static ITEMS: OnceLock<Mutex<Vec<ClipItem>>> = OnceLock::new();
 static LAST_HASH: AtomicU64 = AtomicU64::new(0);
+/// 正在写剪贴板的并发计数（截图复制 / 历史回写）：大于 0 时后台轮询跳过
+/// 本拍。Windows 的 OpenClipboard 是独占的，轮询读一张大图要卡住剪贴板
+/// 几十毫秒，正好赶上用户点「复制」就会 `ClipboardOccupied`。
+static WRITING: AtomicUsize = AtomicUsize::new(0);
+
+/// 写剪贴板前调用，返回的 guard drop 时计数减一；轮询线程只在计数为 0
+/// 时读剪贴板，避免自己抢自己。
+pub(crate) struct ClipboardWriteGuard;
+
+impl Drop for ClipboardWriteGuard {
+    fn drop(&mut self) {
+        WRITING.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+pub(crate) fn begin_write() -> ClipboardWriteGuard {
+    WRITING.fetch_add(1, Ordering::SeqCst);
+    ClipboardWriteGuard
+}
+
+fn is_writing() -> bool {
+    WRITING.load(Ordering::SeqCst) > 0
+}
 
 fn app_slot() -> &'static Mutex<Option<AppHandle>> {
     APP.get_or_init(|| Mutex::new(None))
@@ -158,11 +181,17 @@ pub fn start(app: AppHandle) {
             };
             let mut next_id = 0u64;
             while !STOP.load(Ordering::Relaxed) && GEN.load(Ordering::SeqCst) == gen {
-                // 首拍也捕获当前剪贴板，页面打开就有内容可点
-                let changed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    poll_once(&mut clip, &mut next_id)
-                }))
-                .unwrap_or(false);
+                // 首拍也捕获当前剪贴板，页面打开就有内容可点；正在写剪贴板时
+                // 跳拍，下一拍再读——否则会把用户刚复制的内容卡在
+                // ClipboardOccupied 上。
+                let changed = if is_writing() {
+                    false
+                } else {
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        poll_once(&mut clip, &mut next_id)
+                    }))
+                    .unwrap_or(false)
+                };
                 if changed {
                     if let Some(app) = app_slot().lock().ok().and_then(|g| g.clone()) {
                         emit(&app);
@@ -193,24 +222,55 @@ pub fn island_clipboard_copy(id: u64) -> Result<(), String> {
         .find(|i| i.id == id)
         .cloned()
         .ok_or_else(|| "剪贴板记录不存在".to_string())?;
-    let mut clip = arboard::Clipboard::new().map_err(|e| format!("剪贴板不可用: {e}"))?;
-    if item.kind == "image" {
-        let img = image::load_from_memory(&item.png)
-            .map_err(|e| format!("图片解码失败: {e}"))?
-            .to_rgba8();
-        let (w, h) = (img.width() as usize, img.height() as usize);
-        let data = arboard::ImageData {
-            width: w,
-            height: h,
-            bytes: std::borrow::Cow::Owned(img.into_raw()),
-        };
-        LAST_HASH.store(hash_bytes(&data.bytes), Ordering::SeqCst);
-        clip.set_image(data).map_err(|e| format!("写入图片失败: {e}"))?;
+    // 回写期间让轮询线程停一拍，避免它正读着剪贴板时这里打不开。
+    let _writing = begin_write();
+    // 图片只解码一次，重试时只重写剪贴板
+    let rgba = if item.kind == "image" {
+        Some(
+            image::load_from_memory(&item.png)
+                .map_err(|e| format!("图片解码失败: {e}"))?
+                .to_rgba8(),
+        )
     } else {
-        LAST_HASH.store(hash_bytes(item.text.as_bytes()), Ordering::SeqCst);
-        clip.set_text(item.text).map_err(|e| format!("写入文本失败: {e}"))?;
+        None
+    };
+    let mut last_err = String::new();
+    for attempt in 0..3 {
+        match write_clip_item(&item, rgba.as_ref()) {
+            Ok(()) => {
+                let hash = match rgba.as_ref() {
+                    Some(img) => hash_bytes(img.as_raw()),
+                    None => hash_bytes(item.text.as_bytes()),
+                };
+                LAST_HASH.store(hash, Ordering::SeqCst);
+                return Ok(());
+            }
+            Err(e) => last_err = e,
+        }
+        if attempt < 2 {
+            thread::sleep(Duration::from_millis(50));
+        }
     }
-    Ok(())
+    Err(last_err)
+}
+
+/// 单次回写系统剪贴板（图片 / 文本）。
+fn write_clip_item(item: &ClipItem, rgba: Option<&image::RgbaImage>) -> Result<(), String> {
+    let mut clip = arboard::Clipboard::new().map_err(|e| format!("剪贴板不可用: {e}"))?;
+    match rgba {
+        Some(img) => {
+            let data = arboard::ImageData {
+                width: img.width() as usize,
+                height: img.height() as usize,
+                bytes: std::borrow::Cow::Borrowed(img.as_raw()),
+            };
+            clip.set_image(data)
+                .map_err(|e| format!("写入图片失败: {e}"))
+        }
+        None => clip
+            .set_text(item.text.as_str())
+            .map_err(|e| format!("写入文本失败: {e}")),
+    }
 }
 
 #[tauri::command]

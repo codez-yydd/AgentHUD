@@ -75,6 +75,8 @@ objc2-foundation = { version = "0.3", features = ["NSProcessInfo"] }
 [target.'cfg(windows)'.dependencies]
 # 读取 Windows 系统代理设置（HKCU Internet Settings），wham/usage 实时额度查询用
 winreg = "0.52"
+# 截图复制兜底：arboard 的 CF_DIBV5 写失败时改走「只写 PNG 格式」
+clipboard-win = { version = "5.3", features = ["std"] }
 # 灵动岛：SMTC 媒体会话、Core Audio 音量、Wi-Fi/蓝牙电台、全屏检测
 windows = { version = "0.61", features = [
   "Foundation",
