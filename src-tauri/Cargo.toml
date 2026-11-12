@@ -20,6 +20,8 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = ["macos-private-api", "tray-icon", "image-png", "protocol-asset"] }
 tauri-plugin-opener = "2"
+# 单实例：第二次启动只唤醒已有窗口，避免两份进程抢全局快捷键
+tauri-plugin-single-instance = "2"
 tauri-plugin-positioner = { version = "2", features = ["tray-icon"] }
 tauri-plugin-global-shortcut = "2"
 tauri-plugin-clipboard-manager = "2"
@@ -55,6 +57,9 @@ ruzstd = "0.8"
 arboard = "3.6"
 encoding_rs = "0.8"
 qrcode = { version = "0.14.1", default-features = false }
+# 会议录音（工具箱「会议」子页）：跨平台音频输入采集（Windows WASAPI /
+# macOS CoreAudio），只要采集不要 jack / asio 特性；会议页不依赖 ffmpeg
+cpal = "0.15"
 
 [target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]
 tauri-plugin-autostart = "2.5.1"
@@ -96,6 +101,8 @@ windows = { version = "0.61", features = [
   "Win32_Media_Audio_Endpoints",
   "Win32_Security_Credentials",
   "Win32_System_Com",
+  "Win32_System_Console",
+  "Win32_System_JobObjects",
   "Win32_System_Com_StructuredStorage",
   "Win32_System_Threading",
   "Win32_System_Variant",

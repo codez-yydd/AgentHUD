@@ -211,6 +211,21 @@ button {
   color: #ffca77;
 }
 
+/* MP4 带音轨的标识徽标（与格式徽标同款栅格） */
+.rec-audio-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.4px;
+  padding: 2px 6px;
+  border-radius: 5px;
+  background: rgba(96, 211, 148, 0.14);
+  color: #7fdda9;
+  flex: none;
+}
+
 .rec-meta {
   display: flex;
   align-items: center;

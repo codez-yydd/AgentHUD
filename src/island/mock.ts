@@ -7,6 +7,8 @@ import type {
   IslandConfig,
   LauncherProject,
   MediaState,
+  MeetingAudioDevice,
+  MeetingItem,
   NotifyState,
   Snippet,
   StockMinute,
@@ -491,7 +493,41 @@ export const mockSnippets: Snippet[] = [
 ];
 
 export const mockProjects: LauncherProject[] = [
-  { key: "zai-floating-monitor", display_path: "D:\\code\\zai-floating-monitor", sessions: 38 },
-  { key: "agents/refactor-auth", display_path: "D:\\code\\agents\\refactor-auth", sessions: 12 },
-  { key: "docs-site", display_path: "D:\\code\\docs-site", sessions: 4 },
+  { key: "agenthud-demo", display_path: "D:\\workspace\\agenthud-demo", sessions: 38 },
+  { key: "agents/refactor-auth", display_path: "D:\\workspace\\agents\\refactor-auth", sessions: 12 },
+  { key: "docs-site", display_path: "D:\\workspace\\docs-site", sessions: 4 },
+];
+
+// ===== 会议录音预览数据（浏览器预览没有 cpal，走 api.ts 的假会话状态机）=====
+
+export const mockMeetingDevices: MeetingAudioDevice[] = [
+  { id: "麦克风阵列 (Realtek Audio)", name: "麦克风阵列 (Realtek Audio)" },
+  { id: "USB Conference Mic", name: "USB Conference Mic" },
+];
+
+export const mockMeetings: MeetingItem[] = [
+  {
+    id: "20261112-1015",
+    name: "20261112-1015",
+    started_at: now - 5_400_000,
+    duration_ms: 3_620_000,
+    size: 115_840_000,
+    sample_rate: 16_000,
+    device: "麦克风阵列 (Realtek Audio)",
+    marks: [
+      { ms: 640_000, label: "排期确认" },
+      { ms: 1_820_000, label: "" },
+      { ms: 3_100_000, label: "风险点" },
+    ],
+  },
+  {
+    id: "20261111-1602",
+    name: "评审会",
+    started_at: now - 86_400_000,
+    duration_ms: 1_240_000,
+    size: 39_680_000,
+    sample_rate: 48_000,
+    device: "USB Conference Mic",
+    marks: [{ ms: 480_000, label: "行动项" }],
+  },
 ];

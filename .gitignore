@@ -54,3 +54,6 @@ ios/**/build/
 
 # 本地联调脚本与截图（HUD 逐帧验证用的 CDP/screencast 脚本，不入库）
 .preview/
+
+# 本地临时录制/导出的素材（调试录屏、裁剪产物），不入库
+/temp/

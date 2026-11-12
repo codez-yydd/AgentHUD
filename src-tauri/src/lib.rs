@@ -3119,6 +3119,15 @@ async fn show_notification(title: String, body: String) -> Result<(), String> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // 单实例必须最先注册：第二次启动直接退出并唤醒已有窗口，避免两份
+        // 进程同时抢全局快捷键（日志里三个热键同时「已被注册」就是这个）。
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            if let Some(win) = app.get_webview_window("panel") {
+                let _ = win.show();
+                let _ = win.unminimize();
+                let _ = win.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_positioner::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
@@ -3575,6 +3584,9 @@ pub fn run() {
             island::screenshot::shot_record_start,
             island::screenshot::shot_record_state,
             island::screenshot::shot_record_stop,
+            island::screenshot::shot_record_audio_devices,
+            island::screenshot::shot_record_ffmpeg_status,
+            island::screenshot::shot_record_ensure_ffmpeg,
             island::screenshot::shot_record_preview,
             island::screenshot::shot_record_src,
             island::screenshot::shot_record_media,
@@ -3641,7 +3653,26 @@ pub fn run() {
             agent_assets::agent_assets_fetch_bundle,
             agent_assets::agent_assets_export_to_disk,
             agent_assets::agent_assets_install,
-            agent_assets::agent_assets_import_files
+            agent_assets::agent_assets_import_files,
+            // 会议录音（工具箱第 5 子页）：cpal 采集 → 本机 WAV + JSON 侧车，
+            // 不依赖 ffmpeg；转写明确不做（前端置灰占位）
+            island::meeting::meeting_devices,
+            island::meeting::meeting_start,
+            island::meeting::meeting_pause,
+            island::meeting::meeting_resume,
+            island::meeting::meeting_stop,
+            island::meeting::meeting_add_mark,
+            island::meeting::meeting_state,
+            island::meeting::meeting_list,
+            island::meeting::meeting_delete,
+            island::meeting::meeting_rename,
+            island::meeting::meeting_open_folder,
+            island::meeting::meeting_privacy,
+            island::meeting::meeting_confirm_privacy,
+            // 播放（asset 协议放行 wav）与「自动音量」设置
+            island::meeting::meeting_audio,
+            island::meeting::meeting_settings,
+            island::meeting::meeting_set_auto_gain
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

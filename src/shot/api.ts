@@ -2,7 +2,9 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { IS_TAURI } from "../island/api";
 import {
+  mockAudioDevices,
   mockDesktop,
+  mockFfmpegStatus,
   mockHistory,
   mockMonitor,
   mockOcr,
@@ -18,6 +20,9 @@ import {
   mockWindows,
 } from "./mock";
 import type {
+  AudioDevice,
+  FfmpegDownloadProgress,
+  FfmpegStatus,
   OcrResult,
   PinData,
   QrResult,
@@ -148,6 +153,44 @@ export async function getRecordState(recordId: number): Promise<RecordState> {
 export async function stopRecord(recordId: number): Promise<void> {
   if (!IS_TAURI) return delay(undefined, 10);
   return invoke("shot_record_stop", { recordId });
+}
+
+/** 枚举音频输入设备（Windows MP4 的麦克风下拉）。ffmpeg 未就位时后端返回
+ *  中文错误，调用方据此展示下载引导。 */
+export async function recordAudioDevices(): Promise<AudioDevice[]> {
+  if (!IS_TAURI) return mockAudioDevices();
+  return invoke<AudioDevice[]>("shot_record_audio_devices");
+}
+
+/** ffmpeg 是否就位（决定显示下载引导还是麦克风下拉）。 */
+export async function ffmpegStatus(): Promise<FfmpegStatus> {
+  if (!IS_TAURI) return mockFfmpegStatus();
+  return invoke<FfmpegStatus>("shot_record_ffmpeg_status");
+}
+
+/** 确保 ffmpeg 就位：缺失时按需下载，进度经 onFfmpegDownload 推送。 */
+export async function ensureFfmpeg(): Promise<FfmpegStatus> {
+  if (!IS_TAURI) return mockFfmpegStatus();
+  return invoke<FfmpegStatus>("shot_record_ensure_ffmpeg");
+}
+
+/** ffmpeg 下载进度（下载期间持续推送，done/error 后不再推）。 */
+export function onFfmpegDownload(
+  handler: (progress: FfmpegDownloadProgress) => void
+): () => void {
+  if (!IS_TAURI) return () => {};
+  let unlisten: UnlistenFn | null = null;
+  let dead = false;
+  listen<FfmpegDownloadProgress>("zbar://ffmpeg-download", (event) => handler(event.payload))
+    .then((fn) => {
+      if (dead) fn();
+      else unlisten = fn;
+    })
+    .catch(() => {});
+  return () => {
+    dead = true;
+    if (unlisten) unlisten();
+  };
 }
 
 /** 录制结束后把录制条原地放大成预览窗。 */

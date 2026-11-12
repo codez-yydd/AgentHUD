@@ -256,6 +256,12 @@ html.island-preview .island::after {
 
 /* ============================================================
    左右吸附：收起态变成竖胶囊
+
+   **胶囊的外框和内部布局只跟吸附方向走，不跟开合状态走**：展开的一瞬间
+   根节点就从 is-collapsed 切成 is-open，如果这时让胶囊回到横排 100% 宽，
+   48 → 520 的宽度动画会把它横向摊开（温度在最左、额度环在中间、金额在
+   最右，见录屏 f104~f106），看起来就是「打开后内容/字号突然变大」。
+   展开时胶囊只需要原地淡出，所以几何必须冻结在收起态。
    ============================================================ */
 
 .island-root.edge-left.is-collapsed,
@@ -278,17 +284,38 @@ html.island-preview .island::after {
 .island-root.edge-right.is-collapsed .island {
   width: 48px;
   height: 440px;
+  /* 收起用的宽度曲线带 1.12 过冲，尾段会短暂压到 46px 左右，把竖胶囊
+     左边裁掉 1~2px 再弹回来（看起来像左边缘在呼吸）。钳住下限，过冲
+     只允许往上，不允许把内容裁掉。 */
+  min-width: 48px;
+  min-height: 440px;
   border-radius: 24px;
 }
 
-.island-root.edge-left.is-collapsed .pill-wrap,
-.island-root.edge-right.is-collapsed .pill-wrap {
+/* 胶囊外框：固定 48×440，贴住吸附边并垂直居中（440/2 = 220）。
+   收起态岛高 440、展开态 492，top:50% 让它在高度动画里也保持屏幕位置
+   不动；胶囊只做原地淡出，不会被面板的宽度带着走。 */
+.island-root.edge-left .pill-wrap,
+.island-root.edge-right .pill-wrap {
   width: 48px;
   height: 440px;
+  top: 50%;
+  bottom: auto;
+  margin-top: -220px;
 }
 
-.island-root.edge-left.is-collapsed .pill,
-.island-root.edge-right.is-collapsed .pill {
+.island-root.edge-left .pill-wrap {
+  left: 0;
+  right: auto;
+}
+
+.island-root.edge-right .pill-wrap {
+  left: auto;
+  right: 0;
+}
+
+.island-root.edge-left .pill,
+.island-root.edge-right .pill {
   width: 48px;
   height: 440px;
   flex-direction: column;
@@ -297,30 +324,30 @@ html.island-preview .island::after {
   padding: 13px 0;
 }
 
-.island-root.edge-left.is-collapsed .pill-weather,
-.island-root.edge-right.is-collapsed .pill-weather {
+.island-root.edge-left .pill-weather,
+.island-root.edge-right .pill-weather {
   flex-direction: column;
   gap: 3px;
 }
 
-.island-root.edge-left.is-collapsed .pill-weather-city,
-.island-root.edge-right.is-collapsed .pill-weather-city {
+.island-root.edge-left .pill-weather-city,
+.island-root.edge-right .pill-weather-city {
   display: none;
 }
 
-.island-root.edge-left.is-collapsed .pill-weather-temp,
-.island-root.edge-right.is-collapsed .pill-weather-temp {
+.island-root.edge-left .pill-weather-temp,
+.island-root.edge-right .pill-weather-temp {
   font-size: calc(12px * var(--fs-scale, 1));
 }
 
-.island-root.edge-left.is-collapsed .pill-divider,
-.island-root.edge-right.is-collapsed .pill-divider {
+.island-root.edge-left .pill-divider,
+.island-root.edge-right .pill-divider {
   width: 22px;
   height: 1px;
 }
 
-.island-root.edge-left.is-collapsed .pill-agents,
-.island-root.edge-right.is-collapsed .pill-agents {
+.island-root.edge-left .pill-agents,
+.island-root.edge-right .pill-agents {
   flex: 0 0 auto;
   flex-direction: column;
   gap: 5px;
@@ -328,16 +355,16 @@ html.island-preview .island::after {
   transform: none;
 }
 
-.island-root.edge-left.is-collapsed .pill-agent-empty,
-.island-root.edge-right.is-collapsed .pill-agent-empty {
+.island-root.edge-left .pill-agent-empty,
+.island-root.edge-right .pill-agent-empty {
   flex-direction: column;
   gap: 4px;
   font-size: calc(8.5px * var(--fs-scale, 1));
   writing-mode: vertical-rl;
 }
 
-.island-root.edge-left.is-collapsed .pill-usage,
-.island-root.edge-right.is-collapsed .pill-usage {
+.island-root.edge-left .pill-usage,
+.island-root.edge-right .pill-usage {
   flex-direction: column;
   align-items: center;
   gap: 2px;
@@ -349,8 +376,8 @@ html.island-preview .island::after {
   text-align: center;
 }
 
-.island-root.edge-left.is-collapsed .pill-usage-tokens,
-.island-root.edge-right.is-collapsed .pill-usage-tokens {
+.island-root.edge-left .pill-usage-tokens,
+.island-root.edge-right .pill-usage-tokens {
   /* 竖排用更短的数字（1091M），字号反而可以放大到 10.5px；仍按 48px
      宽度收住，超长值省略。 */
   max-width: 100%;
@@ -361,8 +388,8 @@ html.island-preview .island::after {
   text-overflow: ellipsis;
 }
 
-.island-root.edge-left.is-collapsed .pill-usage-cost,
-.island-root.edge-right.is-collapsed .pill-usage-cost {
+.island-root.edge-left .pill-usage-cost,
+.island-root.edge-right .pill-usage-cost {
   max-width: 100%;
   font-size: clamp(7px, calc(7.5px * var(--fs-scale, 1)), 10.5px);
   font-weight: 600;
@@ -372,15 +399,15 @@ html.island-preview .island::after {
   text-overflow: ellipsis;
 }
 
-.island-root.edge-left.is-collapsed .pill-tail,
-.island-root.edge-right.is-collapsed .pill-tail {
+.island-root.edge-left .pill-tail,
+.island-root.edge-right .pill-tail {
   margin: auto 0 0;
   flex-direction: column;
   gap: 4px;
 }
 
-.island-root.edge-left.is-collapsed .pill-ring,
-.island-root.edge-right.is-collapsed .pill-ring {
+.island-root.edge-left .pill-ring,
+.island-root.edge-right .pill-ring {
   width: 32px !important;
   height: 32px !important;
 }
@@ -411,22 +438,28 @@ html.island-preview .island::after {
   justify-content: flex-end;
 }
 
-/* 抽屉内容从贴边方向滑入；关闭时反向滑回。 */
+/* 抽屉内容从贴边方向滑入；关闭时反向滑回。
+   **只做位移、不做缩放**：面板里是整页文字，scale 0.988 → 1 虽然只有 1.2%，
+   但在大字号下会被看成「内容出现后又涨了一下」；滑入本身已经够表达抽屉。 */
 .island-root.edge-left .island-panel {
   transform-origin: left center;
-  transform: translateX(-18px) scale(0.988);
+  transform: translateX(-18px);
 }
 
 .island-root.edge-right .island-panel {
   transform-origin: right center;
-  transform: translateX(18px) scale(0.988);
+  transform: translateX(18px);
 }
 
 .island-panel {
   position: absolute;
   top: 0;
   left: 0;
-  width: 100%;
+  /* 页面始终按**展开态宽度**排版（520 - 左右各 1px 边框）：折叠动画期间
+     只被卡片裁切，不跟着 520 → 48 的宽度逐帧重排。之前用 width:100% 时，
+     收起前 200ms 整页文字会不断换行，看起来就是「关闭后字号突然变小」。
+     竖排胶囊同理，见上方 edge-* 规则。 */
+  width: 518px;
   height: 492px;
   display: flex;
   flex-direction: column;
@@ -434,12 +467,32 @@ html.island-preview .island::after {
   opacity: 0;
   visibility: hidden;
   pointer-events: none;
-  transform: translateY(7px) scale(0.988);
+  /* 只位移不缩放：面板里是整页文字，缩放会让人误以为字号在变（见上） */
+  transform: translateY(7px);
   transform-origin: 50% 0;
   transition:
     opacity 180ms ease,
     transform 520ms cubic-bezier(0.2, 1.02, 0.28, 1),
     visibility 0s linear 200ms;
+}
+
+/* 吸附态：内容贴住吸附边。面板宽度固定后，只要把它钉在对应的边上，
+   宽度动画就只是「卡片把内容裁掉/露出来」，内容在屏幕上完全不动。 */
+.island-root.edge-left .island-panel {
+  left: 0;
+  right: auto;
+}
+
+.island-root.edge-right .island-panel {
+  left: auto;
+  right: 0;
+}
+
+/* 未吸附（顶部横条）时岛是居中的，面板居中锚定才不会在展开时横向漂移。 */
+.island-root.edge-top .island-panel {
+  left: 50%;
+  right: auto;
+  margin-left: -259px;
 }
 
 .island.open .island-panel {
@@ -468,7 +521,10 @@ html.island-preview .island::after {
 .island.open .pill-wrap {
   opacity: 0;
   pointer-events: none;
-  transform: translateY(-5px) scale(0.985);
+  /* 只上移 5px，不缩放：收起后胶囊回到 1:1 时，0.985 → 1 的 1.5% 放大会让
+     545px 高的竖条整体「涨一下」（实机录屏里右边缘 867→865 再回 867，
+     等于每次收起都抖 2px）。文字页同理，见 .island-panel。 */
+  transform: translateY(-5px);
   transition-delay: 0s;
 }
 
@@ -692,9 +748,10 @@ html.island-preview .island::after {
 }
 
 /* 竖排胶囊只有 48px 宽：档位标签仍挂在环下，但环间距要加大到 12px，
-   否则标签会压到下一枚环上。7 个条目仍能放进 440px 高。 */
-.island-root.edge-left.is-collapsed .pill-agents.has-plans,
-.island-root.edge-right.is-collapsed .pill-agents.has-plans {
+   否则标签会压到下一枚环上。7 个条目仍能放进 440px 高。
+   （同上面一整套：只跟吸附方向走，展开淡出期间也保持竖排。） */
+.island-root.edge-left .pill-agents.has-plans,
+.island-root.edge-right .pill-agents.has-plans {
   gap: 12px;
   padding-bottom: 10px;
 }
@@ -1040,6 +1097,15 @@ html.island-preview .island::after {
   gap: 9px;
   min-height: 100%;
   animation: page-in 0.22s ease;
+}
+
+/* 主页自适应缩放（见 pages.tsx fitPage）：数据波动引起的比例微调走 180ms
+   过渡，避免「展开 1~2 秒后字号跳一下」的观感；首次套用发生在收起态，
+   用户看不见。 */
+.home-page {
+  transition:
+    scale 180ms ease,
+    width 180ms ease;
 }
 
 @keyframes page-in {
@@ -3528,6 +3594,14 @@ html.island-preview .island::after {
     width: 100%;
     max-width: 100%;
   }
+
+  /* 窄视口下面板跟着岛走，否则固定 518 会横向溢出 */
+  .island-panel {
+    width: 100%;
+    left: 0;
+    right: auto;
+    margin-left: 0;
+  }
 }
 
 /* 减少动态效果 */
@@ -4634,4 +4708,525 @@ html.island-preview .island::after {
   font-size: calc(10px * var(--fs-scale, 1));
   color: var(--accent);
   opacity: 0.9;
+}
+/* ===== 会议录音（工具箱子页）=====
+   cpal 采集 → 本机 WAV + JSON 侧车；复用岛的玻璃变量，配色与片段库/
+   启动器一致。录制态只有「计时 + 暂停继续 / 打标记 / 结束」三件东西，
+   转写占位保持置灰，不做电平条（避免喧宾夺主）。 */
+.meet-page {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+}
+
+.meet-setup {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* 设备选择：自建下拉。原生 <select> 的弹层由 WebView2 画成独立窗口，在岛的
+   透明置顶窗里真机上会白底白字、被窗口边缘裁掉半截，故改成 DOM 列表。 */
+.meet-picker {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+}
+
+.meet-select {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+  padding: 5px 8px;
+  border-radius: 8px;
+  border: 1px solid var(--hairline);
+  background: var(--input);
+  color: var(--text);
+  font-family: inherit;
+  font-size: calc(10px * var(--fs-scale, 1));
+  text-align: left;
+}
+
+.meet-select-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.meet-caret {
+  flex: none;
+  color: var(--muted);
+  transition: transform 0.16s ease;
+}
+
+.meet-caret.open {
+  transform: rotate(180deg);
+}
+
+.meet-select:focus,
+.meet-select[aria-expanded="true"] {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+
+/* 弹层：绝对定位、接近实底（压住正文才读得清），下方空间不足时向上翻 */
+.meet-picker-pop {
+  position: absolute;
+  left: 0;
+  right: 0;
+  z-index: 40;
+  max-height: 176px;
+  overflow-y: auto;
+  padding: 3px;
+  border-radius: 10px;
+  border: 1px solid var(--glass-edge);
+  /* 弹层直接压在正文上：--menu-bg 的 0.94 会让下方的「开始录音」按钮透出来，
+     这里单独提到 0.985（列表要比右键菜单更实，否则选项文字和背后的按钮叠在一起） */
+  background: rgba(15, 18, 27, 0.985);
+  backdrop-filter: blur(18px) saturate(150%);
+  box-shadow: 0 16px 34px -14px rgba(0, 0, 0, 0.82);
+  scrollbar-width: thin;
+  scrollbar-color: var(--hairline) transparent;
+}
+
+.meet-picker-pop[data-dir="down"] {
+  top: calc(100% + 4px);
+}
+
+.meet-picker-pop[data-dir="up"] {
+  bottom: calc(100% + 4px);
+}
+
+.meet-picker-pop:focus {
+  outline: none;
+}
+
+.meet-option {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 7px;
+  border-radius: 7px;
+  color: var(--text-soft);
+  font-size: calc(10px * var(--fs-scale, 1));
+  cursor: pointer;
+}
+
+.meet-option[data-active="true"] {
+  background: var(--panel-strong);
+  color: var(--text);
+}
+
+.meet-option[aria-selected="true"] {
+  color: var(--accent);
+}
+
+.meet-option[aria-selected="true"] svg {
+  flex: none;
+}
+
+.meet-option-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.meet-picker-foot {
+  /* 设备多时列表要滚，但「重新扫描」不该被滚出去：贴底吸附 */
+  position: sticky;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 3px;
+  padding: 4px 4px 2px 7px;
+  border-top: 1px solid var(--hairline);
+  background: rgba(15, 18, 27, 0.985);
+  color: var(--faint);
+  font-size: calc(9px * var(--fs-scale, 1));
+}
+
+.meet-picker-foot .mini-text-btn {
+  height: 20px;
+}
+
+/* 设备区一行说明：枚举失败 / 设备被拔 / 刚插上 / 没有麦克风 */
+.meet-device-note {
+  margin-top: -3px;
+  color: var(--faint);
+  font-size: calc(9px * var(--fs-scale, 1));
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.meet-device-note.error {
+  color: var(--low);
+}
+
+/* 自动音量：一行说明 + 右侧开关（说明占满剩余宽度，避免把开关挤到换行） */
+.meet-gain-hint {
+  flex: 1;
+  min-width: 0;
+  font-size: calc(9px * var(--fs-scale, 1));
+  line-height: 1.4;
+  color: var(--faint);
+}
+
+/* 条目内播放器：独占一整行（播放键 + 当前 / 总时长 + 进度条） */
+.meet-player {
+  display: flex;
+  flex: 0 0 100%;
+  align-items: center;
+  gap: 6px;
+  margin-top: 1px;
+}
+
+.meet-play-btn {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+  border: 1px solid var(--hairline);
+  background: var(--input);
+  color: var(--text);
+}
+
+.meet-play-btn:hover {
+  background: var(--panel-strong);
+}
+
+.meet-player-time {
+  flex: none;
+  font-size: calc(8.5px * var(--fs-scale, 1));
+  color: var(--faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.meet-player-seek {
+  flex: 1;
+  min-width: 0;
+  height: 14px;
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.meet-privacy {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px 9px;
+  border-radius: 9px;
+  border: 1px solid rgba(126, 166, 255, 0.32);
+  background: var(--panel);
+}
+
+.meet-privacy p {
+  margin: 0;
+  font-size: calc(9.5px * var(--fs-scale, 1));
+  line-height: 1.5;
+  color: var(--text-soft);
+  overflow-wrap: anywhere;
+}
+
+.meet-privacy-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.meet-rec {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 9px 10px;
+  border-radius: 10px;
+  border: 1px solid var(--hairline);
+  background: var(--panel);
+}
+
+.meet-dot {
+  flex: none;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #ff5d6c;
+  box-shadow: 0 0 10px rgba(255, 93, 108, 0.62);
+  animation: meet-pulse 1.4s ease-in-out infinite;
+}
+
+.meet-dot[data-paused="true"] {
+  background: #8fa3c8;
+  box-shadow: none;
+  animation: none;
+}
+
+@keyframes meet-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+.meet-timer {
+  font-size: calc(21px * var(--fs-scale, 1));
+  font-weight: 650;
+  letter-spacing: 0.5px;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.meet-rec-meta {
+  margin-left: auto;
+  font-size: calc(8.5px * var(--fs-scale, 1));
+  line-height: 1.4;
+  color: var(--faint);
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+
+.meet-rec-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.meet-rec-actions .tool-btn {
+  flex: 1;
+}
+
+.meet-mark-row {
+  display: flex;
+  gap: 6px;
+}
+
+.meet-mark-row input {
+  flex: 1;
+  min-width: 0;
+  padding: 5px 8px;
+  border-radius: 8px;
+  border: 1px solid var(--hairline);
+  background: var(--input);
+  color: var(--text);
+  font-family: inherit;
+  font-size: calc(10px * var(--fs-scale, 1));
+}
+
+.meet-mark-row input::placeholder {
+  color: var(--faint);
+}
+
+.meet-mark-row input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.meet-marks-info {
+  font-size: calc(8.5px * var(--fs-scale, 1));
+  line-height: 1.45;
+  color: var(--faint);
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.meet-list-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.meet-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.meet-item {
+  display: flex;
+  /* 播放器独占第二行：主信息 + 动作列排第一行，播放器 flex-basis:100% 换行 */
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 9px;
+  border-radius: 9px;
+  border: 1px solid var(--hairline);
+  background: var(--panel);
+}
+
+.meet-main {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.meet-name {
+  font-size: calc(10.5px * var(--fs-scale, 1));
+  font-weight: 600;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.meet-meta {
+  font-size: calc(8.5px * var(--fs-scale, 1));
+  color: var(--faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.meet-actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 2px;
+}
+
+.meet-rename {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 6px;
+}
+
+.meet-rename input {
+  flex: 1;
+  min-width: 0;
+  padding: 4px 8px;
+  border-radius: 8px;
+  border: 1px solid var(--hairline);
+  background: var(--input);
+  color: var(--text);
+  font-family: inherit;
+  font-size: calc(10px * var(--fs-scale, 1));
+}
+
+.meet-rename input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+/* ===== 会议录音：审查修复补充（tab 录音红点 / 标记明细展开 / 重命名行内错误）===== */
+.meet-tab-live {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #ff5d6c;
+  box-shadow: 0 0 8px rgba(255, 93, 108, 0.62);
+  animation: meet-pulse 1.4s ease-in-out infinite;
+}
+
+.meet-marks-toggle {
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--accent);
+  font-family: inherit;
+  font-size: inherit;
+  font-variant-numeric: inherit;
+  cursor: pointer;
+}
+
+.meet-marks-toggle:hover {
+  text-decoration: underline;
+}
+
+.meet-marks-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 4px;
+  padding: 5px 8px;
+  border-radius: 8px;
+  border: 1px dashed var(--hairline);
+  background: var(--panel);
+}
+
+.meet-mark-line {
+  display: flex;
+  gap: 8px;
+  min-width: 0;
+  font-size: calc(8.5px * var(--fs-scale, 1));
+  line-height: 1.4;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.meet-mark-at {
+  flex: none;
+  color: var(--accent);
+}
+
+.meet-mark-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 重命名行：错误就显示在输入框下方（不再顶到列表头部） */
+.meet-rename-wrap {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.meet-inline-error {
+  font-size: calc(8.5px * var(--fs-scale, 1));
+}
+
+/* ===== 收起胶囊：会议录音进行中指示（红点与工具页 meet-tab-live 同款
+   红色 #ff5d6c 与 meet-pulse 闪烁语义；计时按 tabular-nums 固定宽度，
+   胶囊自适应测量不会因跳秒变形）===== */
+.pill-meet {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: none;
+}
+
+.pill-meet-dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #ff5d6c;
+  box-shadow: 0 0 8px rgba(255, 93, 108, 0.62);
+  animation: meet-pulse 1.4s ease-in-out infinite;
+}
+
+/* 暂停：红点常亮不闪（保留红色，与工具页红点语义一致） */
+.pill-meet-dot.is-paused {
+  animation: none;
+}
+
+.pill-meet-time {
+  flex: none;
+  font-size: calc(10px * var(--fs-scale, 1));
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: #ff5d6c;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }

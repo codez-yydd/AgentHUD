@@ -11,6 +11,11 @@
 export const IS_MAC =
   typeof navigator !== "undefined" && /Mac OS X|Macintosh/.test(navigator.userAgent);
 
+/** 平台能力判断用（如录屏 MP4 + 麦克风目前仅 Windows 支持），别用 !IS_MAC：
+ *  那会把 Linux 也算进来。 */
+export const IS_WINDOWS =
+  typeof navigator !== "undefined" && /Windows/.test(navigator.userAgent);
+
 /** 应用内：Ctrl → ⌘ */
 const APP_MAC: Record<string, string> = {
   Ctrl: "⌘",

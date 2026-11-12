@@ -394,7 +394,9 @@ function Preview({
     try {
       const path = await exportRecord(recordId, inMs, outMs, action);
       if (action === "save") {
-        if (path) onToast("已保存");
+        // 带上文件名，用户能确认落到哪一份（默认目录是 视频/AgentHUD）
+        const name = path?.split(/[\\/]/).pop();
+        if (name) onToast(`已保存 ${name}`);
       } else {
         onToast("已复制到剪贴板");
       }
@@ -411,6 +413,15 @@ function Preview({
         <span className={`rec-format ${result?.format ?? "gif"}`}>
           {(result?.format ?? "gif").toUpperCase()}
         </span>
+        {result?.format === "mp4" && result.hasAudio ? (
+          <span className="rec-audio-tag" title="本条录制包含音轨">
+            <svg width="11" height="11" viewBox="0 0 14 14" aria-hidden>
+              <path d="M2 5.2h2.3L7.4 2.8v8.4L4.3 8.8H2z" fill="currentColor" />
+              <path d="M9.3 4.6a2.8 2.8 0 010 4.8" stroke="currentColor" strokeWidth="1.2" fill="none" strokeLinecap="round" />
+            </svg>
+            有声
+          </span>
+        ) : null}
         <span className="rec-meta">
           {result ? `${result.width} × ${result.height}` : "—"}
           <i />

@@ -18,6 +18,7 @@ import {
 } from "@tauri-apps/plugin-dialog";
 import {
   IS_TAURI,
+  meetingState,
   toolboxImageInspect,
   toolboxImageSave,
   toolboxQrPng,
@@ -27,6 +28,7 @@ import type { ToolboxImageInfo, ToolboxImageOut, ToolboxQrPng, TabKey } from "./
 import { Icon, SectionHead } from "./ui";
 import { SnippetsPanel } from "./SnippetsPanel";
 import { LauncherPanel } from "./LauncherPanel";
+import { MeetingPanel } from "./MeetingPanel";
 
 /** 二维码容错级别 */
 type QrEcc = "L" | "M" | "Q" | "H";
@@ -135,7 +137,39 @@ export function ToolboxPage({
   /** 启动器打开项目目录 */
   onOpenPath: (path: string) => void;
 }) {
-  const [mode, setMode] = useState<"qr" | "img" | "snip" | "launch">("qr");
+  const [mode, setMode] = useState<"qr" | "img" | "snip" | "launch" | "meeting">("qr");
+  // ---- 会议录音指示（UI-5）----
+  // 轮询后端会话状态（轻量：读一次进程内会话槽），录音进行时在「会议」标签
+  // 上显示红点、提示行常驻提醒；挂载后的第一次查询若发现活跃会话，直接切
+  // 回「会议」子页（一级标签切走再回来时，工具页重置到二维码，录音会变得
+  // 不可感知）。之后的轮询不再自动切换：录音开始后用户去别的子页浏览，
+  // 不该被强行拽回。
+  const [meetingActive, setMeetingActive] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    // first=true 仅挂载后的第一次查询：命中活跃会话才自动切到「会议」子页。
+    // 之后的轮询只更新红点/提示，不再拉拽用户（录音开始后用户去别的子页
+    // 浏览，不该被强行拽回）。
+    const check = (first: boolean) => {
+      meetingState()
+        .then((brief) => {
+          if (cancelled) return;
+          const active = Boolean(brief);
+          setMeetingActive(active);
+          if (first && active) setMode("meeting");
+        })
+        .catch(() => {
+          /* 状态查询失败只影响指示，不打扰页面 */
+        });
+    };
+    check(true);
+    const timer = window.setInterval(() => check(false), 2000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, []);
 
   // ---- 二维码 ----
   const [qrText, setQrText] = useState("");
@@ -256,13 +290,17 @@ export function ToolboxPage({
       <SectionHead
         title="工具箱"
         hint={
-          mode === "qr"
-            ? "二维码生成 · 全部本机处理"
-            : mode === "img"
-              ? "图片压缩与格式转换 · 全部本机处理"
-              : mode === "snip"
-                ? "常用 prompt / 模板 · 点一条即复制"
-                : "搜页面、动作或项目 · ↑↓ 选择、回车执行"
+          meetingActive && mode !== "meeting"
+            ? "● 会议录音进行中 · 「会议」子页可查看"
+            : mode === "qr"
+              ? "二维码生成 · 全部本机处理"
+              : mode === "img"
+                ? "图片压缩与格式转换 · 全部本机处理"
+                : mode === "snip"
+                  ? "常用 prompt / 模板 · 点一条即复制"
+                  : mode === "meeting"
+                    ? "会议录音 · 保存到本机 ~/.agenthud/meetings"
+                    : "搜页面、动作或项目 · ↑↓ 选择、回车执行"
         }
       />
 
@@ -307,9 +345,22 @@ export function ToolboxPage({
           <Icon name="search" size={11} />
           启动
         </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={mode === "meeting"}
+          className={mode === "meeting" ? "active" : ""}
+          onClick={() => setMode("meeting")}
+        >
+          <Icon name="mic" size={11} />
+          会议
+          {meetingActive ? <span className="meet-tab-live" title="录音进行中" /> : null}
+        </button>
       </div>
 
-      {mode === "snip" ? (
+      {mode === "meeting" ? (
+        <MeetingPanel onToast={onToast} />
+      ) : mode === "snip" ? (
         <SnippetsPanel onToast={onToast} />
       ) : mode === "launch" ? (
         <LauncherPanel

@@ -311,6 +311,8 @@ pub struct RecordResult {
     /// "mp4" | "gif"
     pub format: String,
     pub record_id: u64,
+    /// MP4 是否带音轨（GIF 恒为 false；预览窗据此显示声音标识）
+    pub has_audio: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -324,6 +326,10 @@ pub struct ShotSettings {
     /// 唯一的截图快捷键：呼出覆盖层后在里面切换区域/窗口/全屏。
     /// 旧版按模式分了三个快捷键，读取时由 store 迁移到这一个。
     pub hotkey: String,
+    /// 录屏麦克风开关（仅 Windows MP4 生效；GIF 无音轨）
+    pub mic_enabled: bool,
+    /// 上次选择的麦克风设备（dshow 备用名，跨重启保持选择）
+    pub mic_device: String,
 }
 
 impl Default for ShotSettings {
@@ -335,6 +341,8 @@ impl Default for ShotSettings {
             format: "png".into(),
             delay_sec: 0,
             hotkey: DEFAULT_SHOT_HOTKEY.into(),
+            mic_enabled: false,
+            mic_device: String::new(),
         }
     }
 }
@@ -521,6 +529,9 @@ fn capture_rect(x: i32, y: i32, width: u32, height: u32) -> Result<image::RgbaIm
     if width < 2 || height < 2 {
         return Err("截图区域过小".into());
     }
+    // 截图期间别让灵动岛临时「对采集隐藏」：否则刚好撞上的截图里岛会消失。
+    // 见 island::capture_guard。
+    let _capture_guard = crate::island::capture_guard::CaptureGuard::enter();
     unsafe {
         let screen = GetDC(None);
         if screen.is_invalid() {
@@ -875,6 +886,8 @@ fn capture_window(hwnd: windows::Win32::Foundation::HWND) -> Result<Captured, St
     if w < 4 || h < 4 {
         return Err("窗口尺寸过小".into());
     }
+    // PrintWindow 同样受「对采集隐藏」影响（见 island::capture_guard）。
+    let _capture_guard = crate::island::capture_guard::CaptureGuard::enter();
     let title = window_title(hwnd);
     let mut rendered = None;
 
@@ -2864,35 +2877,58 @@ pub async fn shot_scroll(
 
 /// 注册截图快捷键（与面板/灵动岛共用 global-shortcut 插件）。
 /// 只注册一个键：呼出覆盖层后，区域/窗口/全屏都在覆盖层里切换。
-/// 被占用只记日志，不影响应用启动；设置页修改快捷键后由
+/// 被占用时换备用键并弹通知（QQ/微信默认也抢 Ctrl+Alt+A，另一份
+/// AgentHUD 进程没退时同样会占住）；设置页修改快捷键后由
 /// `refresh_global_shortcuts` 统一重注册。
 pub fn register_hotkeys(app: &AppHandle) {
-    use tauri_plugin_global_shortcut::GlobalShortcutExt;
     let settings = super::store::load_shot_settings();
     let key = settings.hotkey;
     if key.trim().is_empty() {
         return;
     }
-    let gs = app.global_shortcut();
-    if let Err(e) = gs.on_shortcut(key.as_str(), move |app, _shortcut, event| {
-        // macOS 上 global-hotkey 按下/松开各派发一次，这里只认按下，
-        // 否则第二次会撞上 STARTING 守卫，报“截图正在进行中”。
-        if !matches!(
-            event.state(),
-            tauri_plugin_global_shortcut::ShortcutState::Pressed
-        ) {
-            return;
-        }
-        let app = app.clone();
-        tauri::async_runtime::spawn(async move {
-            // 统一以区域模式呼出：覆盖层里可以切到窗口/全屏。
-            if let Err(e) = start_capture(app, "region".into(), 0, None).await {
-                eprintln!("[zbar-shot] 快捷键截图失败: {e}");
-            }
-        });
-    }) {
+    if let Err(e) = register_shot_hotkey(app, &key) {
         eprintln!("[zbar-shot] 注册截图快捷键 {key} 失败（可能被占用）: {e}");
+        // 不静默失效：换一个常见冲突更少的组合键，并明确告诉用户是谁占了
+        const FALLBACK: &str = "Ctrl+Alt+Shift+A";
+        if register_shot_hotkey(app, FALLBACK).is_ok() {
+            eprintln!("[zbar-shot] 已临时改用截图快捷键 {FALLBACK}");
+            crate::notify(
+                "AgentHUD · 截图快捷键被占用".to_string(),
+                format!(
+                    "{key} 被其他程序占用，本次改用 {FALLBACK}；关掉占用它的程序（常见是 QQ / 另一份 AgentHUD）后重启即可恢复"
+                ),
+            );
+        } else {
+            crate::notify(
+                "AgentHUD · 截图快捷键不可用".to_string(),
+                format!("{key} 和备用键 {FALLBACK} 都被占用，只能从托盘或截图页手动打开"),
+            );
+        }
     }
+}
+
+/// 绑定单个截图快捷键；失败把插件错误原样带出（调用方决定是否换备用键）。
+fn register_shot_hotkey(app: &AppHandle, key: &str) -> Result<(), String> {
+    use tauri_plugin_global_shortcut::GlobalShortcutExt;
+    app.global_shortcut()
+        .on_shortcut(key, move |app, _shortcut, event| {
+            // macOS 上 global-hotkey 按下/松开各派发一次，这里只认按下，
+            // 否则第二次会撞上 STARTING 守卫，报“截图正在进行中”。
+            if !matches!(
+                event.state(),
+                tauri_plugin_global_shortcut::ShortcutState::Pressed
+            ) {
+                return;
+            }
+            let app = app.clone();
+            tauri::async_runtime::spawn(async move {
+                // 统一以区域模式呼出：覆盖层里可以切到窗口/全屏。
+                if let Err(e) = start_capture(app, "region".into(), 0, None).await {
+                    eprintln!("[zbar-shot] 快捷键截图失败: {e}");
+                }
+            });
+        })
+        .map_err(|e| e.to_string())
 }
 
 #[cfg(test)]

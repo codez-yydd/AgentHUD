@@ -9,9 +9,31 @@
 //! 这样既不会把岛自己拍进去形成递归，也不会影响用户平时截图/录屏时看到岛。
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
+use std::sync::{Mutex, OnceLock};
 
 /// 物理像素 → 缩略图。6 倍下采样后再由 CSS 模糊，足够柔且 IPC 很小。
 const DOWNSCALE: u32 = 6;
+
+/// 最近一次成功采到的底板（data URL）。
+///
+/// 采集中（录屏 / 截图进行时）直接复用它，不去动窗口的「对采集隐藏」标志：
+/// 那个标志只影响截屏 API，却会让正在录屏的画面里岛整块消失 1~2 帧。毛玻璃
+/// 底下本来就是模糊壁纸，冻结几秒没有观感差别；录屏里岛连续可见才是硬要求。
+static LAST_BACKDROP: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+
+fn last_slot() -> &'static Mutex<Option<String>> {
+    LAST_BACKDROP.get_or_init(|| Mutex::new(None))
+}
+
+fn cached_backdrop() -> Option<String> {
+    last_slot().lock().ok().and_then(|slot| slot.clone())
+}
+
+fn store_backdrop(url: &str) {
+    if let Ok(mut slot) = last_slot().lock() {
+        *slot = Some(url.to_string());
+    }
+}
 
 /// 抓取窗口矩形下的桌面，返回可直接塞进 CSS `url(...)` 的 data URL。
 ///
@@ -34,6 +56,13 @@ pub fn capture(hwnd: isize, x: i32, y: i32, width: u32, height: u32) -> Result<S
 
     if width < 4 || height < 4 {
         return Err("窗口尺寸过小".into());
+    }
+
+    // 用户正在录屏/截图：不要临时把岛标成「对采集隐藏」，否则他们的画面里
+    // 岛会周期性闪掉。直接回上一次的底板。
+    if crate::island::capture_guard::active() {
+        return cached_backdrop()
+            .ok_or_else(|| "正在录屏或截图，跳过桌面底板采样".to_string());
     }
 
     let tw = (width / DOWNSCALE).clamp(2, 240) as i32;
@@ -145,10 +174,12 @@ pub fn capture(hwnd: isize, x: i32, y: i32, width: u32, height: u32) -> Result<S
             ExtendedColorType::Rgba8,
         )
         .map_err(|e| format!("编码桌面背景失败: {e}"))?;
-    Ok(format!("data:image/png;base64,{}", STANDARD.encode(png)))
+    let url = format!("data:image/png;base64,{}", STANDARD.encode(png));
+    store_backdrop(&url);
+    Ok(url)
 }
 
 #[cfg(not(target_os = "windows"))]
 pub fn capture(_hwnd: isize, _x: i32, _y: i32, _width: u32, _height: u32) -> Result<String, String> {
-    Err("桌面毛玻璃采样仅支持 Windows".into())
+    cached_backdrop().ok_or_else(|| "桌面毛玻璃采样仅支持 Windows".to_string())
 }

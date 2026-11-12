@@ -27,6 +27,8 @@ const DEFAULT_SETTINGS: ShotSettings = {
   format: "png",
   delaySec: 0,
   hotkey: "Ctrl+Alt+A",
+  micEnabled: false,
+  micDevice: "",
 };
 
 function fmtAgo(ts: number) {

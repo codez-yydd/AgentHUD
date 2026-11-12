@@ -253,6 +253,81 @@ export interface LauncherProject {
   sessions: number;
 }
 
+// ===== 会议录音（工具箱「会议」子页；wire 为 snake_case）=====
+
+/** 音频输入设备（下拉用；cpal 无跨平台稳定 id，id 即设备名） */
+export interface MeetingAudioDevice {
+  id: string;
+  name: string;
+}
+
+/** 时间标记：ms 为有效时间轴（扣除暂停段）上的位置 */
+export interface MeetingMark {
+  ms: number;
+  label: string;
+}
+
+/** 开始录音后的会话信息 */
+export interface MeetingSessionInfo {
+  id: string;
+  name: string;
+  path: string;
+  dir: string;
+  started_at: number;
+  device: string;
+  sample_rate: number;
+}
+
+/** 录制中的会话快照（子页重挂载后恢复录制视图用） */
+export interface MeetingSessionBrief {
+  id: string;
+  name: string;
+  device: string;
+  sample_rate: number;
+  started_at: number;
+  paused: boolean;
+  effective_ms: number;
+  marks: MeetingMark[];
+  dir: string;
+}
+
+/** 结束录音的结果 */
+export interface MeetingStopResult {
+  id: string;
+  name: string;
+  path: string;
+  duration_ms: number;
+  size: number;
+  marks: number;
+  sample_rate: number;
+  /** 非 null = 文件已保存但录制期间有过写入告警；null = 全程无告警 */
+  warning: string | null;
+}
+
+/** 最近录音列表条目 */
+export interface MeetingItem {
+  id: string;
+  name: string;
+  started_at: number;
+  duration_ms: number;
+  size: number;
+  sample_rate: number;
+  device: string;
+  marks: MeetingMark[];
+}
+
+/** 首次使用隐私确认状态 + 保存目录 */
+export interface MeetingPrivacy {
+  confirmed: boolean;
+  dir: string;
+}
+
+/** 会议录音设置（camelCase wire）：自动音量默认开 */
+export interface MeetingSettings {
+  privacyConfirmed: boolean;
+  autoGain: boolean;
+}
+
 export interface NotifyItem {
   id: number;
   kind: string;

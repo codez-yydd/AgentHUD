@@ -13,6 +13,7 @@ use rusqlite::{params, Connection};
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 
+use super::meeting::MeetingSettings;
 use super::screenshot::ShotSettings;
 use super::IslandConfig;
 
@@ -232,6 +233,72 @@ pub fn save_shot_settings(settings: &ShotSettings) -> Result<(), String> {
     .map_err(|e| format!("保存截图设置失败: {e}"))?;
     if let Ok(mut guard) = shot_cache().lock() {
         *guard = Some(next);
+    }
+    Ok(())
+}
+
+// ============================================================
+// 会议录音设置（首次使用隐私确认等；同样走 island.db 单行 payload 模式）
+// ============================================================
+
+static MEETING_CACHE: OnceLock<Mutex<Option<MeetingSettings>>> = OnceLock::new();
+
+fn meeting_cache() -> &'static Mutex<Option<MeetingSettings>> {
+    MEETING_CACHE.get_or_init(|| Mutex::new(None))
+}
+
+/// 建会议设置表（幂等；db 文件与目录由 open() 保证就位，不动既有表）
+fn ensure_meeting_table(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS meeting_settings (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            payload TEXT NOT NULL,
+            updated_at INTEGER NOT NULL
+        );",
+    )
+    .map_err(|e| format!("初始化会议设置失败: {e}"))
+}
+
+pub fn load_meeting_settings() -> MeetingSettings {
+    if let Ok(guard) = meeting_cache().lock() {
+        if let Some(settings) = guard.as_ref() {
+            return settings.clone();
+        }
+    }
+    let loaded = (|| -> Result<MeetingSettings, String> {
+        let conn = open()?;
+        ensure_meeting_table(&conn)?;
+        let mut stmt = conn
+            .prepare("SELECT payload FROM meeting_settings WHERE id = 1")
+            .map_err(|e| format!("读取会议设置失败: {e}"))?;
+        let mut rows = stmt
+            .query([])
+            .map_err(|e| format!("读取会议设置失败: {e}"))?;
+        let Some(row) = rows.next().map_err(|e| format!("读取会议设置失败: {e}"))? else {
+            return Ok(MeetingSettings::default());
+        };
+        let payload: String = row.get(0).map_err(|e| format!("读取会议设置失败: {e}"))?;
+        serde_json::from_str(&payload).map_err(|e| format!("解析会议设置失败: {e}"))
+    })()
+    .unwrap_or_default();
+    if let Ok(mut guard) = meeting_cache().lock() {
+        *guard = Some(loaded.clone());
+    }
+    loaded
+}
+
+pub fn save_meeting_settings(settings: &MeetingSettings) -> Result<(), String> {
+    let payload = serde_json::to_string(settings).map_err(|e| format!("序列化会议设置失败: {e}"))?;
+    let conn = open()?;
+    ensure_meeting_table(&conn)?;
+    conn.execute(
+        "INSERT INTO meeting_settings (id, payload, updated_at) VALUES (1, ?1, ?2)
+         ON CONFLICT(id) DO UPDATE SET payload = excluded.payload, updated_at = excluded.updated_at",
+        params![payload, chrono::Utc::now().timestamp_millis()],
+    )
+    .map_err(|e| format!("保存会议设置失败: {e}"))?;
+    if let Ok(mut guard) = meeting_cache().lock() {
+        *guard = Some(settings.clone());
     }
     Ok(())
 }

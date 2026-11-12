@@ -1,4 +1,6 @@
 import type {
+  AudioDevice,
+  FfmpegStatus,
   OcrResult,
   PinData,
   QrResult,
@@ -30,6 +32,8 @@ export const mockShotSettings: ShotSettings = {
   format: "png",
   delaySec: 0,
   hotkey: "Ctrl+Alt+A",
+  micEnabled: false,
+  micDevice: "",
 };
 
 /** 浏览器预览用的假窗口（和 mockDesktop 里画的窗口对齐，前→后顺序）。 */
@@ -295,7 +299,7 @@ export function mockHistory(): ShotHistoryItem[] {
     name: `Shot_20261110_${String(10 - Math.floor(index / 2)).padStart(2, "0")}${String(
       58 - minute
     ).padStart(2, "0")}_118.png`,
-    path: `C:\\Users\\admin\\Pictures\\AgentHUD Screenshots\\Shot_${index}.png`,
+    path: `C:\\Users\\user\\Pictures\\AgentHUD Screenshots\\Shot_${index}.png`,
     width: 1600,
     height: 1000,
     createdAt: Date.now() - minute * 60_000,
@@ -354,6 +358,7 @@ export function mockRecordStart(format: string): Promise<RecordStarted> {
           width: 960,
           height: 600,
           maxSeconds: 300,
+          notice: null,
         }),
       120
     )
@@ -391,6 +396,7 @@ export function mockRecordState(recordId: number): Promise<RecordState> {
           size: 1_820_000,
           format: entry.format,
           recordId,
+          hasAudio: entry.format === "mp4",
         },
     error: null,
     gifFps: 10,
@@ -413,4 +419,28 @@ export async function mockRecordMedia(): Promise<ArrayBuffer> {
   const bytes = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
   return bytes.buffer;
+}
+
+// ------------------------------------------------------------
+// ffmpeg / 麦克风（浏览器预览用假状态）
+// ------------------------------------------------------------
+
+/** 浏览器预览里假装 ffmpeg 已就位，麦克风下拉直接出假设备。 */
+export function mockFfmpegStatus(): Promise<FfmpegStatus> {
+  return new Promise((resolve) =>
+    window.setTimeout(() => resolve({ ready: true, path: "C:/mock/bin/ffmpeg.exe" }), 60)
+  );
+}
+
+export function mockAudioDevices(): Promise<AudioDevice[]> {
+  return new Promise((resolve) =>
+    window.setTimeout(
+      () =>
+        resolve([
+          { name: "@device_cm_mock_mic", label: "麦克风 (Realtek Audio)" },
+          { name: "@device_cm_mock_headset", label: "耳机麦克风 (HyperX)" },
+        ]),
+      80
+    )
+  );
 }

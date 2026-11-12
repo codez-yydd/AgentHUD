@@ -9,27 +9,34 @@ import {
   type ReactElement,
 } from "react";
 import { IS_TAURI } from "../island/api";
-import { IS_MAC, shortcutParts, shortcutText } from "../shortcuts";
+import { IS_MAC, IS_WINDOWS, shortcutParts, shortcutText } from "../shortcuts";
 import {
   closeShot,
   copyShot,
   copyText,
+  ensureFfmpeg,
+  ffmpegStatus,
   getSessionImage,
   getShotSession,
   getShotSettings,
   getShotWindows,
   ocrShot,
+  onFfmpegDownload,
   onRecordError,
   pinShot,
   qrShot,
+  recordAudioDevices,
   saveShot,
   saveShotAs,
   markPainted,
   scrollShot,
+  setShotSettings,
   shotReady,
   startRecord,
 } from "./api";
 import type {
+  AudioDevice,
+  FfmpegDownloadProgress,
   OcrResult,
   QrResult,
   ShotRect,
@@ -212,6 +219,14 @@ export default function ShotApp() {
   // 录屏设置：格式与鼠标指针，选完区域后直接在截图条里调
   const [recFormat, setRecFormat] = useState<"mp4" | "gif">(IS_MAC ? "mp4" : "gif");
   const [recCursor, setRecCursor] = useState(true);
+  // Windows MP4 的麦克风：开关与设备持久化在 ShotSettings，设备列表按需拉取
+  const [micEnabled, setMicEnabled] = useState(false);
+  const [micDevice, setMicDevice] = useState("");
+  /** null = 还没拉过设备 */
+  const [audioDevices, setAudioDevices] = useState<AudioDevice[] | null>(null);
+  /** null = 还没查过；false = 未就位（显示下载引导） */
+  const [ffmpegReady, setFfmpegReady] = useState<boolean | null>(null);
+  const [ffmpegProgress, setFfmpegProgress] = useState<FfmpegDownloadProgress | null>(null);
 
 
   const stageRef = useRef<HTMLDivElement | null>(null);
@@ -250,7 +265,13 @@ export default function ShotApp() {
   }, []);
 
   useEffect(() => {
-    void getShotSettings().then(setSettings).catch(() => {});
+    void getShotSettings()
+      .then((next) => {
+        setSettings(next);
+        setMicEnabled(next.micEnabled);
+        setMicDevice(next.micDevice);
+      })
+      .catch(() => {});
   }, []);
 
   // 录屏中途失败：录制窗收起后把原因提示在覆盖层里。
@@ -259,6 +280,95 @@ export default function ShotApp() {
       onRecordError((message) => {
         setBusy("");
         showToast(message, 5200);
+      }),
+    [showToast]
+  );
+
+  // Windows MP4 依赖 ffmpeg：进录屏标签时查一次就位状态（决定是否显示下载引导）
+  useEffect(() => {
+    if (!IS_WINDOWS || tab !== "record" || ffmpegReady !== null) return;
+    void ffmpegStatus()
+      .then((status) => setFfmpegReady(status.ready))
+      .catch(() => setFfmpegReady(false));
+  }, [tab, ffmpegReady]);
+
+  // 拉取麦克风设备列表：开了麦克风开关再拉（枚举要跑一次 ffmpeg 子进程，
+  // 没必要在切标签时抢跑）。保存过的设备失效时回落到第一个可用设备。
+  // 失败与「无设备」是两回事：失败（多为 ffmpeg 未就位）保持 audioDevices
+  // 为 null，空列表才是「这台机器没有麦克风」。
+  const loadAudioDevices = useCallback(async () => {
+    try {
+      const devices = await recordAudioDevices();
+      setAudioDevices(devices);
+      setFfmpegReady(true);
+      setMicDevice((current) =>
+        current && devices.some((device) => device.name === current || device.label === current)
+          ? current
+          : (devices[0]?.name ?? "")
+      );
+    } catch (error) {
+      // 后端在这里给的就是中文错误（ffmpeg 未就位）
+      setFfmpegReady(false);
+      showToast(String(error), 4200);
+    }
+  }, [showToast]);
+
+  useEffect(() => {
+    if (!IS_WINDOWS || tab !== "record" || recFormat !== "mp4" || !micEnabled) return;
+    if (audioDevices !== null || ffmpegReady === false) return;
+    void loadAudioDevices();
+  }, [tab, recFormat, micEnabled, audioDevices, ffmpegReady, loadAudioDevices]);
+
+  // 麦克风开关 / 设备选择 → 持久化到 ShotSettings（老配置自动补默认值）
+  const updateMicSettings = useCallback((enabled: boolean, device: string) => {
+    setMicEnabled(enabled);
+    setMicDevice(device);
+    setSettings((current) => {
+      if (!current) return current;
+      const next = { ...current, micEnabled: enabled, micDevice: device };
+      void setShotSettings(next).catch(() => {});
+      return next;
+    });
+  }, []);
+
+  // 枚举结果一个设备都没有时自动关闭麦克风开关：与其录出「以为有声实际
+  // 静默」的视频，不如明确回落为无声并在界面说明（空设备名不持久化）。
+  useEffect(() => {
+    if (audioDevices !== null && audioDevices.length === 0 && micEnabled) {
+      updateMicSettings(false, "");
+    }
+  }, [audioDevices, micEnabled, updateMicSettings]);
+
+  // 首次使用 MP4：下载 ffmpeg（下载到程序目录 bin\，进度就地展示）
+  const downloadFfmpeg = useCallback(() => {
+    setFfmpegProgress({
+      stage: "download",
+      sourceIndex: 1,
+      sourceTotal: 2,
+      downloaded: 0,
+      total: null,
+      message: "正在连接下载源…",
+    });
+    void ensureFfmpeg()
+      .then(() => {
+        setFfmpegReady(true);
+        setAudioDevices(null);
+        void loadAudioDevices();
+      })
+      .catch((error) => {
+        setFfmpegProgress(null);
+        showToast(String(error), 5200);
+      });
+  }, [loadAudioDevices, showToast]);
+
+  useEffect(
+    () =>
+      onFfmpegDownload((progress) => {
+        setFfmpegProgress(progress);
+        if (progress.stage === "done") {
+          showToast("ffmpeg 已就绪，可以录制 MP4 了", 2600);
+          window.setTimeout(() => setFfmpegProgress(null), 900);
+        }
       }),
     [showToast]
   );
@@ -917,10 +1027,17 @@ export default function ShotApp() {
       return;
     }
     const rect = normRect(selection);
+    // 麦克风开着却没有有效设备（列表空 / 还没选）时明确告知将无声，
+    // 不静默录出「以为有声」的视频；后端对 null 一律正常录制
+    const wantsMic = micEnabled && recFormat === "mp4";
+    const micName = wantsMic && micDevice ? micDevice : null;
+    if (wantsMic && !micName && ffmpegReady) {
+      showToast("未检测到可用的麦克风设备，本次录制不含人声", 3600);
+    }
     setBusy("正在准备录屏…");
     try {
       // 后端会挪走覆盖层并在屏幕右下角浮出录制条，这里只负责把选区传过去。
-      await startRecord(
+      const started = await startRecord(
         session.id,
         {
           x: Math.round(rect.x),
@@ -928,8 +1045,14 @@ export default function ShotApp() {
           width: Math.round(rect.width),
           height: Math.round(rect.height),
         },
-        { format: recFormat, cursor: recCursor }
+        {
+          format: recFormat,
+          cursor: recCursor,
+          mic: micName,
+        }
       );
+      // 非致命提示（如「未检测到系统声设备」）只 toast 一次，不阻塞录制
+      if (started.notice) showToast(started.notice, 4200);
     } catch (error) {
       showToast(String(error), 4200);
     } finally {
@@ -1368,11 +1491,15 @@ export default function ShotApp() {
             ) : (
               <>
                 <div className="shot-rec-format" role="group" aria-label="录屏格式">
-                  {IS_MAC ? (
+                  {IS_MAC || IS_WINDOWS ? (
                     <button
                       type="button"
                       className={recFormat === "mp4" ? "active" : ""}
-                      title="MP4 视频：画面流畅、体积适中，支持裁剪"
+                      title={
+                        IS_MAC
+                          ? "MP4 视频：画面流畅、体积适中，支持裁剪"
+                          : "MP4 视频：画面流畅、可带音轨（首次使用需下载 ffmpeg，约 100MB）"
+                      }
                       onClick={() => setRecFormat("mp4")}
                     >
                       MP4
@@ -1387,6 +1514,9 @@ export default function ShotApp() {
                     GIF
                   </button>
                 </div>
+                {!IS_MAC && !IS_WINDOWS ? (
+                  <span className="shot-mode-note">当前平台仅支持 GIF</span>
+                ) : null}
                 <button
                   type="button"
                   className={recCursor ? "shot-rec-toggle on" : "shot-rec-toggle"}
@@ -1396,6 +1526,75 @@ export default function ShotApp() {
                   <span className="shot-rec-switch" />
                   鼠标
                 </button>
+                {IS_WINDOWS ? (
+                  recFormat === "mp4" ? (
+                    <>
+                      <button
+                        type="button"
+                        className={micEnabled ? "shot-rec-toggle on" : "shot-rec-toggle"}
+                        disabled={ffmpegReady === false}
+                        title={
+                          ffmpegReady === false
+                            ? "需先下载 ffmpeg 才能录制麦克风"
+                            : "录制时是否采集麦克风人声"
+                        }
+                        onClick={() =>
+                          updateMicSettings(!micEnabled, micDevice || audioDevices?.[0]?.name || "")
+                        }
+                      >
+                        <span className="shot-rec-switch" />
+                        麦克风
+                      </button>
+                      {ffmpegReady === false ? (
+                        <button
+                          type="button"
+                          className="shot-btn ghost"
+                          title="MP4 录制依赖 ffmpeg：下载到程序目录 bin\ 下，约 100MB，只需一次"
+                          disabled={ffmpegProgress !== null}
+                          onClick={downloadFfmpeg}
+                        >
+                          {ffmpegProgress ? "下载中…" : "下载 ffmpeg"}
+                        </button>
+                      ) : micEnabled ? (
+                        audioDevices === null ? (
+                          <select className="shot-rec-select" disabled value="">
+                            <option value="">正在读取设备…</option>
+                          </select>
+                        ) : audioDevices.length === 0 ? (
+                          <span className="shot-mode-note" title="没有检测到任何音频输入设备，本次录制将不含人声">
+                            未检测到麦克风
+                          </span>
+                        ) : (
+                          <select
+                            className="shot-rec-select"
+                            value={micDevice}
+                            title="选择要录入的麦克风设备"
+                            onChange={(event) => updateMicSettings(true, event.target.value)}
+                          >
+                            {(audioDevices ?? []).map((device) => (
+                              <option key={device.name} value={device.name}>
+                                {device.label}
+                              </option>
+                            ))}
+                          </select>
+                        )
+                      ) : null}
+                    </>
+                  ) : (
+                    <span className="shot-rec-toggle disabled" title="GIF 无音轨，切到 MP4 才能录声音">
+                      <span className="shot-rec-switch" />
+                      麦克风
+                    </span>
+                  )
+                ) : null}
+                {IS_WINDOWS && recFormat === "mp4" && ffmpegReady === false && !ffmpegProgress ? (
+                  <span
+                    className="shot-mode-note"
+                    title="ffmpeg 未安装时无法录制 MP4，点击「下载 ffmpeg」后即可使用"
+                  >
+                    将录制为 GIF（未安装 ffmpeg）
+                  </span>
+                ) : null}
                 <button
                   type="button"
                   className="shot-btn record"
@@ -1422,6 +1621,39 @@ export default function ShotApp() {
               <ShotIcon name="close" size={15} />
             </button>
           </div>
+          {ffmpegProgress ? (
+            <div className="shot-ffmpeg-progress" role="status">
+              <div
+                className={`shot-ffmpeg-progress-track${
+                  ffmpegProgress.total || ffmpegProgress.stage === "done" ? "" : " indeterminate"
+                }`}
+              >
+                <span
+                  style={{
+                    width: `${
+                      ffmpegProgress.total
+                        ? Math.min(
+                            100,
+                            Math.round((ffmpegProgress.downloaded / ffmpegProgress.total) * 100)
+                          )
+                        : ffmpegProgress.stage === "done"
+                          ? 100
+                          : 34
+                    }%`,
+                  }}
+                />
+              </div>
+              <span className="shot-ffmpeg-progress-text">
+                {ffmpegProgress.stage === "download"
+                  ? `${(ffmpegProgress.downloaded / 1024 / 1024).toFixed(1)} MB${
+                      ffmpegProgress.total
+                        ? ` / ${(ffmpegProgress.total / 1024 / 1024).toFixed(1)} MB`
+                        : ""
+                    }（下载源 ${ffmpegProgress.sourceIndex}/${ffmpegProgress.sourceTotal}）`
+                  : ffmpegProgress.message}
+              </span>
+            </div>
+          ) : null}
           <div className="shot-hint">
             {tab === "shot" ? (
               <>

@@ -6,6 +6,71 @@
 
 ---
 
+## 实施状态（批 1，2026-11-12；批 2 会议录音同日完成）
+
+批 1 已完成 **任务 A（Windows MP4 + 麦克风）+ 任务 B（Windows MP4 裁剪）+ ffmpeg 基础设施**；**批 2 已完成任务 C（会议录音页）**，见下方「批 2 完成记录」。本文其余章节保留为背景与原始设计，行号对应批 1 之前的代码，**与现状已有出入，以代码为准**。
+
+### 批 2 完成记录：任务 C 会议录音页（2026-11-12）
+
+- **采集层**：`cpal 0.15`（默认特性，无 jack/asio），Windows WASAPI / macOS CoreAudio 同一套代码，**不依赖 ffmpeg**——会议页在没下载 ffmpeg 的机器上完整可用。
+- **后端** `src-tauri/src/island/meeting.rs`：`meeting_devices / meeting_start / meeting_pause / meeting_resume / meeting_stop / meeting_add_mark / meeting_state / meeting_list / meeting_delete / meeting_rename / meeting_open_folder / meeting_privacy / meeting_confirm_privacy` 共 13 个命令（全部中文错误 `Result<_, String>`），注册在 lib.rs `generate_handler!` 末尾追加。
+- **落盘**（C.1 口径）：`~/.agenthud/meetings/{YYYYMMDD-HHMM}.wav`（16kHz/16bit/单声道为目标；设备不支持 16k 时用设备默认采样率并记入侧车 `sample_rate`；声道一律降混单声道）+ 同名 `.json` 侧车 `{started_at, duration_ms, device, sample_rate, marks:[{ms,label}]}`（`#[serde(default)]` 兼容旧文件）。录制中写 `.wav.tmp`（44 字节占位头 + 追加数据），stop 回填真实长度再 rename；杀进程只留 `.tmp`，下次 start/list 自动清理，**不会产生 0 字节正式文件**。
+- **暂停 / 有效时长**：暂停走 cpal 流的 pause（keeper 线程持有 `cpal::Stream`——它刻意 `!Send`，用「专职线程 + mpsc 控制通道」模式跨线程操控）；`duration_ms` 按实际写入采样数计算，天然扣除暂停段；marks 的 ms 用 `SegClock` 有效时间轴（纯函数可单测）。
+- **隐私确认**：首次开始前端弹确认卡（展示保存路径），持久化在 island.db 新表 `meeting_settings`（store.rs 追加 `load/save_meeting_settings`，复用 ShotSettings 的单行 payload 模式，未动既有函数）。
+- **前端**：工具箱第 5 子页「会议」（`src/island/MeetingPanel.tsx`，注册见 `ToolboxPage.tsx`）；状态机 空闲 → 录制中（计时 / 暂停继续 / 打标记 / 结束 / 「转写（即将支持）」置灰占位）→ 列表（打开文件夹 / 重命名 / 两段式删除）；子页切走再切回用 `meeting_state` 恢复录制视图。mock 走 `api.ts` 的假会话状态机，`.preview/harness/island-tool.html?mode=meeting&open=1` 可完整预览。
+- **验证**：`cargo test --lib` 947 passed / 0 failed / 3 ignored（基线 938 + 新增 9 个纯函数单测：WAV 头布局与解析、降混、SegClock 暂停扣除、侧车兼容读、重名避让、文件名往返、名称消毒）；`cargo check --lib` 无新增错误与 warning；`npx tsc --noEmit` / `npx vite build` 通过；浏览器 mock 全链路已实测。
+- **顺手修正**：`island/api.ts` 的 `stepIslandDrag` mock 之前恒回 `started: true`，浏览器预览里点任何按钮都可能被判成拖拽而收起面板；改为 `started: false`（与真实 Rust 阈值判定的「按住没拖」语义一致）。
+
+### 批 3 追加记录：播放 / 自动音量 / 额度通知归属（2026-11-13）
+
+真机试用后反馈的三点：录完不能就地播放、录出来的声音偏小、额度重置通知看不出是哪家订阅。补法：
+
+- **列表播放**：`MeetingPanel.tsx` 条目新增播放键，播放器展开在条目内（独占一行：播放/暂停、进度拖动、当前/总时长、停止）；后端 `meeting_audio(id)` 只做「校验 id → 确认 wav 存在 → `asset_protocol_scope().allow_file(wav)` → 返回路径」，前端 `convertFileSrc` 后交给 `<audio>`，**不复制、不转码**，asset 协议自带 Range 所以拖动进度不用整段重下。一次只播一条；开始录音前自动停（外放会串进麦克风）；删除正在播放的条目会收起播放器。浏览器预览用 `api.ts` 合成的 60 秒 WAV Blob 走同一套 UI。
+- **自动音量**：`meeting.rs::normalize_wav_peak` 在 stop 的回填头之后、rename 之前扫一遍整段峰值，原地线性放大到 ≈ -2 dBFS；只放大不衰减、上限 +18 dB、峰值低于 ≈ -48 dBFS 视为静音不动，因此不会削波也不会把底噪抬成噪音。失败只打日志并保留原始录音（文件已完整，不能因为「想更响」让保存失败）。设置存 island.db `meeting_settings.autoGain`（默认开，会议页「音量」行可关），老 payload 缺字段自动补 true。
+- **额度通知归属**：`quota_reminder::Entry` 新增 `source`，登记 ZCode 三个窗口时统一填 `ZCode · GLM Coding Plan {档位}`（档位由 `QuotaResult.level` 映射 lite/pro/max/ultra，未知档位首字母大写原样附上）；正文改为「ZCode · GLM Coding Plan Pro · 5 小时额度将在 今天 12:30 重置，之后可用新额度」——**先给归属、再给时间**，通知横幅第一行就能看出是哪家订阅；跨 provider 的 key 改成 `zcode:hour5` 前缀，Claude / Codex 将来接入不会撞键。
+- **测试**：`cargo test --lib` 956 passed / 0 failed / 4 ignored；新增 `normalize_boosts_quiet_audio_and_forces_no_clip`（峰值 8000 → ≈26000、已足够响不动、静音不动）、`plan_label_maps_subscription_tiers`。
+
+### 已完成项
+
+- **ffmpeg 基础设施**（`src-tauri/src/island/screenshot/record/ffmpeg.rs`，新模块）：
+  - 定位顺序 `AGENTHUD_FFMPEG`（支持指到 exe 或目录）→ exe 同目录 `bin\ffmpeg.exe` → `PATH`；
+  - 按需下载：多源依次降级（BtbN GitHub → gyan.dev），zip 下载到程序目录 `bin\`（先落 `.part` 再 rename），只解压 `bin/ffmpeg.exe` 条目（路径穿越防护 + 体积上限），跑 `ffmpeg -version` 校验；进度经 `zbar://ffmpeg-download` 事件推送（download/extract/verify/done/error 阶段 + 字节数）；目录不可写时给中文指引（AGENTHUD_FFMPEG / 手动放置）；
+  - dshow 音频设备枚举：按字节匹配 `"名字" (audio)` 引号模式 + `Alternative name "@device_cm_…"` 备用名；显示名按 UTF-8 → GBK → windows-1252 回退解码（复用既有 `encoding_rs`），**录制一律用 ASCII 备用名**，与本地代码页无关；
+  - 系统声探测：关键词匹配「立体声混音 / 混音 / Stereo Mix / Wave Out / Loopback」，不硬编码设备名。
+- **Windows MP4 录制**（`record.rs`）：`RecordOptions.mic`（camelCase wire）；gdigrab 30fps + dshow 音频 + libx264 `-preset veryfast -crf 23` + aac 160k；麦克风与系统声两路时 `amix` 混流；抓屏区与输出尺寸不一致时 `scale` 对齐（偶数化）；**启动前先跑一次设备枚举校验**，麦克风不在列表立即中文报错（不产静默无音轨文件）；系统声探测不到只降级并在 `RecordStarted.notice` 带一句提示；**停止：先向独立进程组发 `CTRL_BREAK`（2 秒内优雅收尾、moov 完整），未退或无 console（GUI 发布版）时 kill**——录制输出用 fragmented MP4（`empty_moov+default_base_moof` + 0.2s 切片 + `-flush_packets 1`），被 kill 的文件依然完整可播，最多丢最后 0.2s 切片（Windows 上管道 stdin 写 `q` 实测无效，ffmpeg 键盘交互走 console API，定案过程见 ffmpeg.rs 模块注释）；ffmpeg 子进程挂进 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` 的 Job Object，应用任何路径退出（含崩溃）都不留孤儿进程继续录屏；ffmpeg 启动后 600ms 内退出（设备错/区域非法）会以 stderr 尾部报中文错误。
+- **录制条入画**：录制条矩形与选区**相交时**才隐藏（拍板方案的隐藏），同时临时注册全局快捷键 `Ctrl+Shift+G`（与「开始录制」同键）结束录制 + 系统通知说明；录制结束注销快捷键，预览窗 `shot_record_preview` 原有的 `show()` 负责恢复窗口。选区不含录制条（多数场景）时录制条保持显示，Esc / 「结束」按钮照常可用——这是对拍板「录制期间隐藏」的工程化落地：无脑全隐藏会让用户失去唯一停止 UI。
+- **Windows MP4 裁剪**（`trim_recording`）：默认重编码（`-ss` 输入侧快速 seek + 输出 `-t` 时长 + libx264/aac，精确到 0.001s），快速模式 `-c copy` 未做（按拍板）；ffmpeg 缺失给中文错误；GIF 分支零改动。
+- **格式降级**：Windows 上 `mp4_supported()` 运行时判断（ffmpeg 就位与否）；缺失时请求 MP4 自动降级 GIF 并系统通知一次。
+- **前端**：录屏条 MP4 格式下（仅 Windows）显示麦克风开关 + 设备下拉（`shot_record_audio_devices`）；ffmpeg 未就位显示「下载 ffmpeg」按钮，下载进度条就地展示；GIF 格式麦克风置灰 + 提示「GIF 无音轨」；麦克风偏好持久化到 `ShotSettings.micEnabled/micDevice`（`#[serde(default)]`，老配置兼容）；MP4 预览头部加「有声」徽标（`RecordResult.hasAudio`）。
+- **新命令**：`shot_record_audio_devices` / `shot_record_ffmpeg_status` / `shot_record_ensure_ffmpeg`（自定义命令不走 ACL，capability 未改，`capabilities/rec.json` 的描述本来就写明录制工作全走自定义命令）。
+- **测试**：`cargo test --lib` 938 passed / 0 failed / 3 ignored（基线 924 + 新增 14，全部为纯函数单测：定位顺序、URL 清单、dshow 解析、GBK 解码、loopback 匹配、录制/裁剪参数拼接、秒数格式化、zip 防伪、格式降级、录制条相交几何）；`npx tsc --noEmit` / `npx vite build` 通过。
+
+### macOS 查证结论（拍板 3）
+
+- **ScreenCaptureKit 原生支持麦克风**：`SCStreamConfiguration.captureMicrophone`（macOS 15.0+，WWDC24 session 10088 引入），且项目锁定的 `objc2-screen-capture-kit 0.3.2` 绑定**已生成** `setCaptureMicrophone(&self, bool)`（已从 docs.rs 0.3.2 页面核实）。
+- **但本批留白，未接入**，理由：
+  1. Apple 文档要求麦克风音频走 `SCStreamOutputTypeMicrophone` 输出类型的 sample handler，而 `sck.rs` 现有结构用的是 `SCRecordingOutput`（直写磁盘）——`captureMicrophone = true` 时 `SCRecordingOutput` 是否会把麦克风混进 MP4 无法在本机（Windows）验证，社区还有「开启后录制损坏」的报告（r/swift 2025）；
+  2. 需要新增 `NSMicrophoneUsageDescription` 权限声明与运行时授权，属于 Tauri 配置 + Info.plist 改动，同样无法验证；
+  3. 若 `SCRecordingOutput` 不写麦克风轨，就得改造成 sample handler 自行混流编码 = 大改，超出「最小侵入」。
+- **后续在 mac 真机上验证的最小实验**（批 2 或专项）：在 `sck.rs` 的 `Session::start` 里给 `config` 加一行 `config.setCaptureMicrophone(mic_on)`，Info.plist 加 `NSMicrophoneUsageDescription`，录 10 秒说话检查产物音轨；能用就是三行改动接入 `RecordOptions.mic`，不能用再评估 sample handler 路线。**在验证之前绝不要动 sck.rs 已验证路径**。
+- mac 的 MP4 裁剪（avconvert）与 `mod h264` / `mp4_track` 本批未动。
+
+### 批 2 范围（未做）
+
+- 任务 C：会议录音页（工具箱第 5 子页），采集层建议 cpal（避开 ffmpeg 常驻进程），落盘 `~/.agenthud/meetings/`；转写方案仍是产品决策，不要先写代码。
+- macOS 麦克风：按上面的最小实验先行查证。
+- `-c copy` 快速裁剪模式、鼠标点击高亮 / 聚光：未做。
+
+### 与本文其余章节的差异
+
+- 第 3 节 A.3① 的「下载到 `~/.agenthud/bin/`」已被用户拍板否决：实际下载到**应用 exe 同目录 `bin\`**；
+- A.3⑤ 的参数模板已按双音频 amix / scale 对齐 / `-draw_mouse` 扩展，见 `ffmpeg.rs` 的 `build_record_args`（含单测快照）；
+- 第 4 节的「先无损再重编码」双尝试被简化为**只做重编码**（用户拍板：避免 UI 复杂化）；
+- `RecordResult` 新增 `hasAudio` 字段（仅 Serialize 方向，向后兼容）。
+
+---
+
+
 ## 0. 结论先行（TL;DR）
 
 1. **「Windows 端录屏裁剪」名不副实**：Windows 录出来的是 GIF，而 GIF 裁剪本来就是跨平台实现，已经能用。真正缺的是 Windows 的 **MP4 + 音轨** 整条链路。别在这个标题下写无用代码。

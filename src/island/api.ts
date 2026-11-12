@@ -1,11 +1,13 @@
 /** 灵动岛 API 封装：Tauri 环境走 invoke；浏览器预览回退到 mock.ts */
 
-import { invoke } from "@tauri-apps/api/core";
+import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import {
   mockClipboardWithImage,
   mockConfig,
   mockMedia,
+  mockMeetingDevices,
+  mockMeetings,
   mockMinute,
   mockNotify,
   mockProjects,
@@ -29,6 +31,14 @@ import type {
   LocatedPlace,
   LyricsState,
   MediaState,
+  MeetingAudioDevice,
+  MeetingItem,
+  MeetingMark,
+  MeetingPrivacy,
+  MeetingSessionBrief,
+  MeetingSessionInfo,
+  MeetingSettings,
+  MeetingStopResult,
   NotifyState,
   Snippet,
   StockMinute,
@@ -131,7 +141,9 @@ export async function beginIslandDrag(): Promise<IslandDragBegin> {
 }
 
 export async function stepIslandDrag(): Promise<IslandDragStep> {
-  if (!IS_TAURI) return delay({ active: true, dx: 0, dy: 0, started: true }, 10);
+  // 浏览器预览没有真实光标位移：一律按「只是按住没拖」处理（started=false）。
+  // 之前恒回 started=true，预览里点任何按钮都可能被判成拖拽而收起面板。
+  if (!IS_TAURI) return delay({ active: true, dx: 0, dy: 0, started: false }, 10);
   return invoke<IslandDragStep>("island_drag_step");
 }
 
@@ -619,4 +631,271 @@ export async function launcherProjects(): Promise<LauncherProject[]> {
     display_path: row.display_path,
     sessions: row.sessions,
   }));
+}
+
+// ===== 会议录音 =====
+
+let mockMeetingItems: MeetingItem[] = clone(mockMeetings);
+let mockPrivacyConfirmed = false;
+let mockAutoGain = true;
+const MOCK_MEETING_DIR = "C:\\Users\\demo\\.agenthud\\meetings";
+/** 预览用的假录音地址（懒生成一次，60 秒近静音 WAV Blob） */
+let mockMeetingAudioUrl = "";
+
+/** 浏览器预览没有真实 wav：合成一段 60 秒、极轻的 220Hz 音，播放器 UI 可走通 */
+function mockMeetingTone(): string {
+  if (mockMeetingAudioUrl) return mockMeetingAudioUrl;
+  const rate = 16_000;
+  const seconds = 60;
+  const count = rate * seconds;
+  const buffer = new ArrayBuffer(44 + count * 2);
+  const view = new DataView(buffer);
+  const writeText = (offset: number, text: string) => {
+    for (let i = 0; i < text.length; i += 1) view.setUint8(offset + i, text.charCodeAt(i));
+  };
+  writeText(0, "RIFF");
+  view.setUint32(4, 36 + count * 2, true);
+  writeText(8, "WAVEfmt ");
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true);
+  view.setUint32(24, rate, true);
+  view.setUint32(28, rate * 2, true);
+  view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true);
+  writeText(36, "data");
+  view.setUint32(40, count * 2, true);
+  for (let i = 0; i < count; i += 1) {
+    view.setInt16(44 + i * 2, Math.round(Math.sin((i / rate) * 2 * Math.PI * 220) * 40), true);
+  }
+  mockMeetingAudioUrl = URL.createObjectURL(new Blob([buffer], { type: "audio/wav" }));
+  return mockMeetingAudioUrl;
+}
+
+/** 浏览器预览用的假录制会话（真机不参与：全部走 invoke） */
+interface MockMeetingSession {
+  id: string;
+  device: string;
+  sampleRate: number;
+  startWall: number;
+  pausedAccumMs: number;
+  pauseAt: number | null;
+  marks: MeetingMark[];
+}
+
+let mockMeetingSession: MockMeetingSession | null = null;
+
+function mockMeetingElapsedMs(session: MockMeetingSession): number {
+  const pausedNow =
+    session.pauseAt != null ? Date.now() - session.pauseAt : 0;
+  return Math.max(0, Date.now() - session.startWall - session.pausedAccumMs - pausedNow);
+}
+
+function mockMeetingStamp(): string {
+  const d = new Date();
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(
+    d.getHours()
+  )}${pad(d.getMinutes())}`;
+}
+
+/** 枚举音频输入设备（下拉用） */
+export async function meetingDevices(): Promise<MeetingAudioDevice[]> {
+  if (!IS_TAURI) return delay(clone(mockMeetingDevices));
+  return invoke<MeetingAudioDevice[]>("meeting_devices");
+}
+
+/** 播放地址：后端把 wav 放行进 asset 协议，这里转成 `<audio>` 能用的 URL */
+export async function meetingAudio(id: string): Promise<string> {
+  if (!IS_TAURI) return mockMeetingTone();
+  const path = await invoke<string>("meeting_audio", { id });
+  return convertFileSrc(path);
+}
+
+/** 会议录音设置（目前只有「自动音量」） */
+export async function meetingSettings(): Promise<MeetingSettings> {
+  if (!IS_TAURI) {
+    return delay({ privacyConfirmed: mockPrivacyConfirmed, autoGain: mockAutoGain });
+  }
+  return invoke<MeetingSettings>("meeting_settings");
+}
+
+/** 开关「保存时自动提升音量」 */
+export async function meetingSetAutoGain(enabled: boolean): Promise<MeetingSettings> {
+  if (!IS_TAURI) {
+    mockAutoGain = enabled;
+    return delay({ privacyConfirmed: mockPrivacyConfirmed, autoGain: mockAutoGain });
+  }
+  return invoke<MeetingSettings>("meeting_set_auto_gain", { enabled });
+}
+
+/** 首次使用隐私确认状态 + 保存目录 */
+export async function meetingPrivacy(): Promise<MeetingPrivacy> {
+  if (!IS_TAURI) {
+    return delay({ confirmed: mockPrivacyConfirmed, dir: MOCK_MEETING_DIR });
+  }
+  return invoke<MeetingPrivacy>("meeting_privacy");
+}
+
+/** 用户确认「录音保存到本机磁盘」后持久化 */
+export async function meetingConfirmPrivacy(): Promise<boolean> {
+  if (!IS_TAURI) {
+    mockPrivacyConfirmed = true;
+    return delay(true);
+  }
+  return invoke<boolean>("meeting_confirm_privacy");
+}
+
+/** 开始录音；device 传 null 用默认输入设备 */
+export async function meetingStart(device: string | null): Promise<MeetingSessionInfo> {
+  if (!IS_TAURI) {
+    const stamp = mockMeetingStamp();
+    mockMeetingSession = {
+      id: stamp,
+      device: device ?? "麦克风阵列 (Realtek Audio)",
+      sampleRate: 16_000,
+      startWall: Date.now(),
+      pausedAccumMs: 0,
+      pauseAt: null,
+      marks: [],
+    };
+    return delay({
+      id: stamp,
+      name: stamp,
+      path: `${MOCK_MEETING_DIR}\\${stamp}.wav`,
+      dir: MOCK_MEETING_DIR,
+      started_at: Date.now(),
+      device: mockMeetingSession.device,
+      sample_rate: 16_000,
+    });
+  }
+  return invoke<MeetingSessionInfo>("meeting_start", { device });
+}
+
+export async function meetingPause(): Promise<void> {
+  if (!IS_TAURI) {
+    if (mockMeetingSession && mockMeetingSession.pauseAt == null) {
+      mockMeetingSession.pauseAt = Date.now();
+    }
+    return delay(undefined, 20);
+  }
+  return invoke("meeting_pause");
+}
+
+export async function meetingResume(): Promise<void> {
+  if (!IS_TAURI) {
+    if (mockMeetingSession && mockMeetingSession.pauseAt != null) {
+      mockMeetingSession.pausedAccumMs += Date.now() - mockMeetingSession.pauseAt;
+      mockMeetingSession.pauseAt = null;
+    }
+    return delay(undefined, 20);
+  }
+  return invoke("meeting_resume");
+}
+
+/** 录制中打时间标记（label 可选），返回打在有效时间轴上的标记 */
+export async function meetingAddMark(label: string | null): Promise<MeetingMark> {
+  if (!IS_TAURI) {
+    const session = mockMeetingSession;
+    if (!session) throw new Error("当前没有正在进行的会议录音");
+    const mark: MeetingMark = { ms: mockMeetingElapsedMs(session), label: (label ?? "").trim() };
+    session.marks.push(mark);
+    return delay(mark, 20);
+  }
+  return invoke<MeetingMark>("meeting_add_mark", { label });
+}
+
+/** 录制中的会话快照（null = 空闲）；子页重挂载后恢复录制视图用 */
+export async function meetingState(): Promise<MeetingSessionBrief | null> {
+  if (!IS_TAURI) {
+    const session = mockMeetingSession;
+    if (!session) return delay(null, 0);
+    return delay({
+      id: session.id,
+      name: session.id,
+      device: session.device,
+      sample_rate: session.sampleRate,
+      started_at: session.startWall,
+      paused: session.pauseAt != null,
+      effective_ms: mockMeetingElapsedMs(session),
+      marks: clone(session.marks),
+      dir: MOCK_MEETING_DIR,
+    });
+  }
+  return invoke<MeetingSessionBrief | null>("meeting_state");
+}
+
+/** 结束录音并落盘（后端回填 WAV 头 + 写侧车 + rename） */
+export async function meetingStop(): Promise<MeetingStopResult> {
+  if (!IS_TAURI) {
+    const session = mockMeetingSession;
+    if (!session) throw new Error("当前没有正在进行的会议录音");
+    const durationMs = mockMeetingElapsedMs(session);
+    const result: MeetingStopResult = {
+      id: session.id,
+      name: session.id,
+      path: `${MOCK_MEETING_DIR}\\${session.id}.wav`,
+      duration_ms: durationMs,
+      size: Math.max(44, Math.round(durationMs * 32)),
+      marks: session.marks.length,
+      sample_rate: session.sampleRate,
+      warning: null,
+    };
+    mockMeetingItems = [
+      {
+        id: session.id,
+        name: session.id,
+        started_at: session.startWall,
+        duration_ms: durationMs,
+        size: result.size,
+        sample_rate: session.sampleRate,
+        device: session.device,
+        marks: clone(session.marks),
+      },
+      ...mockMeetingItems,
+    ];
+    mockMeetingSession = null;
+    return delay(result, 60);
+  }
+  return invoke<MeetingStopResult>("meeting_stop");
+}
+
+/** 最近录音列表（started_at 倒序） */
+export async function meetingList(): Promise<MeetingItem[]> {
+  if (!IS_TAURI) return delay(clone(mockMeetingItems));
+  return invoke<MeetingItem[]>("meeting_list");
+}
+
+export async function meetingDelete(id: string): Promise<void> {
+  if (!IS_TAURI) {
+    mockMeetingItems = mockMeetingItems.filter((item) => item.id !== id);
+    return delay(undefined, 40);
+  }
+  return invoke("meeting_delete", { id });
+}
+
+/** 重命名（wav 与侧车 json 一起改名），返回改名后的条目 */
+export async function meetingRename(id: string, newName: string): Promise<MeetingItem> {
+  if (!IS_TAURI) {
+    const target = mockMeetingItems.find((item) => item.id === id);
+    if (!target) throw new Error("录音不存在或已被删除");
+    // 按显示名查重（真实后端按文件主干查，主干恒等于名称；mock 种子数据的
+    // id 可以与 name 不同，按 id 查重会漏掉「评审会」这类手工命名的种子项）
+    if (mockMeetingItems.some((item) => item.name === newName && item.id !== id)) {
+      throw new Error(`已存在同名录音「${newName}」`);
+    }
+    const next: MeetingItem = { ...target, id: newName, name: newName };
+    mockMeetingItems = [next, ...mockMeetingItems.filter((item) => item.id !== id)];
+    return delay(next, 40);
+  }
+  return invoke<MeetingItem>("meeting_rename", { id, newName });
+}
+
+/** 打开该录音所在文件夹 */
+export async function meetingOpenFolder(id: string): Promise<void> {
+  if (!IS_TAURI) {
+    console.info("[island mock] open meeting folder", id);
+    return delay(undefined, 20);
+  }
+  return invoke("meeting_open_folder", { id });
 }

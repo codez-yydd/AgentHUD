@@ -1,6 +1,6 @@
 /** 灵动岛各页面：主页 / 消息 / 股票 / 天气 / 控制 / 剪贴板 / 设置 */
 
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { getStockMinute, locateCurrentPlace, mediaAction as runMediaAction, searchStock } from "./api";
 import type {
   ClipItem,
@@ -164,30 +164,68 @@ export function HomePage({
   }, [lyrics, media.hasSession, media.position]);
 
   // 面板高度固定（492），媒体条 / 3 行额度卡 / 大字号都可能把主页顶出滚动条。
-  // 这里按实际可用高度把整页等比缩到刚好放下：不出现滚动条，也不裁内容；
-  // 宽度按 100/scale 补偿，缩完仍铺满面板内容区。
-  // 不写依赖数组：账号数量 / 媒体条 / 字号 / 可用高度任一变化都要重新量。
-  useLayoutEffect(() => {
+  // 这里按**展开态**的内容盒把整页等比缩到刚好放下：不出现滚动条，也不裁内容。
+  //
+  // 三条约束（改之前先读一遍，都是实测踩过的坑）：
+  // 1. **在展开态宽度下量**：收起态侧边胶囊只有 70px 宽，按当前宽度量会让整页
+  //    自然高度因超窄宽度暴涨，把主页缩到 0.65；展开后又要跳回正常比例——
+  //    就是「打开 1~2 秒后字体突然变大」。这里始终把页面临时撑到目标宽度
+  //    （518 = 岛 520 - 1px 边框）再量，收起态也能算出正确比例，展开前就已生效。
+  // 2. **展开后冻结小波动**：数据刷新（媒体条出现 / 消失、行数变化）会让自然
+  //    高度小幅波动；已缩放显示时只要还装得下（留 24px 余量）就不动比例，
+  //    避免字号在打开后 1~2 秒又跳一下。
+  // 3. 真正需要改比例时（首次量、内容明显变多）由 CSS transition 平滑过去，
+  //    见 island.css 的 .home-page。
+  const fitScaleRef = useRef(0);
+  const fitPage = useCallback(() => {
     const pageEl = pageRef.current;
+    const panelEl = pageEl?.closest<HTMLElement>(".island-panel");
+    const islandEl = panelEl?.closest<HTMLElement>(".island");
     const contentEl = pageEl?.parentElement;
-    if (!pageEl || !contentEl) return;
+    if (!pageEl || !panelEl || !islandEl || !contentEl) return;
+    const maxWidth = parseFloat(getComputedStyle(islandEl).maxWidth);
+    const width = Number.isFinite(maxWidth) && maxWidth > 0 ? maxWidth - 2 : 518;
     const cs = getComputedStyle(contentEl);
     const available =
-      contentEl.clientHeight -
+      panelEl.clientHeight -
+      (panelEl.querySelector<HTMLElement>(".island-nav")?.clientHeight ?? 42) -
       (parseFloat(cs.paddingTop) || 0) -
       (parseFloat(cs.paddingBottom) || 0);
-    // 量自然高度前先还原成 1:1，否则会把上一轮的补偿宽度量进去
-    pageEl.style.width = "";
+    if (width < 360 || available < 200) return;
+    // 量自然高度前先把页面撑到展开态宽度，且还原成 1:1（不带上一轮的补偿）。
+    // 量的一瞬间关掉 width 过渡，否则量到的是过渡中的中间宽度。
+    const previousTransition = pageEl.style.transition;
+    pageEl.style.transition = "none";
+    pageEl.style.width = `${width}px`;
     const natural = pageEl.offsetHeight;
-    // 只差 1px 以内不缩，避免亚像素来回抖
-    if (available <= 0 || natural <= available + 1) {
+    pageEl.style.transition = previousTransition;
+    const applied = fitScaleRef.current;
+    let scale = applied || 1;
+    // 已缩放（<1）且面板展开时：装得下就不动，避免数据晚到导致字号二次跳动
+    if (
+      islandEl.classList.contains("open") &&
+      applied > 0 &&
+      applied < 0.999 &&
+      natural * applied <= available + 24
+    ) {
+      pageEl.style.width = `${(100 / applied).toFixed(3)}%`;
+      return;
+    }
+    if (natural * scale > available + 4) {
+      // 装不下：按可用高度缩到刚好放下
+      scale = Math.max(0.65, available / natural);
+    } else if (natural * scale < available * 0.9) {
+      // 明显偏小（换小字号 / 内容变少）：留 10% 余量才放大，避免在临界点来回抖
+      scale = Math.min(1, available / natural);
+    }
+    fitScaleRef.current = scale;
+    pageEl.style.transformOrigin = "top left";
+    if (scale >= 0.999) {
       pageEl.style.width = "";
       pageEl.style.scale = "";
       pageEl.style.transform = "";
       return;
     }
-    const scale = Math.max(0.65, available / natural);
-    pageEl.style.transformOrigin = "top left";
     pageEl.style.width = `${(100 / scale).toFixed(3)}%`;
     // 优先用独立的 scale 属性：它和页面入场动画的 transform 互不覆盖，
     // 老 WebView 不支持时再退回 transform。
@@ -198,7 +236,29 @@ export function HomePage({
       pageEl.style.scale = "";
       pageEl.style.transform = `scale(${scale.toFixed(4)})`;
     }
+  }, []);
+
+  // 不写依赖数组：账号数量 / 媒体条 / 字号任一变化都要重新量
+  useLayoutEffect(() => {
+    fitPage();
   });
+
+  // 面板尺寸变化（展开/收起、拖拽调高）后补量一次：80ms 防抖吸收动画帧
+  useEffect(() => {
+    const contentEl = pageRef.current?.parentElement;
+    if (!contentEl) return;
+    let timer = 0;
+    const schedule = () => {
+      window.clearTimeout(timer);
+      timer = window.setTimeout(fitPage, 80);
+    };
+    const observer = new ResizeObserver(schedule);
+    observer.observe(contentEl);
+    return () => {
+      window.clearTimeout(timer);
+      observer.disconnect();
+    };
+  }, [fitPage]);
 
   return (
     <div className="page home-page" ref={pageRef}>

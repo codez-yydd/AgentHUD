@@ -29,6 +29,8 @@ use tauri::{
 #[cfg(target_os = "macos")]
 mod sck;
 
+mod ffmpeg;
+
 use super::{
     close_shot, hide_island_for_capture, monitor_list, on_main_thread, park_overlay,
     restore_overlay, shot_dir, shot_session, show_island_for_capture, RecordResult, ShotMonitor,
@@ -62,6 +64,22 @@ const MP4_SUPPORTED: bool = true;
 #[cfg(not(target_os = "macos"))]
 const MP4_SUPPORTED: bool = false;
 
+/// Windows 的 MP4 录制依赖 ffmpeg：ffmpeg 就位才算支持，否则回落 GIF。
+/// macOS 编译期恒为 true（VideoToolbox / ScreenCaptureKit）。
+fn mp4_supported() -> bool {
+    if MP4_SUPPORTED {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        ffmpeg::Ffmpeg::locate().is_ok()
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
+}
+
 static REC_SEQ: AtomicU64 = AtomicU64::new(1);
 static RECORDS: OnceLock<Mutex<HashMap<u64, Arc<Recording>>>> = OnceLock::new();
 
@@ -76,8 +94,12 @@ pub struct RecordOptions {
     pub format: Option<String>,
     /// 是否把鼠标指针画进画面
     pub cursor: Option<bool>,
-    /// MP4 是否录系统声音（GIF 没有声音，忽略）
+    /// MP4 是否录系统声音（GIF 没有声音，忽略）。Windows 依赖机器上有
+    /// 「立体声混音」类 loopback 设备，探测不到只降级为无系统声，不失败。
     pub audio: Option<bool>,
+    /// 麦克风设备名（None = 不录麦克风）；Windows 走 ffmpeg dshow，
+    /// macOS 目前忽略（ScreenCaptureKit 麦克风未接入，见交接文档）
+    pub mic: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -88,6 +110,8 @@ pub struct RecordStarted {
     pub width: u32,
     pub height: u32,
     pub max_seconds: u64,
+    /// 非致命提示（如「未检测到系统声设备」），录制条/覆盖层 toast 一次
+    pub notice: Option<String>,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -158,10 +182,10 @@ impl Recording {
     }
 }
 
-fn normalize_format(raw: Option<&str>) -> String {
+fn normalize_format(raw: Option<&str>, mp4_ok: bool) -> String {
     match raw {
         Some("gif") => "gif".to_string(),
-        _ if MP4_SUPPORTED => "mp4".to_string(),
+        _ if mp4_ok => "mp4".to_string(),
         _ => "gif".to_string(),
     }
 }
@@ -238,9 +262,34 @@ async fn start_recording(
     if session.origin.is_none() {
         return Err("当前截图不是屏幕区域，无法录制：请框选屏幕区域后再录".into());
     }
-    let format = normalize_format(options.format.as_deref());
+    // Windows 上 MP4 依赖 ffmpeg：没装就回落 GIF，并系统通知一次
+    let mp4_ok = mp4_supported();
+    let format = normalize_format(options.format.as_deref(), mp4_ok);
+    if !mp4_ok && options.format.as_deref() != Some("gif") {
+        crate::notify(
+            "录屏格式".into(),
+            "未找到 ffmpeg，本次录制降级为 GIF（无音轨）。可在录屏条里下载 ffmpeg 后使用 MP4".into(),
+        );
+    }
     let cursor = options.cursor.unwrap_or(true);
     let audio = options.audio.unwrap_or(true) && format == "mp4";
+
+    // Windows MP4：ffmpeg 定位 + 麦克风/系统声设备预校验。子进程枚举要
+    // 几百毫秒，放阻塞线程池，别卡异步执行器。
+    #[cfg(windows)]
+    let (audio_spec, notice) = if format == "mp4" {
+        let mic = options
+            .mic
+            .as_deref()
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .map(str::to_string);
+        probe_windows_audio(mic, audio).await?
+    } else {
+        (ffmpeg::RecordAudioSpec::default(), None)
+    };
+    #[cfg(not(windows))]
+    let notice: Option<String> = None;
 
     #[cfg(target_os = "macos")]
     if !super::mac_screen_recording_ready() {
@@ -317,6 +366,45 @@ async fn start_recording(
         return Err(e);
     }
 
+    // Windows 的 MP4 走 ffmpeg 抓屏（gdigrab），没有 macOS 那种「排除本进程
+    // 窗口」的机制：录制条若压在选区里会入画，此时把它藏起来，改用全局
+    // 快捷键（Ctrl+Shift+G，与「开始录制」同键）结束录制；选区不含录制条
+    // 时保持显示，用户照常点「结束」或按 Esc。
+    // 顺序必须是「先注册快捷键、成功后才隐藏」：注册失败时保持录制条
+    // 可见，用户仍可点「结束」/按 Esc 停止，不至于只能等 5 分钟自动停。
+    #[cfg(windows)]
+    let hide_recorder_bar = format == "mp4"
+        && recorder_overlaps_selection(&session.monitor, screen_x, screen_y, w, h);
+    #[cfg(windows)]
+    let mut stop_hotkey_registered = false;
+    #[cfg(windows)]
+    if hide_recorder_bar && register_record_stop_hotkey(&app) {
+        stop_hotkey_registered = true;
+        let app_hide = app.clone();
+        let hidden = on_main_thread(&app, move || {
+            if let Some(win) = app_hide.get_webview_window(REC_WINDOW_LABEL) {
+                let _ = win.hide();
+                Ok(())
+            } else {
+                Err("录制窗口不存在".to_string())
+            }
+        })
+        .await
+        .is_ok();
+        // hide 失败（窗口异常）时快捷键反而是唯一停止手段，注册保留到收尾
+        if hidden {
+            crate::notify(
+                "录屏已开始".into(),
+                "录制条在录制区域内已隐藏：按 Ctrl+Shift+G 结束录制（最长 5 分钟自动停）".into(),
+            );
+        }
+    }
+
+    #[cfg(windows)]
+    let (mic_in_spec, system_in_spec) = (audio_spec.mic.clone(), audio_spec.system.clone());
+    #[cfg(not(windows))]
+    let (mic_in_spec, system_in_spec): (Option<String>, Option<String>) = (None, None);
+
     let spec = CaptureSpec {
         screen_x,
         screen_y,
@@ -331,9 +419,30 @@ async fn start_recording(
         fps: MP4_FPS as u32,
         cursor_origin: (screen_x, screen_y),
         max_ms: MAX_RECORD_MS,
+        mic: mic_in_spec,
+        system_audio: system_in_spec,
     };
     let rec_worker = rec.clone();
     let dir = shot_dir()?;
+
+    // Windows MP4：单独的 ffmpeg 录制线程（子进程收尾 + 快捷键按需注销）
+    #[cfg(windows)]
+    if format == "mp4" {
+        let worker_app = app.clone();
+        let hotkey_registered = stop_hotkey_registered;
+        std::thread::spawn(move || {
+            run_ffmpeg_recording(rec_worker, spec, dir, worker_app, hotkey_registered);
+        });
+        return Ok(RecordStarted {
+            record_id,
+            format,
+            width: out_w,
+            height: out_h,
+            max_seconds: MAX_RECORD_MS / 1000,
+            notice,
+        });
+    }
+
     std::thread::spawn(move || {
         run_recording(rec_worker, spec, dir);
     });
@@ -344,6 +453,7 @@ async fn start_recording(
         width: out_w,
         height: out_h,
         max_seconds: MAX_RECORD_MS / 1000,
+        notice,
     })
 }
 
@@ -450,6 +560,33 @@ pub fn shot_record_stop(record_id: u64) -> Result<(), String> {
     Ok(())
 }
 
+/// 枚举音频输入设备（Windows MP4 的麦克风下拉）。ffmpeg 未就位时返回
+/// 中文错误，前端据此展示下载引导。
+#[tauri::command]
+pub async fn shot_record_audio_devices() -> Result<Vec<ffmpeg::AudioDevice>, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let ff = ffmpeg::Ffmpeg::locate()?;
+        ff.audio_devices()
+    })
+    .await
+    .map_err(|e| format!("枚举音频设备任务失败: {e}"))?
+}
+
+/// ffmpeg 是否就位（前端决定显示下载引导还是麦克风下拉）。
+#[tauri::command]
+pub fn shot_record_ffmpeg_status() -> ffmpeg::FfmpegStatus {
+    ffmpeg::Ffmpeg::status()
+}
+
+/// 确保 ffmpeg 就位：缺失时按需下载（多源依次降级），进度经
+/// `zbar://ffmpeg-download` 事件推给前端。下载上百 MB，全程在阻塞线程。
+#[tauri::command]
+pub async fn shot_record_ensure_ffmpeg(app: AppHandle) -> Result<ffmpeg::FfmpegStatus, String> {
+    tauri::async_runtime::spawn_blocking(move || ffmpeg::ensure_ffmpeg(&app))
+        .await
+        .map_err(|e| format!("ffmpeg 下载任务失败: {e}"))?
+}
+
 /// 把录制条原地放大成预览窗（播放 / 裁剪 / 复制 / 下载）。
 #[tauri::command]
 pub async fn shot_record_preview(app: AppHandle, record_id: u64) -> Result<(), String> {
@@ -547,12 +684,10 @@ pub async fn shot_record_export(
     let start = start_ms.clamp(0.0, duration);
     let end = end_ms.clamp(0.0, duration).max(start + 1.0);
     let trimmed = start > 60.0 || end < duration - 60.0;
-
     eprintln!(
         "[zbar-rec] 导出请求 id={record_id} {:.0}ms~{:.0}ms action={action} 裁剪={trimmed}",
         start, end
     );
-    let source_path_for_name = PathBuf::from(&result.path);
     tauri::async_runtime::spawn_blocking(move || {
         let source = PathBuf::from(&result.path);
         let path = if trimmed {
@@ -574,8 +709,19 @@ pub async fn shot_record_export(
             "save" => {
                 use tauri_plugin_dialog::DialogExt;
                 let ext = result.format.clone();
-                // 用原始录制文件命名，别把临时裁剪文件的 agenthud-trim-* 暴露给用户
-                let name = trimmed_name(&source_path_for_name, &ext, trimmed);
+                // 默认落到「视频/AgentHUD」，而不是让对话框停在临时目录或
+                // 上次的任意位置；文件名用人类可读的时间戳，不暴露
+                // agenthud-recording-* / agenthud-trim-* 这种内部名字。
+                let dir = dirs::video_dir()
+                    .or_else(|| dirs::home_dir().map(|home| home.join("Videos")))
+                    .unwrap_or_else(|| std::env::temp_dir())
+                    .join("AgentHUD");
+                let _ = std::fs::create_dir_all(&dir);
+                let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
+                let name = format!(
+                    "录屏-{stamp}{}.{ext}",
+                    if trimmed { "-裁剪" } else { "" }
+                );
                 let filter = if ext == "gif" {
                     ("GIF 动图", "gif")
                 } else {
@@ -584,7 +730,8 @@ pub async fn shot_record_export(
                 let picked = app
                     .dialog()
                     .file()
-                    .set_title("下载录屏")
+                    .set_title("保存录屏")
+                    .set_directory(&dir)
                     .add_filter(filter.0, &[filter.1])
                     .set_file_name(name)
                     .blocking_save_file();
@@ -595,6 +742,7 @@ pub async fn shot_record_export(
                     .into_path()
                     .map_err(|e| format!("解析保存路径失败: {e}"))?;
                 std::fs::copy(&path, &target).map_err(|e| format!("写入录屏文件失败: {e}"))?;
+                eprintln!("[zbar-rec] 已保存 {}", target.display());
                 Ok(Some(target.to_string_lossy().to_string()))
             }
             other => Err(format!("未知操作: {other}")),
@@ -701,7 +849,9 @@ fn remove_record(record_id: u64) {
 /// - `agenthud-recording-*`：GIF 的 JPEG 帧（只在录制/编码期间有用）；
 /// - `agenthud-trim-*`：裁剪产物。**不能立刻删**——「复制」放的是文件
 ///   URL，用户关掉预览窗之后才去聊天窗口粘贴，删早了就粘不出来，
-///   所以只在下次开录前清理一天以前的。
+///   所以只在下次开录前清理一天以前的；
+/// - `agenthud-ffmpeg-*`：ffmpeg 录制/裁剪的 stderr 日志（正常路径
+///   用完即删，这里兜底清残留）。
 fn prune_temp_media() {
     let Ok(entries) = std::fs::read_dir(std::env::temp_dir()) else {
         return;
@@ -709,7 +859,9 @@ fn prune_temp_media() {
     let now = std::time::SystemTime::now();
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().to_string();
-        let stale = name.starts_with("agenthud-trim-") || name.starts_with("agenthud-recording-");
+        let stale = name.starts_with("agenthud-trim-")
+            || name.starts_with("agenthud-recording-")
+            || name.starts_with("agenthud-ffmpeg-");
         if !stale {
             continue;
         }
@@ -745,18 +897,6 @@ fn preview_size(monitor: &ShotMonitor, media_w: u32, media_h: u32) -> (f64, f64)
     let win_w = content_w + 48.0;
     let win_h = content_h + 178.0;
     (win_w, win_h.min(mon_h - 80.0))
-}
-
-fn trimmed_name(path: &Path, ext: &str, trimmed: bool) -> String {
-    let stem = path
-        .file_stem()
-        .map(|s| s.to_string_lossy().to_string())
-        .unwrap_or_else(|| "Recording".into());
-    if trimmed {
-        format!("{stem}_trimmed.{ext}")
-    } else {
-        format!("{stem}.{ext}")
-    }
 }
 
 // ============================================================
@@ -823,11 +963,231 @@ struct CaptureSpec {
     fps: u32,
     cursor_origin: (i32, i32),
     max_ms: u64,
+    /// 麦克风设备（仅 Windows ffmpeg 分支使用；None = 不录）
+    mic: Option<String>,
+    /// 系统声 loopback 设备（仅 Windows ffmpeg 分支使用）
+    system_audio: Option<String>,
+}
+
+// ============================================================
+// Windows：ffmpeg 录制（MP4 + 麦克风 / 系统声）
+// ============================================================
+
+/// Windows MP4 的音频预校验：麦克风必须在设备列表里（被拔出/占用就明确
+/// 失败，不产出静默无音轨的文件）；系统声按「立体声混音」关键词探测，
+/// 探测不到只降级并带一句提示，不阻塞录制。
+#[cfg(windows)]
+async fn probe_windows_audio(
+    mic: Option<String>,
+    want_system: bool,
+) -> Result<(ffmpeg::RecordAudioSpec, Option<String>), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut spec = ffmpeg::RecordAudioSpec::default();
+        let mut notice: Option<String> = None;
+        if mic.is_none() && !want_system {
+            return Ok((spec, notice));
+        }
+        let ff = ffmpeg::Ffmpeg::locate()?;
+        let devices = ff.audio_devices()?;
+        if let Some(mic) = &mic {
+            let found = devices
+                .iter()
+                .find(|device| device.name == *mic || device.label == *mic)
+                .ok_or_else(|| {
+                    format!("找不到麦克风设备「{mic}」：设备可能已被拔出或占用，请在录制条里重新选择")
+                })?;
+            // 统一改用 dshow 备用名：与本地代码页无关，比显示名稳
+            spec.mic = Some(found.name.clone());
+        }
+        if want_system {
+            match ffmpeg::find_loopback_device(&devices) {
+                Some(loopback) => spec.system = Some(loopback.name),
+                None => {
+                    notice = Some(
+                        "未检测到系统声音设备（立体声混音），本条录制不含系统声；如需系统声请在系统声音设置里启用「立体声混音」".into(),
+                    );
+                }
+            }
+        }
+        Ok((spec, notice))
+    })
+    .await
+    .map_err(|e| format!("音频设备检查任务失败: {e}"))?
+}
+
+/// 录制条（右下角 238×54 逻辑像素 + 24 边距，见 build_recorder_window）
+/// 是否与选区相交——相交则 gdigrab 会把它拍进画面。
+#[cfg(windows)]
+fn recorder_overlaps_selection(
+    monitor: &ShotMonitor,
+    x: i32,
+    y: i32,
+    w: u32,
+    h: u32,
+) -> bool {
+    let scale = monitor.scale_factor.max(0.5);
+    let bar_w = (238.0 * scale) as i32;
+    let bar_h = (54.0 * scale) as i32;
+    let margin = (24.0 * scale) as i32;
+    let bar_x = monitor.x + monitor.width as i32 - bar_w - margin;
+    let bar_y = monitor.y + monitor.height as i32 - bar_h - margin;
+    x < bar_x + bar_w && bar_x < x + w as i32 && y < bar_y + bar_h && bar_y < y + h as i32
+}
+
+/// 录制条被隐藏时，临时注册「停止录制」全局快捷键（与「开始录制」同键
+/// Ctrl+Shift+G，语义连续：按下开始，录制中再按结束）。返回是否注册成功。
+#[cfg(windows)]
+fn register_record_stop_hotkey(app: &AppHandle) -> bool {
+    use tauri_plugin_global_shortcut::GlobalShortcutExt;
+    let gs = app.global_shortcut();
+    match gs.on_shortcut("ctrl+shift+g", move |_app, _shortcut, event| {
+        if !matches!(
+            event.state(),
+            tauri_plugin_global_shortcut::ShortcutState::Pressed
+        ) {
+            return;
+        }
+        // 同一时刻最多一条录制；直接把所有进行中的都置停止位
+        if let Ok(map) = records().lock() {
+            for rec in map.values() {
+                if rec.inner.lock().map(|i| i.running).unwrap_or(false) {
+                    rec.stop.store(true, Ordering::Relaxed);
+                }
+            }
+        }
+    }) {
+        Ok(()) => true,
+        Err(e) => {
+            eprintln!("[zbar-rec] 注册停止录制快捷键失败（可能被占用）: {e}");
+            false
+        }
+    }
+}
+
+/// 录制结束后注销「停止录制」快捷键（成败路径都要走）。
+#[cfg(windows)]
+fn unregister_record_stop_hotkey(app: &AppHandle) {
+    use tauri_plugin_global_shortcut::GlobalShortcutExt;
+    let gs = app.global_shortcut();
+    let _ = gs.unregister("ctrl+shift+g");
+}
+
+/// Windows MP4 录制主循环：spawn ffmpeg → 轮询停止位 → 停止收尾（CTRL_BREAK
+/// 优先、kill 兜底，fMP4 保证落盘文件可用，详见 ffmpeg.rs 模块注释）→
+/// 校验产物 → 通知前端。
+#[cfg(windows)]
+fn run_ffmpeg_recording(
+    rec: Arc<Recording>,
+    spec: CaptureSpec,
+    dir: PathBuf,
+    app: AppHandle,
+    stop_hotkey_registered: bool,
+) {
+    /// gdigrab 帧率：30fps 是 Windows 屏幕抓取与体积的平衡点（mac SCK 是 60）
+    const GRAB_FPS: u32 = 30;
+    // 录制期间不许灵动岛再临时「对采集隐藏」：那个标志会让本应用录出来的
+    // 画面里岛周期性消失（详见 island::capture_guard 模块注释）。
+    let _capture_guard = crate::island::capture_guard::CaptureGuard::enter();
+    let outcome = (|| -> Result<RecordResult, String> {
+        let ff = ffmpeg::Ffmpeg::locate()?;
+        let path = dir.join(recording_name("mp4"));
+        let audio = ffmpeg::RecordAudioSpec {
+            mic: spec.mic.clone(),
+            system: spec.system_audio.clone(),
+        };
+        let args = ffmpeg::build_record_args(
+            spec.screen_x,
+            spec.screen_y,
+            spec.width,
+            spec.height,
+            spec.out_w,
+            spec.out_h,
+            GRAB_FPS,
+            spec.cursor,
+            &audio,
+            &path,
+        );
+        // 对齐 run_capture 的 420ms 预滚：等覆盖层挪走、窗口系统画稳
+        std::thread::sleep(Duration::from_millis(420));
+        let mut proc = ffmpeg::FfmpegRecording::spawn(&ff, &args)?;
+        rec.started_ms
+            .store(super::now_ms() as u64, Ordering::Relaxed);
+        // 提前失败探测：设备名错 / 抓屏区域非法会让 ffmpeg 立即退出。
+        // 给它 600ms，把「启动即失败」在录制条还醒着时就暴露出来。
+        std::thread::sleep(Duration::from_millis(600));
+        if let Some(status) = proc.try_finish() {
+            let tail = proc.stderr_tail(400);
+            proc.cleanup();
+            let _ = std::fs::remove_file(&path);
+            return Err(describe_ffmpeg_exit(status, &tail, "启动"));
+        }
+        loop {
+            if rec.stop.load(Ordering::Relaxed) {
+                break;
+            }
+            if rec.elapsed_ms() >= spec.max_ms {
+                break;
+            }
+            if let Some(status) = proc.try_finish() {
+                // 录制中途 ffmpeg 自己退出（磁盘满 / 进程被杀）
+                let tail = proc.stderr_tail(400);
+                proc.cleanup();
+                let _ = std::fs::remove_file(&path);
+                return Err(describe_ffmpeg_exit(status, &tail, "录制"));
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        let duration = rec.elapsed_ms().min(spec.max_ms);
+        let status = proc
+            .stop_graceful()
+            .map_err(|e| format!("结束 ffmpeg 失败: {e}"))?;
+        proc.cleanup();
+        let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+        if size == 0 || (!status.success() && size < 1024) {
+            let _ = std::fs::remove_file(&path);
+            return Err("录制没有产出可用的 MP4 文件".into());
+        }
+        Ok(RecordResult {
+            path: path.to_string_lossy().to_string(),
+            width: spec.out_w,
+            height: spec.out_h,
+            frames: ((duration as f64 / 1000.0) * GRAB_FPS as f64) as u32,
+            duration_ms: duration,
+            size,
+            format: "mp4".into(),
+            record_id: 0,
+            has_audio: audio.has_audio(),
+        })
+    })();
+    // 录制条被隐藏时注册过停止快捷键，结束时注销。只有本次注册成功过才
+    // 注销：用户可能把自定义截图快捷键（可配置）设成同键，无条件注销
+    // 会把用户的快捷键一起拆掉。预览窗的 show 由 shot_record_preview
+    // 负责（它本来就带 win.show()）。
+    if stop_hotkey_registered {
+        unregister_record_stop_hotkey(&app);
+    }
+    rec.finish(outcome);
+}
+
+/// 把 ffmpeg 退出状态 + stderr 尾部转成可读中文错误。
+#[cfg(windows)]
+fn describe_ffmpeg_exit(status: std::process::ExitStatus, tail: &str, phase: &str) -> String {
+    if tail.trim().is_empty() {
+        format!(
+            "ffmpeg {phase}失败（退出码 {}）",
+            status.code().unwrap_or(-1)
+        )
+    } else {
+        format!("ffmpeg {phase}失败: {tail}")
+    }
 }
 
 /// 录制入口：macOS 15+ 的 MP4 优先走 ScreenCaptureKit（60fps + 系统声音），
 /// 起流失败再退回逐帧抓屏 + VideoToolbox 编码（无声音、帧率受抓屏速度限制）。
 fn run_recording(rec: Arc<Recording>, spec: CaptureSpec, dir: PathBuf) {
+    // 逐帧抓屏（GIF 兜底 / 非 ffmpeg 分支）同样算「正在采集屏幕」：
+    // 期间不能动岛的「对采集隐藏」标志，否则录出来的岛会周期性闪掉。
+    let _capture_guard = crate::island::capture_guard::CaptureGuard::enter();
     #[cfg(target_os = "macos")]
     if spec.format == "mp4" {
         let path = dir.join(recording_name("mp4"));
@@ -878,6 +1238,7 @@ fn run_recording(rec: Arc<Recording>, spec: CaptureSpec, dir: PathBuf) {
                         size,
                         format: "mp4".into(),
                         record_id: 0,
+                        has_audio: spec.audio,
                     })
                 });
                 rec.finish(outcome);
@@ -1143,6 +1504,7 @@ impl GifSink {
             size,
             format: "gif".into(),
             record_id: 0,
+            has_audio: false,
         })
     }
 }
@@ -2155,6 +2517,8 @@ struct Mp4Sink {
     frames: u32,
     first_pts: i64,
     last_pts: i64,
+    /// 逐帧抓屏回退路径没有音频（纯 VideoToolbox 视频轨）
+    has_audio: bool,
 }
 
 #[cfg(target_os = "macos")]
@@ -2169,6 +2533,7 @@ impl Mp4Sink {
             frames: 0,
             first_pts: -1,
             last_pts: -1,
+            has_audio: false,
         })
     }
 
@@ -2223,6 +2588,7 @@ impl Mp4Sink {
             size,
             format: "mp4".into(),
             record_id: 0,
+            has_audio: self.has_audio,
         })
     }
 }
@@ -2305,8 +2671,16 @@ fn trim_recording(
     }
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = (source, start_ms, end_ms);
-        Err("当前系统暂不支持裁剪视频".into())
+        // Windows：ffmpeg 重编码裁剪（精确到 0.1s 级；不做 -c copy 快速模式，
+        // 关键帧对齐的误差对预览里的精确裁剪体验不友好）。
+        let ff = ffmpeg::Ffmpeg::locate()?;
+        let args = ffmpeg::build_trim_args(source, &out, start_ms, end_ms);
+        ffmpeg::run_to_done(&ff, &args)?;
+        let size = std::fs::metadata(&out).map(|m| m.len()).unwrap_or(0);
+        if size == 0 {
+            return Err("裁剪没有产出可用的视频文件".into());
+        }
+        Ok(out)
     }
 }
 
@@ -2322,9 +2696,12 @@ fn source_frame_times(dir: &Path) -> Result<Vec<u64>, String> {
 }
 
 fn clipboard_file(path: &Path) -> Result<(), String> {
-    let escaped = path.to_string_lossy().replace('\\', "\\\\").replace('"', "\\\"");
     #[cfg(target_os = "macos")]
     {
+        let escaped = path
+            .to_string_lossy()
+            .replace('\\', "\\\\")
+            .replace('"', "\\\"");
         let output = std::process::Command::new("/usr/bin/osascript")
             .args([
                 "-e",
@@ -2342,22 +2719,22 @@ fn clipboard_file(path: &Path) -> Result<(), String> {
     }
     #[cfg(target_os = "windows")]
     {
-        let output = std::process::Command::new("powershell")
-            .args([
-                "-NoProfile",
-                "-Command",
-                &format!("Set-Clipboard -Path \"{escaped}\""),
-            ])
-            .output()
-            .map_err(|e| format!("调用剪贴板失败: {e}"))?;
-        if !output.status.success() {
-            return Err("复制录制文件失败".into());
-        }
+        use clipboard_win::formats::FileList;
+        use clipboard_win::{Clipboard, Setter};
+        // 直接写 CF_HDROP 文件列表：不再 spawn powershell（会弹一个黑框，
+        // 而且 Set-Clipboard -Path 在部分机器上直接失败）。粘贴到资源管理器
+        // / 微信 / 飞书都是一个文件。
+        let _clip = Clipboard::new_attempts(10)
+            .map_err(|e| format!("剪贴板被占用，复制失败: {e}"))?;
+        let files = [path.to_string_lossy().to_string()];
+        FileList
+            .write_clipboard(&files)
+            .map_err(|e| format!("写入剪贴板失败: {e}"))?;
         Ok(())
     }
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
-        let _ = escaped;
+        let _ = path;
         Err("当前系统暂不支持复制录制文件".into())
     }
 }
@@ -2381,8 +2758,12 @@ mod tests {
     #[test]
     fn format_defaults_to_mp4_on_macos() {
         #[cfg(target_os = "macos")]
-        assert_eq!(normalize_format(None), "mp4");
-        assert_eq!(normalize_format(Some("gif")), "gif");
+        assert_eq!(normalize_format(None, true), "mp4");
+        assert_eq!(normalize_format(Some("gif"), true), "gif");
+        // ffmpeg 缺席的 Windows：请求 mp4 / 不指定都降级 gif，显式 gif 不变
+        assert_eq!(normalize_format(Some("mp4"), false), "gif");
+        assert_eq!(normalize_format(None, false), "gif");
+        assert_eq!(normalize_format(Some("gif"), false), "gif");
     }
 
     #[cfg(target_os = "macos")]
@@ -2493,6 +2874,8 @@ mod tests {
             fps: 60,
             cursor_origin: (300, 200),
             max_ms: 10_000,
+            mic: None,
+            system_audio: None,
         };
         let mut sink = Mp4Sink::new(&dir.join("bench.mp4"), w, h).expect("sink");
         let mut cap_total = std::time::Duration::ZERO;
@@ -2529,5 +2912,31 @@ mod tests {
         let (w, h) = preview_size(&monitor, 800, 600);
         assert!(w <= 1440.0 && h <= 900.0);
         assert!(w > 400.0 && h > 300.0);
+    }
+
+    /// 录制条右下角矩形：scale=1 时是 x∈[2878-24-238?]…… 直接按公式算。
+    /// 1920×1080 屏幕：bar = (1920-238-24, 1080-54-24) = (1658, 1002) 起，
+    /// 尺寸 238×54。
+    #[cfg(windows)]
+    #[test]
+    fn recorder_overlap_follows_corner_geometry() {
+        let monitor = ShotMonitor {
+            index: 0,
+            name: "main".into(),
+            x: 0,
+            y: 0,
+            width: 1920,
+            height: 1080,
+            scale_factor: 1.0,
+            primary: true,
+        };
+        // 选区在屏幕中间：不重叠
+        assert!(!recorder_overlaps_selection(&monitor, 100, 100, 800, 600));
+        // 选区盖住右下角（录制条位置）：重叠
+        assert!(recorder_overlaps_selection(&monitor, 1650, 990, 300, 100));
+        // 全屏录制：必然重叠
+        assert!(recorder_overlaps_selection(&monitor, 0, 0, 1920, 1080));
+        // 刚好贴着录制条上边缘之外：不重叠
+        assert!(!recorder_overlaps_selection(&monitor, 1658, 0, 238, 1002));
     }
 }

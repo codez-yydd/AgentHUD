@@ -26,6 +26,7 @@ import {
   getWeather,
   IS_TAURI,
   markNotifyRead,
+  meetingState,
   onEvent,
   openMainWindow,
   openNotifyApp,
@@ -61,6 +62,7 @@ import type {
   IslandState,
   LyricsState,
   MediaState,
+  MeetingSessionBrief,
   NotifyState,
   StockAlert,
   StocksState,
@@ -155,6 +157,15 @@ function timeGreeting(now: number): string {
   return "晚上好";
 }
 
+/** 胶囊上的会议录音计时：mm:ss 且分钟恒补零。字符数不随时间变化，
+ *  tabular-nums 下宽度稳定，胶囊的自适应测量不会因计时跳秒而变形。 */
+function fmtMeetClock(ms: number): string {
+  const total = Math.max(0, Math.floor(ms / 1000));
+  const minutes = Math.floor(total / 60);
+  const seconds = total % 60;
+  return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+}
+
 export default function IslandApp() {
   const [config, setConfig] = useState<IslandConfig | null>(null);
   const [enabled, setEnabled] = useState(true);
@@ -173,6 +184,8 @@ export default function IslandApp() {
   /** 剪贴板保留条数上限（后端状态，页面首次渲染读一次） */
   const [clipLimit, setClipLimit] = useState(10);
   const [notify, setNotify] = useState<NotifyState>({ items: [], unread: 0 });
+  /** 会议录音会话快照（null = 空闲）：收起胶囊上的录音指示数据源 */
+  const [meetingBrief, setMeetingBrief] = useState<MeetingSessionBrief | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [toast, setToast] = useState("");
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
@@ -429,6 +442,31 @@ export default function IslandApp() {
     window.addEventListener("blur", onBlur);
     return () => window.removeEventListener("blur", onBlur);
   }, []);
+
+  // ===== 会议录音指示（收起胶囊）=====
+  // 只在收起态轮询：展开时工具页自己的 meet-tab-live 红点与提示行已经承担
+  // 感知职责，本层再轮询就是重复请求；收起后胶囊是用户唯一能看到的入口，
+  // 指示只能由这里提供。2.5s 一拍足够——胶囊上的计时按轮询粒度跳秒，
+  // 不需要每秒刷新，也不值得为一个红点常驻更高频的 IPC。
+  useEffect(() => {
+    if (open) return;
+    let cancelled = false;
+    const check = () => {
+      meetingState()
+        .then((brief) => {
+          if (!cancelled) setMeetingBrief(brief);
+        })
+        .catch(() => {
+          /* 状态查询失败只影响红点显示，不打扰用户 */
+        });
+    };
+    check();
+    const timer = window.setInterval(check, 2500);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [open]);
 
   // ===== 歌词：换曲后按「曲名 + 歌手」取一次，失败静默 =====
   useEffect(() => {
@@ -1177,6 +1215,7 @@ export default function IslandApp() {
               media={media}
               lyrics={lyrics}
               system={system}
+              meeting={meetingBrief}
               edge={edge}
               onOpen={() => {
                 if (suppressClickRef.current) return;
@@ -1272,6 +1311,7 @@ function CollapsedPill({
   media,
   lyrics,
   system,
+  meeting,
   edge,
   onOpen,
   onWidth,
@@ -1283,6 +1323,8 @@ function CollapsedPill({
   media: MediaState;
   lyrics: LyricsState | null;
   system: SystemState;
+  /** 会议录音会话快照（null = 空闲）：非空时胶囊尾部亮录音指示 */
+  meeting: MeetingSessionBrief | null;
   edge: IslandEdge;
   onOpen: () => void;
   /** 把收起胶囊的实际宽度报给外壳，窗口里的胶囊才会贴着内容收窄 */
@@ -1295,6 +1337,17 @@ function CollapsedPill({
     return currentLyricLine(parseLyrics(lyrics.lrc, lyrics.translation), media.position);
   }, [lyrics, media.position]);
   const agents = usage?.agents ?? [];
+  // 会议录音进行中的胶囊指示：闪烁红点 + mm:ss 计时（暂停时红点常亮不闪）。
+  // 与工具页 meet-tab-live 同色（#ff5d6c）同动画（meet-pulse）。
+  const meetIndicator = meeting ? (
+    <span
+      className="pill-meet"
+      title={meeting.paused ? "会议录音已暂停" : "会议录音进行中"}
+    >
+      <span className={`pill-meet-dot ${meeting.paused ? "is-paused" : ""}`} />
+      <span className="pill-meet-time">{fmtMeetClock(meeting.effective_ms)}</span>
+    </span>
+  ) : null;
   // 收起态宽度按内容自适应：窗口仍是 552 宽（左右各 16 投影留白），但胶囊
   // 只占内容需要的宽度，账号少时不会被撑成一条 500px 的空条。环放不下时
   // 折成「+N」，N 由实测宽度算出来，不再写死 5/6 条。
@@ -1391,6 +1444,7 @@ function CollapsedPill({
     todayUsage?.cost,
     todayUsage?.currency,
     system.muted,
+    meeting,
     onWidth,
   ]);
 
@@ -1407,6 +1461,7 @@ function CollapsedPill({
           <WeatherGlyph icon={weather?.icon ?? "cloudy"} size={20} />
           {weather ? `${Math.round(weather.temp)}°` : "--°"}
         </span>
+        {meetIndicator}
         <span className="pill-chevron">
           <Icon name="chevron" size={12} />
         </span>
@@ -1435,6 +1490,7 @@ function CollapsedPill({
         <span className="pill-music-time">
           {fmtDuration(media.position)} / {fmtDuration(media.duration)}
         </span>
+        {meetIndicator}
         <span className="pill-chevron">
           <Icon name="chevron" size={12} />
         </span>
@@ -1470,6 +1526,7 @@ function CollapsedPill({
         <span className="pill-usage-cost">≈{todayLabel}</span>
       </span>
       <span className="pill-tail" ref={tailRef}>
+        {meetIndicator}
         {system.muted ? <Icon name="volumeOff" size={12} /> : null}
         <span className="pill-chevron">
           <Icon name="chevron" size={12} />

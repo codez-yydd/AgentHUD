@@ -90,6 +90,7 @@ export type IconName =
   | "timer"
   | "image"
   | "edit"
+  | "mic"
   | "toolbox";
 
 const PATHS: Record<IconName, ReactNode> = {
@@ -344,6 +345,13 @@ const PATHS: Record<IconName, ReactNode> = {
       <rect x="2.8" y="8.2" width="18.4" height="12" rx="2.4" />
       <path d="M8.6 8.2V5.9a1.7 1.7 0 0 1 1.7-1.7h3.4a1.7 1.7 0 0 1 1.7 1.7v2.3" />
       <path d="M2.8 12.6h18.4M10 12.6v2.1h4v-2.1" />
+    </>
+  ),
+  /* 会议录音：麦克风（正面话筒头 + 支架弧线） */
+  mic: (
+    <>
+      <path d="M12 3.2a2.9 2.9 0 0 1 2.9 2.9v5.4a2.9 2.9 0 0 1-5.8 0V6.1A2.9 2.9 0 0 1 12 3.2Z" />
+      <path d="M6.3 11.2v.5a5.7 5.7 0 0 0 11.4 0v-.5M12 17.4v3.4M8.8 20.8h6.4" />
     </>
   ),
 };
