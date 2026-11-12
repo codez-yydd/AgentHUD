@@ -51,10 +51,12 @@ mod session_hud;
 // 的来源查询，只按会话重新分组，见模块注释）
 mod session_inspect;
 mod shortcut;
+mod snippets;
 mod stepfun;
 mod sync;
 mod today_usage;
 mod token_speed;
+mod toolbox;
 // 自定义托盘右键菜单窗口：macOS 与 Windows 编译。macOS 是被迫摘菜单——
 // 挂原生 NSMenu 会让托盘点击事件不再送达（上游 tray-icon#355），右键改弹
 // HTML 菜单窗口；Windows 是主动采用同一面板（右键事件无此问题，纯产品
@@ -3368,6 +3370,11 @@ pub fn run() {
             get_equivalent_costs,
             // 等价花费的模型选择器：内置参考表全量模型（id + 单价）
             get_reference_models,
+            // 工具箱：二维码生成 / 图片压缩与格式转换（纯本机，不联网）
+            toolbox::toolbox_qr_png,
+            toolbox::toolbox_qr_save,
+            toolbox::toolbox_image_inspect,
+            toolbox::toolbox_image_save,
             get_sync_config,
             set_sync_config,
             register_device,
@@ -3536,6 +3543,15 @@ pub fn run() {
             island::clipboard::island_clipboard,
             island::clipboard::island_clipboard_copy,
             island::clipboard::island_clipboard_clear,
+            // 剪贴板增强：钉住 / 删除 / 条数上限
+            island::clipboard::island_clipboard_pin,
+            island::clipboard::island_clipboard_delete,
+            island::clipboard::island_clipboard_set_limit,
+            island::clipboard::island_clipboard_limit,
+            // 提示词片段库（~/.agenthud/snippets.json，纯本机）
+            snippets::list_snippets,
+            snippets::save_snippet,
+            snippets::delete_snippet,
             // 消息（Windows 通知数据库 + 飞书 / 钉钉通知浮窗）
             island::notify::island_notify,
             island::notify::island_notify_mark_read,

@@ -1,7 +1,12 @@
-//! 灵动岛剪贴板：最近 10 条文本 / 图片（内存历史，退出即清空）。
+//! 灵动岛剪贴板：最近若干条文本 / 图片（**内存历史，退出即清空**）。
 //!
 //! 用 arboard 轮询系统剪贴板；同一内容不重复入栈。点击历史项经
 //! `island_clipboard_copy` 写回剪贴板。
+//!
+//! 刻意不落盘：剪贴板里经常是密码 / token / 私密内容，写进
+//! `~/.agenthud/` 属于凭空多出来的泄漏面。条数上限可调（5–100，默认 10），
+//! 钉住的条目不会被新内容挤出、也不会被「清空」清掉；图片条目可转文字
+//! （前端复用截图 OCR 命令，本模块不管）。
 
 use base64::Engine;
 use serde::Serialize;
@@ -15,13 +20,18 @@ use std::time::Duration;
 use tauri::{AppHandle, Emitter};
 
 pub const CLIPBOARD_EVENT: &str = "zbar://island-clipboard";
-const MAX_ITEMS: usize = 10;
+/// 条数上限：默认 10，可在设置里调到 5–100
+const DEFAULT_LIMIT: usize = 10;
+const MIN_LIMIT: usize = 5;
+const MAX_LIMIT: usize = 100;
 
 static STOP: AtomicBool = AtomicBool::new(false);
 static GEN: AtomicU64 = AtomicU64::new(0);
 static APP: OnceLock<Mutex<Option<AppHandle>>> = OnceLock::new();
 static ITEMS: OnceLock<Mutex<Vec<ClipItem>>> = OnceLock::new();
 static LAST_HASH: AtomicU64 = AtomicU64::new(0);
+/// 当前条数上限（AtomicUsize 读多写少：轮询线程每拍都要读）
+static LIMIT: AtomicUsize = AtomicUsize::new(DEFAULT_LIMIT);
 /// 正在写剪贴板的并发计数（截图复制 / 历史回写）：大于 0 时后台轮询跳过
 /// 本拍。Windows 的 OpenClipboard 是独占的，轮询读一张大图要卡住剪贴板
 /// 几十毫秒，正好赶上用户点「复制」就会 `ClipboardOccupied`。
@@ -64,6 +74,8 @@ pub struct ClipItem {
     pub time: i64,
     pub width: u32,
     pub height: u32,
+    /// 钉住：不会被新内容挤出、也不会被「清空」清掉
+    pub pinned: bool,
     #[serde(skip)]
     pub png: Vec<u8>,
 }
@@ -74,8 +86,34 @@ fn hash_bytes(bytes: &[u8]) -> u64 {
     h.finish()
 }
 
+/// 展示顺序：钉住的在前，其余保持插入顺序（新的在前）。
+/// 用稳定分区，避免交换法把未钉住条目之间的先后顺序打乱。
+fn sort_for_display(items: &mut Vec<ClipItem>) {
+    let (pinned, rest): (Vec<ClipItem>, Vec<ClipItem>) =
+        items.drain(..).partition(|item| item.pinned);
+    items.extend(pinned);
+    items.extend(rest);
+}
+
+/// 超限淘汰：只淘汰最旧的**未钉住**条目；全钉住时宁可超出上限也不丢。
+fn prune_to_limit(items: &mut Vec<ClipItem>, limit: usize) {
+    while items.len() > limit {
+        match items.iter().rposition(|item| !item.pinned) {
+            Some(index) => {
+                items.remove(index);
+            }
+            None => break,
+        }
+    }
+}
+
+fn clamp_limit(limit: usize) -> usize {
+    limit.clamp(MIN_LIMIT, MAX_LIMIT)
+}
+
 fn emit(app: &AppHandle) {
-    let items = items_slot().lock().map(|g| g.clone()).unwrap_or_default();
+    let mut items = items_slot().lock().map(|g| g.clone()).unwrap_or_default();
+    sort_for_display(&mut items);
     let _ = app.emit(CLIPBOARD_EVENT, items);
 }
 
@@ -86,7 +124,7 @@ fn push_item(item: ClipItem) {
     };
     guard.retain(|i| i.preview != item.preview || i.kind != item.kind);
     guard.insert(0, item);
-    guard.truncate(MAX_ITEMS);
+    prune_to_limit(&mut guard, LIMIT.load(Ordering::Relaxed));
 }
 
 fn png_data_url(png: &[u8]) -> String {
@@ -122,6 +160,7 @@ fn poll_once(clip: &mut arboard::Clipboard, next_id: &mut u64) -> bool {
                             time: chrono::Utc::now().timestamp_millis(),
                             width,
                             height,
+                            pinned: false,
                             png: bytes,
                         };
                         push_item(item);
@@ -153,6 +192,7 @@ fn poll_once(clip: &mut arboard::Clipboard, next_id: &mut u64) -> bool {
                     time: chrono::Utc::now().timestamp_millis(),
                     width: 0,
                     height: 0,
+                    pinned: false,
                     png: Vec::new(),
                 };
                 push_item(item);
@@ -210,7 +250,10 @@ pub fn stop() {
 
 #[tauri::command]
 pub fn island_clipboard() -> Vec<ClipItem> {
-    items_slot().lock().map(|g| g.clone()).unwrap_or_default()
+    let mut items = items_slot().lock().map(|g| g.clone()).unwrap_or_default();
+    // 与事件推送同一口径：钉住的在前，保证启动后首次拉取顺序一致
+    sort_for_display(&mut items);
+    items
 }
 
 #[tauri::command]
@@ -273,14 +316,134 @@ fn write_clip_item(item: &ClipItem, rgba: Option<&image::RgbaImage>) -> Result<(
     }
 }
 
+/// 清空历史：钉住的条目保留（用户明确钉住的东西不该被「清空」顺手带走）。
 #[tauri::command]
 pub fn island_clipboard_clear() -> Result<(), String> {
     if let Ok(mut guard) = items_slot().lock() {
-        guard.clear();
+        guard.retain(|item| item.pinned);
     }
     LAST_HASH.store(0, Ordering::SeqCst);
-    if let Some(app) = app_slot().lock().ok().and_then(|g| g.clone()) {
+    notify_changed();
+    Ok(())
+}
+
+/// 钉住 / 取消钉住，返回调整后的完整列表（前端直接替换，省一次全量拉取）。
+#[tauri::command]
+pub fn island_clipboard_pin(id: u64, pinned: bool) -> Result<Vec<ClipItem>, String> {
+    let list = {
+        let mut guard = items_slot()
+            .lock()
+            .map_err(|_| "剪贴板历史不可用".to_string())?;
+        let item = guard
+            .iter_mut()
+            .find(|item| item.id == id)
+            .ok_or_else(|| "剪贴板记录不存在".to_string())?;
+        item.pinned = pinned;
+        guard.clone()
+    };
+    notify_changed();
+    Ok(display_list(list))
+}
+
+/// 删除单条（钉住的也能删——这是显式操作）。
+#[tauri::command]
+pub fn island_clipboard_delete(id: u64) -> Result<Vec<ClipItem>, String> {
+    let list = {
+        let mut guard = items_slot()
+            .lock()
+            .map_err(|_| "剪贴板历史不可用".to_string())?;
+        guard.retain(|item| item.id != id);
+        guard.clone()
+    };
+    notify_changed();
+    Ok(display_list(list))
+}
+
+/// 调整条数上限（5–100）：立即按新上限淘汰最旧的未钉住条目。
+#[tauri::command]
+pub fn island_clipboard_set_limit(limit: u32) -> Result<Vec<ClipItem>, String> {
+    let next = clamp_limit(limit as usize);
+    LIMIT.store(next, Ordering::Relaxed);
+    let list = {
+        let mut guard = items_slot()
+            .lock()
+            .map_err(|_| "剪贴板历史不可用".to_string())?;
+        prune_to_limit(&mut guard, next);
+        guard.clone()
+    };
+    notify_changed();
+    Ok(display_list(list))
+}
+
+/// 当前条数上限（页面首次渲染读一次）。
+#[tauri::command]
+pub fn island_clipboard_limit() -> u32 {
+    LIMIT.load(Ordering::Relaxed) as u32
+}
+
+fn display_list(mut items: Vec<ClipItem>) -> Vec<ClipItem> {
+    sort_for_display(&mut items);
+    items
+}
+
+fn notify_changed() {
+    if let Some(app) = app_slot().lock().ok().and_then(|slot| slot.clone()) {
         emit(&app);
     }
-    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn item(id: u64, pinned: bool) -> ClipItem {
+        ClipItem {
+            id,
+            kind: "text".into(),
+            text: format!("t{id}"),
+            preview: format!("t{id}"),
+            image: String::new(),
+            time: id as i64,
+            width: 0,
+            height: 0,
+            pinned,
+            png: Vec::new(),
+        }
+    }
+
+    fn ids(items: &[ClipItem]) -> Vec<u64> {
+        items.iter().map(|item| item.id).collect()
+    }
+
+    /// 超限时淘汰最旧的未钉住条目，钉住的必须活着
+    #[test]
+    fn prune_drops_oldest_unpinned_only() {
+        let mut items = vec![item(4, false), item(3, true), item(2, false), item(1, false)];
+        prune_to_limit(&mut items, 3);
+        assert_eq!(ids(&items), vec![4, 3, 2]);
+    }
+
+    /// 全部钉住时宁可超出上限，也不能悄悄丢用户钉住的东西
+    #[test]
+    fn prune_keeps_all_when_everything_pinned() {
+        let mut items = vec![item(3, true), item(2, true), item(1, true)];
+        prune_to_limit(&mut items, 2);
+        assert_eq!(ids(&items), vec![3, 2, 1]);
+    }
+
+    /// 展示顺序：钉住的在前，未钉住的相对顺序不变（稳定分区）
+    #[test]
+    fn display_order_is_stable_partition() {
+        let mut items = vec![item(4, false), item(3, true), item(2, false), item(1, true)];
+        sort_for_display(&mut items);
+        assert_eq!(ids(&items), vec![3, 1, 4, 2]);
+    }
+
+    /// 上限夹到 5..=100
+    #[test]
+    fn limit_is_clamped_to_sane_range() {
+        assert_eq!(clamp_limit(1), MIN_LIMIT);
+        assert_eq!(clamp_limit(1000), MAX_LIMIT);
+        assert_eq!(clamp_limit(42), 42);
+    }
 }

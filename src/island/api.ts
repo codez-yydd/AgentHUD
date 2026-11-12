@@ -3,13 +3,17 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import {
-  mockClipboard,
+  mockClipboardWithImage,
   mockConfig,
   mockMedia,
   mockMinute,
   mockNotify,
+  mockProjects,
+  mockSnippets,
   mockStocks,
   mockSystem,
+  mockToolboxImagePreview,
+  mockToolboxQr,
   mockUsage,
   mockWeather,
 } from "./mock";
@@ -21,15 +25,21 @@ import type {
   IslandDragEnd,
   IslandDragStep,
   IslandState,
+  LauncherProject,
   LocatedPlace,
   LyricsState,
   MediaState,
   NotifyState,
+  Snippet,
   StockMinute,
   StockSearchItem,
   StocksState,
   SystemState,
   TodayUsageTotals,
+  ToolboxImageInfo,
+  ToolboxImageOut,
+  ToolboxQrPng,
+  ToolboxQrSaved,
   WeatherState,
 } from "./types";
 
@@ -43,6 +53,18 @@ function delay<T>(value: T, ms = 120): Promise<T> {
 
 function clone<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
+}
+
+// 浏览器预览用的可变状态（真机上不参与：全部走 invoke）
+let mockClipState: ClipItem[] = clone(mockClipboardWithImage());
+let mockSnippetState: Snippet[] = clone(mockSnippets);
+
+/** 钉住的排前面（与 Rust 侧 sort_for_display 同语义的稳定分区） */
+function sortPinnedFirst(items: ClipItem[]): ClipItem[] {
+  return [
+    ...items.filter((item) => item.pinned),
+    ...items.filter((item) => !item.pinned),
+  ];
 }
 
 // ===== 窗口 / 配置 =====
@@ -324,7 +346,7 @@ export async function openSystemSettings(kind: string): Promise<void> {
 // ===== 剪贴板 =====
 
 export async function getClipboard(): Promise<ClipItem[]> {
-  if (!IS_TAURI) return delay(clone(mockClipboard));
+  if (!IS_TAURI) return delay(clone(mockClipState));
   return invoke<ClipItem[]>("island_clipboard");
 }
 
@@ -335,7 +357,8 @@ export async function copyClipboard(id: number): Promise<void> {
 
 export async function clearClipboard(): Promise<void> {
   if (!IS_TAURI) {
-    mockClipboard.length = 0;
+    // 与 Rust 侧一致：清空保留钉住的条目
+    mockClipState = mockClipState.filter((item) => item.pinned);
     return delay(undefined, 20);
   }
   return invoke("island_clipboard_clear");
@@ -398,4 +421,202 @@ export function onEvent<T>(name: string, handler: (payload: T) => void): () => v
     dead = true;
     if (unlisten) unlisten();
   };
+}
+
+// ===== 工具箱（二维码 / 图片压缩转换）=====
+
+/** 生成二维码 PNG（data URL，不落盘）。空内容 / 超容量由后端给中文错误。 */
+export async function toolboxQrPng(
+  text: string,
+  ecLevel: string,
+  scale: number,
+  quiet: number
+): Promise<ToolboxQrPng> {
+  if (!IS_TAURI) return delay(mockToolboxQr(text, scale, quiet));
+  return invoke<ToolboxQrPng>("toolbox_qr_png", { text, ecLevel, scale, quiet });
+}
+
+/** 生成二维码并写盘（路径由文件对话框给出） */
+export async function toolboxQrSave(
+  text: string,
+  ecLevel: string,
+  scale: number,
+  quiet: number,
+  outPath: string
+): Promise<ToolboxQrSaved> {
+  if (!IS_TAURI) {
+    const png = mockToolboxQr(text, scale, quiet);
+    return delay({ path: outPath, bytes: png.bytes, size: png.size });
+  }
+  return invoke<ToolboxQrSaved>("toolbox_qr_save", {
+    text,
+    ecLevel,
+    scale,
+    quiet,
+    outPath,
+  });
+}
+
+/** 读取图片元信息 + 720px 预览 */
+export async function toolboxImageInspect(
+  path: string
+): Promise<ToolboxImageInfo> {
+  if (!IS_TAURI) {
+    return delay({
+      path,
+      width: 2560,
+      height: 1440,
+      bytes: 3_912_448,
+      format: "png",
+      preview: mockToolboxImagePreview(),
+    });
+  }
+  return invoke<ToolboxImageInfo>("toolbox_image_inspect", { path });
+}
+
+/** 按目标格式 / 质量 / 最长边重编码并写盘 */
+export async function toolboxImageSave(
+  inputPath: string,
+  format: string,
+  quality: number | null,
+  maxEdge: number,
+  outPath: string
+): Promise<ToolboxImageOut> {
+  if (!IS_TAURI) {
+    const ratio = maxEdge > 0 ? maxEdge / 2560 : 1;
+    return delay({
+      path: outPath,
+      width: Math.round(2560 * ratio),
+      height: Math.round(1440 * ratio),
+      bytes:
+        format === "jpeg" ? 412_000 : format === "webp" ? 602_000 : 1_820_000,
+      format,
+    });
+  }
+  return invoke<ToolboxImageOut>("toolbox_image_save", {
+    inputPath,
+    format,
+    quality,
+    maxEdge,
+    outPath,
+  });
+}
+
+// ===== 剪贴板增强 =====
+
+/** 钉住 / 取消钉住（返回调整后的完整列表） */
+export async function clipboardPin(
+  id: number,
+  pinned: boolean
+): Promise<ClipItem[]> {
+  if (!IS_TAURI) {
+    const next = mockClipState.map((item) =>
+      item.id === id ? { ...item, pinned } : item
+    );
+    mockClipState = sortPinnedFirst(next);
+    return delay(mockClipState);
+  }
+  return invoke<ClipItem[]>("island_clipboard_pin", { id, pinned });
+}
+
+/** 删除单条（钉住的也能删） */
+export async function clipboardDelete(id: number): Promise<ClipItem[]> {
+  if (!IS_TAURI) {
+    mockClipState = mockClipState.filter((item) => item.id !== id);
+    return delay(mockClipState);
+  }
+  return invoke<ClipItem[]>("island_clipboard_delete", { id });
+}
+
+/** 调整条数上限（后端夹到 5–100 并立即淘汰） */
+export async function clipboardSetLimit(limit: number): Promise<ClipItem[]> {
+  if (!IS_TAURI) {
+    mockClipState = mockClipState.slice(0, Math.max(5, Math.min(100, limit)));
+    return delay(mockClipState);
+  }
+  return invoke<ClipItem[]>("island_clipboard_set_limit", { limit });
+}
+
+/** 当前条数上限（页面首次渲染读一次） */
+export async function clipboardLimit(): Promise<number> {
+  if (!IS_TAURI) return delay(10, 0);
+  return invoke<number>("island_clipboard_limit");
+}
+
+/** 写文本剪贴板（OCR 结果回写等场景） */
+export async function copyText(text: string): Promise<void> {
+  if (!IS_TAURI) {
+    console.info("[island mock] copy text", text.slice(0, 40));
+    return delay(undefined, 20);
+  }
+  return invoke("shot_copy_text", { text });
+}
+
+/** 图片 → 文字（复用截图 OCR 命令，入参是 data URL） */
+export async function ocrImage(dataUrl: string): Promise<{
+  ok: boolean;
+  text: string;
+  lines: string[];
+  error: string;
+}> {
+  if (!IS_TAURI) {
+    const text = "AgentHUD · 剪贴板 OCR 预览文本\n第二行示例内容";
+    return delay({ ok: true, text, lines: text.split("\n"), error: "" }, 400);
+  }
+  return invoke("shot_ocr", { dataUrl });
+}
+
+// ===== 片段库 =====
+
+export async function listSnippets(): Promise<Snippet[]> {
+  if (!IS_TAURI) return delay(mockSnippetState);
+  return invoke<Snippet[]>("list_snippets");
+}
+
+export async function saveSnippet(
+  id: string | null,
+  name: string,
+  body: string
+): Promise<Snippet> {
+  if (!IS_TAURI) {
+    const now = Date.now();
+    const existing = id ? mockSnippetState.find((item) => item.id === id) : null;
+    const next: Snippet = existing
+      ? { ...existing, name: name || existing.name, body, updated_at: now }
+      : {
+          id: `mock-${now}`,
+          name: name || body.split("\n")[0].slice(0, 40) || "未命名片段",
+          body,
+          created_at: now,
+          updated_at: now,
+        };
+    mockSnippetState = [next, ...mockSnippetState.filter((item) => item.id !== next.id)];
+    return delay(next);
+  }
+  return invoke<Snippet>("save_snippet", { id, name, body });
+}
+
+export async function deleteSnippet(id: string): Promise<void> {
+  if (!IS_TAURI) {
+    mockSnippetState = mockSnippetState.filter((item) => item.id !== id);
+    return delay(undefined, 40);
+  }
+  return invoke("delete_snippet", { id });
+}
+
+// ===== 启动器 =====
+
+/** 近 30 天的项目清单（只取展示字段） */
+export async function launcherProjects(): Promise<LauncherProject[]> {
+  if (!IS_TAURI) return delay(mockProjects);
+  const to = Date.now();
+  const from = to - 30 * 86_400_000;
+  const rows = await invoke<
+    { key: string; display_path: string | null; sessions: number }[]
+  >("get_projects", { fromMs: from, toMs: to });
+  return rows.map((row) => ({
+    key: row.key,
+    display_path: row.display_path,
+    sessions: row.sessions,
+  }));
 }

@@ -11,6 +11,7 @@ export type TabKey =
   | "ctl"
   | "clip"
   | "shot"
+  | "tool"
   | "settings";
 
 export interface LauncherItem {
@@ -232,6 +233,24 @@ export interface ClipItem {
   time: number;
   width: number;
   height: number;
+  /** 钉住：不会被新内容挤出、也不会被「清空」清掉 */
+  pinned: boolean;
+}
+
+/** 提示词片段（~/.agenthud/snippets.json；wire 为 snake_case） */
+export interface Snippet {
+  id: string;
+  name: string;
+  body: string;
+  created_at: number;
+  updated_at: number;
+}
+
+/** 启动器用到的项目摘要（只取展示所需字段，接口与 get_projects 同源） */
+export interface LauncherProject {
+  key: string;
+  display_path: string | null;
+  sessions: number;
 }
 
 export interface NotifyItem {
@@ -267,4 +286,44 @@ export interface StockAlert {
   pct: number;
   price: number;
   text: string;
+}
+
+// ===== 工具箱（二维码 / 图片压缩转换）=====
+// wire 字段是 snake_case（Rust 侧没有 rename_all），与用量系契约一致。
+
+/** 二维码生成结果：data_url 可直接给 <img src> */
+export interface ToolboxQrPng {
+  data_url: string;
+  /** 逻辑模块数（不含静区） */
+  modules: number;
+  /** 生成图边长（像素，含静区） */
+  size: number;
+  bytes: number;
+}
+
+/** 二维码落盘结果 */
+export interface ToolboxQrSaved {
+  path: string;
+  bytes: number;
+  size: number;
+}
+
+/** 选中图片的元信息 + 720px 预览（preview 为 JPEG data URL） */
+export interface ToolboxImageInfo {
+  path: string;
+  width: number;
+  height: number;
+  bytes: number;
+  /** 按扩展名粗分：png / jpeg / webp / gif / bmp / 其他 */
+  format: string;
+  preview: string;
+}
+
+/** 图片转换落盘结果 */
+export interface ToolboxImageOut {
+  path: string;
+  width: number;
+  height: number;
+  bytes: number;
+  format: string;
 }

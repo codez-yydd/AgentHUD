@@ -1093,39 +1093,112 @@ export function ControlsPage({
 
 export function ClipboardPage({
   items,
+  limit,
   onCopy,
+  onPin,
+  onDelete,
   onClear,
+  onLimit,
+  onOcr,
   onToast,
 }: {
   items: ClipItem[];
+  limit: number;
   onCopy: (id: number) => void;
+  onPin: (id: number, pinned: boolean) => void;
+  onDelete: (id: number) => void;
   onClear: () => void;
+  onLimit: (limit: number) => void;
+  onOcr: (item: ClipItem) => void;
   onToast: (msg: string) => void;
 }) {
   const now = useNow();
+  const [query, setQuery] = useState("");
+  const keyword = query.trim().toLowerCase();
+  const visible = keyword
+    ? items.filter(
+        (item) =>
+          item.text.toLowerCase().includes(keyword) ||
+          item.preview.toLowerCase().includes(keyword)
+      )
+    : items;
+  const pinnedCount = items.filter((item) => item.pinned).length;
+  const searchable = items.some((item) => item.kind === "text");
+
   return (
     <div className="page clipboard-page">
       <SectionHead
         title="剪贴板"
-        hint={`最近 ${items.length} 条 · 只保存在本机内存`}
+        hint={`最近 ${items.length} 条 · 仅本机内存${pinnedCount ? ` · 已钉 ${pinnedCount}` : ""}`}
         action={
-          items.length > 0 ? (
+          items.some((item) => !item.pinned) ? (
             <button type="button" className="mini-text-btn" onClick={onClear}>
               清空
             </button>
           ) : null
         }
       />
+
+      {items.length > 0 ? (
+        <div className="clip-toolbar">
+          {searchable ? (
+            <label className="clip-search">
+              <Icon name="search" size={11} />
+              <input
+                value={query}
+                placeholder="搜索文本"
+                onChange={(event) => setQuery(event.target.value)}
+              />
+              {query ? (
+                <button
+                  type="button"
+                  className="clip-search-clear"
+                  title="清空搜索"
+                  aria-label="清空搜索"
+                  onClick={() => setQuery("")}
+                >
+                  ×
+                </button>
+              ) : null}
+            </label>
+          ) : (
+            <span className="clip-toolbar-hint">只保留图片</span>
+          )}
+          <label className="clip-limit" title="保留条数上限">
+            <span>上限</span>
+            <select
+              value={limit}
+              onChange={(event) => onLimit(Number(event.target.value))}
+            >
+              {[5, 10, 20, 50].map((value) => (
+                <option key={value} value={value}>
+                  {value}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+      ) : null}
+
       {items.length === 0 ? (
         <EmptyState icon="clipboard" title="剪贴板还是空的" hint="复制文字或图片后会自动出现在这里" />
+      ) : visible.length === 0 ? (
+        <EmptyState icon="search" title="没有匹配的条目" hint="换个关键词试试" />
       ) : (
         <div className="clip-list">
-          {items.map((item) => (
-            <button
-              type="button"
-              className={`clip-item ${item.kind}`}
+          {visible.map((item) => (
+            <div
+              className={`clip-item ${item.kind} ${item.pinned ? "pinned" : ""}`}
               key={item.id}
+              role="button"
+              tabIndex={0}
               onClick={() => {
+                onCopy(item.id);
+                onToast("已复制到剪贴板");
+              }}
+              onKeyDown={(event) => {
+                if (event.key !== "Enter" && event.key !== " ") return;
+                event.preventDefault();
                 onCopy(item.id);
                 onToast("已复制到剪贴板");
               }}
@@ -1142,13 +1215,55 @@ export function ClipboardPage({
               <span className="clip-main">
                 <span className="clip-preview">{item.preview || item.text}</span>
                 <span className="clip-meta">
-                  {item.kind === "image" ? `${item.width}×${item.height}` : "文本"} · {timeAgo(item.time, now)}
+                  {item.kind === "image" ? `${item.width}×${item.height}` : "文本"} ·{" "}
+                  {timeAgo(item.time, now)}
+                  {item.pinned ? " · 已钉" : ""}
                 </span>
               </span>
-              <span className="clip-copy">
-                <Icon name="copy" size={13} />
+              <span className="clip-actions">
+                {item.kind === "image" ? (
+                  <button
+                    type="button"
+                    className="clip-action"
+                    title="识别文字并复制"
+                    aria-label="识别文字并复制"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      onOcr(item);
+                    }}
+                  >
+                    <Icon name="note" size={12} />
+                  </button>
+                ) : null}
+                <button
+                  type="button"
+                  className={`clip-action ${item.pinned ? "on" : ""}`}
+                  title={item.pinned ? "取消钉住" : "钉住（不被挤出）"}
+                  aria-label={item.pinned ? "取消钉住" : "钉住"}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onPin(item.id, !item.pinned);
+                  }}
+                >
+                  <Icon name="pin" size={12} />
+                </button>
+                <button
+                  type="button"
+                  className="clip-action danger"
+                  title="删除这条"
+                  aria-label="删除这条"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onDelete(item.id);
+                  }}
+                >
+                  <Icon name="trash" size={12} />
+                </button>
+                <span className="clip-copy" aria-hidden>
+                  <Icon name="copy" size={13} />
+                </span>
               </span>
-            </button>
+            </div>
           ))}
         </div>
       )}

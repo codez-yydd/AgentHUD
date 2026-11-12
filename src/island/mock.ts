@@ -5,8 +5,10 @@ import type {
   HudBarAgent,
   HudBarUsage,
   IslandConfig,
+  LauncherProject,
   MediaState,
   NotifyState,
+  Snippet,
   StockMinute,
   StocksState,
   SystemState,
@@ -244,6 +246,7 @@ export const mockSystem: SystemState = {
 };
 
 export const mockClipboard: ClipItem[] = [
+
   {
     id: 1,
     kind: "text",
@@ -253,6 +256,7 @@ export const mockClipboard: ClipItem[] = [
     time: now - 120_000,
     width: 0,
     height: 0,
+    pinned: false,
   },
   {
     id: 2,
@@ -263,6 +267,7 @@ export const mockClipboard: ClipItem[] = [
     time: now - 540_000,
     width: 0,
     height: 0,
+    pinned: false,
   },
   {
     id: 3,
@@ -273,6 +278,7 @@ export const mockClipboard: ClipItem[] = [
     time: now - 1_800_000,
     width: 0,
     height: 0,
+    pinned: false,
   },
 ];
 
@@ -351,6 +357,24 @@ export const mockConfig: IslandConfig = {
   ],
 };
 
+/** 预览用剪贴板：带一条图片条目（图片懒生成，避免模块初始化顺序问题） */
+export function mockClipboardWithImage(): ClipItem[] {
+  return [
+    {
+      id: 4,
+      kind: "image",
+      text: "",
+      preview: "图片 1280×800",
+      image: mockToolboxImagePreview(),
+      time: now - 300_000,
+      width: 1280,
+      height: 800,
+      pinned: true,
+    },
+    ...mockClipboard,
+  ];
+}
+
 export const mockMinute: StockMinute = {
   code: "sh000001",
   prevClose: 3352.11,
@@ -359,3 +383,115 @@ export const mockMinute: StockMinute = {
     return Number(base.toFixed(2));
   }),
 };
+
+// ===== 工具箱预览数据（浏览器预览没有 Rust，就地画一张）=====
+
+/** 画一张"像二维码"的图：三个定位角 + 伪随机模块，只为版式预览 */
+export function mockToolboxQr(text: string, scale: number, quiet: number): {
+  data_url: string;
+  modules: number;
+  size: number;
+  bytes: number;
+} {
+  const modules = 21 + Math.min(6, Math.floor(text.length / 32)) * 4;
+  if (typeof document === "undefined") {
+    return { data_url: "", modules, size: (modules + quiet * 2) * scale, bytes: 0 };
+  }
+  const side = (modules + quiet * 2) * scale;
+  const canvas = document.createElement("canvas");
+  canvas.width = side;
+  canvas.height = side;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) {
+    return { data_url: "", modules, size: side, bytes: 0 };
+  }
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(0, 0, side, side);
+  ctx.fillStyle = "#11141c";
+  for (let y = 0; y < modules; y += 1) {
+    for (let x = 0; x < modules; x += 1) {
+      let dark = ((x * 73856093) ^ (y * 19349663)) % 97 < 48;
+      const inFinder =
+        (x < 7 && y < 7) ||
+        (x >= modules - 7 && y < 7) ||
+        (x < 7 && y >= modules - 7);
+      if (inFinder) {
+        const lx = x >= modules - 7 ? x - (modules - 7) : x;
+        const ly = y >= modules - 7 ? y - (modules - 7) : y;
+        const ring = Math.max(Math.abs(lx - 3), Math.abs(ly - 3));
+        dark = ring === 3 || ring <= 1;
+      }
+      if (!dark) continue;
+      ctx.fillRect((quiet + x) * scale, (quiet + y) * scale, scale, scale);
+    }
+  }
+  return {
+    data_url: canvas.toDataURL("image/png"),
+    modules,
+    size: side,
+    bytes: 1024 + modules * 12,
+  };
+}
+
+let mockImagePreviewCache: string | null = null;
+
+/** 画一张"像截图"的假图（渐变底 + 假窗口色块），供图片卡预览 */
+export function mockToolboxImagePreview(): string {
+  if (mockImagePreviewCache) return mockImagePreviewCache;
+  if (typeof document === "undefined") return "";
+  const width = 1280;
+  const height = 800;
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return "";
+  const gradient = ctx.createLinearGradient(0, 0, width, height);
+  gradient.addColorStop(0, "#1e293b");
+  gradient.addColorStop(0.55, "#4338ca");
+  gradient.addColorStop(1, "#0ea5e9");
+  ctx.fillStyle = gradient;
+  ctx.fillRect(0, 0, width, height);
+  ctx.fillStyle = "rgba(255,255,255,0.10)";
+  ctx.fillRect(80, 90, 1120, 620);
+  ctx.fillStyle = "rgba(255,255,255,0.22)";
+  ctx.fillRect(110, 120, 320, 18);
+  for (let index = 0; index < 3; index += 1) {
+    ctx.fillStyle = `rgba(255,255,255,${0.14 - index * 0.03})`;
+    ctx.fillRect(130, 190 + index * 120, 360, 84);
+  }
+  mockImagePreviewCache = canvas.toDataURL("image/jpeg", 0.82);
+  return mockImagePreviewCache;
+}
+
+// ===== 片段库 / 启动器预览数据 =====
+
+export const mockSnippets: Snippet[] = [
+  {
+    id: "s1",
+    name: "代码审查清单",
+    body: "请按下面顺序审查这次改动：\n1. 有没有改变现有行为（兼容性）\n2. 错误分支是否都有中文提示\n3. 是否补了单测\n4. 有没有硬编码 / 过时数据",
+    created_at: now - 86_400_000,
+    updated_at: now - 3_600_000,
+  },
+  {
+    id: "s2",
+    name: "提交信息模板",
+    body: "fix: 一句话说清修了什么\n\n- 原因：\n- 做法：\n- 影响面：",
+    created_at: now - 172_800_000,
+    updated_at: now - 7_200_000,
+  },
+  {
+    id: "s3",
+    name: "交接给下一个 Agent",
+    body: "当前进度：\n已完成：\n未完成：\n注意点（坑）：\n下一步建议：",
+    created_at: now - 259_200_000,
+    updated_at: now - 172_800_000,
+  },
+];
+
+export const mockProjects: LauncherProject[] = [
+  { key: "zai-floating-monitor", display_path: "D:\\code\\zai-floating-monitor", sessions: 38 },
+  { key: "agents/refactor-auth", display_path: "D:\\code\\agents\\refactor-auth", sessions: 12 },
+  { key: "docs-site", display_path: "D:\\code\\docs-site", sessions: 4 },
+];

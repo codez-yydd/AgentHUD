@@ -4,7 +4,13 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperti
 import {
   clearClipboard,
   clearNotify,
+  clipboardDelete,
+  clipboardLimit,
+  clipboardPin,
+  clipboardSetLimit,
   copyClipboard,
+  copyText,
+  ocrImage,
   beginIslandDrag,
   endIslandDrag,
   getClipboard,
@@ -89,6 +95,7 @@ import {
   WeatherPage,
 } from "./pages";
 import { ScreenshotPage } from "./ShotPage";
+import { ToolboxPage } from "./ToolboxPage";
 
 /** 桌面抓屏目前只有 Windows 实现；macOS 上不轮询，避免每 150ms 一次空报错。 */
 const CAN_CAPTURE_BACKDROP =
@@ -102,6 +109,7 @@ const TABS: { key: TabKey; label: string; icon: IconName }[] = [
   { key: "ctl", label: "控制", icon: "sliders" },
   { key: "clip", label: "剪贴板", icon: "clipboard" },
   { key: "shot", label: "截图", icon: "camera" },
+  { key: "tool", label: "工具", icon: "toolbox" },
 ];
 
 const EMPTY_MEDIA: MediaState = {
@@ -162,6 +170,8 @@ export default function IslandApp() {
   const [lyrics, setLyrics] = useState<LyricsState | null>(null);
   const [system, setSystem] = useState<SystemState>(EMPTY_SYSTEM);
   const [clipboard, setClipboard] = useState<ClipItem[]>([]);
+  /** 剪贴板保留条数上限（后端状态，页面首次渲染读一次） */
+  const [clipLimit, setClipLimit] = useState(10);
   const [notify, setNotify] = useState<NotifyState>({ items: [], unread: 0 });
   const [refreshing, setRefreshing] = useState(false);
   const [toast, setToast] = useState("");
@@ -263,6 +273,7 @@ export default function IslandApp() {
         void getMedia().then((data) => alive && setMedia(data));
         void getSystem().then((data) => alive && setSystem(data));
         void getClipboard().then((data) => alive && setClipboard(data));
+        void clipboardLimit().then((value) => alive && setClipLimit(value));
         void getNotify().then((data) => alive && setNotify(data));
       } catch (e) {
         if (alive) showToast(`灵动岛加载失败: ${String(e)}`);
@@ -964,17 +975,65 @@ export default function IslandApp() {
         return (
           <ClipboardPage
             items={clipboard}
+            limit={clipLimit}
             onCopy={(id) => {
               void copyClipboard(id).catch((e) => showToast(String(e)));
             }}
+            onPin={(id, pinned) => {
+              void clipboardPin(id, pinned)
+                .then(setClipboard)
+                .catch((e) => showToast(String(e)));
+            }}
+            onDelete={(id) => {
+              void clipboardDelete(id)
+                .then(setClipboard)
+                .catch((e) => showToast(String(e)));
+            }}
             onClear={() => {
-              void clearClipboard().then(() => setClipboard([])).catch(() => {});
+              void clearClipboard()
+                .then(() => getClipboard().then(setClipboard).catch(() => {}))
+                .catch((e) => showToast(String(e)));
+            }}
+            onLimit={(limit) => {
+              void clipboardSetLimit(limit)
+                .then((next) => {
+                  setClipboard(next);
+                  setClipLimit(limit);
+                })
+                .catch((e) => showToast(String(e)));
+            }}
+            onOcr={(item) => {
+              // 图片转文字：走截图 OCR，识别结果直接写回剪贴板
+              void ocrImage(item.image)
+                .then((result) => {
+                  if (!result.ok || !result.text.trim()) {
+                    showToast(result.error || "没识别到文字");
+                    return;
+                  }
+                  return copyText(result.text).then(() =>
+                    showToast(`已识别 ${result.text.length} 字并复制`)
+                  );
+                })
+                .catch((e) => showToast(String(e)));
             }}
             onToast={showToast}
           />
         );
       case "shot":
         return <ScreenshotPage onToast={showToast} />;
+      case "tool":
+        return (
+          <ToolboxPage
+            onToast={showToast}
+            onOpenTab={(next) => setTab(next)}
+            onOpenMainWindow={(page) =>
+              void openMainWindow(page).catch((e) => showToast(String(e)))
+            }
+            onOpenPath={(path) =>
+              void openPath(path).catch((e) => showToast(String(e)))
+            }
+          />
+        );
       case "settings":
         return (
           <SettingsPage

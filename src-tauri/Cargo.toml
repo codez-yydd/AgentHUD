@@ -54,6 +54,7 @@ ruzstd = "0.8"
 # 灵动岛：剪贴板历史（文本/图片）与股票行情 GBK 解码
 arboard = "3.6"
 encoding_rs = "0.8"
+qrcode = { version = "0.14.1", default-features = false }
 
 [target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]
 tauri-plugin-autostart = "2.5.1"

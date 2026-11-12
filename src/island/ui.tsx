@@ -89,7 +89,8 @@ export type IconName =
   | "scroll"
   | "timer"
   | "image"
-  | "edit";
+  | "edit"
+  | "toolbox";
 
 const PATHS: Record<IconName, ReactNode> = {
   home: <path d="M3.5 10.6 12 3.5l8.5 7.1V20a1 1 0 0 1-1 1h-5v-6h-5v6h-5a1 1 0 0 1-1-1z" />,
@@ -335,6 +336,14 @@ const PATHS: Record<IconName, ReactNode> = {
     <>
       <path d="m4 20 4.4-1L19 8.4a1.9 1.9 0 0 0 0-2.7l-.7-.7a1.9 1.9 0 0 0-2.7 0L5 15.6 4 20Z" />
       <path d="m14 6.4 3.6 3.6" />
+    </>
+  ),
+  /* 工具箱：带提手的工具盒（二维码 / 图片小工具都收在这里） */
+  toolbox: (
+    <>
+      <rect x="2.8" y="8.2" width="18.4" height="12" rx="2.4" />
+      <path d="M8.6 8.2V5.9a1.7 1.7 0 0 1 1.7-1.7h3.4a1.7 1.7 0 0 1 1.7 1.7v2.3" />
+      <path d="M2.8 12.6h18.4M10 12.6v2.1h4v-2.1" />
     </>
   ),
 };
