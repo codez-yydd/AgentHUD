@@ -527,7 +527,7 @@ fn capture_rect(x: i32, y: i32, width: u32, height: u32) -> Result<image::RgbaIm
     if width < 2 || height < 2 {
         return Err("截图区域过小".into());
     }
-    // 截图期间别让灵动岛临时「对采集隐藏」：否则刚好撞上的截图里岛会消失。
+    // 截图期间让底板采样复用上一张，避免和本次抓屏抢 GDI 桌面。
     // 见 island::capture_guard。
     let _capture_guard = crate::island::capture_guard::CaptureGuard::enter();
     unsafe {
@@ -886,7 +886,7 @@ fn capture_window(hwnd: windows::Win32::Foundation::HWND) -> Result<Captured, St
     if w < 4 || h < 4 {
         return Err("窗口尺寸过小".into());
     }
-    // PrintWindow 同样受「对采集隐藏」影响（见 island::capture_guard）。
+    // PrintWindow 期间让底板采样复用上一张（见 island::capture_guard）。
     let _capture_guard = crate::island::capture_guard::CaptureGuard::enter();
     let title = window_title(hwnd);
     let mut rendered = None;

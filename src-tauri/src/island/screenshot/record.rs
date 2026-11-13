@@ -1085,8 +1085,7 @@ fn run_ffmpeg_recording(
 ) {
     /// gdigrab 帧率：30fps 是 Windows 屏幕抓取与体积的平衡点（mac SCK 是 60）
     const GRAB_FPS: u32 = 30;
-    // 录制期间不许灵动岛再临时「对采集隐藏」：那个标志会让本应用录出来的
-    // 画面里岛周期性消失（详见 island::capture_guard 模块注释）。
+    // 录制期间暂停底板采样，避免和录屏抓屏抢 GDI 桌面（见 island::capture_guard）。
     let _capture_guard = crate::island::capture_guard::CaptureGuard::enter();
     let outcome = (|| -> Result<RecordResult, String> {
         let ff = ffmpeg::Ffmpeg::locate()?;
@@ -1185,8 +1184,7 @@ fn describe_ffmpeg_exit(status: std::process::ExitStatus, tail: &str, phase: &st
 /// 录制入口：macOS 15+ 的 MP4 优先走 ScreenCaptureKit（60fps + 系统声音），
 /// 起流失败再退回逐帧抓屏 + VideoToolbox 编码（无声音、帧率受抓屏速度限制）。
 fn run_recording(rec: Arc<Recording>, spec: CaptureSpec, dir: PathBuf) {
-    // 逐帧抓屏（GIF 兜底 / 非 ffmpeg 分支）同样算「正在采集屏幕」：
-    // 期间不能动岛的「对采集隐藏」标志，否则录出来的岛会周期性闪掉。
+    // 逐帧抓屏（GIF 兜底 / 非 ffmpeg 分支）期间同样暂停底板采样。
     let _capture_guard = crate::island::capture_guard::CaptureGuard::enter();
     #[cfg(target_os = "macos")]
     if spec.format == "mp4" {

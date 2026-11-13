@@ -193,14 +193,24 @@ export function HomePage({
       (parseFloat(cs.paddingBottom) || 0);
     if (width < 360 || available < 200) return;
     // 量自然高度前先把页面撑到展开态宽度，且还原成 1:1（不带上一轮的补偿）。
-    // 量的一瞬间关掉 width 过渡，否则量到的是过渡中的中间宽度。
+    // 关键机制：读 offsetHeight 会强制一次同步样式落账，把测量用的中间宽度
+    // （518px）提交成补间基准；如果之后恢复 transition 和写最终宽度落在
+    // 同一次样式变更里，浏览器就会从 518px 补间到目标宽度，横向挤压一次——
+    // useLayoutEffect 每次渲染都跑（时钟每秒一跳），展开后便成了“挤一下又
+    // 恢复”的无限循环。所以测量后必须先把宽度写回原值，并趁 transition 仍
+    // 为 none 再次强制落账，让中间值永远当不成补间起点；决策无变化时整趟
+    // 循环净样式为零，每秒的时钟渲染不再产生任何补间。
     const previousTransition = pageEl.style.transition;
+    const previousWidth = pageEl.style.width;
     pageEl.style.transition = "none";
     pageEl.style.width = `${width}px`;
     const natural = pageEl.offsetHeight;
-    pageEl.style.transition = previousTransition;
     const applied = fitScaleRef.current;
     let scale = applied || 1;
+    // 各分支只计算并记录最终宽度（finalWidth）与是否改比例（finalScale），
+    // 统一交给函数末尾的“写回收尾”逻辑落账，不再各自提前 return。
+    let finalWidth: string;
+    let finalScale: number | null = null; // null 表示本轮不改比例
     // 已缩放（<1）且面板展开时：装得下就不动，避免数据晚到导致字号二次跳动
     if (
       islandEl.classList.contains("open") &&
@@ -208,33 +218,51 @@ export function HomePage({
       applied < 0.999 &&
       natural * applied <= available + 24
     ) {
-      pageEl.style.width = `${(100 / applied).toFixed(3)}%`;
-      return;
-    }
-    if (natural * scale > available + 4) {
-      // 装不下：按可用高度缩到刚好放下
-      scale = Math.max(0.65, available / natural);
+      finalWidth = `${(100 / applied).toFixed(3)}%`;
+    } else if (natural * scale > available + 4) {
+      // 装不下：按可用高度缩到刚好放下；只允许继续缩小，不回头放大
+      scale = Math.min(scale, Math.max(0.65, available / natural));
+      fitScaleRef.current = scale;
+      pageEl.style.transformOrigin = "top left";
+      finalScale = scale;
+      finalWidth = scale >= 0.999 ? "" : `${(100 / scale).toFixed(3)}%`;
     } else if (natural * scale < available * 0.9) {
-      // 明显偏小（换小字号 / 内容变少）：留 10% 余量才放大，避免在临界点来回抖
-      scale = Math.min(1, available / natural);
-    }
-    fitScaleRef.current = scale;
-    pageEl.style.transformOrigin = "top left";
-    if (scale >= 0.999) {
-      pageEl.style.width = "";
-      pageEl.style.scale = "";
-      pageEl.style.transform = "";
-      return;
-    }
-    pageEl.style.width = `${(100 / scale).toFixed(3)}%`;
-    // 优先用独立的 scale 属性：它和页面入场动画的 transform 互不覆盖，
-    // 老 WebView 不支持时再退回 transform。
-    if (typeof CSS === "undefined" || CSS.supports("scale", "0.9")) {
-      pageEl.style.scale = scale.toFixed(4);
-      pageEl.style.transform = "";
+      // 只缩不放：媒体条 / 歌词行 / 额度数据刷新会让内容高度反复变化，
+      // 一缩一放就是用户看到的“整页从右往左挤一下又恢复”。保持当前比例，
+      // 切页/重开时 fitScaleRef 归零会自然恢复到 1:1。
+      finalWidth =
+        applied > 0 && applied < 0.999 ? `${(100 / applied).toFixed(3)}%` : "";
     } else {
-      pageEl.style.scale = "";
-      pageEl.style.transform = `scale(${scale.toFixed(4)})`;
+      // 装得下且比例合适：按当前比例落账（含首次量与常规稳态）
+      fitScaleRef.current = scale;
+      pageEl.style.transformOrigin = "top left";
+      finalScale = scale;
+      finalWidth = scale >= 0.999 ? "" : `${(100 / scale).toFixed(3)}%`;
+    }
+    // 写回收尾：先把宽度写回测量前的原值，并趁 transition 仍为 none 再落账
+    // 一次——测量用的 width px 只是中间值，永远不会成为补间起点。
+    pageEl.style.width = previousWidth;
+    void pageEl.offsetHeight;
+    pageEl.style.transition = previousTransition;
+    // 决策真的变化时才写新宽度：从真实旧值出发，走 CSS 的 180ms 过渡。
+    if (finalWidth !== previousWidth) {
+      pageEl.style.width = finalWidth;
+    }
+    // 比例写回收尾：放在恢复过渡之后，与宽度变更合并成同一次样式变更事件，
+    // 真正改比例时仍由 .home-page 的 scale 过渡平滑过去。
+    if (finalScale !== null) {
+      // 优先用独立的 scale 属性：它和页面入场动画的 transform 互不覆盖，
+      // 老 WebView 不支持时再退回 transform。
+      if (finalScale >= 0.999) {
+        pageEl.style.scale = "";
+        pageEl.style.transform = "";
+      } else if (typeof CSS === "undefined" || CSS.supports("scale", "0.9")) {
+        pageEl.style.scale = finalScale.toFixed(4);
+        pageEl.style.transform = "";
+      } else {
+        pageEl.style.scale = "";
+        pageEl.style.transform = `scale(${finalScale.toFixed(4)})`;
+      }
     }
   }, []);
 
@@ -383,9 +411,12 @@ export function HomePage({
               {media.artist || media.appName}
               {media.album ? ` · ${media.album}` : ""}
             </div>
-            {lyricLine ? (
+            {/* 有歌词的曲目固定占一行（空行用 nbsp 撑住）：逐行歌词在
+                有/无之间切换时，媒体条高度会一涨一缩，整页自适应比例也
+                跟着反复缩放，看起来就是“面板从右往左挤一下又恢复”。 */}
+            {lyrics?.ok ? (
               <div className="media-lyric">
-                {lyricLine.trans || lyricLine.text}
+                {lyricLine ? lyricLine.trans || lyricLine.text : "\u00a0"}
               </div>
             ) : null}
             <div className="media-progress">
