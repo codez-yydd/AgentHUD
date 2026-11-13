@@ -63,74 +63,16 @@ Both repositories have exactly the same content — the latest version can be ob
 
 <table>
   <tr>
-    <td width="50%" align="center">
-      <img src="doc/img/hud-top.png" width="320" alt="HUD · top bar & detail"/><br/>
-      <b>HUD · top bar & detail</b> — capsule top bar with a pop-up usage panel
-    </td>
-    <td width="50%" align="center">
-      <img src="doc/img/hud-dock.png" width="320" alt="HUD · edge dock & detail card"/><br/>
-      <b>HUD · edge dock & detail card</b> — slim edge dock with a floating detail card
-    </td>
+    <td width="50%" align="center"><img src="doc/img/island-home.png" width="320" alt="Island · expanded home"/><br/><b>Island · Expanded Home</b> — weather, quota rings, today's tokens / cost and launcher</td>
+    <td width="50%" align="center"><img src="doc/img/island-collapsed.png" width="320" alt="Island · collapsed quota rings"/><br/><b>Island · Collapsed Quota Rings</b> — concentric quota rings + today's tokens / estimated cost</td>
   </tr>
   <tr>
-    <td width="50%" align="center">
-      <img src="doc/img/summary.png" width="320" alt="Summary view"/><br/>
-      <b>Summary view</b> — Total cost / tokens across services & subscription quotas
-    </td>
-    <td width="50%" align="center">
-      <img src="doc/img/zai-quota.png" width="320" alt="Z.ai view"/><br/>
-      <b>Z.ai view</b> — Coding Plan 5-hour / weekly / MCP quotas
-    </td>
+    <td width="50%" align="center"><img src="doc/img/island-side-combo.png" width="320" alt="Island · side dock"/><br/><b>Island · Side Dock</b> — 48px vertical dock at the left/right edge, hover / click to expand</td>
+    <td width="50%" align="center"><img src="doc/img/dashboard-overview.png" width="320" alt="Dashboard · usage overview"/><br/><b>Dashboard · Usage Overview</b> — cross-service tokens, cost, trend and activity heatmap</td>
   </tr>
   <tr>
-    <td width="50%" align="center">
-      <img src="doc/img/summary-trend.png" width="320" alt="Trend & model ranking"/><br/>
-      <b>Trend & model ranking</b> — Hourly usage trend and model ranking
-    </td>
-    <td width="50%" align="center">
-      <img src="doc/img/dashboard-overview.png" width="320" alt="Dashboard · usage overview"/><br/>
-      <b>Dashboard · Usage Overview</b> — Cross-service usage, cost & trend summary
-    </td>
-  </tr>
-  <tr>
-    <td width="50%" align="center">
-      <img src="doc/img/settings.png" width="320" alt="Pricing settings"/><br/>
-      <b>Pricing settings</b> — USD unit prices, FX rate & global hotkey
-    </td>
-    <td width="50%" align="center">
-      <img src="doc/img/sync.png" width="320" alt="Device sync"/><br/>
-      <b>Device sync</b> — Incremental multi-device sync & data management
-    </td>
-  </tr>
-  <tr>
-    <td width="50%" align="center">
-      <img src="doc/img/speed.png" width="320" alt="Model speed ranking"/><br/>
-      <b>Model speed ranking</b> — "Speed" tab: percentile speeds, TTFT & success rate
-    </td>
-    <td width="50%" align="center">
-      <img src="doc/img/tokeninfo.png" width="320" alt="Session token HUD"/><br/>
-      <b>Session token HUD</b> — injection-free live tokens, streaming speed & per-model rows
-    </td>
-  </tr>
-  <tr>
-    <td width="50%" align="center">
-      <img src="doc/img/dashboard-logs.png" width="320" alt="Dashboard · request logs"/><br/>
-      <b>Dashboard · Request Logs</b> — per-agent request details: duration, cache & cost
-    </td>
-    <td width="50%" align="center">
-      <img src="doc/img/usage-report.png" width="320" alt="Usage report"/><br/>
-      <b>Usage report</b> — activity / token heatmap & daily / weekly report export
-    </td>
-  </tr>
-  <tr>
-    <td width="50%" align="center">
-      <img src="doc/img/island-shot.png" width="320" alt="Island · screenshot workbench"/><br/>
-      <b>Island · Screenshot workbench</b> — region/window/full/scroll, GIF, history
-    </td>
-    <td width="50%" align="center">
-      <img src="doc/img/island-shot-editor.png" width="320" alt="Screenshot annotator"/><br/>
-      <b>Screenshot annotator</b> — shapes, text, steps, mosaic, OCR/QR/pin
-    </td>
+    <td width="50%" align="center"><img src="doc/img/dashboard-logs.png" width="320" alt="Dashboard · request logs"/><br/><b>Dashboard · Request Logs</b> — per-request details, token breakdown, cache and cost</td>
+    <td width="50%" align="center"><img src="doc/img/island-shot.png" width="320" alt="Island · screenshot workbench"/><br/><b>Island · Screenshot Workbench</b> — region / window / full / scroll, GIF and recent captures</td>
   </tr>
 </table>
 

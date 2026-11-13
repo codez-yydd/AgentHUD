@@ -63,74 +63,16 @@ AgentHUD 是一个面向 AI 编程 Agent 的开源可观测性看板，统一监
 
 <table>
   <tr>
-    <td width="50%" align="center">
-      <img src="doc/img/hud-top.png" width="320" alt="HUD · 顶部悬浮条与详情"/><br/>
-      <b>HUD · 顶部悬浮条与详情</b> — 屏幕顶部胶囊悬浮条与弹出用量面板
-    </td>
-    <td width="50%" align="center">
-      <img src="doc/img/hud-dock.png" width="320" alt="HUD · 贴边停靠条与详情卡"/><br/>
-      <b>HUD · 贴边停靠条与详情卡</b> — 屏幕右缘竖直停靠条与悬浮详情卡
-    </td>
+    <td width="50%" align="center"><img src="doc/img/island-home.png" width="320" alt="灵动岛 · 展开主页"/><br/><b>灵动岛 · 展开主页</b> — 天气、额度环、今日 Token / 花费与启动器</td>
+    <td width="50%" align="center"><img src="doc/img/island-collapsed.png" width="320" alt="灵动岛 · 收起额度环"/><br/><b>灵动岛 · 收起额度环</b> — 同心额度环 + 今日 Token / 预估花费</td>
   </tr>
   <tr>
-    <td width="50%" align="center">
-      <img src="doc/img/summary.png" width="320" alt="汇总视图"/><br/>
-      <b>汇总视图</b> — 多服务合计花费 / Token 与订阅额度
-    </td>
-    <td width="50%" align="center">
-      <img src="doc/img/zai-quota.png" width="320" alt="Z.ai 视图"/><br/>
-      <b>Z.ai 视图</b> — Coding Plan 5 小时 / 每周 / MCP 额度
-    </td>
+    <td width="50%" align="center"><img src="doc/img/island-side-combo.png" width="320" alt="灵动岛 · 贴边竖排"/><br/><b>灵动岛 · 贴边竖排</b> — 左右贴边 48px 竖排，悬停 / 点击展开</td>
+    <td width="50%" align="center"><img src="doc/img/dashboard-overview.png" width="320" alt="主窗口 · 用量总览"/><br/><b>主窗口 · 用量总览</b> — 跨服务 Token / 花费 / 趋势与活跃热力图</td>
   </tr>
   <tr>
-    <td width="50%" align="center">
-      <img src="doc/img/summary-trend.png" width="320" alt="趋势与模型排行"/><br/>
-      <b>趋势与模型排行</b> — 按时段用量趋势与模型排行
-    </td>
-    <td width="50%" align="center">
-      <img src="doc/img/dashboard-overview.png" width="320" alt="主窗口 · 用量总览"/><br/>
-      <b>主窗口 · 用量总览</b> — 跨服务用量、花费与趋势汇总
-    </td>
-  </tr>
-  <tr>
-    <td width="50%" align="center">
-      <img src="doc/img/settings.png" width="320" alt="价格设置"/><br/>
-      <b>价格设置</b> — 美元单价、汇率折算与全局快捷键
-    </td>
-    <td width="50%" align="center">
-      <img src="doc/img/sync.png" width="320" alt="设备同步"/><br/>
-      <b>设备同步</b> — 多设备增量同步与数据管理
-    </td>
-  </tr>
-  <tr>
-    <td width="50%" align="center">
-      <img src="doc/img/speed.png" width="320" alt="模型速度排行"/><br/>
-      <b>模型速度排行</b> — 「速度」标签页：分位速度、首字延迟与成功率
-    </td>
-    <td width="50%" align="center">
-      <img src="doc/img/tokeninfo.png" width="320" alt="会话Token悬浮窗"/><br/>
-      <b>会话 Token 悬浮窗</b> — 免注入实时 Token、流式速度与模型速度行
-    </td>
-  </tr>
-  <tr>
-    <td width="50%" align="center">
-      <img src="doc/img/dashboard-logs.png" width="320" alt="主窗口 · 请求日志"/><br/>
-      <b>主窗口 · 请求日志</b> — 各 Agent 请求明细、耗时、缓存与花费
-    </td>
-    <td width="50%" align="center">
-      <img src="doc/img/usage-report.png" width="320" alt="用量报告"/><br/>
-      <b>用量报告</b> — 活跃度 / Token 活动热力图与日报周报导出
-    </td>
-  </tr>
-  <tr>
-    <td width="50%" align="center">
-      <img src="doc/img/island-shot.png" width="320" alt="灵动岛 · 截图工作台"/><br/>
-      <b>灵动岛 · 截图工作台</b> — 区域/窗口/全屏/滚动、GIF 录制与最近截图
-    </td>
-    <td width="50%" align="center">
-      <img src="doc/img/island-shot-editor.png" width="320" alt="截图标注器"/><br/>
-      <b>截图标注器</b> — 框选、箭头/高亮/文字/序号/马赛克、OCR/二维码/贴图
-    </td>
+    <td width="50%" align="center"><img src="doc/img/dashboard-logs.png" width="320" alt="主窗口 · 请求日志"/><br/><b>主窗口 · 请求日志</b> — 逐请求明细、Token 构成、缓存与花费</td>
+    <td width="50%" align="center"><img src="doc/img/island-shot.png" width="320" alt="灵动岛 · 截图工作台"/><br/><b>灵动岛 · 截图工作台</b> — 区域 / 窗口 / 全屏 / 滚动、GIF 与最近截图</td>
   </tr>
 </table>
 
@@ -149,7 +91,7 @@ AgentHUD 是一个面向 AI 编程 Agent 的开源可观测性看板，统一监
 - **⌨️ 全局快捷键** — 默认 `alt+shift+z` 唤起 / 隐藏面板，可在设置中自定义或停用。
 - **🎨 动态壁纸** — 一键把动态视频壁纸注入 ZCode 桌面应用，作为对话背景；安装前自动备份原版、可随时还原。ZCode 升级后壁纸会失效，需重新安装；macOS 上注入后 ZCode 内置更新将不可用（还原也无法恢复），需前往官网重新下载。
 - **🖥 会话 Token 悬浮窗** — 免注入的桌面悬浮窗：按 agent 分组（ZCode / Claude / Codex / Kimi Code / DeepSeek Harness / OpenCode / MiniMax Code / Cursor）实时展示各会话累计 Token（输入 / 输出 / 缓存 / 请求数）、流式生成速度（t/s 与首字延迟）与实时状态点（有运行中信号的来源显示生成中 / 空闲，其余为中性灰点），底部按「来源 × 模型」给出窗口速度行（真生成窗口口径不带 ≈，整请求耗时口径带 ≈）。活跃窗口内无会话的 agent 回退展示「今日最近会话」并淡显标注，组头仍为该 agent 今日合计。支持拖拽边缘 / 四角自由调整大小（尺寸与位置自动记忆），标题栏内置设置面板（字体大小 / 窗口透明度）与一键关闭；语言、主题跟随主面板。在「皮肤」页开启。
-- **🫧 灵动岛 HUD（新增）** — 液态毛玻璃胶囊，视觉与交互参考 [Misaka273/wisland](https://github.com/Misaka273/wisland)。收起态**显示全部订阅的同心额度环 + 天气 + 今日 token / 预估花费**（不做宠物/表情）；同一来源的多账号、多凭证各占一枚环。悬停或点击展开为带标签栏的玻璃面板：主页 / 消息 / 股票 / 天气 / 控制 / 剪贴板 / **截图** / 设置。首页额度卡每页 4 张，滚轮横向滑动，底部用白色细横条指示页码；胶囊可拖到屏幕上缘或左右边，贴边时变成 48×440 竖排并记住位置。功能还含 SMTC 媒体控制与网易云歌词、Windows 通知历史（含飞书 / 钉钉右下角浮窗识别与正文预览）、腾讯行情、Open-Meteo 天气（省/市/区县三级联动 + 获取当前位置）、DDC/CI 外接屏亮度（WMI 内屏回退）、iOS 控制中心式音量/亮度滑块与 Wi-Fi/蓝牙磁贴、剪贴板历史、深色毛玻璃与透明度调节（无外投影）、字体大小 10–18px 自定义（只缩放文字）、右键菜单、滚轮切换、全屏隐藏与全局开关热键（`Ctrl+Alt+Shift+I`）。不再生成/暴露 `island.json`，也没有“编辑配置”入口。数据链路与未移植项见 [doc/island-hud.md](doc/island-hud.md)。
+- **🫧 灵动岛 HUD（新增）** — 液态毛玻璃胶囊，视觉与交互参考 [Misaka273/wisland](https://github.com/Misaka273/wisland)。收起态**显示全部订阅的同心额度环 + 天气 + 今日 token / 预估花费**（不做宠物/表情）；同一来源的多账号、多凭证各占一枚环。悬停或点击展开为带标签栏的玻璃面板：主页 / 消息 / 股票 / 天气 / 控制 / 剪贴板 / **截图** / 工具 / 设置。首页额度卡每页 4 张，滚轮横向滑动，底部用白色细横条指示页码；胶囊可拖到屏幕上缘或左右边，贴边时变成 48×440 竖排并记住位置。功能还含 SMTC 媒体控制与网易云歌词、Windows 通知历史（含飞书 / 钉钉右下角浮窗识别与正文预览）、腾讯行情、Open-Meteo 天气（省/市/区县三级联动 + 获取当前位置）、DDC/CI 外接屏亮度（WMI 内屏回退）、iOS 控制中心式音量/亮度滑块与 Wi-Fi/蓝牙磁贴、剪贴板历史、深色毛玻璃与透明度调节（无外投影）、字体大小 10–18px 自定义（只缩放文字）、右键菜单、全屏隐藏与全局开关热键（`Ctrl+Alt+Shift+I`）。不再生成/暴露 `island.json`，也没有“编辑配置”入口。数据链路与未移植项见 [doc/island-hud.md](doc/island-hud.md)。
 - **📸 截图工作台** — 截图页支持区域/窗口/全屏/延时截图、滚动长截图（逐帧滚动并按行签名拼接）、标注器（矩形/椭圆/箭头/画笔/高亮/文字/序号/马赛克/模糊）、贴图窗口、本地 OCR（Windows.Media.Ocr）、本地二维码（`rqrr`）与 8 秒 GIF 录制。保存 PNG/JPG 到 `图片/AgentHUD Screenshots`，可自动复制/贴图；最近截图支持打开、重新标注、复制、贴图和二次确认删除。抓屏用 GDI/PrintWindow，PNG 原始字节走 raw IPC，不上传任何图片。
 - **🐶 桌面宠物** — 内置智谱娘默认形象，支持 Petdex 自定义形象导入；七状态任务联动动画随 ZCode 任务状态实时切换；注入版（嵌入 ZCode 界面，可拖拽）与悬浮窗双形态按需选择，按屏幕比例提供尺寸档位，皮肤页统一管理。
 - **🖼 皮肤分类页** — 「皮肤」入口（调色板图标）改为分类导航：会话悬浮窗、桌面宠物等免注入功能独立成页、秒开即用；动态壁纸等需注入功能单独一页，进入时才检测 ZCode 注入环境。
