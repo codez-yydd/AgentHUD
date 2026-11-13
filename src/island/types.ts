@@ -1,7 +1,6 @@
 /** 灵动岛前后端数据契约（与 src-tauri/src/island/* 的 serde camelCase 对齐） */
 
 export type ExpandMode = "hover" | "never";
-export type CompactView = "quota" | "clock" | "music";
 export type IslandEdge = "top" | "left" | "right";
 export type TabKey =
   | "home"
@@ -27,7 +26,6 @@ export interface IslandConfig {
   /** 界面基准字号（逻辑 px，13 = 标准）；只缩放文字，不改窗口几何 */
   fontSize: number;
   expandMode: ExpandMode;
-  compactView: CompactView;
   replaceLegacyBar: boolean;
   weatherCity: string;
   weatherLabel: string;

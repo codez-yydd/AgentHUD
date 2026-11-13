@@ -484,9 +484,10 @@ fn should_mouse_through(
     let Some((rx, ry, rw, rh)) = pill.and_then(|rect| clamp_hover_rect(rect, edge)) else {
         return false;
     };
-    // 胶囊边缘给几 px 容错：光标贴着边抖动不会反复切样式，贴边点击也仍
-    // 落回胶囊上。
-    const MARGIN: f64 = 4.0;
+    // 胶囊边缘给几 px 容错：光标贴着边抖动不会反复切样式，贴边点击也仍会
+    // 落回胶囊上。留 10px 而不是只留 1~2px：用户经常从胶囊的圆角/描边上
+    // 按下去拖拽，判定太紧会出现「明明点到了却穿透给下层应用」。
+    const MARGIN: f64 = 10.0;
     let x0 = wx as f64 + (rx - MARGIN) * scale;
     let y0 = wy as f64 + (ry - MARGIN) * scale;
     let x1 = wx as f64 + (rx + rw + MARGIN) * scale;
@@ -509,7 +510,9 @@ fn should_mouse_through(
 #[cfg(target_os = "windows")]
 fn start_mouse_through_watcher(app: AppHandle) {
     use windows::Win32::Foundation::{HWND, RECT};
-    use windows::Win32::UI::WindowsAndMessaging::{GetWindowRect, IsWindow, IsWindowVisible};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetWindowLongW, GetWindowRect, IsWindow, IsWindowVisible, GWL_EXSTYLE, WS_EX_TRANSPARENT,
+    };
 
     static STARTED: AtomicBool = AtomicBool::new(false);
     if STARTED.swap(true, Ordering::SeqCst) {
@@ -525,7 +528,6 @@ fn start_mouse_through_watcher(app: AppHandle) {
         .name("zbar-island-passthrough".into())
         .spawn(move || {
             let debug = std::env::var_os("ZBAR_ISLAND_DEBUG").is_some();
-            let mut through = false;
             let mut hwnd: Option<HWND> = None;
             let mut scale = 0.0f64;
             let mut rect = (0i32, 0i32, 0u32, 0u32);
@@ -543,7 +545,6 @@ fn start_mouse_through_watcher(app: AppHandle) {
                     hwnd = app
                         .get_webview_window(ISLAND_WINDOW_LABEL)
                         .and_then(|win| win.hwnd().ok());
-                    through = false;
                     outside_ticks = 0;
                     scale = 0.0;
                     scale_age = SCALE_TICKS;
@@ -592,6 +593,23 @@ fn start_mouse_through_watcher(app: AppHandle) {
                     .lock()
                     .map(|slot| slot.is_some())
                     .unwrap_or(false);
+                let mouse_down = left_button_down();
+                // 只按不拖的点击也会建立会话，但前端在 begin 回执前松手时
+                // 可能来不及调用 drag_step/end。这里兜底清掉「已松手且从未
+                // 越过阈值」的会话；已经 started 的真拖拽必须留给
+                // island_drag_end 做吸附落盘，不能在这里清。
+                if dragging && !mouse_down {
+                    if let Ok(mut slot) = drag_slot().lock() {
+                        if slot.as_ref().map(|s| !s.started).unwrap_or(false) {
+                            *slot = None;
+                        }
+                    }
+                }
+                // 左键按着时不切换穿透：用户可能正在胶囊上按下准备拖拽，
+                // 中途把窗口切成 WS_EX_TRANSPARENT 会让 WebView 丢掉
+                // pointerup/pointermove，看起来就是「按住了却拖不动」。
+                // （拖拽会话建立前同样要拦住——从按下到 begin 回执之间
+                // 还有一次 IPC 往返。）
                 let Some(cursor) = cursor_physical(&app) else {
                     continue;
                 };
@@ -599,6 +617,7 @@ fn start_mouse_through_watcher(app: AppHandle) {
                 // 拖拽期间保持可交互：拖拽由 Rust 轮询光标推进，但松手和点击
                 // 语义还留在窗口上，中间切成穿透会丢掉 pointerup。
                 let outside = !dragging
+                    && !mouse_down
                     && should_mouse_through(&cfg.edge, now_rect, scale, pill, cursor);
 
                 // 光标移进胶囊：立刻恢复可交互（宁可慢一拍穿透，也不能让用户
@@ -610,18 +629,21 @@ fn start_mouse_through_watcher(app: AppHandle) {
                     0
                 };
                 let want = outside && outside_ticks >= 2;
-                if want == through {
+                // 外部路径（show/hide、全屏守护、截图恢复）也可能改过窗口的
+                // transparent 位。每拍都和真实 ex-style 比一次，不维护本地
+                // 缓存——缓存一旦和实际状态分叉，窗口要么一直吃不到点击，
+                // 要么一直挡着下面的应用。
+                let actual_through =
+                    unsafe { GetWindowLongW(h, GWL_EXSTYLE) as u32 & WS_EX_TRANSPARENT.0 != 0 };
+                if want == actual_through {
                     continue;
                 }
                 let applied = app
                     .get_webview_window(ISLAND_WINDOW_LABEL)
                     .map(|win| win.set_ignore_cursor_events(want).is_ok())
                     .unwrap_or(false);
-                if applied {
-                    through = want;
-                    if debug {
-                        eprintln!("[zbar-island] mouse-through {through}");
-                    }
+                if applied && debug {
+                    eprintln!("[zbar-island] mouse-through {want}");
                 }
             }
         })
@@ -772,8 +794,7 @@ pub async fn island_drag_step(app: AppHandle) -> Result<IslandDragStep, String> 
                 // 重建合成面，看起来就是「一开始拖，岛闪一下」。
                 // 条画在窗口顶部，所以窗口顶边 = 条顶边；把「条」的落点 clamp 在
                 // 工作区内即可，窗口多出来的透明部分伸出屏幕边缘也无所谓。
-                let x = (lx - ISLAND_WINDOW_W / 2.0)
-                    .clamp(ax, (ax + aw - ISLAND_WINDOW_W).max(ax));
+                let x = (lx - ISLAND_WINDOW_W / 2.0).clamp(ax, (ax + aw - ISLAND_WINDOW_W).max(ax));
                 let y = (ly - ISLAND_COLLAPSED_H / 2.0)
                     .clamp(ay, (ay + ah - ISLAND_COLLAPSED_H).max(ay));
                 // Windows：窗口常驻展开态尺寸，拖拽期间也不改（改尺寸会闪一下）；
@@ -782,14 +803,7 @@ pub async fn island_drag_step(app: AppHandle) -> Result<IslandDragStep, String> 
                 let drag_window_h = ISLAND_EXPANDED_H;
                 #[cfg(not(target_os = "windows"))]
                 let drag_window_h = ISLAND_COLLAPSED_H;
-                apply_window_frame_scaled(
-                    &win,
-                    x,
-                    y,
-                    ISLAND_WINDOW_W,
-                    drag_window_h,
-                    area.scale,
-                )?;
+                apply_window_frame_scaled(&win, x, y, ISLAND_WINDOW_W, drag_window_h, area.scale)?;
                 LAST_EXPANDED.store(false, Ordering::Relaxed);
                 session.need_bar = false;
                 // 收条后重算抓取偏移，保证跟手不跳
@@ -807,24 +821,35 @@ pub async fn island_drag_step(app: AppHandle) -> Result<IslandDragStep, String> 
         // 多屏：夹到所有显示器工作区的并集，而不是主屏。这样窗口可以
         // 从左屏跨到负坐标的副屏（或右侧副屏），不会被 primary 边界卡住。
         let bounds = virtual_work_bounds(&app_main);
-        let size = win.outer_size().map_err(|e| format!("读取窗口尺寸失败: {e}"))?;
+        let size = win
+            .outer_size()
+            .map_err(|e| format!("读取窗口尺寸失败: {e}"))?;
+        // Windows 上窗口常驻 552×520，但可见的只有顶部 70 高的横条；拖拽
+        // 范围必须按「条」算，不能按整扇透明窗算——否则用户把岛往屏幕下方
+        // 拖，窗口底边一碰到工作区下沿（1080 屏约 y=560）就再也拖不动了，
+        // 看起来就是「拖到一半卡住 / 根本拖不走」。窗口多出来的透明部分
+        // 允许伸出屏幕边缘。
+        let bar_h =
+            (ISLAND_COLLAPSED_H * win.scale_factor().unwrap_or(1.0)).min(size.height as f64);
         let (target_x, target_y) = clamp_drag_target(
             cx as f64,
             cy as f64,
             session.offset_x,
             session.offset_y,
-            (size.width as f64, size.height as f64),
+            (size.width as f64, bar_h),
             bounds,
         );
         let max_x = bounds.2 - size.width as f64;
-        let max_y = bounds.3 - size.height as f64;
+        let max_y = bounds.3 - bar_h;
         let lo_x = bounds.0.min(max_x);
         let hi_x = max_x;
         let lo_y = bounds.1.min(max_y);
         let hi_y = max_y;
 
         let now = Instant::now();
-        let dt = (now - session.last_tick).as_secs_f64().clamp(1.0 / 240.0, 1.0 / 30.0);
+        let dt = (now - session.last_tick)
+            .as_secs_f64()
+            .clamp(1.0 / 240.0, 1.0 / 30.0);
         session.last_tick = now;
         spring_axis(&mut session.x, &mut session.vx, target_x, dt);
         spring_axis(&mut session.y, &mut session.vy, target_y, dt);
@@ -870,12 +895,27 @@ pub async fn island_drag_step(app: AppHandle) -> Result<IslandDragStep, String> 
 /// 立即切到该边的窗口尺寸与位置。前端负责在调用前把胶囊淡出，避免
 /// WebView 在窗口改几何的那一帧露出没有玻璃底的横条。
 #[tauri::command]
-pub async fn island_drag_end(app: AppHandle) -> Result<IslandDragEnd, String> {
+pub async fn island_drag_end(
+    app: AppHandle,
+    started: Option<bool>,
+) -> Result<IslandDragEnd, String> {
     let app_main = app.clone();
     on_main_thread(&app, move || {
-        if let Ok(mut slot) = drag_slot().lock() {
-            *slot = None;
-        }
+        // 只按不拖（纯点击）时 Rust 侧会话已经建立但 started 仍为 false：
+        // 这里清掉会话即可，绝不能走吸附/落盘——否则点一下胶囊岛就会被
+        // 弹到最近的屏幕边。前端在 pointerup 早于 begin 回执时也会调用
+        // 本命令收尾，语义必须保持幂等。
+        let session_started = drag_slot()
+            .lock()
+            .ok()
+            .and_then(|mut slot| slot.take())
+            .map(|session| session.started)
+            .unwrap_or(false);
+        // 前端在真正拖动过（收到过 started=true）后会显式传 started=true。
+        // 不能只信 drag_slot：island_drag_step 在检测到左键松开时会先清掉
+        // 会话，等 130ms 淡出后再调用本命令时槽里已经空了。只按会话判断会
+        // 得到 false，于是拖到左边/顶部也不会吸附，配置一直停在旧边。
+        let started = started.unwrap_or(session_started);
         DRAG_RELEASED.store(true, Ordering::Relaxed);
         let win = ensure_window(&app_main)?;
         let pos = win
@@ -884,12 +924,21 @@ pub async fn island_drag_end(app: AppHandle) -> Result<IslandDragEnd, String> {
         let size = win
             .outer_size()
             .map_err(|e| format!("读取窗口尺寸失败: {e}"))?;
+        let drag_scale = win.scale_factor().unwrap_or(1.0);
+        let bar_h = ISLAND_COLLAPSED_H * drag_scale;
+        if !started {
+            return Ok(IslandDragEnd {
+                edge: load_config().edge,
+                x: pos.x as f64 / drag_scale,
+                y: pos.y as f64 / drag_scale,
+                width: size.width as f64 / drag_scale,
+                height: size.height as f64 / drag_scale,
+            });
+        }
         // 以窗口中心所在的那块屏做吸附判定：拖到副屏后，距离和比例都
         // 相对副屏工作区计算，不能再用主屏的边。
         // 注意窗口是常驻的 552×520，**条只占窗口顶部 70 高**：吸附距离和比例
         // 都必须按条算，否则条会被算在窗口垂直中心上，贴左右边时整体下坠 260px。
-        let drag_scale = win.scale_factor().unwrap_or(1.0);
-        let bar_h = ISLAND_COLLAPSED_H * drag_scale;
         let center = (
             pos.x as f64 + size.width as f64 / 2.0,
             pos.y as f64 + bar_h / 2.0,
@@ -900,27 +949,11 @@ pub async fn island_drag_end(app: AppHandle) -> Result<IslandDragEnd, String> {
         let y = pos.y as f64;
         let w = size.width as f64;
         let h = bar_h;
-        let d_top = (y - ay).max(0.0);
-        let d_left = (x - ax).max(0.0);
-        let d_right = (ax + aw - (x + w)).max(0.0);
-        // 到左右边的距离乘 0.82：同样距离下优先贴左右，符合“拖到两边变竖”
-        // 的主诉求；顶边仍保留，用于回到顶部横排。
-        let score_left = d_left * 0.82;
-        let score_right = d_right * 0.82;
-        let edge = if d_top <= score_left && d_top <= score_right {
-            "top"
-        } else if score_left <= score_right {
-            "left"
-        } else {
-            "right"
-        };
+        let (edge, pos_frac) = snap_to_edge(x, y, w, h, (ax, ay, aw, ah));
         let cfg = {
             let mut c = load_config();
             c.edge = edge.to_string();
-            c.pos_frac = match edge {
-                "top" => ((x + w / 2.0 - ax) / aw).clamp(0.0, 1.0),
-                _ => ((y + h / 2.0 - ay) / ah).clamp(0.0, 1.0),
-            };
+            c.pos_frac = pos_frac;
             c.monitor = area.name.clone();
             c
         };
@@ -977,9 +1010,6 @@ fn default_font_size() -> f64 {
 fn default_expand_mode() -> String {
     "hover".into()
 }
-fn default_compact_view() -> String {
-    "quota".into()
-}
 fn default_city() -> String {
     "上海".into()
 }
@@ -990,10 +1020,12 @@ fn default_pos_frac() -> f64 {
     0.5
 }
 fn default_stocks() -> Vec<String> {
-    ["sh000001", "sz399001", "sz399006", "hk00700", "usAAPL", "usNVDA", "usQQQ"]
-        .iter()
-        .map(|s| s.to_string())
-        .collect()
+    [
+        "sh000001", "sz399001", "sz399006", "hk00700", "usAAPL", "usNVDA", "usQQQ",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect()
 }
 fn default_stock_interval() -> u64 {
     5
@@ -1047,8 +1079,6 @@ pub struct IslandConfig {
     pub font_size: f64,
     /// hover / never（常驻展开已移除）
     pub expand_mode: String,
-    /// quota / clock / music
-    pub compact_view: String,
     /// 首次启用时自动关掉旧的贴边 HUD 停靠条，避免两套 HUD 叠在一起
     pub replace_legacy_bar: bool,
     pub weather_city: String,
@@ -1083,7 +1113,6 @@ impl Default for IslandConfig {
             transparency: default_transparency(),
             font_size: default_font_size(),
             expand_mode: default_expand_mode(),
-            compact_view: default_compact_view(),
             replace_legacy_bar: true,
             weather_city: default_city(),
             weather_label: String::new(),
@@ -1115,9 +1144,6 @@ impl IslandConfig {
         };
         if c.expand_mode != "hover" && c.expand_mode != "never" {
             c.expand_mode = default_expand_mode();
-        }
-        if c.compact_view != "quota" && c.compact_view != "clock" && c.compact_view != "music" {
-            c.compact_view = default_compact_view();
         }
         if c.weather_city.trim().is_empty() {
             c.weather_city = default_city();
@@ -1157,7 +1183,8 @@ impl IslandConfig {
         });
         c.hidden_tabs.sort();
         c.hidden_tabs.dedup();
-        c.launcher.retain(|i| !i.name.trim().is_empty() && !i.path.trim().is_empty());
+        c.launcher
+            .retain(|i| !i.name.trim().is_empty() && !i.path.trim().is_empty());
         if c.launcher.is_empty() {
             c.launcher = default_launcher();
         }
@@ -1221,9 +1248,7 @@ fn work_area_logical(app: &AppHandle) -> (f64, f64, f64, f64) {
 /// 上的那一次会算错；换算必须和 `work_area_logical` 用同一块屏的比例。
 fn island_scale(app: &AppHandle) -> f64 {
     let cfg = load_config();
-    monitor_area_for(app, cfg.monitor.as_deref())
-        .scale
-        .max(0.5)
+    monitor_area_for(app, cfg.monitor.as_deref()).scale.max(0.5)
 }
 
 /// 一块显示器的物理工作区 + 缩放比 + 设备名（跨屏拖拽/吸附用）。
@@ -1288,8 +1313,7 @@ fn monitor_index_at(rects: &[(f64, f64, f64, f64)], point: (f64, f64)) -> Option
 
 fn monitor_area_at(app: &AppHandle, point: (f64, f64)) -> MonitorArea {
     let areas = monitor_areas(app);
-    let rects: Vec<(f64, f64, f64, f64)> =
-        areas.iter().map(|a| (a.x, a.y, a.w, a.h)).collect();
+    let rects: Vec<(f64, f64, f64, f64)> = areas.iter().map(|a| (a.x, a.y, a.w, a.h)).collect();
     monitor_index_at(&rects, point)
         .and_then(|i| areas.get(i).cloned())
         .or_else(|| areas.first().cloned())
@@ -1368,6 +1392,42 @@ fn clamp_drag_target(
         (cx - offset_x as f64).clamp(lo_x, max_x),
         (cy - offset_y as f64).clamp(lo_y, max_y),
     )
+}
+
+/// 松手后按「条」到三条边的距离选最近边。左右距离乘 0.82：同样距离下
+/// 优先贴左右，符合“拖到两边变竖”的主诉求；顶边仍保留，用于回到顶部横排。
+/// 纯函数，单测覆盖左/右/顶三种落点。
+fn pick_snap_edge(d_top: f64, d_left: f64, d_right: f64) -> &'static str {
+    let score_left = d_left * 0.82;
+    let score_right = d_right * 0.82;
+    if d_top <= score_left && d_top <= score_right {
+        "top"
+    } else if score_left <= score_right {
+        "left"
+    } else {
+        "right"
+    }
+}
+
+/// 松手后的吸附结果：边 + 该边上的位置比例（top 用横轴，左右用纵轴）。
+/// 入参都是物理 px，区域是该窗口中心所在显示器的工作区；条高只取顶部
+/// 可见的 70，不按整扇 520 高窗口算。
+fn snap_to_edge(
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+    (ax, ay, aw, ah): (f64, f64, f64, f64),
+) -> (&'static str, f64) {
+    let d_top = (y - ay).max(0.0);
+    let d_left = (x - ax).max(0.0);
+    let d_right = (ax + aw - (x + w)).max(0.0);
+    let edge = pick_snap_edge(d_top, d_left, d_right);
+    let frac = match edge {
+        "top" => ((x + w / 2.0 - ax) / aw.max(1.0)).clamp(0.0, 1.0),
+        _ => ((y + h / 2.0 - ay) / ah.max(1.0)).clamp(0.0, 1.0),
+    };
+    (edge, frac)
 }
 
 fn island_position(app: &AppHandle) -> (f64, f64) {
@@ -1808,14 +1868,8 @@ fn start_fullscreen_watcher(app: AppHandle) {
                         let cfg = load_config();
                         let (x, y, w, h) =
                             island_geometry(&app_main, &cfg.edge, false, cfg.pos_frac);
-                        let _ = apply_window_frame_scaled(
-                            &win,
-                            x,
-                            y,
-                            w,
-                            h,
-                            island_scale(&app_main),
-                        );
+                        let _ =
+                            apply_window_frame_scaled(&win, x, y, w, h, island_scale(&app_main));
                         let _ = win.hide();
                     }
                     LAST_EXPANDED.store(false, Ordering::Relaxed);
@@ -1929,10 +1983,7 @@ pub async fn island_backdrop(app: AppHandle) -> Result<String, String> {
         let size = win
             .outer_size()
             .map_err(|e| format!("读取窗口尺寸失败: {e}"))?;
-        let hwnd = win
-            .hwnd()
-            .map_err(|e| format!("读取窗口句柄失败: {e}"))?
-            .0 as isize;
+        let hwnd = win.hwnd().map_err(|e| format!("读取窗口句柄失败: {e}"))?.0 as isize;
         return tauri::async_runtime::spawn_blocking(move || {
             backdrop::capture(hwnd, pos.x, pos.y, size.width, size.height)
         })
@@ -2073,10 +2124,7 @@ mod tests {
 
     #[test]
     fn monitor_index_at_handles_negative_secondary() {
-        let mons = [
-            (0.0, 0.0, 2752.0, 1152.0),
-            (-2560.0, -82.0, 2560.0, 1440.0),
-        ];
+        let mons = [(0.0, 0.0, 2752.0, 1152.0), (-2560.0, -82.0, 2560.0, 1440.0)];
         assert_eq!(monitor_index_at(&mons, (100.0, 500.0)), Some(0));
         assert_eq!(monitor_index_at(&mons, (-100.0, 500.0)), Some(1));
         assert_eq!(monitor_index_at(&mons, (-2560.0, -82.0)), Some(1));
@@ -2113,6 +2161,54 @@ mod tests {
     }
 
     #[test]
+    fn snap_edge_prefers_the_nearest_side() {
+        // 左边缘中部：到左边 0，顶边 400，右边 2200 → left。
+        assert_eq!(pick_snap_edge(400.0, 0.0, 2200.0), "left");
+        // 顶边中部：到顶 0，左右都 1400 → top。
+        assert_eq!(pick_snap_edge(0.0, 1400.0, 1400.0), "top");
+        // 右边缘中部 → right。
+        assert_eq!(pick_snap_edge(400.0, 2200.0, 0.0), "right");
+        // 左上角同时贴两边时选 top（横排更自然）。
+        assert_eq!(pick_snap_edge(0.0, 0.0, 2200.0), "top");
+        // 离左边稍远但仍在左侧：左右权重不能把 left 抢成 top。
+        assert_eq!(pick_snap_edge(100.0, 0.0, 2200.0), "left");
+    }
+
+    #[test]
+    fn snap_to_edge_handles_left_top_right_and_negative_secondary() {
+        let primary = (0.0, 0.0, 3440.0, 1440.0);
+        // 左边中部：窗口 690×87.5 的左上角贴在 (0, 600)。
+        let (edge, frac) = snap_to_edge(0.0, 600.0, 690.0, 87.5, primary);
+        assert_eq!(edge, "left");
+        assert!((frac - (600.0 + 43.75) / 1440.0).abs() < 1e-9);
+        // 顶部中间：横轴比例按窗口中心算。
+        let (edge, frac) = snap_to_edge(1375.0, 0.0, 690.0, 87.5, primary);
+        assert_eq!(edge, "top");
+        assert!((frac - 1720.0 / 3440.0).abs() < 1e-9);
+        // 右边中部。
+        let (edge, _) = snap_to_edge(2750.0, 600.0, 690.0, 87.5, primary);
+        assert_eq!(edge, "right");
+        // 副屏在负坐标时，左边仍然是副屏自己的工作区。
+        let secondary = (-3200.0, 0.0, 3200.0, 1800.0);
+        let (edge, frac) = snap_to_edge(-3200.0, 900.0, 690.0, 87.5, secondary);
+        assert_eq!(edge, "left");
+        assert!((frac - (900.0 + 43.75) / 1800.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn drag_target_uses_bar_height_not_tall_window() {
+        // Windows 常驻窗口 552×520，但可见横条只有 70 高：拖拽 clamp 必须
+        // 用条的尺寸，窗口多出来的透明部分允许伸出屏幕下沿。否则 1080 屏
+        // 上窗口 top 最高只能到 560，岛拖不到下半屏。
+        let bounds = (0.0, 0.0, 1920.0, 1080.0);
+        let (_, y_bar) = clamp_drag_target(960.0, 900.0, 276, 35, (552.0, 70.0), bounds);
+        assert_eq!(y_bar, 865.0);
+        let (_, y_window) = clamp_drag_target(960.0, 900.0, 276, 35, (552.0, 520.0), bounds);
+        assert_eq!(y_window, 560.0);
+        assert!(y_bar > y_window);
+    }
+
+    #[test]
     fn drag_spring_converges_without_blowing_up() {
         let mut x = 0.0;
         let mut v = 0.0;
@@ -2136,7 +2232,10 @@ mod tests {
             ..IslandConfig::default()
         }
         .clamped();
-        assert_eq!(cfg.agent_order, vec!["zai:1".to_string(), "dsh".to_string()]);
+        assert_eq!(
+            cfg.agent_order,
+            vec!["zai:1".to_string(), "dsh".to_string()]
+        );
         // 默认（空数组）= 数据源自己的顺序，不写死任何账号
         assert!(IslandConfig::default().clamped().agent_order.is_empty());
     }
@@ -2183,13 +2282,37 @@ mod tests {
         assert!(!should_mouse_through("top", win, s, pill, (1010, 40)));
         LAST_EXPANDED.store(false, Ordering::Relaxed);
         // 窗口尺寸对不上（拖拽期间的「条」）：不动样式。
-        assert!(!should_mouse_through("top", (1000, 0, 690, 88), s, pill, (1010, 40)));
+        assert!(!should_mouse_through(
+            "top",
+            (1000, 0, 690, 88),
+            s,
+            pill,
+            (1010, 40)
+        ));
         // 左右吸附的竖胶囊：同样在常驻窗口里，48×440 贴右边。
         let side = (0, 0, 690, 650);
         let side_pill = Some((493.0, 40.0, 48.0, 440.0));
-        assert!(!should_mouse_through("right", side, s, side_pill, (640, 300)));
-        assert!(should_mouse_through("right", side, s, side_pill, (500, 300)));
+        assert!(!should_mouse_through(
+            "right",
+            side,
+            s,
+            side_pill,
+            (640, 300)
+        ));
+        assert!(should_mouse_through(
+            "right",
+            side,
+            s,
+            side_pill,
+            (500, 300)
+        ));
         // 非法缩放：不动样式。
-        assert!(!should_mouse_through("top", win, f64::NAN, pill, (1010, 40)));
+        assert!(!should_mouse_through(
+            "top",
+            win,
+            f64::NAN,
+            pill,
+            (1010, 40)
+        ));
     }
 }

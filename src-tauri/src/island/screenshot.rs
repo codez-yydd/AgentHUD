@@ -3,7 +3,8 @@
 //!
 //! 设计上把"抓屏"和"编辑"拆开：
 //! - 抓屏在 Rust 的阻塞线程里完成（GDI/PrintWindow），产物是 PNG data URL；
-//! - 抓屏前隐藏 AgentHUD 自己的窗口，避免把岛/贴图/主窗口拍进去；
+//! - 抓屏前隐藏 AgentHUD 自己的窗口，避免把贴图/托盘菜单拍进去；灵动岛和
+//!   主窗口例外——用户经常想截的就是它们，抓完再统一藏起来，免得浮在覆盖层上；
 //! - 抓完立即创建一个覆盖当前显示器的无边框窗口（`shot.html`），
 //!   平时它保持隐藏，前端把图片绘制好后再调用 `shot_ready` 显示，
 //!   避免 WebView 首帧白屏闪一下；
@@ -136,12 +137,8 @@ mod mac_events {
     /// 向系统投递滚轮事件。需要「辅助功能」权限，没有权限时事件会被丢弃。
     pub fn post_scroll(point: CGPoint, delta_px: i32) -> bool {
         unsafe {
-            let event = CGEventCreateScrollWheelEvent(
-                std::ptr::null(),
-                SCROLL_UNIT_PIXEL,
-                1,
-                delta_px,
-            );
+            let event =
+                CGEventCreateScrollWheelEvent(std::ptr::null(), SCROLL_UNIT_PIXEL, 1, delta_px);
             if event.is_null() {
                 return false;
             }
@@ -388,12 +385,12 @@ fn encode_png(image: &image::RgbaImage) -> Result<Vec<u8>, String> {
         image::codecs::png::FilterType::Sub,
     )
     .write_image(
-            image.as_raw(),
-            image.width(),
-            image.height(),
-            image::ExtendedColorType::Rgba8,
-        )
-        .map_err(|e| format!("编码 PNG 失败: {e}"))?;
+        image.as_raw(),
+        image.width(),
+        image.height(),
+        image::ExtendedColorType::Rgba8,
+    )
+    .map_err(|e| format!("编码 PNG 失败: {e}"))?;
     Ok(png)
 }
 
@@ -484,9 +481,7 @@ fn monitor_list(app: &AppHandle) -> Vec<ShotMonitor> {
 fn monitor_for_point(app: &AppHandle, x: i32, y: i32) -> Option<ShotMonitor> {
     monitor_list(app)
         .into_iter()
-        .find(|m| {
-            x >= m.x && x < m.x + m.width as i32 && y >= m.y && y < m.y + m.height as i32
-        })
+        .find(|m| x >= m.x && x < m.x + m.width as i32 && y >= m.y && y < m.y + m.height as i32)
         .or_else(|| monitor_list(app).into_iter().find(|m| m.primary))
 }
 
@@ -505,7 +500,10 @@ fn cursor_position() -> Option<(i32, i32)> {
         // 才能和 Tauri 的显示器几何对齐。
         let point = mac_events::cursor_location()?;
         let scale = mac_scale().max(1.0);
-        return Some(((point.x * scale).round() as i32, (point.y * scale).round() as i32));
+        return Some((
+            (point.x * scale).round() as i32,
+            (point.y * scale).round() as i32,
+        ));
     }
     #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     {
@@ -621,7 +619,9 @@ fn mac_screencapture_png(
         return Err("截图区域过小".into());
     }
     if !mac_screen_recording_ready() {
-        return Err("没有屏幕录制权限：系统设置 → 隐私与安全性 → 屏幕录制，勾选 AgentHUD 后重试".into());
+        return Err(
+            "没有屏幕录制权限：系统设置 → 隐私与安全性 → 屏幕录制，勾选 AgentHUD 后重试".into(),
+        );
     }
     let path = std::env::temp_dir().join(format!(
         "agenthud-shot-{}-{}.png",
@@ -801,12 +801,12 @@ fn blend_own_process(hwnd: windows::Win32::Foundation::HWND) -> bool {
 
 #[cfg(target_os = "windows")]
 fn active_window() -> Option<windows::Win32::Foundation::HWND> {
-    use windows::Win32::UI::WindowsAndMessaging::{
-        EnumWindows, GetForegroundWindow, GetWindowTextLengthW, IsIconic, IsWindowVisible,
-    };
     use std::ffi::c_void;
     use windows::core::BOOL;
     use windows::Win32::Foundation::{LPARAM, TRUE};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        EnumWindows, GetForegroundWindow, GetWindowTextLengthW, IsIconic, IsWindowVisible,
+    };
 
     unsafe {
         let fg = GetForegroundWindow();
@@ -1015,7 +1015,8 @@ mod mac_windows {
         static kCGWindowOwnerPID: CFStringRef;
         static kCGWindowAlpha: CFStringRef;
         fn CGWindowListCopyWindowInfo(option: u32, relative_to: u32) -> CFArrayRef;
-        fn CGRectMakeWithDictionaryRepresentation(dict: CFDictionaryRef, rect: *mut CGRect) -> bool;
+        fn CGRectMakeWithDictionaryRepresentation(dict: CFDictionaryRef, rect: *mut CGRect)
+            -> bool;
     }
 
     #[link(name = "CoreFoundation", kind = "framework")]
@@ -1074,8 +1075,12 @@ mod mac_windows {
             return String::new();
         }
         let mut buf = [0i8; 512];
-        if !CFStringGetCString(value, buf.as_mut_ptr(), buf.len() as isize, CF_STRING_ENCODING_UTF8)
-        {
+        if !CFStringGetCString(
+            value,
+            buf.as_mut_ptr(),
+            buf.len() as isize,
+            CF_STRING_ENCODING_UTF8,
+        ) {
             return String::new();
         }
         let bytes: Vec<u8> = buf
@@ -1203,16 +1208,16 @@ pub fn shot_windows(id: u64) -> Vec<ShotWindow> {
 // 窗口管理：隐藏自身窗口 / 创建编辑器
 // ============================================================
 
-/// 隐藏 AgentHUD 自己的窗口。`keep_island = true` 时保留灵动岛：
-/// 抓屏时岛要留在画面里（用户希望 HUD 也能被截到），抓完再单独藏起来，
-/// 免得它浮在截图覆盖层上面。
-fn hide_own_windows(app: &AppHandle, keep_island: bool) -> Vec<String> {
+/// 隐藏 AgentHUD 自己的窗口。`keep` 里的 label 保留在画面里：
+/// 抓屏时灵动岛和主窗口都要留着（用户希望 HUD / Dashboard 也能被截到），
+/// 抓完再单独藏起来，免得它们浮在截图覆盖层上面。
+fn hide_own_windows(app: &AppHandle, keep: &[&str]) -> Vec<String> {
     let mut hidden = Vec::new();
     for (label, win) in app.webview_windows() {
         if label == SHOT_WINDOW_LABEL {
             continue;
         }
-        if keep_island && label == super::ISLAND_WINDOW_LABEL {
+        if keep.iter().any(|k| *k == label) {
             continue;
         }
         if win.is_visible().unwrap_or(false) {
@@ -1296,17 +1301,29 @@ async fn restore_overlay(app: &AppHandle, monitor_x: i32, monitor_y: i32) -> Res
 }
 
 /// 冻住的画面里有灵动岛（抓屏时刻意没藏它），真正去录屏/滚动时把它放回
-/// 屏幕，录出来的结果才和用户看到的选区一致。用完再藏起来。
+/// 冻住的画面里有灵动岛/主窗口（抓屏时刻意没藏它们），真正去录屏/滚动时
+/// 把它们放回屏幕，录出来的结果才和用户看到的选区一致。用完再藏起来。
 async fn show_island_for_capture(app: &AppHandle) {
     let app_main = app.clone();
     let _ = on_main_thread(app, move || {
-        let was_hidden = hidden_slot()
-            .lock()
-            .map(|g| g.iter().any(|label| label == super::ISLAND_WINDOW_LABEL))
-            .unwrap_or(false);
-        if was_hidden {
+        let was_hidden = |label: &str| {
+            hidden_slot()
+                .lock()
+                .map(|g| g.iter().any(|l| l == label))
+                .unwrap_or(false)
+        };
+        if was_hidden(super::ISLAND_WINDOW_LABEL) {
             let _ = super::set_expanded_on_main(&app_main, false);
             if let Some(win) = app_main.get_webview_window(super::ISLAND_WINDOW_LABEL) {
+                if !win.is_visible().unwrap_or(true) {
+                    let _ = win.show();
+                }
+            }
+        }
+        // 主窗口同样还原：否则「框选画面里有 Dashboard、真正录制时那块却是
+        // 桌面/别的应用」，录出来的结果和选区预览不一致。
+        if was_hidden(crate::main_window::MAIN_WINDOW_LABEL) {
+            if let Some(win) = app_main.get_webview_window(crate::main_window::MAIN_WINDOW_LABEL) {
                 if !win.is_visible().unwrap_or(true) {
                     let _ = win.show();
                 }
@@ -1320,9 +1337,14 @@ async fn show_island_for_capture(app: &AppHandle) {
 async fn hide_island_for_capture(app: &AppHandle) {
     let app_main = app.clone();
     let _ = on_main_thread(app, move || {
-        if let Some(win) = app_main.get_webview_window(super::ISLAND_WINDOW_LABEL) {
-            if win.is_visible().unwrap_or(false) {
-                let _ = win.hide();
+        for label in [
+            super::ISLAND_WINDOW_LABEL,
+            crate::main_window::MAIN_WINDOW_LABEL,
+        ] {
+            if let Some(win) = app_main.get_webview_window(label) {
+                if win.is_visible().unwrap_or(false) {
+                    let _ = win.hide();
+                }
             }
         }
         Ok(())
@@ -1389,8 +1411,8 @@ fn reuse_overlay(app: &AppHandle, monitor: &ShotMonitor, id: u64) -> Result<(), 
     url.set_query(Some(&format!("id={id}")));
     win.navigate(url)
         .map_err(|e| format!("刷新截图窗口失败: {e}"))?;
-    let _ = win.show();
-    let _ = win.set_focus();
+    // 先不 show：此时窗口底色是深色，整屏会先黑一下，等前端把冻结帧画好
+    // 调用 shot_ready 再显示。位置/尺寸已经在隐藏状态下设好。
     let _ = win.set_position(PhysicalPosition::new(monitor.x, monitor.y));
     Ok(())
 }
@@ -1439,10 +1461,9 @@ fn build_overlay(app: &AppHandle, monitor: &ShotMonitor, id: u64) -> Result<Webv
     // macOS 会把高于可视区（菜单栏以下）的窗口往下顶 30pt，显示后再钉一次位置，
     // 让冻结帧和真实屏幕 1:1 对齐。
     let _ = win.set_position(PhysicalPosition::new(monitor.x, monitor.y));
-    // 抓屏此时已经结束，先显示出去让用户马上看到“正在加载”的暗色遮罩，
-    // 比等图片解码完再显示（shot_ready）快一截。
-    let _ = win.show();
-    let _ = win.set_focus();
+    // 这里不 show：show 出来的是深色空窗口，图片解码前整屏会黑一下。
+    // 前端把冻结帧画好并调用 shot_ready 后，由 reveal_overlay 在隐藏自家
+    // 窗口的同一拍显示，避免「HUD 先消失 → 再出现截图」的闪动。
     Ok(win)
 }
 
@@ -1487,10 +1508,7 @@ async fn start_capture_inner(
     if record::is_recording() {
         return Err("录屏进行中，结束录制后再截图".into());
     }
-    if app
-        .get_webview_window(record::REC_WINDOW_LABEL)
-        .is_some()
-    {
+    if app.get_webview_window(record::REC_WINDOW_LABEL).is_some() {
         return Err("录屏预览窗还开着，先关掉它再截图".into());
     }
     if let Ok(guard) = session_slot().lock() {
@@ -1520,27 +1538,42 @@ async fn start_capture_inner(
     let app_main = app.clone();
     let hidden = on_main_thread(&app, move || {
         hide_overlay(&app_main);
-        // 灵动岛先留着：抓屏画面里要有 HUD，用户才能截到它。
-        let hidden = hide_own_windows(&app_main, true);
+        // 灵动岛 + 主窗口先留着：抓屏画面里要有 HUD / Dashboard，用户才能
+        // 截到它们；抓完（画面已冻结）再统一藏起来让位给覆盖层。
+        let hidden = hide_own_windows(
+            &app_main,
+            &[
+                super::ISLAND_WINDOW_LABEL,
+                crate::main_window::MAIN_WINDOW_LABEL,
+            ],
+        );
         if let Ok(mut guard) = hidden_slot().lock() {
             *guard = hidden.clone();
         }
         Ok(hidden)
     })
     .await?;
+    let any_hidden = !hidden.is_empty();
     let _ = hidden;
     let wait_ms = if delay_sec > 0 {
         delay_sec.min(30) * 1000
-    } else if cfg!(target_os = "windows") {
-        // 给 DWM 一拍把岛/贴图真正移出合成画面。
-        140
+    } else if any_hidden {
+        // 有窗口刚被藏掉，给 DWM 一拍把它们移出合成画面；没有窗口变化时
+        // 不用白等这 140ms，冻结帧能早一点出来。
+        if cfg!(target_os = "windows") {
+            140
+        } else {
+            // macOS 上窗口隐藏是同步提交的，只留一帧给合成器。
+            32
+        }
     } else {
-        // macOS 上窗口隐藏是同步提交的，只留一帧给合成器。
-        32
+        0
     };
-    tauri::async_runtime::spawn_blocking(move || std::thread::sleep(Duration::from_millis(wait_ms)))
-        .await
-        .map_err(|e| format!("等待截图延时失败: {e}"))?;
+    tauri::async_runtime::spawn_blocking(move || {
+        std::thread::sleep(Duration::from_millis(wait_ms))
+    })
+    .await
+    .map_err(|e| format!("等待截图延时失败: {e}"))?;
 
     let app_cap = app.clone();
     let (captured, monitor, origin, final_mode, title, windows) =
@@ -1623,16 +1656,10 @@ async fn start_capture_inner(
         started.elapsed().as_millis()
     );
 
-    // 画面已经抓到（里面有灵动岛），现在把岛藏起来，免得它浮在覆盖层上。
-    let app_island = app.clone();
-    let _ = on_main_thread(&app, move || {
-        let hidden = hide_own_windows(&app_island, false);
-        if let Ok(mut guard) = hidden_slot().lock() {
-            guard.extend(hidden);
-        }
-        Ok(())
-    })
-    .await;
+    // 画面已经抓到（里面有灵动岛/主窗口）。这里**先不藏**它们：覆盖层
+    // 此时还在隐藏状态等图片解码，提前藏会让桌面露出来闪一下。等前端画好
+    // 冻结帧、调用 shot_ready 时，由 reveal_overlay 在显示覆盖层的同一拍
+    // 把它们藏掉，视觉上就是冻结帧直接盖住原画面。
 
     let id = SESSION_SEQ.fetch_add(1, Ordering::Relaxed);
     let session = ShotSession {
@@ -1685,11 +1712,12 @@ async fn start_capture_inner(
         }
         let app_inner = app_watch.clone();
         let _ = on_main_thread_blocking(&app_watch, move || {
-            if let Some(win) = app_inner.get_webview_window(SHOT_WINDOW_LABEL) {
-                if !win.is_visible().unwrap_or(false) {
-                    let _ = win.show();
-                    let _ = win.set_focus();
-                }
+            let visible = app_inner
+                .get_webview_window(SHOT_WINDOW_LABEL)
+                .map(|win| win.is_visible().unwrap_or(false))
+                .unwrap_or(false);
+            if !visible {
+                reveal_overlay(&app_inner)?;
             }
             Ok(())
         });
@@ -1745,11 +1773,7 @@ pub async fn shot_edit_file(app: AppHandle, path: String) -> Result<u64, String>
         if !is_inside_shot_dir(&p)? {
             return Err("只能编辑截图目录中的文件".into());
         }
-        if session_slot()
-            .lock()
-            .map(|g| g.is_some())
-            .unwrap_or(false)
-        {
+        if session_slot().lock().map(|g| g.is_some()).unwrap_or(false) {
             return Err("截图窗口已经打开".into());
         }
         let image = tauri::async_runtime::spawn_blocking(move || {
@@ -1768,10 +1792,8 @@ pub async fn shot_edit_file(app: AppHandle, path: String) -> Result<u64, String>
         let app_main = app.clone();
         on_main_thread(&app, move || {
             destroy_overlay(&app_main);
-            let hidden = hide_own_windows(&app_main, false);
-            if let Ok(mut guard) = hidden_slot().lock() {
-                *guard = hidden;
-            }
+            // 不在这里提前藏自家窗口：和截图流程一样，等 shot_ready 时
+            // 显示覆盖层、隐藏窗口在同一拍完成，避免桌面先闪一下。
             Ok(())
         })
         .await?;
@@ -1814,11 +1836,12 @@ pub async fn shot_edit_file(app: AppHandle, path: String) -> Result<u64, String>
             }
             let app_inner = app_watch.clone();
             let _ = on_main_thread_blocking(&app_watch, move || {
-                if let Some(win) = app_inner.get_webview_window(SHOT_WINDOW_LABEL) {
-                    if !win.is_visible().unwrap_or(false) {
-                        let _ = win.show();
-                        let _ = win.set_focus();
-                    }
+                let visible = app_inner
+                    .get_webview_window(SHOT_WINDOW_LABEL)
+                    .map(|win| win.is_visible().unwrap_or(false))
+                    .unwrap_or(false);
+                if !visible {
+                    reveal_overlay(&app_inner)?;
                 }
                 Ok(())
             });
@@ -1867,6 +1890,22 @@ pub fn shot_session_image(id: u64) -> Result<tauri::ipc::Response, String> {
     Ok(tauri::ipc::Response::new(bytes))
 }
 
+/// 把冻结帧覆盖层“无缝”推到最前：先藏掉 AgentHUD 自己的窗口，再显示
+/// 覆盖层。两件事必须在同一拍主线程回调里提交，DWM 会按同一帧合成；
+/// 如果先藏、下一拍再显示，用户会看到 HUD 先消失、桌面露出来，像整屏
+/// 闪了一下才出现截图。
+fn reveal_overlay(app: &AppHandle) -> Result<(), String> {
+    let hidden = hide_own_windows(app, &[]);
+    if let Ok(mut guard) = hidden_slot().lock() {
+        guard.extend(hidden);
+    }
+    if let Some(win) = app.get_webview_window(SHOT_WINDOW_LABEL) {
+        win.show().map_err(|e| format!("显示截图窗口失败: {e}"))?;
+        let _ = win.set_focus();
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn shot_ready(app: AppHandle, id: u64) -> Result<(), String> {
     let valid = session_slot()
@@ -1887,14 +1926,7 @@ pub async fn shot_ready(app: AppHandle, id: u64) -> Result<(), String> {
         );
     }
     let app_main = app.clone();
-    on_main_thread(&app, move || {
-        if let Some(win) = app_main.get_webview_window(SHOT_WINDOW_LABEL) {
-            win.show().map_err(|e| format!("显示截图窗口失败: {e}"))?;
-            let _ = win.set_focus();
-        }
-        Ok(())
-    })
-    .await
+    on_main_thread(&app, move || reveal_overlay(&app_main)).await
 }
 
 /// 前端把冻结帧画到屏幕后回调一次，用来量化“点击到真的能框选”的耗时。
@@ -1958,7 +1990,9 @@ fn shot_dir() -> Result<PathBuf, String> {
 fn is_inside_shot_dir(path: &Path) -> Result<bool, String> {
     let dir = shot_dir()?;
     let dir = dir.canonicalize().unwrap_or(dir);
-    let path = path.canonicalize().map_err(|e| format!("截图不存在: {e}"))?;
+    let path = path
+        .canonicalize()
+        .map_err(|e| format!("截图不存在: {e}"))?;
     Ok(path.starts_with(&dir))
 }
 
@@ -2180,7 +2214,11 @@ pub async fn shot_save_as(
 
         let image = decode_data_url(&data_url)?;
         let ext = if fmt == "jpg" { "jpg" } else { "png" };
-        let filter = if fmt == "jpg" { "JPEG 图片" } else { "PNG 图片" };
+        let filter = if fmt == "jpg" {
+            "JPEG 图片"
+        } else {
+            "PNG 图片"
+        };
         let picked = app
             .dialog()
             .file()
@@ -2267,7 +2305,9 @@ fn pin_id_from_label(label: &str) -> Option<u64> {
 
 fn build_pin_window(app: &AppHandle, id: u64) -> Result<WebviewWindow, String> {
     let (image, width, height) = {
-        let pins = pins_slot().lock().map_err(|_| "贴图数据不可用".to_string())?;
+        let pins = pins_slot()
+            .lock()
+            .map_err(|_| "贴图数据不可用".to_string())?;
         let entry = pins.get(&id).ok_or_else(|| "贴图不存在".to_string())?;
         (entry.image.clone(), entry.width, entry.height)
     };
@@ -2395,7 +2435,9 @@ pub async fn shot_copy_file(path: String) -> Result<(), String> {
 
 #[tauri::command]
 pub fn shot_pin_data(id: u64) -> Result<PinData, String> {
-    let pins = pins_slot().lock().map_err(|_| "贴图数据不可用".to_string())?;
+    let pins = pins_slot()
+        .lock()
+        .map_err(|_| "贴图数据不可用".to_string())?;
     let entry = pins.get(&id).ok_or_else(|| "贴图不存在".to_string())?;
     Ok(PinData {
         id,
@@ -2458,9 +2500,8 @@ fn ocr_image(image: &image::RgbaImage) -> Result<OcrResult, String> {
         for px in src.pixels() {
             bgra.extend_from_slice(&[px[2], px[1], px[0], 255]);
         }
-        let engine = OcrEngine::TryCreateFromUserProfileLanguages().map_err(|e| {
-            format!("Windows OCR 不可用（请先在系统设置中安装语言识别组件）: {e}")
-        })?;
+        let engine = OcrEngine::TryCreateFromUserProfileLanguages()
+            .map_err(|e| format!("Windows OCR 不可用（请先在系统设置中安装语言识别组件）: {e}"))?;
         let writer = DataWriter::new().map_err(|e| format!("创建 OCR 缓冲区失败: {e}"))?;
         writer
             .WriteBytes(&bgra)
@@ -2709,8 +2750,7 @@ fn scroll_once(screen_x: i32, screen_y: i32, amount: i32) -> Result<(), String> 
             // 在后台进程里可能被 Windows 拒绝，只靠全局滚轮会把内容滚到
             // 别的窗口里。
             let wheel_wparam = ((delta as u32) << 16) as usize;
-            let wheel_lparam =
-                (((screen_y as u32) << 16) | (screen_x as u32 & 0xffff)) as isize;
+            let wheel_lparam = (((screen_y as u32) << 16) | (screen_x as u32 & 0xffff)) as isize;
             let _ = PostMessageW(
                 Some(target),
                 WM_MOUSEWHEEL,
@@ -2757,11 +2797,7 @@ fn scroll_once(_x: i32, _y: i32, _amount: i32) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub async fn shot_scroll(
-    app: AppHandle,
-    id: u64,
-    rect: ShotRect,
-) -> Result<ScrollResult, String> {
+pub async fn shot_scroll(app: AppHandle, id: u64, rect: ShotRect) -> Result<ScrollResult, String> {
     let session = shot_session(id)?;
     #[cfg(target_os = "macos")]
     set_mac_scale(session.monitor.scale_factor);
@@ -2783,8 +2819,8 @@ pub async fn shot_scroll(
     let screen_x = session.monitor.x + x + w as i32 / 2;
     let screen_y = session.monitor.y + y + h as i32 / 2;
     let original_cursor = cursor_position();
-    let captured = tauri::async_runtime::spawn_blocking(
-        move || -> Result<Vec<image::RgbaImage>, String> {
+    let captured =
+        tauri::async_runtime::spawn_blocking(move || -> Result<Vec<image::RgbaImage>, String> {
             let mut frames = Vec::new();
             let first = capture_rect(session.monitor.x + x, session.monitor.y + y, w, h)?;
             frames.push(first);
@@ -2809,9 +2845,8 @@ pub async fn shot_scroll(
                 }
             }
             Ok(frames)
-        },
-    )
-    .await;
+        })
+        .await;
 
     if let Some((cx, cy)) = original_cursor {
         #[cfg(target_os = "windows")]
@@ -2940,7 +2975,11 @@ mod tests {
         for y in 0..220u32 {
             for x in 0..120u32 {
                 let v = ((y + shift) * 7 + x * 3) as u8;
-                img.put_pixel(x, y, image::Rgba([v, v.wrapping_add(41), v.wrapping_add(83), 255]));
+                img.put_pixel(
+                    x,
+                    y,
+                    image::Rgba([v, v.wrapping_add(41), v.wrapping_add(83), 255]),
+                );
             }
         }
         img
@@ -2967,7 +3006,11 @@ mod tests {
         let stitched = stitch_frames(&[first.clone(), second.clone()]).unwrap();
         assert_eq!(stitched.width(), 120);
         // 重叠 160 行，只新增 60 行。
-        assert!((stitched.height() as i32 - 280).abs() <= 5, "height={}", stitched.height());
+        assert!(
+            (stitched.height() as i32 - 280).abs() <= 5,
+            "height={}",
+            stitched.height()
+        );
         for x in [0u32, 37, 119] {
             assert_eq!(stitched.get_pixel(x, 220).0, second.get_pixel(x, 160).0);
         }
@@ -2981,7 +3024,6 @@ mod tests {
         assert_eq!(decoded.dimensions(), img.dimensions());
         assert_eq!(decoded.get_pixel(12, 34), img.get_pixel(12, 34));
     }
-
 }
 
 #[cfg(all(test, target_os = "macos"))]

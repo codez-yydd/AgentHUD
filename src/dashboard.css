@@ -246,6 +246,25 @@ body {
   outline-offset: 2px;
 }
 
+/* 原生 select 的弹出列表由浏览器/系统绘制，**不继承卡片那层半透明底**：
+   暗色主题下只设 select 的 color 会让选项变成「浅色字 + 系统白底」，
+   整列选项几乎看不见（Agent 与 Skill 页的工具/类型下拉就是这个坑）。
+   给 option 显式不透明底色与文字色，亮暗两套变量各自成对；disabled
+   项用弱化文字色，避免也和背景糊在一起。 */
+select option {
+  color: var(--db-text);
+  background-color: var(--db-card-solid);
+}
+select option:disabled {
+  color: var(--db-text-dim);
+}
+/* 弹出列表的滚动条/高亮也跟随主题（WebView2 对 color-scheme 的支持
+   比 option 样式更完整；两者叠加作为兜底）。亮色主题由 body 的
+   color-scheme: light 兜底，这里只覆写暗色。 */
+.dark select {
+  color-scheme: dark;
+}
+
 /* 等宽数字（与 index.css 的 .num 同源） */
 .num {
   font-family: "SF Mono", "JetBrains Mono", ui-monospace, monospace;

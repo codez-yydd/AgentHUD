@@ -53,7 +53,6 @@ const MAX_PILL_W = 500;
 
 import type {
   ClipItem,
-  CompactView,
   HudBarAgent,
   HudBarQuota,
   HudBarUsage,
@@ -74,17 +73,12 @@ import type {
 import {
   agentLabel,
   BrandMark,
-  currentLyricLine,
-  fmtClock,
-  fmtDuration,
   fmtMoney,
   Icon,
   type IconName,
   NowProvider,
-  parseLyrics,
   remainingPct,
   Slider,
-  useNow,
   WeatherGlyph,
 } from "./ui";
 import {
@@ -147,15 +141,6 @@ const EMPTY_SYSTEM: SystemState = {
   error: "",
   updatedAt: 0,
 };
-
-function timeGreeting(now: number): string {
-  const h = new Date(now).getHours();
-  if (h < 6) return "夜深了";
-  if (h < 11) return "早上好";
-  if (h < 14) return "中午好";
-  if (h < 18) return "下午好";
-  return "晚上好";
-}
 
 /** 胶囊上的会议录音计时：mm:ss 且分钟恒补零。字符数不随时间变化，
  *  tabular-nums 下宽度稳定，胶囊的自适应测量不会因计时跳秒而变形。 */
@@ -658,14 +643,6 @@ export default function IslandApp() {
     else configTimer.current = window.setTimeout(commit, 220);
   };
 
-  const cycleCompact = (direction: number) => {
-    const order: CompactView[] = ["quota", "clock", "music"];
-    const current = configRef.current?.compactView ?? "quota";
-    const index = Math.max(0, order.indexOf(current));
-    const next = order[(index + (direction > 0 ? 1 : order.length - 1)) % order.length];
-    updateConfig({ compactView: next }, true);
-  };
-
   const refreshAll = () => {
     setRefreshing(true);
     void refreshQuota();
@@ -700,6 +677,9 @@ export default function IslandApp() {
       setDragging(false);
       stopDragVisual();
       suppressClickRef.current = false;
+      // 只按不拖的会话由 Rust 穿透轮询兜底清理（见 island/mod.rs 的
+      // drag_slot 清理），这里不再补发 island_drag_end：快速连点时补发的
+      // end 可能落在下一次 begin 之后，把新会话误清掉。
       return;
     }
     dragActiveRef.current = false;
@@ -751,6 +731,7 @@ export default function IslandApp() {
             // Rust 判定越过阈值，此刻才进入拖动视觉
             dragActiveRef.current = true;
             dragStartingRef.current = false;
+            if (pointerRef.current) pointerRef.current.started = true;
             // 拖拽期间窗口会被收成横条：面板必须同时切回收起态，
             // 否则 React 还在渲染 552 宽的面板，窗口却只有 70 宽（内容被裁花）。
             if (openRef.current) {
@@ -833,6 +814,8 @@ export default function IslandApp() {
     dragStartingRef.current = true;
     void beginIslandDrag()
       .then((result) => {
+        // 松手发生在 begin 回执前：会话由 Rust 穿透轮询按「松手且未越过
+        // 阈值」兜底清理，这里直接作废本次流程。
         if (epoch !== dragEpochRef.current) return;
         if (!result.active) {
           dragStartingRef.current = false;
@@ -852,7 +835,10 @@ export default function IslandApp() {
     const pointer = pointerRef.current;
     pointerRef.current = null;
     pressingRef.current = false;
-    if (pointer?.started) {
+    // 只有真的进入过拖动才在 pointerup 收尾。普通点击（begin 回执还没
+    // 回来、pointer.started 仍为 false）不能 preventDefault，也不能抢
+    // pointer capture，否则导航/页面切换按钮的 click 会丢。
+    if (dragActiveRef.current || pointer?.started) {
       event.preventDefault();
       finishDrag();
     }
@@ -1173,11 +1159,6 @@ export default function IslandApp() {
           if (!openRef.current) expand();
           setContextMenu({ x: e.clientX, y: e.clientY });
         }}
-        onWheel={(e) => {
-          if (openRef.current || dragActiveRef.current) return;
-          e.preventDefault();
-          cycleCompact(e.deltaY);
-        }}
       >
         <div
           ref={islandRef}
@@ -1212,8 +1193,6 @@ export default function IslandApp() {
               usage={orderedUsage}
               todayUsage={todayUsage}
               weather={weather}
-              media={media}
-              lyrics={lyrics}
               system={system}
               meeting={meetingBrief}
               edge={edge}
@@ -1308,8 +1287,6 @@ function CollapsedPill({
   usage,
   todayUsage,
   weather,
-  media,
-  lyrics,
   system,
   meeting,
   edge,
@@ -1320,8 +1297,6 @@ function CollapsedPill({
   usage: HudBarUsage | null;
   todayUsage: TodayUsageTotals | null;
   weather: WeatherState | null;
-  media: MediaState;
-  lyrics: LyricsState | null;
   system: SystemState;
   /** 会议录音会话快照（null = 空闲）：非空时胶囊尾部亮录音指示 */
   meeting: MeetingSessionBrief | null;
@@ -1330,12 +1305,6 @@ function CollapsedPill({
   /** 把收起胶囊的实际宽度报给外壳，窗口里的胶囊才会贴着内容收窄 */
   onWidth: (width: number) => void;
 }) {
-  const clockNow = useNow();
-  const view = config.compactView;
-  const lyricLine = useMemo(() => {
-    if (!lyrics?.ok) return null;
-    return currentLyricLine(parseLyrics(lyrics.lrc, lyrics.translation), media.position);
-  }, [lyrics, media.position]);
   const agents = usage?.agents ?? [];
   // 会议录音进行中的胶囊指示：闪烁红点 + mm:ss 计时（暂停时红点常亮不闪）。
   // 与工具页 meet-tab-live 同色（#ff5d6c）同动画（meet-pulse）。
@@ -1380,13 +1349,12 @@ function CollapsedPill({
   // layoutEffect 里，首帧就按结果渲染，不会先闪一下撑满 500px 的胶囊。
   const ringKey = agents.map((agent) => agent.id).join("|");
   useLayoutEffect(() => {
-    const quotaView = !(view === "clock" || (view === "music" && media.hasSession));
     const report = (width: number) => {
       if (reportedWidth.current === width) return;
       reportedWidth.current = width;
       onWidth(width);
     };
-    if (edge !== "top" || !quotaView) {
+    if (edge !== "top") {
       report(MAX_PILL_W);
       return;
     }
@@ -1432,11 +1400,9 @@ function CollapsedPill({
     );
     report(next.width);
   }, [
-    view,
     edge,
     ringKey,
     showPlans,
-    media.hasSession,
     config.fontSize,
     weather?.city,
     weather?.temp,
@@ -1447,56 +1413,6 @@ function CollapsedPill({
     meeting,
     onWidth,
   ]);
-
-  if (view === "clock") {
-    return (
-      <button type="button" className={`pill pill-clock edge-${edge}`} onClick={onOpen}>
-        <span className="pill-clock-time">{fmtClock(clockNow)}</span>
-        <span className="pill-clock-date">{timeGreeting(clockNow)}</span>
-        <span className="pill-usage-inline">
-          <b>{todayUsage ? fmtTokens(todayUsage.tokens) : "--"}</b>
-          <span>≈{todayLabel}</span>
-        </span>
-        <span className="pill-weather-mini">
-          <WeatherGlyph icon={weather?.icon ?? "cloudy"} size={20} />
-          {weather ? `${Math.round(weather.temp)}°` : "--°"}
-        </span>
-        {meetIndicator}
-        <span className="pill-chevron">
-          <Icon name="chevron" size={12} />
-        </span>
-      </button>
-    );
-  }
-
-  if (view === "music" && media.hasSession) {
-    return (
-      <button type="button" className={`pill pill-music edge-${edge}`} onClick={onOpen}>
-        <span className="pill-cover">
-          {media.cover ? <img src={media.cover} alt="" /> : <Icon name="music" size={16} />}
-        </span>
-        <span className="pill-music-main">
-          <span className="pill-music-title">{media.title || "未命名曲目"}</span>
-          <span className="pill-music-sub">
-            {lyricLine?.trans || lyricLine?.text || media.artist || media.appName}
-          </span>
-        </span>
-        <span className={`pill-wave ${media.playing ? "playing" : ""}`} aria-hidden="true">
-          <i />
-          <i />
-          <i />
-          <i />
-        </span>
-        <span className="pill-music-time">
-          {fmtDuration(media.position)} / {fmtDuration(media.duration)}
-        </span>
-        {meetIndicator}
-        <span className="pill-chevron">
-          <Icon name="chevron" size={12} />
-        </span>
-      </button>
-    );
-  }
 
   return (
     <button

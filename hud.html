@@ -26,14 +26,12 @@
          类切换），胶囊面板 #hud-strip 填满窗口去掉 6px 屏缘留白后的内容盒；
          停靠边经 .edge-right 类控制卡片/热区方向。条目沿长轴用
          space-between 分布，拉伸倍率 >1 时多出的空间变成条目间空隙。
-      - 拖拽热区分层（Tauri 2 的 data-tauri-drag-region 只认 mousedown
-        目标元素自身带属性）：#hud-root（背景留白壳，含 6px padding 区）
-        与 #hud-empty 直接带属性；#hud-strip 胶囊底带属性；条目 .hud-item
-        本身不带属性（带属性会吞点击，且 startDragging 的模态循环会吃掉
-        mouseup 导致 click 不触发——标题栏改造时踩过），改为 hud-main.ts
-        的"阈值拖拽"：pointerdown 记录起点、位移超 4px 才手动
-        startDragging（拖拽已启动则跳过随后派发的 click），未超阈值松手
-        = 纯点击开详情卡。
+      - 拖拽：**不使用 data-tauri-drag-region**。Tauri 2.11 的 drag region 只认
+        mousedown 目标元素自身带属性（bare 值不再向子树生效），而停靠条可见
+        区域几乎全是条目/胶囊底；宿主实现差异会让 native startDragging 与
+        前端阈值拖拽互相抢事件。统一由 hud-main.ts 接管：pointerdown 记录
+        起点、位移超 4px 调 hud_bar_drag_begin（Rust 按系统光标逐帧改窗口），
+        未超阈值松手 = 纯点击开详情卡。
       - 尺寸栅格（基准 = 缩放 1）：窗口 68 宽（竖排）/ 70 高（横排），
          透明屏缘间隙固定 6（不随缩放变）
         （#hud-root padding，保证投影不被裁切）；面板内边距 8×s、条目
@@ -1032,13 +1030,13 @@
   </head>
 
   <body>
-    <div id="hud-root" data-tauri-drag-region="">
-      <!-- 空态占位放在胶囊面板内部（空态时撑起面板高度）。可拖拽层：根
-           节点背景留白壳 + 胶囊条底 + 空态占位都带 data-tauri-drag-region
-           （空态无点击功能，直接带属性可拖）；条目 .hud-item 不带属性
-           （防吞点击），由 hud-main.ts 阈值拖拽接管 -->
-      <div id="hud-strip" data-tauri-drag-region="">
-        <div id="hud-empty" data-tauri-drag-region=""></div>
+    <div id="hud-root">
+      <!-- 空态占位放在胶囊面板内部（空态时撑起面板高度）。拖拽全部由
+           hud-main.ts 的阈值拖拽接管（root/strip/空态都可按），不再依赖
+           data-tauri-drag-region：Tauri 2.11 的 bare 属性只认直接目标，
+           条目/胶囊底上的按下会被吞掉。 -->
+      <div id="hud-strip">
+        <div id="hud-empty"></div>
       </div>
       <!-- 隐形调整热区（几何/光标见样式区注释）：pointerdown 交给
            hud-main.ts 开 Rust 会话，轮询系统光标改窗口宽高 -->

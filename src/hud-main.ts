@@ -1995,15 +1995,27 @@ async function finalizeResize(): Promise<void> {
   }, 350);
 }
 
-stripEl.addEventListener("pointerdown", (e) => {
+// 拖拽起点挂在根节点而不是 strip：停靠条可见区域几乎全是条目/胶囊底，
+// 背景留白只有 6px；Tauri 2.11 的 data-tauri-drag-region 只认直接目标，
+// 不再向子树生效，把拖拽判定留在宿主实现上会出现「按在条目上能拖、按在
+// 胶囊底/留白上拖不动」。这里统一接管所有非热区的按下：未超阈值仍是点击，
+// 超过 4px 才由 Rust 开始逐帧移动窗口。
+rootEl.addEventListener("pointerdown", (e) => {
+  if (CARD_MODE) return; // 卡片窗口没有条，别把卡片上的按下当成拖条
   if (e.button !== 0) return;
-  const item = hitItem(e);
-  if (!item) return;
+  // 尺寸热区自己 stopPropagation，这里兜底再排除一次
+  if ((e.target as HTMLElement | null)?.closest?.("[data-hud-resize]")) return;
   // 新会话：清掉上一会话残留的吞 click 标志（陈旧 suppressClick 会把
   // 本次真实点击吞掉，要点两次才开详情）
   suppressClick = false;
   hoverSuspended = false;
   drag = { x: e.clientX, y: e.clientY, started: false };
+  // 捕获指针：窗口跟手移动时 pointerup 仍会回到本窗口，松手不会丢
+  try {
+    rootEl.setPointerCapture(e.pointerId);
+  } catch {
+    /* 不支持捕获：Rust 轮询照常推进，失焦/pointercancel 兜底 */
+  }
 });
 
 document.addEventListener("pointermove", (e) => {

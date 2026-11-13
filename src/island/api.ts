@@ -147,9 +147,11 @@ export async function stepIslandDrag(): Promise<IslandDragStep> {
   return invoke<IslandDragStep>("island_drag_step");
 }
 
-export async function endIslandDrag(): Promise<IslandDragEnd> {
+export async function endIslandDrag(started = true): Promise<IslandDragEnd> {
   if (!IS_TAURI) return delay({ edge: "top", x: 0, y: 0, width: 552, height: 70 }, 10);
-  return invoke<IslandDragEnd>("island_drag_end");
+  // Rust 的 drag_step 会在松手时先清掉会话，等淡出 130ms 后再 end 时
+  // 槽里可能已经空了。显式告诉 Rust 这次是真拖拽，才能保证左/顶也吸附。
+  return invoke<IslandDragEnd>("island_drag_end", { started });
 }
 
 /** 窗口身后的桌面缩略图（data URL）；浏览器预览返回空，让 CSS 渐变兜底。 */

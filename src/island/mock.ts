@@ -335,7 +335,6 @@ export const mockConfig: IslandConfig = {
   transparency: 40,
   fontSize: 13,
   expandMode: "hover",
-  compactView: "quota",
   replaceLegacyBar: true,
   weatherCity: "上海",
   weatherLabel: "上海 · 徐汇区",
