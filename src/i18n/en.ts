@@ -1278,6 +1278,7 @@ export const en: typeof zh = {
     "dashboard.accounts": "Credentials",
     "dashboard.pricing": "Pricing",
     "dashboard.settings": "Settings",
+    "dashboard.about": "About",
 
     "dashboard.overview.desc":
       "Aggregated usage, cost and trends across services.",
@@ -1297,6 +1298,8 @@ export const en: typeof zh = {
       "ZCode account snapshot management and an overview of local agent credentials.",
     "dashboard.pricing.desc":
       "Model unit-price maintenance and pricing table updates.",
+    "dashboard.about.desc":
+      "App info, version and updates, plus project links and feedback.",
 
     "dashboard.mainWindow": "Main window",
     "dashboard.openMainWindow": "Open main window",
@@ -1951,6 +1954,49 @@ export const en: typeof zh = {
     "dashboard.settings.hudBar": "Dynamic island",
     "dashboard.settings.hudBarHint":
       "The top-center dynamic island that expands on hover; shares its on/off state with the tray menu and the panel header button.",
+
+    // ===== About page: brand / check for updates / project links & license =====
+    // Updates run in the panel (the Update resource's rid is only valid in the
+    // panel webview); this page reads/writes state via the cross-window event
+    // bridge (updaterEvents.ts / updaterBridge.ts). Result / ready / failure
+    // wording mirrors the panel's settings.* update block verbatim.
+    "dashboard.about.updateTitle": "Software update",
+    "dashboard.about.checkUpdate": "Check update",
+    "dashboard.about.checking": "Checking…",
+    "dashboard.about.upToDate": "Up to date",
+    "dashboard.about.backgroundDownloading":
+      "Downloading new version {v} in the background",
+    "dashboard.about.downloading": "Downloading {pct}%",
+    // Same values as the panel's settings.updateReady / settings.restartUpdate
+    "dashboard.about.updateReady": "Version {v} is downloaded — restart to apply",
+    "dashboard.about.restartUpdate": "Restart to update",
+    "dashboard.about.readyShort": "Ready",
+    "dashboard.about.openDownloadPage": "Open download page",
+    "dashboard.about.installing": "Installing…",
+    "dashboard.about.updateFailed": "Update failed: {msg}",
+    // Fallback when the panel does not respond: "Check update" clicked but no
+    // state broadcast arrived within 3s (the trailing "or" leads into the
+    // inline "Open download page" button, same as the zh copy)
+    "dashboard.about.panelUnresponsive":
+      "The panel did not respond — try again later, or",
+    // Dashboard-specific update hint (the panel's settings.updateHint mentions
+    // a settings-entry red dot that only exists in the panel, so this window
+    // gets its own copy without that claim)
+    "dashboard.about.updateHint":
+      "Checks hourly and downloads in the background; once ready, restart to install right from here. Updates are signature-checked. zh UI prefers Gitee, en prefers GitHub, with automatic fallback.",
+    // Project & info (title + de-emphasized scheme-less path subtitle; the
+    // paths themselves are not translated)
+    "dashboard.about.linksTitle": "Project & info",
+    "dashboard.about.linkGitHub": "GitHub repository",
+    "dashboard.about.linkGitee": "Gitee repository",
+    "dashboard.about.linkReleases": "Releases",
+    "dashboard.about.linkIssues": "Report an issue",
+    // Read-only info rows (value literals: MIT / stack / data dir unlocalized)
+    "dashboard.about.infoLicense": "License",
+    "dashboard.about.infoStack": "Tech stack",
+    "dashboard.about.infoDataDir": "Local data directory",
+    "dashboard.about.infoDataDirHint":
+      "Data stays on this machine in this folder by default; it is only uploaded after multi-device sync is enabled.",
 
     "dashboard.logs.rangeLabel": "Time range",
     // Header auto-refresh interval (Off / 5s / 10s / 30s / 60s, default 30s):

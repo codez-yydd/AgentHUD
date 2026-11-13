@@ -5,7 +5,8 @@
  *
  * 视图切换用组件内 state（对齐面板 App.tsx 的 view 模式，不引路由库）：
  * 用量总览 / 请求日志 / 模型速度 / 周额度对比 / 额度驾驶舱 / 同步与设备 /
- * 凭证与账号 / 价格设置 / Agent 与 Skill / 设置 十个页面各自独立取数渲染。
+ * 凭证与账号 / 价格设置 / Agent 与 Skill / 设置 / 关于 十一个页面各自
+ * 独立取数渲染。
  */
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ComponentType } from "react";
@@ -16,6 +17,7 @@ import { loadLocale } from "../i18n/locale";
 import { useI18n, type MessageKey } from "../i18n";
 import type { IconProps } from "./icons";
 import {
+  AboutIcon,
   AccountsIcon,
   CompareIcon,
   LogsIcon,
@@ -40,6 +42,7 @@ import { SyncPage } from "./SyncPage";
 import { AccountsPage } from "./AccountsPage";
 import { AgentAssetsPage } from "./AgentAssetsPage";
 import { SettingsPage } from "./SettingsPage";
+import { AboutPage } from "./AboutPage";
 
 /** 主区视图（新增页面时在此扩展） */
 type View =
@@ -53,7 +56,8 @@ type View =
   | "accounts"
   | "pricing"
   | "agents"
-  | "settings";
+  | "settings"
+  | "about";
 
 /** 面板 → 主窗口跳页事件（Rust 侧 open_main_window(page) 在开窗/聚焦后
  *  emit_to 本窗，见 main_window.rs；事件名风格沿 zbar://appearance-changed，
@@ -74,6 +78,7 @@ const NAVIGATABLE_VIEWS: readonly string[] = [
   "pricing",
   "agents",
   "settings",
+  "about",
 ];
 
 /** 侧栏导航项：顺序即展示顺序；labelKey 同时用作页面标题词典键 */
@@ -93,6 +98,7 @@ const NAV_ITEMS: {
   { view: "pricing", labelKey: "dashboard.pricing", Icon: PricingIcon },
   { view: "agents", labelKey: "dashboard.agentAssets", Icon: AccountsIcon },
   { view: "settings", labelKey: "dashboard.settings", Icon: SettingsIcon },
+  { view: "about", labelKey: "dashboard.about", Icon: AboutIcon },
 ];
 
 /**
@@ -269,6 +275,8 @@ export function DashboardApp() {
             <PricingPage />
           ) : view === "agents" ? (
             <AgentAssetsPage />
+          ) : view === "about" ? (
+            <AboutPage />
           ) : (
             <SettingsPage />
           )}

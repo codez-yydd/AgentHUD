@@ -5949,6 +5949,327 @@ body {
 }
 
 /* ============================================================
+ * 关于页（第十一页）：品牌区 / 软件更新 / 项目链接与信息行。
+ * 更新的执行在面板（About 页只经跨窗口事件桥展示状态，见
+ * src/dashboard/AboutPage.tsx）；颜色全部走 --db-* 变量，亮暗由
+ * :root / .dark 两套变量切换，这里不写 .dark 分支。
+ * ============================================================ */
+
+/* ---- 品牌区：左对齐单行元信息（logo + 品牌名 + 版本胶囊）。标题栏已有
+   常驻品牌区，这里刻意收窄：不重复副标题、字号不超过页标题（h1「关于」
+   22px 仍是页面最大标题），避免双页头并把内容顶出首屏 ---- */
+.db-about-brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 2px 0;
+}
+
+/* 圆角方 logo：44px（单行品牌块的行高尺度，与 TitleBar 44px 栏高同档） */
+.db-about-brand__logo {
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+}
+
+.db-about-brand__name {
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--db-text);
+}
+
+/* 版本徽标：胶囊 + 发丝描边（版本号全页唯一出处） */
+.db-about-version {
+  padding: 3px 10px;
+  border: 1px solid var(--db-control-border);
+  border-radius: 999px;
+  background: var(--db-control-bg);
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--db-text-dim);
+}
+
+/* ---- 更新 / 链接卡片：db-card 自身无内边距，由本页段落统一承担 ---- */
+.db-about-card {
+  padding: 18px 20px;
+}
+
+.db-about-card__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 4px;
+}
+
+.db-about-card__title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--db-text);
+}
+
+/* ---- 状态行 ---- */
+
+/* 检查结论行：只在「已是最新」时出现（其余阶段的版本信息在各自状态句） */
+.db-about-statusrow {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 8px 0;
+  font-size: 12.5px;
+  color: var(--db-text);
+}
+
+/* ✓ 已是最新：借 --db-chip-* 的绿色语言（亮暗各有一套定义） */
+.db-about-ok {
+  font-size: 12px;
+  color: var(--db-chip-text);
+}
+
+/* 卡片头 action 槽的不可点状态文字（下载中 {pct}% / 安装中… / 已就绪）：
+   与 db-btn 同高占位，阶段切换时卡头不跳行 */
+.db-about-phase {
+  display: inline-flex;
+  align-items: center;
+  min-height: 32px;
+  font-size: 12px;
+  color: var(--db-text-dim);
+}
+
+/* 状态说明行（后台下载中 / 已就绪 / 正在安装）；--accent 为就绪的强调档 */
+.db-about-status {
+  margin: 6px 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--db-text-dim);
+}
+
+.db-about-status--accent {
+  color: var(--db-accent-sky);
+  font-weight: 500;
+}
+
+/* 面板未响应兜底：弱提示行 + 行内"打开下载页"文字按钮 */
+.db-about-fallback {
+  margin: 4px 0 0;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--db-text-dim);
+}
+
+.db-about-fallback__link {
+  margin-left: 6px;
+  padding: 0;
+  border: none;
+  background: none;
+  font-family: inherit;
+  font-size: 12px;
+  color: var(--db-accent-sky);
+  cursor: pointer;
+}
+
+.db-about-fallback__link:hover {
+  text-decoration: underline;
+}
+
+.db-about-fallback__link:focus-visible {
+  outline: none;
+  box-shadow: var(--db-focus-ring);
+  border-radius: 4px;
+}
+
+/* ---- 下载进度：细条 + 右侧百分比（面板 UpdaterCard 同形态，正常字号） */
+.db-about-progresswrap {
+  padding: 2px 0 6px;
+}
+
+.db-about-progressline {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.db-about-progress {
+  flex: 1;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--db-track);
+  overflow: hidden;
+}
+
+.db-about-progress__bar {
+  height: 100%;
+  border-radius: 999px;
+  background: var(--db-accent-sky);
+  transition: width 0.2s ease;
+}
+
+.db-about-progressline .num {
+  flex: none;
+  font-size: 12px;
+  color: var(--db-text-dim);
+}
+
+/* ---- 就绪态：说明行 + 主次按钮 + 发行说明 ---- */
+.db-about-ready {
+  padding-bottom: 4px;
+}
+
+.db-about-btnrow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 8px 0 4px;
+}
+
+/* 发行说明：保留换行 + 限高滚动（changelog 多行文本不撑破卡片）；
+   长 URL 在 pre 里不会自然断行，补 overflow-wrap 防横向撑破 */
+.db-about-note {
+  margin: 6px 0 0;
+  max-height: 120px;
+  overflow-y: auto;
+  font-family: inherit;
+  font-size: 11.5px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--db-text-dim);
+}
+
+/* ---- 错误态：长错误串（路径 / 网络细节）断行 + 打开下载页出口 ---- */
+.db-about-error {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 4px 0;
+}
+
+.db-about-error__text {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.7;
+  color: #e11d48;
+  /* 长错误串不撑破卡片（同 db-errorstate__reason 的做法） */
+  overflow-wrap: anywhere;
+}
+
+.dark .db-about-error__text {
+  /* 暗色下同一玫红提亮一档，保证与卡片底的对比度 */
+  color: #fb7185;
+}
+
+/* 更新源说明小字（双 endpoint 自动降级；复用 settings.updateHint 词条） */
+.db-about-hint {
+  margin: 8px 0 0;
+  padding-top: 10px;
+  border-top: 1px solid var(--db-row-border);
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--db-text-dim);
+}
+
+/* ---- 链接行：整行可点，hover 背景反馈；标题 + 副文本左置、外链图标右置 */
+.db-about-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.db-about-link {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  width: 100%;
+  padding: 10px 12px;
+  border: none;
+  border-radius: 12px;
+  background: transparent;
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+
+.db-about-link:hover {
+  background: var(--db-hover);
+}
+
+.db-about-link:focus-visible {
+  outline: none;
+  box-shadow: var(--db-focus-ring);
+}
+
+.db-about-link__text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.db-about-link__title {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--db-text);
+}
+
+.db-about-link__sub {
+  font-size: 11px;
+  color: var(--db-text-dim);
+}
+
+.db-about-link__icon {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  color: var(--db-text-dim);
+}
+
+/* ---- 只读信息行：与链接行同构（无 hover、无图标），左标题右值 ---- */
+.db-about-info {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 12px;
+}
+
+.db-about-info__text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.db-about-info__title {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--db-text);
+}
+
+.db-about-info__hint {
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--db-text-dim);
+}
+
+.db-about-info__value {
+  flex: none;
+  font-size: 12px;
+  color: var(--db-text-dim);
+}
+
+/* 只读信息行不响应 hover，与上方链接行之间补一道发丝分隔（链接行自带
+   hover 背景反馈，行间不再加线，避免在 12px 圆角上绘制弯线） */
+.db-about-list > .db-about-info:first-of-type {
+  margin-top: 4px;
+  border-top: 1px solid var(--db-row-border);
+}
+
+/* ============================================================
  * 数据卡片外框（高度可调 / 折叠 / 列表展开）：与面板 index.css 同源，
  * 视觉仍由 .db-card 承担，这里只补交互层；颜色走 --db-* 变量。
  * ============================================================ */

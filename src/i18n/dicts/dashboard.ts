@@ -17,7 +17,7 @@ export const dashboard = {
   "dashboard.titlebar.restore": "还原",
   "dashboard.titlebar.close": "关闭",
 
-  // 侧栏导航项（同时用作页面标题）：用量总览 / 请求日志 / 模型速度 / 周额度对比 / 额度驾驶舱 / 同步与设备 / 凭证与账号 / 价格设置 / 设置
+  // 侧栏导航项（同时用作页面标题）：用量总览 / 请求日志 / 模型速度 / 周额度对比 / 额度驾驶舱 / 同步与设备 / 凭证与账号 / 价格设置 / 设置 / 关于
   "dashboard.overview": "用量总览",
   "dashboard.logs": "请求日志",
   "dashboard.speed": "模型速度",
@@ -27,6 +27,7 @@ export const dashboard = {
   "dashboard.accounts": "凭证与账号",
   "dashboard.pricing": "价格设置",
   "dashboard.settings": "设置",
+  "dashboard.about": "关于",
 
   // 页面说明
   "dashboard.overview.desc": "跨服务用量、花费与趋势的汇总视图。",
@@ -42,6 +43,7 @@ export const dashboard = {
   "dashboard.sync.desc": "本机同步状态、服务端设备管理与数据清理。",
   "dashboard.accounts.desc": "ZCode 账号快照管理，以及各 Agent 源本地登录凭证的一览。",
   "dashboard.pricing.desc": "模型单价维护与价格表更新。",
+  "dashboard.about.desc": "应用信息、版本与更新，以及项目仓库与反馈入口。",
 
   // 悬浮窗统计页的主窗口入口（头部工具条图标按钮 + 完整提示/aria）
   "dashboard.mainWindow": "主窗口",
@@ -670,6 +672,43 @@ export const dashboard = {
   "dashboard.settings.hudBar": "灵动岛 HUD",
   "dashboard.settings.hudBarHint":
     "顶部居中、悬停展开的灵动岛；与托盘右键菜单、面板顶部按钮共用同一份开关状态。",
+
+  // ===== 关于页（大窗）：品牌区 / 检查更新 / 项目链接与许可 =====
+  // 更新的执行在面板（Update 资源 rid 只对面板 webview 有效），本页经
+  // 跨窗口事件桥（updaterEvents.ts / updaterBridge.ts）读写状态；更新
+  // 结论 / 就绪 / 失败词条措辞逐字对齐面板 settings.* 更新区块
+  "dashboard.about.updateTitle": "软件更新",
+  "dashboard.about.checkUpdate": "检查更新",
+  "dashboard.about.checking": "正在检查…",
+  "dashboard.about.upToDate": "已是最新版本",
+  "dashboard.about.backgroundDownloading": "新版本 {v} 后台下载中",
+  "dashboard.about.downloading": "下载中 {pct}%",
+  // 与面板 settings.updateReady / settings.restartUpdate 同值（口径一致）
+  "dashboard.about.updateReady": "新版本 {v} 已下载，重启即可完成更新",
+  "dashboard.about.restartUpdate": "重启并更新",
+  "dashboard.about.readyShort": "已就绪",
+  "dashboard.about.openDownloadPage": "打开下载页",
+  "dashboard.about.installing": "正在安装…",
+  "dashboard.about.updateFailed": "更新失败：{msg}",
+  // 面板未响应兜底：点了「检查更新」但 3 秒内未收到任何状态广播
+  "dashboard.about.panelUnresponsive":
+    "面板未响应，暂时无法检查更新；可稍后重试或",
+  // 主窗口专用更新源说明（面板 settings.updateHint 提到的设置入口红点只在
+  // 面板存在，主窗口按它找不到，故另写一条）
+  "dashboard.about.updateHint":
+    "每小时自动检查并在后台下载，完成后可在此直接重启安装；更新包带签名校验，中文界面优先 Gitee、英文优先 GitHub，失败自动切换。",
+  // 项目与信息（标题 + 弱化的去协议路径副文本；路径字面不翻译）
+  "dashboard.about.linksTitle": "项目与信息",
+  "dashboard.about.linkGitHub": "GitHub 仓库",
+  "dashboard.about.linkGitee": "Gitee 仓库",
+  "dashboard.about.linkReleases": "发布页",
+  "dashboard.about.linkIssues": "问题反馈",
+  // 只读信息行（值字面：MIT / 技术栈 / 数据目录不翻译）
+  "dashboard.about.infoLicense": "开源许可",
+  "dashboard.about.infoStack": "技术栈",
+  "dashboard.about.infoDataDir": "本地数据目录",
+  "dashboard.about.infoDataDirHint":
+    "数据默认仅保存在本机该目录，启用多设备同步后才会上传。",
 
   // ===== 请求日志页（大窗）：筛选行 / 明细表 / 分页条 / 详情抽屉 =====
   // 时间范围四档与其他主窗口页统一，全部复用 dashboard.overview.range.*

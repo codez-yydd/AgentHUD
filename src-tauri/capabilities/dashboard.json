@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "dashboard",
-  "description": "Minimal capability for the main dashboard window (core APIs only for now; custom commands like open_main_window are not ACL-gated). Extend permissions as later phases need them. Window permissions below back the self-drawn title bar (minimize / maximize-restore / drag / close).",
+  "description": "Minimal capability for the main dashboard window (core APIs + dialog + opener for external links such as the About page's project links; custom commands like open_main_window are not ACL-gated). Window permissions below back the self-drawn title bar (minimize / maximize-restore / drag / close). Update execution stays in the panel window on purpose — no updater/process permissions here (the About page reads update state via the cross-window event bridge, see src/updaterEvents.ts).",
   "windows": ["main-window"],
   "permissions": [
     "core:default",
@@ -9,6 +9,7 @@
     "core:window:allow-toggle-maximize",
     "core:window:allow-start-dragging",
     "core:window:allow-close",
-    "dialog:allow-open"
+    "dialog:allow-open",
+    "opener:default"
   ]
 }

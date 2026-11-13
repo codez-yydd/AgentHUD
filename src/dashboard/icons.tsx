@@ -325,3 +325,44 @@ export function SessionsIcon({ className }: IconProps) {
     </svg>
   );
 }
+
+/** 关于：圆圈 i（Info 通用语义，「关于」页的侧栏导航与页面标识；
+    圆环 r=9 外沿 3~21，与总览图标同占满 24 视口） */
+export function AboutIcon({ className }: IconProps) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden
+    >
+      <circle cx="12" cy="12" r="9" />
+      <path d="M12 11.2v5" />
+      <path d="M12 7.8h.01" />
+    </svg>
+  );
+}
+
+/** 外链：方框 + 斜出箭头（点击在本机浏览器打开外部链接的通用语义） */
+export function ExternalLinkIcon({ className }: IconProps) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden
+    >
+      <path d="M15 3.5h5.5V9" />
+      <path d="M20.5 3.5 12 12" />
+      <path d="M17.5 13.5v5a2 2 0 0 1-2 2h-9a2 2 0 0 1-2-2v-9a2 2 0 0 1 2-2h5" />
+    </svg>
+  );
+}

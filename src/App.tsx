@@ -19,6 +19,7 @@ import {
   syncAgentVisibility,
 } from "./api";
 import { startUpdateScheduler } from "./updater";
+import { startUpdaterBridgeHost } from "./updaterBridge";
 import { useI18n } from "./i18n";
 import { loadLocale } from "./i18n/locale";
 import {
@@ -380,8 +381,12 @@ export default function App() {
   }, []);
 
   // 启动更新调度：延迟 10s 首次检查，之后每 1h 后台检查并下载；
-  // 下载完成后写 localStorage 供设置入口红点展示，失败静默不打扰
+  // 下载完成后写 localStorage 供设置入口红点展示，失败静默不打扰。
+  // 同处挂载更新桥宿主：面板是唯一更新执行者（Update 资源 rid 只在本
+  // webview 有效），主窗口「关于」页的状态读写都经跨窗口事件桥（见
+  // updaterBridge.ts），updater.ts 本体零改动
   useEffect(() => startUpdateScheduler(), []);
+  useEffect(() => startUpdaterBridgeHost(), []);
 
   const backToStats = () => {
     fetchPricing()
