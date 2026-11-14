@@ -32,6 +32,9 @@ mod moonshot;
 mod net_config;
 mod opencode;
 mod opencodego;
+// panel 悬浮窗：按设置按需建窗 + 启用开关（原 tauri.conf.json 静态定义
+// 已移除，见 panel.rs 模块注释）
+mod panel;
 mod pet;
 mod pets;
 mod pricing;
@@ -64,6 +67,9 @@ mod toolbox;
 // 行为变化。见 tray_menu.rs 模块注释
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 mod tray_menu;
+// WebView2 建窗参数统一辅助：所有窗口共用 --process-per-site 合并渲染
+// 进程（内存压降专项，见模块注释）
+mod webview_args;
 mod zcode_crypto;
 mod zcode_sessions;
 mod zcode_speed_evidence;
@@ -589,18 +595,28 @@ fn set_auto_capture(enabled: bool) -> Result<accounts::AppSettings, String> {
 async fn get_quota_history(
     all: Option<bool>,
     from_ms: Option<i64>,
-) -> Result<Vec<quota_history::QuotaSnapshot>, String> {
+) -> Result<std::sync::Arc<Vec<quota_history::QuotaSnapshot>>, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let snaps = quota_history::load_all()?;
-        let snaps = match from_ms {
-            Some(from) => snaps.into_iter().filter(|s| s.ts >= from).collect(),
+        // 返回类型为 Arc 共享：缓存命中路径（60s 轮询）零克隆直达 IPC 序列化；
+        // 只有 from_ms 过滤需要新组装一份当日子集
+        Ok(match from_ms {
+            Some(from) => std::sync::Arc::new(
+                snaps
+                    .iter()
+                    .filter(|s| s.ts >= from)
+                    .cloned()
+                    .collect::<Vec<_>>(),
+            ),
             None => snaps,
-        };
-        if all.unwrap_or(false) {
-            return Ok(snaps);
-        }
-        let current = accounts::current_fingerprint().map(|fp| fp.user_id);
-        Ok(quota_history::filter_for_current(snaps, &current))
+        })
+        .map(|snaps| {
+            if all.unwrap_or(false) {
+                return snaps;
+            }
+            let current = accounts::current_fingerprint().map(|fp| fp.user_id);
+            std::sync::Arc::new(quota_history::filter_for_current(&snaps, &current))
+        })
     })
     .await
     .map_err(|e| format!("读取快照历史任务失败: {e}"))?
@@ -611,7 +627,8 @@ async fn get_quota_history(
 async fn get_weekly_compare() -> Result<Vec<quota_history::WeeklyPeriod>, String> {
     tauri::async_runtime::spawn_blocking(|| {
         let current = accounts::current_fingerprint().map(|fp| fp.user_id);
-        let filtered = quota_history::filter_for_current(quota_history::load_all()?, &current);
+        let all = quota_history::load_all()?;
+        let filtered = quota_history::filter_for_current(&all, &current);
         Ok(quota_history::split_periods(&filtered))
     })
     .await
@@ -2324,7 +2341,10 @@ async fn get_trend(req: TrendRequest) -> Result<Vec<TrendBucket>, String> {
 /// 调整原生毛玻璃视图的不透明度，让背景保持柔和透出而不让文字穿透。
 /// Tauri 会把 NSVisualEffectView 放在 contentView 下方，并用这个 tag 标记它。
 #[cfg(target_os = "macos")]
-fn tune_panel_vibrancy(window: &tauri::WebviewWindow) {
+/// panel 窗口 vibrancy 调整（macOS 专属）：popover 材质的透明底与模糊
+/// alpha 微调。panel 的建窗收敛到 panel.rs 后，由 ensure_panel_window 在
+/// 建窗时调用（启动与设置页开启两条路径共用），setup 里不再单独处理
+pub(crate) fn tune_panel_vibrancy(window: &tauri::WebviewWindow) {
     use objc2_app_kit::{NSColor, NSWindow};
 
     const BLUR_VIEW_TAG: isize = 91_376_254;
@@ -2356,7 +2376,19 @@ fn tune_panel_vibrancy(window: &tauri::WebviewWindow) {
 /// 切换面板窗口显示/隐藏，并定位到托盘附近（紧贴菜单栏/任务栏）。
 /// click_pos: 点击位置（逻辑像素 x, y），来自托盘点击事件。
 /// 坐标系：左上角原点，x 向右增，y 向下增。
+///
+/// panel 缺失（悬浮窗开关关闭被销毁 / 启动未建）时现场重建后再走显隐
+/// 切换：托盘左键、全局快捷键、托盘菜单「打开悬浮窗」都收敛到本函数，
+/// 都是显式呼出意图，必须作为开关关闭后的可靠重开入口（现场建窗几百
+/// ms 冷启动，省内存改造已接受该代价）。panel.json 的开关不在此翻转
+/// ——呼出是临时使用，下次启动仍按开关决定是否常驻。
 fn toggle_panel(app: &AppHandle, click_pos: Option<(f64, f64)>) {
+    if app.get_webview_window("panel").is_none() {
+        if let Err(e) = panel::ensure_panel_window(app) {
+            eprintln!("[zbar-panel] 呼出悬浮窗失败: {e}");
+            return;
+        }
+    }
     let Some(window) = app.get_webview_window("panel") else {
         return;
     };
@@ -2902,27 +2934,41 @@ fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
                 ..
             } = event
             {
-                let scale = tray.app_handle().get_webview_window("panel")
-                    .and_then(|w| w.scale_factor().ok())
-                    .unwrap_or(1.0);
-                let pos = (
-                    position.x as f64 / scale,
-                    position.y as f64 / scale,
-                );
                 match button {
                     MouseButton::Left => {
                         // macOS/Windows：左键切面板前先收起打开着的自定义菜单，
                         // 避免菜单与面板同时停在屏幕上（失焦收起是异步的，
-                        // 这里主动 hide 一次更跟手）
+                        // 这里主动 hide 一次更跟手）。收起统一走 tray_menu
+                        // 模块的 collapse_from_tray（同时挂空闲销毁调度，
+                        // 120s 无再次使用自动销毁菜单窗口）
                         #[cfg(any(target_os = "macos", target_os = "windows"))]
-                        if let Some(menu) =
-                            tray.app_handle().get_webview_window("tray-menu")
+                        crate::tray_menu::collapse_from_tray(tray.app_handle());
+                        // 托盘点击坐标换算的 scale 取自 panel 窗口的
+                        // scale_factor——panel 缺失（悬浮窗开关关闭 /
+                        // 启动未建，左键会触发 toggle_panel 现场冷建）时
+                        // 拿不到可靠 scale，回退 1.0 在高 DPI 下会把点击
+                        // 位置换算失真。改为：panel 存在才按点击点定位；
+                        // 缺失走无 click_pos 分支（定位屏幕右上/右下角，
+                        // 与全局快捷键唤起同口径），冷建后窗口内部会按
+                        // 自己的真实 scale 重新定位
+                        if tray
+                            .app_handle()
+                            .get_webview_window(panel::PANEL_WINDOW_LABEL)
+                            .is_some()
                         {
-                            if menu.is_visible().unwrap_or(false) {
-                                let _ = menu.hide();
-                            }
+                            let scale = tray
+                                .app_handle()
+                                .get_webview_window(panel::PANEL_WINDOW_LABEL)
+                                .and_then(|w| w.scale_factor().ok())
+                                .unwrap_or(1.0);
+                            let pos = (
+                                position.x as f64 / scale,
+                                position.y as f64 / scale,
+                            );
+                            toggle_panel(tray.app_handle(), Some(pos));
+                        } else {
+                            toggle_panel(tray.app_handle(), None);
                         }
-                        toggle_panel(tray.app_handle(), Some(pos));
                     }
                     // macOS/Windows：右键弹自定义菜单窗口（已可见时再按 =
                     // 收起）。传物理坐标：菜单窗口自己按目标屏幕的
@@ -3122,11 +3168,31 @@ pub fn run() {
         // 单实例必须最先注册：第二次启动直接退出并唤醒已有窗口，避免两份
         // 进程同时抢全局快捷键（日志里三个热键同时「已被注册」就是这个）。
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
-            if let Some(win) = app.get_webview_window("panel") {
-                let _ = win.show();
-                let _ = win.unminimize();
-                let _ = win.set_focus();
-            }
+            // panel 缺失（悬浮窗开关关闭后被销毁）时现场重建：二次启动是
+            // 显式唤醒意图，不能无声无息。注意回调的线程模型按平台不同：
+            // Windows 走 WM_COPYDATA 在主线程执行，macOS 跑在 tokio 工作
+            // 线程——建窗铁律（WebviewWindowBuilder / 窗口 API 必须主线程，
+            // macOS 分支还会触碰 AppKit 的 NSWindow）按最坏情况统一处理：
+            // 整体投递主线程执行（panel.json 开关不翻转，下次启动仍按
+            // 开关决定是否常驻）。投递失败（事件循环退出中）只能放弃
+            let app_main = app.clone();
+            let _ = app.run_on_main_thread(move || {
+                if app_main
+                    .get_webview_window(panel::PANEL_WINDOW_LABEL)
+                    .is_none()
+                {
+                    if let Err(e) = panel::ensure_panel_window(&app_main) {
+                        eprintln!("[zbar-panel] 单实例唤醒建窗失败: {e}");
+                    }
+                }
+                if let Some(win) =
+                    app_main.get_webview_window(panel::PANEL_WINDOW_LABEL)
+                {
+                    let _ = win.show();
+                    let _ = win.unminimize();
+                    let _ = win.set_focus();
+                }
+            });
         }))
         .plugin(tauri_plugin_positioner::init())
         .plugin(tauri_plugin_opener::init())
@@ -3164,17 +3230,16 @@ pub fn run() {
                         hud_bar::handle_hud_bar_window_destroyed(window.app_handle());
                     }
                 }
-                // 主窗口（Dashboard）：点标题栏"×"= 隐藏不销毁（常驻秒开）。
-                // 标题栏是前端自绘的（decorations(false)，见 main_window.rs
-                // 模块 doc），前端关闭按钮同样走 close() 触发本挂点。
-                // webview 与页面状态原样保留，再次打开走 show + focus；应用
-                // 退出仍由托盘"退出 AgentHUD"完成。只拦 main-window 一个 label，
-                // panel/pet/session-hud 的关闭路径（各自 Destroyed 挂点）不受影响
+                // 主窗口（Dashboard）：省内存改造后"关闭即销毁"。原先点标题
+                // 栏"×"走隐藏保留 WebView（常驻秒开），代价是 dashboard 的
+                // WebView 渲染进程常驻内存；现在放行默认关闭 = 销毁窗口，
+                // 下次打开走 open_main_window_on_main_thread 的现场建窗路径
+                // （带页跳转经 pending page 补发，见 main_window.rs，导航
+                // 事件不会丢）。应用退出仍由托盘"退出 AgentHUD"完成。
+                // panel/pet/session-hud 的关闭路径（各自 Destroyed 挂点）
+                // 不受影响；灵动岛仍保留"关闭=隐藏"（默认开启的常驻 HUD）。
                 WindowEvent::CloseRequested { api, .. } => {
-                    if window.label() == main_window::MAIN_WINDOW_LABEL {
-                        api.prevent_close();
-                        let _ = window.hide();
-                    } else if window.label() == island::ISLAND_WINDOW_LABEL {
+                    if window.label() == island::ISLAND_WINDOW_LABEL {
                         // 灵动岛「关闭」= 隐藏，不销毁 WebView；再次开启秒开
                         api.prevent_close();
                         let _ = window.hide();
@@ -3235,71 +3300,40 @@ pub fn run() {
                 app.handle().plugin(tauri_plugin_process::init())?;
             }
 
+            // panel 悬浮窗按设置建窗（panel.rs）：原 tauri.conf.json 静态
+            // 定义已移除，改为读 panel.json 的 enabled（缺省 true，保持老
+            // 用户体验）按需创建。必须先于下方 macOS vibrancy / Windows
+            // 置顶恢复两段执行——它们都按 get_webview_window("panel") 取窗
+            // （见 panel.rs 模块 doc 的顺序依赖说明）；开关关闭时不建窗，
+            // 一个 WebView 都不留，两段随 if let Some 自然跳过
+            panel::start_if_enabled(app.handle());
+
             // macOS 隐藏 Dock 图标，只保留菜单栏
             #[cfg(target_os = "macos")]
             {
                 app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
-                // 显式清空窗口背景，避免 WebView 默认背景把原生 NSVisualEffectView
-                // 盖成纯白；真正的底色和模糊由 windowEffects 的 popover 材质提供。
-                if let Some(panel) = app.get_webview_window("panel") {
-                    let _ = panel.set_background_color(Some(
-                        tauri::window::Color(0, 0, 0, 0),
-                    ));
-                    tune_panel_vibrancy(&panel);
-                }
+                // panel 的背景清空与 vibrancy 调整已随建窗收敛到
+                // panel::ensure_panel_window（启动与设置页开启共用），
+                // 这里不再按窗口取用处理。
 
                 // 常驻活动断言：防止面板长期隐藏时应用被系统挂起、WebView 被回收
                 prevent_app_nap();
             }
             setup_tray(app.handle())?;
-            // 托盘菜单窗口预热（macOS/Windows，tray_menu 模块）：隐藏建窗让
-            // tray-menu.html 的 WebView 提前加载，首次右键只剩定位 + show
-            // （建窗 ~300ms 不能落在右键路径上，同 main_window 预建思路）。
-            // 失败只记日志，首次右键仍能现场建窗
-            #[cfg(any(target_os = "macos", target_os = "windows"))]
-            if let Err(e) = tray_menu::ensure_tray_menu_window(app.handle()) {
-                eprintln!("[zbar-tray-menu] 预热托盘菜单窗口失败: {e}");
-            }
-            // 主窗口预热：托盘初始化后立即预建隐藏的主窗口，dashboard.html 的
-            // WebView 提前加载（建窗本身走主线程异步路径，不阻塞启动关键路径），
-            // 首次「打开主窗口」只剩 show + focus（见 main_window.rs 的
-            // prebuild_main_window 注释）。失败只记日志，首次打开仍能正常建窗。
-            if let Err(e) = main_window::prebuild_main_window(app.handle()) {
-                eprintln!("[zbar-main-window] 预建主窗口失败: {e}");
-            }
+            // 省内存改造：托盘菜单 / 主窗口 / 截图覆盖层 / 录制条的启动预热
+            // 全部取消——不再有"启动即常驻的隐藏 WebView"。四个窗口改为
+            // 按需现场建窗（建窗函数保留且幂等）：
+            // - tray-menu：首次右键托盘时 show_tray_menu 现场建（隐藏后
+            //   120s 无再次使用自动销毁，见 tray_menu.rs）；
+            // - main-window：首次「打开主窗口」时 ensure_main_window 现场
+            //   建（关闭即销毁，见 main_window.rs）；
+            // - shot / rec：热键或 HUD 按钮触发截图 / 录屏时 reuse_overlay
+            //   / build_recorder_window 的冷建路径现场建（窗口缺失时各自
+            //   建窗函数内部兜底，reveal 顺序修复不依赖预热窗口存在）。
             spawn_today_usage_updater(app.handle().clone());
             // 额度重置提醒后台线程：每 30s 读一次内存登记表，不额外发请求
             quota_reminder::spawn();
-            // 截图覆盖窗口预热：启动 2.5s（避开启动高峰：托盘/主窗/岛都在
-            // 抢 WebView 资源）后把隐藏的 shot.html 建好，之后无论走热键还是
-            // HUD 按钮，第一次截图都不再冷启动 WebView，也不会出现「前端
-            // 2.5s 内没画好冻结帧、兜底强制 reveal 深色窗」的整屏闪黑。
-            // shot_prewarm 自身幂等（窗口已存在直接返回），HUD 截图页打开时
-            // 的重复预热是空操作；窗口以 visible(false)+focused(false) 常驻，
-            // 不显示、不抢焦点，等真正的截图会话经 reuse_overlay 复用。
-            {
-                let handle = app.handle().clone();
-                std::thread::spawn(move || {
-                    std::thread::sleep(std::time::Duration::from_millis(2500));
-                    let app_warm = handle.clone();
-                    let _ = tauri::async_runtime::block_on(
-                        island::screenshot::shot_prewarm(app_warm),
-                    );
-                    // 截图覆盖窗口热身后顺带预热录制条窗口（rec.html 空白
-                    // 待命页，再延迟 1.5s 避开启动高峰抢 WebView 资源）：
-                    // 首次录制复用窗口只走 navigate + 定位 + show，省掉
-                    // WebView 冷启动的几百毫秒。失败只记日志，首次录制
-                    // 仍能现场建窗。
-                    std::thread::sleep(std::time::Duration::from_millis(1500));
-                    let app_rec = handle.clone();
-                    if let Err(e) = tauri::async_runtime::block_on(
-                        island::screenshot::prewarm_recorder_window(app_rec),
-                    ) {
-                        eprintln!("[zbar-rec] 预热录制窗口失败: {e}");
-                    }
-                });
-            }
             spawn_fx_rate_refresher();
             // 参考价表后台刷新（models.dev）：新模型发布后「等价花费」选择器
             // 自动跟上，编译期内置表只作离线兜底
@@ -3422,6 +3456,10 @@ pub fn run() {
             get_pin,
             set_pin,
             set_panel_sticky,
+            // 悬浮窗启用开关（设置页）：读状态 + 开/关即时建窗/销毁
+            //（async + 主线程投递，见 panel.rs 的建窗铁律说明）
+            panel::get_panel_enabled,
+            panel::set_panel_enabled,
             get_quota_history,
             get_weekly_compare,
             get_weekly_compare_for_snapshots,
@@ -3628,6 +3666,10 @@ pub fn run() {
             island::screenshot::shot_qr,
             // 主窗口（Dashboard）：托盘菜单与悬浮窗统计页按钮共用的打开入口
             main_window::open_main_window,
+            // 冷建跳页补发：DashboardApp 挂载完成后取走建窗时暂存的跳页
+            // 意图（关闭即销毁后 emit 可能赶在监听注册前被丢弃，见
+            // main_window.rs 的 PENDING_PAGE）
+            main_window::take_pending_dashboard_page,
             // 自定义托盘右键菜单（macOS/Windows）：轻量状态快照（文件读）+
             // 用量页汇总/趋势一次取数（async + spawn_blocking）+ 菜单项
             // 动作分发（同步命令 = 主线程执行，open-main/hud-toggle 的

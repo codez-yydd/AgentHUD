@@ -27,7 +27,8 @@ tauri-plugin-global-shortcut = "2"
 tauri-plugin-clipboard-manager = "2"
 # 动态壁纸皮肤页选择壁纸文件
 tauri-plugin-dialog = "2"
-serde = { version = "1", features = ["derive"] }
+# rc：Arc<T> / Arc<str> 参与序列化（速度证据快照、剪贴板条目 emit 走 Arc 共享省内存）
+serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"
 rusqlite = { version = "0.32", features = ["bundled", "functions"] }
 dirs = "5"

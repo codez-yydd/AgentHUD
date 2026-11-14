@@ -1,7 +1,8 @@
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 import type { MessageKey } from "./i18n";
 import { useI18n } from "./i18n";
 import { useDataCache } from "./DataCache";
+import { useNow } from "./nowClock";
 import type { CredentialKind, ProviderQuotaEntry } from "./types";
 import {
   AGENT_COLOR,
@@ -74,16 +75,10 @@ export function GenericQuotaPanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hasCreds]);
 
-  // 倒计时显示用时钟（有窗口带重置时间才有意义，空数据不启定时器）
-  const hasResets = quotaEntries.some((e) =>
-    e.windows.some((w) => w.resetsAt != null)
-  );
-  const [now, setNow] = useState(Date.now());
-  useEffect(() => {
-    if (!hasResets) return;
-    const timer = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(timer);
-  }, [hasResets]);
+  // 倒计时显示用时钟：收敛为共享 context（内存压降专项 6，见 nowClock.tsx）。
+  // 原先「有重置数据才启定时器」的门槛随共享时钟取消——全局定时器只剩
+  // 一个，无重置数据的组件仅多几次幂等重渲染。
+  const now = useNow();
 
   return (
     <div className="flex-1 min-h-0 overflow-y-auto px-3 py-2.5 page-stack">

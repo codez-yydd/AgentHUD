@@ -18,7 +18,15 @@ import type {
 } from "./types";
 import { hotkeyText } from "../shortcuts";
 import type { TabKey } from "./types";
-import { citiesOf, districtsOf, findDivisionPath, matchPlace, provinces } from "./china";
+import {
+  citiesOf,
+  districtsOf,
+  divisionsLoaded,
+  findDivisionPath,
+  loadDivisions,
+  matchPlace,
+  provinces,
+} from "./china";
 import {
   agentColor,
   agentLabel,
@@ -1533,15 +1541,34 @@ export function SettingsPage({
   const [districtCode, setDistrictCode] = useState("");
   const [hotkey, setHotkey] = useState(config.hotkeyToggle);
   const [locating, setLocating] = useState(false);
+  // 省市区数据就绪标记（内存压降专项）：china-pca.json 动态 import，设置
+  // 页天气区块挂载时才触发加载；就绪后置位驱动重渲染，级联选择器与初始
+  // 回填 effect（下方依赖含本标记）在数据到达后补齐。
+  const [divisionsReady, setDivisionsReady] = useState(divisionsLoaded);
 
   useEffect(() => setHotkey(config.hotkeyToggle), [config.hotkeyToggle]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void loadDivisions()
+      .then(() => {
+        if (!cancelled) setDivisionsReady(true);
+      })
+      .catch(() => {
+        // 加载失败静默（选择器保持空占位），重进设置页时 loadDivisions
+        // 会重新触发加载（失败不缓存 rejected promise）
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     const path = findDivisionPath("", config.weatherCity, config.weatherLabel || config.weatherCity);
     if (path.province) setProvinceCode(String(path.province.c));
     if (path.city) setCityCode(String(path.city.c));
     if (path.district) setDistrictCode(String(path.district.c));
-  }, [config.weatherCity, config.weatherLabel]);
+  }, [config.weatherCity, config.weatherLabel, divisionsReady]);
 
   const province = provinces().find((item) => String(item.c) === provinceCode);
   const cityList = citiesOf(provinceCode);

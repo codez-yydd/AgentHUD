@@ -18,12 +18,29 @@ import type { HudBarQuota } from "./types";
 
 const NowContext = createContext(Date.now());
 
-export function NowProvider({ children }: { children: ReactNode }) {
+/**
+ * 整岛共用时钟。frozen=true（收起态，内存压降专项 3b）时冻结 1s tick：
+ * 收起胶囊不消费 now（会议计时走 meetingState 轮询自带的时间戳），面板
+ * 子树收起态虽仍挂载（3a 延时卸载）但不可见，倒计时/相对时间停走无感知；
+ * 解冻（展开）时立即重新同步一次，不留冻结期间的旧值。
+ */
+export function NowProvider({
+  children,
+  frozen = false,
+}: {
+  children: ReactNode;
+  frozen?: boolean;
+}) {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
+    if (frozen) return;
     const timer = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(timer);
-  }, []);
+  }, [frozen]);
+  useEffect(() => {
+    // 解冻即同步：跳过 frozen 初始挂载那一次也无害（多 set 一次同值）
+    if (!frozen) setNow(Date.now());
+  }, [frozen]);
   return <NowContext.Provider value={now}>{children}</NowContext.Provider>;
 }
 

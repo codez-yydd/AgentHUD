@@ -1,4 +1,3 @@
-import { useEffect, useState } from "react";
 import type {
   Currency,
   OpencodeSnapshot,
@@ -10,6 +9,7 @@ import { BrandIcon } from "./BrandIcon";
 import { ProviderQuotaErrorBanner, QuotaEntryCard } from "./QuotaEntryCard";
 import { useDataCache } from "./DataCache";
 import { AGENT_COLOR } from "./agentVisibility";
+import { useNow } from "./nowClock";
 import { ProviderAccountsSection } from "./ProviderAccountsSection";
 import { useResetDisplay } from "./resetDisplay";
 import { useI18n } from "./i18n";
@@ -76,16 +76,10 @@ export function OpencodePanel(props: Props) {
   // 不能一片空白——空态另有底部凭证区的引导）
   const firstRoundDone = (cacheEntry?.ts ?? 0) > 0;
 
-  // 倒计时显示用时钟（有窗口带重置时间才有意义，空数据不启定时器）
-  const hasResets = quotaEntries.some((e) =>
-    e.windows.some((w) => w.resetsAt != null)
-  );
-  const [now, setNow] = useState(Date.now());
-  useEffect(() => {
-    if (!hasResets) return;
-    const timer = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(timer);
-  }, [hasResets]);
+  // 倒计时显示用时钟：收敛为共享 context（内存压降专项 6，见 nowClock.tsx）。
+  // 原先「有重置数据才启定时器」的门槛随共享时钟取消——全局定时器只剩
+  // 一个，无重置数据的组件仅多几次幂等重渲染。
+  const now = useNow();
 
   // 查询中 / 首轮未回 / 已有条目 / 整体查询失败才渲染额度板块：首轮已回且
   // 确认无数据时整块不渲染（不留一块空标题），此时下方用量面板的空态已

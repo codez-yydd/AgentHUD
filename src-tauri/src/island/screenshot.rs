@@ -28,6 +28,8 @@ use tauri::{
     WebviewWindowBuilder,
 };
 
+use crate::webview_args::MergedRendererBuilder;
+
 /// 截图选择/编辑器窗口 label（capabilities/shot.json 同步）
 pub const SHOT_WINDOW_LABEL: &str = "shot-overlay";
 /// 贴图窗口 label 前缀，后缀为 pin id
@@ -1482,7 +1484,12 @@ async fn hide_island_for_capture(app: &AppHandle) {
     .await;
 }
 
-/// 预先建好隐藏的覆盖窗口：截图页一打开就调用，首次点击截图时 WebView 已经是热的。
+/// 预先建好隐藏的覆盖窗口：HUD 截图页一打开就调用（ShotPage.tsx 挂载时
+/// invoke），用户主动打开截图页视为"马上要用截图"的明确意图，此时预热
+/// 让首次点击截图时 WebView 已经是热的。省内存改造后应用启动不再调用
+/// 本函数（启动预热线程已删）——用户没开启的功能一个 WebView 都不留；
+/// 直接热键截图的路径不经过预热，由 start_capture → reuse_overlay 的
+/// 窗口缺失分支（build_overlay 冷建）现场建窗，时序见 build_overlay 注释。
 #[tauri::command]
 pub async fn shot_prewarm(app: AppHandle) -> Result<(), String> {
     let app_inner = app.clone();
@@ -1513,6 +1520,8 @@ pub async fn shot_prewarm(app: AppHandle) -> Result<(), String> {
         .visible(false)
         .focused(false)
         .background_throttling(tauri::utils::config::BackgroundThrottlingPolicy::Disabled)
+        // 合并 WebView2 渲染进程（内存压降专项，见 webview_args.rs 模块注释）
+        .merged_renderer()
         .build()
         .map_err(|e| format!("预热截图窗口失败: {e}"))?;
         let _ = win.set_background_color(Some(tauri::window::Color(9, 11, 17, 255)));
@@ -1523,8 +1532,12 @@ pub async fn shot_prewarm(app: AppHandle) -> Result<(), String> {
     .await
 }
 
-/// 覆盖窗口在多次截图之间复用：WebView 进程是热的，比每次重建快 ~100ms。
-/// 复用走 `navigate` 到带新 id 的 `shot.html`，前端照旧按 id 拉会话。
+/// 覆盖窗口存在时复用：WebView 进程是热的，比每次重建快 ~100ms（HUD 截图
+/// 页预热过的窗口、同会话连续截图）。复用走 `navigate` 到带新 id 的
+/// `shot.html`，前端照旧按 id 拉会话。窗口缺失（省内存改造后的常态：启动
+/// 不预热、会话结束即销毁）→ build_overlay 冷建，两条路径共用同一套
+/// "不 show、等 shot_ready 再 reveal"的时序（见 build_overlay 注释），
+/// 防整屏闪黑的 reveal 顺序修复只依赖建窗后的时序、不依赖窗口提前存在。
 fn reuse_overlay(app: &AppHandle, monitor: &ShotMonitor, id: u64) -> Result<(), String> {
     let Some(win) = app.get_webview_window(SHOT_WINDOW_LABEL) else {
         build_overlay(app, monitor, id)?;
@@ -1547,7 +1560,8 @@ fn reuse_overlay(app: &AppHandle, monitor: &ShotMonitor, id: u64) -> Result<(), 
     Ok(())
 }
 
-/// 抓屏前把覆盖窗口收起来（复用模式下不能 destroy，否则又变成冷启动）。
+/// 抓屏前把残留的覆盖窗口收起来（防御性幂等：省内存改造后窗口常态不
+/// 存在，if let Some 自然跳过；窗口存在时 hide 让 reuse_overlay 重新接管）。
 fn hide_overlay(app: &AppHandle) {
     if let Some(win) = app.get_webview_window(SHOT_WINDOW_LABEL) {
         let _ = win.hide();
@@ -1577,7 +1591,9 @@ fn build_overlay(app: &AppHandle, monitor: &ShotMonitor, id: u64) -> Result<Webv
     .visible(false)
     .focusable(true)
     .focused(false)
-    .background_throttling(tauri::utils::config::BackgroundThrottlingPolicy::Disabled);
+    .background_throttling(tauri::utils::config::BackgroundThrottlingPolicy::Disabled)
+    // 合并 WebView2 渲染进程（内存压降专项，见 webview_args.rs 模块注释）
+    .merged_renderer();
 
     let win = builder
         .build()
@@ -1594,6 +1610,11 @@ fn build_overlay(app: &AppHandle, monitor: &ShotMonitor, id: u64) -> Result<Webv
     // 这里不 show：show 出来的是深色空窗口，图片解码前整屏会黑一下。
     // 前端把冻结帧画好并调用 shot_ready 后，由 reveal_overlay 先显示覆盖层
     // （冻结帧里就有 HUD/主窗，画面零变化）、再藏自家窗口，全程看不到桌面。
+    // 该时序是本函数固有的（2026 年 585ef7c 批次修复），只依赖"建窗后先
+    // 隐藏、前端就绪再 reveal"这一建窗后的先后关系——省内存改造取消启动
+    // 预热后，冷建成为首次截图的主路径，本时序不受影响、无闪黑回退。
+    // WebView 冷启动多出的几百毫秒由既有的 2.5s shot_ready 兜底看护
+    // （见 start_capture_inner 的兜底线程）。
     Ok(win)
 }
 
@@ -1638,9 +1659,9 @@ async fn start_capture_inner(
     if record::is_recording() {
         return Err("录屏进行中，结束录制后再截图".into());
     }
-    // 录制条/预览窗是常驻复用窗口（启动预热隐藏预建，关闭只 hide 不销毁），
-    // 这里只拦「可见」状态：录制条挂着或预览窗开着时不能开新截图；隐藏的
-    // 预热/残留窗口不拦，否则窗口常驻之后所有截图都会被误挡。
+    // 录制条/预览窗按需建、用完销毁（省内存改造），这里只拦「可见」状态：
+    // 录制条挂着或预览窗开着时不能开新截图；窗口不存在（常态）或已隐藏的
+    // 残留窗口不拦，否则销毁前若留有隐藏残留会挡住所有截图。
     if app
         .get_webview_window(record::REC_WINDOW_LABEL)
         .map(|win| win.is_visible().unwrap_or(false))
@@ -1822,6 +1843,12 @@ async fn start_capture_inner(
     let app_build = app.clone();
     let mon_build = monitor.clone();
     let id_build = id;
+    // 记录本次创建路径（建窗前的窗口存在性）：冷建（省内存改造后首次
+    // 截图的主路径）比复用（navigate 整页重载）多一次 WebView 进程冷
+    // 启动，shot_ready 兜底预算相应放宽。预判与 reuse_overlay 内部的
+    // 实际分支存在极小竞态（预判复用但窗口恰好消失），代价只是兜底
+    // 偏紧一档，不影响正确性
+    let cold_build = app.get_webview_window(SHOT_WINDOW_LABEL).is_none();
     if let Err(e) = on_main_thread(&app, move || {
         reuse_overlay(&app_build, &mon_build, id_build)?;
         Ok(())
@@ -1836,10 +1863,15 @@ async fn start_capture_inner(
     }
 
     // 前端如果因为 WebView 加载失败/图片过大而没有调用 shot_ready，窗口会
-    // 永远隐藏、HUD 也一直不回来。2.5s 后兜底显示，至少让用户能取消。
+    // 永远隐藏、HUD 也一直不回来。到时兜底显示（深色未渲染窗），至少让
+    // 用户能取消。时限按创建路径分档：复用 2.5s；冷建放宽到 4s——WebView
+    // 进程冷启动吃掉一部分预算，2.5s 在低配机上有「前端还在正常加载却被
+    // 兜底强制 reveal 深色窗」的误触发风险，放宽的代价只是真失败场景下
+    // 晚 1.5s 才能取消
+    let ready_fallback_ms: u64 = if cold_build { 4000 } else { 2500 };
     let app_watch = app.clone();
     std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_millis(2500));
+        std::thread::sleep(Duration::from_millis(ready_fallback_ms));
         let alive = session_slot()
             .lock()
             .map(|g| g.as_ref().map(|s| s.id == id).unwrap_or(false))
@@ -2094,8 +2126,13 @@ pub async fn shot_close(app: AppHandle) -> Result<(), String> {
 pub async fn close_shot(app: &AppHandle) -> Result<(), String> {
     let app_main = app.clone();
     on_main_thread(app, move || {
-        // 只隐藏不销毁：下次截图复用同一个 WebView，省掉冷启动。
-        hide_overlay(&app_main);
+        // 省内存改造：会话结束直接销毁覆盖层窗口（原先只 hide 保留热
+        // WebView 供下次复用），截图功能用完不留常驻 WebView；下次截图走
+        // start_capture → reuse_overlay 的"窗口缺失 → build_overlay 冷建"
+        // 路径（已验证与复用路径同一套 reveal 时序，见 build_overlay 注释）。
+        // Alt+F4 / 系统关闭路径（on_overlay_close_requested）原本就是销毁，
+        // 两条路径行为就此一致
+        destroy_overlay(&app_main);
         if let Ok(mut guard) = session_slot().lock() {
             *guard = None;
         }
@@ -2499,7 +2536,9 @@ fn build_pin_window(app: &AppHandle, id: u64) -> Result<WebviewWindow, String> {
     .visible(false)
     .focusable(true)
     .focused(false)
-    .background_throttling(tauri::utils::config::BackgroundThrottlingPolicy::Disabled);
+    .background_throttling(tauri::utils::config::BackgroundThrottlingPolicy::Disabled)
+    // 合并 WebView2 渲染进程（内存压降专项，见 webview_args.rs 模块注释）
+    .merged_renderer();
     let win = builder
         .build()
         .map_err(|e| format!("创建贴图窗口失败: {e}"))?;

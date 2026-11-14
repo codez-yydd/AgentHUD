@@ -512,10 +512,12 @@ pub fn upload_incremental() -> Result<SyncOutcome, String> {
     let _ = crate::zcode_sessions::import_incremental();
 
     // 读取待上传的快照（ts > 游标）。读失败不阻断明细同步。
+    // load_all 返回缓存 Arc：这里只借用遍历、克隆游标后的少量待传条目
     let mut pending_snaps = crate::quota_history::load_all()
         .unwrap_or_default()
-        .into_iter()
+        .iter()
         .filter(|s| s.ts > cfg.last_uploaded_snapshot_ts)
+        .cloned()
         .collect::<Vec<_>>();
     let snap_max_ts = pending_snaps.iter().map(|s| s.ts).max();
     let mut snapshot_cursor_advanced = false;

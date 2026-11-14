@@ -15,9 +15,9 @@
  *   startDragging），macOS 则放在 mouseup（detail===2 且指针未移动）——
  *   与 Tauri 官方 data-tauri-drag-region 脚本（tauri/src/window/scripts/
  *   drag.js）同款做法；
- * - 关闭按钮走 close()：Rust 侧 WindowEvent::CloseRequested 挂点对
- *   main-window 做 prevent_close + hide（隐藏不销毁，见 lib.rs），不能直接
- *   调 hide 绕开该挂点；
+ * - 关闭按钮走 close()：省内存改造后 Rust 侧不再拦截 main-window 的
+ *   CloseRequested，默认关闭 = 销毁窗口（WebView 渲染进程随之释放，下次
+ *   打开走现场建窗，见 lib.rs / main_window.rs），前端无需感知差异；
  * - 最大化状态：挂载时查一次 isMaximized()，onResized 监听刷新（覆盖
  *   按钮点击、双击、系统热区缩放三条路径），卸载时退订。
  *

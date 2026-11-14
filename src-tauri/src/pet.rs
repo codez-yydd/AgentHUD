@@ -45,6 +45,7 @@ use std::time::Duration;
 use tauri::{
     AppHandle, Emitter, LogicalSize, Manager, WebviewUrl, WebviewWindowBuilder,
 };
+use crate::webview_args::MergedRendererBuilder;
 
 // ============================================================
 // 常量
@@ -576,7 +577,9 @@ fn ensure_pet_window(app: &AppHandle, cfg: &PetConfig) -> Result<(), String> {
     // 建控件的副作用，实测建窗后本窗口即前台），focusable(false) 映射
     // WS_EX_NOACTIVATE 从根上不激活；宠物无键盘交互，拖动不需要激活
     .focusable(false)
-    .focused(false); /* 创建时不抢焦点（不惊扰当前输入焦点） */
+    .focused(false) /* 创建时不抢焦点（不惊扰当前输入焦点） */
+    // 合并 WebView2 渲染进程（内存压降专项，见 webview_args.rs 模块注释）
+    .merged_renderer();
 
     // 位置：持久化逻辑坐标优先，无记录默认主显示器右下角
     let (x, y) = match cfg.pos {

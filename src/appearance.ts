@@ -145,7 +145,8 @@ export function bootstrapTheme(): void {
  * 注册系统主题变化监听（幂等，进程内只挂一次）：来源偏好为「跟随系统」时，
  * 系统切深/浅色立即解析新值并 applyTheme（广播带动其他窗口跟随）；
  * 非 system 偏好下系统变化不产生任何动作。主窗口入口（dashboard-main）
- * 调用一次即可——设置的属主窗口常驻（关闭=隐藏），面板经广播跟随。
+ * 调用一次即可——主窗口存活期间面板经广播跟随（省内存改造后主窗口
+ * 关闭即销毁，跟随只在其存活期内生效，重开窗口重新挂载本监听）。
  */
 export function watchSystemTheme(): () => void {
   if (systemThemeWatched) return () => {};

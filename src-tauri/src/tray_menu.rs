@@ -22,11 +22,21 @@
 //! 菜单窗口本体（tray-menu.html，零 React 轻壳，照 session-hud-main.ts 的
 //! 架构哲学）两平台完全共用。
 //!
+//! 省内存改造：菜单窗口不再"应用 setup 时预热常驻"，改为**按需建 +
+//! 空闲销毁**——
+//! - 按需建：首次右键托盘时 show_tray_menu 现场建窗（~300ms 冷启动落在
+//!   右键路径上，省内存改造已接受该代价；建窗函数幂等，菜单已存在时
+//!   直接复用，收起后再点仍是热 WebView 秒开）；
+//! - 空闲销毁：窗口收起（失焦 / 再按右键 / 菜单项动作 / 托盘左键）后
+//!   启动一个 120s 一次性定时线程，到点若窗口仍隐藏则销毁，释放 WebView
+//!   渲染进程；期间再次弹出会刷新活动时间戳，销毁条件不满足即自动作废。
+//!   不用常驻轮询：每个收起动作只 spawn 一个 sleep 线程，醒来检查一次
+//!   就退出（同 lib.rs 旧预热线程的"一次性后台线程"模式），零轮询开销。
+//!
 //! 职责：
-//! - ensure_tray_menu_window：懒建隐藏窗口（应用 setup 时预热调用一次，
-//!   右键时秒开——建窗 ~300ms 不能落在右键路径上）。菜单窗口保持
-//!   focusable（默认，不设 focusable(false)）：要接收菜单项点击与 Esc，
-//!   "点外部自动收起"依赖 Focused(false) 事件。
+//! - ensure_tray_menu_window：懒建隐藏窗口（首次右键路径上调用，幂等）。
+//!   菜单窗口保持 focusable（默认，不设 focusable(false)）：要接收菜单项
+//!   点击与 Esc，"点外部自动收起"依赖 Focused(false) 事件。
 //! - show_tray_menu：定位 + show + set_focus。setup_tray 传入托盘事件的
 //!   物理坐标，本函数用 monitor_from_point 找到点击所在屏幕、按该屏的
 //!   scale_factor 换算逻辑坐标后定位（y 按平台分叉：macOS 贴菜单栏底，
@@ -55,6 +65,8 @@ use tauri::{
     WindowEvent,
 };
 
+use crate::webview_args::MergedRendererBuilder;
+
 /// 菜单窗口 label（Rust 侧定位/hide 与命令 hide 共用）
 pub(crate) const TRAY_MENU_WINDOW_LABEL: &str = "tray-menu";
 
@@ -82,6 +94,18 @@ const AUTO_HIDE_GUARD_MS: u64 = 250;
 /// 事件又 show"的闪烁往返
 static LAST_AUTO_HIDE_MS: AtomicU64 = AtomicU64::new(0);
 
+/// 菜单空闲销毁延迟（毫秒）：收起后 120s 内再次使用继续复用热 WebView，
+/// 超时销毁释放 WebView 渲染进程（省内存改造的核心指标之一）。用户在
+/// 托盘菜单里看用量、顺手干点别的再回来的间隔通常在分钟级，120s 足够
+/// 覆盖"连续操作"场景，又不会让菜单窗口长期常驻
+const IDLE_DESTROY_DELAY_MS: u64 = 120_000;
+
+/// 菜单最近一次活动（弹出 / 收起）的时间戳（Unix 毫秒）：空闲销毁线程
+/// 醒来后据此判断"这 120s 里菜单是否又被用过"——被用过就放弃销毁（让
+/// 下一轮收起的调度接手），没被用过且窗口仍隐藏才真销毁。弹出与收起都
+/// 刷新，保证"弹出后一直开着"的窗口不会被旧调度误杀（可见性检查兜底）
+static LAST_MENU_ACTIVITY_MS: AtomicU64 = AtomicU64::new(0);
+
 fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -89,9 +113,57 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
+/// 刷新菜单活动时间戳（弹出 / 收起时调用，供空闲销毁判定）
+fn touch_menu_activity() {
+    LAST_MENU_ACTIVITY_MS.store(now_ms(), Ordering::Relaxed);
+}
+
+/// 菜单收起后的空闲销毁调度：spawn 一个一次性线程睡满 IDLE_DESTROY_DELAY_MS，
+/// 醒来后确认「期间无新活动 && 窗口仍存在 && 窗口仍隐藏」才销毁。多次收起
+/// 会 spawn 多个线程，但除最后一个外都会因活动时间戳刷新而提前返回，
+/// 每个线程生命周期 = 一次 sleep + 一次判断，无轮询开销。销毁动作投递
+/// 主线程执行（窗口 API 的建窗/销毁铁律，见 main_window.rs 模块注释）。
+fn schedule_idle_destroy(app: &AppHandle) {
+    touch_menu_activity();
+    let app_spawn = app.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(IDLE_DESTROY_DELAY_MS));
+        let last = LAST_MENU_ACTIVITY_MS.load(Ordering::Relaxed);
+        let idle_for = now_ms().saturating_sub(last);
+        if idle_for < IDLE_DESTROY_DELAY_MS {
+            return; // 期间菜单又被用过：本轮作废，由最近一次收起的调度接手
+        }
+        let app_main = app_spawn.clone();
+        let _ = app_spawn.run_on_main_thread(move || {
+            if let Some(win) = app_main.get_webview_window(TRAY_MENU_WINDOW_LABEL) {
+                if !win.is_visible().unwrap_or(true) {
+                    // 再查一次时间戳：投递排队期间若恰好弹出，放弃销毁
+                    let last = LAST_MENU_ACTIVITY_MS.load(Ordering::Relaxed);
+                    if now_ms().saturating_sub(last) >= IDLE_DESTROY_DELAY_MS {
+                        let _ = win.destroy();
+                        eprintln!("[zbar-tray-menu] 菜单窗口空闲超时，已销毁释放 WebView");
+                    }
+                }
+            }
+        });
+    });
+}
+
+/// 菜单窗口收起（托盘左键切换面板前的主动收起）：统一走这里，收起的
+/// 同时挂上空闲销毁调度。pub(crate)：lib.rs 的托盘左键分支调用。
+pub(crate) fn collapse_from_tray(app: &AppHandle) {
+    if let Some(win) = app.get_webview_window(TRAY_MENU_WINDOW_LABEL) {
+        if win.is_visible().unwrap_or(false) {
+            let _ = win.hide();
+            schedule_idle_destroy(app);
+        }
+    }
+}
+
 /// 确保 "tray-menu" 窗口存在（隐藏态，首次显示前 WebView 已就绪）。
 /// 必须在主线程事件循环上下文调用（建窗铁律，同 ensure_hud_bar_window）：
-/// setup 预热与托盘事件回调都满足。pub(crate)：lib.rs 的 setup 里预热调用。
+/// show_tray_menu 与托盘事件回调都满足。pub(crate)：show_tray_menu 首次
+/// 右键时按需调用（省内存改造后 setup 不再预热）。
 pub(crate) fn ensure_tray_menu_window(app: &AppHandle) -> Result<(), String> {
     if app.get_webview_window(TRAY_MENU_WINDOW_LABEL).is_some() {
         return Ok(());
@@ -117,6 +189,8 @@ pub(crate) fn ensure_tray_menu_window(app: &AppHandle) -> Result<(), String> {
     // Windows 钳宽修复（照搬 hud_bar.rs / session_hud.rs）：tao 的
     // WM_GETMINMAXINFO 默认最小跟踪宽度会把 340 逻辑宽的小窗出生即钳宽
     .min_inner_size(1.0, 1.0)
+    // 合并 WebView2 渲染进程（内存压降专项，见 webview_args.rs 模块注释）
+    .merged_renderer()
     .visible(false);
     // 不设 focusable(false)：菜单要接收点击、Esc，且失焦自动收起依赖
     // key 状态变化（与停靠条"永不抢焦点"相反的有意取舍）
@@ -147,7 +221,8 @@ pub(crate) fn ensure_tray_menu_window(app: &AppHandle) -> Result<(), String> {
     let _ = win.set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
 
     // 失焦自动收起：点窗口外任意区域系统会释放本窗口的 key 状态，
-    // Focused(false) → hide（原生菜单"点外面就关"的等价行为）。
+    // Focused(false) → hide（原生菜单"点外面就关"的等价行为），收起后
+    // 挂上空闲销毁调度（120s 无再次使用自动销毁窗口）。
     // on_window_event 闭包拿不到 AppHandle，克隆一份捕获
     let app_ev = app.clone();
     win.on_window_event(move |event| {
@@ -155,6 +230,7 @@ pub(crate) fn ensure_tray_menu_window(app: &AppHandle) -> Result<(), String> {
             LAST_AUTO_HIDE_MS.store(now_ms(), Ordering::Relaxed);
             if let Some(w) = app_ev.get_webview_window(TRAY_MENU_WINDOW_LABEL) {
                 let _ = w.hide();
+                schedule_idle_destroy(&app_ev);
             }
         }
     });
@@ -174,9 +250,11 @@ pub(crate) fn show_tray_menu(app: &AppHandle, click_pos: (f64, f64)) {
         return;
     };
 
-    // 已可见 → 再按右键 = 收起（与左键切面板的"再点一次隐藏"习惯一致）
+    // 已可见 → 再按右键 = 收起（与左键切面板的"再点一次隐藏"习惯一致），
+    // 收起后挂空闲销毁调度
     if win.is_visible().unwrap_or(false) {
         let _ = win.hide();
+        schedule_idle_destroy(app);
         return;
     }
     // 刚因失焦自动收起（保护窗口内）的托盘点击不再重新弹出：托盘图标
@@ -273,6 +351,8 @@ pub(crate) fn show_tray_menu(app: &AppHandle, click_pos: (f64, f64)) {
     let _ = win.set_size(LogicalSize::new(TRAY_MENU_WIDTH, height));
     let _ = win.show();
     let _ = win.set_focus();
+    // 弹出即活动：刷新空闲销毁判定的基准时间戳（让此前收起挂的调度作废）
+    touch_menu_activity();
 }
 
 /// tray_menu_state 命令返回：轻量、秒回的状态（camelCase 契约）。
@@ -436,6 +516,7 @@ pub fn tray_menu_action(app: AppHandle, action: String) -> Result<(), String> {
     if !keep_open {
         if let Some(win) = app.get_webview_window(TRAY_MENU_WINDOW_LABEL) {
             let _ = win.hide();
+            schedule_idle_destroy(&app);
         }
     }
     match action.as_str() {
@@ -487,6 +568,7 @@ pub fn tray_menu_action(app: AppHandle, action: String) -> Result<(), String> {
     if !keep_open {
         if let Some(win) = app.get_webview_window(TRAY_MENU_WINDOW_LABEL) {
             let _ = win.hide();
+            schedule_idle_destroy(&app);
         }
     }
     Ok(())

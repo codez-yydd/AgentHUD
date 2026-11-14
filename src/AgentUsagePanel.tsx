@@ -1,4 +1,4 @@
-import { useEffect, useState, type CSSProperties } from "react";
+import { useState, type CSSProperties } from "react";
 import type {
   AgentQuotaDelta,
   Currency,
@@ -30,6 +30,7 @@ import {
 import { useI18n } from "./i18n";
 import { useDataCache } from "./DataCache";
 import { useResetDisplay } from "./resetDisplay";
+import { useNow } from "./nowClock";
 
 /** 通用快照形状：Codex / Claude 的快照结构一致（stats/trend 同构 +
  *  同款五字段速率限制），TS 结构化类型直接兼容。monthly 两字段为 Kimi
@@ -217,12 +218,9 @@ export function AgentUsagePanel({
   const [trendMetric, setTrendMetric] = useState<"cost" | "token">("cost");
   const [sortBy, setSortBy] = useState<"cost" | "token" | "requests">("cost");
 
-  // 重置倒计时需要秒级跳动（与汇总页同款 1s tick）
-  const [now, setNow] = useState(Date.now());
-  useEffect(() => {
-    const tick = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(tick);
-  }, []);
+  // 重置倒计时需要秒级跳动：收敛为共享 context（内存压降专项 6，见
+  // nowClock.tsx），不再自己挂 1s 定时器
+  const now = useNow();
 
   // 加载中 & 无数据
   if (loading && !snapshot) {

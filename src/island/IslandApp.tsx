@@ -1,6 +1,6 @@
 /** 灵动岛外壳：收起胶囊 / 展开面板 / 标签导航 / 右键菜单 / 深色玻璃与事件桥 */
 
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
+import { lazy, Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
 import {
   clearClipboard,
   clearNotify,
@@ -90,12 +90,34 @@ import {
   StocksPage,
   WeatherPage,
 } from "./pages";
-import { ScreenshotPage } from "./ShotPage";
-import { ToolboxPage } from "./ToolboxPage";
+// 重页拆独立 chunk（内存压降专项 5）：截图编辑器与工具箱（连带其内部的
+// 会议录音面板）代码量大且非首屏，React.lazy 拆出去后 island 主 chunk 不
+// 再包含；首次点击对应 tab 时按需加载（挂载后有空闲期预取，见下方 effect）。
+// 首页保持同步 import，保证展开首帧零延迟。
+const ScreenshotPage = lazy(() =>
+  import("./ShotPage").then((m) => ({ default: m.ScreenshotPage }))
+);
+const ToolboxPage = lazy(() =>
+  import("./ToolboxPage").then((m) => ({ default: m.ToolboxPage }))
+);
 
 /** 桌面抓屏目前只有 Windows 实现；macOS 上不轮询，避免每 150ms 一次空报错。 */
 const CAN_CAPTURE_BACKDROP =
   IS_TAURI && typeof navigator !== "undefined" && /Windows/i.test(navigator.userAgent);
+
+/**
+ * 收起态面板子树延时卸载（内存压降专项 3a，保守方案）：收起持续 10 分钟
+ * 后卸载 island-panel 子树（nav + 8 个 tab 页 + 图表），保留胶囊常驻。
+ *
+ * 不采用「open 即条件渲染」的原因：面板常驻 DOM 是展开/收起 CSS 过渡
+ * （opacity/visibility/transform，见 island.css .island-panel）工作的前提，
+ * 收起即卸载会让面板在展开首帧无过渡地"瞬间出现"——灵动岛是最高频可见
+ * UI，动画回归不可接受。改用延时卸载：expand() 入口同步预挂（距
+ * setOpen(true) 还有窗口视口等待 + 双 rAF 的帧余量，一次 commit 完成），
+ * 展开时面板已在 DOM，过渡与原行为完全一致。卸载会丢失面板内未提交的
+ * 输入态（搜索词、设置项草稿），10 分钟无交互后可接受。
+ */
+const PANEL_UNMOUNT_DELAY_MS = 10 * 60_000;
 
 const TABS: { key: TabKey; label: string; icon: IconName }[] = [
   { key: "home", label: "主页", icon: "home" },
@@ -177,6 +199,9 @@ export default function IslandApp() {
   const [edge, setEdge] = useState<IslandEdge>("top");
   const [dragging, setDragging] = useState(false);
   const [snapHiding, setSnapHiding] = useState(false);
+  // 面板子树挂载开关（内存压降专项 3a）：收起 10 分钟后卸载、expand 入口
+  // 预挂，见 PANEL_UNMOUNT_DELAY_MS 注释。初始挂载保持首帧行为与原版一致。
+  const [panelMounted, setPanelMounted] = useState(true);
 
   // 用户自定义顺序（设置页里上下挪）：不在表里的条目保持数据源原顺序排在后面。
   // 必须放在 config 的早退分支之前——hooks 不能有条件地跳过。
@@ -283,22 +308,41 @@ export default function IslandApp() {
   }, []);
 
   // ===== 桌面毛玻璃底板 =====
-  // 展开约 650ms 一拍、收起约 1.8s 一拍；抓屏结果通过 base64 PNG 回到 CSS。
-  // 串行轮询，绝不让两次抓屏叠在一起；切页/窗口显隐时自动重开。
+  // 展开约 650ms 一拍、收起降到 5s 一拍（内存压降专项：收起时玻璃只露出
+  // 48px 高的一条，桌面变化对观感影响远小于展开面板，低频采样足够）；
+  // Rust 侧内容未变返回空串哨兵，跳过 CSS 变量更新与 base64 解码。
+  // 串行轮询，绝不让两次抓屏叠在一起；隐藏态彻底停拍，恢复可见由
+  // visibilitychange 监听重新拉起。
   useEffect(() => {
     if (!CAN_CAPTURE_BACKDROP || !enabled) return;
     let alive = true;
     let timer: number | null = null;
+    // true = 尚未拿到过一拍真实底图：每拍带 force 绕过哈希哨兵，直到拿到
+    // 非空 data URL 才关闭（首拍失败如窗口未 show 时下一拍继续 force）
+    let firstCapture = true;
+    const schedule = () => {
+      if (timer != null) window.clearTimeout(timer);
+      timer = window.setTimeout(tick, open ? 120 : 0);
+    };
     const tick = () => {
       if (!alive) return;
-      if (document.visibilityState === "hidden") {
-        timer = window.setTimeout(tick, 900);
-        return;
-      }
+      // 隐藏态彻底停拍（内存压降专项）：对不可见窗口抓屏是纯浪费，不再
+      // 900ms 空转排程；恢复可见由 visibilitychange 监听重新拉起。
+      if (document.visibilityState === "hidden") return;
+      // 首拍 force（自愈重载缺口）：页面重载 / effect 重建后 CSS 底图可能
+      // 为空，而 Rust 侧哈希去重会返回空串哨兵——首拍强制回传完整 data
+      // URL，后续拍恢复去重（P2 修复，见 backdrop::invalidate_last_hash）。
+      const force = firstCapture;
       const seq = ++backdropSeq.current;
-      getIslandBackdrop()
+      getIslandBackdrop(force)
         .then((url) => {
-          if (!alive || seq !== backdropSeq.current || !url) return;
+          if (!alive || seq !== backdropSeq.current) return;
+          // 空串哨兵（Rust 侧缩略图哈希与上一拍相同 → 桌面没动）：连同
+          // 其它空值一起跳过 CSS 变量更新，省 base64 解码与字符串拼接。
+          if (!url) return;
+          // 拿到过一拍真实底图后才关闭 force；Err 拍（如窗口未 show）保持
+          // force 下一拍重试，保证重载后底图必然恢复
+          firstCapture = false;
           // 直接写 CSS 变量，不为背景图重渲染整个面板（页面里有图表/
           // 输入框，每次抓屏都做 React 全树渲染会让展开动画掉帧）。
           islandRef.current?.style.setProperty("--backdrop", `url("${url}")`);
@@ -308,15 +352,21 @@ export default function IslandApp() {
           if (!alive) return;
           // 深模糊下背景变化本来就慢；低频采样能显著降低抓屏排除窗口对
           // 用户截图/录屏的干扰，也省掉不必要的 PNG 编码。
-          timer = window.setTimeout(tick, open ? 650 : 1800);
+          timer = window.setTimeout(tick, open ? 650 : 5000);
         });
     };
     // 展开/收起会改变窗口尺寸，等 WebView 视口稳定后再抓第一帧。
-    timer = window.setTimeout(tick, open ? 120 : 0);
+    schedule();
+    const onVisible = () => {
+      if (!alive || document.visibilityState !== "visible") return;
+      schedule();
+    };
+    document.addEventListener("visibilitychange", onVisible);
     return () => {
       alive = false;
       backdropSeq.current++;
       if (timer != null) window.clearTimeout(timer);
+      document.removeEventListener("visibilitychange", onVisible);
     };
   }, [enabled, open]);
 
@@ -428,13 +478,46 @@ export default function IslandApp() {
     return () => window.removeEventListener("blur", onBlur);
   }, []);
 
+  // ===== 面板子树延时卸载（内存压降专项 3a）=====
+  // 进入收起态后启动 10 分钟倒计时，到期卸载 island-panel 子树省内存；
+  // 展开立即清表（expand() 里还有同步预挂，二者叠加保证展开时已挂载）。
+  useEffect(() => {
+    if (open) return;
+    const timer = window.setTimeout(() => setPanelMounted(false), PANEL_UNMOUNT_DELAY_MS);
+    return () => window.clearTimeout(timer);
+  }, [open]);
+
+  // ===== lazy 页 chunk 空闲期预取（内存压降专项 5）=====
+  // ShotPage / ToolboxPage 拆独立 chunk 后，首次点击对应 tab 才加载会有
+  // 一帧 Suspense 占位；启动后空闲期预取（只下载执行模块顶层，不渲染
+  // 组件）让首次点击零等待。
+  useEffect(() => {
+    const warm = () => {
+      void import("./ShotPage");
+      void import("./ToolboxPage");
+    };
+    if (typeof window.requestIdleCallback === "function") {
+      const id = window.requestIdleCallback(warm, { timeout: 5000 });
+      return () => window.cancelIdleCallback(id);
+    }
+    const t = window.setTimeout(warm, 1500);
+    return () => window.clearTimeout(t);
+  }, []);
+
   // ===== 会议录音指示（收起胶囊）=====
   // 只在收起态轮询：展开时工具页自己的 meet-tab-live 红点与提示行已经承担
   // 感知职责，本层再轮询就是重复请求；收起后胶囊是用户唯一能看到的入口，
   // 指示只能由这里提供。2.5s 一拍足够——胶囊上的计时按轮询粒度跳秒，
   // 不需要每秒刷新，也不值得为一个红点常驻更高频的 IPC。
+  // 会议功能唯一入口在「工具」页内（ToolboxPage 的会议子页），配置把 tool
+  // tab 隐藏后胶囊指示无从进入会议页，轮询就是纯空转——跳过（内存压降
+  // 专项 3c；IslandConfig 无独立"会议启用"开关，hiddenTabs 是唯一可达性
+  // 字段）。config 未就绪时保持轮询（与原行为一致，boot 期只有几百 ms）。
+  const meetingEntryAvailable = config
+    ? !config.hiddenTabs.includes("tool")
+    : true;
   useEffect(() => {
-    if (open) return;
+    if (open || !meetingEntryAvailable) return;
     let cancelled = false;
     const check = () => {
       meetingState()
@@ -451,7 +534,7 @@ export default function IslandApp() {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [open]);
+  }, [open, meetingEntryAvailable]);
 
   // ===== 歌词：换曲后按「曲名 + 歌手」取一次，失败静默 =====
   useEffect(() => {
@@ -487,6 +570,8 @@ export default function IslandApp() {
     setTab(initialTab);
     if (!enabled) return;
     if (previewOpen) {
+      // 预览路径不经过 expand()：同样先预挂面板子树（对称 expand 入口）
+      setPanelMounted(true);
       setOpen(true);
       openRef.current = true;
       void setIslandExpanded(true);
@@ -519,6 +604,10 @@ export default function IslandApp() {
   };
 
   const expand = (immediate = false) => {
+    // 面板子树预挂（内存压降专项 3a）：收起 10 分钟后面板被卸载，展开入口
+    // 先同步挂回，距 showExpanded() 还有 setIslandExpanded → 视口等待 →
+    // 双 rAF 的帧余量，面板已在 DOM，展开 CSS 过渡与常驻 DOM 时代完全一致
+    setPanelMounted(true);
     cancelHover();
     cancelCollapse();
     if (shrinkTimer.current != null) {
@@ -1132,8 +1221,10 @@ export default function IslandApp() {
     </div>
   );
 
+  // 收起态冻结整岛 1s 时钟（内存压降专项 3b）：胶囊不消费 now，展开解冻
+  // 时 NowProvider 会立即重新同步，倒计时/相对时间无陈旧残留
   return (
-    <NowProvider>
+    <NowProvider frozen={!open}>
       <div
         ref={rootRef}
         className={`island-root edge-${edge} ${open ? "is-open" : "is-collapsed"} ${
@@ -1203,6 +1294,9 @@ export default function IslandApp() {
               onWidth={setPillWidth}
             />
           </div>
+          {/* 面板子树：收起 10 分钟后卸载、展开入口预挂（内存压降专项 3a，
+              见 PANEL_UNMOUNT_DELAY_MS 注释；胶囊 pill-wrap 常驻不卸载） */}
+          {panelMounted ? (
           <div className="island-panel" aria-hidden={!open}>
             <nav className="island-nav" title="按住顶部空白处拖动 HUD">
               {tabs.map((item) => (
@@ -1230,8 +1324,13 @@ export default function IslandApp() {
                 <Icon name="settings" size={15} />
               </button>
             </nav>
-            <div className={`island-content tab-${activeTab}`}>{renderPage()}</div>
+            <div className={`island-content tab-${activeTab}`}>
+              {/* lazy 页的 Suspense 边界：chunk 毫秒级加载 + 空闲期预取，
+                  fallback 保持空占位不引入额外样式 */}
+              <Suspense fallback={null}>{renderPage()}</Suspense>
+            </div>
           </div>
+          ) : null}
         </div>
         {contextMenu ? (
           <>

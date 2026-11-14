@@ -3,9 +3,12 @@ import type { CursorConfig, ProxyConfig, ShortcutConfig } from "./types";
 import {
   fetchFxRate,
   getCursorConfig,
+  getPanelEnabled,
   getProxyConfig,
   getShortcutConfig,
   setCursorConfig,
+  // 别名避免与本组件 panelEnabled 的 useState setter setPanelEnabled 撞名
+  setPanelEnabled as savePanelSwitch,
   setProxyConfig,
   setShortcutConfig,
 } from "./api";
@@ -108,6 +111,12 @@ export function SettingsPanel({
   const [autostartLoaded, setAutostartLoaded] = useState(false);
   const [savingAutostart, setSavingAutostart] = useState(false);
   const [autostartError, setAutostartError] = useState<string | null>(null);
+  // ===== 悬浮窗启用开关（关闭即销毁本窗口所在 panel，释放 WebView 渲染
+  // 进程；重新开启或托盘呼出时由 Rust 侧现场建窗，见 panel.rs）=====
+  const [panelEnabled, setPanelEnabled] = useState(true);
+  const [panelLoaded, setPanelLoaded] = useState(false);
+  const [savingPanel, setSavingPanel] = useState(false);
+  const [panelError, setPanelError] = useState<string | null>(null);
   // 透明度持久化防抖：拖动滑块时只实时应用 DOM，写盘按 300ms 节流
   const alphaPersistTimer = useRef<number | undefined>(undefined);
   // 最新透明度镜像：卸载清理的闭包读不到最新 state，从 ref 取
@@ -178,6 +187,39 @@ export function SettingsPanel({
       .finally(() => setAutostartLoaded(true));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    getPanelEnabled()
+      .then(setPanelEnabled)
+      .catch((e) =>
+        setPanelError(t("settings.floatWindowReadFail", { msg: String(e) }))
+      )
+      .finally(() => setPanelLoaded(true));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // 应用悬浮窗开关：开启 → Rust 侧现场建窗并显示聚焦（用户能立刻看到
+  // 面板回来）；关闭 → 销毁 panel 窗口。注意关闭分支的响应可能永远不
+  // 返回——本组件就跑在 panel 窗口里，窗口销毁后 WebView 直接关闭，
+  // Promise 随进程终止；所以先把 UI 态置为目标值再 invoke，失败（只可能
+  // 是建窗/销毁被拒，窗口仍在）再回滚并提示
+  const handlePanelEnabledChange = async (enabled: boolean) => {
+    setSavingPanel(true);
+    setPanelError(null);
+    setPanelEnabled(enabled);
+    try {
+      await savePanelSwitch(enabled);
+    } catch (e) {
+      setPanelEnabled(!enabled);
+      setPanelError(
+        enabled
+          ? t("settings.floatWindowFailOn", { msg: String(e) })
+          : t("settings.floatWindowFailOff", { msg: String(e) })
+      );
+    } finally {
+      setSavingPanel(false);
+    }
+  };
 
   // 保存 Cursor 配置（设置页改动落盘：手动汇率输入、自动更新开关）
   const handleSaveCursor = async () => {
@@ -380,6 +422,43 @@ export function SettingsPanel({
               </PillButton>
             )}
           </PillGroup>
+        </SettingsCard>
+
+        {/* 悬浮窗开关：关闭即销毁 panel 窗口（省内存，WebView 渲染进程
+            随之释放），开启或托盘呼出时 Rust 侧现场重建；重开入口见文案 */}
+        <SettingsCard
+          title={t("settings.floatWindow")}
+          action={
+            <label className="flex items-center gap-1 text-[10px] text-slate-600 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={panelEnabled}
+                onChange={(e) => handlePanelEnabledChange(e.target.checked)}
+                disabled={!panelLoaded || savingPanel}
+                className="accent-sky-500 h-3 w-3 disabled:opacity-40"
+              />
+              {savingPanel ? t("settings.applying") : t("settings.enable")}
+            </label>
+          }
+        >
+          <p className="text-[9px] text-slate-500 leading-relaxed">
+            {t("settings.floatWindowHint")}
+          </p>
+          {!panelLoaded && (
+            <p className="text-[9px] text-slate-500 mt-1">{t("settings.readingState")}</p>
+          )}
+          {panelError && (
+            <>
+              <p className="text-[9px] text-rose-600 mt-1 leading-relaxed break-all">
+                {panelError}
+              </p>
+              {/* 开关操作失败可能是超时（配置已落盘、窗口动作未确认），
+                  UI 回滚态与磁盘状态可能短暂不一致，提示以重启为准 */}
+              <p className="text-[9px] text-slate-500 mt-0.5 leading-relaxed">
+                {t("settings.floatWindowFailNote")}
+              </p>
+            </>
+          )}
         </SettingsCard>
 
         {/* 语言：与顶栏 LanguageToggle 读写同一 Context，切换后全站即时同步 */}

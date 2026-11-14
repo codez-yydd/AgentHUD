@@ -10,6 +10,7 @@ import {
 import type { BrandIconName } from "./BrandIcon";
 import { ProviderQuotaErrorBanner, QuotaEntryCard } from "./QuotaEntryCard";
 import { useResetDisplay } from "./resetDisplay";
+import { useNow } from "./nowClock";
 
 export interface ProviderAccountsSectionProps {
   /** 凭证 provider id（决定凭证文件 ~/.agenthud/credentials/<provider>.json 与查询分发）。
@@ -109,16 +110,10 @@ export function ProviderAccountsSection({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hasCreds, provider]);
 
-  // 倒计时显示用时钟（有窗口带重置时间才有意义，空数据不启定时器）
-  const hasResets = quotaEntries.some((e) =>
-    e.windows.some((w) => w.resetsAt != null)
-  );
-  const [now, setNow] = useState(Date.now());
-  useEffect(() => {
-    if (!hasResets) return;
-    const timer = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(timer);
-  }, [hasResets]);
+  // 倒计时显示用时钟：收敛为共享 context（内存压降专项 6，见 nowClock.tsx）。
+  // 原先「有重置数据才启定时器」的门槛随共享时钟取消——全局定时器只剩
+  // 一个，无重置数据的组件仅多几次幂等重渲染。
+  const now = useNow();
 
   // 凭证列表未加载完成不渲染（防闪：加载为本地文件读，瞬时完成）。
   // 整体查询失败时仍渲染：坏文件会让凭证列表永远读取失败（entriesLoaded

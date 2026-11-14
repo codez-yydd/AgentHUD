@@ -42,6 +42,8 @@ use tauri::{
     WebviewWindowBuilder,
 };
 
+use crate::webview_args::MergedRendererBuilder;
+
 /// 灵动岛窗口 label（capabilities/island.json 白名单同步）
 pub const ISLAND_WINDOW_LABEL: &str = "island";
 /// 配置变更广播（透明度 / 板块显隐 / 城市 / 自选股等）
@@ -53,10 +55,11 @@ pub const ISLAND_EXPAND_EVENT: &str = "zbar://island-expand";
 
 /// 窗口宽（逻辑 px）。面板 520 + 左右各 16 的投影留白。
 const ISLAND_WINDOW_W: f64 = 552.0;
-/// 拖拽时临时用的「条」高：顶部 6 屏缘间隙 + 胶囊 48 + 底部 16 投影留白。
-/// 只是拖拽期间的窗口高度（为了能贴到屏幕下缘），松手/开合都用展开态高。
+/// 收起态窗口高（逻辑 px）：顶部 6 屏缘间隙 + 胶囊 48 + 底部 16 投影留白。
+/// 收起/拖拽时窗口真实缩到这个高度（省内存专项 4：@2x 下合成面从
+/// 1104×1040 降到 1104×140），展开时恢复 `ISLAND_EXPANDED_H`。
 const ISLAND_COLLAPSED_H: f64 = 70.0;
-/// 常驻窗口高（内容面板 492 + 顶部间隙 9 + 底部 16 投影留白）。开合不改窗口。
+/// 展开态窗口高（内容面板 492 + 顶部间隙 9 + 底部 16 投影留白）。
 const ISLAND_EXPANDED_H: f64 = 520.0;
 
 static SERVICES_STARTED: AtomicBool = AtomicBool::new(false);
@@ -87,14 +90,26 @@ pub fn island_set_hover_rect(x: f64, y: f64, width: f64, height: f64) {
     }
 }
 
-/// 灵动岛窗口的逻辑尺寸（前端上报的热区按此裁剪）。
-///
-/// **窗口永远是展开态尺寸**（见 `set_expanded_on_main` 的注释）：透明窗口每改
-/// 一次尺寸，DWM 都会重建它的合成面，WebView2 重绘前的那 1~2 帧是空的——实机上
-/// 展开时表现为「整块岛先横向跳一下、再消失一瞬」，收起后表现为「动画都结束了
-/// 竖条才闪一下冒出来」。所以尺寸一次定死，开合只由 CSS 负责。
+/// 前端上报热区的裁剪上界（逻辑 px）：取两种开合几何的**最大值**。
+/// 窗口现在会随开合真实缩放（见 `set_expanded_on_main`），但热区上报发生在
+/// 收起稳态（胶囊矩形必然小于展开几何），用展开态尺寸做上界在两态下都安全
+/// ——不会把合法的胶囊矩形裁掉，也不会把展开动画途中的陈旧大矩形放行
+/// （那道防御由 rAF 稳帧上报 + `LAST_EXPANDED` 兜底，见 IslandApp.tsx）。
 fn window_size_logical(_edge: &str) -> (f64, f64) {
     (ISLAND_WINDOW_W, ISLAND_EXPANDED_H)
+}
+
+/// 按开合状态与吸附边给出的窗口逻辑尺寸（与 `window_rect_in_area` 的取值
+/// 完全一致）。穿透判定用它校验「当前窗口是否正处于收起几何」。
+fn window_size_for_state(edge: &str, expanded: bool) -> (f64, f64) {
+    if expanded {
+        return (ISLAND_WINDOW_W, ISLAND_EXPANDED_H);
+    }
+    // 48px 竖胶囊 + 左右各 11px 留宽 / 胶囊 48 + 上 6 下 16
+    match edge {
+        "left" | "right" => (70.0, 520.0),
+        _ => (ISLAND_WINDOW_W, ISLAND_COLLAPSED_H),
+    }
 }
 
 /// 把前端上报的热区（相对窗口左上角的逻辑 px）裁进窗口内。
@@ -454,13 +469,14 @@ fn left_button_down() -> bool {
 
 /// 「这一刻是否要让灵动岛窗口对鼠标透明」——纯函数，单测覆盖。
 ///
-/// 灵动岛窗口按「展开面板 + 投影留白」建窗（顶部吸附 552×70），可见胶囊只占
-/// 中间一块，四周是纯透明像素。Win32 的命中测试按窗口矩形算，这圈留白会把
-/// 点击吃掉：看着是空的，点下面的应用却没反应。
+/// 收起态窗口缩到胶囊高度（顶部吸附 552×70），可见胶囊只占中间一块，四周
+/// 是纯透明像素。Win32 的命中测试按窗口矩形算，这圈留白会把点击吃掉：
+/// 看着是空的，点下面的应用却没反应。
 ///
 /// 只有「窗口正好是收起态几何 + 有可信的胶囊矩形 + 光标不在胶囊内」三条同时
-/// 成立才穿透；窗口尺寸对不上（展开态 / 展开收起动画途中）一律保持整窗可交互
-/// ——那 500ms 里热区必然滞后，宁可多挡十几 px 也不能让面板上的点击漏到下面。
+/// 成立才穿透；窗口尺寸对不上（展开态 / 展开收起动画途中 / 拖拽中间态）一律
+/// 保持整窗可交互——那 500ms 里热区必然滞后，宁可多挡十几 px 也不能让面板上
+/// 的点击漏到下面。
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 fn should_mouse_through(
     edge: &str,
@@ -477,7 +493,10 @@ fn should_mouse_through(
     if LAST_EXPANDED.load(Ordering::Relaxed) {
         return false;
     }
-    let (cw, ch) = window_size_logical(edge);
+    // 按收起几何校验窗口尺寸（省内存专项 4：窗口真实随开合缩放，顶部吸附
+    // 收起时是 552×70，左右吸附是 70×520）。resize 与 LAST_EXPANDED 翻转之间
+    // 有一个轮询拍的内窗口：尺寸对不上时保持整窗可交互，最坏只多挡几拍。
+    let (cw, ch) = window_size_for_state(edge, false);
     if (ww as f64 / scale - cw).abs() > 1.5 || (wh as f64 / scale - ch).abs() > 1.5 {
         return false;
     }
@@ -678,7 +697,8 @@ pub struct IslandDragEnd {
 }
 
 /// 开始拖拽：记录光标与窗口左上角的偏移。展开态或左右竖排胶囊会先被
-/// 收成 552×70 的横条，并以光标为中心放到屏幕上再开始拖——前端在按住
+/// 收成 552×70 的横条，并以光标为中心放到屏幕上再开始拖（顶部吸附的收起
+/// 态本来就是横条，`need_bar` 为 false，拖动时不改几何）——前端在按住
 /// 任意非表单区域移动超过阈值后调用，面板会在这一拍收掉。
 #[tauri::command]
 pub async fn island_drag_begin(app: AppHandle) -> Result<IslandDragBegin, String> {
@@ -790,20 +810,16 @@ pub async fn island_drag_step(app: AppHandle) -> Result<IslandDragStep, String> 
                 );
                 let lx = cx as f64 / area.scale;
                 let ly = cy as f64 / area.scale;
-                // 窗口尺寸保持常驻展开态，**拖拽期间也不再改**：改尺寸会让 DWM
-                // 重建合成面，看起来就是「一开始拖，岛闪一下」。
-                // 条画在窗口顶部，所以窗口顶边 = 条顶边；把「条」的落点 clamp 在
-                // 工作区内即可，窗口多出来的透明部分伸出屏幕边缘也无所谓。
+                // 窗口统一缩成「条」高（省内存专项 4：拖拽态 = 收起态几何，
+                // 松手后 island_drag_end 落回同一几何，不再有第二次 resize）。
+                // 换边拖拽本来就要改几何，此刻前端同时把面板切回收起态
+                // （见 runDragLoop 的 started 分支），一次 SetWindowPos 提交，
+                // 中间态不可见。条画在窗口顶部，所以窗口顶边 = 条顶边；
+                // 把「条」的落点 clamp 在工作区内即可。
                 let x = (lx - ISLAND_WINDOW_W / 2.0).clamp(ax, (ax + aw - ISLAND_WINDOW_W).max(ax));
                 let y = (ly - ISLAND_COLLAPSED_H / 2.0)
                     .clamp(ay, (ay + ah - ISLAND_COLLAPSED_H).max(ay));
-                // Windows：窗口常驻展开态尺寸，拖拽期间也不改（改尺寸会闪一下）；
-                // macOS 的透明窗口不经过 DWM 这条合成路径，仍缩成「条」。
-                #[cfg(target_os = "windows")]
-                let drag_window_h = ISLAND_EXPANDED_H;
-                #[cfg(not(target_os = "windows"))]
-                let drag_window_h = ISLAND_COLLAPSED_H;
-                apply_window_frame_scaled(&win, x, y, ISLAND_WINDOW_W, drag_window_h, area.scale)?;
+                apply_window_frame_scaled(&win, x, y, ISLAND_WINDOW_W, ISLAND_COLLAPSED_H, area.scale)?;
                 LAST_EXPANDED.store(false, Ordering::Relaxed);
                 session.need_bar = false;
                 // 收条后重算抓取偏移，保证跟手不跳
@@ -824,11 +840,10 @@ pub async fn island_drag_step(app: AppHandle) -> Result<IslandDragStep, String> 
         let size = win
             .outer_size()
             .map_err(|e| format!("读取窗口尺寸失败: {e}"))?;
-        // Windows 上窗口常驻 552×520，但可见的只有顶部 70 高的横条；拖拽
-        // 范围必须按「条」算，不能按整扇透明窗算——否则用户把岛往屏幕下方
-        // 拖，窗口底边一碰到工作区下沿（1080 屏约 y=560）就再也拖不动了，
-        // 看起来就是「拖到一半卡住 / 根本拖不走」。窗口多出来的透明部分
-        // 允许伸出屏幕边缘。
+        // 拖拽范围必须按「条」算（顶部吸附时条 = 整窗，左右吸附时条横在
+        // 中段），不能按更大的窗口几何算——否则用户把岛往屏幕下方拖，
+        // 窗口底边一碰到工作区下沿就再也拖不动了，看起来就是「拖到一半
+        // 卡住 / 根本拖不走」。窗口多出来的部分允许伸出屏幕边缘。
         let bar_h =
             (ISLAND_COLLAPSED_H * win.scale_factor().unwrap_or(1.0)).min(size.height as f64);
         let (target_x, target_y) = clamp_drag_target(
@@ -937,8 +952,8 @@ pub async fn island_drag_end(
         }
         // 以窗口中心所在的那块屏做吸附判定：拖到副屏后，距离和比例都
         // 相对副屏工作区计算，不能再用主屏的边。
-        // 注意窗口是常驻的 552×520，**条只占窗口顶部 70 高**：吸附距离和比例
-        // 都必须按条算，否则条会被算在窗口垂直中心上，贴左右边时整体下坠 260px。
+        // 注意吸附判定按**条**（70 高）算而不是按窗口：拖拽期间窗口就是条
+        // 高；从展开态拖起（need_bar 路径）时窗口已在此前一步缩成条。
         let center = (
             pos.x as f64 + size.width as f64 / 2.0,
             pos.y as f64 + bar_h / 2.0,
@@ -958,8 +973,10 @@ pub async fn island_drag_end(
             c
         };
         save_config(&cfg)?;
-        // 落点按「条」算；窗口尺寸由 island_geometry 决定（Windows 上恒为展开态，
-        // 不再改窗口尺寸，否则又要闪一下）。
+        // 落点按「条」算；窗口尺寸由 island_geometry 决定（收起态几何：顶部
+        // 552×70 / 左右 70×520）。拖拽期间窗口已是条高，顶部吸附落回时几何
+        // 未变（apply_window_frame_scaled 的 no-op 守卫跳过），换边吸附的
+        // 尺寸切换发生在此刻的淡出帧（前端先 setSnapHiding 再调用）。
         let (nx, ny, nw, nh) = island_geometry(&app_main, edge, false, cfg.pos_frac);
         let scale = area.scale;
         apply_window_frame_scaled(&win, nx, ny, nw, nh, scale)?;
@@ -1439,34 +1456,21 @@ fn island_position(app: &AppHandle) -> (f64, f64) {
 /// 纯计算版窗口矩形（**逻辑 px**），方便单测。
 ///
 /// 尺寸是「设计稿的工作面」而不是「物理像素」：逻辑 px 经 `scale_factor()`
-/// 换算成物理像素后才交给 `SetWindowPos`——100% 屏是 552×520，125% 是 690×650，
-/// 150% 是 828×780，换分辨率/缩放都不用改代码。
+/// 换算成物理像素后才交给 `SetWindowPos`——100% 屏展开态是 552×520，125% 是
+/// 690×650，150% 是 828×780，换分辨率/缩放都不用改代码。
 ///
-/// 552 = 面板 520 + 左右各 16 的投影留白；520 = 上 6 + 面板 492 + 下 16 + 余量。
-/// 这两个数只跟 CSS 设计稿（`.island.open` 520×492）绑定，改面板尺寸时要一起改。
-/// 工作面比设计稿还小时（高 DPI 的小笔记本）取小值，宁可窗口窄一点也不能让
-/// 面板跑到屏幕外。
+/// 展开态 552×520：552 = 面板 520 + 左右各 16 的投影留白；520 = 上 9 + 面板
+/// 492 + 下 16 + 余量。收起态缩到胶囊高度（顶部吸附 552×70，左右吸附 70×520，
+/// 见 `ISLAND_COLLAPSED_H`）。这两个数只跟 CSS 设计稿绑定（`.island.open`
+/// 520×492 / 收起胶囊 48 高），改面板尺寸时要一起改。工作面比设计稿还小时
+/// （高 DPI 的小笔记本）取小值，宁可窗口窄一点也不能让面板跑到屏幕外。
 fn window_rect_in_area(
     edge: &str,
     expanded: bool,
     frac: f64,
     (ax, ay, aw, ah): (f64, f64, f64, f64),
 ) -> (f64, f64, f64, f64) {
-    #[cfg(target_os = "windows")]
-    let (base_w, base_h) = {
-        let _ = expanded;
-        (ISLAND_WINDOW_W, ISLAND_EXPANDED_H)
-    };
-    #[cfg(not(target_os = "windows"))]
-    let (base_w, base_h) = if expanded {
-        (ISLAND_WINDOW_W, ISLAND_EXPANDED_H)
-    } else {
-        // 48px 竖胶囊 + 左右各 11px 留白 / 胶囊 48 + 上 6 下 16
-        match edge {
-            "left" | "right" => (70.0, 520.0),
-            _ => (ISLAND_WINDOW_W, ISLAND_COLLAPSED_H),
-        }
-    };
+    let (base_w, base_h) = window_size_for_state(edge, expanded);
     let w = base_w.min(aw.max(1.0));
     let h = base_h.min(ah.max(1.0));
     match edge {
@@ -1484,15 +1488,19 @@ fn window_rect_in_area(
     }
 }
 
-/// 灵动岛窗口几何（**逻辑 px**）。三种吸附边：
-/// - top：552×520，沿工作区横轴按 pos_frac 定位；
-/// - left/right：552×520（面板向内展开），贴住对应屏幕边，
-///   沿工作区纵轴按 pos_frac 定位。
+/// 灵动岛窗口几何（**逻辑 px**）。展开/收起的真实尺寸：
+/// - top：展开 552×520 / 收起 552×70，沿工作区横轴按 pos_frac 定位，
+///   **Y 恒贴工作区上缘**（`y = ay`）——缩窗只裁底部，胶囊在窗口顶部的
+///   屏幕位置开合前后完全不变；
+/// - left/right：展开 552×520 / 收起 70×520，贴住对应屏幕边，沿工作区
+///   纵轴按 pos_frac 定位——竖胶囊贴吸附边（CSS flex-end + 11px 内边距），
+///   宽度变化不移动胶囊的屏幕位置。
 ///
-/// **Windows 上窗口恒为展开态尺寸**：透明窗口每改一次尺寸，DWM 都会重建合成面
-/// 并空出 1~2 帧（见 `set_expanded_on_main` 的注释）；`expanded` 于是在 Windows
-/// 上只影响窗口内岛元素的布局（CSS 的事）。macOS 的透明窗口不经过这条合成路径，
-/// 保持原来的「收起态窗口更小」，避免常驻大窗口挡住点击。
+/// 平台不再分叉（省内存专项 4）：Windows 与 macOS 都按收起态真实缩窗。
+/// 历史上 Windows 曾固定 552×520 以规避透明窗口 resize 的 DWM 闪帧，代价
+/// 是收起态（约 95% 的存在时间）合成面/光栅缓存仍按 1104×1040 @2x 计费；
+/// 现在开合时序约束为「展开先改窗口、收起后改窗口」（见
+/// `set_expanded_on_main`），把 resize 放在内容静止的胶囊帧上。
 fn island_geometry(
     app: &AppHandle,
     edge: &str,
@@ -1541,7 +1549,9 @@ pub fn ensure_window(app: &AppHandle) -> Result<WebviewWindow, String> {
     .min_inner_size(1.0, 1.0)
     .background_throttling(tauri::utils::config::BackgroundThrottlingPolicy::Disabled)
     .focusable(false)
-    .focused(false);
+    .focused(false)
+    // 合并 WebView2 渲染进程（内存压降专项，见 webview_args.rs 模块注释）
+    .merged_renderer();
 
     // Windows：隐藏建窗 → 修正尺寸 → 显示，规避 tao 对极窄窗口的默认钳宽。
     #[cfg(target_os = "windows")]
@@ -1645,15 +1655,27 @@ fn apply_window_frame_scaled(
 pub(crate) fn set_expanded_on_main(app: &AppHandle, expanded: bool) -> Result<(), String> {
     let win = ensure_window(app)?;
     let cfg = load_config();
-    // **窗口尺寸永远按展开态**，开合只切 CSS。
+    // 开合时序契约（省内存专项 4，与前端 IslandApp.tsx 配合，勿单独改动）：
     //
-    // 透明窗口一改尺寸，DWM 会丢掉旧的合成面重建，WebView2 重绘之前的那 1~2
-    // 帧窗口是空的：展开时看着像「整块岛先横向跳一下 → 消失 → 动画才开始」，
-    // 收起时看着像「收缩动画演完了，竖条才闪一下冒出来」。以前收起 70×520、
-    // 展开 552×520，每次开合都要改窗口尺寸，正好踩中这个。
+    // **展开**：前端先调 island_set_expanded(true) 把窗口长到全尺寸，等
+    // WebView 视口真的变成目标尺寸（window.innerHeight >= 518 / innerWidth
+    // >= 550，见 expand() 的 waitViewport）后再启动 CSS 形变动画——窗口先大、
+    // 内容后长，不会出现「内容比窗口先大被裁剪」。
     //
-    // 现在窗口固定 552×520，收起态只是把胶囊画在边缘、其余透明——透明区域
-    // 的点击穿透由 start_mouse_through_watcher 按胶囊热区处理。
+    // **收起**：前端先播完 CSS 收起动画（closeNow 的 560ms 定时器 ≥ 500ms
+    // 过渡），再调 island_set_expanded(false) 把窗口缩回胶囊高度——内容先静、
+    // 窗口后缩，胶囊画在窗口顶部，缩窗只裁底部透明区，胶囊屏幕位置不变。
+    //
+    // 已知取舍：透明窗口每次 resize，DWM 都会重建合成面，WebView2 重绘前的
+    // 1~2 帧是空的（实机录屏能抓到）。resize 现在只发生在内容静止的胶囊帧
+    // （展开起点 / 收起终点），表现为胶囊极轻微地闪一下（16~33ms），换收起态
+    // （约 95% 的存在时间）合成面从 1104×1040 @2x 降到 1104×140 的 GPU 大头。
+    // 早期实现是在动画进行中 resize + 双 SetWindowPos，闪的是「整块岛横向跳 +
+    // 消失一瞬」，与本实现不是同一量级；若实测仍不可接受，回退点在
+    // window_size_for_state（恢复恒为展开态分支）。
+    //
+    // apply_window_frame_scaled 一次 SetWindowPos 同时提交位置与尺寸，目标
+    // 几何未变时直接跳过（重复调用 / 拖拽后的幂等收尾不触发 DWM 重建）。
     let (x, y, w, h) = island_geometry(app, &cfg.edge, expanded, cfg.pos_frac);
     apply_window_frame_scaled(&win, x, y, w, h, island_scale(app))?;
     LAST_EXPANDED.store(expanded, Ordering::Relaxed);
@@ -1967,10 +1989,17 @@ pub async fn island_set_expanded(expanded: bool, app: AppHandle) -> Result<(), S
 ///
 /// 前端在展开时约 7fps、收起时约 1fps 轮询；抓屏是阻塞的 GDI 操作，
 /// 放到 blocking 线程池里，避免卡住 Tauri 的异步运行时和 UI。
+/// `force`：true 时清空上一拍内容哈希，本拍必定重新编码并回传完整 data
+/// URL——前端页面重载（renderer 崩溃自动恢复等）后 CSS 底图从零开始，
+/// 哈希命中会持续返回空串哨兵导致底图缺失，重载后的轮询首拍带 force
+/// 自愈（见 backdrop::invalidate_last_hash）。
 #[tauri::command]
-pub async fn island_backdrop(app: AppHandle) -> Result<String, String> {
+pub async fn island_backdrop(app: AppHandle, force: Option<bool>) -> Result<String, String> {
     #[cfg(target_os = "windows")]
     {
+        if force.unwrap_or(false) {
+            backdrop::invalidate_last_hash();
+        }
         let win = app
             .get_webview_window(ISLAND_WINDOW_LABEL)
             .ok_or_else(|| "灵动岛窗口不存在".to_string())?;
@@ -1993,6 +2022,7 @@ pub async fn island_backdrop(app: AppHandle) -> Result<String, String> {
     #[cfg(not(target_os = "windows"))]
     {
         let _ = app;
+        let _ = force;
         Err("桌面毛玻璃采样仅支持 Windows".into())
     }
 }
@@ -2067,26 +2097,34 @@ mod tests {
     fn window_rect_is_logical_and_fits_small_work_area() {
         // 工作区按逻辑 px 传入（3440×1440 @125% → 2752×1152）。
         let big = (0.0, 0.0, 2752.0, 1152.0);
-        // Windows：窗口常驻「设计稿」尺寸 552×520，跟缩放/分辨率无关——
-        // 物理尺寸由 apply_window_frame_scaled 乘那块屏的 scale 得到。
-        #[cfg(target_os = "windows")]
-        {
-            let r = window_rect_in_area("right", true, 0.5, big);
-            assert_eq!((r.2, r.3), (552.0, 520.0));
-            assert_eq!(r.0, 2752.0 - 552.0);
-            assert_eq!(r.1, 1152.0 / 2.0 - 260.0);
-            // 收起态几何不变：窗口不跟着开合改尺寸。
-            assert_eq!(r, window_rect_in_area("right", false, 0.5, big));
-            // 左吸附贴左边。
-            assert_eq!(window_rect_in_area("left", true, 0.5, big).0, 0.0);
-            // 工作面比设计稿还小（1366×768 @150% → 911×512）：取小，别出屏。
-            let small = window_rect_in_area("top", true, 0.5, (0.0, 0.0, 911.0, 512.0));
-            assert_eq!((small.2, small.3), (552.0, 512.0));
-            assert_eq!(small.1, 0.0);
-        }
+        // 展开态：「设计稿」尺寸 552×520，跟缩放/分辨率无关——物理尺寸由
+        // apply_window_frame_scaled 乘那块屏的 scale 得到。
+        let r = window_rect_in_area("right", true, 0.5, big);
+        assert_eq!((r.2, r.3), (552.0, 520.0));
+        assert_eq!(r.0, 2752.0 - 552.0);
+        assert_eq!(r.1, 1152.0 / 2.0 - 260.0);
+        // 左吸附贴左边。
+        assert_eq!(window_rect_in_area("left", true, 0.5, big).0, 0.0);
+        // 收起态真实缩窗（省内存专项 4）：顶部横条 552×70，左右竖条 70×520。
+        let top_c = window_rect_in_area("top", false, 0.5, big);
+        assert_eq!((top_c.2, top_c.3), (552.0, 70.0));
+        // 顶部吸附 Y 恒贴工作区上缘：缩窗只裁底部，胶囊屏幕位置不变。
+        assert_eq!(top_c.1, 0.0);
+        assert_eq!(top_c.0, 2752.0 / 2.0 - 552.0 / 2.0, "缩窗不改 X 锚定");
+        let side_c = window_rect_in_area("right", false, 0.5, big);
+        assert_eq!((side_c.2, side_c.3), (70.0, 520.0));
+        assert_eq!(side_c.0, 2752.0 - 70.0);
+        assert_eq!(side_c.1, r.1, "左右吸附竖条高度与展开一致，Y 不动");
+        // 工作面比设计稿还小（1366×768 @150% → 911×512）：取小，别出屏。
+        let small = window_rect_in_area("top", true, 0.5, (0.0, 0.0, 911.0, 512.0));
+        assert_eq!((small.2, small.3), (552.0, 512.0));
+        assert_eq!(small.1, 0.0);
+        // 收起态 70 高远小于小工作面：原样保留。
+        let small_c = window_rect_in_area("top", false, 0.5, (0.0, 0.0, 911.0, 512.0));
+        assert_eq!((small_c.2, small_c.3), (552.0, 70.0));
         // 非法 pos_frac 由调用方归一到 0.5；这里只验证吸附轴仍贴边。
-        let r = window_rect_in_area("right", true, 0.0, big);
-        assert_eq!(r.0, 2752.0 - r.2);
+        let r2 = window_rect_in_area("right", true, 0.0, big);
+        assert_eq!(r2.0, 2752.0 - r2.2);
     }
 
     #[test]
@@ -2197,9 +2235,9 @@ mod tests {
 
     #[test]
     fn drag_target_uses_bar_height_not_tall_window() {
-        // Windows 常驻窗口 552×520，但可见横条只有 70 高：拖拽 clamp 必须
-        // 用条的尺寸，窗口多出来的透明部分允许伸出屏幕下沿。否则 1080 屏
-        // 上窗口 top 最高只能到 560，岛拖不到下半屏。
+        // 可见横条只有 70 高：拖拽 clamp 必须用条的尺寸，窗口多出来的部分
+        // 允许伸出屏幕下沿。否则 1080 屏上窗口 top 最高只能到 560，岛拖不到
+        // 下半屏。
         let bounds = (0.0, 0.0, 1920.0, 1080.0);
         let (_, y_bar) = clamp_drag_target(960.0, 900.0, 276, 35, (552.0, 70.0), bounds);
         assert_eq!(y_bar, 865.0);
@@ -2252,8 +2290,9 @@ mod tests {
 
     #[test]
     fn expanded_size_report_is_clamped() {
-        // 窗口恒为展开态 552×520：报告只按窗口边界裁剪，不再被收起尺寸压扁
-        // （收起动画期间的误判由 LAST_EXPANDED 和前端重新上报兜底）。
+        // 热区上报按两态中的最大几何（552×520）裁剪：收起稳态的胶囊矩形必然
+        // 小于上界不被误裁；收起动画途中的陈旧大矩形由 LAST_EXPANDED 和
+        // 前端 rAF 稳帧重新上报兜底。
         let r = clamp_hover_rect((26.0, 6.0, 494.0, 450.0), "top").unwrap();
         assert_eq!(r, (26.0, 6.0, 494.0, 450.0));
         // 越界部分裁进窗口。
@@ -2266,45 +2305,48 @@ mod tests {
 
     #[test]
     fn mouse_through_follows_pill_rect() {
-        // 窗口常驻展开态尺寸（552×520 逻辑 = 690×650 物理），顶部吸附时
-        // 胶囊 500×48 在 (26,6)。
-        let win = (1000, 0, 690, 650);
+        // 收起态窗口 552×70 逻辑（@1.25 → 690×88 物理），顶部吸附时胶囊
+        // 500×48 在 (26,6)。
+        let win = (1000, 0, 690, 88);
         let pill = Some((26.0, 6.0, 500.0, 48.0));
         let s = 1.25;
         // 胶囊正中可交互；左右留白、胶囊下方的留白穿透。
         assert!(!should_mouse_through("top", win, s, pill, (1345, 37)));
         assert!(should_mouse_through("top", win, s, pill, (1010, 40)));
-        assert!(should_mouse_through("top", win, s, pill, (1345, 300)));
+        assert!(should_mouse_through("top", win, s, pill, (1345, 86)));
         // 没上报过胶囊矩形：保持整窗可交互（宁可挡着也别乱穿透）。
         assert!(!should_mouse_through("top", win, s, None, (1010, 40)));
-        // 展开态：整窗可交互，绝不穿透。
+        // 展开态：整窗可交互，绝不穿透（窗口尺寸用展开几何验证）。
         LAST_EXPANDED.store(true, Ordering::Relaxed);
-        assert!(!should_mouse_through("top", win, s, pill, (1010, 40)));
+        assert!(!should_mouse_through("top", (1000, 0, 690, 650), s, pill, (1010, 40)));
         LAST_EXPANDED.store(false, Ordering::Relaxed);
-        // 窗口尺寸对不上（拖拽期间的「条」）：不动样式。
+        // 收起态但窗口尺寸对不上（展开收起动画途中 / 拖拽换边中间态）：
+        // 不动样式，保持整窗可交互。
         assert!(!should_mouse_through(
             "top",
-            (1000, 0, 690, 88),
+            (1000, 0, 690, 650),
             s,
             pill,
             (1010, 40)
         ));
-        // 左右吸附的竖胶囊：同样在常驻窗口里，48×440 贴右边。
-        let side = (0, 0, 690, 650);
-        let side_pill = Some((493.0, 40.0, 48.0, 440.0));
+        // 左右吸附的竖胶囊：收起态 70×520 逻辑（@1.25 → 88×650 物理），
+        // 竖条 48×440 贴右边（x=11）；左右留白只有 11px（< 10px 容差），
+        // 穿透区在竖条下方的底部留白（490..520 逻辑）。
+        let side = (0, 0, 88, 650);
+        let side_pill = Some((11.0, 40.0, 48.0, 440.0));
         assert!(!should_mouse_through(
             "right",
             side,
             s,
             side_pill,
-            (640, 300)
+            (55, 300)
         ));
         assert!(should_mouse_through(
             "right",
             side,
             s,
             side_pill,
-            (500, 300)
+            (55, 620)
         ));
         // 非法缩放：不动样式。
         assert!(!should_mouse_through(

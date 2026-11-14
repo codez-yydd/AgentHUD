@@ -67,6 +67,7 @@ use crate::token_speed::{
     speed_sample, is_completed_status, request_speed_at, PENDING_FRESH_MS, RequestTiming,
     SessionTree, SpeedQuality, SpeedSnapshot, SpeedState,
 };
+use crate::webview_args::MergedRendererBuilder;
 
 // ============================================================
 // 常量
@@ -1002,7 +1003,9 @@ fn ensure_session_hud_window(app: &AppHandle, cfg: &SessionHudConfig) -> Result<
     // 从根上不激活，focused(false) 双保险；HUD 无键盘交互，拖动不需要
     // 激活，且绝不能从正在输入的会话里抢走焦点
     .focusable(false)
-    .focused(false);
+    .focused(false)
+    // 合并 WebView2 渲染进程（内存压降专项，见 webview_args.rs 模块注释）
+    .merged_renderer();
 
     // 位置：持久化逻辑坐标优先，无记录默认主显示器右下角（宠物窗上方）
     let mon = app.primary_monitor().ok().flatten();

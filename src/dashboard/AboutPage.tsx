@@ -85,8 +85,13 @@ function useRemoteUpdateState(): [
       .catch(() => {
         /* 静默：收不到广播时更新区块停留在「未收到状态」形态 */
       });
-    // 请求面板立即广播当前状态（幂等：面板桥按序列化去重也保证无副作用）
-    emitTo(PANEL_TARGET, REMOTE_UPDATE_COMMAND_EVENT, "sync").catch(() => {});
+    // 请求面板立即广播当前状态（幂等：面板桥按序列化去重也保证无副作用）。
+    // 失败只 warn 不阻断：悬浮窗开关关闭（panel 被销毁）后这里是常态失败
+    //（自动更新检查暂停，见设置页开关文案），留日志便于区分「面板没开」
+    // 与「事件通道异常」
+    emitTo(PANEL_TARGET, REMOTE_UPDATE_COMMAND_EVENT, "sync").catch((e) => {
+      console.warn("[about] 面板不在线，更新状态同步请求未送达:", e);
+    });
     return () => {
       disposed = true;
       unlistenState?.();
@@ -94,7 +99,10 @@ function useRemoteUpdateState(): [
   }, []);
 
   const send = (command: RemoteUpdateCommand) => {
-    emitTo(PANEL_TARGET, REMOTE_UPDATE_COMMAND_EVENT, command).catch(() => {});
+    // 同上：panel 不在线（悬浮窗开关关闭）时命令不可达，warn 留痕
+    emitTo(PANEL_TARGET, REMOTE_UPDATE_COMMAND_EVENT, command).catch((e) => {
+      console.warn(`[about] 更新命令 ${command} 未送达（面板不在线）:`, e);
+    });
   };
 
   return [state, send];

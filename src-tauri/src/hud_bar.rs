@@ -84,6 +84,7 @@ use crate::codex::CodexRateLimits;
 use crate::kimi::KimiRateLimits;
 use crate::provider_quota::{ProviderQuotaBalance, ProviderQuotaEntry};
 use crate::quota::QuotaResult;
+use crate::webview_args::MergedRendererBuilder;
 
 // ============================================================
 // 常量与窗口 label / 事件
@@ -2021,7 +2022,9 @@ pub fn ensure_hud_bar_window(app: &AppHandle) -> Result<(), String> {
     // 不抢焦点（照搬 pet.rs）：focusable(false) 映射 WS_EX_NOACTIVATE 从
     // 根上不激活；停靠条无键盘交互，点击条目/拖动都不需要激活
     .focusable(false)
-    .focused(false);
+    .focused(false)
+    // 合并 WebView2 渲染进程（内存压降专项，见 webview_args.rs 模块注释）
+    .merged_renderer();
 
     // 位置：持久化吸附落点优先，但必须先验证它仍落在某块屏的工作区内——
     // 显示器拔插/分辨率变化后旧坐标可能完全在桌面外，窗口会「消失」且
@@ -2262,6 +2265,8 @@ pub fn ensure_hud_card_window(app: &AppHandle) -> Result<(), String> {
     // 不抢焦点（同停靠条）：卡片只做悬浮展示与点击，"打开主窗口"按钮走 IPC
     .focusable(false)
     .focused(false)
+    // 合并 WebView2 渲染进程（内存压降专项，见 webview_args.rs 模块注释）
+    .merged_renderer()
     .visible(false)
     .build()
     .map_err(|e| format!("创建详情卡窗口失败: {e}"))?;

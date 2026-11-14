@@ -78,7 +78,7 @@ import {
   remoteToStats,
   remoteTrendToLocal,
 } from "./merge";
-import { loadCache, saveCache } from "./cache";
+import { loadCache, saveCache, removeCache, loadCacheByPrefix } from "./cache";
 import { useI18n } from "./i18n";
 import { CREDENTIALS_CHANGED_EVENT } from "./agentVisibility";
 import {
@@ -792,6 +792,121 @@ function schedulePersist(key: string, value: unknown): void {
   }, PERSIST_DEBOUNCE_MS);
 }
 
+// ===== 大缓存拆 key 持久化（内存压降专项） =====
+// 原方案：每个来源整键全量 stringify（如 zbar-zai-cache = 全部 range 条目
+// 一次 JSON.stringify），30s 刷新轮每拍都有数个 range 条目更新，整键反复
+// 全量序列化（trend 数组占大头），CPU 浪费明显。新方案：条目按
+// `{baseKey}|{entryKey}` 子键独立落盘（{source}|{range} 粒度），只写实际
+// 变化的条目（对象引用对比，未变零序列化）；冷启动由 loadCacheByPrefix 按
+// 前缀聚合恢复（见 cache.ts），旧整键在首次 useState 初始化时一次性同步
+// 拆写并删除（幂等迁移，见 migrateSplitCacheKey）。
+// localStorage 键结构变更（V-split 迁移）：旧键读出 → 逐条目写子键 →
+// removeCache 旧键。进程中途被杀最坏残留「旧键 + 部分子键」，下次冷启动
+// 旧键仍在则重跑拆分（子键被同值覆盖），幂等无害。
+
+/**
+ * 冷启动拆 key 迁移：旧整键存在时同步拆写子键并删除旧键，返回旧数据供
+ * useState 恢复；旧键不存在（新结构或已迁移）返回 null，调用方走
+ * loadCacheByPrefix 聚合。同步执行发生在首帧渲染前，秒显路径不受影响。
+ */
+function migrateSplitCacheKey<T>(baseKey: string): Record<string, T> | null {
+  const legacy = loadCache<Record<string, T>>(baseKey);
+  if (!legacy) return null;
+  for (const [k, v] of Object.entries(legacy)) {
+    saveCache(`${baseKey}|${k}`, v);
+  }
+  removeCache(baseKey);
+  return legacy;
+}
+
+/**
+ * 拆 key 写盘：对比 prev/current 逐条目写变化项（引用对比，未变跳写）。
+ * - syncWrite=true（速度契约迁移轮挂载首写）：同步 saveCache，维持
+ *   「迁移后的缓存先落盘 → 版本标记后落盘」时序契约（见版本标记 effect）；
+ * - 条目被淘汰（trimCustomEntries）：从 pending 移除防旧值回写 + 同步删子键
+ *   （低频事件，直接删不防抖）。
+ */
+function persistSplitCache<T>(
+  baseKey: string,
+  cache: Record<string, T>,
+  prev: Record<string, T> | null,
+  syncWrite: boolean
+): void {
+  const prefix = `${baseKey}|`;
+  for (const [k, v] of Object.entries(cache)) {
+    // 引用未变（未参与本轮 setCache 的新对象）→ 内容必未变，跳过序列化
+    if (prev && prev[k] === v) continue;
+    if (syncWrite) saveCache(prefix + k, v);
+    else schedulePersist(prefix + k, v);
+  }
+  if (prev) {
+    for (const k of Object.keys(prev)) {
+      if (k in cache) continue;
+      persistPending.delete(prefix + k);
+      removeCache(prefix + k);
+    }
+  }
+}
+
+/** 窗口隐藏判定（刷新轮跳 tick 用）：WebView2 在宿主窗口隐藏时会把
+ *  visibilityState 置 hidden（项目既有 background_throttling 行为依赖
+ *  该事实，见 hud_bar 等模块注释）。 */
+function isDocHidden(): boolean {
+  return document.visibilityState === "hidden";
+}
+
+/**
+ * 隐藏感知的定时刷新轮（内存压降专项）：隐藏态跳过 tick，变可见时立即补
+ * 一轮。隐藏窗口里照常发起 IPC 拉取 + 解析 + 写盘是纯浪费；且隐藏页的
+ * interval 被浏览器节流，恢复后最长要等一个周期才有新数据，故监听
+ * visibilitychange 在变可见时主动补一次（无既有补刷 effect 的轮次用：
+ * quota / accountQuotas / accountTodayDeltas / agentQuotaDeltas /
+ * providerQuota 120s 轮；zai/cursor 范围轮已由挂载层 visibilitychange
+ * 全量补刷覆盖，不重复挂监听）。
+ */
+function useHiddenAwareTimer(
+  tick: () => void,
+  intervalMs: number,
+  firstDelayMs: number
+): void {
+  useEffect(() => {
+    const run = () => {
+      if (isDocHidden()) return;
+      tick();
+    };
+    const onVisible = () => {
+      if (document.visibilityState === "visible") tick();
+    };
+    const first = setTimeout(run, firstDelayMs);
+    const timer = setInterval(run, intervalMs);
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      clearTimeout(first);
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+    // tick 由调用方保证随依赖重建（与原各 effect 依赖数组等价），intervalMs
+    // / firstDelayMs 是调用点常量
+  }, [tick, intervalMs, firstDelayMs]);
+}
+
+/**
+ * 大缓存拆 key 持久化挂载点：effect 首跑（prev=null）全量拆写挂载时缓存
+ * （覆盖迁移残留 / 补齐缺失子键），后续仅写引用变化的条目（见
+ * persistSplitCache）。syncWrite 透传迁移轮同步写开关。
+ */
+function useSplitCachePersist<T>(
+  baseKey: string,
+  cache: Record<string, T>,
+  syncWrite: boolean
+): void {
+  const prevRef = useRef<Record<string, T> | null>(null);
+  useEffect(() => {
+    persistSplitCache(baseKey, cache, prevRef.current, syncWrite);
+    prevRef.current = cache;
+  }, [cache, baseKey, syncWrite]);
+}
+
 /** 今日增量持久化载荷：带本地日期戳（dateStr），跨天冷启动据此丢弃昨日值 */
 interface DatedTodayDelta {
   date: string;
@@ -857,39 +972,66 @@ export function DataProvider({ pricing, credentialPresence, children }: Provider
   // ===== 按范围缓存（持久化，key: zai/codex=`${df}|${rangeKey}`，cursor=rangeKey）=====
   // zai/claude/kimi 含速度数据：旧契约缓存冷启动恢复时先剥离旧口径速度字段
   // 并把 ts 归零（详见 migrateSpeedEntries 注释），刷新到达后自动恢复新口径。
+  // 存储：拆 key 子键（`zbar-{源}-cache|{条目key}`，见 persistSplitCache），
+  // 冷启动先试旧整键一次性迁移、否则按前缀聚合恢复（秒显路径不变）。
   const [zaiCache, setZaiCache] = useState<Record<string, ZaiEntry>>(
     () => {
-      const raw = stripRefreshing(loadCache<Record<string, ZaiEntry>>("zbar-zai-cache") ?? {});
+      const raw = stripRefreshing(
+        migrateSplitCacheKey<ZaiEntry>("zbar-zai-cache") ??
+          loadCacheByPrefix<ZaiEntry>("zbar-zai-cache|")
+      );
       return LEGACY_SPEED_CACHE ? migrateSpeedEntries(raw) : raw;
     }
   );
   const [cursorCache, setCursorCache] = useState<Record<string, CursorEntry>>(
-    () => stripRefreshing(loadCache<Record<string, CursorEntry>>("zbar-cursor-cache") ?? {})
+    () =>
+      stripRefreshing(
+        migrateSplitCacheKey<CursorEntry>("zbar-cursor-cache") ??
+          loadCacheByPrefix<CursorEntry>("zbar-cursor-cache|")
+      )
   );
   const [codexCache, setCodexCache] = useState<Record<string, AgentEntry>>(
-    () => stripRefreshing(loadCache<Record<string, AgentEntry>>("zbar-codex-cache") ?? {})
+    () =>
+      stripRefreshing(
+        migrateSplitCacheKey<AgentEntry>("zbar-codex-cache") ??
+          loadCacheByPrefix<AgentEntry>("zbar-codex-cache|")
+      )
   );
   const [claudeCache, setClaudeCache] = useState<Record<string, AgentEntry>>(
     () => {
-      const raw = stripRefreshing(loadCache<Record<string, AgentEntry>>("zbar-claude-cache") ?? {});
+      const raw = stripRefreshing(
+        migrateSplitCacheKey<AgentEntry>("zbar-claude-cache") ??
+          loadCacheByPrefix<AgentEntry>("zbar-claude-cache|")
+      );
       return LEGACY_SPEED_CACHE ? migrateSpeedEntries(raw) : raw;
     }
   );
   const [kimiCache, setKimiCache] = useState<Record<string, KimiEntry>>(
     () => {
-      const raw = stripRefreshing(loadCache<Record<string, KimiEntry>>("zbar-kimi-cache") ?? {});
+      const raw = stripRefreshing(
+        migrateSplitCacheKey<KimiEntry>("zbar-kimi-cache") ??
+          loadCacheByPrefix<KimiEntry>("zbar-kimi-cache|")
+      );
       return LEGACY_SPEED_CACHE ? migrateSpeedEntries(raw) : raw;
     }
   );
   // dsh 缓存：速度契约迁移不适用——zbar-dsh-cache 是本版本全新引入的键，
   // 磁盘上不可能存在旧口径速度条目（其余处理与 claude/kimi 完全一致）
   const [dshCache, setDshCache] = useState<Record<string, DshEntry>>(
-    () => stripRefreshing(loadCache<Record<string, DshEntry>>("zbar-dsh-cache") ?? {})
+    () =>
+      stripRefreshing(
+        migrateSplitCacheKey<DshEntry>("zbar-dsh-cache") ??
+          loadCacheByPrefix<DshEntry>("zbar-dsh-cache|")
+      )
   );
   // opencode 缓存：与 dsh 同款（zbar-opencode-cache 同为全新键，无旧口径速度
   // 条目需要迁移，速度字段照旧由后端下发）
   const [opencodeCache, setOpencodeCache] = useState<Record<string, OpencodeEntry>>(
-    () => stripRefreshing(loadCache<Record<string, OpencodeEntry>>("zbar-opencode-cache") ?? {})
+    () =>
+      stripRefreshing(
+        migrateSplitCacheKey<OpencodeEntry>("zbar-opencode-cache") ??
+          loadCacheByPrefix<OpencodeEntry>("zbar-opencode-cache|")
+      )
   );
   // minimaxcode 缓存：与 opencode 同款（zbar-minimaxcode-cache 同为全新键，
   // 无旧口径速度条目需要迁移，速度字段照旧由后端下发）
@@ -898,7 +1040,8 @@ export function DataProvider({ pricing, credentialPresence, children }: Provider
   >(
     () =>
       stripRefreshing(
-        loadCache<Record<string, MinimaxcodeEntry>>("zbar-minimaxcode-cache") ?? {}
+        migrateSplitCacheKey<MinimaxcodeEntry>("zbar-minimaxcode-cache") ??
+          loadCacheByPrefix<MinimaxcodeEntry>("zbar-minimaxcode-cache|")
       )
   );
 
@@ -2118,6 +2261,10 @@ export function DataProvider({ pricing, credentialPresence, children }: Provider
   useEffect(() => {
     const df = deviceFilter;
     const tick = () => {
+      // 窗口隐藏时跳过本轮刷新（内存压降专项）：隐藏窗口里的 IPC 拉取 +
+      // 解析 + 写盘是纯浪费；恢复可见由下方 visibilitychange 补刷 effect
+      // 立即补一轮，数据不缺失
+      if (isDocHidden()) return;
       for (const p of PRESET_RANGES) {
         const [f, t] = resolveRange(p, custom);
         refreshZaiRange(df, `${df}|${p}`, f, t, bucketOf(p));
@@ -2162,6 +2309,8 @@ export function DataProvider({ pricing, credentialPresence, children }: Provider
   //      tick 同款 ref 模式；cursorCache 的 inflight 去重复用）。 =====
   useEffect(() => {
     const tick = () => {
+      // 窗口隐藏时跳过本轮刷新（内存压降专项，恢复可见由下方补刷 effect 兜底）
+      if (isDocHidden()) return;
       // 每 tick 读一次汇率（用户可能在设置页改过），避免每个范围重复读。
       // >0 校验：非法值（手改文件等）保持现值，与后端 load_fx_rate 的 7.2 兜底口径一致
       getCursorConfig()
@@ -2190,55 +2339,30 @@ export function DataProvider({ pricing, credentialPresence, children }: Provider
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [refreshCursorRange]);
 
-  // Quota 定时 30s（与范围无关）。延后首刷（2.5s）错峰，避免与首屏渲染竞争
-  useEffect(() => {
-    const first = setTimeout(loadQuota, 2_500);
-    const timer = setInterval(loadQuota, 30_000);
-    return () => {
-      clearTimeout(first);
-      clearInterval(timer);
-    };
-  }, [loadQuota]);
+  // Quota 定时 30s（与范围无关）。延后首刷（2.5s）错峰，避免与首屏渲染竞争。
+  // 隐藏态跳 tick、恢复可见立即补一轮（useHiddenAwareTimer，内存压降专项）
+  useHiddenAwareTimer(loadQuota, 30_000, 2_500);
 
   // 多账号额度定时 60s：非当前账号的额度查询兼今日增量采样，5 分钟一轮
   // 会漏掉轻度账号两次采样间的百分比变化（增量恒为 0 不显示）；当前账号
   // 条目展示时仍由 30s 的 quota 实时覆盖（见下方 value 派生）。
   // 延后首刷（3.5s）错峰。
-  useEffect(() => {
-    const first = setTimeout(loadAccountQuotas, 3_500);
-    const timer = setInterval(loadAccountQuotas, 60_000);
-    return () => {
-      clearTimeout(first);
-      clearInterval(timer);
-    };
-  }, [loadAccountQuotas]);
+  useHiddenAwareTimer(loadAccountQuotas, 60_000, 3_500);
 
   // 各账号今日增量（本机+远端合并）与多账号额度同频刷新；依赖 syncConfig，
   // 配置异步就绪后本函数重建、effect 重跑，远端部分自动生效。
-  useEffect(() => {
-    const first = setTimeout(loadAccountTodayDeltas, 4_000);
-    const timer = setInterval(loadAccountTodayDeltas, 60_000);
-    return () => {
-      clearTimeout(first);
-      clearInterval(timer);
-    };
-  }, [loadAccountTodayDeltas]);
+  useHiddenAwareTimer(loadAccountTodayDeltas, 60_000, 4_000);
 
   // Agent 额度快照在各数据源首刷后读取，后续与额度查询同频刷新。
-  useEffect(() => {
-    const first = setTimeout(loadAgentQuotaDeltas, 3_000);
-    const timer = setInterval(loadAgentQuotaDeltas, 30_000);
-    return () => {
-      clearTimeout(first);
-      clearInterval(timer);
-    };
-  }, [loadAgentQuotaDeltas]);
+  useHiddenAwareTimer(loadAgentQuotaDeltas, 30_000, 3_000);
 
   // ===== 通用 provider 额度轮询（120s，独立于上面各循环）：只查已有凭证的
   //      provider（presence 经 ref 读最新值，定时器不因 presence 变化重建）。
   //      未接入的 provider 即使有凭证，后端也返回空数组不打网络，轮询无害。 =====
   useEffect(() => {
     const tick = () => {
+      // 窗口隐藏时跳过本轮刷新（内存压降专项，恢复可见由下方补刷 effect 兜底）
+      if (isDocHidden()) return;
       for (const [provider, has] of Object.entries(
         credentialPresenceRef.current
       )) {
@@ -2364,37 +2488,19 @@ export function DataProvider({ pricing, credentialPresence, children }: Provider
   useEffect(() => {
     saveCache("zbar-device", deviceFilter);
   }, [deviceFilter]);
-  // 大缓存防抖写盘。zai/claude/kimi 在速度契约迁移轮（speedMigrationSyncWrite）
-  // 改用同步 saveCache：迁移结果必须先于下方版本标记落盘（同一次 commit 的
+  // 大缓存防抖写盘（拆 key 子键，见 useSplitCachePersist / persistSplitCache）。
+  // zai/claude/kimi 在速度契约迁移轮（speedMigrationSyncWrite）改用同步
+  // saveCache 写子键：迁移结果必须先于下方版本标记落盘（同一次 commit 的
   // effect 按声明顺序同步执行，不受防抖影响），时序语义与既有约定一致；
   // 开关仅在迁移会话为 true 且写完标记即复位，正常路径恒走防抖调度器。
-  useEffect(() => {
-    if (speedMigrationSyncWrite) saveCache("zbar-zai-cache", zaiCache);
-    else schedulePersist("zbar-zai-cache", zaiCache);
-  }, [zaiCache]);
-  useEffect(() => {
-    schedulePersist("zbar-cursor-cache", cursorCache);
-  }, [cursorCache]);
-  useEffect(() => {
-    schedulePersist("zbar-codex-cache", codexCache);
-  }, [codexCache]);
-  useEffect(() => {
-    if (speedMigrationSyncWrite) saveCache("zbar-claude-cache", claudeCache);
-    else schedulePersist("zbar-claude-cache", claudeCache);
-  }, [claudeCache]);
-  useEffect(() => {
-    if (speedMigrationSyncWrite) saveCache("zbar-kimi-cache", kimiCache);
-    else schedulePersist("zbar-kimi-cache", kimiCache);
-  }, [kimiCache]);
-  useEffect(() => {
-    schedulePersist("zbar-dsh-cache", dshCache);
-  }, [dshCache]);
-  useEffect(() => {
-    schedulePersist("zbar-opencode-cache", opencodeCache);
-  }, [opencodeCache]);
-  useEffect(() => {
-    schedulePersist("zbar-minimaxcode-cache", minimaxcodeCache);
-  }, [minimaxcodeCache]);
+  useSplitCachePersist("zbar-zai-cache", zaiCache, speedMigrationSyncWrite);
+  useSplitCachePersist("zbar-cursor-cache", cursorCache, false);
+  useSplitCachePersist("zbar-codex-cache", codexCache, false);
+  useSplitCachePersist("zbar-claude-cache", claudeCache, speedMigrationSyncWrite);
+  useSplitCachePersist("zbar-kimi-cache", kimiCache, speedMigrationSyncWrite);
+  useSplitCachePersist("zbar-dsh-cache", dshCache, false);
+  useSplitCachePersist("zbar-opencode-cache", opencodeCache, false);
+  useSplitCachePersist("zbar-minimaxcode-cache", minimaxcodeCache, false);
   // 版本标记写入：必须位于 zai/claude/kimi 三个持久化 effect 之后。同一次
   // commit 的 effect 按声明顺序同步执行，挂载轮先落盘迁移后的缓存、再写
   // 版本标记；若两步之间进程被杀，只会残留「版本=旧 + 缓存=已剥离」，

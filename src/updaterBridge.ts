@@ -41,10 +41,12 @@ export function startUpdaterBridgeHost(): () => void {
     if (serialized === lastSerialized) return;
     lastSerialized = serialized;
     // 定向 main-window，不全局 emit（避免打扰宠物 / Session HUD 等窗口）；
-    // 失败静默：桥接是增强，不影响面板本窗的更新流程
-    emitTo(MAIN_WINDOW_TARGET, REMOTE_UPDATE_STATE_EVENT, state).catch(
-      () => {}
-    );
+    // 失败只 warn 不阻断：桥接是增强，不影响面板本窗的更新流程。
+    // 主窗口关闭即销毁（省内存改造）后此处失败成为常态（主窗不在场），
+    // 留一条日志便于区分「主窗没开」与「事件通道异常」两类排查方向
+    emitTo(MAIN_WINDOW_TARGET, REMOTE_UPDATE_STATE_EVENT, state).catch((e) => {
+      console.warn("[updaterBridge] 广播更新状态到主窗口失败:", e);
+    });
   };
 
   // 挂载即广播一次当前状态（主窗口可能晚于面板启动才进入「关于」页，

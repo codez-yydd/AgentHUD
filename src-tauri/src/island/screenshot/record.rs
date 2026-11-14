@@ -15,9 +15,10 @@
 //! - MP4 用 VideoToolbox 硬编 H.264，再用纯 Rust 的 `mp4` 写封装，边录边写，
 //!   内存占用与时长无关；
 //! - GIF 先把 JPEG 帧落到临时目录，停止时统一编码，这样裁剪可以按帧重编；
-//! - 录制条/预览窗是同一个常驻窗口：应用启动时预热隐藏预建（rec.html 空白
-//!   待命页），录制时 navigate 整页重载复用（WebView 进程热着，省冷启动），
-//!   录制结束/取消/关预览只 hide 不销毁，下次录制继续复用；
+//! - 录制条/预览窗是同一个窗口：省内存改造后按需建、用完销毁——启动不再
+//!   预热，首次录制（或会话内连续录制时窗口尚存）由 build_recorder_window
+//!   建窗/复用，录制结束/取消/关预览直接销毁，下次录制现场重建（首次多
+//!   几百 ms WebView 冷启动，省内存改造已接受该代价）；
 //! - 录制条窗口由于有独立标题，抓帧时用 `OnScreenBelowWindow` 把它自己排除
 //!   在画面之外，录出来的区域里不会出现录制条。
 
@@ -42,6 +43,7 @@ use super::{
     park_overlay_for_record, restore_overlay_for_record, shot_dir, shot_session,
     show_island_for_capture, RecordResult, ShotMonitor, ShotRect,
 };
+use crate::webview_args::MergedRendererBuilder;
 
 /// 录制条 / 预览窗的窗口 label（capabilities/rec.json 同步）
 pub const REC_WINDOW_LABEL: &str = "shot-recorder";
@@ -390,7 +392,7 @@ async fn start_recording(
         // 的录制条窗口（复用模式下 navigate 失败会留下隐藏窗）；覆盖层从未
         // 缩过（缩窗在两者都成功之后），restore 只是幂等兜底
         remove_record(record_id);
-        hide_recorder_window(&app).await;
+        destroy_recorder_window(&app).await;
         let _ = restore_overlay_for_record(&app, session.monitor.x, session.monitor.y).await;
         return Err(e);
     }
@@ -408,7 +410,7 @@ async fn start_recording(
                 Ok((spec, notice)) => (spec, notice),
                 Err(e) => {
                     remove_record(record_id);
-                    hide_recorder_window(&app).await;
+                    destroy_recorder_window(&app).await;
                     let _ =
                         restore_overlay_for_record(&app, session.monitor.x, session.monitor.y)
                             .await;
@@ -427,7 +429,7 @@ async fn start_recording(
     // 失败时覆盖层保持原样，不会出现「提前缩窗又被打回」的闪动。
     if let Err(e) = park_overlay_for_record(&app).await {
         remove_record(record_id);
-        hide_recorder_window(&app).await;
+        destroy_recorder_window(&app).await;
         let _ = restore_overlay_for_record(&app, session.monitor.x, session.monitor.y).await;
         return Err(e);
     }
@@ -795,10 +797,12 @@ pub async fn shot_record_close(app: AppHandle, record_id: u64) -> Result<(), Str
     remove_record(record_id);
     let app_main = app.clone();
     let _ = on_main_thread(&app, move || {
-        // 预览窗即录制条窗口（同一窗口复用）：关闭只隐藏保留，下次录制
-        // navigate 整页重载，不吃 WebView 冷启动
+        // 预览窗即录制条窗口（同一窗口）：关闭即销毁（省内存改造，原先
+        // 只 hide 保留热 WebView 供下次复用），下次录制由
+        // build_recorder_window 冷建分支现场重建；预览产物（MP4/GIF 文件）
+        // 落在磁盘，不受窗口销毁影响
         if let Some(win) = app_main.get_webview_window(REC_WINDOW_LABEL) {
-            let _ = win.hide();
+            let _ = win.destroy();
         }
         Ok(())
     })
@@ -806,7 +810,7 @@ pub async fn shot_record_close(app: AppHandle, record_id: u64) -> Result<(), Str
     close_shot(&app).await
 }
 
-/// 出错 / 用户取消：收起录制窗，把覆盖层放回原位让用户重选。
+/// 出错 / 用户取消：销毁录制窗，把覆盖层放回原位让用户重选。
 #[tauri::command]
 pub async fn shot_record_cancel(
     app: AppHandle,
@@ -823,10 +827,11 @@ pub async fn shot_record_cancel(
     remove_record(record_id);
     let app_main = app.clone();
     let _ = on_main_thread(&app, move || {
-        // 录制条窗口只隐藏保留复用（隐藏前可能带着失败/取消态的内容，
-        // 下次录制会整页 navigate 重载掉）
+        // 录制条窗口直接销毁（省内存改造）：窗口可能带着失败/取消态的
+        // 内容，没有保留价值；下次录制由 build_recorder_window 冷建分支
+        // 现场重建
         if let Some(win) = app_main.get_webview_window(REC_WINDOW_LABEL) {
-            let _ = win.hide();
+            let _ = win.destroy();
         }
         Ok(())
     })
@@ -1061,10 +1066,11 @@ fn resolve_recorder_bar_position(
 
 /// 录制条 / 预览窗窗口（同一个窗口：录制中是右下角录制条，结束后原地放大
 /// 成预览）。已存在则复用——整页 navigate 到新会话参数（WebView 进程热着，
-/// 与截图覆盖层 reuse_overlay 同模式，省 WebView 冷启动的几百毫秒），恢复
-/// 录制条尺寸并按选区避让重新落位后 show；不存在才新建。窗口的消失统一
-/// 收敛为 hide（录制结束/取消/关预览，见 hide_recorder_window 与
-/// shot_record_close/cancel），让下一次录制继续吃到热 WebView。
+/// 与截图覆盖层 reuse_overlay 同模式），恢复录制条尺寸并按选区避让重新
+/// 落位后 show；不存在才新建（省内存改造后的常态主路径：启动不再预热、
+/// 录制结束即销毁，每次录制首次进录制条都要吃一次 WebView 冷启动的几百
+/// 毫秒——URL 直接带 id/format，RecApp 首次加载即拿到会话参数，倒计时
+/// 与启动黑屏根治的时序只依赖建窗后的先后关系，见下方建窗分支注释）。
 fn build_recorder_window(
     app: &AppHandle,
     record_id: u64,
@@ -1119,8 +1125,14 @@ fn build_recorder_window(
     .visible(false)
     .focused(false)
     .background_throttling(tauri::utils::config::BackgroundThrottlingPolicy::Disabled)
+    // 合并 WebView2 渲染进程（内存压降专项，见 webview_args.rs 模块注释）
+    .merged_renderer()
     .build()
     .map_err(|e| format!("创建录制窗口失败: {e}"))?;
+    // 冷建分支与复用分支同一套收尾：透明底 + 按选区避让落位 + show。
+    // 窗口隐藏出生、show 前背景已置全透明，页面未加载完只会短暂透明空白
+    //（录制条从无到有），不会出现黑屏；倒计时由 rec.html 加载后按 URL
+    // 参数自行驱动（倒计时根治批次的行为，不依赖窗口提前存在）。
     let _ = win.set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
     win.set_position(PhysicalPosition::new(x, y))
         .map_err(|e| format!("定位录制窗口失败: {e}"))?;
@@ -1128,66 +1140,19 @@ fn build_recorder_window(
     Ok(win)
 }
 
-/// 隐藏（不销毁）录制条 / 预览窗：窗口常驻复用，启动预热、录制、预览共用
-/// 同一个 WebView；销毁会让下次录制重新吃 WebView 冷启动。错误回滚路径
-/// （probe 失败 / 建窗失败 / 收起覆盖层失败）也只隐藏，留下的是待命窗口。
-async fn hide_recorder_window(app: &AppHandle) {
+/// 销毁录制条 / 预览窗：省内存改造后窗口不再常驻（启动预热已删、录制
+/// 结束/取消/关预览即销毁），下次录制走 build_recorder_window 冷建分支
+/// 现场重建。错误回滚路径（probe 失败 / 建窗失败 / 收起覆盖层失败）同样
+/// 销毁刚建好/复用的窗口——录制没开始，不留待命 WebView。
+async fn destroy_recorder_window(app: &AppHandle) {
     let app_main = app.clone();
     let _ = on_main_thread(app, move || {
         if let Some(win) = app_main.get_webview_window(REC_WINDOW_LABEL) {
-            let _ = win.hide();
+            let _ = win.destroy();
         }
         Ok(())
     })
     .await;
-}
-
-/// 预热录制条窗口：应用启动线程（lib.rs）在截图覆盖窗口预热完成后顺带
-/// 调用，隐藏预建 rec.html 空白待命页。首次录制由 [`build_recorder_window`]
-/// 复用该窗口：只走 navigate + 定位 + show，省掉 WebView 冷启动。幂等：
-/// 窗口已存在（已预热 / 录制中 / 预览中）直接返回。待命页无 id 参数，
-/// RecApp 渲染全透明空白页，不起轮询、不报错、不触发任何取消副作用。
-pub async fn prewarm_recorder_window(app: AppHandle) -> Result<(), String> {
-    let app_main = app.clone();
-    on_main_thread(&app, move || {
-        if app_main.get_webview_window(REC_WINDOW_LABEL).is_some() {
-            return Ok(()); // 已有窗口（已预热 / 录制中 / 预览中），不动
-        }
-        let monitor = monitor_list(&app_main)
-            .into_iter()
-            .find(|m| m.primary)
-            .or_else(|| monitor_list(&app_main).into_iter().next())
-            .ok_or_else(|| "没有检测到显示器".to_string())?;
-        // 窗口保持隐藏，位置随手落在录制条默认位（右下角），只为让 WebView
-        // 提前加载 rec.html；真正显示时 build_recorder_window 会重新定位
-        let work = monitor_work_area(&monitor);
-        let ((x, y), _) = resolve_recorder_bar_position(&monitor, work, None);
-        let win = WebviewWindowBuilder::new(
-            &app_main,
-            REC_WINDOW_LABEL,
-            WebviewUrl::App("rec.html".into()),
-        )
-        .title(REC_WINDOW_TITLE)
-        .inner_size(REC_BAR_W, REC_BAR_H)
-        .decorations(false)
-        .transparent(true)
-        .always_on_top(true)
-        .skip_taskbar(true)
-        .shadow(false)
-        .resizable(false)
-        .maximizable(false)
-        .minimizable(false)
-        .closable(false)
-        .visible(false)
-        .focused(false)
-        .background_throttling(tauri::utils::config::BackgroundThrottlingPolicy::Disabled)
-        .build()
-        .map_err(|e| format!("预热录制窗口失败: {e}"))?;
-        let _ = win.set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
-        let _ = win.set_position(PhysicalPosition::new(x, y));
-        Ok(())
-    })
-    .await
 }
 
 // ============================================================

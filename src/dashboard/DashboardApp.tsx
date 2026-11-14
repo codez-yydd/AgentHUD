@@ -10,6 +10,7 @@
  */
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ComponentType } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { LanguageToggle, ThemeToggle } from "../layout";
 import { APPEARANCE_CHANGED_EVENT, loadTheme, type Theme } from "../appearance";
@@ -161,9 +162,11 @@ export function DashboardApp() {
 
   // 面板入口跳页（如窄窗「价格设置」按钮 → 本窗定价页）：监听 Rust 侧
   // zbar://dashboard-navigate，payload 合法才 setView（Rust 侧已按白名单
-  // 过滤，这里兜底校验，非法/缺省忽略）。窗口预建隐藏时 WebView 已存活、
-  // 本监听已注册，事件可达（appearance-changed 同款前提）；导航是离散
-  // 意图，无需外观同步那套同值守卫。监听失败静默：入口退化为只开窗。
+  // 过滤，这里兜底校验，非法/缺省忽略）。窗口已存在（未关闭）时 WebView
+  // 存活、本监听已注册，事件可达（appearance-changed 同款前提）；导航是
+  // 离散意图，无需外观同步那套同值守卫。冷建（关闭即销毁后的常态）时
+  // 本监听尚未注册，事件可能被丢，由下方挂载补发兜住。监听失败静默：
+  // 入口退化为只开窗。
   useEffect(() => {
     let dispose: (() => void) | undefined;
     let cancelled = false;
@@ -183,6 +186,25 @@ export function DashboardApp() {
       cancelled = true;
       dispose?.();
     };
+  }, []);
+
+  // 冷建补发（省内存改造配套）：主窗口改为"关闭即销毁"后，每次打开都是
+  // 现场建窗，开窗方带 page 的跳页事件可能赶在本监听注册前被 Rust 侧
+  // emit 丢弃。Rust 侧建窗时把 page 暂存在 PENDING_PAGE（见 main_window.rs），
+  // 本组件挂载完成后主动取走一次——emit 先生效的场景这里返回 None，
+  // 不会重复切页；emit 被丢的场景由这里兜住，导航意图不丢。只在本窗口
+  // 生命周期开头跑一次；非 Tauri 环境（纯浏览器调试）invoke 会 reject，
+  // 静默跳过。
+  useEffect(() => {
+    invoke<string | null>("take_pending_dashboard_page")
+      .then((page) => {
+        if (page && NAVIGATABLE_VIEWS.includes(page)) {
+          setView(page as View);
+        }
+      })
+      .catch(() => {
+        /* 静默：保持当前页 */
+      });
   }, []);
 
   // 命令面板快捷键：Ctrl/⌘ + K 开关（面板里再按一次即收起）。必须
