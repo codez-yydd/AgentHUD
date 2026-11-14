@@ -16,7 +16,7 @@ use std::io::Cursor;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
 
 pub const CLIPBOARD_EVENT: &str = "zbar://island-clipboard";
@@ -36,6 +36,12 @@ static LIMIT: AtomicUsize = AtomicUsize::new(DEFAULT_LIMIT);
 /// 本拍。Windows 的 OpenClipboard 是独占的，轮询读一张大图要卡住剪贴板
 /// 几十毫秒，正好赶上用户点「复制」就会 `ClipboardOccupied`。
 static WRITING: AtomicUsize = AtomicUsize::new(0);
+/// 写剪贴板前的「让行」请求：置位后轮询线程从下一拍起直接跳过，直到
+/// 恢复。WRITING 只能拦住「下一拍」，拦不住正在进行中的一拍（拉全尺寸
+/// RGBA 持锁几十毫秒），这里补上这一层。
+static PAUSED: AtomicBool = AtomicBool::new(false);
+/// 轮询线程正在读剪贴板（poll_once 进行中）；让行方据此等待当前拍让出。
+static POLLING: AtomicBool = AtomicBool::new(false);
 
 /// 写剪贴板前调用，返回的 guard drop 时计数减一；轮询线程只在计数为 0
 /// 时读剪贴板，避免自己抢自己。
@@ -47,8 +53,23 @@ impl Drop for ClipboardWriteGuard {
     }
 }
 
+/// 请求轮询线程暂停，并等正在进行的读拍让出剪贴板（最多 ~150ms：一拍
+/// 读大图的持锁时间在几十毫秒量级，150ms 足够它跑完，不至于白等）。
+/// 恢复交给 `begin_write` 收尾——届时 WRITING 计数已生效，轮询自然跳拍。
+fn suspend_polling_while_reading() {
+    PAUSED.store(true, Ordering::SeqCst);
+    let deadline = Instant::now() + Duration::from_millis(150);
+    while POLLING.load(Ordering::SeqCst) && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(5));
+    }
+}
+
 pub(crate) fn begin_write() -> ClipboardWriteGuard {
+    // 先让轮询停拍、等当前读拍退出，再置写计数；恢复暂停标志放在写计数
+    // 之后，两个状态无缝衔接，轮询全程不会撞上这次写入。
+    suspend_polling_while_reading();
     WRITING.fetch_add(1, Ordering::SeqCst);
+    PAUSED.store(false, Ordering::SeqCst);
     ClipboardWriteGuard
 }
 
@@ -221,16 +242,19 @@ pub fn start(app: AppHandle) {
             };
             let mut next_id = 0u64;
             while !STOP.load(Ordering::Relaxed) && GEN.load(Ordering::SeqCst) == gen {
-                // 首拍也捕获当前剪贴板，页面打开就有内容可点；正在写剪贴板时
-                // 跳拍，下一拍再读——否则会把用户刚复制的内容卡在
-                // ClipboardOccupied 上。
-                let changed = if is_writing() {
+                // 首拍也捕获当前剪贴板，页面打开就有内容可点；正在写剪贴板
+                // 或有写入方请求让行时跳拍，下一拍再读——否则会把用户刚复制
+                // 的内容卡在 ClipboardOccupied 上。
+                let changed = if is_writing() || PAUSED.load(Ordering::SeqCst) {
                     false
                 } else {
-                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    POLLING.store(true, Ordering::SeqCst);
+                    let changed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                         poll_once(&mut clip, &mut next_id)
                     }))
-                    .unwrap_or(false)
+                    .unwrap_or(false);
+                    POLLING.store(false, Ordering::SeqCst);
+                    changed
                 };
                 if changed {
                     if let Some(app) = app_slot().lock().ok().and_then(|g| g.clone()) {
@@ -445,5 +469,18 @@ mod tests {
         assert_eq!(clamp_limit(1), MIN_LIMIT);
         assert_eq!(clamp_limit(1000), MAX_LIMIT);
         assert_eq!(clamp_limit(42), 42);
+    }
+
+    /// begin_write 全程置写计数、不残留暂停标志：写期间轮询必须跳拍
+    /// （is_writing 为真），guard drop 后一切复原。
+    #[test]
+    fn begin_write_marks_writing_and_resumes_polling() {
+        assert!(!is_writing(), "测试前提：没有并发写入");
+        {
+            let _guard = begin_write();
+            assert!(is_writing(), "写入期间写计数必须生效");
+            assert!(!PAUSED.load(Ordering::SeqCst), "让行标志用完即清");
+        }
+        assert!(!is_writing(), "guard drop 后写计数必须归零");
     }
 }

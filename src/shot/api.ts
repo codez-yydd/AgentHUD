@@ -276,9 +276,18 @@ export async function saveShotAs(
   return invoke<ShotHistoryItem | null>("shot_save_as", { dataUrl, format: format ?? null });
 }
 
-export async function copyShot(dataUrl: string): Promise<void> {
+/** 复制截图：入参是 canvas.toBlob 出来的 PNG 原始字节，经 Tauri raw IPC
+ *  直达后端，省掉 base64 编码 + 大字符串过桥的开销。 */
+export async function copyShot(pngBytes: Uint8Array): Promise<void> {
   if (!IS_TAURI) return delay(undefined, 100);
-  return invoke("shot_copy", { dataUrl });
+  return invoke("shot_copy", pngBytes);
+}
+
+/** data URL 转 PNG 字节（fetch 异步解码，不阻塞主线程）：给手里只有
+ *  dataUrl 的调用方（贴图窗复制）接上 raw IPC 的复制通道。 */
+export async function dataUrlToPngBytes(dataUrl: string): Promise<Uint8Array> {
+  const blob = await (await fetch(dataUrl)).blob();
+  return new Uint8Array(await blob.arrayBuffer());
 }
 
 export async function copyText(text: string): Promise<void> {

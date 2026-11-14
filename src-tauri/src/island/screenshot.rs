@@ -417,6 +417,55 @@ fn decode_data_url(data: &str) -> Result<image::RgbaImage, String> {
     Ok(img.to_rgba8())
 }
 
+/// 解码前端经 raw IPC 传来的 PNG 字节（与 `decode_data_url` 同出口，绕开
+/// base64 的体积与 CPU 开销）。
+fn decode_png_bytes(bytes: &[u8]) -> Result<image::RgbaImage, String> {
+    let img = image::load_from_memory(bytes).map_err(|e| format!("图片解码失败: {e}"))?;
+    Ok(img.to_rgba8())
+}
+
+/// `spawn_blocking` 的 JoinError 诊断：任务 panic 时把 payload 提出来记日志、
+/// 拼进报错（截断到 80 字符），取消时说明取消，其余透传原错误。
+/// 返回「××任务失败: 原因」的完整文案，直接用作命令的 Err。
+pub(crate) fn join_error_message(context: &str, error: tauri::Error) -> String {
+    let reason = match error {
+        tauri::Error::JoinError(join) => {
+            if join.is_panic() {
+                truncate_chars(&panic_payload_message(join.into_panic()), 80)
+            } else if join.is_cancelled() {
+                "后台任务被取消".to_string()
+            } else {
+                join.to_string()
+            }
+        }
+        other => other.to_string(),
+    };
+    let message = format!("{context}任务失败: {reason}");
+    eprintln!("[zbar-shot] {message}");
+    message
+}
+
+/// 从 panic payload 提取文字：常规 `&'static str` / `String` 之外给一个
+/// 类型不明的兜底描述，绝不再 panic。
+fn panic_payload_message(payload: Box<dyn std::any::Any + Send>) -> String {
+    if let Some(text) = payload.downcast_ref::<&'static str>() {
+        return (*text).to_string();
+    }
+    if let Some(text) = payload.downcast_ref::<String>() {
+        return text.clone();
+    }
+    "后台线程 panic（载荷不是文本）".to_string()
+}
+
+/// 按字符截断（中文友好），超长补省略号。
+fn truncate_chars(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        return text.to_string();
+    }
+    let truncated: String = text.chars().take(max).collect();
+    format!("{truncated}…")
+}
+
 fn now_ms() -> i64 {
     chrono::Utc::now().timestamp_millis()
 }
@@ -443,7 +492,7 @@ where
     let app = app.clone();
     tauri::async_runtime::spawn_blocking(move || on_main_thread_blocking(&app, f))
         .await
-        .map_err(|e| format!("等待主线程任务失败: {e}"))?
+        .map_err(|e| join_error_message("等待主线程", e))?
 }
 
 fn monitor_list(app: &AppHandle) -> Vec<ShotMonitor> {
@@ -1266,6 +1315,11 @@ fn destroy_overlay(app: &AppHandle) {
 
 /// 抓屏/录屏前把编辑器窗口移出所有显示器。WebView2 的 `hide()` 在某些
 /// 情况下仍会被 `WindowFromPoint` 命中，挪走是更可靠的兜底。
+///
+/// 注意：这只服务滚动截图等编辑器路径（期间可能做窗口拾取）。录屏走
+/// [`park_overlay_for_record`]（先缩 1×1 再挪出屏幕——全屏窗口直接 hide
+/// 会触发整屏黑，编辑器路径若也出现整屏黑闪，参考 `park_overlay_for_record`
+/// 的做法）。
 async fn park_overlay(app: &AppHandle) -> Result<(), String> {
     let app_main = app.clone();
     on_main_thread(app, move || {
@@ -1291,6 +1345,82 @@ async fn restore_overlay(app: &AppHandle, monitor_x: i32, monitor_y: i32) -> Res
     let app_main = app.clone();
     on_main_thread(app, move || {
         if let Some(win) = app_main.get_webview_window(SHOT_WINDOW_LABEL) {
+            let _ = win.set_position(PhysicalPosition::new(monitor_x, monitor_y));
+            let _ = win.show();
+            let _ = win.set_focus();
+        }
+        Ok(())
+    })
+    .await
+}
+
+/// 录屏开始前把覆盖层窗口收起来（Windows）。
+///
+/// 实机逐帧证据：只要让**全屏窗口**从屏幕上消失（`hide()`、直接挪出屏幕
+/// 都算，无论窗口透明与否），DWM 的全屏翻转/直通合成层被拆除，触发显示
+/// 输出级重新同步，整屏纯黑约 370ms（鼠标光标保留、无任何窗口内容）。
+/// 而**非全屏小窗口**的移动/消失不触发这套重同步。
+///
+/// 所以不能直接 hide，改为「先缩小、再挪走」：
+/// 1. `set_size` 缩成 1×1：全屏 → 1×1 只是普通 resize，桌面立即从缩小的
+///    区域露出，无显示模式切换，窗口就此退出「全屏覆盖」状态；
+/// 2. `set_position` 挪到屏幕外（x=-10000，与 [`park_overlay`] 的先例
+///    一致）。不 hide、不穿透：1×1 窗口留在屏幕外不碍事，DWM 也无需
+///    重同步显示输出。
+///
+/// 抓帧（gdigrab）在窗口已挪走之后才启动，录到的是真实桌面，覆盖层不会
+/// 在录制画面里留下任何痕迹。非 Windows 没有这个 DWM 全屏层问题，保持
+/// 原有 hide 行为不变。
+async fn park_overlay_for_record(app: &AppHandle) -> Result<(), String> {
+    let app_main = app.clone();
+    on_main_thread(app, move || {
+        if let Some(win) = app_main.get_webview_window(SHOT_WINDOW_LABEL) {
+            #[cfg(target_os = "windows")]
+            {
+                // 先缩到 1×1（物理像素，与 reuse_overlay/build_overlay 的
+                // 尺寸口径一致）退出全屏覆盖状态，再挪出屏幕；顺序不能反，
+                // 全屏状态下直接挪走仍算「全屏窗口离开屏幕」，会触发黑屏。
+                let _ = win.set_size(PhysicalSize::new(1, 1));
+                let _ = win.set_position(PhysicalPosition::new(-10_000, -10_000));
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                let _ = win.hide();
+            }
+        }
+        Ok(())
+    })
+    .await
+}
+
+/// 录屏取消/失败后把覆盖层放回原显示器，与 [`park_overlay_for_record`]
+/// 配对：恢复全屏尺寸（在 `monitor_list` 里按显示器原点坐标找回原始的
+/// width/height，找不到时兜底主显示器）→ set_position 回 (monitor_x,
+/// monitor_y) → show + focus。先位置后尺寸与 [`reuse_overlay`] 的顺序
+/// 一致：park 后窗口只剩 1×1，先挪回原位只是个不碍事的 1px 点，再放大
+/// 到全屏。Windows 之外 park 走的是 hide，这里的 show 负责把窗口放回来。
+/// 取消与失败两条恢复路径（shot_record_cancel、build_recorder_window
+/// 失败回滚）都走这里。
+async fn restore_overlay_for_record(
+    app: &AppHandle,
+    monitor_x: i32,
+    monitor_y: i32,
+) -> Result<(), String> {
+    let app_main = app.clone();
+    on_main_thread(app, move || {
+        if let Some(win) = app_main.get_webview_window(SHOT_WINDOW_LABEL) {
+            let size = monitor_list(&app_main)
+                .into_iter()
+                .find(|m| m.x == monitor_x && m.y == monitor_y)
+                .or_else(|| {
+                    monitor_list(&app_main)
+                        .into_iter()
+                        .find(|m| m.primary)
+                })
+                .map(|m| (m.width, m.height));
+            if let Some((width, height)) = size {
+                let _ = win.set_size(PhysicalSize::new(width, height));
+            }
             let _ = win.set_position(PhysicalPosition::new(monitor_x, monitor_y));
             let _ = win.show();
             let _ = win.set_focus();
@@ -1462,8 +1592,8 @@ fn build_overlay(app: &AppHandle, monitor: &ShotMonitor, id: u64) -> Result<Webv
     // 让冻结帧和真实屏幕 1:1 对齐。
     let _ = win.set_position(PhysicalPosition::new(monitor.x, monitor.y));
     // 这里不 show：show 出来的是深色空窗口，图片解码前整屏会黑一下。
-    // 前端把冻结帧画好并调用 shot_ready 后，由 reveal_overlay 在隐藏自家
-    // 窗口的同一拍显示，避免「HUD 先消失 → 再出现截图」的闪动。
+    // 前端把冻结帧画好并调用 shot_ready 后，由 reveal_overlay 先显示覆盖层
+    // （冻结帧里就有 HUD/主窗，画面零变化）、再藏自家窗口，全程看不到桌面。
     Ok(win)
 }
 
@@ -1508,7 +1638,14 @@ async fn start_capture_inner(
     if record::is_recording() {
         return Err("录屏进行中，结束录制后再截图".into());
     }
-    if app.get_webview_window(record::REC_WINDOW_LABEL).is_some() {
+    // 录制条/预览窗是常驻复用窗口（启动预热隐藏预建，关闭只 hide 不销毁），
+    // 这里只拦「可见」状态：录制条挂着或预览窗开着时不能开新截图；隐藏的
+    // 预热/残留窗口不拦，否则窗口常驻之后所有截图都会被误挡。
+    if app
+        .get_webview_window(record::REC_WINDOW_LABEL)
+        .map(|win| win.is_visible().unwrap_or(false))
+        .unwrap_or(false)
+    {
         return Err("录屏预览窗还开着，先关掉它再截图".into());
     }
     if let Ok(guard) = session_slot().lock() {
@@ -1645,7 +1782,7 @@ async fn start_capture_inner(
             ))
         })
         .await
-        .map_err(|e| format!("截图任务失败: {e}"))??;
+        .map_err(|e| join_error_message("截图", e))??;
 
     eprintln!(
         "[zbar-shot] 抓屏+编码完成 {}×{} @({}, {})，耗时 {}ms",
@@ -1658,8 +1795,8 @@ async fn start_capture_inner(
 
     // 画面已经抓到（里面有灵动岛/主窗口）。这里**先不藏**它们：覆盖层
     // 此时还在隐藏状态等图片解码，提前藏会让桌面露出来闪一下。等前端画好
-    // 冻结帧、调用 shot_ready 时，由 reveal_overlay 在显示覆盖层的同一拍
-    // 把它们藏掉，视觉上就是冻结帧直接盖住原画面。
+    // 冻结帧、调用 shot_ready 时，由 reveal_overlay 先显示覆盖层（冻结帧
+    // 直接盖住原画面，视觉零变化）、再把它们藏掉。
 
     let id = SESSION_SEQ.fetch_add(1, Ordering::Relaxed);
     let session = ShotSession {
@@ -1782,7 +1919,7 @@ pub async fn shot_edit_file(app: AppHandle, path: String) -> Result<u64, String>
                 .map_err(|e| format!("读取截图失败: {e}"))
         })
         .await
-        .map_err(|e| format!("读取截图任务失败: {e}"))??;
+        .map_err(|e| join_error_message("读取截图", e))??;
         let png = encode_png(&image)?;
         let monitors = monitor_list(&app);
         let monitor = cursor_position()
@@ -1890,18 +2027,23 @@ pub fn shot_session_image(id: u64) -> Result<tauri::ipc::Response, String> {
     Ok(tauri::ipc::Response::new(bytes))
 }
 
-/// 把冻结帧覆盖层“无缝”推到最前：先藏掉 AgentHUD 自己的窗口，再显示
-/// 覆盖层。两件事必须在同一拍主线程回调里提交，DWM 会按同一帧合成；
-/// 如果先藏、下一拍再显示，用户会看到 HUD 先消失、桌面露出来，像整屏
-/// 闪了一下才出现截图。
+/// 把冻结帧覆盖层“无缝”推到最前：先显示覆盖层、再藏掉 AgentHUD 自己的
+/// 窗口。冻结帧是抓屏那一刻的整屏画面，本来就包含灵动岛/主窗口（抓屏时
+/// 刻意没藏它们），show 出去的一拍画面零变化；紧接着把真窗口藏掉，它们的
+/// 位置已经被覆盖层里的同款像素占住，同样看不出变化。反过来先藏再 show，
+/// 两次系统调用之间可能被 DWM 合成一帧，用户会看到 HUD 消失、真实桌面
+/// 露出来，像整屏闪了一下才出现截图。
+///
+/// 2.5s 兜底路径（前端没画好冻结帧就强制 reveal）不受顺序影响：兜底本来
+/// 就要显示（深色未渲染窗），先 show 后藏只是少一次“桌面露出”的帧隙。
 fn reveal_overlay(app: &AppHandle) -> Result<(), String> {
-    let hidden = hide_own_windows(app, &[]);
-    if let Ok(mut guard) = hidden_slot().lock() {
-        guard.extend(hidden);
-    }
     if let Some(win) = app.get_webview_window(SHOT_WINDOW_LABEL) {
         win.show().map_err(|e| format!("显示截图窗口失败: {e}"))?;
         let _ = win.set_focus();
+    }
+    let hidden = hide_own_windows(app, &[]);
+    if let Ok(mut guard) = hidden_slot().lock() {
+        guard.extend(hidden);
     }
     Ok(())
 }
@@ -2193,7 +2335,7 @@ pub async fn shot_save(
         Ok(item)
     })
     .await
-    .map_err(|e| format!("保存截图任务失败: {e}"))?
+    .map_err(|e| join_error_message("保存截图", e))?
 }
 
 /// 另存为：弹系统保存对话框，用户选路径后写盘。返回 `Ok(None)` 表示取消。
@@ -2237,17 +2379,26 @@ pub async fn shot_save_as(
         Ok(Some(history_item(&path)?))
     })
     .await
-    .map_err(|e| format!("另存为任务失败: {e}"))?
+    .map_err(|e| join_error_message("另存为", e))?
 }
 
+/// 复制截图到剪贴板。入参是前端 `canvas.toBlob` 出来的 PNG 原始字节，走
+/// Tauri 的 raw IPC 通道：既绕开 base64 的几十 MB 字符串（IPC 体积），也
+/// 让 PNG 编码在浏览器的异步编码线程完成（主线程不再被 `toDataURL` 卡住）。
 #[tauri::command]
-pub async fn shot_copy(data_url: String) -> Result<(), String> {
+pub async fn shot_copy(request: tauri::ipc::Request<'_>) -> Result<(), String> {
+    let bytes = match request.body() {
+        tauri::ipc::InvokeBody::Raw(bytes) => bytes.clone(),
+        tauri::ipc::InvokeBody::Json(_) => {
+            return Err("复制截图入参格式不支持（应为 PNG 原始字节）".into());
+        }
+    };
     tauri::async_runtime::spawn_blocking(move || {
-        let image = decode_data_url(&data_url)?;
+        let image = decode_png_bytes(&bytes)?;
         write_clipboard(&image)
     })
     .await
-    .map_err(|e| format!("复制截图任务失败: {e}"))?
+    .map_err(|e| join_error_message("复制截图", e))?
 }
 
 #[tauri::command]
@@ -2275,7 +2426,7 @@ pub async fn shot_delete(path: String) -> Result<(), String> {
         std::fs::remove_file(&p).map_err(|e| format!("删除截图失败: {e}"))
     })
     .await
-    .map_err(|e| format!("删除截图任务失败: {e}"))?
+    .map_err(|e| join_error_message("删除截图", e))?
 }
 
 #[tauri::command]
@@ -2397,7 +2548,7 @@ async fn pin_image(app: AppHandle, image: image::RgbaImage) -> Result<PinData, S
 pub async fn shot_pin(app: AppHandle, data_url: String) -> Result<PinData, String> {
     let image = tauri::async_runtime::spawn_blocking(move || decode_data_url(&data_url))
         .await
-        .map_err(|e| format!("贴图任务失败: {e}"))??;
+        .map_err(|e| join_error_message("贴图", e))??;
     pin_image(app, image).await
 }
 
@@ -2413,7 +2564,7 @@ pub async fn shot_pin_file(app: AppHandle, path: String) -> Result<PinData, Stri
             .map_err(|e| format!("读取截图失败: {e}"))
     })
     .await
-    .map_err(|e| format!("读取截图任务失败: {e}"))??;
+    .map_err(|e| join_error_message("读取截图", e))??;
     pin_image(app, image).await
 }
 
@@ -2430,7 +2581,7 @@ pub async fn shot_copy_file(path: String) -> Result<(), String> {
         write_clipboard(&image)
     })
     .await
-    .map_err(|e| format!("复制截图任务失败: {e}"))?
+    .map_err(|e| join_error_message("复制截图", e))?
 }
 
 #[tauri::command]
@@ -2562,7 +2713,7 @@ pub async fn shot_ocr(data_url: String) -> Result<OcrResult, String> {
         ocr_image(&image)
     })
     .await
-    .map_err(|e| format!("OCR 任务失败: {e}"))?
+    .map_err(|e| join_error_message("OCR", e))?
 }
 
 fn qr_image(image: &image::RgbaImage) -> Result<QrResult, String> {
@@ -2595,7 +2746,7 @@ pub async fn shot_qr(data_url: String) -> Result<QrResult, String> {
         qr_image(&image)
     })
     .await
-    .map_err(|e| format!("二维码识别任务失败: {e}"))?
+    .map_err(|e| join_error_message("二维码识别", e))?
 }
 
 // ============================================================
@@ -2869,7 +3020,7 @@ pub async fn shot_scroll(app: AppHandle, id: u64, rect: ShotRect) -> Result<Scro
         let frames = match captured {
             Ok(Ok(frames)) => frames,
             Ok(Err(e)) => return Err(e),
-            Err(e) => return Err(format!("滚动截图任务失败: {e}")),
+            Err(e) => return Err(join_error_message("滚动截图", e)),
         };
         let stitched = stitch_frames(&frames)?;
         let png = encode_png(&stitched)?;
@@ -3023,6 +3174,53 @@ mod tests {
         let decoded = decode_data_url(&url).unwrap();
         assert_eq!(decoded.dimensions(), img.dimensions());
         assert_eq!(decoded.get_pixel(12, 34), img.get_pixel(12, 34));
+    }
+
+    #[test]
+    fn png_bytes_decode_matches_data_url_path() {
+        // raw IPC 新路径与 data URL 老路径应产出同一张图
+        let img = test_frame(7);
+        let url = png_data_url(&img).unwrap();
+        let bytes = STANDARD
+            .decode(url.split_once(',').map(|(_, body)| body).unwrap_or(&url))
+            .unwrap();
+        let from_bytes = decode_png_bytes(&bytes).unwrap();
+        let from_url = decode_data_url(&url).unwrap();
+        assert_eq!(from_bytes.dimensions(), from_url.dimensions());
+        assert_eq!(from_bytes.get_pixel(3, 5), from_url.get_pixel(3, 5));
+    }
+
+    #[test]
+    fn truncate_chars_limits_by_chars_with_ellipsis() {
+        // 按字符数截断（中文一字算一个），超长补省略号
+        assert_eq!(truncate_chars("剪贴板被占用", 20), "剪贴板被占用");
+        let truncated = truncate_chars("一二三四五六七八九十", 5);
+        assert_eq!(truncated, "一二三四五…");
+        assert!(truncate_chars("", 10).is_empty());
+    }
+
+    #[test]
+    fn panic_payload_message_reads_str_and_string() {
+        // &str / String 载荷都能还原成文字；其他类型给兜底描述而不是 panic
+        let as_str: Box<dyn std::any::Any + Send> = Box::new("设备句柄失效");
+        assert_eq!(panic_payload_message(as_str), "设备句柄失效");
+        let as_string: Box<dyn std::any::Any + Send> = Box::new(String::from("编码越界"));
+        assert_eq!(panic_payload_message(as_string), "编码越界");
+        let other: Box<dyn std::any::Any + Send> = Box::new(42u32);
+        assert_eq!(panic_payload_message(other), "后台线程 panic（载荷不是文本）");
+    }
+
+    #[test]
+    fn join_error_message_reports_panic_reason() {
+        // 真实 spawn_blocking panic → tauri::Error::JoinError：文案带上下文、
+        // panic 消息原文和截断，用户不用再面对一句干巴巴的 "task X panicked"
+        let handle = tauri::async_runtime::spawn_blocking(|| -> () {
+            panic!("OCR 引擎初始化崩溃");
+        });
+        let error = tauri::async_runtime::block_on(handle).expect_err("panic 应变成 JoinError");
+        let message = join_error_message("识别文字", error);
+        assert!(message.starts_with("识别文字任务失败: "), "{message}");
+        assert!(message.contains("OCR 引擎初始化崩溃"), "{message}");
     }
 }
 

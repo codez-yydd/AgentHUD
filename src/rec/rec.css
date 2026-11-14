@@ -7,7 +7,7 @@
   --rec-muted: #8a93a6;
   --rec-dim: #5e6779;
   --rec-accent: #4c8dff;
-  --rec-red: #ff4d5e;
+  --rec-red: #f54a45;
   --rec-amber: #ffb43d;
 }
 
@@ -39,30 +39,48 @@ button {
 
 /* ---------------- 录制条 ---------------- */
 
+/* 录制条按飞书样式重做：深灰实底、无描边、圆角矩形、零 box-shadow。
+   原因：录制窗口是透明窗口且按内容紧贴开窗，CSS 阴影会画在窗口矩形内部
+   （视觉出「边」，且阴影区同样挡住下层软件的点击），因此本文件一律不再
+   使用 box-shadow，需要强调时用底色 / 描边 / transform 实现。 */
+
 .rec-shell {
   height: 100%;
   box-sizing: border-box;
 }
 
 .rec-shell-bar {
-  padding: 6px;
+  padding: 0;
 }
 
 .rec-bar {
   height: 100%;
   display: flex;
   align-items: center;
-  gap: 9px;
-  padding: 0 7px 0 14px;
-  border-radius: 15px;
-  background: var(--rec-bg);
-  border: 1px solid var(--rec-line);
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.42);
+  gap: 12px;
+  padding: 0 12px;
+  border-radius: 11px;
+  background: rgba(43, 43, 43, 0.97);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
   box-sizing: border-box;
 }
 
+/* 失败态：底色带一点红调区分，其余与常态一致（保持无描边） */
 .rec-bar.error {
-  border-color: rgba(255, 77, 94, 0.45);
+  background: rgba(74, 43, 43, 0.97);
+}
+
+/* 拖动把手：2 列 × 3 行共 6 个 2px 灰点。用 background 平铺绘制而不是子
+   元素，保证把手元素自身就是 data-tauri-drag-region 的按下目标 */
+.rec-drag {
+  width: 9px;
+  height: 15px;
+  flex: none;
+  background-image: radial-gradient(circle, #6b6b6b 1px, transparent 1.3px);
+  background-size: 4.5px 5px;
+  background-position: 0.5px center;
+  cursor: grab;
 }
 
 .rec-dot {
@@ -70,8 +88,7 @@ button {
   height: 8px;
   border-radius: 50%;
   background: var(--rec-red);
-  box-shadow: 0 0 0 0 rgba(255, 77, 94, 0.55);
-  animation: rec-pulse 1.7s ease-out infinite;
+  animation: rec-pulse 1.7s ease-in-out infinite;
   flex: none;
 }
 
@@ -85,30 +102,33 @@ button {
   animation: none;
 }
 
+/* 呼吸动画用 transform/opacity 实现：box-shadow 扩散同样会画进透明窗口
+   矩形形成遮挡死区（本文件已全面禁用 box-shadow） */
 @keyframes rec-pulse {
-  0% {
-    box-shadow: 0 0 0 0 rgba(255, 77, 94, 0.55);
-  }
-  70% {
-    box-shadow: 0 0 0 7px rgba(255, 77, 94, 0);
-  }
+  0%,
   100% {
-    box-shadow: 0 0 0 0 rgba(255, 77, 94, 0);
+    transform: scale(1);
+    opacity: 1;
+  }
+  50% {
+    transform: scale(0.72);
+    opacity: 0.55;
   }
 }
 
+/* 时长：等宽数字，已录亮（#e8e8e8）/ 上限略暗，整块参与窗口拖拽 */
 .rec-clock {
-  font-size: 15px;
-  font-weight: 600;
-  letter-spacing: 0.4px;
+  font-family: "SF Mono", "Cascadia Mono", Consolas, "Liberation Mono", monospace;
+  font-size: 14px;
+  color: #e8e8e8;
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 .rec-limit {
-  font-size: 11px;
-  color: var(--rec-dim);
-  font-variant-numeric: tabular-nums;
-  margin-left: -3px;
+  margin-left: 6px;
+  font-style: normal;
+  color: rgba(232, 232, 232, 0.45);
 }
 
 .rec-error-text {
@@ -120,37 +140,31 @@ button {
   white-space: nowrap;
 }
 
+/* 结束录制：红实底 + 圆角 6px + 白字 13px，高 28px 垂直居中 */
 .rec-stop {
   margin-left: auto;
+  flex: none;
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  height: 30px;
+  justify-content: center;
+  height: 28px;
   padding: 0 12px;
-  border-radius: 10px;
-  background: rgba(255, 77, 94, 0.16);
-  color: #ff8b96;
-  font-size: 12.5px;
-  font-weight: 600;
-  transition: background 0.15s ease, color 0.15s ease;
+  border-radius: 6px;
+  background: #f54a45;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+  transition: background 0.15s ease;
 }
 
 .rec-stop:hover {
-  background: rgba(255, 77, 94, 0.26);
-  color: #ffd2d7;
+  background: #ff605b;
 }
 
 .rec-stop:disabled {
-  color: var(--rec-amber);
-  background: rgba(255, 180, 61, 0.14);
+  background: rgba(245, 74, 69, 0.45);
   cursor: default;
-}
-
-.rec-stop-icon {
-  width: 9px;
-  height: 9px;
-  border-radius: 2px;
-  background: currentColor;
 }
 
 .rec-spinner {
@@ -177,6 +191,13 @@ button {
 
 /* ---------------- 预览窗 ---------------- */
 
+/* 预热待命页：应用启动时后端预建隐藏录制条窗口、加载无 id 参数的 rec.html，
+   RecApp 渲染本空白页占位。保持全透明无任何视觉元素——窗口即使被意外
+   show 也不闪出色块；真正录制时后端 navigate 带上 id 整页重载。 */
+.rec-shell-standby {
+  background: transparent;
+}
+
 .rec-shell-preview {
   display: flex;
   flex-direction: column;
@@ -185,7 +206,6 @@ button {
   border-radius: 16px;
   background: var(--rec-bg);
   border: 1px solid var(--rec-line);
-  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5);
 }
 
 .rec-head {
@@ -350,7 +370,7 @@ button {
   padding: 2px;
   border-radius: 8px;
   background: rgba(255, 255, 255, 0.05);
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.06);
 }
 
 .rec-fps-label {
@@ -474,7 +494,6 @@ button {
   border-radius: 1px;
   margin-left: -1px;
   pointer-events: none;
-  box-shadow: 0 0 6px rgba(0, 0, 0, 0.6);
 }
 
 .rec-playhead::after {
@@ -497,7 +516,6 @@ button {
   margin-left: -7px;
   border-radius: 6px;
   background: #fff;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.5);
   padding: 0;
   z-index: 3;
   cursor: ew-resize;

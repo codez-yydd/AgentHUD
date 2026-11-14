@@ -206,7 +206,7 @@ export function ScreenshotPage({ onToast }: { onToast: (message: string) => void
           </span>
           <span className="shot-launch-text">
             <b>录屏</b>
-            <em>MP4 / GIF，最长 5 分钟</em>
+            <em>MP4 最长 1 小时 · GIF 最长 5 分钟</em>
           </span>
         </button>
       </div>

@@ -169,6 +169,27 @@ function loadImage(src: string): Promise<HTMLImageElement> {
   });
 }
 
+/** 画布 PNG 异步编码：toBlob 走浏览器的异步编码线程，大图不再像
+ *  toDataURL 那样同步阻塞主线程数百毫秒（4K 截图复制卡顿的主因之一）。 */
+async function canvasToPngBytes(canvas: HTMLCanvasElement): Promise<Uint8Array> {
+  const blob = await new Promise<Blob | null>((resolve) =>
+    canvas.toBlob(resolve, "image/png")
+  );
+  if (!blob) throw new Error("画布编码失败");
+  return new Uint8Array(await blob.arrayBuffer());
+}
+
+/** PNG 字节转 data URL：FileReader 异步转换，给保存 / 贴图 / OCR 这些仍以
+ *  data URL 为入参的命令复用，同样不在主线程拼大字符串。 */
+function pngBytesToDataUrl(bytes: Uint8Array): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.onerror = () => reject(new Error("图片转码失败"));
+    reader.readAsDataURL(new Blob([bytes], { type: "image/png" }));
+  });
+}
+
 function playTone() {
   try {
     const AudioCtor = window.AudioContext;
@@ -227,6 +248,28 @@ export default function ShotApp() {
   /** null = 还没查过；false = 未就位（显示下载引导） */
   const [ffmpegReady, setFfmpegReady] = useState<boolean | null>(null);
   const [ffmpegProgress, setFfmpegProgress] = useState<FfmpegDownloadProgress | null>(null);
+  // 录屏 3 秒倒计时：3/2/1 数字阶段结束后立即调 startRecord（后端把覆盖层
+  // 窗口缩成 1×1 挪出屏幕，见后端 park_overlay_for_record）。数字消失后遮罩
+  // 与选区保持原样显示，直到后端把窗口缩走——屏幕从「遮罩选区」一次性切回
+  // 「桌面 + 录制条」，中间没有任何深色/黑色过渡段（早先的旧方案先隐藏内容
+  // 再等 200ms，露出的只是窗口深色底，反而造成录制前黑 200ms，已删除）。
+  // ref 守卫重入（快捷键/按钮在倒计时中重复触发直接忽略），timer 句柄供
+  // ESC 取消。
+  const [recCountdown, setRecCountdown] = useState<number | null>(null);
+  const recCountdownRef = useRef(false);
+  const recCountdownTimerRef = useRef<number | null>(null);
+  // 「开始录制」已触发（点下按钮进入倒计时起保持 true）：设置卡从此保持
+  // 隐藏。倒计时数字消失时 setRecCountdown(null) 解除倒计时锁，若无此标记
+  // 设置卡会闪现一帧、随即被后端缩窗挪走（表现为一闪而过）。失败回滚
+  // （doStartRecord catch）与 Esc 取消倒计时（cancelRecCountdown）时复位
+  // 让设置卡回来；成功后保持 true——覆盖层窗口随即被后端挪走无需恢复，
+  // 下次截图整页重载（navigate）时组件重挂自然复位。
+  const [recStarting, setRecStarting] = useState(false);
+  // 倒计时启动时锁定的选区与麦克风参数，供 Enter/空格跳过时直接取用
+  const recStartRef = useRef<{ rect: ShotRect; micName: string | null } | null>(null);
+  // 框选拖拽进行中（新建 / 移动 / 缩放）：录屏设置卡借此在拖选时让位隐藏，
+  // 不挡手、松手即回
+  const [selectDragging, setSelectDragging] = useState(false);
 
 
   const stageRef = useRef<HTMLDivElement | null>(null);
@@ -261,6 +304,8 @@ export default function ShotApp() {
   useEffect(() => {
     return () => {
       if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current);
+      // 覆盖层关闭/重挂载时停掉录屏倒计时，避免残留 timer 空跑
+      if (recCountdownTimerRef.current) window.clearTimeout(recCountdownTimerRef.current);
     };
   }, []);
 
@@ -279,6 +324,10 @@ export default function ShotApp() {
     () =>
       onRecordError((message) => {
         setBusy("");
+        // 后端失败路径会把覆盖层窗口放回屏幕；覆盖层内容全程未隐藏，
+        // 无需恢复显示，错误 toast 直接可见。同时解除「开始录制已触发」
+        // 标记，录制设置卡恢复显示供用户重试
+        setRecStarting(false);
         showToast(message, 5200);
       }),
     [showToast]
@@ -583,10 +632,24 @@ export default function ShotApp() {
           (focused as HTMLElement).blur();
           return;
         }
+        // 录屏倒计时中 Esc = 取消录制并回到框选态（选区保留，不退出截图）
+        if (recCountdownRef.current) {
+          cancelRecCountdown();
+          return;
+        }
         void closeShot();
         return;
       }
       if (typing) return;
+      // 录屏倒计时中 Enter/空格 = 跳过剩余等待立即开录；其余快捷键照旧忽略：
+      // 既防 Ctrl+Shift+G 重入，也避免滚动快捷键在录制即将开始时又改动选区
+      if (recCountdownRef.current) {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          skipRecCountdown();
+        }
+        return;
+      }
       if (phase === "select" && event.key === "Enter" && selection) {
         event.preventDefault();
         void cropSelection();
@@ -804,6 +867,7 @@ export default function ShotApp() {
           origin: rect,
           selection: rect,
         };
+        setSelectDragging(true);
         return;
       }
     }
@@ -816,6 +880,7 @@ export default function ShotApp() {
       origin: next,
       selection: next,
     };
+    setSelectDragging(true);
   };
 
   const startResize = (event: ReactPointerEvent, handle: string) => {
@@ -831,6 +896,7 @@ export default function ShotApp() {
       origin: rect,
       selection: rect,
     };
+    setSelectDragging(true);
   };
 
   const moveSelection = (event: ReactPointerEvent) => {
@@ -850,10 +916,11 @@ export default function ShotApp() {
 
   const endSelection = (event: ReactPointerEvent) => {
     const drag = selectDragRef.current;
-    // 没从画布上按下过（比如点在悬浮工具条的按钮上）就不要动选区，
+    // 没有从画布上按下过（比如点在悬浮工具条的按钮上）就不要动选区，
     // 否则切换格式/开始录制这类点击会把用户刚框好的区域清掉。
     if (!drag) return;
     selectDragRef.current = null;
+    setSelectDragging(false);
     if (stageRef.current?.hasPointerCapture(event.pointerId)) {
       stageRef.current.releasePointerCapture(event.pointerId);
     }
@@ -876,10 +943,11 @@ export default function ShotApp() {
     if (next && tab === "shot") void cropSelection(next);
   };
 
-  /** 把选区按原图像素裁出来（不进入标注器）。不传 rect 时用当前选区。 */
+  /** 把选区按原图像素裁出来（不进入标注器）。不传 rect 时用当前选区。
+   *  返回 PNG 原始字节：复制直接走 raw IPC，其余用途转 data URL。 */
   async function renderSelection(
     rectArg?: ShotRect
-  ): Promise<{ data: string; rect: ShotRect } | null> {
+  ): Promise<{ bytes: Uint8Array; rect: ShotRect } | null> {
     const target = rectArg ?? selection;
     if (!session?.image || !target) return null;
     const rect = normRect(target);
@@ -902,14 +970,14 @@ export default function ShotApp() {
       size.w,
       size.h
     );
-    return { data: canvas.toDataURL("image/png"), rect };
+    return { bytes: await canvasToPngBytes(canvas), rect };
   }
 
   async function cropSelection(rectArg?: ShotRect) {
     try {
       const rendered = await renderSelection(rectArg);
       if (!rendered) return;
-      await beginEdit(rendered.data, rendered.rect);
+      await beginEdit(await pngBytesToDataUrl(rendered.bytes), rendered.rect);
     } catch (error) {
       showToast(String(error));
     }
@@ -925,7 +993,7 @@ export default function ShotApp() {
         setBusy("");
         return;
       }
-      await copyShot(rendered.data);
+      await copyShot(rendered.bytes);
       showToast("已复制到剪贴板", 900);
       window.setTimeout(() => void closeShot(), 320);
     } catch (error) {
@@ -944,7 +1012,10 @@ export default function ShotApp() {
         setBusy("");
         return;
       }
-      const item = await saveShotAs(rendered.data, settings?.format ?? "png");
+      const item = await saveShotAs(
+        await pngBytesToDataUrl(rendered.bytes),
+        settings?.format ?? "png"
+      );
       if (!item) {
         setBusy("");
         return;
@@ -962,8 +1033,10 @@ export default function ShotApp() {
     if (busy) return;
     setBusy("正在保存…");
     try {
-      const data = exportImage();
-      const item = await saveShotAs(data, settings?.format ?? "png");
+      const item = await saveShotAs(
+        await exportImageDataUrl(),
+        settings?.format ?? "png"
+      );
       if (!item) {
         setBusy("");
         return;
@@ -1020,8 +1093,54 @@ export default function ShotApp() {
     }
   }
 
+  /** 倒计时收尾：清掉计时器后立即调 startRecord，不隐藏覆盖层内容——
+   *  倒计时数字消失后遮罩与选区保持原样显示，直到后端把覆盖层窗口缩成
+   *  1×1 挪出屏幕（桌面露出 + 录制条浮出），屏幕从「遮罩」一次性切换到
+   *  「桌面」，没有任何深色/黑色过渡段（旧方案隐藏内容后露出的
+   *  只是窗口深色底，造成录制前黑 200ms，已废弃）。自然到点与 Enter/空格
+   *  跳过共用这一条路径，recCountdownRef 关闭后不会重复启动。 */
+  function beginRecordStart() {
+    if (recCountdownTimerRef.current) {
+      window.clearTimeout(recCountdownTimerRef.current);
+      recCountdownTimerRef.current = null;
+    }
+    recCountdownRef.current = false;
+    const start = recStartRef.current;
+    recStartRef.current = null;
+    setRecCountdown(null);
+    if (start) void doStartRecord(start.rect, start.micName);
+  }
+
+  /** ESC 取消录屏倒计时：停掉计时器回到框选态，覆盖层与选区原样保留；
+   *  同时解除「开始录制已触发」标记，录制设置卡恢复显示。 */
+  function cancelRecCountdown() {
+    if (recCountdownTimerRef.current) {
+      window.clearTimeout(recCountdownTimerRef.current);
+      recCountdownTimerRef.current = null;
+    }
+    recCountdownRef.current = false;
+    recStartRef.current = null;
+    setRecCountdown(null);
+    setRecStarting(false);
+  }
+
+  /** Enter/空格跳过倒计时：立即走与自然到点相同的启动路径（不改选区）；
+   *  已被取消时直接忽略，保持不可重入。 */
+  function skipRecCountdown() {
+    if (!recCountdownRef.current) return;
+    beginRecordStart();
+  }
+
+  /**
+   * 开始录制的公共入口（底部「开始录制」按钮 / Ctrl+Shift+G 都走这里）。
+   * 先做 3 秒倒计时给用户一个反悔窗口（期间覆盖层全屏保持，冻结帧里就是
+   * 即将录制的内容，画面零变化；Esc 取消回框选态），数字走完后立即调
+   * startRecord，遮罩与选区保持显示直到后端把窗口缩走。倒计时进行中
+   * 重复触发直接忽略。
+   */
   async function finishRecord() {
     if (!session || !selection || busy) return;
+    if (recCountdownRef.current) return;
     if (!session.origin) {
       showToast("窗口/图片会话不能录制，请框选屏幕区域后再录", 3600);
       return;
@@ -1034,9 +1153,33 @@ export default function ShotApp() {
     if (wantsMic && !micName && ffmpegReady) {
       showToast("未检测到可用的麦克风设备，本次录制不含人声", 3600);
     }
+    recCountdownRef.current = true;
+    // 锁定本次启动参数，Enter/空格跳过时无需重新计算选区/麦克风
+    recStartRef.current = { rect, micName };
+    // 进入倒计时即标记「开始录制已触发」：倒计时卡与设置卡都在锚点位置，
+    // 数字消失解除倒计时锁时若不靠此标记压住，设置卡会闪现一帧
+    setRecStarting(true);
+    setRecCountdown(3);
+    const tick = (left: number) => {
+      if (!recCountdownRef.current) return; // 已被 ESC 取消
+      if (left > 1) {
+        setRecCountdown(left - 1);
+        recCountdownTimerRef.current = window.setTimeout(() => tick(left - 1), 1000);
+        return;
+      }
+      // 数字走完：立即开始录制，遮罩与选区保持显示直到后端把窗口缩走
+      beginRecordStart();
+    };
+    recCountdownTimerRef.current = window.setTimeout(() => tick(3), 1000);
+  }
+
+  /** 倒计时结束后的真正启动：调后端（后端把覆盖层窗口缩走）并把结果反馈出来。 */
+  async function doStartRecord(rect: ShotRect, micName: string | null) {
+    if (!session) return;
     setBusy("正在准备录屏…");
     try {
-      // 后端会挪走覆盖层并在屏幕右下角浮出录制条，这里只负责把选区传过去。
+      // 后端把覆盖层窗口缩成 1×1 挪出屏幕并浮出录制条（自动避开选区，四角
+      // 都放不下时隐藏、改用 Ctrl+Shift+G 结束），这里只负责把选区传过去。
       const started = await startRecord(
         session.id,
         {
@@ -1051,9 +1194,14 @@ export default function ShotApp() {
           mic: micName,
         }
       );
-      // 非致命提示（如「未检测到系统声设备」）只 toast 一次，不阻塞录制
+      // 非致命提示（如「未检测到系统声设备」）只 toast 一次，不阻塞录制；
+      // 成功后覆盖层窗口已被缩走挪出屏幕，recStarting 保持 true 压住设置卡
+      //（窗口已不可见，无视觉影响），下次截图整页重载时自然复位
       if (started.notice) showToast(started.notice, 4200);
     } catch (error) {
+      // 启动失败：后端已把覆盖层窗口放回屏幕，覆盖层保持原样显示错误 toast；
+      // 解除「开始录制已触发」标记，录制设置卡恢复显示供用户重试
+      setRecStarting(false);
       showToast(String(error), 4200);
     } finally {
       setBusy("");
@@ -1234,19 +1382,25 @@ export default function ShotApp() {
     });
   }
 
-  function exportImage(): string {
+  /** 编辑器当前画面的 PNG 原始字节：复制直接走 raw IPC，编码异步不阻塞
+   *  主线程。 */
+  async function exportImageBytes(): Promise<Uint8Array> {
     redraw();
     const canvas = canvasRef.current;
     if (!canvas) throw new Error("画布尚未准备好");
-    return canvas.toDataURL("image/png");
+    return canvasToPngBytes(canvas);
+  }
+
+  /** 保存 / 贴图 / OCR / 二维码仍是 data URL 入参，从这里转一道。 */
+  async function exportImageDataUrl(): Promise<string> {
+    return pngBytesToDataUrl(await exportImageBytes());
   }
 
   async function finishCopy() {
     if (busy) return;
     setBusy("正在复制到剪贴板…");
     try {
-      const data = exportImage();
-      await copyShot(data);
+      await copyShot(await exportImageBytes());
       showToast("已复制到剪贴板", 900);
       window.setTimeout(() => void closeShot(), 320);
     } catch (error) {
@@ -1259,13 +1413,16 @@ export default function ShotApp() {
     if (busy) return;
     setBusy("正在保存…");
     try {
-      const data = exportImage();
-      const item = await saveShot(data, settings?.format ?? "png");
+      const bytes = await exportImageBytes();
+      const item = await saveShot(
+        await pngBytesToDataUrl(bytes),
+        settings?.format ?? "png"
+      );
       setHistoryNote(`已保存 ${item.name}`);
       let extra = "";
       if (settings?.autoCopy) {
         try {
-          await copyShot(data);
+          await copyShot(bytes);
           extra = "，已复制";
         } catch {
           extra = "";
@@ -1273,7 +1430,7 @@ export default function ShotApp() {
       }
       if (settings?.autoPin) {
         try {
-          await pinShot(data);
+          await pinShot(await pngBytesToDataUrl(bytes));
           extra += "，已贴图";
         } catch {
           extra = "";
@@ -1291,8 +1448,7 @@ export default function ShotApp() {
     if (busy) return;
     setBusy("正在创建贴图…");
     try {
-      const data = exportImage();
-      await pinShot(data);
+      await pinShot(await exportImageDataUrl());
       showToast("已贴到桌面", 900);
       window.setTimeout(() => void closeShot(), 300);
     } catch (error) {
@@ -1305,7 +1461,7 @@ export default function ShotApp() {
     if (busy) return;
     setBusy("正在识别文字…");
     try {
-      const result = await ocrShot(exportImage());
+      const result = await ocrShot(await exportImageDataUrl());
       setModal({ kind: "ocr", result });
     } catch (error) {
       showToast(String(error), 4200);
@@ -1318,7 +1474,7 @@ export default function ShotApp() {
     if (busy) return;
     setBusy("正在识别二维码…");
     try {
-      const result = await qrShot(exportImage());
+      const result = await qrShot(await exportImageDataUrl());
       setModal({ kind: "qr", result });
     } catch (error) {
       showToast(String(error), 4200);
@@ -1345,10 +1501,38 @@ export default function ShotApp() {
       }
     : undefined;
 
+  // 倒计时期间冻结指针交互：按钮、选区拖拽都不再响应（键盘 Esc 仍可取消），
+  // 避免录制即将开始时选区又被改动；数字消失后立即恢复（随后端缩窗自然失效）
+  const recCountdownLock = recCountdown !== null;
+
+  // 录制设置卡：record 分类框好选区后显示（底部工具栏同时让位）。倒计时 /
+  // 隐藏期间与拖动调整选区时让位隐藏——点「开始录制」后设置卡消失、倒计时
+  // 卡原地出现（同位衔接）；拖选时不挡手，松手即回。recStarting 压住倒计时
+  // 结束后的渲染：数字消失解除倒计时锁，但启动流程还在推进（后端正在缩窗），
+  // 设置卡不能再回来（否则闪现一帧后被挪走的窗口带走）。
+  const recSetupVisible =
+    tab === "record" &&
+    selection !== null &&
+    !recCountdownLock &&
+    !selectDragging &&
+    !recStarting;
+
+  // 设置卡 / 倒计时卡的锚点：选区矩形的中心（CSS px，selectionCss 已含
+  // DPI 缩放）。卡片用 translate(-50%,-50%) 挂到这个点上——框选占屏幕
+  // 哪个角落，卡就显示在哪个角落，不再固定屏幕中央。
+  const recAnchor = selectionCss
+    ? {
+        left: selectionCss.left + selectionCss.width / 2,
+        top: selectionCss.top + selectionCss.height / 2,
+      }
+    : null;
+
   return (
     <div
       ref={stageRef}
-      className={`shot-root phase-${phase} ${phase === "edit" ? "tool-" + tool : ""}`}
+      className={`shot-root phase-${phase} ${phase === "edit" ? "tool-" + tool : ""} ${
+        recCountdownLock ? "rec-countdown" : ""
+      }`}
       onPointerDown={phase === "select" ? startSelection : undefined}
       onPointerMove={phase === "select" ? moveSelection : undefined}
       onPointerUp={phase === "select" ? endSelection : undefined}
@@ -1432,23 +1616,25 @@ export default function ShotApp() {
               </span>
             </div>
           ) : null}
-          <div className="shot-top-pill shot-edit-top">
-            <span className="shot-live-dot" />
-            <span>{session.title}</span>
-            <span className="shot-top-sep" />
-            <span>{session.monitor.width} × {session.monitor.height}</span>
-            <span className="shot-top-sep" />
-            <span>拖动框选 · 悬停选窗 · 桌面单击整屏</span>
-          </div>
-          <div className="shot-floating shot-select-actions" onPointerDown={(e) => e.stopPropagation()}>
-            <div className="shot-mode-switch" role="group" aria-label="截图分类">
+          {/* 顶部一体栏：替代原先「信息条 + 模式条」上下两个胶囊。一行内容：
+              左侧截图/滚动/录屏模式切换 + 细分隔线 + 右侧分辨率与 Esc 键位
+              提示（弱化色），长提示文字删除让信息更克制。栏本体
+              pointer-events:none（按住栏空白处照样框选），仅左侧模式切换
+              恢复事件并阻断冒泡，避免误触底下的框选；显隐沿用（框选阶段常驻） */}
+          <div className="shot-top-bar">
+            <div
+              className="shot-mode-switch"
+              role="group"
+              aria-label="截图分类"
+              onPointerDown={(e) => e.stopPropagation()}
+            >
               <button
                 type="button"
                 className={tab === "shot" ? "active" : ""}
                 title="截一张图（拖动框选 / 单击选窗 / 桌面单击整屏）"
                 onClick={() => switchTab("shot")}
               >
-                <ShotIcon name="crop" size={13} /> 截图
+                <ShotIcon name="crop" size={14} /> 截图
               </button>
               <button
                 type="button"
@@ -1456,171 +1642,42 @@ export default function ShotApp() {
                 title="框选滚动区域后自动滚动拼接成长图"
                 onClick={() => switchTab("scroll")}
               >
-                <ShotIcon name="scroll" size={13} /> 滚动截图
+                <ShotIcon name="scroll" size={14} /> 滚动截图
               </button>
               <button
                 type="button"
                 className={tab === "record" ? "active" : ""}
-                title="框选区域录屏（MP4 / GIF，最长 5 分钟）"
+                title="框选区域录屏（MP4 最长 1 小时 · GIF 最长 5 分钟）"
                 onClick={() => switchTab("record")}
               >
                 <span className="shot-rec-dot" /> 录屏
               </button>
             </div>
-            <span className="shot-actions-sep" />
-            <span className="shot-selection-label">
-              {selection
-                ? `${Math.round(normRect(selection).width)} × ${Math.round(normRect(selection).height)}`
-                : hoverWindow
-                  ? hoverWindow.app
-                  : "拖动选择区域"}
+            <span className="shot-top-sep" />
+            <span className="shot-top-meta">
+              {session.monitor.width} × {session.monitor.height}
             </span>
-            {tab === "shot" ? (
-              // 截图分类：选完自动进标注器，不在这里放“标注”按钮。
-              <span className="shot-mode-note">松开即进入标注</span>
-            ) : tab === "scroll" ? (
+            {/* Esc 仍是唯一退出方式，键位提示收敛在栏右侧 */}
+            <span className="shot-top-esc"><kbd>Esc</kbd> 取消</span>
+          </div>
+          {/* 底部保持干净：无选区（框选进行中）时所有分类都不渲染任何底部
+              UI，屏幕上只有冻结帧 / 遮罩 / 顶部一体栏 / 悬停窗口高亮。框好
+              选区后：截图分类松手直接进标注编辑器、录屏分类设置收在选区
+              中心的录制设置卡，两者都无需底部条；仅滚动分类保留一个"开始
+              滚动"按钮。退出统一走 Esc（顶部一体栏有键位提示） */}
+          {tab === "scroll" && selection ? (
+            <div className="shot-floating shot-select-actions" onPointerDown={(e) => e.stopPropagation()}>
               <button
                 type="button"
                 className="shot-btn primary"
-                disabled={!selection || busy !== ""}
+                disabled={busy !== ""}
                 title="选区里的页面会自动滚动并拼接成长图"
                 onClick={() => void finishScroll()}
               >
                 <ShotIcon name="scroll" size={14} /> 开始滚动
               </button>
-            ) : (
-              <>
-                <div className="shot-rec-format" role="group" aria-label="录屏格式">
-                  {IS_MAC || IS_WINDOWS ? (
-                    <button
-                      type="button"
-                      className={recFormat === "mp4" ? "active" : ""}
-                      title={
-                        IS_MAC
-                          ? "MP4 视频：画面流畅、体积适中，支持裁剪"
-                          : "MP4 视频：画面流畅、可带音轨（首次使用需下载 ffmpeg，约 100MB）"
-                      }
-                      onClick={() => setRecFormat("mp4")}
-                    >
-                      MP4
-                    </button>
-                  ) : null}
-                  <button
-                    type="button"
-                    className={recFormat === "gif" ? "active" : ""}
-                    title="GIF 动图：体积小，适合贴到聊天窗口"
-                    onClick={() => setRecFormat("gif")}
-                  >
-                    GIF
-                  </button>
-                </div>
-                {!IS_MAC && !IS_WINDOWS ? (
-                  <span className="shot-mode-note">当前平台仅支持 GIF</span>
-                ) : null}
-                <button
-                  type="button"
-                  className={recCursor ? "shot-rec-toggle on" : "shot-rec-toggle"}
-                  title="录制时是否把鼠标指针画进画面"
-                  onClick={() => setRecCursor((value) => !value)}
-                >
-                  <span className="shot-rec-switch" />
-                  鼠标
-                </button>
-                {IS_WINDOWS ? (
-                  recFormat === "mp4" ? (
-                    <>
-                      <button
-                        type="button"
-                        className={micEnabled ? "shot-rec-toggle on" : "shot-rec-toggle"}
-                        disabled={ffmpegReady === false}
-                        title={
-                          ffmpegReady === false
-                            ? "需先下载 ffmpeg 才能录制麦克风"
-                            : "录制时是否采集麦克风人声"
-                        }
-                        onClick={() =>
-                          updateMicSettings(!micEnabled, micDevice || audioDevices?.[0]?.name || "")
-                        }
-                      >
-                        <span className="shot-rec-switch" />
-                        麦克风
-                      </button>
-                      {ffmpegReady === false ? (
-                        <button
-                          type="button"
-                          className="shot-btn ghost"
-                          title="MP4 录制依赖 ffmpeg：下载到程序目录 bin\ 下，约 100MB，只需一次"
-                          disabled={ffmpegProgress !== null}
-                          onClick={downloadFfmpeg}
-                        >
-                          {ffmpegProgress ? "下载中…" : "下载 ffmpeg"}
-                        </button>
-                      ) : micEnabled ? (
-                        audioDevices === null ? (
-                          <select className="shot-rec-select" disabled value="">
-                            <option value="">正在读取设备…</option>
-                          </select>
-                        ) : audioDevices.length === 0 ? (
-                          <span className="shot-mode-note" title="没有检测到任何音频输入设备，本次录制将不含人声">
-                            未检测到麦克风
-                          </span>
-                        ) : (
-                          <select
-                            className="shot-rec-select"
-                            value={micDevice}
-                            title="选择要录入的麦克风设备"
-                            onChange={(event) => updateMicSettings(true, event.target.value)}
-                          >
-                            {(audioDevices ?? []).map((device) => (
-                              <option key={device.name} value={device.name}>
-                                {device.label}
-                              </option>
-                            ))}
-                          </select>
-                        )
-                      ) : null}
-                    </>
-                  ) : (
-                    <span className="shot-rec-toggle disabled" title="GIF 无音轨，切到 MP4 才能录声音">
-                      <span className="shot-rec-switch" />
-                      麦克风
-                    </span>
-                  )
-                ) : null}
-                {IS_WINDOWS && recFormat === "mp4" && ffmpegReady === false && !ffmpegProgress ? (
-                  <span
-                    className="shot-mode-note"
-                    title="ffmpeg 未安装时无法录制 MP4，点击「下载 ffmpeg」后即可使用"
-                  >
-                    将录制为 GIF（未安装 ffmpeg）
-                  </span>
-                ) : null}
-                <button
-                  type="button"
-                  className="shot-btn record"
-                  disabled={!selection || !session.origin || busy !== ""}
-                  title={
-                    session.origin
-                      ? `开始录屏，最长 5 分钟（${shortcutText("Ctrl+Shift+G")}）`
-                      : "窗口/图片会话不能录制，请框选屏幕区域后再录"
-                  }
-                  onClick={() => void finishRecord()}
-                >
-                  <span className="shot-rec-dot" /> 开始录制
-                </button>
-              </>
-            )}
-            <span className="shot-actions-sep" />
-            <button
-              type="button"
-              className="shot-btn icon ghost"
-              title="取消（Esc）"
-              aria-label="取消"
-              onClick={() => void closeShot()}
-            >
-              <ShotIcon name="close" size={15} />
-            </button>
-          </div>
+            </div>
+          ) : null}
           {ffmpegProgress ? (
             <div className="shot-ffmpeg-progress" role="status">
               <div
@@ -1654,38 +1711,189 @@ export default function ShotApp() {
               </span>
             </div>
           ) : null}
-          <div className="shot-hint">
-            {tab === "shot" ? (
-              <>
-                <kbd>拖动</kbd> 框选
-                <span>·</span>
-                <kbd>单击窗口</kbd> 选中整个窗口
-                <span>·</span>
-                <kbd>桌面单击</kbd> 整屏
-                <span>·</span>
-                松开鼠标直接进入标注
-              </>
-            ) : tab === "scroll" ? (
-              <>
-                <kbd>拖动</kbd> 框选滚动区域
-                <span>·</span>
-                <kbd>单击窗口</kbd> 选中整个窗口
-                <span>·</span>
-                <Shortcut combo="Ctrl+Shift+R" /> 开始滚动
-                {IS_MAC ? <span>· 首次需在「辅助功能」里授权</span> : null}
-              </>
-            ) : (
-              <>
-                <kbd>拖动</kbd> 框选录制区域
-                <span>·</span>
-                <kbd>单击窗口</kbd> 选中整个窗口
-                <span>·</span>
-                <Shortcut combo="Ctrl+Shift+G" /> 开始录制（最长 5 分钟）
-              </>
-            )}
-            <span>·</span>
-            <kbd>Esc</kbd> 取消
-          </div>
+          {recSetupVisible && selection && recAnchor ? (
+            // 录制设置卡：锚在选区中心、与倒计时卡同位衔接、同一套深色毛玻璃
+            // 语言。外层是选区中心上的一个定位点（不接事件，点空白处照常
+            // 框选），卡片本身可交互且 onPointerDown 阻止冒泡，避免误触
+            // 底下的框选。
+            <div
+              className="shot-rec-setup"
+              style={{ left: recAnchor.left, top: recAnchor.top }}
+            >
+              <div
+                className="shot-rec-setup-card"
+                onPointerDown={(e) => e.stopPropagation()}
+              >
+                <div className="shot-rec-setup-head">
+                  <span className="shot-rec-dot" />
+                  <b>录制设置</b>
+                  <span className="shot-rec-setup-size">
+                    选区 {Math.round(normRect(selection).width)} ×{" "}
+                    {Math.round(normRect(selection).height)}
+                    {recFormat === "gif" ? " · GIF 最长 5 分钟" : " · MP4 最长 1 小时"}
+                  </span>
+                </div>
+                <div className="shot-rec-setup-row">
+                  <div className="shot-rec-format" role="group" aria-label="录屏格式">
+                    {IS_MAC || IS_WINDOWS ? (
+                      <button
+                        type="button"
+                        className={recFormat === "mp4" ? "active" : ""}
+                        title={
+                          IS_MAC
+                            ? "MP4 视频：画面流畅、体积适中，支持裁剪"
+                            : "MP4 视频：画面流畅、可带音轨（首次使用需下载 ffmpeg，约 100MB）"
+                        }
+                        onClick={() => setRecFormat("mp4")}
+                      >
+                        MP4
+                      </button>
+                    ) : null}
+                    <button
+                      type="button"
+                      className={recFormat === "gif" ? "active" : ""}
+                      title="GIF 动图：体积小，适合贴到聊天窗口"
+                      onClick={() => setRecFormat("gif")}
+                    >
+                      GIF
+                    </button>
+                  </div>
+                  <button
+                    type="button"
+                    className={recCursor ? "shot-rec-toggle on" : "shot-rec-toggle"}
+                    title="录制时是否把鼠标指针画进画面"
+                    onClick={() => setRecCursor((value) => !value)}
+                  >
+                    <span className="shot-rec-switch" />
+                    鼠标
+                  </button>
+                  {!IS_MAC && !IS_WINDOWS ? (
+                    <span className="shot-rec-setup-note">当前平台仅支持 GIF</span>
+                  ) : null}
+                </div>
+                {IS_WINDOWS ? (
+                  recFormat === "mp4" ? (
+                    <div className="shot-rec-setup-row">
+                      <button
+                        type="button"
+                        className={micEnabled ? "shot-rec-toggle on" : "shot-rec-toggle"}
+                        disabled={ffmpegReady === false}
+                        title={
+                          ffmpegReady === false
+                            ? "需先下载 ffmpeg 才能录制麦克风"
+                            : "录制时是否采集麦克风人声"
+                        }
+                        onClick={() =>
+                          updateMicSettings(!micEnabled, micDevice || audioDevices?.[0]?.name || "")
+                        }
+                      >
+                        <span className="shot-rec-switch" />
+                        麦克风
+                      </button>
+                      {ffmpegReady === false ? (
+                        <>
+                          <button
+                            type="button"
+                            className="shot-btn ghost"
+                            title="MP4 录制依赖 ffmpeg：下载到程序目录 bin\ 下，约 100MB，只需一次"
+                            disabled={ffmpegProgress !== null}
+                            onClick={downloadFfmpeg}
+                          >
+                            {ffmpegProgress ? "下载中…" : "下载 ffmpeg"}
+                          </button>
+                          {!ffmpegProgress ? (
+                            <span className="shot-rec-setup-note">
+                              未安装 ffmpeg，本次将录制为 GIF
+                            </span>
+                          ) : null}
+                        </>
+                      ) : micEnabled ? (
+                        audioDevices === null ? (
+                          <select className="shot-rec-select" disabled value="">
+                            <option value="">正在读取设备…</option>
+                          </select>
+                        ) : audioDevices.length === 0 ? (
+                          <span
+                            className="shot-rec-setup-note"
+                            title="没有检测到任何音频输入设备，本次录制将不含人声"
+                          >
+                            未检测到麦克风
+                          </span>
+                        ) : (
+                          <select
+                            className="shot-rec-select"
+                            value={micDevice}
+                            title="选择要录入的麦克风设备"
+                            onChange={(event) => updateMicSettings(true, event.target.value)}
+                          >
+                            {(audioDevices ?? []).map((device) => (
+                              <option key={device.name} value={device.name}>
+                                {device.label}
+                              </option>
+                            ))}
+                          </select>
+                        )
+                      ) : null}
+                    </div>
+                  ) : (
+                    <div className="shot-rec-setup-row">
+                      <span
+                        className="shot-rec-toggle disabled"
+                        title="GIF 无音轨，切到 MP4 才能录声音"
+                      >
+                        <span className="shot-rec-switch" />
+                        麦克风
+                      </span>
+                      <span className="shot-rec-setup-note">GIF 无音轨，切到 MP4 才能录声音</span>
+                    </div>
+                  )
+                ) : null}
+                <div className="shot-rec-setup-actions">
+                  <button
+                    type="button"
+                    className="shot-btn"
+                    title="清除选区，回到框选状态（Esc 取消整次截图）"
+                    onClick={() => setSelection(null)}
+                  >
+                    取消
+                  </button>
+                  <button
+                    type="button"
+                    className="shot-btn record solid"
+                    disabled={!selection || !session.origin || busy !== ""}
+                    title={
+                      session.origin
+                        ? `开始录屏，最长 ${recFormat === "gif" ? "5 分钟（GIF）" : "1 小时（MP4）"}（${shortcutText("Ctrl+Shift+G")}）`
+                        : "窗口/图片会话不能录制，请框选屏幕区域后再录"
+                    }
+                    onClick={() => void finishRecord()}
+                  >
+                    <span className="shot-rec-dot" /> 开始录制
+                  </button>
+                </div>
+              </div>
+            </div>
+          ) : null}
+          {recCountdown !== null && recAnchor ? (
+            // 倒计时卡与设置卡同位：都锚在选区中心，点「开始录制」后原地衔接
+            <div
+              className="shot-rec-countdown"
+              role="status"
+              aria-live="polite"
+              style={{ left: recAnchor.left, top: recAnchor.top }}
+            >
+              {/* 深色毛玻璃底板：保证亮色桌面上数字对比度可读，只压底板不压画面 */}
+              <div className="shot-rec-countdown-card">
+                {/* key 让每个数字重新挂载，入场缩放动画每次都重放 */}
+                <span className="shot-rec-countdown-num" key={recCountdown}>
+                  {recCountdown}
+                </span>
+                <span className="shot-rec-countdown-tip">
+                  即将开始录制 · <kbd>Esc</kbd> 取消 · <kbd>Enter</kbd> 跳过
+                </span>
+              </div>
+            </div>
+          ) : null}
         </>
       ) : null}
 

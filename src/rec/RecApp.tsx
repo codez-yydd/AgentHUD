@@ -13,8 +13,9 @@ import {
 } from "../shot/api";
 import type { RecordResult } from "../shot/types";
 
-/** 与后端 MAX_RECORD_MS 对齐：最长 5 分钟 */
-const MAX_RECORD_MS = 5 * 60 * 1000;
+/** 与后端时长上限（max_record_ms）对齐：MP4 流式写盘 1 小时；GIF 帧缓存受内存约束 5 分钟 */
+const MAX_RECORD_MP4_MS = 60 * 60 * 1000;
+const MAX_RECORD_GIF_MS = 5 * 60 * 1000;
 
 type Phase = "recording" | "finalizing" | "preview" | "error";
 
@@ -24,6 +25,11 @@ function pad(value: number): string {
 
 function clock(ms: number): string {
   const total = Math.max(0, Math.round(ms / 1000));
+  // 不满 1 小时保持 MM:SS（1 小时上限显示 60:00）；超出后切 H:MM:SS
+  if (total > 3600) {
+    const hours = Math.floor(total / 3600);
+    return `${hours}:${pad((total % 3600) / 60)}:${pad(total % 60)}`;
+  }
   return `${pad(Math.floor(total / 60))}:${pad(total % 60)}`;
 }
 
@@ -44,6 +50,12 @@ export default function RecApp() {
     const id = Number(new URLSearchParams(window.location.search).get("id"));
     return Number.isFinite(id) && id > 0 ? id : 0;
   }, []);
+  // 录制格式：后端建窗时写进 URL（rec.html?id=..&format=..），首帧就能显示
+  // 正确的时长上限；轮询回来的 RecordState.format 再兜底校正一次
+  const [format, setFormat] = useState<"mp4" | "gif">(() =>
+    new URLSearchParams(window.location.search).get("format") === "gif" ? "gif" : "mp4"
+  );
+  const maxRecordMs = format === "mp4" ? MAX_RECORD_MP4_MS : MAX_RECORD_GIF_MS;
   const [phase, setPhase] = useState<Phase>("recording");
   const [elapsed, setElapsed] = useState(0);
   // 点「结束」之后后端还要收尾（GIF 编码可能几秒），计时停在点击那一刻
@@ -66,10 +78,10 @@ export default function RecApp() {
   }, [phase]);
 
   // 录制中轮询后端：时长从后端来（前端窗口可能被节流），结束后顺手把窗口放大成预览。
+  // id 无效（0/缺失）= 预热待命页：直接返回，不轮询、不进 error 态、
+  // 不触发 cancelRecord（那会误收截图会话并隐藏待命窗口），见下方渲染分支。
   useEffect(() => {
     if (!recordId) {
-      setError("录屏参数缺失");
-      setPhase("error");
       return;
     }
     let dead = false;
@@ -81,6 +93,7 @@ export default function RecApp() {
         if (dead) return;
         setElapsed(next.elapsedMs);
         setProgress(next.progress);
+        setFormat(next.format === "gif" ? "gif" : "mp4");
         if (next.gifFps) setGifFpsState(next.gifFps);
         if (!next.running) {
           if (next.error) {
@@ -165,6 +178,7 @@ export default function RecApp() {
   }, [loadBlob, recordId, result]);
 
   const stop = useCallback(() => {
+    if (!recordId) return; // 待命页没有可停止的录制
     setFrozenAt(elapsedRef.current);
     setPhase("finalizing");
     void stopRecord(recordId).catch((problem) => {
@@ -191,30 +205,44 @@ export default function RecApp() {
     return () => window.removeEventListener("keydown", onKey);
   }, [recordId, stop]);
 
+  // 预热待命页：后端启动时预建隐藏录制条窗口、加载无 id 参数的 rec.html。
+  // 渲染全透明空白页——没有计时器、没有 error 态、没有交互元素；真正录制
+  // 时后端 navigate 到带 id 的地址整页重载，组件按新参数重新初始化。
+  if (!recordId) {
+    return <div className="rec-shell rec-shell-standby" />;
+  }
+
   if (phase === "recording" || phase === "finalizing") {
+    // 飞书式录制条：把手 → 红点 → 等宽时长 → 结束录制按钮，纯留白分隔。
+    // 把手与条内非按钮元素都挂 data-tauri-drag-region 供按住拖动窗口
+    // （拖拽权限 core:window:allow-start-dragging 已在 capabilities/rec.json；
+    // Tauri 的拖拽判定只认按下目标的直接属性，所以每个可拖元素都要单独挂）。
     return (
       <div className="rec-shell rec-shell-bar">
-        <div className="rec-bar">
-          <span className={phase === "finalizing" ? "rec-dot busy" : "rec-dot"} />
-          <span className="rec-clock">{clock(frozenAt ?? elapsed)}</span>
-          <span className="rec-limit">/ {clock(MAX_RECORD_MS)}</span>
+        <div className="rec-bar" data-tauri-drag-region>
+          <span className="rec-drag" data-tauri-drag-region title="拖动移动录制条" />
+          <span
+            className={phase === "finalizing" ? "rec-dot busy" : "rec-dot"}
+            data-tauri-drag-region
+          />
+          <span className="rec-clock" data-tauri-drag-region>
+            {clock(frozenAt ?? elapsed)}
+            <i className="rec-limit" data-tauri-drag-region>
+              / {clock(maxRecordMs)}
+            </i>
+          </span>
           <button
             type="button"
             className="rec-stop"
             disabled={phase === "finalizing"}
-            title={phase === "finalizing" ? "正在生成文件…" : "结束录制"}
+            title={
+              phase === "finalizing"
+                ? `正在生成文件${progress > 0 ? ` ${progress}%` : ""}…`
+                : "结束录制"
+            }
             onClick={stop}
           >
-            {phase === "finalizing" ? (
-              <span className="rec-spinner" />
-            ) : (
-              <span className="rec-stop-icon" />
-            )}
-            {phase === "finalizing"
-              ? progress > 0
-                ? `生成中 ${progress}%`
-                : "生成中"
-              : "结束"}
+            {phase === "finalizing" ? "生成中…" : "结束录制"}
           </button>
         </div>
       </div>
@@ -224,9 +252,9 @@ export default function RecApp() {
   if (phase === "error") {
     return (
       <div className="rec-shell rec-shell-bar">
-        <div className="rec-bar error">
-          <span className="rec-dot error" />
-          <span className="rec-error-text" title={error}>
+        <div className="rec-bar error" data-tauri-drag-region>
+          <span className="rec-dot error" data-tauri-drag-region />
+          <span className="rec-error-text" title={error} data-tauri-drag-region>
             录制失败
           </span>
           <button

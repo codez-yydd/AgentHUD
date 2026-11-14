@@ -3271,16 +3271,33 @@ pub fn run() {
             spawn_today_usage_updater(app.handle().clone());
             // 额度重置提醒后台线程：每 30s 读一次内存登记表，不额外发请求
             quota_reminder::spawn();
-            // 截图覆盖窗口预热：启动 1.5s 后把隐藏的 shot.html 建好，
-            // 之后无论走热键还是 HUD 按钮，第一次截图都不再冷启动 WebView。
+            // 截图覆盖窗口预热：启动 2.5s（避开启动高峰：托盘/主窗/岛都在
+            // 抢 WebView 资源）后把隐藏的 shot.html 建好，之后无论走热键还是
+            // HUD 按钮，第一次截图都不再冷启动 WebView，也不会出现「前端
+            // 2.5s 内没画好冻结帧、兜底强制 reveal 深色窗」的整屏闪黑。
+            // shot_prewarm 自身幂等（窗口已存在直接返回），HUD 截图页打开时
+            // 的重复预热是空操作；窗口以 visible(false)+focused(false) 常驻，
+            // 不显示、不抢焦点，等真正的截图会话经 reuse_overlay 复用。
             {
                 let handle = app.handle().clone();
                 std::thread::spawn(move || {
-                    std::thread::sleep(std::time::Duration::from_millis(1500));
+                    std::thread::sleep(std::time::Duration::from_millis(2500));
                     let app_warm = handle.clone();
                     let _ = tauri::async_runtime::block_on(
                         island::screenshot::shot_prewarm(app_warm),
                     );
+                    // 截图覆盖窗口热身后顺带预热录制条窗口（rec.html 空白
+                    // 待命页，再延迟 1.5s 避开启动高峰抢 WebView 资源）：
+                    // 首次录制复用窗口只走 navigate + 定位 + show，省掉
+                    // WebView 冷启动的几百毫秒。失败只记日志，首次录制
+                    // 仍能现场建窗。
+                    std::thread::sleep(std::time::Duration::from_millis(1500));
+                    let app_rec = handle.clone();
+                    if let Err(e) = tauri::async_runtime::block_on(
+                        island::screenshot::prewarm_recorder_window(app_rec),
+                    ) {
+                        eprintln!("[zbar-rec] 预热录制窗口失败: {e}");
+                    }
                 });
             }
             spawn_fx_rate_refresher();

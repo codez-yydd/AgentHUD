@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
-import { closePin, copyShot, getPinData, saveShot } from "../shot/api";
+import { closePin, copyShot, dataUrlToPngBytes, getPinData, saveShot } from "../shot/api";
 import type { PinData } from "../shot/types";
 import "./pin.css";
 
@@ -46,7 +46,8 @@ export default function PinApp() {
     if (!data || busy) return;
     setBusy(true);
     try {
-      await copyShot(data.image);
+      // 复制走 PNG 字节的 raw IPC 通道；dataUrl 在本地异步转字节
+      await copyShot(await dataUrlToPngBytes(data.image));
       notify("已复制");
     } catch (error) {
       notify(String(error));

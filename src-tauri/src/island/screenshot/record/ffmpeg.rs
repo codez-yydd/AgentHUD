@@ -36,8 +36,8 @@
 use serde::Serialize;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
-use std::time::Duration;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
 
 /// 下载 zip 的体积上限（gyan essentials 9.0.2 实测 ~110MB，留足余量）
@@ -60,6 +60,53 @@ pub(crate) fn hide_console(command: &mut std::process::Command) {
 
 #[cfg(not(windows))]
 pub(crate) fn hide_console(_command: &mut std::process::Command) {}
+
+// ============================================================
+// 一次性子进程的超时等待（不引入新依赖，纯 std 短轮询实现）
+// ============================================================
+
+/// 带超时地等子进程退出：退出返回状态，到点返回 `None`（调用方负责
+/// kill）。用 50ms 间隔的 `try_wait` 轮询实现，对枚举 / 校验 / 裁剪这类
+/// 秒级命令足够；跨平台纯 std，无 cfg 分支。
+fn wait_with_timeout(
+    child: &mut std::process::Child,
+    timeout: Duration,
+) -> std::io::Result<Option<std::process::ExitStatus>> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if let Some(status) = child.try_wait()? {
+            return Ok(Some(status));
+        }
+        if Instant::now() >= deadline {
+            return Ok(None);
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// 把子进程的管道读到独立线程里排空：既收集输出，也防止缓冲写满后
+/// ffmpeg 被自己的输出堵死（`output()` 的同步读没法和超时轮询共存）。
+fn drain_pipe<R>(pipe: Option<R>) -> std::thread::JoinHandle<Vec<u8>>
+where
+    R: std::io::Read + Send + 'static,
+{
+    std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        if let Some(mut pipe) = pipe {
+            let _ = pipe.read_to_end(&mut buf);
+        }
+        buf
+    })
+}
+
+/// 超时错误文案：带用途标签与秒数，让用户知道进程已被强制结束而不是
+/// 界面卡死。
+fn timeout_message(label: &str, timeout: Duration) -> String {
+    format!(
+        "{label}超时（{:.0} 秒），已强制结束 ffmpeg",
+        timeout.as_secs_f32()
+    )
+}
 
 /// 锁定的下载包 sha256（zip 整包，小写 hex）。固定版本必须配固定 URL：
 /// 滚动 latest 别名在 gyan 更新后会与这里的哈希失配，届时应随版本升级
@@ -169,8 +216,21 @@ impl Ffmpeg {
         }
     }
 
-    /// 运行一次性命令并等待退出（校验 / 枚举 / 裁剪用）。
-    fn run_capture_output(&self, args: &[&str]) -> Result<std::process::Output, String> {
+    /// 运行一次性命令并等待退出（校验 / 枚举用）。带 10 秒超时：dshow 遇到
+    /// 坏驱动会永久挂起，`command.output()` 那种无超时写法会让前端的
+    /// 「正在准备录屏…」永不消失，超时后强杀并返回明确错误。
+    fn run_capture_output(&self, label: &str, args: &[&str]) -> Result<std::process::Output, String> {
+        self.run_capture_output_timeout(label, args, Duration::from_secs(10))
+    }
+
+    /// 同上，但超时由调用方指定：编码器探测用 6 秒短超时（正常试编亚秒级
+    /// 完成，挂死只可能是坏驱动，早杀早回退）。
+    fn run_capture_output_timeout(
+        &self,
+        label: &str,
+        args: &[&str],
+        timeout: Duration,
+    ) -> Result<std::process::Output, String> {
         let mut command = std::process::Command::new(&self.path);
         command
             .args(args)
@@ -178,15 +238,40 @@ impl Ffmpeg {
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());
         hide_console(&mut command);
-        command
-            .output()
-            .map_err(|e| format!("启动 ffmpeg 失败（{}）: {e}", self.path.display()))
+        let mut child = command
+            .spawn()
+            .map_err(|e| format!("启动 ffmpeg 失败（{}）: {e}", self.path.display()))?;
+        // stdout / stderr 各用一条排水线程读到底：一边收集输出，一边防止
+        // 管道缓冲写满后 ffmpeg 被自己的输出堵死（output() 的同步读没法和
+        // 超时轮询共存）。
+        let stdout_drain = drain_pipe(child.stdout.take());
+        let stderr_drain = drain_pipe(child.stderr.take());
+        let outcome = match wait_with_timeout(&mut child, timeout) {
+            Ok(Some(status)) => Ok(status),
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                Err(timeout_message(label, timeout))
+            }
+            Err(e) => {
+                let _ = child.kill();
+                Err(format!("等待 ffmpeg 退出失败: {e}"))
+            }
+        };
+        // 无论成败都把排水线程收掉：kill 后管道关闭，它们随即结束
+        let stdout = stdout_drain.join().unwrap_or_default();
+        let stderr = stderr_drain.join().unwrap_or_default();
+        outcome.map(|status| std::process::Output {
+            status,
+            stdout,
+            stderr,
+        })
     }
 
     /// 校验 ffmpeg 可用：`ffmpeg -version` 退出码为 0。
     pub(crate) fn verify(&self) -> Result<(), String> {
         let output = self
-            .run_capture_output(&["-version"])
+            .run_capture_output("ffmpeg 校验", &["-version"])
             .map_err(|e| format!("ffmpeg 无法运行: {e}"))?;
         if !output.status.success() {
             return Err("ffmpeg 校验失败：-version 返回非零退出码".into());
@@ -201,15 +286,18 @@ impl Ffmpeg {
         {
             // -list_devices 会以「没有实际输入」退出非 0，这是预期行为，
             // 设备清单都在 stderr 里
-            let output = self.run_capture_output(&[
-                "-hide_banner",
-                "-f",
-                "dshow",
-                "-list_devices",
-                "true",
-                "-i",
-                "dummy",
-            ])?;
+            let output = self.run_capture_output(
+                "音频设备枚举",
+                &[
+                    "-hide_banner",
+                    "-f",
+                    "dshow",
+                    "-list_devices",
+                    "true",
+                    "-i",
+                    "dummy",
+                ],
+            )?;
             Ok(parse_dshow_devices(&output.stderr))
         }
         #[cfg(not(windows))]
@@ -217,6 +305,89 @@ impl Ffmpeg {
             Err("当前系统暂不支持枚举麦克风设备".into())
         }
     }
+}
+
+// ============================================================
+// 视频编码器选择（硬编优先，探测一次进程内缓存）
+// ============================================================
+
+/// 录制可用的 H.264 编码器。Nvenc / Amf / Qsv 是 NVIDIA / AMD / Intel 的
+/// 硬件编码器（试编成功才使用，失败几乎不吃 CPU 也绝不误选），X264 是
+/// 纯软件兜底（本项目锁定的 ffmpeg 构建自带，必可用）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum H264Encoder {
+    Nvenc,
+    Amf,
+    Qsv,
+    X264,
+}
+
+impl H264Encoder {
+    /// ffmpeg 的 `-c:v` 编码器名（也用于错误文案与日志）。
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            H264Encoder::Nvenc => "h264_nvenc",
+            H264Encoder::Amf => "h264_amf",
+            H264Encoder::Qsv => "h264_qsv",
+            H264Encoder::X264 => "libx264",
+        }
+    }
+}
+
+/// 硬件编码器探测优先级：N 卡 nvenc → A 卡 amf → Intel qsv。
+const HARDWARE_ENCODERS: &[H264Encoder] =
+    &[H264Encoder::Nvenc, H264Encoder::Amf, H264Encoder::Qsv];
+
+/// 探测结果缓存：整个进程只探测一次（首次录制时），后续录制直接取结果，
+/// 避免每次录制都重复花几百毫秒试编。
+static ENCODER_CACHE: OnceLock<H264Encoder> = OnceLock::new();
+
+/// 单个编码器试编：用 lavfi 空源编 0.1 秒 256×256 到 null。能完整走通
+/// 编码管线（驱动 / 显存 / 硬编会话数都过关）才算可用；编码器不存在或
+/// 初始化失败都会让 ffmpeg 立即非零退出。6 秒短超时兜底挂死的坏驱动。
+/// 无窗口运行（复用 hide_console），探测黑框不会闪现。
+fn encoder_works(ffmpeg: &Ffmpeg, enc: H264Encoder) -> bool {
+    let args = [
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-f",
+        "lavfi",
+        "-i",
+        "nullsrc=s=256x256:d=0.1",
+        "-c:v",
+        enc.name(),
+        "-f",
+        "null",
+        "-",
+    ];
+    match ffmpeg.run_capture_output_timeout("编码器探测", &args, Duration::from_secs(6)) {
+        Ok(output) => output.status.success(),
+        Err(_) => false,
+    }
+}
+
+/// 按优先级返回第一个试编成功的编码器，全部失败回退 libx264。
+/// `candidates` 是注入的候选列表（生产传 [`HARDWARE_ENCODERS`]）；本函数
+/// 依赖真机硬件，单元测试不覆盖它，只测 [`build_record_args`] 的分支。
+fn probe_encoder_with(ffmpeg: &Ffmpeg, candidates: &[H264Encoder]) -> H264Encoder {
+    for &enc in candidates {
+        if encoder_works(ffmpeg, enc) {
+            return enc;
+        }
+    }
+    H264Encoder::X264
+}
+
+/// 录制编码器选择（硬编优先，进程级缓存）。首次调用同步探测（每个候选
+/// 最多 6 秒，实际失败都是亚秒级退出），之后零开销。libx264 不参与探测：
+/// 兜底编码器直接返回，真不可用时由录制的 600ms 秒退探测统一报错。
+pub(crate) fn select_encoder(ffmpeg: &Ffmpeg) -> H264Encoder {
+    *ENCODER_CACHE.get_or_init(|| {
+        let picked = probe_encoder_with(ffmpeg, HARDWARE_ENCODERS);
+        eprintln!("[zbar-rec] 录制编码器: {}（硬编探测后选定）", picked.name());
+        picked
+    })
 }
 
 /// exe 同目录下的 bin 目录（下载目标位置）。
@@ -718,9 +889,12 @@ impl RecordAudioSpec {
     }
 }
 
-/// 拼接 Windows 录屏参数：gdigrab 抓屏 + dshow 音频 + libx264/aac。
-/// 抓屏区与输出尺寸不同时经 scale 统一（偶数化也在这里完成）；
-/// 麦克风与系统声两路都有时用 amix 混成一条音轨。
+/// 拼接 Windows 录屏参数：gdigrab 抓屏 + dshow 音频 + 探测选定的 H.264
+/// 编码器（[`select_encoder`]，硬编优先）/ aac。抓屏区与输出尺寸不同时经
+/// scale 统一（偶数化也在这里完成）；麦克风与系统声两路都有时用 amix 混
+/// 成一条音轨。`encoder` 由调用方注入（生产 = select_encoder 的缓存结果，
+/// 单测直接传枚举值测分支），裁剪重编码 [`build_trim_args`] 不动：裁剪是
+/// 后台一次性任务，软编可接受。
 pub(crate) fn build_record_args(
     x: i32,
     y: i32,
@@ -731,6 +905,7 @@ pub(crate) fn build_record_args(
     fps: u32,
     draw_mouse: bool,
     audio: &RecordAudioSpec,
+    encoder: H264Encoder,
     out_path: &Path,
 ) -> Vec<String> {
     let mut args: Vec<String> = vec![
@@ -799,17 +974,58 @@ pub(crate) fn build_record_args(
         args.extend(["-map".into(), "[v]".into()]);
     }
     // 纯视频 + 无缩放：不加任何 -map，走 ffmpeg 默认流选择（视频流）
-    // 编码：libx264 + aac。输出用 fragmented MP4（empty_moov + 定长切片）：
-    // Windows 上无法通过管道向 ffmpeg 发 `q`（键盘交互走 console API，管道
-    // 无效，实测确认），停止只能靠 CTRL_BREAK（有 console 的环境）或 kill；
-    // fMP4 让被强杀的文件依然完整可播，最多丢最后一个 0.2s 切片。
+    // 编码：按探测结果选编码器（libx264 分支参数保持历史值不变）。输出用
+    // fragmented MP4（empty_moov + 定长切片）：Windows 上无法通过管道向
+    // ffmpeg 发 `q`（键盘交互走 console API，管道无效，实测确认），停止只
+    // 能靠 CTRL_BREAK（有 console 的环境）或 kill；fMP4 让被强杀的文件
+    // 依然完整可播，最多丢最后一个 0.2s 切片。
+    args.extend(match encoder {
+        // N 卡：p4 是速度/质量中间档，ll 低延迟，VBR 恒定质量（cq 23 与
+        // libx264 的 crf 23 观感对齐，b:v 0 = 不设码率上限、只看 cq）
+        H264Encoder::Nvenc => vec![
+            "-c:v".into(),
+            "h264_nvenc".into(),
+            "-preset".into(),
+            "p4".into(),
+            "-tune".into(),
+            "ll".into(),
+            "-rc".into(),
+            "vbr".into(),
+            "-cq".into(),
+            "23".into(),
+            "-b:v".into(),
+            "0".into(),
+        ],
+        // A 卡：speed 质量档最不吃 GPU 时间，CBR 8M 对录屏足够清晰
+        H264Encoder::Amf => vec![
+            "-c:v".into(),
+            "h264_amf".into(),
+            "-quality".into(),
+            "speed".into(),
+            "-rc".into(),
+            "cbr".into(),
+            "-b:v".into(),
+            "8M".into(),
+        ],
+        // Intel：qsv 沿用 libx264 的 veryfast 档位语义
+        H264Encoder::Qsv => vec![
+            "-c:v".into(),
+            "h264_qsv".into(),
+            "-preset".into(),
+            "veryfast".into(),
+        ],
+        H264Encoder::X264 => vec![
+            "-c:v".into(),
+            "libx264".into(),
+            "-preset".into(),
+            "veryfast".into(),
+            "-crf".into(),
+            "23".into(),
+        ],
+    });
     args.extend([
-        "-c:v".into(),
-        "libx264".into(),
-        "-preset".into(),
-        "veryfast".into(),
-        "-crf".into(),
-        "23".into(),
+        // gdigrab 出 bgr0，统一转 yuv420p：三条硬编路径同样接受（转换在
+        // 编码器内完成），与软编行为一致，兼容性最稳
         "-pix_fmt".into(),
         "yuv420p".into(),
         "-frag_duration".into(),
@@ -1035,8 +1251,28 @@ impl FfmpegRecording {
     }
 }
 
-/// 运行一次性 ffmpeg 命令到完成（裁剪用），失败时带出 stderr 尾部。
-pub(crate) fn run_to_done(ffmpeg: &Ffmpeg, args: &[String]) -> Result<(), String> {
+/// 裁剪重编码的超时下限（毫秒）：坏参数 / 损坏输入会让 ffmpeg 卡住不退，
+/// 这个下限保证异常场景仍会被强杀，不让前端「正在复制…」永久转圈。
+pub(crate) const MIN_TRIM_TIMEOUT_MS: u64 = 90_000;
+
+/// 按裁剪片段时长算重编码超时：`max(90 秒, 片段时长 × 1.5)`。
+///
+/// MP4 裁剪走 libx264 veryfast 全量重编码，耗时与素材时长成正比；低端
+/// CPU 上高分屏满时长素材（GIF 录制上限 300 秒、MP4 上限 1 小时）可能
+/// 超过固定 90 秒，被强杀后误报「裁剪超时」会让裁剪功能整体不可用。
+/// 因此超时随片段时长线性放大，90 秒只兜底「卡死不退」的异常场景。
+/// `clip_ms` 为片段时长毫秒，负数按 0 处理（结果仍不低于下限）。
+pub(crate) fn trim_timeout(clip_ms: f64) -> Duration {
+    let scaled_ms = (clip_ms.max(0.0) * 1.5) as u64;
+    Duration::from_millis(scaled_ms.max(MIN_TRIM_TIMEOUT_MS))
+}
+
+/// 运行一次性 ffmpeg 命令到完成（裁剪用），失败时带出 stderr 尾部。超时
+/// 由调用方按素材时长给出（见 [`trim_timeout`]）：重编码耗时与素材时长
+/// 成正比，固定短超时会误杀低端机上的长素材；ffmpeg 卡住不退时超时后
+/// 强杀并报明确错误，不让前端「正在复制…」永久转圈。stderr 直接落文件
+/// （无管道缓冲风险），stdout 为 null，只需轮询等待。
+pub(crate) fn run_to_done(ffmpeg: &Ffmpeg, args: &[String], timeout: Duration) -> Result<(), String> {
     let stderr_path = std::env::temp_dir().join(format!(
         "agenthud-ffmpeg-{}-{}.log",
         std::process::id(),
@@ -1052,10 +1288,22 @@ pub(crate) fn run_to_done(ffmpeg: &Ffmpeg, args: &[String]) -> Result<(), String
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::from(stderr_file));
         hide_console(&mut command);
-        let output = command
-            .output()
+        let mut child = command
+            .spawn()
             .map_err(|e| format!("启动 ffmpeg 失败: {e}"))?;
-        if !output.status.success() {
+        let status = match wait_with_timeout(&mut child, timeout) {
+            Ok(Some(status)) => status,
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(timeout_message("裁剪", timeout));
+            }
+            Err(e) => {
+                let _ = child.kill();
+                return Err(format!("等待 ffmpeg 退出失败: {e}"));
+            }
+        };
+        if !status.success() {
             let bytes = std::fs::read(&stderr_path).unwrap_or_default();
             let tail = decode_local_bytes(&bytes);
             let tail: String = tail.chars().rev().take(400).collect::<Vec<_>>().into_iter().rev().collect();
@@ -1197,6 +1445,74 @@ mod tests {
     }
 
     #[test]
+    fn timeout_message_names_label_and_seconds() {
+        // 超时文案必须带用途标签和秒数，用户才知道进程被强制结束了
+        let message = timeout_message("音频设备枚举", Duration::from_secs(10));
+        assert_eq!(message, "音频设备枚举超时（10 秒），已强制结束 ffmpeg");
+        assert_eq!(
+            timeout_message("裁剪", Duration::from_secs(90)),
+            "裁剪超时（90 秒），已强制结束 ffmpeg"
+        );
+    }
+
+    #[test]
+    fn trim_timeout_scales_with_clip_duration() {
+        // 短片段用 90 秒下限兜底（卡死场景仍会被强杀）
+        assert_eq!(trim_timeout(10_000.0), Duration::from_secs(90));
+        assert_eq!(trim_timeout(60_000.0), Duration::from_secs(90));
+        // 长素材线性放大：300 秒（GIF 上限）→ 450 秒，低端机重编码不再被误杀
+        assert_eq!(trim_timeout(300_000.0), Duration::from_secs(450));
+        assert_eq!(trim_timeout(200_000.0), Duration::from_secs(300));
+        // 非法输入（负数 / 0）不 panic，也不低于 90 秒下限
+        assert_eq!(trim_timeout(-5.0), Duration::from_secs(90));
+        assert_eq!(trim_timeout(0.0), Duration::from_secs(90));
+    }
+
+    #[test]
+    fn wait_with_timeout_returns_status_for_quick_exit() {
+        // 正常路径：秒退命令在超时前返回 Some(状态)
+        let mut command = quick_exit_command(0);
+        hide_console(&mut command);
+        let mut child = command.spawn().expect("spawn");
+        let status = wait_with_timeout(&mut child, Duration::from_secs(10))
+            .expect("wait")
+            .expect("应在超时前退出");
+        assert!(status.success(), "exit 0 应为成功状态");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn wait_with_timeout_reports_timeout_so_caller_can_kill() {
+        // 超时路径：长驻进程到点返回 None，调用方 kill 后子进程必须退出
+        //（ping -n 5 常驻约 4 秒，远超这里的 100ms 超时）
+        let mut command = std::process::Command::new("ping");
+        command.args(["-n", "5", "127.0.0.1"]).stdout(std::process::Stdio::null());
+        hide_console(&mut command);
+        let mut child = command.spawn().expect("spawn");
+        let timed_out = wait_with_timeout(&mut child, Duration::from_millis(100))
+            .expect("wait")
+            .is_none();
+        assert!(timed_out, "长驻进程应被判定超时（返回 None）");
+        let _ = child.kill();
+        let status = child.wait().expect("kill 后应能收尸");
+        assert!(!status.success(), "被 kill 的进程不应是成功状态");
+    }
+
+    /// 跨平台的秒退命令：Windows 用 `cmd /C exit <code>`，其余用 `sh -c`。
+    #[cfg(test)]
+    fn quick_exit_command(code: i32) -> std::process::Command {
+        if cfg!(windows) {
+            let mut command = std::process::Command::new("cmd");
+            command.args(["/C", &format!("exit {code}")]);
+            command
+        } else {
+            let mut command = std::process::Command::new("sh");
+            command.args(["-c", &format!("exit {code}")]);
+            command
+        }
+    }
+
+    #[test]
     #[ignore = "手动实测：真实访问网络下载 gyan 固定版本 zip（约 110MB）并验证白名单哈希"]
     fn manual_downloaded_zip_passes_pinned_hash() {
         // 「校验通过」路径的端到端实测：从 FFMPEG_DOWNLOAD_URLS[0] 真下载，
@@ -1289,6 +1605,7 @@ mod tests {
             30,
             true,
             &audio,
+            H264Encoder::X264,
             Path::new("D:/out/clip.mp4"),
         );
         assert_eq!(args[0], "-y");
@@ -1312,6 +1629,66 @@ mod tests {
     }
 
     #[test]
+    fn build_record_args_nvenc_encoder_params() {
+        // 探测结果为 nvenc 时走硬编参数；抓屏 / 像素格式 / fMP4 等公共段不变
+        let audio = RecordAudioSpec::default();
+        let args = build_record_args(
+            0,
+            0,
+            800,
+            600,
+            800,
+            600,
+            30,
+            true,
+            &audio,
+            H264Encoder::Nvenc,
+            Path::new("out.mp4"),
+        );
+        let i = args.iter().position(|a| a == "-c:v").unwrap();
+        assert_eq!(args[i + 1], "h264_nvenc");
+        // nvenc 专属参数序列原样拼接
+        assert!(args.windows(2).any(|w| w == ["-preset", "p4"]), "{args:?}");
+        assert!(args.windows(2).any(|w| w == ["-tune", "ll"]), "{args:?}");
+        assert!(args.windows(2).any(|w| w == ["-rc", "vbr"]), "{args:?}");
+        assert!(args.windows(2).any(|w| w == ["-cq", "23"]), "{args:?}");
+        assert!(args.windows(2).any(|w| w == ["-b:v", "0"]), "{args:?}");
+        // 软编参数不能残留
+        assert!(!args.iter().any(|a| a == "libx264"), "{args:?}");
+        assert!(!args.iter().any(|a| a == "-crf"), "{args:?}");
+        // 公共段：bgr0 → yuv420p 的转换行保留，fMP4 输出不变
+        assert!(args.windows(2).any(|w| w == ["-pix_fmt", "yuv420p"]), "{args:?}");
+        assert!(
+            args.windows(2).any(|w| w == ["-movflags", "+empty_moov+default_base_moof"]),
+            "{args:?}"
+        );
+    }
+
+    #[test]
+    fn build_record_args_x264_fallback_params_unchanged() {
+        // libx264 兜底分支：软编参数必须与历史值一致（探测失败机器不改变行为）
+        let audio = RecordAudioSpec::default();
+        let args = build_record_args(
+            0,
+            0,
+            800,
+            600,
+            800,
+            600,
+            30,
+            true,
+            &audio,
+            H264Encoder::X264,
+            Path::new("out.mp4"),
+        );
+        let i = args.iter().position(|a| a == "-c:v").unwrap();
+        assert_eq!(args[i + 1], "libx264");
+        assert!(args.windows(2).any(|w| w == ["-preset", "veryfast"]), "{args:?}");
+        assert!(args.windows(2).any(|w| w == ["-crf", "23"]), "{args:?}");
+        assert!(args.windows(2).any(|w| w == ["-pix_fmt", "yuv420p"]), "{args:?}");
+    }
+
+    #[test]
     fn build_record_args_mic_only_maps_first_audio() {
         let audio = RecordAudioSpec {
             mic: Some("@device_cm_mic".into()),
@@ -1327,6 +1704,7 @@ mod tests {
             30,
             false,
             &audio,
+            H264Encoder::X264,
             Path::new("out.mp4"),
         );
         // 尺寸不同要 scale，并映射 [v]
@@ -1363,6 +1741,7 @@ mod tests {
             30,
             true,
             &audio,
+            H264Encoder::X264,
             Path::new("out.mp4"),
         );
         let filter = args
@@ -1400,6 +1779,7 @@ mod tests {
             30,
             true,
             &audio,
+            H264Encoder::X264,
             Path::new("out.mp4"),
         );
         assert!(args.windows(2).any(|w| w == ["-map", "[v]"]), "{args:?}");
@@ -1426,6 +1806,7 @@ mod tests {
             30,
             true,
             &audio,
+            H264Encoder::X264,
             Path::new("out.mp4"),
         );
         assert!(!args.iter().any(|a| a == "-filter_complex"), "{args:?}");

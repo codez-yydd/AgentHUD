@@ -2,8 +2,11 @@
 //!
 //! 交互对齐飞书：
 //! 1. 覆盖层里框好区域 → 选格式（MP4 / GIF）+ 是否录鼠标 → 点「开始录制」；
-//! 2. 覆盖层挪出屏幕，屏幕右下角浮出录制条（`rec.html`），显示已录时长和
-//!    「结束录制」，最长 5 分钟自动停；
+//! 2. 覆盖层窗口缩成 1×1 挪出屏幕（直接 hide 全屏窗口会拆掉 DWM 全屏合成
+//!    层导致整屏黑 370ms，见 park_overlay_for_record），屏幕右下角浮出录制
+//!    条（`rec.html`），显示已录时长和「结束录制」，到
+//!    时长上限（MP4 1 小时 / GIF 5 分钟）自动停；近似全屏选区（录制条四角
+//!    都避不开）时录制条缩成右下角小圆点，鼠标移过去展开完整控制条；
 //! 3. 结束后录制条原地放大成预览窗：能播放、左右拖动裁剪、复制 / 下载。
 //!
 //! 实现：
@@ -12,6 +15,9 @@
 //! - MP4 用 VideoToolbox 硬编 H.264，再用纯 Rust 的 `mp4` 写封装，边录边写，
 //!   内存占用与时长无关；
 //! - GIF 先把 JPEG 帧落到临时目录，停止时统一编码，这样裁剪可以按帧重编；
+//! - 录制条/预览窗是同一个常驻窗口：应用启动时预热隐藏预建（rec.html 空白
+//!   待命页），录制时 navigate 整页重载复用（WebView 进程热着，省冷启动），
+//!   录制结束/取消/关预览只 hide 不销毁，下次录制继续复用；
 //! - 录制条窗口由于有独立标题，抓帧时用 `OnScreenBelowWindow` 把它自己排除
 //!   在画面之外，录出来的区域里不会出现录制条。
 
@@ -22,8 +28,8 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use tauri::{
-    AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, WebviewUrl, WebviewWindow,
-    WebviewWindowBuilder,
+    AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, PhysicalSize, WebviewUrl,
+    WebviewWindow, WebviewWindowBuilder,
 };
 
 #[cfg(target_os = "macos")]
@@ -32,16 +38,29 @@ mod sck;
 mod ffmpeg;
 
 use super::{
-    close_shot, hide_island_for_capture, monitor_list, on_main_thread, park_overlay,
-    restore_overlay, shot_dir, shot_session, show_island_for_capture, RecordResult, ShotMonitor,
-    ShotRect,
+    close_shot, hide_island_for_capture, join_error_message, monitor_list, on_main_thread,
+    park_overlay_for_record, restore_overlay_for_record, shot_dir, shot_session,
+    show_island_for_capture, RecordResult, ShotMonitor, ShotRect,
 };
 
 /// 录制条 / 预览窗的窗口 label（capabilities/rec.json 同步）
 pub const REC_WINDOW_LABEL: &str = "shot-recorder";
 const REC_WINDOW_TITLE: &str = "AgentHUD 录制";
-/// 飞书同款上限：5 分钟
-pub const MAX_RECORD_MS: u64 = 300_000;
+/// 录制时长上限（毫秒），按格式区分：
+/// - MP4 走 ffmpeg / VideoToolbox 流式写盘，内存占用与时长无关，放宽到 1 小时；
+/// - GIF 抓帧逐帧缓存（JPEG 帧落临时目录 + 整段时间轴驻留内存），1 小时
+///   量级会撑爆内存/磁盘，必须保持 5 分钟，不能跟随 MP4 放宽。
+pub const MAX_RECORD_MP4_MS: u64 = 3_600_000;
+pub const MAX_RECORD_GIF_MS: u64 = 300_000;
+
+/// 按录制格式取时长上限（GIF 因帧缓存内存受限保持 5 分钟）。
+fn max_record_ms(format: &str) -> u64 {
+    if format == "gif" {
+        MAX_RECORD_GIF_MS
+    } else {
+        MAX_RECORD_MP4_MS
+    }
+}
 const MP4_FPS: u64 = 60;
 /// GIF 抓帧节奏：先按 30fps 抓，录久了逐级降到 15/10fps，
 /// 免得五分钟的 GIF 在临时目录里堆出几百 MB 的 JPEG。
@@ -222,7 +241,8 @@ fn recording_name(format: &str) -> String {
 // Tauri 命令
 // ============================================================
 
-/// 开始录制：校验会话/区域 → 挪走覆盖层 → 右下角弹出录制条 → 后台线程抓帧。
+/// 开始录制：校验会话/区域 → 挪走覆盖层 → 弹出录制条（自动避开选区，
+/// 无空位时隐藏改用热键）→ 后台线程抓帧。
 #[tauri::command]
 pub async fn shot_record_start(
     app: AppHandle,
@@ -274,23 +294,6 @@ async fn start_recording(
     let cursor = options.cursor.unwrap_or(true);
     let audio = options.audio.unwrap_or(true) && format == "mp4";
 
-    // Windows MP4：ffmpeg 定位 + 麦克风/系统声设备预校验。子进程枚举要
-    // 几百毫秒，放阻塞线程池，别卡异步执行器。
-    #[cfg(windows)]
-    let (audio_spec, notice) = if format == "mp4" {
-        let mic = options
-            .mic
-            .as_deref()
-            .map(str::trim)
-            .filter(|name| !name.is_empty())
-            .map(str::to_string);
-        probe_windows_audio(mic, audio).await?
-    } else {
-        (ffmpeg::RecordAudioSpec::default(), None)
-    };
-    #[cfg(not(windows))]
-    let notice: Option<String> = None;
-
     #[cfg(target_os = "macos")]
     if !super::mac_screen_recording_ready() {
         return Err("没有屏幕录制权限：系统设置 → 隐私与安全性 → 屏幕录制，勾选 AgentHUD 后重试".into());
@@ -324,12 +327,14 @@ async fn start_recording(
 
     prune_temp_media();
     let record_id = REC_SEQ.fetch_add(1, Ordering::Relaxed);
+    // GIF 抓帧缓存受内存约束保持 5 分钟；MP4 流式写盘放宽到 1 小时
+    let max_ms = max_record_ms(&format);
     let rec = Arc::new(Recording {
         id: record_id,
         format: format.clone(),
         stop: AtomicBool::new(false),
         started_ms: AtomicU64::new(0),
-        max_ms: MAX_RECORD_MS,
+        max_ms,
         session_id: id,
         monitor_x: session.monitor.x,
         monitor_y: session.monitor.y,
@@ -348,57 +353,90 @@ async fn start_recording(
         map.insert(record_id, rec.clone());
     }
 
-    // 覆盖层挪出屏幕：录制期间用户看到的应该是真实桌面。
-    park_overlay(&app).await?;
-    show_island_for_capture(&app).await;
-
+    // —— 音频探测与录制条建窗并行发起 ——
+    // probe（ffmpeg 子进程枚举设备，几百 ms~1s，放阻塞线程池）与建窗（主
+    // 线程）互不依赖：probe 只产出 ffmpeg 音频参数与降级提示，不参与窗口
+    // 创建。串行会把两者耗时叠加在录制条出现之前；probe 丢到运行时独立
+    // 任务上、当前任务 await 建窗，两者并行推进。
     let monitor = session.monitor.clone();
     let app_window = app.clone();
+    let format_for_window = format.clone();
+    // 选区（物理 px，多显示器全局坐标）：录制条据此避让，别压进录制画面
+    let selection = (screen_x, screen_y, w, h);
+    #[cfg(windows)]
+    let probe_task = if format == "mp4" {
+        let mic = options
+            .mic
+            .as_deref()
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .map(str::to_string);
+        Some(tauri::async_runtime::spawn(probe_windows_audio(mic, audio)))
+    } else {
+        None
+    };
     let window = on_main_thread(&app, move || {
-        build_recorder_window(&app_window, record_id, &monitor)
+        build_recorder_window(
+            &app_window,
+            record_id,
+            &monitor,
+            Some(selection),
+            &format_for_window,
+        )
     })
     .await;
     if let Err(e) = window {
-        if let Ok(mut map) = records().lock() {
-            map.remove(&record_id);
-        }
-        let _ = restore_overlay(&app, session.monitor.x, session.monitor.y).await;
+        // 建窗失败：清 records 表项（连 GIF 临时目录一起删）、隐藏可能残留
+        // 的录制条窗口（复用模式下 navigate 失败会留下隐藏窗）；覆盖层从未
+        // 缩过（缩窗在两者都成功之后），restore 只是幂等兜底
+        remove_record(record_id);
+        hide_recorder_window(&app).await;
+        let _ = restore_overlay_for_record(&app, session.monitor.x, session.monitor.y).await;
         return Err(e);
     }
 
-    // Windows 的 MP4 走 ffmpeg 抓屏（gdigrab），没有 macOS 那种「排除本进程
-    // 窗口」的机制：录制条若压在选区里会入画，此时把它藏起来，改用全局
-    // 快捷键（Ctrl+Shift+G，与「开始录制」同键）结束录制；选区不含录制条
-    // 时保持显示，用户照常点「结束」或按 Esc。
-    // 顺序必须是「先注册快捷键、成功后才隐藏」：注册失败时保持录制条
-    // 可见，用户仍可点「结束」/按 Esc 停止，不至于只能等 5 分钟自动停。
+    // probe 结果在建窗 await 之后收（两者并行跑），失败时同样清表项 + 隐藏
+    // 刚建好/复用的录制条窗口；缩窗尚未发生（覆盖层原样），restore 只是
+    // 幂等兜底（等尺寸/等位置 + show + focus，均为无感操作）
     #[cfg(windows)]
-    let hide_recorder_bar = format == "mp4"
-        && recorder_overlaps_selection(&session.monitor, screen_x, screen_y, w, h);
-    #[cfg(windows)]
-    let mut stop_hotkey_registered = false;
-    #[cfg(windows)]
-    if hide_recorder_bar && register_record_stop_hotkey(&app) {
-        stop_hotkey_registered = true;
-        let app_hide = app.clone();
-        let hidden = on_main_thread(&app, move || {
-            if let Some(win) = app_hide.get_webview_window(REC_WINDOW_LABEL) {
-                let _ = win.hide();
-                Ok(())
-            } else {
-                Err("录制窗口不存在".to_string())
+    let (audio_spec, notice) = match probe_task {
+        Some(task) => {
+            let probed = task
+                .await
+                .unwrap_or_else(|e| Err(join_error_message("音频设备检查", e)));
+            match probed {
+                Ok((spec, notice)) => (spec, notice),
+                Err(e) => {
+                    remove_record(record_id);
+                    hide_recorder_window(&app).await;
+                    let _ =
+                        restore_overlay_for_record(&app, session.monitor.x, session.monitor.y)
+                            .await;
+                    return Err(e);
+                }
             }
-        })
-        .await
-        .is_ok();
-        // hide 失败（窗口异常）时快捷键反而是唯一停止手段，注册保留到收尾
-        if hidden {
-            crate::notify(
-                "录屏已开始".into(),
-                "录制条在录制区域内已隐藏：按 Ctrl+Shift+G 结束录制（最长 5 分钟自动停）".into(),
-            );
         }
+        None => (ffmpeg::RecordAudioSpec::default(), None),
+    };
+    #[cfg(not(windows))]
+    let notice: Option<String> = None;
+
+    // 收起覆盖层窗口（Windows：先缩成 1×1 退出全屏覆盖状态、再挪出屏幕；
+    // 直接 hide 全屏窗口会触发显示输出级重新同步、整屏黑 370ms，见
+    // park_overlay_for_record 注释）。放在 probe + 建窗都成功之后：任一
+    // 失败时覆盖层保持原样，不会出现「提前缩窗又被打回」的闪动。
+    if let Err(e) = park_overlay_for_record(&app).await {
+        remove_record(record_id);
+        hide_recorder_window(&app).await;
+        let _ = restore_overlay_for_record(&app, session.monitor.x, session.monitor.y).await;
+        return Err(e);
     }
+    show_island_for_capture(&app).await;
+
+    // Windows 的 MP4 走 ffmpeg 抓屏（gdigrab），没有 macOS 那种「排除本进程
+    // 窗口」的机制：录制条压在选区里会入画。录制条已先按「右下 → 左下 →
+    // 左上 → 右上」避开选区；近似全屏、四个候选位置都被选区盖住时回退右下
+    // 角照常完整显示（入画可接受），用户点「结束」或按 Esc 停止录制。
 
     #[cfg(windows)]
     let (mic_in_spec, system_in_spec) = (audio_spec.mic.clone(), audio_spec.system.clone());
@@ -418,27 +456,25 @@ async fn start_recording(
         audio,
         fps: MP4_FPS as u32,
         cursor_origin: (screen_x, screen_y),
-        max_ms: MAX_RECORD_MS,
+        max_ms,
         mic: mic_in_spec,
         system_audio: system_in_spec,
     };
     let rec_worker = rec.clone();
     let dir = shot_dir()?;
 
-    // Windows MP4：单独的 ffmpeg 录制线程（子进程收尾 + 快捷键按需注销）
+    // Windows MP4：单独的 ffmpeg 录制线程（子进程收尾在线程内完成）
     #[cfg(windows)]
     if format == "mp4" {
-        let worker_app = app.clone();
-        let hotkey_registered = stop_hotkey_registered;
         std::thread::spawn(move || {
-            run_ffmpeg_recording(rec_worker, spec, dir, worker_app, hotkey_registered);
+            run_ffmpeg_recording(rec_worker, spec, dir);
         });
         return Ok(RecordStarted {
             record_id,
             format,
             width: out_w,
             height: out_h,
-            max_seconds: MAX_RECORD_MS / 1000,
+            max_seconds: max_ms / 1000,
             notice,
         });
     }
@@ -452,7 +488,7 @@ async fn start_recording(
         format,
         width: out_w,
         height: out_h,
-        max_seconds: MAX_RECORD_MS / 1000,
+        max_seconds: max_ms / 1000,
         notice,
     })
 }
@@ -547,7 +583,7 @@ pub async fn shot_record_gif_fps(record_id: u64, fps: u32) -> Result<RecordState
         Ok(())
     })
     .await
-    .map_err(|e| format!("重新生成 GIF 失败: {e}"))??;
+    .map_err(|e| join_error_message("重新生成 GIF", e))??;
     eprintln!("[zbar-rec] GIF 重编码完成 id={record_id}");
     shot_record_state(record_id)
 }
@@ -569,7 +605,7 @@ pub async fn shot_record_audio_devices() -> Result<Vec<ffmpeg::AudioDevice>, Str
         ff.audio_devices()
     })
     .await
-    .map_err(|e| format!("枚举音频设备任务失败: {e}"))?
+    .map_err(|e| join_error_message("枚举音频设备", e))?
 }
 
 /// ffmpeg 是否就位（前端决定显示下载引导还是麦克风下拉）。
@@ -584,7 +620,7 @@ pub fn shot_record_ffmpeg_status() -> ffmpeg::FfmpegStatus {
 pub async fn shot_record_ensure_ffmpeg(app: AppHandle) -> Result<ffmpeg::FfmpegStatus, String> {
     tauri::async_runtime::spawn_blocking(move || ffmpeg::ensure_ffmpeg(&app))
         .await
-        .map_err(|e| format!("ffmpeg 下载任务失败: {e}"))?
+        .map_err(|e| join_error_message("ffmpeg 下载", e))?
 }
 
 /// 把录制条原地放大成预览窗（播放 / 裁剪 / 复制 / 下载）。
@@ -656,7 +692,7 @@ pub async fn shot_record_media(record_id: u64) -> Result<tauri::ipc::Response, S
         std::fs::read(&path).map_err(|e| format!("读取录制文件失败: {e}"))
     })
     .await
-    .map_err(|e| format!("读取录制文件任务失败: {e}"))??;
+    .map_err(|e| join_error_message("读取录制文件", e))??;
     Ok(tauri::ipc::Response::new(bytes))
 }
 
@@ -749,18 +785,20 @@ pub async fn shot_record_export(
         }
     })
     .await
-    .map_err(|e| format!("导出录屏任务失败: {e}"))?
+    .map_err(|e| join_error_message("导出录屏", e))?
 }
 
 /// 关闭预览窗：停掉线程、删临时帧、收起截图会话并把 HUD 恢复。
 #[tauri::command]
 pub async fn shot_record_close(app: AppHandle, record_id: u64) -> Result<(), String> {
-    stop_and_wait(record_id);
+    stop_and_wait_detached(record_id).await;
     remove_record(record_id);
     let app_main = app.clone();
     let _ = on_main_thread(&app, move || {
+        // 预览窗即录制条窗口（同一窗口复用）：关闭只隐藏保留，下次录制
+        // navigate 整页重载，不吃 WebView 冷启动
         if let Some(win) = app_main.get_webview_window(REC_WINDOW_LABEL) {
-            let _ = win.destroy();
+            let _ = win.hide();
         }
         Ok(())
     })
@@ -781,12 +819,14 @@ pub async fn shot_record_cancel(
             .ok()
             .map(|_| (rec.monitor_x, rec.monitor_y))
     });
-    stop_and_wait(record_id);
+    stop_and_wait_detached(record_id).await;
     remove_record(record_id);
     let app_main = app.clone();
     let _ = on_main_thread(&app, move || {
+        // 录制条窗口只隐藏保留复用（隐藏前可能带着失败/取消态的内容，
+        // 下次录制会整页 navigate 重载掉）
         if let Some(win) = app_main.get_webview_window(REC_WINDOW_LABEL) {
-            let _ = win.destroy();
+            let _ = win.hide();
         }
         Ok(())
     })
@@ -796,7 +836,7 @@ pub async fn shot_record_cancel(
     }
     hide_island_for_capture(&app).await;
     if let Some((x, y)) = monitor {
-        let _ = restore_overlay(&app, x, y).await;
+        let _ = restore_overlay_for_record(&app, x, y).await;
     }
     Ok(())
 }
@@ -834,6 +874,13 @@ fn stop_and_wait(record_id: u64) {
         }
         std::thread::sleep(Duration::from_millis(40));
     }
+}
+
+/// async 命令专用的 `stop_and_wait`：忙等（40ms 轮询、最长 8s）丢进
+/// spawn_blocking 线程，不占 tokio worker。闭包只持有 `Arc<Recording>`，
+/// 锁都是取完即放，没有跨 await 持锁的问题。
+async fn stop_and_wait_detached(record_id: u64) {
+    let _ = tauri::async_runtime::spawn_blocking(move || stop_and_wait(record_id)).await;
 }
 
 fn remove_record(record_id: u64) {
@@ -903,23 +950,163 @@ fn preview_size(monitor: &ShotMonitor, media_w: u32, media_h: u32) -> (f64, f64)
 // 录制窗口
 // ============================================================
 
+/// 录制条逻辑尺寸与屏幕边距（逻辑 px，乘显示器 scale 得物理 px）。
+/// 避让落位、隐藏判定、前端倒计时提示三处共用，改这里即可。
+/// 尺寸按录制条实际内容估算：拖动把手 + 红点 + 14px 等宽时长
+/// （GIF 00:12 / 05:00、MP4 00:12 / 60:00，等宽字体同宽）+ 结束录制
+/// 按钮，左右各 12px 内边距。窗口矩形 ≈ 可视条矩形（深灰实底无阴影后
+/// 没有外扩透明死区），改动布局时同步调整。
+const REC_BAR_W: f64 = 264.0;
+const REC_BAR_H: f64 = 46.0;
+const REC_BAR_MARGIN: f64 = 24.0;
+
+/// 取指定显示器的工作区矩形 `(x, y, w, h)`（物理 px，多显示器全局坐标）。
+/// Windows 用显示器中心点做代表点 `MonitorFromPoint` 定位 HMONITOR，再取
+/// `GetMonitorInfoW` 的 `rcWork`（已扣除任务栏 / 停靠栏，任务栏在底 / 顶 /
+/// 左 / 右都适用）；查询失败或非 Windows 平台退回显示器全矩形（与旧行为
+/// 一致，不至于更差）。
+fn monitor_work_area(monitor: &ShotMonitor) -> (i32, i32, u32, u32) {
+    #[cfg(target_os = "windows")]
+    {
+        use windows::Win32::Foundation::POINT;
+        use windows::Win32::Graphics::Gdi::{
+            GetMonitorInfoW, MonitorFromPoint, MONITORINFO, MONITOR_DEFAULTTONEAREST,
+        };
+        let center = POINT {
+            x: monitor.x + monitor.width as i32 / 2,
+            y: monitor.y + monitor.height as i32 / 2,
+        };
+        let hmon = unsafe { MonitorFromPoint(center, MONITOR_DEFAULTTONEAREST) };
+        let mut info = MONITORINFO {
+            cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+            ..MONITORINFO::default()
+        };
+        if unsafe { GetMonitorInfoW(hmon, &mut info) }.as_bool() {
+            let work = info.rcWork;
+            let (w, h) = (
+                (work.right - work.left).max(0),
+                (work.bottom - work.top).max(0),
+            );
+            // 宽高异常（极端驱动环境）时退回显示器矩形，别拿空矩形算落位
+            if w > 0 && h > 0 {
+                return (work.left, work.top, w as u32, h as u32);
+            }
+        }
+    }
+    (monitor.x, monitor.y, monitor.width, monitor.height)
+}
+
+/// 录制条候选位置（物理 px，录制条左上角），按避让优先级排列：
+/// 右下 → 左下 → 左上 → 右上，边距统一保持 REC_BAR_MARGIN。
+/// 四角以 `work`（工作区矩形，已扣除任务栏 / 停靠栏）边缘推算，录制条
+/// 不会压到任务栏；`monitor` 只取 scale_factor 换算条尺寸与边距。
+fn recorder_bar_candidates(
+    monitor: &ShotMonitor,
+    work: (i32, i32, u32, u32),
+) -> [(i32, i32); 4] {
+    let scale = monitor.scale_factor.max(0.5);
+    let bar_w = (REC_BAR_W * scale) as i32;
+    let bar_h = (REC_BAR_H * scale) as i32;
+    let margin = (REC_BAR_MARGIN * scale) as i32;
+    let (wx, wy, ww, wh) = work;
+    let left = wx + margin;
+    let top = wy + margin;
+    let right = wx + ww as i32 - bar_w - margin;
+    let bottom = wy + wh as i32 - bar_h - margin;
+    [(right, bottom), (left, bottom), (left, top), (right, top)]
+}
+
+/// 给定录制条左上角位置（物理 px），判断它与选区（物理 px）是否相交——
+/// 相交则 gdigrab 会把录制条拍进画面。边缘相贴不算相交。
+fn recorder_bar_hits(
+    bar: (i32, i32),
+    bar_w: i32,
+    bar_h: i32,
+    sel: (i32, i32, u32, u32),
+) -> bool {
+    let (bar_x, bar_y) = bar;
+    let (sel_x, sel_y, sel_w, sel_h) = sel;
+    sel_x < bar_x + bar_w
+        && bar_x < sel_x + sel_w as i32
+        && sel_y < bar_y + bar_h
+        && bar_y < sel_y + sel_h as i32
+}
+
+/// 选区避让落位：按候选顺序选第一个不与选区相交的位置；四个候选位置都
+/// 被选区盖住（近似全屏）时回退右下角（原默认位）并置 blocked=true，
+/// 录制条照常完整显示（入画可接受）。selection 为 None（无选区场景）
+/// 直接落右下。录制窗口的实际显示位置与 blocked 判定都从这一个纯函数
+/// 取值，保证两端不漂移。`work` 是调用方取好的工作区矩形（已扣除任务
+/// 栏），判定与落位共用同一份结果，不重复查询。
+fn resolve_recorder_bar_position(
+    monitor: &ShotMonitor,
+    work: (i32, i32, u32, u32),
+    selection: Option<(i32, i32, u32, u32)>,
+) -> ((i32, i32), bool) {
+    let candidates = recorder_bar_candidates(monitor, work);
+    let (sel_x, sel_y, sel_w, sel_h) = match selection {
+        Some(sel) => sel,
+        None => return (candidates[0], false),
+    };
+    let scale = monitor.scale_factor.max(0.5);
+    let bar_w = (REC_BAR_W * scale) as i32;
+    let bar_h = (REC_BAR_H * scale) as i32;
+    for &bar in &candidates {
+        if !recorder_bar_hits(bar, bar_w, bar_h, (sel_x, sel_y, sel_w, sel_h)) {
+            return (bar, false);
+        }
+    }
+    (candidates[0], true)
+}
+
+/// 录制条 / 预览窗窗口（同一个窗口：录制中是右下角录制条，结束后原地放大
+/// 成预览）。已存在则复用——整页 navigate 到新会话参数（WebView 进程热着，
+/// 与截图覆盖层 reuse_overlay 同模式，省 WebView 冷启动的几百毫秒），恢复
+/// 录制条尺寸并按选区避让重新落位后 show；不存在才新建。窗口的消失统一
+/// 收敛为 hide（录制结束/取消/关预览，见 hide_recorder_window 与
+/// shot_record_close/cancel），让下一次录制继续吃到热 WebView。
 fn build_recorder_window(
     app: &AppHandle,
     record_id: u64,
     monitor: &ShotMonitor,
+    selection: Option<(i32, i32, u32, u32)>,
+    format: &str,
 ) -> Result<WebviewWindow, String> {
-    if let Some(old) = app.get_webview_window(REC_WINDOW_LABEL) {
-        let _ = old.destroy();
+    // 与 blocked 判定共用同一套避让逻辑：优先挑一个不压选区的角落；四个角
+    // 都放不下（近似全屏选区）时回退右下角，录制条照常完整显示。
+    // 工作区只查一次：候选位置按工作区边缘计算（避开任务栏），判定与
+    // 下方 set_position 落位共用这一个结果
+    let work = monitor_work_area(monitor);
+    let ((x, y), _) = resolve_recorder_bar_position(monitor, work, selection);
+    if let Some(win) = app.get_webview_window(REC_WINDOW_LABEL) {
+        // 复用：先隐藏并把预览态留下的大窗缩回录制条尺寸、按选区重新落位，
+        // 再 navigate 到新参数整页重载（RecApp 挂新 id/format 重新初始化），
+        // 最后 show。navigate 后旧文档还会画到新文档就绪为止，预览态内容
+        // 缩在条形窗口里最多闪零点几秒，与冷启动白屏等待基本等价。
+        let _ = win.hide();
+        win.set_size(LogicalSize::new(REC_BAR_W, REC_BAR_H))
+            .map_err(|e| format!("调整录制窗口尺寸失败: {e}"))?;
+        win.set_position(PhysicalPosition::new(x, y))
+            .map_err(|e| format!("定位录制窗口失败: {e}"))?;
+        let mut url = win
+            .url()
+            .map_err(|e| format!("读取录制窗口地址失败: {e}"))?;
+        url.set_path("rec.html");
+        // format 放 URL：录制条首帧就能按格式显示正确的时长上限（1:00:00 /
+        // 05:00），不用等第一次 getRecordState 轮询回来再跳变
+        url.set_query(Some(&format!("id={record_id}&format={format}")));
+        win.navigate(url)
+            .map_err(|e| format!("刷新录制窗口失败: {e}"))?;
+        let _ = win.show();
+        return Ok(win);
     }
-    let scale = monitor.scale_factor.max(0.5);
-    let (w, h) = (238.0, 54.0);
     let win = WebviewWindowBuilder::new(
         app,
         REC_WINDOW_LABEL,
-        WebviewUrl::App(format!("rec.html?id={record_id}").into()),
+        WebviewUrl::App(format!("rec.html?id={record_id}&format={format}").into()),
     )
     .title(REC_WINDOW_TITLE)
-    .inner_size(w, h)
+    .inner_size(REC_BAR_W, REC_BAR_H)
     .decorations(false)
     .transparent(true)
     .always_on_top(true)
@@ -935,12 +1122,72 @@ fn build_recorder_window(
     .build()
     .map_err(|e| format!("创建录制窗口失败: {e}"))?;
     let _ = win.set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
-    let x = monitor.x + monitor.width as i32 - (w * scale) as i32 - (24.0 * scale) as i32;
-    let y = monitor.y + monitor.height as i32 - (h * scale) as i32 - (24.0 * scale) as i32;
     win.set_position(PhysicalPosition::new(x, y))
         .map_err(|e| format!("定位录制窗口失败: {e}"))?;
     let _ = win.show();
     Ok(win)
+}
+
+/// 隐藏（不销毁）录制条 / 预览窗：窗口常驻复用，启动预热、录制、预览共用
+/// 同一个 WebView；销毁会让下次录制重新吃 WebView 冷启动。错误回滚路径
+/// （probe 失败 / 建窗失败 / 收起覆盖层失败）也只隐藏，留下的是待命窗口。
+async fn hide_recorder_window(app: &AppHandle) {
+    let app_main = app.clone();
+    let _ = on_main_thread(app, move || {
+        if let Some(win) = app_main.get_webview_window(REC_WINDOW_LABEL) {
+            let _ = win.hide();
+        }
+        Ok(())
+    })
+    .await;
+}
+
+/// 预热录制条窗口：应用启动线程（lib.rs）在截图覆盖窗口预热完成后顺带
+/// 调用，隐藏预建 rec.html 空白待命页。首次录制由 [`build_recorder_window`]
+/// 复用该窗口：只走 navigate + 定位 + show，省掉 WebView 冷启动。幂等：
+/// 窗口已存在（已预热 / 录制中 / 预览中）直接返回。待命页无 id 参数，
+/// RecApp 渲染全透明空白页，不起轮询、不报错、不触发任何取消副作用。
+pub async fn prewarm_recorder_window(app: AppHandle) -> Result<(), String> {
+    let app_main = app.clone();
+    on_main_thread(&app, move || {
+        if app_main.get_webview_window(REC_WINDOW_LABEL).is_some() {
+            return Ok(()); // 已有窗口（已预热 / 录制中 / 预览中），不动
+        }
+        let monitor = monitor_list(&app_main)
+            .into_iter()
+            .find(|m| m.primary)
+            .or_else(|| monitor_list(&app_main).into_iter().next())
+            .ok_or_else(|| "没有检测到显示器".to_string())?;
+        // 窗口保持隐藏，位置随手落在录制条默认位（右下角），只为让 WebView
+        // 提前加载 rec.html；真正显示时 build_recorder_window 会重新定位
+        let work = monitor_work_area(&monitor);
+        let ((x, y), _) = resolve_recorder_bar_position(&monitor, work, None);
+        let win = WebviewWindowBuilder::new(
+            &app_main,
+            REC_WINDOW_LABEL,
+            WebviewUrl::App("rec.html".into()),
+        )
+        .title(REC_WINDOW_TITLE)
+        .inner_size(REC_BAR_W, REC_BAR_H)
+        .decorations(false)
+        .transparent(true)
+        .always_on_top(true)
+        .skip_taskbar(true)
+        .shadow(false)
+        .resizable(false)
+        .maximizable(false)
+        .minimizable(false)
+        .closable(false)
+        .visible(false)
+        .focused(false)
+        .background_throttling(tauri::utils::config::BackgroundThrottlingPolicy::Disabled)
+        .build()
+        .map_err(|e| format!("预热录制窗口失败: {e}"))?;
+        let _ = win.set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
+        let _ = win.set_position(PhysicalPosition::new(x, y));
+        Ok(())
+    })
+    .await
 }
 
 // ============================================================
@@ -1012,77 +1259,14 @@ async fn probe_windows_audio(
         Ok((spec, notice))
     })
     .await
-    .map_err(|e| format!("音频设备检查任务失败: {e}"))?
-}
-
-/// 录制条（右下角 238×54 逻辑像素 + 24 边距，见 build_recorder_window）
-/// 是否与选区相交——相交则 gdigrab 会把它拍进画面。
-#[cfg(windows)]
-fn recorder_overlaps_selection(
-    monitor: &ShotMonitor,
-    x: i32,
-    y: i32,
-    w: u32,
-    h: u32,
-) -> bool {
-    let scale = monitor.scale_factor.max(0.5);
-    let bar_w = (238.0 * scale) as i32;
-    let bar_h = (54.0 * scale) as i32;
-    let margin = (24.0 * scale) as i32;
-    let bar_x = monitor.x + monitor.width as i32 - bar_w - margin;
-    let bar_y = monitor.y + monitor.height as i32 - bar_h - margin;
-    x < bar_x + bar_w && bar_x < x + w as i32 && y < bar_y + bar_h && bar_y < y + h as i32
-}
-
-/// 录制条被隐藏时，临时注册「停止录制」全局快捷键（与「开始录制」同键
-/// Ctrl+Shift+G，语义连续：按下开始，录制中再按结束）。返回是否注册成功。
-#[cfg(windows)]
-fn register_record_stop_hotkey(app: &AppHandle) -> bool {
-    use tauri_plugin_global_shortcut::GlobalShortcutExt;
-    let gs = app.global_shortcut();
-    match gs.on_shortcut("ctrl+shift+g", move |_app, _shortcut, event| {
-        if !matches!(
-            event.state(),
-            tauri_plugin_global_shortcut::ShortcutState::Pressed
-        ) {
-            return;
-        }
-        // 同一时刻最多一条录制；直接把所有进行中的都置停止位
-        if let Ok(map) = records().lock() {
-            for rec in map.values() {
-                if rec.inner.lock().map(|i| i.running).unwrap_or(false) {
-                    rec.stop.store(true, Ordering::Relaxed);
-                }
-            }
-        }
-    }) {
-        Ok(()) => true,
-        Err(e) => {
-            eprintln!("[zbar-rec] 注册停止录制快捷键失败（可能被占用）: {e}");
-            false
-        }
-    }
-}
-
-/// 录制结束后注销「停止录制」快捷键（成败路径都要走）。
-#[cfg(windows)]
-fn unregister_record_stop_hotkey(app: &AppHandle) {
-    use tauri_plugin_global_shortcut::GlobalShortcutExt;
-    let gs = app.global_shortcut();
-    let _ = gs.unregister("ctrl+shift+g");
+    .map_err(|e| join_error_message("音频设备检查", e))?
 }
 
 /// Windows MP4 录制主循环：spawn ffmpeg → 轮询停止位 → 停止收尾（CTRL_BREAK
 /// 优先、kill 兜底，fMP4 保证落盘文件可用，详见 ffmpeg.rs 模块注释）→
 /// 校验产物 → 通知前端。
 #[cfg(windows)]
-fn run_ffmpeg_recording(
-    rec: Arc<Recording>,
-    spec: CaptureSpec,
-    dir: PathBuf,
-    app: AppHandle,
-    stop_hotkey_registered: bool,
-) {
+fn run_ffmpeg_recording(rec: Arc<Recording>, spec: CaptureSpec, dir: PathBuf) {
     /// gdigrab 帧率：30fps 是 Windows 屏幕抓取与体积的平衡点（mac SCK 是 60）
     const GRAB_FPS: u32 = 30;
     // 录制期间暂停底板采样，避免和录屏抓屏抢 GDI 桌面（见 island::capture_guard）。
@@ -1094,31 +1278,74 @@ fn run_ffmpeg_recording(
             mic: spec.mic.clone(),
             system: spec.system_audio.clone(),
         };
-        let args = ffmpeg::build_record_args(
-            spec.screen_x,
-            spec.screen_y,
-            spec.width,
-            spec.height,
-            spec.out_w,
-            spec.out_h,
-            GRAB_FPS,
-            spec.cursor,
-            &audio,
-            &path,
-        );
+        // 硬编优先（探测结果进程级缓存）：libx264 软编 3440×1440@30 会吃满
+        // 1~2 核把录制中的 UI（录制条动画 / 时长刷新 / 拖拽）一起拖卡。探测
+        // 放在预滚等待之前，探测耗时与预滚不叠加；结果整个进程只算一次
+        let encoder = ffmpeg::select_encoder(&ff);
+        let build_args = |enc: ffmpeg::H264Encoder| {
+            ffmpeg::build_record_args(
+                spec.screen_x,
+                spec.screen_y,
+                spec.width,
+                spec.height,
+                spec.out_w,
+                spec.out_h,
+                GRAB_FPS,
+                spec.cursor,
+                &audio,
+                enc,
+                &path,
+            )
+        };
         // 对齐 run_capture 的 420ms 预滚：等覆盖层挪走、窗口系统画稳
         std::thread::sleep(Duration::from_millis(420));
-        let mut proc = ffmpeg::FfmpegRecording::spawn(&ff, &args)?;
+        let mut proc = ffmpeg::FfmpegRecording::spawn(&ff, &build_args(encoder))?;
         rec.started_ms
             .store(super::now_ms() as u64, Ordering::Relaxed);
-        // 提前失败探测：设备名错 / 抓屏区域非法会让 ffmpeg 立即退出。
-        // 给它 600ms，把「启动即失败」在录制条还醒着时就暴露出来。
+        // 提前失败探测：设备名错 / 抓屏区域非法 / 硬编初始化失败会让 ffmpeg
+        // 立即退出。给它 600ms，把「启动即失败」在录制条还醒着时就暴露出来。
         std::thread::sleep(Duration::from_millis(600));
         if let Some(status) = proc.try_finish() {
             let tail = proc.stderr_tail(400);
             proc.cleanup();
-            let _ = std::fs::remove_file(&path);
-            return Err(describe_ffmpeg_exit(status, &tail, "启动"));
+            // 硬编秒退（驱动不支持 / 显存不足 / 硬编会话数满）：降级 libx264
+            // 用同一输出文件 -y 覆盖重启一次，探测漏判的机器仍能完成本次
+            // 录制；降级也秒退（或本来就是 libx264）才报错，文案带编码器名
+            let mut downgraded: Option<ffmpeg::FfmpegRecording> = None;
+            if encoder != ffmpeg::H264Encoder::X264 {
+                eprintln!(
+                    "[zbar-rec] 硬件编码器 {} 启动失败（退出码 {}），降级 libx264 重试",
+                    encoder.name(),
+                    status.code().unwrap_or(-1)
+                );
+                if let Ok(mut retried) =
+                    ffmpeg::FfmpegRecording::spawn(&ff, &build_args(ffmpeg::H264Encoder::X264))
+                {
+                    std::thread::sleep(Duration::from_millis(600));
+                    if retried.try_finish().is_none() {
+                        downgraded = Some(retried);
+                    } else {
+                        retried.cleanup();
+                    }
+                }
+            }
+            match downgraded {
+                Some(retried) => {
+                    proc = retried;
+                    eprintln!("[zbar-rec] 已切换为 libx264（软件编码）继续本次录制");
+                    // 时长基准重置到软编真正开始抓帧的时刻（降级重启拖了约 1.2s）
+                    rec.started_ms
+                        .store(super::now_ms() as u64, Ordering::Relaxed);
+                }
+                None => {
+                    let _ = std::fs::remove_file(&path);
+                    return Err(describe_ffmpeg_exit(
+                        status,
+                        &tail,
+                        &format!("启动（编码器 {}）", encoder.name()),
+                    ));
+                }
+            }
         }
         loop {
             if rec.stop.load(Ordering::Relaxed) {
@@ -1158,13 +1385,6 @@ fn run_ffmpeg_recording(
             has_audio: audio.has_audio(),
         })
     })();
-    // 录制条被隐藏时注册过停止快捷键，结束时注销。只有本次注册成功过才
-    // 注销：用户可能把自定义截图快捷键（可配置）设成同键，无条件注销
-    // 会把用户的快捷键一起拆掉。预览窗的 show 由 shot_record_preview
-    // 负责（它本来就带 win.show()）。
-    if stop_hotkey_registered {
-        unregister_record_stop_hotkey(&app);
-    }
     rec.finish(outcome);
 }
 
@@ -2670,10 +2890,13 @@ fn trim_recording(
     #[cfg(not(target_os = "macos"))]
     {
         // Windows：ffmpeg 重编码裁剪（精确到 0.1s 级；不做 -c copy 快速模式，
-        // 关键帧对齐的误差对预览里的精确裁剪体验不友好）。
+        // 关键帧对齐的误差对预览里的精确裁剪体验不友好）。超时按片段时长
+        // 放大（max(90s, 时长×1.5)）：低端 CPU 重编码长素材可能超过固定
+        // 90 秒，误杀会让裁剪功能不可用。
         let ff = ffmpeg::Ffmpeg::locate()?;
         let args = ffmpeg::build_trim_args(source, &out, start_ms, end_ms);
-        ffmpeg::run_to_done(&ff, &args)?;
+        let timeout = ffmpeg::trim_timeout(end_ms - start_ms);
+        ffmpeg::run_to_done(&ff, &args, timeout)?;
         let size = std::fs::metadata(&out).map(|m| m.len()).unwrap_or(0);
         if size == 0 {
             return Err("裁剪没有产出可用的视频文件".into());
@@ -2740,6 +2963,14 @@ fn clipboard_file(path: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn record_max_ms_depends_on_format() {
+        // GIF 抓帧逐帧缓存，时长受内存约束保持 5 分钟（飞书同款）；
+        // MP4 流式写盘、内存与时长无关，放宽到 1 小时
+        assert_eq!(max_record_ms("gif"), 300_000);
+        assert_eq!(max_record_ms("mp4"), 3_600_000);
+    }
 
     #[test]
     fn gif_output_size_is_capped() {
@@ -2912,12 +3143,12 @@ mod tests {
         assert!(w > 400.0 && h > 300.0);
     }
 
-    /// 录制条右下角矩形：scale=1 时是 x∈[2878-24-238?]…… 直接按公式算。
-    /// 1920×1080 屏幕：bar = (1920-238-24, 1080-54-24) = (1658, 1002) 起，
-    /// 尺寸 238×54。
-    #[cfg(windows)]
+    /// 录制条避让几何（scale=1，1920×1080 屏，底部 40px 任务栏 → 工作区
+    /// 1920×1040）：候选位置右下 (1632,970) → 左下 (24,970) → 左上 (24,24)
+    /// → 右上 (1632,24)，条尺寸 264×46、边距 24，均为物理 px。底部候选
+    /// 底边 970+46=1016，压在任务栏（y≥1040）之上而不是里面。
     #[test]
-    fn recorder_overlap_follows_corner_geometry() {
+    fn recorder_bar_avoids_selection_by_corner_priority() {
         let monitor = ShotMonitor {
             index: 0,
             name: "main".into(),
@@ -2928,13 +3159,112 @@ mod tests {
             scale_factor: 1.0,
             primary: true,
         };
-        // 选区在屏幕中间：不重叠
-        assert!(!recorder_overlaps_selection(&monitor, 100, 100, 800, 600));
-        // 选区盖住右下角（录制条位置）：重叠
-        assert!(recorder_overlaps_selection(&monitor, 1650, 990, 300, 100));
-        // 全屏录制：必然重叠
-        assert!(recorder_overlaps_selection(&monitor, 0, 0, 1920, 1080));
-        // 刚好贴着录制条上边缘之外：不重叠
-        assert!(!recorder_overlaps_selection(&monitor, 1658, 0, 238, 1002));
+        let work = (0, 0, 1920, 1040);
+        // 选区只占中部：四个角都空，保持默认右下
+        let (pos, blocked) =
+            resolve_recorder_bar_position(&monitor, work, Some((100, 100, 800, 600)));
+        assert_eq!(pos, (1632, 970));
+        assert!(!blocked);
+        assert!(pos.1 + 46 <= 1040, "底部候选不能压进任务栏");
+        // 选区盖住右下角：让到左下（下一优先级）
+        let (pos, blocked) =
+            resolve_recorder_bar_position(&monitor, work, Some((1500, 800, 420, 280)));
+        assert_eq!(pos, (24, 970));
+        assert!(!blocked);
+        // 选区盖住右下 + 左下：让到左上
+        let (pos, blocked) =
+            resolve_recorder_bar_position(&monitor, work, Some((0, 900, 1920, 180)));
+        assert_eq!(pos, (24, 24));
+        assert!(!blocked);
+        // 近似全屏：四角全被占，回退右下并标记 blocked（录制条照常完整显示）
+        let (pos, blocked) =
+            resolve_recorder_bar_position(&monitor, work, Some((0, 0, 1920, 1080)));
+        assert_eq!(pos, (1632, 970));
+        assert!(blocked);
+        // 无选区场景：直接落右下
+        let (pos, blocked) = resolve_recorder_bar_position(&monitor, work, None);
+        assert_eq!(pos, (1632, 970));
+        assert!(!blocked);
+    }
+
+    #[test]
+    fn recorder_bar_offsets_with_monitor_origin() {
+        // 多显示器：副屏在主屏右侧（monitor.x=1920），候选与相交判定都要以
+        // 显示器全局坐标为基准，不能按主屏原点算；工作区同以全局坐标传入
+        // （副屏底部 40px 任务栏 → 工作区 1920×1040）
+        let monitor = ShotMonitor {
+            index: 1,
+            name: "right".into(),
+            x: 1920,
+            y: 0,
+            width: 1920,
+            height: 1080,
+            scale_factor: 1.0,
+            primary: false,
+        };
+        let work = (1920, 0, 1920, 1040);
+        // 选区压住副屏右下角（全局坐标）→ 让到副屏左下
+        let (pos, blocked) =
+            resolve_recorder_bar_position(&monitor, work, Some((3578, 900, 300, 180)));
+        assert_eq!(pos, (1944, 970));
+        assert!(!blocked);
+        assert!(pos.1 + 46 <= 1040, "底部候选不能压进任务栏");
+    }
+
+    #[test]
+    fn recorder_bar_scales_with_display_scale() {
+        // scale=2：条 528×92 + 48 边距，全部按物理 px 参与判定；底部 80 物理
+        // px 任务栏 → 工作区 3840×2120；右下候选 (3264,1980)，左下 (48,1980)
+        let monitor = ShotMonitor {
+            index: 0,
+            name: "hidpi".into(),
+            x: 0,
+            y: 0,
+            width: 3840,
+            height: 2160,
+            scale_factor: 2.0,
+            primary: true,
+        };
+        let work = (0, 0, 3840, 2120);
+        let (pos, blocked) =
+            resolve_recorder_bar_position(&monitor, work, Some((3200, 1700, 640, 460)));
+        assert_eq!(pos, (48, 1980));
+        assert!(!blocked);
+        assert!(pos.1 + 92 <= 2120, "底部候选不能压进任务栏");
+    }
+
+    #[test]
+    fn recorder_bar_avoids_top_taskbar() {
+        // 任务栏在顶部：工作区从 y=40 起（顶部 40px 任务栏）。底部候选不受
+        // 影响，顶部候选必须让出任务栏高度，不能贴着屏幕上缘
+        let monitor = ShotMonitor {
+            index: 0,
+            name: "top-taskbar".into(),
+            x: 0,
+            y: 0,
+            width: 1920,
+            height: 1080,
+            scale_factor: 1.0,
+            primary: true,
+        };
+        let work = (0, 40, 1920, 1040);
+        // 无选区：右下 (1632, 40+1040-46-24=1010)
+        let (pos, blocked) = resolve_recorder_bar_position(&monitor, work, None);
+        assert_eq!(pos, (1632, 1010));
+        assert!(!blocked);
+        // 选区盖住底部两角 → 让到左上 (24, 40+24=64)，在任务栏之下不遮挡
+        let (pos, blocked) =
+            resolve_recorder_bar_position(&monitor, work, Some((0, 900, 1920, 180)));
+        assert_eq!(pos, (24, 64));
+        assert!(!blocked);
+        assert!(pos.1 >= 40, "顶部候选不能压进顶部任务栏");
+    }
+
+    #[test]
+    fn recorder_bar_hits_edge_touching_is_not_overlap() {
+        // 边缘相贴不算相交（开区间语义）：选区底边刚好贴着右下录制条上边缘
+        assert!(!recorder_bar_hits((1632, 1010), 264, 46, (1632, 0, 264, 1010)));
+        // 选区左上角伸进录制条矩形：相交
+        assert!(recorder_bar_hits((1632, 1010), 264, 46, (1600, 1008, 264, 46)));
     }
 }

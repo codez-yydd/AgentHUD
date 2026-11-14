@@ -50,6 +50,9 @@ button {
   overflow: hidden;
   background: #06080d;
   cursor: crosshair;
+  /* 全屏根层禁止任何 opacity/合成补间：透明 Tauri 窗口里全屏层做 opacity
+     过渡时，WebView2 透明合成路径会把淡出中间帧渲染成全黑（录屏倒计时结束
+     黑屏的根因）。淡出/恢复一律瞬切，此处不放任何 transition */
 }
 
 .shot-root.phase-edit {
@@ -81,7 +84,7 @@ button {
 
 .shot-dim {
   position: absolute;
-  background: rgba(2, 5, 10, 0.56);
+  background: rgba(2, 5, 10, 0.38);
   pointer-events: none;
   transition: background 120ms ease;
 }
@@ -89,8 +92,8 @@ button {
 .shot-dim-full {
   inset: 0;
   background:
-    radial-gradient(ellipse 70% 62% at 50% 46%, rgba(4, 8, 15, 0.38), rgba(2, 5, 10, 0.66)),
-    rgba(2, 5, 10, 0.32);
+    radial-gradient(ellipse 70% 62% at 50% 46%, rgba(4, 8, 15, 0.24), rgba(2, 5, 10, 0.46)),
+    rgba(2, 5, 10, 0.2);
 }
 
 .shot-selection {
@@ -196,28 +199,31 @@ button {
   box-shadow: 0 2px 10px rgba(0, 0, 0, 0.3);
 }
 
-/* 区域 / 窗口 / 全屏：呼出后直接在这里切换模式 */
+/* 顶部一体栏内的模式切换（截图/滚动/录屏）：active 态沿用主题蓝 (#7ea6ff 系)
+   实底白字 + 13px 字号，非 active 降低对比让当前分类一眼可辨。父级一体栏
+   pointer-events:none（栏空白处要能穿透框选），这里单独恢复事件。 */
 .shot-mode-switch {
   display: inline-flex;
   align-items: center;
   gap: 2px;
   padding: 2px;
-  border-radius: 9px;
+  border-radius: 10px;
   background: rgba(255, 255, 255, 0.05);
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.07);
+  pointer-events: auto;
 }
 
 .shot-mode-switch button {
-  height: 26px;
-  padding: 0 9px;
-  border-radius: 7px;
+  height: 30px;
+  padding: 0 12px;
+  border-radius: 8px;
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 6px;
   background: transparent;
   border: 1px solid transparent;
-  color: rgba(226, 233, 247, 0.7);
-  font-size: 11px;
+  color: rgba(226, 233, 247, 0.58);
+  font-size: 13px;
   cursor: pointer;
   white-space: nowrap;
 }
@@ -228,9 +234,10 @@ button {
 }
 
 .shot-mode-switch button.active {
-  background: rgba(110, 140, 255, 0.22);
-  border-color: rgba(126, 166, 255, 0.42);
-  color: #eef3ff;
+  background: linear-gradient(180deg, #8fb0ff, #6d97f7);
+  border-color: rgba(126, 166, 255, 0.9);
+  color: #fff;
+  box-shadow: 0 3px 12px rgba(96, 133, 245, 0.45);
 }
 
 /* 录屏分类里的格式切换 / 鼠标开关 */
@@ -428,12 +435,41 @@ button.shot-rec-toggle:disabled:hover {
   white-space: nowrap;
 }
 
-.shot-top-pill,
-.shot-edit-top {
+/* 顶部一体栏（框选阶段）：单个毛玻璃圆角矩形，一行内容 = 左侧模式切换 +
+   细分隔线 + 右侧分辨率 / Esc 键位提示（弱化色）。top 16px 居中沿用原信息条
+   位置，blur / 底色 / 边框参数沿用原毛玻璃语言，圆角固定 12px（不再是胶囊，
+   避免「两个椭圆拼接」的观感）。栏本体不接事件：按住栏的空白处照样能拖框选，
+   只有左侧模式切换恢复事件。 */
+.shot-top-bar {
   position: absolute;
   top: 16px;
   left: 50%;
   transform: translateX(-50%);
+  z-index: 12;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 38px;
+  padding: 0 12px 0 6px;
+  border-radius: 12px;
+  background: rgba(10, 13, 21, 0.78);
+  border: 1px solid rgba(255, 255, 255, 0.11);
+  box-shadow:
+    0 10px 34px rgba(0, 0, 0, 0.32),
+    inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(18px) saturate(1.3);
+  -webkit-backdrop-filter: blur(18px) saturate(1.3);
+  color: rgba(238, 243, 255, 0.88);
+  font-size: 10.5px;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+/* 标注编辑器阶段的左上信息条：与一体栏同一套毛玻璃语言，靠左放置 */
+.shot-edit-top {
+  position: absolute;
+  top: 16px;
+  left: 18px;
   z-index: 12;
   display: flex;
   align-items: center;
@@ -454,11 +490,6 @@ button.shot-rec-toggle:disabled:hover {
   pointer-events: none;
 }
 
-.shot-edit-top {
-  left: 18px;
-  transform: none;
-}
-
 .shot-live-dot {
   width: 6px;
   height: 6px;
@@ -469,8 +500,15 @@ button.shot-rec-toggle:disabled:hover {
 
 .shot-top-sep {
   width: 1px;
-  height: 10px;
+  height: 12px;
+  margin: 0 2px;
   background: rgba(255, 255, 255, 0.14);
+}
+
+/* 一体栏右侧的分辨率信息：弱化色 + 表格数字，与 Esc 提示同一档对比度 */
+.shot-top-meta {
+  color: rgba(228, 235, 249, 0.55);
+  font-variant-numeric: tabular-nums;
 }
 
 .shot-saved-note {
@@ -500,22 +538,6 @@ button.shot-rec-toggle:disabled:hover {
   -webkit-backdrop-filter: blur(24px) saturate(1.3);
 }
 
-.shot-selection-label {
-  padding: 0 8px 0 5px;
-  color: rgba(229, 235, 248, 0.58);
-  font-size: 10px;
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-}
-
-/* 截图分类没有确认按钮：松开鼠标就进标注器，这里只提示一下 */
-.shot-mode-note {
-  padding: 0 8px;
-  color: rgba(200, 213, 240, 0.46);
-  font-size: 10px;
-  white-space: nowrap;
-}
-
 .shot-btn.icon {
   width: 30px;
   padding: 0;
@@ -523,13 +545,6 @@ button.shot-rec-toggle:disabled:hover {
 
 .shot-btn.icon svg {
   pointer-events: none;
-}
-
-.shot-actions-sep {
-  width: 1px;
-  height: 20px;
-  margin: 0 2px;
-  background: rgba(255, 255, 255, 0.12);
 }
 
 .shot-btn {
@@ -589,24 +604,19 @@ button.shot-rec-toggle:disabled:hover {
 }
 
 .shot-rec-dot {
-  width: 7px;
-  height: 7px;
+  width: 8px;
+  height: 8px;
   border-radius: 50%;
   background: #ff5d6c;
   box-shadow: 0 0 8px rgba(255, 93, 108, 0.75);
 }
 
-.shot-hint {
-  position: absolute;
-  left: 50%;
-  bottom: 34px;
-  transform: translateX(-50%);
-  z-index: 11;
-  display: flex;
+/* 顶部信息条末尾的退出键位提示：纯文字弱化显示，不做按钮 */
+.shot-top-esc {
+  display: inline-flex;
   align-items: center;
-  gap: 6px;
-  color: rgba(228, 235, 249, 0.48);
-  font-size: 9.5px;
+  gap: 4px;
+  color: rgba(228, 235, 249, 0.5);
   white-space: nowrap;
 }
 
@@ -907,6 +917,193 @@ kbd {
 }
 
 /* ============ 加载 / 提示 / 弹窗 ============ */
+
+/* 录屏 3 秒倒计时：大数字 3→2→1，整体坐在一块深色毛玻璃底板上（沿用一体栏
+   的毛玻璃语言），覆盖层其余部分保持原样。容器是 JS 内联定位到「选区中心」
+   的一个点（left/top 由 selection state 同源的 CSS px 坐标算出），再用
+   translate(-50%,-50%) 把卡片对中到该点——框选在屏幕哪个角落，倒计时就出在
+   哪个角落。层级高于底部工具条(z-20)、低于加载/提示(z-30+)，纯展示不拦事件。 */
+.shot-rec-countdown {
+  position: absolute;
+  z-index: 28;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+
+/* 数字 + 提示共用的深色毛玻璃底板：亮色桌面下保证数字对比度，
+   只压底板本身，不压暗整个画面 */
+.shot-rec-countdown-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 28px 46px 22px;
+  border-radius: 26px;
+  background: rgba(10, 13, 21, 0.78);
+  border: 1px solid rgba(255, 255, 255, 0.11);
+  box-shadow:
+    0 18px 60px rgba(0, 0, 0, 0.4),
+    inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(18px) saturate(1.3);
+  -webkit-backdrop-filter: blur(18px) saturate(1.3);
+}
+
+.shot-rec-countdown-num {
+  font-size: 120px;
+  font-weight: 700;
+  line-height: 1;
+  color: rgba(240, 245, 255, 0.94);
+  font-variant-numeric: tabular-nums;
+  text-shadow:
+    0 18px 60px rgba(0, 0, 0, 0.55),
+    0 0 44px rgba(126, 166, 255, 0.35);
+  animation: shot-countdown-pop 1s ease forwards;
+}
+
+/* 每个数字的入场：约 13% 即达到全显，之后一直保持全亮直到被下一个数字
+   硬切，与 1s tick 节奏对齐，避免每秒切换出现「无可读数字」的空档 */
+@keyframes shot-countdown-pop {
+  0% {
+    opacity: 0;
+    transform: scale(1.7);
+  }
+  13% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(0.97);
+  }
+}
+
+/* 提示行：底板已提供深色背景，这里只负责文字排版，键帽复用全局 kbd 样式 */
+.shot-rec-countdown-tip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: rgba(238, 243, 255, 0.72);
+  font-size: 10.5px;
+  white-space: nowrap;
+}
+
+/* 倒计时/隐藏期间冻结指针交互：选区、按钮都不再响应，Esc 仍可取消 */
+.shot-root.rec-countdown {
+  pointer-events: none;
+}
+
+/* ============ 录屏设置卡 ============ */
+
+/* 录屏设置卡：record 分类框好选区后出现在选区中心的设置卡，锚点与倒计时卡
+   一致（JS 内联 left/top = 选区中心 + translate(-50%,-50%) 对中）、同一套
+   深色毛玻璃语言。容器只是选区中心上的一个定位点，不接事件（点空白处照常
+   框选），卡片本身可交互；z-index 低于倒计时卡（28），点「开始录制」后设置
+   卡消失、倒计时卡原地出现，同位衔接。 */
+.shot-rec-setup {
+  position: absolute;
+  z-index: 26;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+
+.shot-rec-setup-card {
+  pointer-events: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 300px;
+  max-width: min(430px, calc(100vw - 48px));
+  padding: 16px 20px 14px;
+  border-radius: 22px;
+  background: rgba(10, 13, 21, 0.78);
+  border: 1px solid rgba(255, 255, 255, 0.11);
+  box-shadow:
+    0 18px 60px rgba(0, 0, 0, 0.4),
+    inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(18px) saturate(1.3);
+  -webkit-backdrop-filter: blur(18px) saturate(1.3);
+  cursor: default;
+}
+
+/* 标题行：红点 + 「录制设置」+ 右侧选区信息 */
+.shot-rec-setup-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+  font-weight: 650;
+  color: rgba(240, 245, 255, 0.94);
+}
+
+.shot-rec-setup-head .shot-rec-dot {
+  flex: none;
+}
+
+.shot-rec-setup-size {
+  margin-left: auto;
+  padding-left: 12px;
+  font-size: 11px;
+  font-weight: 500;
+  color: rgba(200, 213, 240, 0.62);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* 设置行：格式 + 光标开关 / 麦克风 + 设备下拉，窄屏时允许换行 */
+.shot-rec-setup-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.shot-rec-setup-note {
+  font-size: 10.5px;
+  color: rgba(200, 213, 240, 0.5);
+  white-space: nowrap;
+}
+
+/* 按钮行：取消 + 开始录制，靠右与常规对话框一致 */
+.shot-rec-setup-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 2px;
+}
+
+.shot-rec-setup-actions .shot-btn {
+  height: 32px;
+  padding: 0 16px;
+  font-size: 11.5px;
+}
+
+/* 卡内主按钮：录制红实底（#ff5d6c 系，与 .shot-rec-dot 同源），渐变 /
+   投影语言与蓝色 primary 一致，不引入新颜色 */
+.shot-btn.record.solid {
+  background: linear-gradient(180deg, #ff6473, #ea4758);
+  color: #fff;
+  box-shadow:
+    0 6px 18px rgba(232, 71, 88, 0.38),
+    inset 0 1px 0 rgba(255, 255, 255, 0.26);
+}
+
+.shot-btn.record.solid:hover:not(:disabled) {
+  background: linear-gradient(180deg, #ff7583, #ef5565);
+  color: #fff;
+}
+
+/* 冻结期间的视觉禁用态：压暗底部工具栏与选区手柄，让「已锁定」看得见，
+   避免用户对无响应的按钮反复点击 */
+.shot-root.rec-countdown .shot-toolbar-wrap,
+.shot-root.rec-countdown .shot-handle {
+  opacity: 0.4;
+}
+
+/* 开始录制前不再隐藏覆盖层内容：倒计时数字消失后遮罩与选区保持显示，
+   直到后端把覆盖层窗口缩成 1×1 挪出屏幕（见后端 park_overlay_for_record，
+   hide 全屏窗口会拆 DWM 合成层导致整屏黑 370ms，故用缩窗而非 hide）。屏幕
+   从「遮罩」一次性切回「桌面」，没有深色/黑色过渡段（旧方案先隐藏内容等
+   200ms，露出的只是窗口深色底，已废弃删除） */
 
 .shot-loading {
   position: absolute;
