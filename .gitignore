@@ -57,3 +57,11 @@ ios/**/build/
 
 # 本地临时录制/导出的素材（调试录屏、裁剪产物），不入库
 /temp/
+
+# 本地测试脚本与手测清单（不进仓库，文件保留本地）
+/scripts/test-pet-core.mjs
+/scripts/ui-layout-tests.mjs
+/scripts/font-settings-tests.mjs
+/scripts/run-speed-tests.mjs
+/server/test_*.py
+/doc/manual-test.md
