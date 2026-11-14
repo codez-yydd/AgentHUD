@@ -1,6 +1,6 @@
 [package]
 name = "zai-floating-monitor"
-version = "1.8.1"
+version = "2.0.1"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"

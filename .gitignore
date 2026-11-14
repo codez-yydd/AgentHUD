@@ -65,3 +65,6 @@ ios/**/build/
 /scripts/run-speed-tests.mjs
 /server/test_*.py
 /doc/manual-test.md
+
+# 视频生成插件产物（本地宣传片素材），不入库
+/generated-videos/
