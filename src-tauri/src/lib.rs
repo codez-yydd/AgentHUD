@@ -1241,7 +1241,7 @@ async fn get_codex_usage(req: CodexUsageRequest) -> Result<CodexSnapshot, String
         let stats = codex::query_stats(req.from_ms, req.to_ms)?;
         if let Ok(added) = codex::backfill_today_rate_limit_history() {
             if added > 0 {
-                eprintln!("[zbar-codex] 已补齐今日 {added} 条额度快照");
+                eprintln!("[agenthud-codex] 已补齐今日 {added} 条额度快照");
             }
         }
         let buckets = codex::query_trend(req.from_ms, req.to_ms, &req.bucket)?;
@@ -2385,7 +2385,7 @@ pub(crate) fn tune_panel_vibrancy(window: &tauri::WebviewWindow) {
 fn toggle_panel(app: &AppHandle, click_pos: Option<(f64, f64)>) {
     if app.get_webview_window("panel").is_none() {
         if let Err(e) = panel::ensure_panel_window(app) {
-            eprintln!("[zbar-panel] 呼出悬浮窗失败: {e}");
+            eprintln!("[agenthud-panel] 呼出悬浮窗失败: {e}");
             return;
         }
     }
@@ -2474,7 +2474,7 @@ fn toggle_panel(app: &AppHandle, click_pos: Option<(f64, f64)>) {
     // 顶部移动会被岛当成悬停而反复撑开 / 收起。
     if crate::island::island_state().expanded {
         if let Err(e) = crate::island::set_expanded_on_main(app, false) {
-            eprintln!("[zbar-island] 收起灵动岛失败: {e}");
+            eprintln!("[agenthud-island] 收起灵动岛失败: {e}");
         }
     }
     // WKWebView 已知问题：长期隐藏的窗口 show 后首帧可能不立即重绘（白屏）。
@@ -2716,51 +2716,123 @@ fn prevent_app_nap() {
 }
 
 // ============================================================
-// 更名遗留清理：旧应用名（ZBar）的开机自启项一次性移除
+// 更名遗留清理：旧应用名（ZBar）与旧 exe 文件名（zai-floating-monitor）
+// 的开机自启项一次性移除
 // ============================================================
 
-/// 更名遗留清理（ZBar → AgentHUD）：删除旧应用名注册的开机自启项，
+/// 更名遗留清理（旧名 → AgentHUD）：删除旧应用名注册的开机自启项，
 /// 防止更名后旧版自启仍随系统拉起造成新旧双开。启动期幂等执行一次：
 /// 目标不存在时静默跳过，失败只记中文日志不阻断启动。
+/// 返回 true 表示发现"用户曾启用自启、但注册指向旧 exe 文件名"的遗留
+/// （2.0.3 及以前主程序名为 zai-floating-monitor.exe，2.0.4 起改名为
+/// AgentHUD.exe，旧注册升级后会指向不存在的文件），调用方需在
+/// autostart 插件初始化后按启用状态用当前 exe 路径重注册。
 #[cfg(windows)]
-fn cleanup_legacy_autostart() {
+fn cleanup_legacy_autostart() -> bool {
     use winreg::enums::{HKEY_CURRENT_USER, KEY_READ, KEY_WRITE};
     use winreg::RegKey;
-    // 与 tauri-plugin-autostart 同款的 HKCU Run 键；只删旧值名 "ZBar"，
-    // 绝不触碰新名 "AgentHUD" 及其他任何值
+    // 与 tauri-plugin-autostart 同款的 HKCU Run 键。清理两类遗留：
+    // 1. 旧应用名值 "ZBar"（更名前的 autostart 注册）整条删除；
+    // 2. 数据指向旧 exe 文件名的自启值（典型为值名 "AgentHUD" 指向
+    //    安装目录里的旧 exe）——删除后由调用方按启用状态重注册新路径，
+    //    数据不指向旧 exe 文件名的值（本版或其他程序）一律不触碰
+    const OLD_EXE_FILE: &str = "zai-floating-monitor.exe";
     let run_key = r"Software\Microsoft\Windows\CurrentVersion\Run";
     let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-    match hkcu.open_subkey_with_flags(run_key, KEY_READ | KEY_WRITE) {
-        Ok(key) => match key.delete_value("ZBar") {
-            Ok(()) => eprintln!("[zbar-startup] 已清理更名遗留的旧自启项（ZBar）"),
-            // 值不存在 = 无遗留可清，静默
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => eprintln!("[zbar-startup] 清理更名遗留旧自启项失败（不影响启动）: {e}"),
-        },
+    let key = match hkcu.open_subkey_with_flags(run_key, KEY_READ | KEY_WRITE) {
+        Ok(key) => key,
         // Run 键不存在 = 从未配置过自启，静默
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return false,
+        Err(e) => {
+            eprintln!("[agenthud-startup] 打开注册表自启键失败（不影响启动）: {e}");
+            return false;
+        }
+    };
+    // 清理一：旧应用名值 "ZBar"
+    match key.delete_value("ZBar") {
+        Ok(()) => eprintln!("[agenthud-startup] 已清理更名遗留的旧自启项（ZBar）"),
+        // 值不存在 = 无遗留可清，静默
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) => eprintln!("[zbar-startup] 打开注册表自启键失败（不影响启动）: {e}"),
+        Err(e) => eprintln!("[agenthud-startup] 清理更名遗留旧自启项失败（不影响启动）: {e}"),
     }
+    // 清理二：指向旧 exe 文件名的自启值。先枚举值名快照再逐个判断删除，
+    // 避免边枚举边删导致漏项
+    let mut need_reregister = false;
+    let value_names: Vec<String> = key
+        .enum_values()
+        .filter_map(|r| r.ok())
+        .map(|(name, _)| name)
+        .collect();
+    for name in value_names {
+        let data = match key.get_value::<String, _>(&name) {
+            Ok(data) => data,
+            // 非 REG_SZ 值（其他程序写的二进制项等）不参与判断
+            Err(_) => continue,
+        };
+        if data.contains(OLD_EXE_FILE) {
+            match key.delete_value(&name) {
+                Ok(()) => {
+                    eprintln!(
+                        "[agenthud-startup] 已清理指向旧程序名（{OLD_EXE_FILE}）的自启项（{name}）"
+                    );
+                    // 该值存在即代表用户此前处于自启启用状态，删除后按
+                    // 新 exe 路径重注册（调用方在插件初始化后执行）
+                    need_reregister = true;
+                }
+                Err(e) => eprintln!(
+                    "[agenthud-startup] 清理指向旧程序名的自启项失败（不影响启动）: {name}: {e}"
+                ),
+            }
+        }
+    }
+    need_reregister
 }
 
 /// macOS 同款清理：删除旧 identifier（com.chacca.zbar）派生的
-/// LaunchAgent，同样 best-effort。
+/// LaunchAgent，以及 autostart 插件注册的 AgentHUD.plist 中
+/// ProgramArguments 仍指向旧二进制名（zai-floating-monitor）的遗留，
+/// 同样 best-effort。返回 true 表示需按启用状态用新路径重注册。
 #[cfg(target_os = "macos")]
-fn cleanup_legacy_autostart() {
-    let Some(home) = dirs::home_dir() else { return };
-    let plist = home.join("Library/LaunchAgents/com.chacca.zbar.plist");
-    if !plist.exists() {
-        return; // 无旧 LaunchAgent，静默
+fn cleanup_legacy_autostart() -> bool {
+    let Some(home) = dirs::home_dir() else { return false };
+    // 清理一：旧 identifier 派生的 LaunchAgent
+    let legacy_plist = home.join("Library/LaunchAgents/com.chacca.zbar.plist");
+    if legacy_plist.exists() {
+        match std::fs::remove_file(&legacy_plist) {
+            Ok(()) => {
+                eprintln!("[agenthud-startup] 已清理更名遗留的旧 LaunchAgent（com.chacca.zbar）")
+            }
+            Err(e) => {
+                eprintln!("[agenthud-startup] 清理更名遗留旧 LaunchAgent 失败（不影响启动）: {e}")
+            }
+        }
     }
-    match std::fs::remove_file(&plist) {
-        Ok(()) => eprintln!("[zbar-startup] 已清理更名遗留的旧 LaunchAgent（com.chacca.zbar）"),
-        Err(e) => eprintln!("[zbar-startup] 清理更名遗留旧 LaunchAgent 失败（不影响启动）: {e}"),
+    // 清理二：指向旧二进制文件名的自启 LaunchAgent
+    let mut need_reregister = false;
+    let plist = home.join("Library/LaunchAgents/AgentHUD.plist");
+    if let Ok(content) = std::fs::read_to_string(&plist) {
+        if content.contains("zai-floating-monitor") {
+            match std::fs::remove_file(&plist) {
+                Ok(()) => {
+                    eprintln!(
+                        "[agenthud-startup] 已清理指向旧程序名（zai-floating-monitor）的自启 LaunchAgent（AgentHUD.plist）"
+                    );
+                    need_reregister = true;
+                }
+                Err(e) => eprintln!(
+                    "[agenthud-startup] 清理指向旧程序名的自启 LaunchAgent 失败（不影响启动）: {e}"
+                ),
+            }
+        }
     }
+    need_reregister
 }
 
 /// 其他平台无注册表 / LaunchAgent 机制，无遗留可清。
 #[cfg(not(any(windows, target_os = "macos")))]
-fn cleanup_legacy_autostart() {}
+fn cleanup_legacy_autostart() -> bool {
+    false
+}
 
 /// 应用快捷键配置：先注销全部，再按配置注册。
 fn apply_shortcut(app: &AppHandle, cfg: &shortcut::ShortcutConfig) -> Result<(), String> {
@@ -2787,7 +2859,7 @@ fn apply_shortcut(app: &AppHandle, cfg: &shortcut::ShortcutConfig) -> Result<(),
 pub(crate) fn refresh_global_shortcuts(app: &AppHandle) {
     let sc = shortcut::load_shortcut();
     if let Err(e) = apply_shortcut(app, &sc) {
-        eprintln!("[zbar-shortcut] {e}");
+        eprintln!("[agenthud-shortcut] {e}");
     }
 }
 
@@ -2812,7 +2884,7 @@ fn spawn_fx_rate_refresher() {
             if let Ok(cfg) = cursor::load_cursor_config() {
                 if cfg.fx_rate_auto {
                     if let Err(e) = cursor::fetch_fx_rate() {
-                        eprintln!("[zbar-fx-rate] 每日汇率刷新失败（明日重试）: {e}");
+                        eprintln!("[agenthud-fx-rate] 每日汇率刷新失败（明日重试）: {e}");
                     }
                 }
             }
@@ -2859,7 +2931,7 @@ pub(crate) fn refresh_tray_menu(app: &AppHandle) {
                 Ok(next) => {
                     let _ = tray.set_menu(Some(next));
                 }
-                Err(e) => eprintln!("[zbar-tray] 重建托盘菜单失败: {e}"),
+                Err(e) => eprintln!("[agenthud-tray] 重建托盘菜单失败: {e}"),
             }
         }
     }
@@ -2908,14 +2980,14 @@ fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
                     "open-main" => {
                         // page 传 None：托盘入口只开窗不导航，停留在上次页面
                         if let Err(e) = main_window::open_main_window_on_main_thread(app, None) {
-                            eprintln!("[zbar-main-window] 打开主窗口失败: {e}");
+                            eprintln!("[agenthud-main-window] 打开主窗口失败: {e}");
                         }
                     }
                     // 灵动岛开关：on_menu_event 本身在主线程回调，可直接
                     // 走建窗/隐藏主体。切换后重建菜单刷新勾选态
                     "hud-bar-toggle" => match island::toggle_from_tray(app) {
                         Ok(_) => refresh_tray_menu(app),
-                        Err(e) => eprintln!("[zbar-island] 切换灵动岛失败: {e}"),
+                        Err(e) => eprintln!("[agenthud-island] 切换灵动岛失败: {e}"),
                     },
                     _ => {}
                 }
@@ -3182,7 +3254,7 @@ pub fn run() {
                     .is_none()
                 {
                     if let Err(e) = panel::ensure_panel_window(&app_main) {
-                        eprintln!("[zbar-panel] 单实例唤醒建窗失败: {e}");
+                        eprintln!("[agenthud-panel] 单实例唤醒建窗失败: {e}");
                     }
                 }
                 if let Some(win) =
@@ -3283,9 +3355,12 @@ pub fn run() {
             // 启动自动重试
             pricing::migrate_data_dir();
 
-            // 更名遗留清理：删除旧应用名（ZBar）的开机自启项，防止更名后
-            // 旧版随系统启动双开（幂等一次性动作，best-effort 不阻断启动）
-            cleanup_legacy_autostart();
+            // 更名遗留清理：删除旧应用名（ZBar）及旧 exe 文件名
+            // （zai-floating-monitor.exe）的开机自启项，防止更名后旧版随系统
+            // 启动双开（幂等一次性动作，best-effort 不阻断启动）。返回 true
+            // 表示用户此前启用过自启但注册指向旧 exe，需在下方 autostart
+            // 插件初始化后用当前 exe 路径重注册，升级后自启不丢
+            let reregister_legacy_autostart = cleanup_legacy_autostart();
 
             // 注册官方开机自启插件：Windows 使用注册表，macOS 使用 LaunchAgent。
             // 插件只在桌面目标启用，移动端不参与构建。
@@ -3295,6 +3370,19 @@ pub fn run() {
                     tauri_plugin_autostart::MacosLauncher::LaunchAgent,
                     None,
                 ))?;
+                // 旧自启项曾指向旧 exe 且用户处于启用状态：用当前 exe 路径
+                // 重注册（enable 为覆盖写，语义与设置页开关一致）
+                if reregister_legacy_autostart {
+                    use tauri_plugin_autostart::ManagerExt;
+                    match app.autolaunch().enable() {
+                        Ok(()) => eprintln!(
+                            "[agenthud-startup] 已按启用状态重注册开机自启（新程序路径）"
+                        ),
+                        Err(e) => eprintln!(
+                            "[agenthud-startup] 重注册开机自启失败（可在设置页重新开启）: {e}"
+                        ),
+                    }
+                }
                 // 应用内更新：检查/下载/安装由前端 @tauri-apps/plugin-updater 驱动
                 app.handle().plugin(tauri_plugin_updater::Builder::new().build())?;
                 app.handle().plugin(tauri_plugin_process::init())?;
@@ -3321,16 +3409,25 @@ pub fn run() {
                 prevent_app_nap();
             }
             setup_tray(app.handle())?;
-            // 省内存改造：托盘菜单 / 主窗口 / 截图覆盖层 / 录制条的启动预热
-            // 全部取消——不再有"启动即常驻的隐藏 WebView"。四个窗口改为
-            // 按需现场建窗（建窗函数保留且幂等）：
+            // 托盘菜单 / 截图覆盖层 / 录制条仍按需现场建窗（省内存改造
+            // 保留，建窗函数幂等）：
             // - tray-menu：首次右键托盘时 show_tray_menu 现场建（隐藏后
             //   120s 无再次使用自动销毁，见 tray_menu.rs）；
-            // - main-window：首次「打开主窗口」时 ensure_main_window 现场
-            //   建（关闭即销毁，见 main_window.rs）；
             // - shot / rec：热键或 HUD 按钮触发截图 / 录屏时 reuse_overlay
             //   / build_recorder_window 的冷建路径现场建（窗口缺失时各自
             //   建窗函数内部兜底，reveal 顺序修复不依赖预热窗口存在）。
+            // 主窗口预热 v2.0.4 恢复（省内存改造曾取消）：取消预建后改为
+            // 点击时冷建，dev 模式 vite 按需编译 dashboard.html 首次加载
+            // 8-10 秒，点击「打开主窗口」时主线程同步冷建重页面 WebView
+            // 撞上初始化死锁窗口 → 白屏 + 窗口消息泵挂死（PrintWindow 对
+            // 挂死窗口阻塞 2 分钟以上是硬证据）。预建把重页面加载藏进
+            // 启动期即可根治；关闭即销毁不变，第二次及以后的打开走冷建
+            // 兜底（vite 已热 / 生产版资源本地加载，秒建低风险）。失败只
+            // 记日志，首次打开仍能正常建窗（见 main_window.rs 的
+            // prebuild_main_window 注释）。
+            if let Err(e) = main_window::prebuild_main_window(app.handle()) {
+                eprintln!("[zbar-main-window] 预建主窗口失败: {e}");
+            }
             spawn_today_usage_updater(app.handle().clone());
             // 额度重置提醒后台线程：每 30s 读一次内存登记表，不额外发请求
             quota_reminder::spawn();
@@ -3351,7 +3448,7 @@ pub fn run() {
             // 应用全局快捷键配置（启动时若已启用则注册）
             let sc = shortcut::load_shortcut();
             if let Err(e) = apply_shortcut(app.handle(), &sc) {
-                eprintln!("[zbar-shortcut] {e}");
+                eprintln!("[agenthud-shortcut] {e}");
             }
 
             // Windows 启动时恢复置顶常驻状态：若用户上次开启了置顶，
@@ -3385,7 +3482,7 @@ pub fn run() {
             // 宠物窗口恢复/主题渲染之前就位（默认 style 指向它）；失败仅
             // 记日志不阻断启动（下次启动或导入流程重试）
             if let Err(e) = pets::ensure_builtin_pet() {
-                eprintln!("[zbar-pets] 释放内置形象失败: {e}");
+                eprintln!("[agenthud-pets] 释放内置形象失败: {e}");
             }
             // 释放/升级后立即同步注入版物化（pet-custom.js）：升级把新版
             // states（V9 细分键等）落到用户库后，注入版资产要等这里重物
@@ -3393,7 +3490,7 @@ pub fn run() {
             // 内容同比对跳写、皮肤未安装直接返回；失败同样仅记日志不阻断
             // 启动（与上方释放挂点同口径，下次启动或改设置时重试）
             if let Err(e) = pets::sync_theme_custom_pet() {
-                eprintln!("[zbar-pets] 同步注入版宠物物化失败: {e}");
+                eprintln!("[agenthud-pets] 同步注入版宠物物化失败: {e}");
             }
             // 独立桌面宠物（第二阶段）：配置开启时恢复透明悬浮窗并启动
             // 独立状态轮询（未开启零开销，与皮肤安装状态互不依赖）
