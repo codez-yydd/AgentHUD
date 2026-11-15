@@ -351,6 +351,43 @@ mod mac_audio {
     }
 }
 
+/// 亮度链路常驻诊断日志：把 DDC/CI、PowerShell/WMI 每一步的实际成败追加写入
+/// `~/.agenthud/brightness-debug.log`（打包版 windows_subsystem 没有 stderr，
+/// eprintln 不可见，这是失败原因唯一的可观测窗口），长期保留。
+/// 已内置防刷屏机制，可放心常驻：
+/// - 失败路径才写（成功路径静默）；
+/// - PowerShell 启动/执行失败只记首次（PS_FAIL_LOGGED）；
+/// - DDC 成功只记首次（FIRST_READ_LOGGED）。
+/// 目录不存在则创建；写失败静默，绝不影响主流程。
+fn brightness_debug_log(line: &str) {
+    use std::fs::OpenOptions;
+    use std::io::Write;
+    let Some(home) = dirs::home_dir() else {
+        return;
+    };
+    let dir = home.join(".agenthud");
+    if std::fs::create_dir_all(&dir).is_err() {
+        return;
+    }
+    let Ok(mut file) = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(dir.join("brightness-debug.log"))
+    else {
+        return;
+    };
+    let _ = writeln!(
+        file,
+        "[{}] {}",
+        chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f"),
+        line
+    );
+}
+
+/// 亮度诊断日志的「PowerShell 失败只记一次」标志：本机外接屏没有
+/// WmiMonitorBrightness 实例，WMI 分支每次轮询都会失败，不限次会刷屏。
+static PS_FAIL_LOGGED: OnceLock<()> = OnceLock::new();
+
 fn run_powershell(script: &str) -> Option<String> {
     use std::process::Command;
     let mut cmd = Command::new("powershell");
@@ -360,8 +397,28 @@ fn run_powershell(script: &str) -> Option<String> {
         use std::os::windows::process::CommandExt;
         cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
     }
-    let out = cmd.output().ok()?;
+    let out = match cmd.output() {
+        Ok(out) => out,
+        Err(e) => {
+            if PS_FAIL_LOGGED.set(()).is_ok() {
+                brightness_debug_log(&format!("powershell 启动失败: {e}"));
+            }
+            return None;
+        }
+    };
     if !out.status.success() {
+        if PS_FAIL_LOGGED.set(()).is_ok() {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            let last_line = stderr
+                .lines()
+                .rev()
+                .find(|l| !l.trim().is_empty())
+                .unwrap_or("");
+            brightness_debug_log(&format!(
+                "powershell 失败 exit={:?} stderr末行: {last_line}",
+                out.status.code()
+            ));
+        }
         return None;
     }
     Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
@@ -375,8 +432,10 @@ pub fn read_brightness() -> Option<f64> {
 #[cfg(not(target_os = "macos"))]
 pub fn read_brightness() -> Option<f64> {
     #[cfg(target_os = "windows")]
-    if let Some(value) = ddc::read() {
-        return Some(value);
+    match ddc::read() {
+        Some(value) => return Some(value),
+        // 【临时诊断】DDC 整体拿不到值时记一笔（ddc::read 内部已带各屏成败汇总）
+        None => brightness_debug_log("read_brightness: ddc::read 返回 None，回退 PowerShell/WMI"),
     }
     let text = run_powershell(
         "(Get-CimInstance -Namespace root/WMI -ClassName WmiMonitorBrightness -ErrorAction Stop | Select-Object -First 1).CurrentBrightness",
@@ -395,15 +454,29 @@ fn set_brightness_inner(value: f64) -> Result<f64, String> {
 fn set_brightness_inner(value: f64) -> Result<f64, String> {
     let value = value.clamp(0.0, 100.0).round();
     #[cfg(target_os = "windows")]
-    if ddc::set(value)? {
-        return Ok(value);
+    match ddc::set(value) {
+        Ok(true) => return Ok(value),
+        // 【临时诊断】写入失败摘要：是 DDC 一台都没写成，还是调用本身报错
+        Ok(false) => brightness_debug_log(&format!(
+            "set_brightness: ddc::set({value}) 无任何显示器写成功，回退 PowerShell/WMI"
+        )),
+        Err(e) => {
+            brightness_debug_log(&format!("set_brightness: ddc::set({value}) 出错: {e}"));
+            return Err(e);
+        }
     }
     let script = format!(
         "(Get-CimInstance -Namespace root/WMI -ClassName WmiMonitorBrightnessMethods -ErrorAction Stop | Select-Object -First 1).WmiSetBrightness(1, {value})"
     );
-    run_powershell(&script)
-        .ok_or_else(|| "设置亮度失败（显示器未启用 DDC/CI，且系统没有 WMI 亮度接口）".to_string())?;
-    Ok(value)
+    match run_powershell(&script) {
+        Some(_) => Ok(value),
+        None => {
+            brightness_debug_log(&format!(
+                "set_brightness: PowerShell/WMI 回退也失败(value={value})"
+            ));
+            Err("设置亮度失败（显示器未启用 DDC/CI，且系统没有 WMI 亮度接口）".to_string())
+        }
+    }
 }
 
 /// macOS 亮度：走私有框架 DisplayServices（和系统亮度键同一套接口），
@@ -515,6 +588,9 @@ mod mac_brightness {
 /// 遍历所有物理显示器，读取取支持项的平均值，滑块写入时全部一起调。
 #[cfg(target_os = "windows")]
 mod ddc {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    use super::brightness_debug_log;
     use windows::Win32::Devices::Display::{
         DestroyPhysicalMonitors, GetMonitorBrightness, GetNumberOfPhysicalMonitorsFromHMONITOR,
         GetPhysicalMonitorsFromHMONITOR, GetVCPFeatureAndVCPFeatureReply, SetMonitorBrightness,
@@ -525,6 +601,11 @@ mod ddc {
     use windows::Win32::Graphics::Gdi::{EnumDisplayMonitors, HDC, HMONITOR};
 
     const VCP_BRIGHTNESS: u8 = 0x10;
+
+    /// 【临时诊断】ddc::read 首次成功的“只记一次”标志：成功路径本不打日志，
+    /// 但为了确认打包版里 DDC 通路到底能不能读到值，首次成功也落一条，
+    /// 之后不再写，避免每 10s 轮询刷日志。
+    static FIRST_READ_LOGGED: AtomicBool = AtomicBool::new(false);
 
     unsafe extern "system" fn collect_monitor(
         monitor: HMONITOR,
@@ -550,36 +631,54 @@ mod ddc {
         list
     }
 
-    fn physical(monitor: HMONITOR) -> Vec<PHYSICAL_MONITOR> {
+    /// 取逻辑屏下的物理显示器列表；第二返回值是【临时诊断】说明
+    /// （数量 / 哪一步失败），供 read() 汇总成一条日志。
+    fn physical(monitor: HMONITOR) -> (Vec<PHYSICAL_MONITOR>, String) {
         let mut count = 0u32;
-        if unsafe { GetNumberOfPhysicalMonitorsFromHMONITOR(monitor, &mut count) }.is_err()
-            || count == 0
-        {
-            return Vec::new();
+        if unsafe { GetNumberOfPhysicalMonitorsFromHMONITOR(monitor, &mut count) }.is_err() {
+            return (
+                Vec::new(),
+                "GetNumberOfPhysicalMonitorsFromHMONITOR 调用失败".into(),
+            );
+        }
+        if count == 0 {
+            return (
+                Vec::new(),
+                "GetNumberOfPhysicalMonitorsFromHMONITOR 成功但数量=0".into(),
+            );
         }
         let mut list = vec![PHYSICAL_MONITOR::default(); count as usize];
         if unsafe { GetPhysicalMonitorsFromHMONITOR(monitor, &mut list) }.is_err() {
-            return Vec::new();
+            return (
+                Vec::new(),
+                format!("GetPhysicalMonitorsFromHMONITOR 失败(报告数量={count})"),
+            );
         }
-        list
+        (list, format!("{count} 台物理显示器"))
     }
 
-    fn read_one(handle: HANDLE) -> Option<f64> {
+    /// 读单台物理显示器；第二返回值是【临时诊断】说明（两个 API 的返回码），
+    /// 供 read() 汇总成一条日志。
+    fn read_one(handle: HANDLE) -> (Option<f64>, String) {
         if handle.is_invalid() {
-            return None;
+            return (None, "物理显示器句柄无效".into());
         }
         let mut min = 0u32;
         let mut current = 0u32;
         let mut max = 0u32;
-        if unsafe { GetMonitorBrightness(handle, &mut min, &mut current, &mut max) } != 0
-            && max > min
-        {
-            return Some(((current.saturating_sub(min)) as f64 * 100.0 / (max - min) as f64)
-                .clamp(0.0, 100.0));
+        let rc_get = unsafe { GetMonitorBrightness(handle, &mut min, &mut current, &mut max) };
+        if rc_get != 0 && max > min {
+            return (
+                Some(((current.saturating_sub(min)) as f64 * 100.0 / (max - min) as f64)
+                    .clamp(0.0, 100.0)),
+                format!("GetMonitorBrightness 成功(cur={current})"),
+            );
         }
+        let get_note =
+            format!("GetMonitorBrightness 返回{rc_get}(min={min},cur={current},max={max})");
         let mut current = 0u32;
         let mut max = 0u32;
-        if unsafe {
+        let rc_vcp = unsafe {
             GetVCPFeatureAndVCPFeatureReply(
                 handle,
                 VCP_BRIGHTNESS,
@@ -587,12 +686,17 @@ mod ddc {
                 &mut current,
                 Some(&mut max),
             )
-        } != 0
-            && max > 0
-        {
-            return Some((current as f64 * 100.0 / max as f64).clamp(0.0, 100.0));
+        };
+        if rc_vcp != 0 && max > 0 {
+            return (
+                Some((current as f64 * 100.0 / max as f64).clamp(0.0, 100.0)),
+                format!("{get_note}; VCP 0x10 成功(cur={current},max={max})"),
+            );
         }
-        None
+        (
+            None,
+            format!("{get_note}; VCP 0x10 返回{rc_vcp}(cur={current},max={max})"),
+        )
     }
 
     fn set_one(handle: HANDLE, value: f64) -> bool {
@@ -617,12 +721,19 @@ mod ddc {
 
     pub fn read() -> Option<f64> {
         let mut values = Vec::new();
-        for monitor in monitors() {
-            let mut list = physical(monitor);
+        // 【临时诊断】把每一步成败收集成一条摘要，只在失败（或首次成功）时落盘
+        let mut notes: Vec<String> = Vec::new();
+        let monitor_list = monitors();
+        notes.push(format!("EnumDisplayMonitors={}", monitor_list.len()));
+        for (idx, monitor) in monitor_list.iter().enumerate() {
+            let (mut list, note) = physical(*monitor);
+            notes.push(format!("[屏{idx}] {note}"));
             for item in &list {
-                if let Some(value) = read_one(item.hPhysicalMonitor) {
+                let (value, note) = read_one(item.hPhysicalMonitor);
+                if let Some(value) = value {
                     values.push(value);
                 }
+                notes.push(format!("[屏{idx}] {note}"));
             }
             if !list.is_empty() {
                 unsafe {
@@ -631,9 +742,19 @@ mod ddc {
                 list.clear();
             }
         }
+        let summary = format!(
+            "ddc::read: {}; 读到值 {} 台",
+            notes.join("; "),
+            values.len()
+        );
         if values.is_empty() {
+            // 失败必记：这是定位打包版亮度不可用的关键证据
+            brightness_debug_log(&format!("{summary} → ddc 整体失败"));
             None
         } else {
+            if !FIRST_READ_LOGGED.swap(true, Ordering::Relaxed) {
+                brightness_debug_log(&format!("{summary} → ddc 正常"));
+            }
             Some(values.iter().sum::<f64>() / values.len() as f64)
         }
     }
@@ -642,7 +763,7 @@ mod ddc {
     pub fn set(value: f64) -> Result<bool, String> {
         let mut applied = false;
         for monitor in monitors() {
-            let list = physical(monitor);
+            let (list, _note) = physical(monitor);
             for item in &list {
                 if set_one(item.hPhysicalMonitor, value) {
                     applied = true;
@@ -778,6 +899,10 @@ pub fn start(app: AppHandle) {
             }
             let mut last_radio = std::time::Instant::now() - Duration::from_secs(10);
             let mut last_brightness = std::time::Instant::now();
+            // 亮度连续失败计数：驱动失败后的指数退避重试（见 brightness_interval）。
+            // 典型场景是安装版随开机自启启动时，DDC 通道还没就绪导致首拍读失败，
+            // 靠短间隔重试自愈；一旦读成功立即清零，恢复正常 10s 回读。
+            let mut brightness_fails: u32 = 0;
             let mut first_tick = true;
             loop {
                 if STOP.load(Ordering::Relaxed) || GEN.load(Ordering::SeqCst) != gen {
@@ -810,11 +935,16 @@ pub fn start(app: AppHandle) {
                 // macOS 的 DisplayServices 读取是内存级调用，每拍回读一次，
                 // 用亮度键改完立刻同步；Windows 的 DDC/CI / WMI 回读要几百
                 // 毫秒，只对已确认支持的屏幕每 10s 读一次，不支持就不读。
-                if last_brightness.elapsed() >= brightness_interval(state.brightness_supported) {
+                if last_brightness.elapsed() >= brightness_interval(state.brightness_supported, brightness_fails) {
                     last_brightness = std::time::Instant::now();
                     if let Some(value) = read_brightness() {
                         state.brightness = Some(value);
                         state.brightness_supported = true;
+                        // 读成功：清零退避计数，恢复 10s 正常回读节奏
+                        brightness_fails = 0;
+                    } else {
+                        // 读失败：连续失败计数 +1，下一次按指数退避间隔重试
+                        brightness_fails = brightness_fails.saturating_add(1);
                     }
                 }
                 let changed = first_tick
@@ -844,9 +974,17 @@ pub fn start(app: AppHandle) {
 /// 回读周期。macOS 的亮度和音量都是本地属性读取（微秒级），可以每拍都读，
 /// 用系统快捷键改完 HUD 立刻跟上；Windows 的亮度要走 DDC/CI 或 PowerShell，
 /// 只在已确认支持的屏幕上低频回读。
-fn brightness_interval(supported: bool) -> Duration {
+///
+/// `consecutive_failures` 是亮度读取的连续失败次数，仅非 macOS 分支用于失败
+/// 退避：典型场景是安装版随开机自启启动，程序启动早于显示器 DDC 通道就绪，
+/// 首拍 `read_brightness()` 失败后若按小时级间隔再试，灵动岛会长时间显示
+/// "不可用"；改为 15s → 60s → 300s（封顶）的指数退避，让显示器就绪后
+/// 15~75s 内自愈，又不会在真不支持（如 WMI 缺失的外接屏）时高频空转。
+/// macOS 分支维持现状（失败 5s 低频重试）不动。
+fn brightness_interval(supported: bool, consecutive_failures: u32) -> Duration {
     #[cfg(target_os = "macos")]
     {
+        let _ = consecutive_failures; // macOS 分支不用退避计数
         if supported {
             Duration::ZERO
         } else {
@@ -856,10 +994,16 @@ fn brightness_interval(supported: bool) -> Duration {
     }
     #[cfg(not(target_os = "macos"))]
     {
-        if supported {
+        if supported && consecutive_failures == 0 {
             Duration::from_secs(10)
         } else {
-            Duration::from_secs(3600)
+            // 失败退避：首拍失败（计数=0）15s 后重试，之后 60s、300s 封顶；
+            // 任一次读成功由调用方清零计数，恢复上面的 10s 正常回读
+            match consecutive_failures {
+                0 => Duration::from_secs(15),
+                1 => Duration::from_secs(60),
+                _ => Duration::from_secs(300),
+            }
         }
     }
 }
