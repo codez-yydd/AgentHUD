@@ -178,7 +178,7 @@ pub fn append_snapshot(snapshot: &AgentQuotaSnapshot) {
         return;
     }
     if let Err(e) = try_append(snapshot) {
-        eprintln!("[zbar-provider-history] 写 provider 额度快照失败: {e}");
+        eprintln!("[agenthud-provider-history] 写 provider 额度快照失败: {e}");
     }
 }
 
@@ -282,7 +282,7 @@ fn maybe_cleanup(path: &PathBuf) {
     drop(last);
 
     if let Err(e) = try_cleanup(path) {
-        eprintln!("[zbar-provider-history] 滚动清理失败（24h 后重试）: {e}");
+        eprintln!("[agenthud-provider-history] 滚动清理失败（24h 后重试）: {e}");
     }
 }
 

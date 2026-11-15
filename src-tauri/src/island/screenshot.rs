@@ -443,7 +443,7 @@ pub(crate) fn join_error_message(context: &str, error: tauri::Error) -> String {
         other => other.to_string(),
     };
     let message = format!("{context}任务失败: {reason}");
-    eprintln!("[zbar-shot] {message}");
+    eprintln!("[agenthud-shot] {message}");
     message
 }
 
@@ -1676,7 +1676,7 @@ async fn start_capture_inner(
                 .map(|w| w.is_visible().unwrap_or(false))
                 .unwrap_or(false);
             eprintln!(
-                "[zbar-shot] 会话占用中 id={} mode={} 覆盖层可见={visible}",
+                "[agenthud-shot] 会话占用中 id={} mode={} 覆盖层可见={visible}",
                 session.id, session.mode
             );
             return Err("截图窗口已经打开".into());
@@ -1806,7 +1806,7 @@ async fn start_capture_inner(
         .map_err(|e| join_error_message("截图", e))??;
 
     eprintln!(
-        "[zbar-shot] 抓屏+编码完成 {}×{} @({}, {})，耗时 {}ms",
+        "[agenthud-shot] 抓屏+编码完成 {}×{} @({}, {})，耗时 {}ms",
         captured.width,
         captured.height,
         monitor.x,
@@ -1893,7 +1893,7 @@ async fn start_capture_inner(
     });
 
     eprintln!(
-        "[zbar-shot] 截图窗口就绪，端到端 {}ms",
+        "[agenthud-shot] 截图窗口就绪，端到端 {}ms",
         started.elapsed().as_millis()
     );
     Ok(id)
@@ -2095,7 +2095,7 @@ pub async fn shot_ready(app: AppHandle, id: u64) -> Result<(), String> {
         .and_then(|g| g.as_ref().map(|s| s.created_at))
     {
         eprintln!(
-            "[zbar-shot] 前端就绪（图片解码+首帧），距抓屏开始 {}ms",
+            "[agenthud-shot] 前端就绪（图片解码+首帧），距抓屏开始 {}ms",
             (now_ms() - created).max(0)
         );
     }
@@ -2112,7 +2112,7 @@ pub fn shot_mark_painted(id: u64) {
         .and_then(|g| g.as_ref().filter(|s| s.id == id).map(|s| s.created_at))
     {
         eprintln!(
-            "[zbar-shot] 首帧已绘制，距抓屏开始 {}ms",
+            "[agenthud-shot] 首帧已绘制，距抓屏开始 {}ms",
             (now_ms() - created).max(0)
         );
     }
@@ -3112,11 +3112,11 @@ pub fn register_hotkeys(app: &AppHandle) {
         return;
     }
     if let Err(e) = register_shot_hotkey(app, &key) {
-        eprintln!("[zbar-shot] 注册截图快捷键 {key} 失败（可能被占用）: {e}");
+        eprintln!("[agenthud-shot] 注册截图快捷键 {key} 失败（可能被占用）: {e}");
         // 不静默失效：换一个常见冲突更少的组合键，并明确告诉用户是谁占了
         const FALLBACK: &str = "Ctrl+Alt+Shift+A";
         if register_shot_hotkey(app, FALLBACK).is_ok() {
-            eprintln!("[zbar-shot] 已临时改用截图快捷键 {FALLBACK}");
+            eprintln!("[agenthud-shot] 已临时改用截图快捷键 {FALLBACK}");
             crate::notify(
                 "AgentHUD · 截图快捷键被占用".to_string(),
                 format!(
@@ -3149,7 +3149,7 @@ fn register_shot_hotkey(app: &AppHandle, key: &str) -> Result<(), String> {
             tauri::async_runtime::spawn(async move {
                 // 统一以区域模式呼出：覆盖层里可以切到窗口/全屏。
                 if let Err(e) = start_capture(app, "region".into(), 0, None).await {
-                    eprintln!("[zbar-shot] 快捷键截图失败: {e}");
+                    eprintln!("[agenthud-shot] 快捷键截图失败: {e}");
                 }
             });
         })

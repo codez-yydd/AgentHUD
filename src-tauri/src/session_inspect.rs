@@ -363,7 +363,7 @@ pub fn collect_live_sessions(window_hours: Option<i64>) -> Result<SessionFeed, S
                 }
             }
             Err(error) => {
-                eprintln!("[zbar-session-inspect] 来源 {source} 会话查询失败，已跳过: {error}");
+                eprintln!("[agenthud-session-inspect] 来源 {source} 会话查询失败，已跳过: {error}");
                 failed_sources.push(source.to_string());
             }
         }

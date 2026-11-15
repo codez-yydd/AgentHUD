@@ -571,7 +571,7 @@ pub fn start_if_enabled(app: &AppHandle) {
         return;
     }
     if let Err(e) = ensure_session_hud_window(app, &cfg) {
-        eprintln!("[zbar-session-hud] 恢复会话悬浮窗失败: {e}");
+        eprintln!("[agenthud-session-hud] 恢复会话悬浮窗失败: {e}");
         return;
     }
     start_feed(app.clone());

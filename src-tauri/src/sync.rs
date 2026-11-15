@@ -649,7 +649,7 @@ pub fn upload_incremental() -> Result<SyncOutcome, String> {
                 agent_quota_snapshot_cursor_advanced = true;
             } else {
                 eprintln!(
-                    "[zbar-sync] 服务端版本过旧（不支持 Agent 额度快照），本地快照暂不推进上传游标"
+                    "[agenthud-sync] 服务端版本过旧（不支持 Agent 额度快照），本地快照暂不推进上传游标"
                 );
             }
         }
@@ -671,7 +671,7 @@ pub fn upload_incremental() -> Result<SyncOutcome, String> {
             } else if resp.proto < 7 {
                 remember_provider_proto_supported(false);
                 eprintln!(
-                    "[zbar-sync] 服务端未升级到 proto 7（当前 proto={}），provider 额度快照暂不推进上传游标，升级服务端后自动补传",
+                    "[agenthud-sync] 服务端未升级到 proto 7（当前 proto={}），provider 额度快照暂不推进上传游标，升级服务端后自动补传",
                     resp.proto
                 );
             }
@@ -692,7 +692,7 @@ pub fn upload_incremental() -> Result<SyncOutcome, String> {
         Ok(n) => codex_uploaded = n,
         Err(e) => {
             // 游标已随每批成功推进（见函数内），稍后随配置落盘，下次从断点续传
-            eprintln!("[zbar-sync] Codex 增量上传失败（下次重试）: {e}");
+            eprintln!("[agenthud-sync] Codex 增量上传失败（下次重试）: {e}");
         }
     }
 
@@ -701,7 +701,7 @@ pub fn upload_incremental() -> Result<SyncOutcome, String> {
     match upload_derived_source_incremental(&mut cfg, &base, &token, "claude") {
         Ok(n) => claude_uploaded = n,
         Err(e) => {
-            eprintln!("[zbar-sync] Claude 增量上传失败（下次重试）: {e}");
+            eprintln!("[agenthud-sync] Claude 增量上传失败（下次重试）: {e}");
         }
     }
 
@@ -710,7 +710,7 @@ pub fn upload_incremental() -> Result<SyncOutcome, String> {
     match upload_derived_source_incremental(&mut cfg, &base, &token, "dsh") {
         Ok(n) => dsh_uploaded = n,
         Err(e) => {
-            eprintln!("[zbar-sync] DSH 增量上传失败（下次重试）: {e}");
+            eprintln!("[agenthud-sync] DSH 增量上传失败（下次重试）: {e}");
         }
     }
 
@@ -719,7 +719,7 @@ pub fn upload_incremental() -> Result<SyncOutcome, String> {
     match upload_derived_source_incremental(&mut cfg, &base, &token, "opencode") {
         Ok(n) => opencode_uploaded = n,
         Err(e) => {
-            eprintln!("[zbar-sync] OpenCode 增量上传失败（下次重试）: {e}");
+            eprintln!("[agenthud-sync] OpenCode 增量上传失败（下次重试）: {e}");
         }
     }
 
@@ -730,7 +730,7 @@ pub fn upload_incremental() -> Result<SyncOutcome, String> {
     match upload_derived_source_incremental(&mut cfg, &base, &token, "kimi") {
         Ok(n) => kimi_uploaded = n,
         Err(e) => {
-            eprintln!("[zbar-sync] Kimi 增量上传失败（下次重试）: {e}");
+            eprintln!("[agenthud-sync] Kimi 增量上传失败（下次重试）: {e}");
         }
     }
 
@@ -739,7 +739,7 @@ pub fn upload_incremental() -> Result<SyncOutcome, String> {
     match upload_derived_source_incremental(&mut cfg, &base, &token, "minimaxcode") {
         Ok(n) => minimaxcode_uploaded = n,
         Err(e) => {
-            eprintln!("[zbar-sync] MiniMax Code 增量上传失败（下次重试）: {e}");
+            eprintln!("[agenthud-sync] MiniMax Code 增量上传失败（下次重试）: {e}");
         }
     }
 
@@ -764,16 +764,16 @@ pub fn upload_incremental() -> Result<SyncOutcome, String> {
         Ok(latest) => match merge_config_for_save(&token, &cfg, &latest) {
             Some(merged) => save_sync_config(&merged)?,
             None => eprintln!(
-                "[zbar-sync] 同步期间凭证已变更（断开/重注册），放弃本轮游标落盘；服务端按主键幂等去重，下轮重传无副作用"
+                "[agenthud-sync] 同步期间凭证已变更（断开/重注册），放弃本轮游标落盘；服务端按主键幂等去重，下轮重传无副作用"
             ),
         },
         Err(e) => eprintln!(
-            "[zbar-sync] 落盘前重读配置失败，放弃本轮落盘（下轮重传，服务端幂等兜底）: {e}"
+            "[agenthud-sync] 落盘前重读配置失败，放弃本轮落盘（下轮重传，服务端幂等兜底）: {e}"
         ),
     }
     // 价格表同步失败不影响用量上传；pending 保留，下一轮重试
     if let Err(e) = crate::pricing_sync::sync_with_server(&base, &token) {
-        eprintln!("[zbar-sync] 价格表同步失败（下一轮重试）: {e}");
+        eprintln!("[agenthud-sync] 价格表同步失败（下一轮重试）: {e}");
     }
 
     Ok(SyncOutcome {
@@ -901,7 +901,7 @@ fn zcode_protocol(base: &str, token: &str) -> u32 {
         Ok(resp) => resp,
         Err(e) => {
             // 探测失败不阻断同步：本轮不带新字段（原行为），下轮重探
-            eprintln!("[zbar-sync] zcode 项目维度协议探测失败（本轮按旧契约上传）: {e}");
+            eprintln!("[agenthud-sync] zcode 项目维度协议探测失败（本轮按旧契约上传）: {e}");
             return 0;
         }
     };
@@ -1041,7 +1041,7 @@ fn post_batch_with_fallback(
         Ok(resp) => Ok(resp),
         Err(e) if with_projects && is_http_4xx(&e) => {
             eprintln!(
-                "[zbar-sync] proto 5 上传被服务端拒绝（{e}），本批降级为 proto 4 重试（不含项目维度字段）"
+                "[agenthud-sync] proto 5 上传被服务端拒绝（{e}），本批降级为 proto 4 重试（不含项目维度字段）"
             );
             let fallback = build_derived_payload(records, last_rowid, false);
             post_sync_batch(base, token, &fallback)
@@ -1068,7 +1068,7 @@ fn post_zcode_batch_with_fallback(
         Ok(resp) => Ok(resp),
         Err(e) if with_projects && is_http_4xx(&e) => {
             eprintln!(
-                "[zbar-sync] proto 5 上传被服务端拒绝（{e}），本批降级为 proto 4 重试（不含项目维度字段）"
+                "[agenthud-sync] proto 5 上传被服务端拒绝（{e}），本批降级为 proto 4 重试（不含项目维度字段）"
             );
             let mut fallback = payload.clone();
             fallback.records = fallback
@@ -1294,7 +1294,7 @@ fn upload_derived_source_incremental(
     let with_projects = probe.proto >= 5;
     if !with_projects {
         eprintln!(
-            "[zbar-sync] 服务端未升级到 proto 5（当前 proto={}），{source} 明细暂不携带项目维度字段",
+            "[agenthud-sync] 服务端未升级到 proto 5（当前 proto={}），{source} 明细暂不携带项目维度字段",
             probe.proto
         );
     }
@@ -2134,7 +2134,7 @@ pub fn spawn_sync_worker() {
         if cfg.enabled && cfg.mode == SyncMode::Auto {
             // 静默失败：出错只记不抛，下次重试
             if let Err(e) = upload_incremental() {
-                eprintln!("[zbar-sync] 后台同步失败: {e}");
+                eprintln!("[agenthud-sync] 后台同步失败: {e}");
             }
         }
         let sleep_secs = if cfg.enabled && cfg.mode == SyncMode::Auto {

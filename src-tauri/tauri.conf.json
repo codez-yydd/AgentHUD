@@ -1,8 +1,9 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "AgentHUD",
-  "version": "2.0.3",
+  "version": "2.0.4",
   "identifier": "com.chacca.agenthud",
+  "mainBinaryName": "AgentHUD",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",

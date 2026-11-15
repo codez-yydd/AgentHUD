@@ -608,7 +608,7 @@ pub fn import_incremental_force() -> Result<(), String> {
         let key = path.to_string_lossy().to_string();
         let known = progress.get(&key).copied();
         if let Err(e) = import_one_file(&mut conn, path, known) {
-            eprintln!("[zbar-dsh] 导入 {} 失败（下次重试）: {e}", path.display());
+            eprintln!("[agenthud-dsh] 导入 {} 失败（下次重试）: {e}", path.display());
         }
     }
     Ok(())

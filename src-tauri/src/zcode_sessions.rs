@@ -339,7 +339,7 @@ fn import_rollout_files(conn: &mut Connection) {
     let progress = match load_file_progress(conn) {
         Ok(p) => p,
         Err(e) => {
-            eprintln!("[zbar-zcode-sessions] 读取导入进度失败（下次重试）: {e}");
+            eprintln!("[agenthud-zcode-sessions] 读取导入进度失败（下次重试）: {e}");
             return;
         }
     };
@@ -349,7 +349,7 @@ fn import_rollout_files(conn: &mut Connection) {
     for path in &files {
         let key = path.to_string_lossy().to_string();
         if let Err(e) = import_one_rollout_file(conn, path, progress.get(&key).copied()) {
-            eprintln!("[zbar-zcode-sessions] 导入 {} 失败（下次重试）: {e}", path.display());
+            eprintln!("[agenthud-zcode-sessions] 导入 {} 失败（下次重试）: {e}", path.display());
         }
     }
 }
@@ -481,7 +481,7 @@ fn import_one_rollout_file(
         .map_err(|e| format!("提交 ZCode 会话导入事务失败: {e}"))?;
     if bad_lines > 0 {
         eprintln!(
-            "[zbar-zcode-sessions] {} 中有 {bad_lines} 行解析失败已跳过（私有格式字段缺失，不影响其余行）",
+            "[agenthud-zcode-sessions] {} 中有 {bad_lines} 行解析失败已跳过（私有格式字段缺失，不影响其余行）",
             path.display()
         );
     }
@@ -570,14 +570,14 @@ fn import_session_meta_from_main_db(conn: &mut Connection) {
     }) {
         Ok(rows) => rows,
         Err(e) => {
-            eprintln!("[zbar-zcode-sessions] 读取主库 session 表失败（下次重试）: {e}");
+            eprintln!("[agenthud-zcode-sessions] 读取主库 session 表失败（下次重试）: {e}");
             return;
         }
     };
     let rows = match rows.collect::<Result<Vec<_>, _>>() {
         Ok(rows) => rows,
         Err(e) => {
-            eprintln!("[zbar-zcode-sessions] 读取主库 session 行失败（下次重试）: {e}");
+            eprintln!("[agenthud-zcode-sessions] 读取主库 session 行失败（下次重试）: {e}");
             return;
         }
     };
@@ -585,14 +585,14 @@ fn import_session_meta_from_main_db(conn: &mut Connection) {
     let existing = match existing_session_meta(conn) {
         Ok(map) => map,
         Err(e) => {
-            eprintln!("[zbar-zcode-sessions] 查询派生库会话维度失败（下次重试）: {e}");
+            eprintln!("[agenthud-zcode-sessions] 查询派生库会话维度失败（下次重试）: {e}");
             return;
         }
     };
     let tx = match conn.transaction() {
         Ok(tx) => tx,
         Err(e) => {
-            eprintln!("[zbar-zcode-sessions] 开启主库回填事务失败（下次重试）: {e}");
+            eprintln!("[agenthud-zcode-sessions] 开启主库回填事务失败（下次重试）: {e}");
             return;
         }
     };
@@ -608,17 +608,17 @@ fn import_session_meta_from_main_db(conn: &mut Connection) {
             continue;
         }
         if let Err(e) = upsert_session_meta(&tx, &session_id, cwd, created, updated) {
-            eprintln!("[zbar-zcode-sessions] 回填 {session_id} 项目维度失败（下次重试）: {e}");
+            eprintln!("[agenthud-zcode-sessions] 回填 {session_id} 项目维度失败（下次重试）: {e}");
             continue;
         }
         written += 1;
     }
     if let Err(e) = tx.commit() {
-        eprintln!("[zbar-zcode-sessions] 提交主库回填事务失败（下次重试）: {e}");
+        eprintln!("[agenthud-zcode-sessions] 提交主库回填事务失败（下次重试）: {e}");
         return;
     }
     if written > 0 {
-        eprintln!("[zbar-zcode-sessions] 从主库 session 表回填了 {written} 条会话项目维度");
+        eprintln!("[agenthud-zcode-sessions] 从主库 session 表回填了 {written} 条会话项目维度");
     }
 }
 
@@ -652,7 +652,7 @@ fn import_session_meta_from_agents(conn: &mut Connection) {
     let progress = match load_file_progress(conn) {
         Ok(p) => p,
         Err(e) => {
-            eprintln!("[zbar-zcode-sessions] 读取导入进度失败（下次重试）: {e}");
+            eprintln!("[agenthud-zcode-sessions] 读取导入进度失败（下次重试）: {e}");
             return;
         }
     };
@@ -663,7 +663,7 @@ fn import_session_meta_from_agents(conn: &mut Connection) {
     let tx = match conn.transaction() {
         Ok(tx) => tx,
         Err(e) => {
-            eprintln!("[zbar-zcode-sessions] 开启 metadata 回填事务失败（下次重试）: {e}");
+            eprintln!("[agenthud-zcode-sessions] 开启 metadata 回填事务失败（下次重试）: {e}");
             return;
         }
     };
@@ -709,7 +709,7 @@ fn import_session_meta_from_agents(conn: &mut Connection) {
                 continue;
             }
             if let Err(e) = upsert_session_meta(&tx, trimmed, cwd, first_at, last_at) {
-                eprintln!("[zbar-zcode-sessions] 回填 {trimmed} 项目维度失败（下次重试）: {e}");
+                eprintln!("[agenthud-zcode-sessions] 回填 {trimmed} 项目维度失败（下次重试）: {e}");
             }
         }
         let _ = tx.execute(
@@ -719,12 +719,12 @@ fn import_session_meta_from_agents(conn: &mut Connection) {
         );
     }
     if let Err(e) = tx.commit() {
-        eprintln!("[zbar-zcode-sessions] 提交 metadata 回填事务失败（下次重试）: {e}");
+        eprintln!("[agenthud-zcode-sessions] 提交 metadata 回填事务失败（下次重试）: {e}");
         return;
     }
     if bad_files > 0 {
         eprintln!(
-            "[zbar-zcode-sessions] agents 目录有 {bad_files} 个 metadata.json 读取/解析失败已跳过"
+            "[agenthud-zcode-sessions] agents 目录有 {bad_files} 个 metadata.json 读取/解析失败已跳过"
         );
     }
     let _ = scanned;

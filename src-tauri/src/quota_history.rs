@@ -180,7 +180,7 @@ pub fn history_path() -> Result<PathBuf, String> {
 /// 写失败不影响调用方（额度查询本身），因此静默降级。
 pub fn append_snapshot(snap: &QuotaSnapshot) {
     if let Err(e) = try_append(snap) {
-        eprintln!("[zbar-history] 写快照失败: {e}");
+        eprintln!("[agenthud-history] 写快照失败: {e}");
     }
 }
 
@@ -285,7 +285,7 @@ fn maybe_cleanup(path: &PathBuf) {
     drop(last);
 
     if let Err(e) = try_cleanup(path) {
-        eprintln!("[zbar-history] 滚动清理失败（24h 后重试）: {e}");
+        eprintln!("[agenthud-history] 滚动清理失败（24h 后重试）: {e}");
     }
 }
 
@@ -367,7 +367,7 @@ fn try_cleanup(path: &std::path::Path) -> Result<(), String> {
     // 在旧缓存基础上 push 增量，会把已被清理的过期行继续留在内存里。
     cache_invalidate();
     if unattributed > 0 {
-        eprintln!("[zbar-history] 清理无账号归属的快照 {unattributed} 条");
+        eprintln!("[agenthud-history] 清理无账号归属的快照 {unattributed} 条");
     }
     Ok(())
 }

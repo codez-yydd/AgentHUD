@@ -83,7 +83,7 @@ pub fn island_set_hover_rect(x: f64, y: f64, width: f64, height: f64) {
         return;
     }
     if std::env::var_os("ZBAR_ISLAND_DEBUG").is_some() {
-        eprintln!("[zbar-island] hover rect {x:.0},{y:.0} {width:.0}x{height:.0}");
+        eprintln!("[agenthud-island] hover rect {x:.0},{y:.0} {width:.0}x{height:.0}");
     }
     if let Ok(mut slot) = hover_rect_slot().lock() {
         *slot = Some((x, y, width, height));
@@ -277,7 +277,7 @@ fn start_hover_watcher(app: AppHandle) {
                 }
                 if drag_slot().lock().map(|g| g.is_some()).unwrap_or(false) {
                     if trace {
-                        eprintln!("[zbar-island] hover skip: drag session");
+                        eprintln!("[agenthud-island] hover skip: drag session");
                     }
                     outside = 0;
                     inside = 0;
@@ -287,7 +287,7 @@ fn start_hover_watcher(app: AppHandle) {
                 // 胶囊换掉，拖拽因此中断。
                 if left_button_down() {
                     if trace {
-                        eprintln!("[zbar-island] hover skip: left button down");
+                        eprintln!("[agenthud-island] hover skip: left button down");
                     }
                     outside = 0;
                     inside = 0;
@@ -317,7 +317,7 @@ fn start_hover_watcher(app: AppHandle) {
                 let expanded = LAST_EXPANDED.load(Ordering::Relaxed);
                 if trace {
                     eprintln!(
-                        "[zbar-island] trace pos=({},{}) size={}x{} scale={scale} cursor=({cx:.0},{cy:.0}) expanded={expanded}",
+                        "[agenthud-island] trace pos=({},{}) size={}x{} scale={scale} cursor=({cx:.0},{cy:.0}) expanded={expanded}",
                         pos.x, pos.y, size.width, size.height
                     );
                 }
@@ -355,7 +355,7 @@ fn start_hover_watcher(app: AppHandle) {
                     entered_fired = false;
                     if win.is_focused().unwrap_or(false) {
                         if trace {
-                            eprintln!("[zbar-island] hover skip: window focused");
+                            eprintln!("[agenthud-island] hover skip: window focused");
                         }
                         outside = 0; // 正在输入，别收
                         continue;
@@ -662,7 +662,7 @@ fn start_mouse_through_watcher(app: AppHandle) {
                     .map(|win| win.set_ignore_cursor_events(want).is_ok())
                     .unwrap_or(false);
                 if applied && debug {
-                    eprintln!("[zbar-island] mouse-through {want}");
+                    eprintln!("[agenthud-island] mouse-through {want}");
                 }
             }
         })
@@ -1239,7 +1239,7 @@ pub fn prepare_legacy_bar() {
     if bar.enabled {
         bar.enabled = false;
         if let Err(e) = crate::hud_bar::save_hud_bar_config(&bar) {
-            eprintln!("[zbar-island] 关闭旧 HUD 停靠条失败: {e}");
+            eprintln!("[agenthud-island] 关闭旧 HUD 停靠条失败: {e}");
         }
     }
 }
@@ -1804,12 +1804,12 @@ pub fn register_hotkeys(app: &AppHandle) {
         let app_main = app.clone();
         let _ = app.run_on_main_thread(move || {
             if let Err(e) = toggle_from_tray(&app_main) {
-                eprintln!("[zbar-island] 热键切换失败: {e}");
+                eprintln!("[agenthud-island] 热键切换失败: {e}");
             }
         });
     }) {
         eprintln!(
-            "[zbar-island] 注册灵动岛热键 {} 失败（可能被占用或格式非法）: {e}",
+            "[agenthud-island] 注册灵动岛热键 {} 失败（可能被占用或格式非法）: {e}",
             cfg.hotkey_toggle
         );
     }
@@ -1822,7 +1822,7 @@ pub fn start_if_enabled(app: &AppHandle) {
         return;
     }
     if let Err(e) = ensure_window(app) {
-        eprintln!("[zbar-island] 恢复灵动岛失败: {e}");
+        eprintln!("[agenthud-island] 恢复灵动岛失败: {e}");
         return;
     }
     arm_window_after_show(app);

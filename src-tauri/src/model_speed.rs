@@ -190,7 +190,7 @@ where
     let (remote_rows, remote_failed) = match remote {
         Some(Ok(rows)) => (rows, false),
         Some(Err(e)) => {
-            eprintln!("[zbar-model-speed] 远端明细查询失败，已跳过: {e}");
+            eprintln!("[agenthud-model-speed] 远端明细查询失败，已跳过: {e}");
             (Vec::new(), true)
         }
         None => (Vec::new(), false),
@@ -202,7 +202,7 @@ where
         .filter(|row| !crate::request_logs::SOURCES.contains(&row.source.as_str()))
         .count();
     if unknown > 0 {
-        eprintln!("[zbar-model-speed] 丢弃 {unknown} 条未知来源的远端明细（不在速度页来源集合）");
+        eprintln!("[agenthud-model-speed] 丢弃 {unknown} 条未知来源的远端明细（不在速度页来源集合）");
     }
     let mut out: Vec<ModelSpeedStat> = Vec::new();
     for source in crate::request_logs::SOURCES {
@@ -214,7 +214,7 @@ where
             .collect();
         match local_fetch(source, &rows) {
             Ok(mut stats) => out.append(&mut stats),
-            Err(e) => eprintln!("[zbar-model-speed] 来源 {source} 速度统计失败，已跳过: {e}"),
+            Err(e) => eprintln!("[agenthud-model-speed] 来源 {source} 速度统计失败，已跳过: {e}"),
         }
     }
     // 全局排序：请求数降序（高频分组在前），同数按（来源, 模型, 渠道）稳定排序

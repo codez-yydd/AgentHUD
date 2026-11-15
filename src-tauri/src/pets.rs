@@ -944,7 +944,7 @@ fn import_pet_impl(path: &str, app: &tauri::AppHandle) -> Result<CustomPetEntryD
     // 内容更新——variables.css 的 --zbar-pet-asset-ver 内容戳随之变化，
     // 注入版壳据此重载资产热刷新）+ 独立版热刷新
     if let Err(e) = sync_theme_custom_pet() {
-        eprintln!("[zbar-pets] 同步注入版宠物物化失败: {e}");
+        eprintln!("[agenthud-pets] 同步注入版宠物物化失败: {e}");
     }
     push_pet_refresh_if_selected(app, &meta.id);
 
