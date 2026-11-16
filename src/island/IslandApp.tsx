@@ -97,6 +97,10 @@ const STATIC_EDGE_LINES = {
   right: CANVAS_W - CANVAS_INSET,
 };
 
+/** liquid 引擎空闲轮询间隔：稳定休眠后按此频率只读比较输入指纹，输入变化即唤醒；
+ *  有唤醒钩子漏挂时最坏延迟即此值，可自愈。 */
+const LIQUID_IDLE_POLL_MS = 500;
+
 /**
  * 每个标签的展开面板高度（常量表，含 42px 导航 + 内容区上下内边距）。
  * 数值按 640 宽下各页真实内容高度实测（Chrome 672×520 预览，mock 数据）：
@@ -615,6 +619,9 @@ export default function IslandApp() {
   const liquidRimGradientRef = useRef<SVGLinearGradientElement | null>(null);
   const liquidFlowRef = useRef<SVGPathElement | null>(null);
   const liquidFlowGradientRef = useRef<SVGRadialGradientElement | null>(null);
+  /** liquid 引擎唤醒钩子：输入在事件回调 / 渲染期变化时调用，休眠中立即恢复 rAF。
+   *  主循环 effect 内赋真实实现（见该处事故注释），未挂载时是空操作。 */
+  const liquidWakeRef = useRef(() => {});
   const bodyTargetRef = useRef({ ...DEFAULT_QUOTA_SIZES.horizontal, open: false });
   const liquidPokeRef = useRef({ x: CANVAS_W / 2, y: CANVAS_INSET });
   const liquidPreviewRef = useRef(parseLiquidPreview());
@@ -2244,14 +2251,18 @@ export default function IslandApp() {
     poke.stiffness = 260;
     poke.ratio = 0.75;
     poke.target = (1 - Math.min(1, Math.hypot(nx, ny))) ** 1.4;
+    // 悬停挤压目标变化：liquid 引擎可能正在休眠，即时唤醒保证形变跟手。
+    liquidWakeRef.current();
   };
 
   const releasePoke = () => {
     Object.assign(pokeState.current, { pressing: false, stiffness: 300, ratio: 0.22, target: 0 });
+    liquidWakeRef.current();
   };
 
   const resetPoke = () => {
     Object.assign(pokeState.current, { ...springAt(0), target: 0, pressing: false });
+    liquidWakeRef.current();
   };
   resetPokeRef.current = resetPoke;
 
@@ -2261,6 +2272,8 @@ export default function IslandApp() {
     dragActiveRef.current = false;
     dragFrameRef.current = null;
     snapEdgeRef.current = null;
+    // 拖拽结束：motion 输入清空，唤醒引擎补间回锚定几何。
+    liquidWakeRef.current();
     setDragging(false);
     if (wasDragging) refreshBackdropRef.current?.();
   };
@@ -2308,6 +2321,8 @@ export default function IslandApp() {
 
         dragFrameRef.current = step;
         if (step.origin) canvasOriginRef.current = step.origin;
+        // 拖拽帧到达：即使引擎在休眠也立即回 rAF 模式逐帧跟画。
+        liquidWakeRef.current();
         if (justStarted) refreshBackdropRef.current?.();
         if (step.settled && snapEdgeRef.current) {
           const expandAfter = pendingExpand.current && expandModeOf() !== "never";
@@ -2394,6 +2409,8 @@ export default function IslandApp() {
       const root = rootRef.current?.getBoundingClientRect();
       if (root) liquidPokeRef.current = { x: event.clientX - root.left, y: event.clientY - root.top };
       Object.assign(pokeState.current, { pressing: true, stiffness: 380, ratio: 0.55, target: 1 });
+      // 按压起跳：收起态静止时引擎在休眠，必须即时唤醒出下压形变。
+      liquidWakeRef.current();
       setCompactPressed(true);
       setInteractSeq((value) => value + 1);
     }
@@ -2469,6 +2486,21 @@ export default function IslandApp() {
     });
   };
 
+  // ⚠️ 原生内存泄漏事故记录（2026-11-17，参照 webview_args.rs 的事故回滚记录风格）：
+  // liquid 主循环曾是 60fps 永动 rAF——稳定快路径带 isOpen && 前置条件，收起态
+  // （岛约 95% 的存在时间）永远为 false，每帧都走全量路径；收起态「呼吸」又用
+  // 正弦逐帧扰动 fillet，令 liquidPath 每帧产出不同路径，于是 --liquid-clip
+  // （巨型 path 字符串）、两条 SVG path 的 d、--body-r-* 圆角与 flow 渐变每帧
+  // 重写，780×632 全画布（clip-path 变化使 blur 层全部重光栅）随之逐帧重绘。
+  // 用户实测渲染进程 8 分钟 2.5GB→6.0GB（≈440MB/min，20 分钟 6.7GB），页面
+  // JS 堆全程仅 1-12MB——纯原生内存泄漏；CDP A/B 验证：页面内置空
+  // requestAnimationFrame 后增长立即停止并回落。修复三件套：
+  //   1) 稳定判定不再带 isOpen：全部输入静止即休眠（收起态同样适用）；
+  //   2) 呼吸最终删除（第二轮 CDP 复测：矢量 clip-path 子树内连 transform
+  //      动画也无法合成器化，三个常驻 CSS 动画叠加泄漏更凶，收起态静止
+  //      即静止，见 island.css P4 段落的事故记录）；
+  //   3) 休眠期以 500ms 低频轮询只读比较输入指纹兜底，事件侧即时唤醒，
+  //      漏挂唤醒钩子时最坏 500ms 自愈。
   useLayoutEffect(() => {
     if (!config) return;
     const root = rootRef.current;
@@ -2491,8 +2523,55 @@ export default function IslandApp() {
     let sizeDamping = previousTarget.open ? 0.62 : 0.64;
     let lastWidth = widthSpring.value;
     let lastHeight = heightSpring.value;
-    let staticPathKey = "";
     let smoothedPoke = { ...liquidPokeRef.current };
+    // 空闲休眠：稳定帧写完最终几何后不再排 rAF，改由低频轮询只读比较输入指纹。
+    let sleeping = false;
+    let pollTimer = 0;
+    let sleepSnapshot = "";
+
+    // 输入指纹：轮询时只读比较这些 ref，不写任何 DOM。覆盖 busy 判定的全部
+    // 外部输入——几何目标（开合/尺寸）、吸附边、预览、拖拽帧、按压弹簧状态、
+    // 平滑按压点来源、残滴数量、音频电平。
+    const inputFingerprint = () => {
+      const target = bodyTargetRef.current;
+      const poke = pokeState.current;
+      const preview = liquidPreviewRef.current;
+      const pokePoint = liquidPokeRef.current;
+      const audioLevel = !dragFrameRef.current && !preview && !target.open
+        ? liquidAudioLevelRef.current
+        : 0;
+      return [
+        target.open ? 1 : 0,
+        target.width.toFixed(2),
+        target.height.toFixed(2),
+        edgeRef.current,
+        preview ? `${preview.edge}:${preview.gap.toFixed(2)}:${preview.drip ? 1 : 0}` : "-",
+        dragFrameRef.current ? String(dragFrameRef.current.monitor ?? "drag") : "-",
+        poke.target.toFixed(4),
+        poke.value.toFixed(4),
+        poke.velocity.toFixed(4),
+        poke.pressing ? 1 : 0,
+        pokePoint.x.toFixed(1),
+        pokePoint.y.toFixed(1),
+        dripsRef.current.length,
+        audioLevel.toFixed(4),
+      ].join("|");
+    };
+
+    const wake = () => {
+      if (!sleeping) return;
+      sleeping = false;
+      window.clearTimeout(pollTimer);
+      raf = window.requestAnimationFrame(tick);
+    };
+
+    const poll = () => {
+      if (inputFingerprint() !== sleepSnapshot) {
+        wake();
+        return;
+      }
+      pollTimer = window.setTimeout(poll, LIQUID_IDLE_POLL_MS);
+    };
 
     const tick = (now: number) => {
       const dt = Math.max(1 / 240, Math.min(1 / 30, (now - lastNow) / 1000));
@@ -2509,11 +2588,17 @@ export default function IslandApp() {
       const changingSize = widthSpring.value !== target.width || heightSpring.value !== target.height ||
         widthSpring.velocity !== 0 || heightSpring.velocity !== 0;
       const fading = panelAlpha.value !== Number(isOpen) || compactAlpha.value !== Number(!isOpen);
-      if (!motion && !preview && !audioLevel && !poke.target && !poke.value &&
-          !changingSize && !fading && dripsRef.current.length === 0 && now - lastNow < 29) {
-        raf = window.requestAnimationFrame(tick);
-        return;
-      }
+      // 活跃判定（事故修复点：不再含 isOpen，收起态静止同样是稳定态）。按压按
+      // 「弹簧值到位且速度为零」判稳——悬停挤压保持在目标形变时几何静止，平滑
+      // 按压点收敛到指针（≤0.5px，形变中心跟手）后即可休眠，指针一动即被唤醒。
+      const pokeGoal = isOpen || motion ? 0 : poke.target;
+      const pokeSettled = poke.value === pokeGoal && poke.velocity === 0 && (
+        pokeGoal === 0 ||
+        Math.abs(smoothedPoke.x - liquidPokeRef.current.x) <= 0.5 &&
+        Math.abs(smoothedPoke.y - liquidPokeRef.current.y) <= 0.5
+      );
+      const busy = Boolean(motion) || Boolean(preview) || audioLevel > 0 ||
+        !pokeSettled || changingSize || fading || dripsRef.current.length > 0;
       advanceSpring(poke, isOpen || motion ? 0 : poke.target, poke.stiffness, poke.ratio, dt, 0.004);
 
       if (motion?.bodyRect) {
@@ -2654,21 +2739,15 @@ export default function IslandApp() {
         drips.push({ edge, line: lines[edge], center: alongCenter(edge), radius: 7.5 });
       }
 
-      const stable = isOpen && !changingSize && !motion && !preview && drips.length === 0 && poke.value === 0;
-      const pathKey = stable ? `${edge}:${width}:${height}` : "";
-      if (pathKey && pathKey === staticPathKey) {
-        lastNow = now;
-        raf = window.requestAnimationFrame(tick);
-        return;
-      }
-      staticPathKey = pathKey;
-
       const neckEdge = neck.edge ?? edge;
       const neckStrength = neck.edge === null ? 0 : neck.spring.value;
       const gap = Math.max(0, screenGap(neckEdge, body, lines[neckEdge]));
-      const breath = !motion && !isOpen ? 1 + 0.07 * Math.sin(now / 1000 * 1.7) : 1;
+      // 呼吸动画已整体删除（事故修复点：JS 正弦扰动 fillet 与后来试过的
+      // CSS transform 版都会在矢量 clip 子树内逐帧重绘、引发原生内存泄漏，
+      // 最终结论是收起态静止即静止，见 island.css 的事故记录），路径在
+      // 输入静止时保持确定不变，主循环才有可能休眠。
       const shapeSpeed = (Math.abs(width - lastWidth) + Math.abs(height - lastHeight)) / dt;
-      const fillet = FILLET * breath + Math.min(12, shapeSpeed * 0.012);
+      const fillet = FILLET + Math.min(12, shapeSpeed * 0.012);
       lastWidth = width;
       lastHeight = height;
       lastNow = now;
@@ -2726,11 +2805,34 @@ export default function IslandApp() {
       ["tl", "tr", "br", "bl"].forEach((corner, i) => {
         island.style.setProperty(`--body-r-${corner}`, `${radii[i]}px`);
       });
-      raf = window.requestAnimationFrame(tick);
+      if (busy) {
+        raf = window.requestAnimationFrame(tick);
+        return;
+      }
+      // 进入稳定休眠：本帧已写入「无呼吸扰动、无音频波」的最终几何（呼吸在
+      // CSS 合成器层继续，liquidPath 不再变化）；之后不排 rAF，改由 500ms
+      // 轮询只读比较输入指纹，变化即唤醒回 rAF 模式。音频律动期间
+      // audioLevel > 0 属真实业务渲染，保持活跃；归零后即回到这里休眠。
+      sleeping = true;
+      sleepSnapshot = inputFingerprint();
+      pollTimer = window.setTimeout(poll, LIQUID_IDLE_POLL_MS);
     };
+    liquidWakeRef.current = wake;
     tick(lastNow + 30);
-    return () => window.cancelAnimationFrame(raf);
+    return () => {
+      liquidWakeRef.current = () => {};
+      window.cancelAnimationFrame(raf);
+      window.clearTimeout(pollTimer);
+    };
   }, [Boolean(config)]);
+
+  // 渲染期写入的 liquid 输入（bodyTargetRef 在 render 里赋值、edgeRef 跟随
+  // edge state）不经过事件回调，任何重渲染后都唤醒一次引擎：已活跃时是空
+  // 操作，休眠中则立即恢复 rAF——展开/收起、切标签改面板高度、收起视图换
+  // 宽度、媒体起播/暂停（media state）等都走这条路。
+  useLayoutEffect(() => {
+    liquidWakeRef.current();
+  });
 
   // 静止时上报当前本体尺寸，拖拽与吸附期间由原生帧提供尺寸。
   useEffect(() => {

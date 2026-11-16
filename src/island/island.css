@@ -4913,7 +4913,8 @@ html.island-preview .island::after {
 }
 
 /* ============================================================
-   P3-2 液态玻璃：贴边内凹圆角 + 圆角呼吸 + 沿边流光
+   P3-2 液态玻璃：贴边内凹圆角（圆角呼吸 / 沿边流光两动画已因
+   原生内存泄漏事故删除，见下方 P4 liquid 段落的事故记录）
    ============================================================ */
 
 /* 可动画的长度自定义属性（Chromium/WebView2 支持 @property） */
@@ -4981,22 +4982,11 @@ html.island-preview .island::after {
   mask-composite: intersect;
 }
 
-/* 圆角呼吸：anchored 未展开时 fillet 幅度 ±7%，角频率 1.7rad/s（周期≈3.7s） */
-@keyframes island-fillet-breathe {
-  0%,
-  100% {
-    --fillet-r: calc(13px * 0.93);
-  }
-  50% {
-    --fillet-r: calc(13px * 1.07);
-  }
-}
-
-.island-root.is-collapsed:not(.is-dragging) {
-  /* 动画挂在 root 上（--fillet-r inherits），这样 .island 上的吸附挤压
-     animation 不会被这条规则覆盖。 */
-  animation: island-fillet-breathe 3.7s ease-in-out infinite;
-}
+/* 圆角呼吸（island-fillet-breathe，--fillet-r 自定义属性动画）已删除：
+   2026-11-17 CDP 复测实锤的泄漏主力元凶——自定义属性动画每帧 style
+   recalc + repaint，且挂在 root 上沿继承树污染整个矢量 clip 子树；
+   详见下方 P4 liquid 段落的事故记录。--fillet-r 变量定义与上面的静态
+   内凹 mask 规则保留不动。 */
 
 /* 沿边流光：贴着玻璃描边走的一团柔和白光（相位 sin(t*0.55) 往返）。 */
 .island-flow {
@@ -5031,7 +5021,6 @@ html.island-preview .island::after {
   bottom: 1px;
   width: 52%;
   height: 2px;
-  animation: island-flow-x 11.4s cubic-bezier(0.45, 0, 0.55, 1) infinite alternate;
 }
 
 .island-root[data-edge="bottom"] .island-flow::after {
@@ -5039,7 +5028,6 @@ html.island-preview .island::after {
   top: 1px;
   width: 52%;
   height: 2px;
-  animation: island-flow-x 11.4s cubic-bezier(0.45, 0, 0.55, 1) infinite alternate;
 }
 
 .island-root[data-edge="left"] .island-flow::after {
@@ -5047,7 +5035,6 @@ html.island-preview .island::after {
   top: 0;
   width: 2px;
   height: 52%;
-  animation: island-flow-y 11.4s cubic-bezier(0.45, 0, 0.55, 1) infinite alternate;
 }
 
 .island-root[data-edge="right"] .island-flow::after {
@@ -5055,26 +5042,14 @@ html.island-preview .island::after {
   top: 0;
   width: 2px;
   height: 52%;
-  animation: island-flow-y 11.4s cubic-bezier(0.45, 0, 0.55, 1) infinite alternate;
 }
 
-@keyframes island-flow-x {
-  from {
-    transform: translateX(0);
-  }
-  to {
-    transform: translateX(92%);
-  }
-}
-
-@keyframes island-flow-y {
-  from {
-    transform: translateY(0);
-  }
-  to {
-    transform: translateY(92%);
-  }
-}
+/* 沿边流光的 island-flow-x / island-flow-y 无限位移动画（11.4s infinite
+   alternate）已删除：渐变位移动画 = 矢量 clip 子树内逐帧重绘重光栅，
+   收起态常驻，属 2026-11-17 原生内存泄漏事故三元凶之一（详见下方 P4
+   liquid 段落的事故记录）。另注：.island-flow 自 P4 起已 display:none
+   （流光语义由 SVG liquid-stroke-flow 承担），本段为遗留样式，仅保留
+   几何规则；禁止在矢量 clip 子树内恢复逐帧插值的 infinite 版本。 */
 
 /* ============================================================
    P2 主页改版（媒体卡 + 小形象 + 四动作 + 横向启动器）
@@ -7860,6 +7835,29 @@ body,
 .island-root.is-dragging .liquid-stroke-flow {
   opacity: 0;
 }
+
+/* ============================================================
+   ⚠️ 原生内存泄漏事故记录（2026-11-17，两轮 CDP 复测实锤）
+   liquid 外壳用 clip-path: path(...)（--liquid-clip）做矢量裁剪，
+   矢量 clip 无法合成器化：其子树内任何逐帧动画——包括 transform
+   动画与 CSS 自定义属性动画——都会强制 780×632 全画布重绘重光栅。
+   第一轮：liquid 主循环 JS 呼吸 + 永动 rAF 每帧重写路径（≈440MB/min，
+   详见 IslandApp.tsx 事故注释，已改为空闲休眠 + 500ms 轮询唤醒）。
+   第二轮：JS 休眠后泄漏仍以 ≈1.9GB/min 增长（岛渲染进程 2.5 分钟
+   4.7GB），元凶是三个矢量 clip 子树内的常驻 CSS 无限动画：
+     1. island-fillet-breathe——--fillet-r 自定义属性动画，挂在
+        root 上沿继承树污染整个子树（主力元凶）；
+     2. liquid-breath——曾在此用 transform scale 替代 JS 呼吸，
+        本可合成器插值，但被矢量 clip 废掉（两元素各一份）；
+     3. island-flow-x / island-flow-y——沿边流光渐变逐帧位移。
+   决定性 A/B：页面内 document.getAnimations().forEach(a => a.pause())
+   后内存瞬间冻结，30 秒内 5.7GB→42MB 全部释放。
+   结论：岛的空闲态必须零逐帧动画——收起态静止即静止。三个动画
+   已全部删除；此后在 .liquid-glass / .liquid-outline /
+   .liquid-content-clip 及其后代上新增任何 animation 前，先想清楚
+   矢量 clip 的代价。条件性动画（加载 skeleton / 会议红点 / 播放
+   波形等随状态出现消失、不常驻的）不在此列。
+   ============================================================ */
 
 /* ---- 内容壳：只负责内容裁切与指针事件；背景/描边/阴影全部在 liquid 层 ---- */
 .liquid-content-clip {
