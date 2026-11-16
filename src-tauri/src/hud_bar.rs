@@ -1419,16 +1419,33 @@ fn snap_loop() {
 /// 停摆，卡片窗口就成了关不掉的孤儿（实测：点开卡片 → 移到卡上 → 移走，
 /// 偶尔不复位）。这里只认光标与两个窗口的屏幕矩形，状态只有"离开起始时刻"，
 /// 不受前端影响；命中后投递主线程 force_close_card（隐藏窗口 + 两端收敛）。
+///
+/// Windows：光标与窗口矩形全部 Win32 直调（GetCursorPos / GetWindowRect）。
+/// 原实现每拍 app.cursor_position() + 双窗口 outer_position/outer_size 共
+/// 5 次主线程同步往返，主线程挂死时（见 island/popup.rs 事故记录）守护
+/// 线程本身被拖死，卡片反而成了挂死期间唯一收不掉的孤儿。Win32 版零
+/// 主线程往返，挂死时仍能完成判定（force_close_card 的投递会被超时放弃，
+/// 不堆积）。非 Windows 保留 Tauri 调用（AppHandle 版 cursor_position：
+/// Window 的同名方法在 Linux 上直调 GDK，从守护线程调不安全）。
 fn card_guard_tick(app: &AppHandle, outside_since: &mut Option<Instant>) {
     if !CARD_VISIBLE.load(Ordering::Relaxed) {
         *outside_since = None;
         return;
     }
-    // 用 AppHandle 的 cursor_position（走事件循环消息）而不是 Window 的同名
-    // 方法：后者在 Linux 上是直接调 GDK，从守护线程调不安全；AppHandle 版本
-    // 会把读取投递回主线程。
-    let Ok(cursor) = app.cursor_position() else {
+    #[cfg(target_os = "windows")]
+    let Some(cursor) = ({
+        use windows::Win32::Foundation::POINT;
+        use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
+        let mut p = POINT::default();
+        unsafe { GetCursorPos(&mut p) }.ok().map(|_| (p.x as f64, p.y as f64))
+    })
+    else {
         // 读不到光标：本拍跳过但不清零，别把"刚离开"误判成"还在"
+        return;
+    };
+    #[cfg(not(target_os = "windows"))]
+    let Ok(cursor) = app.cursor_position().map(|c| (c.x, c.y))
+    else {
         return;
     };
     let mut inside = false;
@@ -1439,16 +1456,39 @@ fn card_guard_tick(app: &AppHandle, outside_since: &mut Option<Instant>) {
     .into_iter()
     .flatten()
     {
-        let (Ok(pos), Ok(size)) = (win.outer_position(), win.outer_size()) else {
+        #[cfg(target_os = "windows")]
+        let Some(rect) = win.hwnd().ok().and_then(|hwnd| {
+            use windows::Win32::Foundation::RECT;
+            use windows::Win32::UI::WindowsAndMessaging::GetWindowRect;
+            let mut raw = RECT::default();
+            unsafe { GetWindowRect(hwnd, &mut raw) }.ok().map(|_| raw)
+        })
+        else {
             continue;
+        };
+        #[cfg(target_os = "windows")]
+        let (left, top, right, bottom) = (
+            rect.left as f64,
+            rect.top as f64,
+            rect.right as f64,
+            rect.bottom as f64,
+        );
+        #[cfg(not(target_os = "windows"))]
+        let (left, top, right, bottom) = {
+            let (Ok(pos), Ok(size)) = (win.outer_position(), win.outer_size()) else {
+                continue;
+            };
+            (
+                pos.x as f64,
+                pos.y as f64,
+                (pos.x + size.width as i32) as f64,
+                (pos.y + size.height as i32) as f64,
+            )
         };
         // 2px 容差：圆角/缩放边缘不误判；卡片窗口自带 CARD_PAD 留白，
         // 用窗口矩形而不是卡片内容矩形——指针落在留白上也算"在卡上"
-        let left = pos.x as f64 - 2.0;
-        let top = pos.y as f64 - 2.0;
-        let right = (pos.x + size.width as i32) as f64 + 2.0;
-        let bottom = (pos.y + size.height as i32) as f64 + 2.0;
-        if cursor.x >= left && cursor.x <= right && cursor.y >= top && cursor.y <= bottom {
+        if cursor.0 >= left - 2.0 && cursor.0 <= right + 2.0 && cursor.1 >= top - 2.0 && cursor.1 <= bottom + 2.0
+        {
             inside = true;
             break;
         }
@@ -2239,6 +2279,12 @@ pub async fn hud_bar_set_enabled(enabled: bool, app: AppHandle) -> Result<bool, 
 
 /// 确保 "hud-card" 窗口存在（隐藏态预热，第一次 hover 才能秒开）。
 /// 必须在主线程事件循环上下文调用（建窗铁律，同 ensure_hud_bar_window）。
+///
+/// ⚠️ 冷建入口（主线程 build() 同步等 WebView2 初始化、无超时，挂死风险
+/// 见 island/popup.rs 的事故记录）：条窗建立时已同步预热本窗口
+/// （ensure_hud_bar_window 尾段），运行期的冷建只剩 hud_card_open 里
+/// 「预热窗被销毁后的第一次 hover」，由用户交互的 async 命令 + 8s 超时的
+/// on_main_thread 触发，不由数据回调线程触发——保持这一现状即可。
 pub fn ensure_hud_card_window(app: &AppHandle) -> Result<(), String> {
     if app.get_webview_window(HUD_CARD_WINDOW_LABEL).is_some() {
         return Ok(());

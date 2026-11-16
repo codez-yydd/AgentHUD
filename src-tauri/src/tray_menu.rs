@@ -164,6 +164,12 @@ pub(crate) fn collapse_from_tray(app: &AppHandle) {
 /// 必须在主线程事件循环上下文调用（建窗铁律，同 ensure_hud_bar_window）：
 /// show_tray_menu 与托盘事件回调都满足。pub(crate)：show_tray_menu 首次
 /// 右键时按需调用（省内存改造后 setup 不再预热）。
+///
+/// ⚠️ 冷建入口（主线程 build() 同步等 WebView2 初始化、无超时，挂死风险
+/// 见 island/popup.rs 的事故记录）：本入口只由用户显式交互（右键托盘）触发
+/// 且在主线程回调上下文，不来自数据回调线程，风险量级低于 popup 曾有的
+/// 「夜间消息冷建」；120s 空闲销毁后的再次右键仍会冷建一次，属已接受的
+/// 取舍。方针不变：能预热就预热、冷建永远不要由数据回调线程触发。
 pub(crate) fn ensure_tray_menu_window(app: &AppHandle) -> Result<(), String> {
     if app.get_webview_window(TRAY_MENU_WINDOW_LABEL).is_some() {
         return Ok(());

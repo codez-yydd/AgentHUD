@@ -2237,6 +2237,27 @@ function boxBlur(
   return out;
 }
 
+/** 模块级复用画布（内存止血）：模糊 / 马赛克笔刷拖动时每帧都要中转画布，
+ * 原实现每帧 createElement 两三张（其中一张是全图尺寸），释放全靠 GC，
+ * 页面空闲时 GC 极少触发 → 原生内存无上限堆积（与岛 backdrop 采样同款
+ * 机制）。这里按「大 / 小」两档复用同一张画布，尺寸变化才重设（重设即
+ * 清空，各调用点都会全量覆盖，无残留问题）。 */
+type ScratchCanvas = { canvas: HTMLCanvasElement | null; w: number; h: number };
+const scratchBig: ScratchCanvas = { canvas: null, w: 0, h: 0 };
+const scratchSmall: ScratchCanvas = { canvas: null, w: 0, h: 0 };
+
+function scratchCtx(scratch: ScratchCanvas, w: number, h: number): CanvasRenderingContext2D | null {
+  if (w < 1 || h < 1) return null;
+  if (!scratch.canvas) scratch.canvas = document.createElement("canvas");
+  if (scratch.w !== w || scratch.h !== h) {
+    scratch.canvas.width = w;
+    scratch.canvas.height = h;
+    scratch.w = w;
+    scratch.h = h;
+  }
+  return scratch.canvas.getContext("2d");
+}
+
 function drawOp(ctx: CanvasRenderingContext2D, op: Op, unit: number, quick = false) {
   ctx.save();
   ctx.lineCap = "round";
@@ -2293,10 +2314,7 @@ function drawOp(ctx: CanvasRenderingContext2D, op: Op, unit: number, quick = fal
     }
     if (op.type === "mosaic") {
       const data = ctx.getImageData(x, y, w, h);
-      const temp = document.createElement("canvas");
-      temp.width = w;
-      temp.height = h;
-      const tctx = temp.getContext("2d");
+      const tctx = scratchCtx(scratchBig, w, h);
       if (!tctx) {
         ctx.restore();
         return;
@@ -2305,40 +2323,35 @@ function drawOp(ctx: CanvasRenderingContext2D, op: Op, unit: number, quick = fal
       const block = Math.max(4, Math.round(14 * unit));
       const sw = Math.max(1, Math.ceil(w / block));
       const sh = Math.max(1, Math.ceil(h / block));
-      const small = document.createElement("canvas");
-      small.width = sw;
-      small.height = sh;
-      const sctx = small.getContext("2d");
+      const sctx = scratchCtx(scratchSmall, sw, sh);
       if (!sctx) {
         ctx.restore();
         return;
       }
       sctx.imageSmoothingEnabled = false;
-      sctx.drawImage(temp, 0, 0, sw, sh);
+      sctx.drawImage(tctx.canvas, 0, 0, sw, sh);
       ctx.imageSmoothingEnabled = false;
-      ctx.drawImage(small, 0, 0, sw, sh, x, y, w, h);
+      ctx.drawImage(sctx.canvas, 0, 0, sw, sh, x, y, w, h);
     } else if (quick) {
       // 拖动中的草稿：整图缩小再放大，几毫秒出效果（和最终结果会有细微差别）。
       const source = ctx.canvas;
       const cw = source.width;
       const ch = source.height;
       const factor = Math.max(4, Math.min(12, Math.round(10 * unit)));
-      const small = document.createElement("canvas");
-      small.width = Math.max(1, Math.round(cw / factor));
-      small.height = Math.max(1, Math.round(ch / factor));
-      const sctx = small.getContext("2d");
-      const big = document.createElement("canvas");
-      big.width = cw;
-      big.height = ch;
-      const bctx = big.getContext("2d");
+      const sctx = scratchCtx(
+        scratchSmall,
+        Math.max(1, Math.round(cw / factor)),
+        Math.max(1, Math.round(ch / factor)),
+      );
+      const bctx = scratchCtx(scratchBig, cw, ch);
       if (sctx && bctx) {
         sctx.imageSmoothingEnabled = true;
         sctx.imageSmoothingQuality = "high";
-        sctx.drawImage(source, 0, 0, cw, ch, 0, 0, small.width, small.height);
+        sctx.drawImage(source, 0, 0, cw, ch, 0, 0, sctx.canvas.width, sctx.canvas.height);
         bctx.imageSmoothingEnabled = true;
         bctx.imageSmoothingQuality = "high";
-        bctx.drawImage(small, 0, 0, small.width, small.height, 0, 0, cw, ch);
-        ctx.drawImage(big, x, y, w, h, x, y, w, h);
+        bctx.drawImage(sctx.canvas, 0, 0, sctx.canvas.width, sctx.canvas.height, 0, 0, cw, ch);
+        ctx.drawImage(bctx.canvas, x, y, w, h, x, y, w, h);
       }
     } else {
       // 模糊：不用 ctx.filter —— 部分 WKWebView 直接忽略它，画出来和原图
@@ -2356,17 +2369,14 @@ function drawOp(ctx: CanvasRenderingContext2D, op: Op, unit: number, quick = fal
         const img = ctx.getImageData(sx, sy, sw, sh);
         const once = boxBlur(img.data, sw, sh, radius);
         const twice = boxBlur(once, sw, sh, radius);
-        const temp = document.createElement("canvas");
-        temp.width = sw;
-        temp.height = sh;
-        const tctx = temp.getContext("2d");
+        const tctx = scratchCtx(scratchBig, sw, sh);
         if (tctx) {
           tctx.putImageData(new ImageData(twice, sw, sh), 0, 0);
           ctx.save();
           ctx.beginPath();
           ctx.rect(x, y, w, h);
           ctx.clip();
-          ctx.drawImage(temp, sx, sy);
+          ctx.drawImage(tctx.canvas, sx, sy);
           ctx.restore();
         }
       }

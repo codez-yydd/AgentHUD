@@ -360,9 +360,42 @@ impl ShotSettings {
 
 #[derive(Debug, Clone)]
 struct PinEntry {
-    image: String,
+    /// PNG 落盘路径（数据目录 `temp/pins/<id>.png`，见 [`pin_dir`]）：
+    /// 贴图常驻期间内存里只留路径与尺寸，显示窗口经 `shot_pin_data`
+    /// 按需读回。原先全尺寸 data URL 常驻 pins_slot，多张贴图时 Rust 侧
+    /// 内存随贴图数线性膨胀（每张几 MB 起步）。
+    path: PathBuf,
     width: u32,
     height: u32,
+}
+
+/// 贴图 PNG 的暂存目录（数据目录 `temp/pins`）：会话级文件，启动时整目录
+/// 清空（[`cleanup_pin_files`]，崩溃残留也兜住）、贴图关闭时单删。
+fn pin_dir() -> Result<PathBuf, String> {
+    let dir = crate::pricing::config_dir()?
+        .join("temp")
+        .join("pins");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("创建贴图暂存目录失败: {e}"))?;
+    Ok(dir)
+}
+
+/// 启动清理（lib.rs setup 挂点）：贴图不跨会话保留，上个会话（正常退出 /
+/// 崩溃 / 被杀）残留在 `temp/pins` 的 PNG 全部清掉。失败只记日志。
+pub fn cleanup_pin_files() {
+    let Ok(base) = crate::pricing::config_dir() else {
+        return;
+    };
+    match std::fs::remove_dir_all(base.join("temp").join("pins")) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => eprintln!("[zbar-shot] 清理贴图暂存目录失败: {e}"),
+    }
+}
+
+/// 删除单张贴图的暂存文件（best-effort：文件被占用等删不掉时，由下次
+/// 启动的 [`cleanup_pin_files`] 兜底）。
+fn remove_pin_file(path: &Path) {
+    let _ = std::fs::remove_file(path);
 }
 
 #[derive(Debug, Clone)]
@@ -941,6 +974,9 @@ fn capture_window(hwnd: windows::Win32::Foundation::HWND) -> Result<Captured, St
     let _capture_guard = crate::island::capture_guard::CaptureGuard::enter();
     let title = window_title(hwnd);
     let mut rendered = None;
+    // PrintWindow 线程超时后仍握着 mem DC：GDI 资源（mem/bitmap）在超时
+    // 路径上不回收（见下方注释），用标志把「跳过清理」传到外层。
+    let mut timed_out = false;
 
     unsafe {
         let screen = GetDC(None);
@@ -962,7 +998,36 @@ fn capture_window(hwnd: windows::Win32::Foundation::HWND) -> Result<Captured, St
                 CreateDIBSection(Some(mem), &bmi, DIB_RGB_COLORS, &mut bits, None, 0)
             {
                 let old = SelectObject(mem, HGDIOBJ(bitmap.0));
-                let ok = PrintWindow(hwnd, mem, PW_RENDERFULLCONTENT);
+                // PrintWindow 对挂死窗口（如主线程无响应的应用）可能无限
+                // 阻塞（曾实测 2 分钟以上）：挪到短命线程里执行、本线程限时
+                // 3s 等待。超时放弃本路径走下方 capture_rect 屏幕抓取兜底；
+                // 卡住的线程无法安全终止，它还握着 mem DC——本分支的 DC /
+                // 位图只能一并泄漏（每次超时一份，量级远小于整条截图管线
+                // 被拖死 + capture_guard 永久占用导致 backdrop 冻结）。
+                let (printed_tx, printed_rx) = std::sync::mpsc::channel::<i32>();
+                // 句柄以整数跨线程（HWND/HDC 含裸指针不满足 Send，同
+                // backdrop.rs 的 isize 传递先例）；GDI/窗口句柄本身是进程级
+                // 资源，PrintWindow 允许在创建线程之外调用。
+                let hwnd_for_print = hwnd.0 as usize;
+                let mem_for_print = mem.0 as usize;
+                std::thread::spawn(move || {
+                    let _ = printed_tx.send(unsafe {
+                        PrintWindow(
+                            HWND(hwnd_for_print as *mut c_void),
+                            windows::Win32::Graphics::Gdi::HDC(mem_for_print as *mut c_void),
+                            PW_RENDERFULLCONTENT,
+                        )
+                    });
+                });
+                // 只把「等待超时/线程异常」记为 timed_out；PrintWindow 正常
+                // 返回 0（目标窗口拒绝打印）走原有的黑图兜底，不泄漏 GDI。
+                let ok = match printed_rx.recv_timeout(Duration::from_secs(3)) {
+                    Ok(code) => code,
+                    Err(_) => {
+                        timed_out = true;
+                        0
+                    }
+                };
                 if ok != 0 && !bits.is_null() {
                     let len = (w as usize) * (h as usize) * 4;
                     let raw = std::slice::from_raw_parts(bits as *const u8, len);
@@ -976,10 +1041,18 @@ fn capture_window(hwnd: windows::Win32::Foundation::HWND) -> Result<Captured, St
                         }
                     }
                 }
-                SelectObject(mem, old);
-                let _ = DeleteObject(HGDIOBJ(bitmap.0));
+                if timed_out {
+                    eprintln!("[zbar-shot] PrintWindow 超时（目标窗口无响应），退回屏幕区域抓取");
+                }
+                // 超时路径跳过 GDI 清理（见上方注释），正常路径照常回收
+                if !timed_out {
+                    SelectObject(mem, old);
+                    let _ = DeleteObject(HGDIOBJ(bitmap.0));
+                }
             }
-            let _ = DeleteDC(mem);
+            if !timed_out {
+                let _ = DeleteDC(mem);
+            }
         }
         if !window_dc.is_invalid() {
             ReleaseDC(Some(hwnd), window_dc);
@@ -2572,15 +2645,18 @@ fn pin_id_from_label(label: &str) -> Option<u64> {
         .and_then(|s| s.parse::<u64>().ok())
 }
 
+/// ⚠️ 冷建入口（主线程 build() 同步等 WebView2 初始化、无超时，挂死风险
+/// 见 island/popup.rs 的事故记录）：贴图窗只由用户「贴图」动作的 async 命令
+/// （on_main_thread 带超时）触发，不由数据回调线程触发，风险量级可控；
+/// 贴图是短命会话型窗口（关闭即销毁、不跨会话保留），不做常驻预热。
 fn build_pin_window(app: &AppHandle, id: u64) -> Result<WebviewWindow, String> {
-    let (image, width, height) = {
+    let (width, height) = {
         let pins = pins_slot()
             .lock()
             .map_err(|_| "贴图数据不可用".to_string())?;
         let entry = pins.get(&id).ok_or_else(|| "贴图不存在".to_string())?;
-        (entry.image.clone(), entry.width, entry.height)
+        (entry.width, entry.height)
     };
-    let _ = image;
     let cursor = cursor_position();
     let mon = cursor
         .and_then(|(x, y)| monitor_for_point(app, x, y))
@@ -2633,17 +2709,24 @@ fn build_pin_window(app: &AppHandle, id: u64) -> Result<WebviewWindow, String> {
 
 async fn pin_image(app: AppHandle, image: image::RgbaImage) -> Result<PinData, String> {
     let id = PIN_SEQ.fetch_add(1, Ordering::Relaxed);
+    // PNG 直接落盘（temp/pins/<id>.png），内存里只登记路径：贴图常驻期间
+    // Rust 侧不再持有全尺寸 base64（见 PinEntry.path 的说明）。
+    let png = encode_png(&image)?;
+    let path = pin_dir()?.join(format!("{id}.png"));
+    std::fs::write(&path, &png).map_err(|e| format!("写入贴图暂存文件失败: {e}"))?;
     let data = PinData {
         id,
         width: image.width(),
         height: image.height(),
-        image: png_data_url(&image)?,
+        // 命令返回值的 image 字段：前端 ShotApp 只 await 不消费（pin.html
+        // 显示走 shot_pin_data 的 data URL），这里给落盘路径便于排查
+        image: path.display().to_string(),
     };
     if let Ok(mut pins) = pins_slot().lock() {
         pins.insert(
             id,
             PinEntry {
-                image: data.image.clone(),
+                path: path.clone(),
                 width: data.width,
                 height: data.height,
             },
@@ -2653,7 +2736,9 @@ async fn pin_image(app: AppHandle, image: image::RgbaImage) -> Result<PinData, S
     let result = on_main_thread(&app, move || build_pin_window(&app_build, id)).await;
     if let Err(e) = result {
         if let Ok(mut pins) = pins_slot().lock() {
-            pins.remove(&id);
+            if let Some(entry) = pins.remove(&id) {
+                remove_pin_file(&entry.path);
+            }
         }
         return Err(e);
     }
@@ -2704,24 +2789,33 @@ pub async fn shot_copy_file(path: String) -> Result<(), String> {
     .map_err(|e| join_error_message("复制截图", e))?
 }
 
+/// 贴图窗口按需取图：从暂存文件读回 PNG 转 data URL（贴图窗口创建时调
+/// 一次；多张贴图常驻期间数据不占 Rust 内存，只有活跃窗口短暂持有解码）。
 #[tauri::command]
 pub fn shot_pin_data(id: u64) -> Result<PinData, String> {
-    let pins = pins_slot()
-        .lock()
-        .map_err(|_| "贴图数据不可用".to_string())?;
-    let entry = pins.get(&id).ok_or_else(|| "贴图不存在".to_string())?;
+    let (path, width, height) = {
+        let pins = pins_slot()
+            .lock()
+            .map_err(|_| "贴图数据不可用".to_string())?;
+        let entry = pins.get(&id).ok_or_else(|| "贴图不存在".to_string())?;
+        (entry.path.clone(), entry.width, entry.height)
+    };
+    let png =
+        std::fs::read(&path).map_err(|e| format!("读取贴图暂存文件失败: {e}"))?;
     Ok(PinData {
         id,
-        image: entry.image.clone(),
-        width: entry.width,
-        height: entry.height,
+        image: format!("data:image/png;base64,{}", STANDARD.encode(png)),
+        width,
+        height,
     })
 }
 
 #[tauri::command]
 pub async fn shot_pin_close(app: AppHandle, id: u64) -> Result<(), String> {
     if let Ok(mut pins) = pins_slot().lock() {
-        pins.remove(&id);
+        if let Some(entry) = pins.remove(&id) {
+            remove_pin_file(&entry.path);
+        }
     }
     let app_main = app.clone();
     on_main_thread(&app, move || {
@@ -2733,11 +2827,13 @@ pub async fn shot_pin_close(app: AppHandle, id: u64) -> Result<(), String> {
     .await
 }
 
-/// 贴图窗口关闭（Alt+F4 / 自绘关闭按钮）时清理数据。
+/// 贴图窗口关闭（Alt+F4 / 自绘关闭按钮）时清理数据与暂存文件。
 pub fn on_pin_close_requested(app: &AppHandle, label: &str) {
     if let Some(id) = pin_id_from_label(label) {
         if let Ok(mut pins) = pins_slot().lock() {
-            pins.remove(&id);
+            if let Some(entry) = pins.remove(&id) {
+                remove_pin_file(&entry.path);
+            }
         }
     }
     let _ = app;

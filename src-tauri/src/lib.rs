@@ -3250,6 +3250,14 @@ pub fn run() {
             // macOS 分支还会触碰 AppKit 的 NSWindow）按最坏情况统一处理：
             // 整体投递主线程执行（panel.json 开关不翻转，下次启动仍按
             // 开关决定是否常驻）。投递失败（事件循环退出中）只能放弃
+            //
+            // ⚠️ 冷建入口警示：这里的 ensure_panel_window 在主线程同步
+            // build WebView2（wry 0.55.1 无超时）。二次启动恰逢上一实例
+            // 退出中、EBWebView 用户数据目录锁未释放时，主线程会在
+            // build() 内挂死（同 island/popup.rs 事故记录的机制）。本路径
+            // 只在「panel 开关关闭后用户再点图标」这种显式唤醒时走到，
+            // 概率低；如后续观察到二次启动挂死，优先考虑给 panel 也加
+            // 启动预热或在此处放弃重建只弹通知。
             let app_main = app.clone();
             let _ = app.run_on_main_thread(move || {
                 if app_main
@@ -3369,6 +3377,11 @@ pub fn run() {
             // pricing::BASE_DIR；失败自动回退旧目录，本次运行不失忆，下次
             // 启动自动重试
             pricing::migrate_data_dir();
+
+            // 贴图暂存目录清理（temp/pins）：贴图不跨会话保留，上个会话
+            // 正常退出 / 崩溃残留的 PNG 全部清掉（见 screenshot.rs 的
+            // cleanup_pin_files），避免数据目录被临时文件慢慢撑大
+            island::screenshot::cleanup_pin_files();
 
             // 更名遗留清理：删除旧应用名（ZBar）及旧 exe 文件名
             // （zai-floating-monitor.exe）的开机自启项，防止更名后旧版随系统
@@ -3584,6 +3597,10 @@ pub fn run() {
             });
             // 灵动岛 HUD：顶部毛玻璃胶囊 + 多页展开（默认开启）
             island::start_if_enabled(app.handle());
+            // 消息浮窗启动预热：岛与浮窗开关都开启时延迟几秒预建隐藏窗口，
+            // 消除「夜间消息到达 → 数据回调线程触发主线程冷建 WebView2」的
+            // 挂死窗口期（事故记录与机制见 island/popup.rs 的 ensure_window）
+            island::popup::prewarm_if_enabled(app.handle());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

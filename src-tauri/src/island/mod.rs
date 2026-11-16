@@ -386,9 +386,21 @@ fn cursor_points_macos() -> Option<(f64, f64)> {
 /// 顶部移动鼠标就会触发岛的悬停展开 / 收起，表现为「岛在乱闪」。
 fn top_popup_visible(app: &AppHandle) -> bool {
     ["panel", "tray-menu"].iter().any(|label| {
-        app.get_webview_window(label)
-            .and_then(|win| win.is_visible().ok())
-            .unwrap_or(false)
+        let win = app.get_webview_window(label);
+        // Windows：is_visible() 是主线程同步往返（hover watcher 每 120ms
+        // 调一次），主线程挂死时这里全部卡死并往死队列堆积闭包——改 Win32
+        // 直判（同下方 start_mouse_through_watcher 的先例），零主线程往返。
+        #[cfg(target_os = "windows")]
+        {
+            use windows::Win32::UI::WindowsAndMessaging::IsWindowVisible;
+            win.and_then(|win| win.hwnd().ok())
+                .map(|hwnd| unsafe { IsWindowVisible(hwnd) }.as_bool())
+                .unwrap_or(false)
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            win.and_then(|win| win.is_visible().ok()).unwrap_or(false)
+        }
     })
 }
 
@@ -472,7 +484,19 @@ fn start_hover_watcher(app: AppHandle) {
                 let Some(win) = app.get_webview_window(ISLAND_WINDOW_LABEL) else {
                     continue;
                 };
-                if !win.is_visible().unwrap_or(false) {
+                // Windows：is_visible() 走主线程同步往返（同 top_popup_visible
+                // 的说明），改 Win32 直判，悬停守护在主线程挂死时不再被拖死。
+                #[cfg(target_os = "windows")]
+                let visible = {
+                    use windows::Win32::UI::WindowsAndMessaging::IsWindowVisible;
+                    win.hwnd()
+                        .ok()
+                        .map(|hwnd| unsafe { IsWindowVisible(hwnd) }.as_bool())
+                        .unwrap_or(false)
+                };
+                #[cfg(not(target_os = "windows"))]
+                let visible = win.is_visible().unwrap_or(false);
+                if !visible {
                     outside = 0;
                     inside = 0;
                     continue;
@@ -3348,24 +3372,38 @@ fn start_fullscreen_watcher(app: AppHandle) {
     let _ = thread::Builder::new()
         .name("zbar-island-fullscreen".into())
         .spawn(move || {
-            let interval = Duration::from_secs(1);
+            // 空闲拍 3s：全屏应用切换是分钟级事件，原先 1s 一拍的
+            // block_on 主线程同步往返（on_main_thread 内含 5s 超时）在
+            // 主线程挂死/繁忙时每拍白等满超时，还往主线程死队列堆闭包
+            // ——这是岛失效的传导路径之一（见 popup.rs 事故记录）。
+            let interval = Duration::from_secs(3);
             let mut last_check = Instant::now() - interval;
             let mut foreground = None;
+            // 连续失败退避（3s→6s→12s→24s，封顶 30s）：任何一次成功即复原。
+            let mut failures: u32 = 0;
             loop {
                 if last_check.elapsed() >= interval {
                     foreground = foreground_fullscreen();
                     last_check = Instant::now();
                 }
                 let app_main = app.clone();
-                let animated = tauri::async_runtime::block_on(on_main_thread(&app, move || {
+                let animated = match tauri::async_runtime::block_on(on_main_thread(&app, move || {
                     update_fullscreen_on_main(&app_main, foreground)
-                }))
-                .unwrap_or_else(|error| {
-                    eprintln!("[zbar-island] 更新灵动岛全屏状态失败: {error}");
-                    false
-                });
+                })) {
+                    Ok(animated) => {
+                        failures = 0;
+                        animated
+                    }
+                    Err(error) => {
+                        failures += 1;
+                        eprintln!("[zbar-island] 更新灵动岛全屏状态失败(连续 {failures}): {error}");
+                        false
+                    }
+                };
                 thread::sleep(if animated {
                     Duration::from_millis(16)
+                } else if failures > 0 {
+                    Duration::from_secs((3u64 << (failures - 1).min(4)).min(30))
                 } else {
                     interval.saturating_sub(last_check.elapsed())
                 });

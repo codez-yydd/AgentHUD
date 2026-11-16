@@ -435,6 +435,18 @@ pub(crate) fn sync_capture_flag(app: &AppHandle) {
 /// 提前建窗是**故意**的：WebView2 冷启动（几百毫秒到 1 秒）与
 /// [`POPUP_DELAY_MS`] 的等待重叠，第一波卡片不会比后面几波晚一个 WebView
 /// 启动时间。
+///
+/// ⚠️ v2.0.4 事故记录（2026-11-17，用户安装版实锤）：本函数曾只由
+/// `on_notify_state`（通知轮询的数据回调线程）触发——夜间 QQ 群消息等
+/// 低频通知场景下，浮窗窗口在应用空闲数小时后仍要**冷建**。wry 0.55.1
+/// 的 WebView2 初始化在主线程 build() 内同步等待
+/// CreateCoreWebView2Environment，且**无超时**：系统内存危机 /
+/// EBWebView 用户数据目录锁未释放时，主线程在 build() 里无限挂死，
+/// 表现为 AppHangB1×2、岛白屏、灵动岛失效、退出无反应四症状并发。
+/// 对策：启动阶段就按开关预建（[`prewarm_if_enabled`]），让通知到达时
+/// 走「已存在 → show」快路径，冷建窗口期从「任何时刻」收缩为「开关
+/// 刚打开后的第一波」。本函数保留为兜底路径，但正常运行期不再承担
+/// 首次建窗。
 pub(crate) fn ensure_window(app: &AppHandle) {
     let app_main = app.clone();
     let _ = app.run_on_main_thread(move || {
@@ -442,6 +454,36 @@ pub(crate) fn ensure_window(app: &AppHandle) {
             eprintln!("[zbar-island-popup] {e}");
         }
     });
+}
+
+/// 启动预热延迟：避开启动高峰（托盘 / 主窗 / 岛 / 截图覆盖窗 2.5s、
+/// 录制条约 4.2s 都在抢 WebView2 资源），排在这两波之后。
+const POPUP_PREWARM_DELAY_MS: u64 = 5_000;
+
+/// 启动预热（lib.rs setup 挂点，岛启动之后调用）：岛与浮窗开关都开启时，
+/// 后台延迟数秒预建**隐藏**浮窗窗口（复用 [`ensure_window`] 的幂等性，
+/// 建后保持 `visible(false)`，几何由第一次 `notify_popup_resize` 摆好再
+/// show——与冷建路径完全同一形态）。等真正的新消息到达时窗口已就绪，
+/// 数据回调线程不再触发主线程冷建（见 [`ensure_window`] 的事故记录）。
+pub(crate) fn prewarm_if_enabled(app: &AppHandle) {
+    let cfg = super::load_config();
+    if !cfg.enabled || !cfg.notify_popup_enabled {
+        return;
+    }
+    let handle = app.clone();
+    std::thread::Builder::new()
+        .name("zbar-popup-prewarm".into())
+        .spawn(move || {
+            std::thread::sleep(Duration::from_millis(POPUP_PREWARM_DELAY_MS));
+            // 等待期间开关可能被关掉（或预建线程起跑时刚好在改配置）：
+            // 再读一次，关了就不建，避免给关掉的功能留隐藏 WebView。
+            let cfg = super::load_config();
+            if !cfg.enabled || !cfg.notify_popup_enabled {
+                return;
+            }
+            ensure_window(&handle);
+        })
+        .ok();
 }
 
 /// 主线程上下文里同步隐藏（岛总开关关闭 / 配置关掉弹窗时调用）。

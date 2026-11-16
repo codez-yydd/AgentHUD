@@ -14,7 +14,9 @@ use windows::Win32::Foundation::{HWND, RECT};
 #[path = "backdrop/desktop.rs"]
 mod desktop;
 
-/// 相邻区域按比例下采样，保留边缘折射所需的细节。
+/// 相邻区域按比例下采样，保留自动主题亮度判断所需的代表性；缩略图短边
+/// 上限 256（曾为 320：每帧解码位图越大，前端光栅内存压力越大，256 在
+/// 亮度统计上已远超充分采样密度）。
 #[cfg(windows)]
 const DOWNSCALE: u32 = 3;
 
@@ -23,6 +25,9 @@ pub struct BackdropFrame {
     pub revision: u32,
     pub url: Option<Arc<str>>,
     pub aligned: bool,
+    /// 相邻区域帧的平均亮度（0..=1，Rust 侧随帧算好；Aligned / Unavailable
+    /// 路径为 `None`——全窗折射帧不参与自动主题，前端不需要亮度）。
+    pub luminance: Option<f32>,
 }
 
 #[cfg(any(windows, test))]
@@ -52,7 +57,7 @@ impl FrameCache {
             .cloned()
     }
 
-    fn update(&mut self, source: FrameSource, url: Option<String>) {
+    fn update(&mut self, source: FrameSource, url: Option<String>, luminance: Option<f32>) {
         let revision = self
             .latest
             .as_ref()
@@ -63,6 +68,7 @@ impl FrameCache {
                 revision,
                 url: url.map(Arc::from),
                 aligned: source == FrameSource::Aligned,
+                luminance,
             },
         ));
     }
@@ -72,7 +78,7 @@ impl FrameCache {
             *source == FrameSource::Aligned && frame.url.as_deref() == Some(url.as_str())
         });
         if !unchanged {
-            self.update(FrameSource::Aligned, Some(url));
+            self.update(FrameSource::Aligned, Some(url), None);
         }
         self.reply(known_revision)
     }
@@ -80,6 +86,7 @@ impl FrameCache {
     fn neighbor(
         &mut self,
         source: FrameSource,
+        luminance: Option<f32>,
         known_revision: Option<u32>,
         encode: impl FnOnce() -> Result<String, String>,
     ) -> Result<Option<BackdropFrame>, String> {
@@ -88,14 +95,14 @@ impl FrameCache {
             .as_ref()
             .is_some_and(|(latest, _)| *latest == source)
         {
-            self.update(source, Some(encode()?));
+            self.update(source, Some(encode()?), luminance);
         }
         Ok(self.reply(known_revision))
     }
 
     fn unavailable(&mut self, known_revision: Option<u32>) -> Option<BackdropFrame> {
         if !matches!(self.latest.as_ref(), Some((FrameSource::Unavailable, _))) {
-            self.update(FrameSource::Unavailable, None);
+            self.update(FrameSource::Unavailable, None, None);
         }
         self.reply(known_revision)
     }
@@ -134,6 +141,29 @@ fn thumbnail_hash(image: &image::RgbaImage) -> u64 {
     hash
 }
 
+/// 相邻区域缩略图的平均亮度（0..=1）。公式与被替换掉的前端
+/// `sampleBackdropLuminance` 完全一致：Rec.709 加权
+/// (0.2126R + 0.7152G + 0.0722B) / 255，alpha < 8 的像素不计入，
+/// 没有任何不透明像素时返回 `None`。
+///
+/// 在 Rust 侧随帧算好（capture 已持有 `RgbaImage`），前端邻域采样就不再
+/// 需要 `new Image()` + `decode()` 解码链——那条链的解码位图释放全靠 GC，
+/// 页面空闲时 GC 极少触发，正是渲染进程原生内存无上限堆积的来源。
+#[cfg(any(windows, test))]
+fn average_luminance(image: &image::RgbaImage) -> Option<f32> {
+    let mut total = 0f32;
+    let mut count = 0u32;
+    for pixel in image.pixels() {
+        let [r, g, b, a] = pixel.0;
+        if a < 8 {
+            continue;
+        }
+        total += (0.2126 * f32::from(r) + 0.7152 * f32::from(g) + 0.0722 * f32::from(b)) / 255.0;
+        count += 1;
+    }
+    (count > 0).then(|| total / count as f32)
+}
+
 #[cfg(test)]
 mod cache_tests {
     use super::*;
@@ -146,33 +176,61 @@ mod cache_tests {
         }
     }
 
+    /// 亮度纯函数（与被替换的前端 sampleBackdropLuminance 公式对齐）
+    #[test]
+    fn luminance_of_flat_colors_matches_reference_weights() {
+        use image::RgbaImage;
+        let white = RgbaImage::from_pixel(4, 4, image::Rgba([255, 255, 255, 255]));
+        assert!((average_luminance(&white).unwrap() - 1.0).abs() < 1e-5);
+        let black = RgbaImage::from_pixel(4, 4, image::Rgba([0, 0, 0, 255]));
+        assert!(average_luminance(&black).unwrap().abs() < 1e-5);
+        // 纯红按 Rec.709 权重：0.2126
+        let red = RgbaImage::from_pixel(4, 4, image::Rgba([255, 0, 0, 255]));
+        assert!((average_luminance(&red).unwrap() - 0.2126).abs() < 1e-4);
+    }
+
+    /// alpha < 8 的像素不计入；全透明图没有亮度（前端保持上一拍平滑值）
+    #[test]
+    fn luminance_skips_transparent_pixels_and_none_when_fully_clear() {
+        use image::RgbaImage;
+        let mut mixed = RgbaImage::from_pixel(2, 1, image::Rgba([255, 255, 255, 255]));
+        mixed.put_pixel(0, 0, image::Rgba([255, 255, 255, 0]));
+        assert!((average_luminance(&mixed).unwrap() - 1.0).abs() < 1e-5);
+        let clear = RgbaImage::from_pixel(2, 2, image::Rgba([120, 120, 120, 0]));
+        assert!(average_luminance(&clear).is_none());
+    }
+
     #[test]
     fn resends_unacknowledged_neighbor_without_encoding_again() {
         let mut cache = FrameCache::default();
         let source = neighbor(10, 16);
         let first = cache
-            .neighbor(source, None, || Ok("neighbor".into()))
+            .neighbor(source, Some(0.5), None, || Ok("neighbor".into()))
             .unwrap()
             .unwrap();
+        assert_eq!(first.luminance, Some(0.5));
         let no_reencode = || panic!("cached pixels must not be re-encoded");
         let missed = cache
-            .neighbor(source, None, no_reencode)
+            .neighbor(source, Some(0.5), None, no_reencode)
             .unwrap()
             .unwrap();
         assert_eq!(first.revision, missed.revision);
         assert!(!missed.aligned);
+        assert_eq!(missed.luminance, Some(0.5));
         assert!(Arc::ptr_eq(&first.url.unwrap(), &missed.url.unwrap()));
         assert!(cache
-            .neighbor(source, Some(first.revision), no_reencode)
+            .neighbor(source, None, Some(first.revision), no_reencode)
             .unwrap()
             .is_none());
         let resized = cache
-            .neighbor(neighbor(16, 10), Some(first.revision), || {
+            .neighbor(neighbor(16, 10), None, Some(first.revision), || {
                 Ok("resized".into())
             })
             .unwrap()
             .unwrap();
         assert_ne!(resized.revision, first.revision);
+        // 缩放后是另一帧：未提供亮度时不再沿用旧帧的值
+        assert_eq!(resized.luminance, None);
     }
 
     #[test]
@@ -180,7 +238,7 @@ mod cache_tests {
         let mut cache = FrameCache::default();
         let source = neighbor(10, 16);
         let initial = cache
-            .neighbor(source, None, || Ok("neighbor".into()))
+            .neighbor(source, None, None, || Ok("neighbor".into()))
             .unwrap()
             .unwrap();
         let aligned = cache
@@ -191,7 +249,7 @@ mod cache_tests {
             .aligned("aligned".into(), Some(aligned.revision))
             .is_none());
         let neighbor_again = cache
-            .neighbor(source, Some(aligned.revision), || Ok("neighbor".into()))
+            .neighbor(source, None, Some(aligned.revision), || Ok("neighbor".into()))
             .unwrap()
             .unwrap();
         assert_ne!(aligned.revision, neighbor_again.revision);
@@ -233,7 +291,7 @@ mod cache_tests {
             .unwrap();
         assert!(missing.url.is_none());
         let neighbor = cache
-            .neighbor(neighbor(10, 16), Some(missing.revision), || {
+            .neighbor(neighbor(10, 16), None, Some(missing.revision), || {
                 Ok("neighbor".into())
             })
             .unwrap()
@@ -543,8 +601,8 @@ pub fn capture(
     else {
         return unavailable();
     };
-    let tw = (sw / DOWNSCALE).clamp(2, 320) as i32;
-    let th = (sh / DOWNSCALE).clamp(2, 320) as i32;
+    let tw = (sw / DOWNSCALE).clamp(2, 256) as i32;
+    let th = (sh / DOWNSCALE).clamp(2, 256) as i32;
     let sample = RECT {
         left: sx,
         top: sy,
@@ -650,13 +708,15 @@ pub fn capture(
         return unavailable();
     };
     // 比较相邻取样本身，未变化时复用已编码的图；客户端尚未收到就重发。
+    // 亮度随帧在 Rust 侧算好（见 average_luminance），前端邻域采样只读值。
     let source = FrameSource::Neighbor {
         width: image.width(),
         height: image.height(),
         hash: thumbnail_hash(&image),
     };
+    let luminance = average_luminance(&image);
     let mut cache = backdrop_cache()?;
-    let result = cache.neighbor(source, known_revision, || {
+    let result = cache.neighbor(source, luminance, known_revision, || {
         let mut png = Vec::new();
         PngEncoder::new(&mut png)
             .write_image(

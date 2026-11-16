@@ -265,7 +265,13 @@ function clearSettledConfigPatch(
   }
 }
 
-/** 复用已解码的底板，按参考主题的亮度权重取样。 */
+/** 复用已解码的底板，按参考主题的亮度权重取样。
+ *
+ * 仅用于 Aligned 帧上屏路径（excludeFromCapture 开启时的全窗折射帧）：
+ * 解码本就必须发生（折射上屏），在其上追加 32×32 采样不新增解码位图的
+ * 生命周期。Neighbor 帧（未开排除）的亮度由 Rust 随帧算好下发
+ * （captured.luminance），前端不再为采样而解码——那是渲染进程原生内存
+ * 无上限堆积的旧通路。 */
 function sampleBackdropLuminance(image: HTMLImageElement): number | null {
   try {
     const canvas = document.createElement("canvas");
@@ -922,7 +928,10 @@ export default function IslandApp() {
         }
       }
       canvas.classList.remove("is-ready");
-      fallback.src = frame.src;
+      // 同值跳过：Rust revision 协议已保证 url 变化才下发，这里再防御一层，
+      // 避免异常重放时每拍把同一 data URL 重新解码成光栅（旧光栅释放靠
+      // GC，正是原生内存堆积的通路之一）。
+      if (fallback.getAttribute("src") !== frame.src) fallback.src = frame.src;
     };
     const onLost = (event: Event) => {
       event.preventDefault();
@@ -966,22 +975,30 @@ export default function IslandApp() {
         if (!alive || !canCapture()) return;
         if (captured) {
           const showFrame = wantsRefraction && captured.aligned && Boolean(captured.url);
-          if (!showFrame) {
-            frame = null;
-            clearBackdrop();
-          }
-          luminance = null;
-          if (captured.url && (showFrame || sampleNeighbor)) {
+          let sampled: number | null = null;
+          if (showFrame && captured.url) {
+            // 唯一保留的解码路径：Aligned 帧真要上屏折射。Neighbor 帧的
+            // 亮度由 Rust 随帧算好（captured.luminance），不再
+            // new Image()+decode()——那条链每拍丢弃解码位图、释放全靠
+            // GC，页面空闲时 GC 极少触发，是渲染进程原生内存无上限堆积
+            // （6.4GB 事故）的来源。
             const incoming = new Image();
             incoming.src = captured.url;
             await incoming.decode();
             if (!alive || !canCapture()) return;
-            if (showFrame) {
-              frame = incoming;
-              uploadFrame();
-            }
-            if (sampleNeighbor) luminance = sampleBackdropLuminance(incoming);
+            frame = incoming;
+            uploadFrame();
+            // Aligned 帧 + auto 主题：复用这张已解码的图采样正下方画面
+            // 亮度（见 sampleBackdropLuminance 的说明），保持旧版语义。
+            if (sampleNeighbor) sampled = sampleBackdropLuminance(incoming);
+          } else {
+            frame = null;
+            clearBackdrop();
           }
+          // Neighbor 帧优先用 Rust 算好的值；Aligned 帧（luminance=null）
+          // 落到上面的采样值，两条通路互补，auto 主题在任何采集模式下
+          // 都有输入。
+          luminance = typeof captured.luminance === "number" ? captured.luminance : sampled;
           knownRevision = captured.revision;
         }
         if (themeModeRef.current === "auto" && luminance != null) feedLuminance(luminance);

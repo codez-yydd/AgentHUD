@@ -572,11 +572,15 @@ export async function endIslandDrag(): Promise<IslandDragEnd> {
   return { edge, x: 0, y: 0, width: CANVAS_W, height: CANVAS_H };
 }
 
-/** null 表示版本未变；帧的 url 为 null 表示当前没有可用画面。 */
+/** null 表示版本未变；帧的 url 为 null 表示当前没有可用画面。
+ * luminance 是 Rust 侧随邻域帧算好的平均亮度（0..=1，其余帧为 null），
+ * 自动主题直接读它，前端不再走解码-采样链。 */
 export async function getIslandBackdrop(
   knownRevision: number | undefined,
   sampleNeighbor: boolean,
-): Promise<{ revision: number; url: string | null; aligned: boolean } | null> {
+): Promise<
+  { revision: number; url: string | null; aligned: boolean; luminance: number | null } | null
+> {
   if (IS_TAURI) return invoke("island_backdrop", { knownRevision, sampleNeighbor });
   if (knownRevision === 1 || new URLSearchParams(window.location.search).get("backdrop") !== "1") return null;
 
@@ -589,7 +593,17 @@ export async function getIslandBackdrop(
     '<path d="M0 0H42M0 0V42" stroke="#a7d8ff" stroke-opacity=".65" stroke-width="3"/>' +
     '</pattern></defs><rect width="780" height="632" fill="url(#g)"/>' +
     '<rect width="780" height="632" fill="url(#lines)"/></svg>';
-  return delay({ revision: 1, aligned: true, url: "data:image/svg+xml;charset=utf-8," + encodeURIComponent(svg) }, 35);
+  // 与真实契约一致：Aligned 帧 luminance=null，亮度由前端对已解码帧采样
+  // （sampleBackdropLuminance）——预览与生产的 auto 主题走同一条链路。
+  return delay(
+    {
+      revision: 1,
+      aligned: true,
+      url: "data:image/svg+xml;charset=utf-8," + encodeURIComponent(svg),
+      luminance: null,
+    },
+    35,
+  );
 }
 
 /** 输入框聚焦时临时激活窗口；false = 恢复不可聚焦，不抢编辑器焦点 */
