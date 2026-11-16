@@ -180,6 +180,12 @@ fn decrypt_body(body: &str, key: &[u8]) -> Result<String, String> {
     String::from_utf8(plaintext).map_err(|e| format!("凭证明文非 UTF-8: {e}"))
 }
 
+/// 新版 ZCode（数据目录迁移后）用户信息键候选，按优先级依次尝试：
+/// 旧键 `oauth:bigmodel:user_info` 优先（老版本行为不变），缺失时回落新键
+/// `oauth:zai_cn:user_info`（解密后为 `{"user_id":..,"email":..,"name":..}`，
+/// 无 displayName/username，昵称由现有 displayName→username→name 回落链命中 name）。
+const USER_INFO_KEYS: [&str; 2] = ["oauth:bigmodel:user_info", "oauth:zai_cn:user_info"];
+
 /// 解析 JWT 的 payload 段（不验签，仅用于读取 user_id/email）。
 /// token 形如 `header.payload.signature`，payload 为 base64url 编码的 JSON。
 pub fn jwt_payload(token: &str) -> Option<Value> {
@@ -221,27 +227,38 @@ pub fn fingerprint_of_credentials(creds: &Value) -> Option<Fingerprint> {
     })
 }
 
-/// 从 `oauth:bigmodel:user_info`（解密后为 JSON）中提取 email 与昵称。
+/// 从 user_info 键（解密后为 JSON）中提取 email 与昵称。
+/// 新版 ZCode 把用户信息挪到 `oauth:zai_cn:user_info`，旧键仍优先；按候选
+/// 列表依次尝试，第一个存在且解密+解析成功的生效，结构不同也不报错。
 /// 一次解密同时返回两个字段（避免同一密文解密两次）；
-/// 昵称仅取 displayName / username / name 三个键，按此优先级回落。
-/// user_info 缺失或解密失败返回 None。
+/// 昵称仅取 displayName / username / name 三个键，按此优先级回落（新版
+/// 的 name 由该回落链自然命中）。所有键缺失或解密失败返回 None，静默降级。
 fn user_info_fields(creds: &Value, secret: &[u8]) -> Option<(Option<String>, Option<String>)> {
-    let raw = creds.get("oauth:bigmodel:user_info")?.as_str()?;
-    let decrypted = decrypt_value(raw, secret).ok()?;
-    let info: Value = serde_json::from_str(&decrypted).ok()?;
-    let email = info
-        .get("email")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
-    let display_name = ["displayName", "username", "name"]
-        .iter()
-        .find_map(|k| {
-            info.get(*k)
-                .and_then(|v| v.as_str())
-                .filter(|s| !s.is_empty())
-                .map(|s| s.to_string())
-        });
-    Some((email, display_name))
+    for key in USER_INFO_KEYS {
+        let Some(raw) = creds.get(key).and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let Ok(decrypted) = decrypt_value(raw, secret) else {
+            continue;
+        };
+        let Ok(info) = serde_json::from_str::<Value>(&decrypted) else {
+            continue;
+        };
+        let email = info
+            .get("email")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let display_name = ["displayName", "username", "name"]
+            .iter()
+            .find_map(|k| {
+                info.get(*k)
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_string())
+            });
+        return Some((email, display_name));
+    }
+    None
 }
 
 #[cfg(test)]
@@ -445,6 +462,54 @@ mod tests {
             .expect("指纹应提取成功");
         assert_eq!(fp.display_name, None);
         assert_eq!(fp.email.as_deref(), Some("a@b.c"));
+    }
+
+    /// 新版键回落：旧键 oauth:bigmodel:user_info 缺失，
+    /// oauth:zai_cn:user_info 存在时 email/昵称正确回落（name 命中回落链）。
+    #[test]
+    fn user_info_falls_back_to_zai_cn_key() {
+        let secret = credential_secret();
+        let payload = r#"{"user_id":"u1"}"#;
+        let jwt = format!(
+            "{}.{}.sig",
+            b64url_encode(br#"{"alg":"HS256"}"#),
+            b64url_encode(payload.as_bytes())
+        );
+        // 新版结构：只有 name/email，无 displayName/username
+        let creds = serde_json::json!({
+            "zcodejwttoken": encrypt_value(&jwt, &secret),
+            "oauth:zai_cn:user_info": encrypt_value(
+                r#"{"user_id":"u1","email":"new@y.z","name":"新版昵称"}"#, &secret
+            ),
+        });
+        let fp = fingerprint_of_credentials(&creds).expect("指纹应提取成功");
+        assert_eq!(fp.email.as_deref(), Some("new@y.z"));
+        // name 由 displayName→username→name 回落链命中
+        assert_eq!(fp.display_name.as_deref(), Some("新版昵称"));
+    }
+
+    /// 两个 user_info 键都在时优先旧键 oauth:bigmodel:user_info。
+    #[test]
+    fn user_info_prefers_bigmodel_key_when_both_present() {
+        let secret = credential_secret();
+        let payload = r#"{"user_id":"u1"}"#;
+        let jwt = format!(
+            "{}.{}.sig",
+            b64url_encode(br#"{"alg":"HS256"}"#),
+            b64url_encode(payload.as_bytes())
+        );
+        let creds = serde_json::json!({
+            "zcodejwttoken": encrypt_value(&jwt, &secret),
+            "oauth:bigmodel:user_info": encrypt_value(
+                r#"{"email":"old@y.z","displayName":"旧版昵称"}"#, &secret
+            ),
+            "oauth:zai_cn:user_info": encrypt_value(
+                r#"{"email":"new@y.z","name":"新版昵称"}"#, &secret
+            ),
+        });
+        let fp = fingerprint_of_credentials(&creds).expect("指纹应提取成功");
+        assert_eq!(fp.email.as_deref(), Some("old@y.z"));
+        assert_eq!(fp.display_name.as_deref(), Some("旧版昵称"));
     }
 
     /// JWT 自带 email 时仍会解析 user_info 取昵称（email 优先级不变）

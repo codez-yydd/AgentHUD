@@ -248,6 +248,40 @@ fn pick_from_credentials(dir: &std::path::Path) -> Option<(String, String)> {
     pick_account_provider_plan_key(&creds, identity.as_deref(), &secret)
 }
 
+/// 按 origin 挑选调用换 token 接口所需的登录 Bearer 令牌（纯函数，便于单测）。
+/// 新版 ZCode（数据目录迁移到 dataBaseDir 后）删除了旧的登录令牌键，把它挪进
+/// `oauth:linked_bigmodel` / `oauth:linked_zai`：解密后是 JSON，取其中的
+/// `accessToken` 字段作为登录令牌。挑选顺序旧键优先——旧键存在且解密非空时
+/// 直接返回，保证老版本 ZCode 用户行为完全不变；旧键缺失/为空/解密失败才回落
+/// 新版 linked_* 键。解密失败、非法 JSON、字段缺失或为空一律返回 None，静默
+/// 降级（本路径全链路静默失败，绝不因此报错）。
+fn pick_login_token(
+    creds: &serde_json::Value,
+    origin: &str,
+    secret: &[u8],
+) -> Option<String> {
+    let (old_key, linked_key) = if origin == "https://bigmodel.cn" {
+        ("oauth:bigmodel:access_token", "oauth:linked_bigmodel")
+    } else {
+        ("oauth:zai:access_token", "oauth:linked_zai")
+    };
+    // 旧键优先：解密成功且非空直接用（与改动前行为一致）
+    if let Some(raw) = creds.get(old_key).and_then(|v| v.as_str()) {
+        if let Ok(token) = crate::zcode_crypto::decrypt_value(raw, secret) {
+            let token = token.trim();
+            if !token.is_empty() {
+                return Some(token.to_string());
+            }
+        }
+    }
+    // 旧键不可用：回落新版 linked_* 键的 accessToken 字段
+    let raw = creds.get(linked_key)?.as_str()?;
+    let decrypted = crate::zcode_crypto::decrypt_value(raw, secret).ok()?;
+    let linked: serde_json::Value = serde_json::from_str(&decrypted).ok()?;
+    let token = linked.get("accessToken")?.as_str()?.trim();
+    (!token.is_empty()).then(|| token.to_string())
+}
+
 /// Exchange the account's project location for its short-lived access token.
 pub(crate) fn project_plan_credential(
     creds: &serde_json::Value,
@@ -290,13 +324,7 @@ pub(crate) fn project_plan_credential(
                 .all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_')
                 .then_some(v)
         };
-        let login_key = if origin == "https://bigmodel.cn" {
-            "oauth:bigmodel:access_token"
-        } else {
-            "oauth:zai:access_token"
-        };
-        let login =
-            crate::zcode_crypto::decrypt_value(creds.get(login_key)?.as_str()?, secret).ok()?;
+        let login = pick_login_token(creds, origin, secret)?;
         let url = format!(
             "{origin}/api/biz/v1/organization/{}/projects/{}/api_keys/{}/access_tokens",
             field("organizationId")?,
@@ -972,6 +1000,115 @@ mod tests {
             "account-provider:coding-plan:account:bigmodel-coding-plan:account:111:api-key": broken
         });
         assert!(pick_account_provider_plan_key(&only_broken, Some("111"), b"secret").is_none());
+    }
+
+    /// 登录令牌挑选：旧键优先（明文测试值经 decrypt_value 原样放行）。
+    /// 旧键存在且非空时行为与改动前完全一致；缺失时回落 linked_* 的 accessToken。
+    #[test]
+    fn pick_login_token_prefers_old_key_then_linked() {
+        let bigmodel = "https://bigmodel.cn";
+        // 旧键存在 → 直接取旧键（即使 linked 也在，旧键优先保证老版本行为不变）
+        let creds = serde_json::json!({
+            "oauth:bigmodel:access_token": "old-token",
+            "oauth:linked_bigmodel": r#"{"accessToken":"new-token"}"#,
+        });
+        assert_eq!(
+            pick_login_token(&creds, bigmodel, b"secret").as_deref(),
+            Some("old-token")
+        );
+
+        // 旧键缺失 → 回落 linked_bigmodel.accessToken
+        let creds = serde_json::json!({
+            "oauth:linked_bigmodel": r#"{"userId":"u","customerId":"c","accessToken":"new-token"}"#,
+        });
+        assert_eq!(
+            pick_login_token(&creds, bigmodel, b"secret").as_deref(),
+            Some("new-token")
+        );
+
+        // 旧键存在但解密后为空 → 回落 linked
+        let creds = serde_json::json!({
+            "oauth:bigmodel:access_token": "   ",
+            "oauth:linked_bigmodel": r#"{"accessToken":" new-with-space "}"#,
+        });
+        assert_eq!(
+            pick_login_token(&creds, bigmodel, b"secret").as_deref(),
+            Some("new-with-space")
+        );
+    }
+
+    /// 登录令牌降级：linked 值非法 JSON / accessToken 缺失或为空 / 两者都缺
+    /// 一律返回 None（静默，不引入新错误路径）。
+    #[test]
+    fn pick_login_token_returns_none_on_bad_linked_or_missing() {
+        let bigmodel = "https://bigmodel.cn";
+        // linked 非法 JSON
+        assert!(pick_login_token(
+            &serde_json::json!({"oauth:linked_bigmodel": "not-json"}),
+            bigmodel,
+            b"secret"
+        )
+        .is_none());
+        // linked JSON 里 accessToken 空串 / 纯空白
+        for bad in [r#"{"accessToken":""}"#, r#"{"accessToken":"   "}"#] {
+            assert!(pick_login_token(
+                &serde_json::json!({"oauth:linked_bigmodel": bad}),
+                bigmodel,
+                b"secret"
+            )
+            .is_none());
+        }
+        // accessToken 字段缺失
+        assert!(pick_login_token(
+            &serde_json::json!({"oauth:linked_bigmodel": r#"{"userId":"u"}"#}),
+            bigmodel,
+            b"secret"
+        )
+        .is_none());
+        // 两个键都不在
+        assert!(pick_login_token(&serde_json::json!({"zcodejwttoken": "jwt"}), bigmodel, b"secret")
+            .is_none());
+        // 旧键是无法解密的密文、且无 linked 键 → 静默返回 None
+        assert!(pick_login_token(
+            &serde_json::json!({"oauth:bigmodel:access_token": "enc:v1:bad.bad.bad"}),
+            bigmodel,
+            b"secret"
+        )
+        .is_none());
+    }
+
+    /// z.ai 分支对称处理：旧键 oauth:zai:access_token 优先，
+    /// 缺失时回落 oauth:linked_zai 的 accessToken。
+    #[test]
+    fn pick_login_token_zai_branch() {
+        let zai = "https://z.ai";
+        // 旧键优先
+        let creds = serde_json::json!({
+            "oauth:zai:access_token": "old-zai",
+            "oauth:linked_zai": r#"{"accessToken":"new-zai"}"#,
+        });
+        assert_eq!(
+            pick_login_token(&creds, zai, b"secret").as_deref(),
+            Some("old-zai")
+        );
+        // 旧键缺失 → 回落 linked_zai
+        let creds = serde_json::json!({
+            "oauth:linked_zai": r#"{"accessToken":"new-zai"}"#,
+        });
+        assert_eq!(
+            pick_login_token(&creds, zai, b"secret").as_deref(),
+            Some("new-zai")
+        );
+        // 都不在 / 非法 JSON → None
+        assert!(pick_login_token(
+            &serde_json::json!({"oauth:linked_zai": "not-json"}),
+            zai,
+            b"secret"
+        )
+        .is_none());
+        assert!(
+            pick_login_token(&serde_json::json!({}), zai, b"secret").is_none()
+        );
     }
 
     /// config.json 端点解析：取 coding-plan provider 的 options.baseURL，
