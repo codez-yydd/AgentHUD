@@ -3599,21 +3599,14 @@ pub fn island_set_last_tab(key: String, app: AppHandle) -> Result<IslandConfig, 
     Ok(next)
 }
 
-/// 抓取灵动岛窗口身后的桌面缩略图（CSS 深色毛玻璃的底层）。
-///
-/// 前端在展开时约 7fps、收起时约 1fps 轮询；抓屏是阻塞的 GDI 操作，
-/// 放到 blocking 线程池里，避免卡住 Tauri 的异步运行时和 UI。
-/// `force`：true 时清空上一拍内容哈希，本拍必定重新编码并回传完整 data
-/// URL——前端页面重载（renderer 崩溃自动恢复等）后 CSS 底图从零开始，
-/// 哈希命中会持续返回空串哨兵导致底图缺失，重载后的轮询首拍带 force
-/// 自愈（见 backdrop::invalidate_last_hash）。
+/// 采集液态玻璃纹理。调用方提交已经显示的底板版本；版本相同时省略图片。
 #[tauri::command]
-pub async fn island_backdrop(app: AppHandle, force: Option<bool>) -> Result<String, String> {
+pub async fn island_backdrop(
+    app: AppHandle,
+    known_revision: Option<u32>,
+) -> Result<Option<backdrop::BackdropFrame>, String> {
     #[cfg(target_os = "windows")]
     {
-        if force.unwrap_or(false) {
-            backdrop::invalidate_last_hash();
-        }
         let win = app
             .get_webview_window(ISLAND_WINDOW_LABEL)
             .ok_or_else(|| "灵动岛窗口不存在".to_string())?;
@@ -3628,15 +3621,14 @@ pub async fn island_backdrop(app: AppHandle, force: Option<bool>) -> Result<Stri
             .map_err(|e| format!("读取窗口尺寸失败: {e}"))?;
         let hwnd = win.hwnd().map_err(|e| format!("读取窗口句柄失败: {e}"))?.0 as isize;
         return tauri::async_runtime::spawn_blocking(move || {
-            backdrop::capture(hwnd, pos.x, pos.y, size.width, size.height)
+            backdrop::capture(hwnd, pos.x, pos.y, size.width, size.height, known_revision)
         })
         .await
         .map_err(|e| format!("背景抓取任务失败: {e}"))?;
     }
     #[cfg(not(target_os = "windows"))]
     {
-        let _ = app;
-        let _ = force;
+        let _ = (app, known_revision);
         Err("桌面毛玻璃采样仅支持 Windows".into())
     }
 }

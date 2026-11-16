@@ -572,34 +572,21 @@ export async function endIslandDrag(): Promise<IslandDragEnd> {
   return { edge, x: 0, y: 0, width: CANVAS_W, height: CANVAS_H };
 }
 
-/**
- * 玻璃使用的桌面纹理（data URL）；浏览器预览返回空，让 CSS 渐变兜底。
- * force=true：绕过 Rust 侧内容哈希去重，本拍必定回传完整 data URL——页面
- * 重载（renderer 崩溃自动恢复等）后 CSS 底图从零开始，轮询首拍带 force
- * 自愈；后续拍不传（去重照常生效）。
- */
-export async function getIslandBackdrop(force = false): Promise<string> {
-  if (!IS_TAURI) {
-    // 预览中的条纹便于观察边缘对采样坐标的位移。
-    if (new URLSearchParams(window.location.search).get("backdrop") === "1") {
-      return delay(
-        "data:image/svg+xml;charset=utf-8," +
-          encodeURIComponent(
-            '<svg xmlns="http://www.w3.org/2000/svg" width="780" height="632">' +
-              '<defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1">' +
-              '<stop offset="0" stop-color="#223a72"/><stop offset="0.55" stop-color="#4a2f6e"/>' +
-              '<stop offset="1" stop-color="#7a3357"/></linearGradient>' +
-              '<pattern id="lines" width="42" height="42" patternUnits="userSpaceOnUse">' +
-              '<path d="M0 0H42M0 0V42" stroke="#a7d8ff" stroke-opacity=".65" stroke-width="3"/>' +
-              '</pattern></defs><rect width="780" height="632" fill="url(#g)"/>' +
-              '<rect width="780" height="632" fill="url(#lines)"/></svg>'
-          ),
-        35
-      );
-    }
-    return "";
-  }
-  return invoke<string>("island_backdrop", { force });
+/** 只接收前端尚未确认的桌面纹理。 */
+export async function getIslandBackdrop(knownRevision?: number): Promise<{ revision: number; url: string } | null> {
+  if (IS_TAURI) return invoke("island_backdrop", { knownRevision });
+  if (knownRevision === 1 || new URLSearchParams(window.location.search).get("backdrop") !== "1") return null;
+
+  // 预览中的条纹便于观察边缘对采样坐标的位移。
+  const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="780" height="632">' +
+    '<defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1">' +
+    '<stop offset="0" stop-color="#223a72"/><stop offset="0.55" stop-color="#4a2f6e"/>' +
+    '<stop offset="1" stop-color="#7a3357"/></linearGradient>' +
+    '<pattern id="lines" width="42" height="42" patternUnits="userSpaceOnUse">' +
+    '<path d="M0 0H42M0 0V42" stroke="#a7d8ff" stroke-opacity=".65" stroke-width="3"/>' +
+    '</pattern></defs><rect width="780" height="632" fill="url(#g)"/>' +
+    '<rect width="780" height="632" fill="url(#lines)"/></svg>';
+  return delay({ revision: 1, url: "data:image/svg+xml;charset=utf-8," + encodeURIComponent(svg) }, 35);
 }
 
 /** 输入框聚焦时临时激活窗口；false = 恢复不可聚焦，不抢编辑器焦点 */

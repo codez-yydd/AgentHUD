@@ -2,57 +2,111 @@
 //! 桌面纹理。允许录屏显示灵动岛时，使用同一显示器的相邻区域，避开窗口回采。
 //! 采集过程不修改窗口采集标志，避免录制画面闪烁。
 
+#[cfg(windows)]
 use base64::{engine::general_purpose::STANDARD, Engine as _};
-use std::sync::{Mutex, OnceLock};
+use std::sync::Arc;
+#[cfg(windows)]
+use std::sync::Mutex;
 
 #[cfg(windows)]
 #[path = "backdrop/desktop.rs"]
 mod desktop;
 
 /// 相邻区域按比例下采样，保留边缘折射所需的细节。
+#[cfg(windows)]
 const DOWNSCALE: u32 = 3;
 
-/// 最近一次成功采到的底板（data URL）。本应用自己的截图/录屏进行中时直接
-/// 复用它，避免与录屏和截图同时读取桌面。
-static LAST_BACKDROP: OnceLock<Mutex<Option<String>>> = OnceLock::new();
-
-/// 最近一次采样的缩略图内容哈希（内存压降专项：桌面画面没变时跳过 PNG
-/// 编码与 base64，返回空串哨兵，前端据此跳过 CSS 变量更新与解码）。
-static LAST_HASH: OnceLock<Mutex<Option<u64>>> = OnceLock::new();
-
-fn last_slot() -> &'static Mutex<Option<String>> {
-    LAST_BACKDROP.get_or_init(|| Mutex::new(None))
+#[derive(Clone, serde::Serialize)]
+pub struct BackdropFrame {
+    pub revision: u32,
+    pub url: Arc<str>,
 }
 
-fn last_hash_slot() -> &'static Mutex<Option<u64>> {
-    LAST_HASH.get_or_init(|| Mutex::new(None))
+#[cfg(any(windows, test))]
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FrameSource {
+    Aligned,
+    Neighbor { width: u32, height: u32, hash: u64 },
 }
 
-/// 清空上一拍内容哈希，强制下一拍 capture 必定重新编码并回传完整 data URL。
-///
-/// 用途：前端页面重载（renderer 崩溃自动恢复等）后 CSS `--backdrop` 从零
-/// 开始，若桌面与采样区域都没变，哈希恒命中会让重载后的前端持续拿到空串
-/// 哨兵、底图缺失。前端在每轮轮询的首拍带 force=true 调用 island_backdrop，
-/// 命令层据此调用本函数；后续拍恢复哨兵去重，不损失省益。
-pub fn invalidate_last_hash() {
-    if let Ok(mut slot) = last_hash_slot().lock() {
-        *slot = None;
+#[cfg(any(windows, test))]
+#[derive(Default)]
+struct FrameCache {
+    latest: Option<(FrameSource, BackdropFrame)>,
+}
+
+#[cfg(windows)]
+static BACKDROP: Mutex<FrameCache> = Mutex::new(FrameCache { latest: None });
+
+#[cfg(any(windows, test))]
+impl FrameCache {
+    fn reply(&self, known_revision: Option<u32>) -> Option<BackdropFrame> {
+        self.latest
+            .as_ref()
+            .map(|(_, frame)| frame)
+            .filter(|frame| Some(frame.revision) != known_revision)
+            .cloned()
+    }
+
+    fn update(&mut self, source: FrameSource, url: String) {
+        let revision = self
+            .latest
+            .as_ref()
+            .map_or(1, |(_, frame)| frame.revision.wrapping_add(1));
+        self.latest = Some((
+            source,
+            BackdropFrame {
+                revision,
+                url: Arc::from(url),
+            },
+        ));
+    }
+
+    fn aligned(&mut self, url: String, known_revision: Option<u32>) -> Option<BackdropFrame> {
+        let unchanged = self.latest.as_ref().is_some_and(|(source, frame)| {
+            *source == FrameSource::Aligned && frame.url.as_ref() == url
+        });
+        if !unchanged {
+            self.update(FrameSource::Aligned, url);
+        }
+        self.reply(known_revision)
+    }
+
+    fn neighbor(
+        &mut self,
+        source: FrameSource,
+        known_revision: Option<u32>,
+        encode: impl FnOnce() -> Result<String, String>,
+    ) -> Result<Option<BackdropFrame>, String> {
+        if !self
+            .latest
+            .as_ref()
+            .is_some_and(|(latest, _)| *latest == source)
+        {
+            self.update(source, encode()?);
+        }
+        Ok(self.reply(known_revision))
     }
 }
 
-fn cached_backdrop() -> Option<String> {
-    last_slot().lock().ok().and_then(|slot| slot.clone())
-}
-
-fn store_backdrop(url: &str) {
-    if let Ok(mut slot) = last_slot().lock() {
-        *slot = Some(url.to_string());
+#[cfg(windows)]
+fn cached_backdrop(
+    known_revision: Option<u32>,
+    unavailable: &str,
+) -> Result<Option<BackdropFrame>, String> {
+    let cache = BACKDROP
+        .lock()
+        .map_err(|_| "桌面底板缓存不可用".to_string())?;
+    if cache.latest.is_none() {
+        return Err(unavailable.to_string());
     }
+    Ok(cache.reply(known_revision))
 }
 
 /// 缩略图像素的 FNV-1a 64 位内容哈希（无依赖；只为相邻两拍的等值判断，
 /// 不承担抗碰撞安全职责——壁纸类画面哈希碰撞时最坏表现为少更新一拍底板，
 /// 下一拍内容变化自愈）。
+#[cfg(windows)]
 fn thumbnail_hash(image: &image::RgbaImage) -> u64 {
     let mut hash: u64 = 0xcbf29ce484222325;
     for byte in image.as_raw() {
@@ -60,6 +114,69 @@ fn thumbnail_hash(image: &image::RgbaImage) -> u64 {
         hash = hash.wrapping_mul(0x100000001b3);
     }
     hash
+}
+
+#[cfg(test)]
+mod cache_tests {
+    use super::*;
+
+    fn neighbor(width: u32, height: u32) -> FrameSource {
+        FrameSource::Neighbor {
+            width,
+            height,
+            hash: 7,
+        }
+    }
+
+    #[test]
+    fn resends_unacknowledged_neighbor_without_encoding_again() {
+        let mut cache = FrameCache::default();
+        let source = neighbor(10, 16);
+        let first = cache
+            .neighbor(source, None, || Ok("neighbor".into()))
+            .unwrap()
+            .unwrap();
+        let no_reencode = || panic!("cached pixels must not be re-encoded");
+        let missed = cache
+            .neighbor(source, None, no_reencode)
+            .unwrap()
+            .unwrap();
+        assert_eq!(first.revision, missed.revision);
+        assert!(Arc::ptr_eq(&first.url, &missed.url));
+        assert!(cache
+            .neighbor(source, Some(first.revision), no_reencode)
+            .unwrap()
+            .is_none());
+        let resized = cache
+            .neighbor(neighbor(16, 10), Some(first.revision), || {
+                Ok("resized".into())
+            })
+            .unwrap()
+            .unwrap();
+        assert_ne!(resized.revision, first.revision);
+    }
+
+    #[test]
+    fn returning_to_same_neighbor_pixels_after_aligned_frame_publishes_them() {
+        let mut cache = FrameCache::default();
+        let source = neighbor(10, 16);
+        let initial = cache
+            .neighbor(source, None, || Ok("neighbor".into()))
+            .unwrap()
+            .unwrap();
+        let aligned = cache
+            .aligned("aligned".into(), Some(initial.revision))
+            .unwrap();
+        assert!(cache
+            .aligned("aligned".into(), Some(aligned.revision))
+            .is_none());
+        let neighbor_again = cache
+            .neighbor(source, Some(aligned.revision), || Ok("neighbor".into()))
+            .unwrap()
+            .unwrap();
+        assert_ne!(aligned.revision, neighbor_again.revision);
+        assert_eq!(neighbor_again.url.as_ref(), "neighbor");
+    }
 }
 
 /// 窗口所在显示器的物理边界和句柄。
@@ -186,11 +303,18 @@ mod tests {
     }
 }
 
-/// 抓取用于液态玻璃纹理的桌面底板，以图片 data URL 返回。
+/// 抓取液态玻璃底板。只有来方已经确认显示最新版本时才省略图片。
 ///
 /// `hwnd` 用 `isize` 传递，避免原始 HWND 指针跨线程的 `Send` 限制。
 #[cfg(target_os = "windows")]
-pub fn capture(hwnd: isize, x: i32, y: i32, width: u32, height: u32) -> Result<String, String> {
+pub fn capture(
+    hwnd: isize,
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+    known_revision: Option<u32>,
+) -> Result<Option<BackdropFrame>, String> {
     use image::{codecs::png::PngEncoder, ExtendedColorType, ImageEncoder, RgbaImage};
     use std::ffi::c_void;
     use std::mem::size_of;
@@ -210,12 +334,12 @@ pub fn capture(hwnd: isize, x: i32, y: i32, width: u32, height: u32) -> Result<S
 
     // 本应用自己的截图/录屏正在抓屏时复用上一张。
     if crate::island::capture_guard::active() {
-        return cached_backdrop().ok_or_else(|| "正在录屏或截图，跳过桌面底板采样".to_string());
+        return cached_backdrop(known_revision, "正在录屏或截图，跳过桌面底板采样");
     }
 
     let hwnd = HWND(hwnd as *mut c_void);
     let Some(monitor) = monitor_for(hwnd) else {
-        return cached_backdrop().ok_or_else(|| "没有可用的桌面底板采样区域".to_string());
+        return cached_backdrop(known_revision, "没有可用的桌面底板采样区域");
     };
     let excluded = || {
         let mut affinity = 0;
@@ -232,8 +356,10 @@ pub fn capture(hwnd: isize, x: i32, y: i32, width: u32, height: u32) -> Result<S
             bottom: y.checked_add(h).ok_or("窗口纵坐标无效")?,
         };
         if let Some(url) = desktop::capture(monitor, canvas).filter(|_| excluded()) {
-            store_backdrop(&url);
-            return Ok(url);
+            return BACKDROP
+                .lock()
+                .map(|mut cache| cache.aligned(url, known_revision))
+                .map_err(|_| "桌面底板缓存不可用".to_string());
         }
     }
     if !excluded() {
@@ -242,7 +368,7 @@ pub fn capture(hwnd: isize, x: i32, y: i32, width: u32, height: u32) -> Result<S
     let r = monitor.bounds;
     let area = (r.left, r.top, r.right - r.left, r.bottom - r.top);
     let Some((sx, sy, sw, sh)) = sample_rect((x, y, width, height), area) else {
-        return cached_backdrop().ok_or_else(|| "没有可用的桌面底板采样区域".to_string());
+        return cached_backdrop(known_revision, "没有可用的桌面底板采样区域");
     };
     let tw = (sw / DOWNSCALE).clamp(2, 320) as i32;
     let th = (sh / DOWNSCALE).clamp(2, 320) as i32;
@@ -322,34 +448,27 @@ pub fn capture(hwnd: isize, x: i32, y: i32, width: u32, height: u32) -> Result<S
     })();
 
     let image = result?;
-    // 内容去重（内存压降专项）：PNG 编码 + base64 + IPC 传输是每拍最大的
-    // 开销，桌面静止时（长时间挂机的大多数时刻）缩略图逐字节相同，哈希
-    // 相同即返回空串哨兵，前端跳过 CSS 更新。哈希在编码前算，省掉的就是
-    // 整段编码。
-    let hash = thumbnail_hash(&image);
-    if last_hash_slot()
+    // 比较相邻取样本身，未变化时复用已编码的图；客户端尚未收到就重发。
+    let source = FrameSource::Neighbor {
+        width: image.width(),
+        height: image.height(),
+        hash: thumbnail_hash(&image),
+    };
+    let mut cache = BACKDROP
         .lock()
-        .ok()
-        .map(|slot| slot.as_ref() == Some(&hash))
-        .unwrap_or(false)
-    {
-        return Ok(String::new());
-    }
-    let mut png = Vec::new();
-    PngEncoder::new(&mut png)
-        .write_image(
-            image.as_raw(),
-            image.width(),
-            image.height(),
-            ExtendedColorType::Rgba8,
-        )
-        .map_err(|e| format!("编码桌面背景失败: {e}"))?;
-    let url = format!("data:image/png;base64,{}", STANDARD.encode(png));
-    store_backdrop(&url);
-    if let Ok(mut slot) = last_hash_slot().lock() {
-        *slot = Some(hash);
-    }
-    Ok(url)
+        .map_err(|_| "桌面底板缓存不可用".to_string())?;
+    cache.neighbor(source, known_revision, || {
+        let mut png = Vec::new();
+        PngEncoder::new(&mut png)
+            .write_image(
+                image.as_raw(),
+                image.width(),
+                image.height(),
+                ExtendedColorType::Rgba8,
+            )
+            .map_err(|error| format!("编码桌面背景失败: {error}"))?;
+        Ok(format!("data:image/png;base64,{}", STANDARD.encode(png)))
+    })
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -359,6 +478,7 @@ pub fn capture(
     _y: i32,
     _width: u32,
     _height: u32,
-) -> Result<String, String> {
-    cached_backdrop().ok_or_else(|| "桌面毛玻璃采样仅支持 Windows".to_string())
+    _known_revision: Option<u32>,
+) -> Result<Option<BackdropFrame>, String> {
+    Err("桌面毛玻璃采样仅支持 Windows".into())
 }

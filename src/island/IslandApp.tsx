@@ -881,7 +881,6 @@ export default function IslandApp() {
   };
 
   // 解码桌面帧并更新背景纹理。液态外壳动画复用同一张模糊纹理。
-  // Rust 侧内容哈希未变时返回空串哨兵 → 空 url 整拍跳过 base64 解码上传。
   const backdropReady = Boolean(config);
   useEffect(() => {
     if (!CAN_CAPTURE_BACKDROP || !enabled || !backdropReady) return;
@@ -889,15 +888,12 @@ export default function IslandApp() {
     const fallback = backdropFallbackRef.current;
     if (!canvas || !fallback) return;
     let alive = true;
-    let timer: number;
+    let timer: number | undefined;
+    let capturing = false;
+    let refreshOnFinish = false;
     let frame: HTMLImageElement | null = null;
-    let frameUrl = "";
+    let knownRevision: number | undefined;
     let luminance: number | null = null;
-    // 首拍 force：页面重载 / effect 重建后 canvas 与底图都从零开始，而 Rust
-    // 侧内容哈希去重会把「桌面没动」判成空串哨兵，前几拍永远拿不到图。
-    // 所以在拿到第一张非空 data URL 之前，每拍都带 force 绕过去重；空哨兵 /
-    // Err 拍（窗口还没 show 等）保持 true，下一拍照样自愈重试。
-    let firstCapture = true;
     glassBackdropRef.current = createGlassBackdrop(canvas);
 
     const uploadFrame = () => {
@@ -938,44 +934,36 @@ export default function IslandApp() {
       return openRef.current ? delay : delay * 3;
     };
     const canCapture = () => !document.hidden && !dragActiveRef.current;
-    // 只保留一个待执行计时器：隐藏态复位拍、可见重启与 finally 复位都可能
-    // 在竞态里同时排程，重复排程会让抓屏节奏翻倍。
-    let timerPending = false;
     const schedule = (ms: number) => {
-      if (timerPending) return;
-      timerPending = true;
+      if (!alive || timer !== undefined) return;
       timer = window.setTimeout(() => {
-        timerPending = false;
+        timer = undefined;
         void tick();
       }, ms);
     };
 
     const tick = async () => {
-      if (!alive) return;
+      if (!alive || capturing) return;
       if (!canCapture()) {
-        // 隐藏 / 拖拽态不抓屏：250ms 只做轻量复位，不空转 invoke；恢复可见
-        // 由下面的 visibilitychange 监听立即拉起（内存压降专项）。
         schedule(250);
         return;
       }
 
+      capturing = true;
       const start = performance.now();
       try {
-        // 首拍 force：绕过 Rust 侧内容哈希哨兵，否则重载后底图会永久空白。
-        const url = await getIslandBackdrop(firstCapture);
-        if (!alive || !url || !canCapture()) return;
-        if (frameUrl !== url) {
+        const captured = await getIslandBackdrop(knownRevision);
+        if (!alive || !canCapture()) return;
+        if (captured) {
           const incoming = new Image();
-          incoming.src = url;
+          incoming.src = captured.url;
           await incoming.decode();
           if (!alive || !canCapture()) return;
           frame = incoming;
-          frameUrl = url;
           luminance = null;
           uploadFrame();
+          knownRevision = captured.revision;
         }
-        // 只有真的拿到非空底图才关闭 force；空串哨兵 / 解码失败保持 true 重试。
-        firstCapture = false;
         if (frame && themeModeRef.current === "auto") {
           luminance ??= sampleBackdropLuminance(frame);
           if (luminance != null) feedLuminance(luminance);
@@ -983,15 +971,22 @@ export default function IslandApp() {
       } catch {
         // 捕获和解码失败时保留当前底板。
       } finally {
-        if (alive) schedule(Math.max(0, interval() - (performance.now() - start)));
+        capturing = false;
+        const delay = refreshOnFinish ? 0 : Math.max(0, interval() - (performance.now() - start));
+        refreshOnFinish = false;
+        schedule(delay);
       }
     };
 
-    // 隐藏态停拍后，恢复可见立刻重新拉起 tick，不必等 250ms 复位拍。
     const onVisible = () => {
       if (!alive || document.visibilityState !== "visible") return;
+      uploadFrame();
+      if (capturing) {
+        refreshOnFinish = true;
+        return;
+      }
       window.clearTimeout(timer);
-      timerPending = false;
+      timer = undefined;
       schedule(0);
     };
     document.addEventListener("visibilitychange", onVisible);
@@ -999,7 +994,6 @@ export default function IslandApp() {
     schedule(0);
     return () => {
       alive = false;
-      // firstCapture 是 effect 内局部变量，清理后下一次重建自然复位为 true。
       window.clearTimeout(timer);
       document.removeEventListener("visibilitychange", onVisible);
       canvas.removeEventListener("webglcontextlost", onLost);
