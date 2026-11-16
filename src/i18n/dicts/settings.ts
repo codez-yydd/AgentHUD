@@ -39,6 +39,12 @@ export const settings = {
   "settings.floatWindowFailOff": "关闭悬浮窗失败：{msg}",
   "settings.floatWindowFailNote": "若面板状态与开关不一致，以重启后的实际状态为准。",
 
+  // ===== 灵动岛设置入口 =====
+  "settings.islandSettings": "灵动岛设置",
+  "settings.islandSettingsOpen": "打开灵动岛设置",
+  "settings.islandSettingsHint":
+    "灵动岛的位置、透明度、鼠标穿透、板块等都在独立设置窗口里调整；灵动岛开启鼠标穿透或隐藏后，可随时从这里重新打开。",
+
   // ===== 开机自启 =====
   "settings.autostart": "开机自启",
   "settings.enable": "启用",

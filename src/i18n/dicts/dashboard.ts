@@ -676,6 +676,11 @@ export const dashboard = {
   "dashboard.settings.hudBar": "灵动岛 HUD",
   "dashboard.settings.hudBarHint":
     "顶部居中、悬停展开的灵动岛；与托盘右键菜单、面板顶部按钮共用同一份开关状态。",
+  // ⑥ 灵动岛设置入口（鼠标穿透后右键菜单不可达时的重开入口）
+  "dashboard.settings.islandSettings": "灵动岛设置",
+  "dashboard.settings.islandSettingsHint":
+    "灵动岛的位置、透明度、鼠标穿透、板块等在独立设置窗口里调整；开启鼠标穿透后可从这里重新打开。",
+  "dashboard.settings.islandSettingsOpen": "打开灵动岛设置",
 
   // ===== 关于页（大窗）：品牌区 / 检查更新 / 项目链接与许可 =====
   // 更新的执行在面板（Update 资源 rid 只对面板 webview 有效），本页经

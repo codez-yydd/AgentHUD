@@ -1,5 +1,5 @@
 /**
- * 设置页（主窗口第九页）：应用级设置的统一入口，五个设置项——
+ * 设置页（主窗口第九页）：应用级设置的统一入口，六个设置项——
  * ① 语言（中文 / English）：复用面板同一套 i18n 存储（zbar-locale）与
  *    zbar://appearance-changed 广播，主窗口改了面板跟着变；
  * ② 外观主题（浅色 / 深色 / 跟随系统）：复用既有主题体系——来源偏好存
@@ -12,7 +12,9 @@
  *    改完下一周期生效，无需重启；
  * ⑤ HUD 停靠条开关：与托盘右键菜单 / 面板顶部按钮同一份配置
  *    （hud-bar.json）与同一套命令 + 状态事件（zbar://hud-bar-state），
- *    三处入口状态互通。
+ *    三处入口状态互通；
+ * ⑥ 灵动岛设置入口：灵动岛开启鼠标穿透后右键菜单不可达，设置窗关闭后
+ *    可从这里重新打开（位置/透明度/穿透/板块均在独立设置窗里调整）。
  *
  * 刻意不做的：各页数据口径、时间范围等页面级偏好仍在各页自身；
  * 本页只收「应用级」开关，避免设置堆积。
@@ -26,8 +28,13 @@ import {
   loadThemePref,
   type ThemePref,
 } from "../appearance";
-import { getAppSettings, setAutoCapture as setAutoCaptureApi } from "../api";
+import {
+  getAppSettings,
+  openIslandSettings,
+  setAutoCapture as setAutoCaptureApi,
+} from "../api";
 import { getHudBarState, onHudBarState, setHudBarEnabled } from "../hudBar";
+import { AlertBanner } from "../layout";
 import { FontSizeControl } from "../FontSizeControl";
 import {
   FONT_CHANGED_EVENT,
@@ -130,6 +137,8 @@ function ToggleSwitch({
 export function SettingsPage() {
   const { locale, setLocale, t } = useI18n();
   const { mode: currencyMode, setMode: setCurrencyMode } = useCurrencyPref();
+  // 操作失败提示（如打开灵动岛设置窗失败），复用 PricingPage 的 AlertBanner
+  const [settingsError, setSettingsError] = useState<string | null>(null);
 
   // ---- 主题来源：挂载读一次；监听外观广播重读（侧栏快捷切换 / 其他窗口
   //      改主题后，本页分段选项跟着当前来源走，不停留在旧值） ----
@@ -249,6 +258,8 @@ export function SettingsPage() {
         </div>
       </header>
 
+      {settingsError && <AlertBanner type="error">{settingsError}</AlertBanner>}
+
       <div className="db-set-list">
         {/* ① 语言 */}
         <section className="db-set-row">
@@ -354,6 +365,28 @@ export function SettingsPage() {
             title={t("dashboard.settings.hudBar")}
             onChange={changeHudBar}
           />
+        </section>
+
+        {/* ⑥ 灵动岛设置入口：灵动岛开启鼠标穿透后右键菜单不可达，设置窗关闭后
+            可从这里重新打开（位置/透明度/穿透/板块均在独立设置窗里调整） */}
+        <section className="db-set-row">
+          <div className="db-set-row__text">
+            <h2 className="db-set-row__title">
+              {t("dashboard.settings.islandSettings")}
+            </h2>
+            <p className="db-set-row__desc">
+              {t("dashboard.settings.islandSettingsHint")}
+            </p>
+          </div>
+          <button
+            type="button"
+            className="db-btn db-btn--primary"
+            onClick={() => {
+              openIslandSettings().catch((e) => setSettingsError(String(e)));
+            }}
+          >
+            {t("dashboard.settings.islandSettingsOpen")}
+          </button>
         </section>
       </div>
     </div>

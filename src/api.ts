@@ -478,6 +478,12 @@ export async function setPanelEnabled(enabled: boolean): Promise<void> {
   await invoke("set_panel_enabled", { enabled });
 }
 
+/** 打开灵动岛设置窗口：窗口已存在则显示并聚焦，不存在则由 Rust 侧创建。
+ *  灵动岛开启鼠标穿透或被隐藏时，这是设置窗的常驻重开入口（主窗口设置页）。 */
+export async function openIslandSettings(): Promise<void> {
+  await invoke("open_island_settings_window");
+}
+
 /** 打开主窗口（Dashboard 管理/分析大窗）：窗口已存在则显示并聚焦，
  *  不存在则由 Rust 侧 main_window.rs 建窗（1100×720 普通系统窗）。
  *  省内存改造后主窗口"关闭即销毁"，每次冷开多几百 ms；建窗失败时 reject，

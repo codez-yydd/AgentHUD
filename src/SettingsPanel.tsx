@@ -6,6 +6,7 @@ import {
   getPanelEnabled,
   getProxyConfig,
   getShortcutConfig,
+  openIslandSettings,
   setCursorConfig,
   // 别名避免与本组件 panelEnabled 的 useState setter setPanelEnabled 撞名
   setPanelEnabled as savePanelSwitch,
@@ -459,6 +460,25 @@ export function SettingsPanel({
               </p>
             </>
           )}
+        </SettingsCard>
+
+        {/* 灵动岛设置入口：灵动岛开启鼠标穿透后右键菜单不可达，设置窗关闭后
+            只能从这里重新打开（否则透明度/穿透等设置被锁死无法调整） */}
+        <SettingsCard
+          title={t("settings.islandSettings")}
+          action={
+            <BtnPrimary
+              onClick={() =>
+                openIslandSettings().catch((e) => setError(String(e)))
+              }
+            >
+              {t("settings.islandSettingsOpen")}
+            </BtnPrimary>
+          }
+        >
+          <p className="text-[9px] text-slate-500 leading-relaxed">
+            {t("settings.islandSettingsHint")}
+          </p>
         </SettingsCard>
 
         {/* 语言：与顶栏 LanguageToggle 读写同一 Context，切换后全站即时同步 */}

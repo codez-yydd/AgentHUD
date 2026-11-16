@@ -558,6 +558,11 @@ export const en: typeof zh = {
     "settings.floatWindowFailNote":
       "If the panel state doesn't match the switch, the state after the next launch prevails.",
 
+    "settings.islandSettings": "Island Settings",
+    "settings.islandSettingsOpen": "Open Island Settings",
+    "settings.islandSettingsHint":
+      "The island's position, opacity, mouse passthrough, and sections are all adjusted in a separate settings window. Once mouse passthrough is enabled or the island is hidden, you can reopen it here at any time.",
+
     "settings.autostart": "Launch at login",
     "settings.enable": "Enable",
     "settings.applying": "Applying…",
@@ -1965,6 +1970,11 @@ export const en: typeof zh = {
     "dashboard.settings.hudBar": "Dynamic island",
     "dashboard.settings.hudBarHint":
       "The top-center dynamic island that expands on hover; shares its on/off state with the tray menu and the panel header button.",
+    // ⑥ Island settings entry (reopen path when mouse passthrough hides the context menu)
+    "dashboard.settings.islandSettings": "Island Settings",
+    "dashboard.settings.islandSettingsHint":
+      "Adjust the island's position, opacity, mouse passthrough, and panels in its dedicated settings window; once passthrough is on, reopen it from here.",
+    "dashboard.settings.islandSettingsOpen": "Open Island Settings",
 
     // ===== About page: brand / check for updates / project links & license =====
     // Updates run in the panel (the Update resource's rid is only valid in the
