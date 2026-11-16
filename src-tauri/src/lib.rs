@@ -19,6 +19,9 @@ mod gemini;
 mod grok;
 mod hud_bar;
 mod island;
+// 灵动岛设置独立窗口：岛展开面板齿轮打开的 1100×720 无边框大窗，建窗铁律
+// 与 main_window 同源（懒创建、关闭=隐藏），见模块 doc
+mod island_settings_window;
 mod kimi;
 mod kimi_oauth;
 mod local_agents;
@@ -3168,10 +3171,21 @@ pub fn run() {
                 // 标题栏是前端自绘的（decorations(false)，见 main_window.rs
                 // 模块 doc），前端关闭按钮同样走 close() 触发本挂点。
                 // webview 与页面状态原样保留，再次打开走 show + focus；应用
-                // 退出仍由托盘"退出 AgentHUD"完成。只拦 main-window 一个 label，
+                // 退出仍由托盘"退出 AgentHUD"完成。本分支只拦 main-window /
+                // island-settings / island 这类"关闭=隐藏"的常驻窗口，
                 // panel/pet/session-hud 的关闭路径（各自 Destroyed 挂点）不受影响
                 WindowEvent::CloseRequested { api, .. } => {
                     if window.label() == main_window::MAIN_WINDOW_LABEL {
+                        api.prevent_close();
+                        let _ = window.hide();
+                    } else if window.label()
+                        == island_settings_window::ISLAND_SETTINGS_WINDOW_LABEL
+                    {
+                        // 灵动岛设置独立窗口：与主窗口同款的"关闭=隐藏"（常驻
+                        // 秒开，见 island_settings_window.rs 模块 doc）。标题栏
+                        // 由设置页前端自绘，关闭按钮同样走 close() 触发本挂点；
+                        // prevent_close + hide 保住 WebView 与表单/滚动状态。
+                        // 岛被总开关关闭时另有收窗分支（island::set_enabled_on_main）
                         api.prevent_close();
                         let _ = window.hide();
                     } else if window.label() == island::ISLAND_WINDOW_LABEL {
@@ -3282,6 +3296,21 @@ pub fn run() {
                 let handle = app.handle().clone();
                 std::thread::spawn(move || {
                     std::thread::sleep(std::time::Duration::from_millis(2500));
+                    // 截图板块在设置里被隐藏时整段跳过：覆盖窗 / 录制条都是
+                    // 全屏、backgroundThrottling 关闭的隐藏 WebView，建好就
+                    // 一直占渲染进程内存，正是「关掉的板块不占资源」要避免的。
+                    // 此时不建窗，真正的截图 / 录屏入口仍会现场建窗（只吃一次
+                    // WebView 冷启动）；等用户在设置里重新显示，由
+                    // island::sync_tab_services → screenshot::set_tab_visible
+                    // 延迟预热。
+                    if island::load_config()
+                        .hidden_tabs
+                        .iter()
+                        .any(|key| key == "shot")
+                    {
+                        eprintln!("[zbar-shot] 截图板块已隐藏，跳过启动预热");
+                        return;
+                    }
                     let app_warm = handle.clone();
                     let _ = tauri::async_runtime::block_on(
                         island::screenshot::shot_prewarm(app_warm),
@@ -3292,6 +3321,17 @@ pub fn run() {
                     // WebView 冷启动的几百毫秒。失败只记日志，首次录制
                     // 仍能现场建窗。
                     std::thread::sleep(std::time::Duration::from_millis(1500));
+                    // 这 1.5s 里用户可能在设置里刚隐藏截图板块：预热前再复查一次
+                    //（与 screenshot::set_tab_visible 的延迟复查同款），隐藏就不再
+                    // 建录制条窗口，避免关掉的板块留一个隐藏 WebView 占内存。
+                    if island::load_config()
+                        .hidden_tabs
+                        .iter()
+                        .any(|key| key == "shot")
+                    {
+                        eprintln!("[zbar-rec] 截图板块已隐藏，跳过录制窗口预热");
+                        return;
+                    }
                     let app_rec = handle.clone();
                     if let Err(e) = tauri::async_runtime::block_on(
                         island::screenshot::prewarm_recorder_window(app_rec),
@@ -3373,6 +3413,15 @@ pub fn run() {
             // 恢复逻辑，避免两套 HUD 同时出现。
             island::prepare_legacy_bar();
             hud_bar::start_if_enabled(app.handle());
+            // 消息等后台服务启动前，先准备 settings.json 并同步剪贴板上限。
+            island::settings::ensure_document(app.handle());
+            // 「打开应用 / Clash Verge 程序」的启动自动探测：只填空项、不覆盖
+            // 用户手动保存过（含显式清空）的值。探测要枚举进程 / 读卸载表，
+            // 放后台线程，不阻塞 setup（失败只记日志）。
+            let seed_app = app.handle().clone();
+            std::thread::spawn(move || {
+                tauri::async_runtime::block_on(island::settings::seed_detected_paths(&seed_app));
+            });
             // 灵动岛 HUD：顶部毛玻璃胶囊 + 多页展开（默认开启）
             island::start_if_enabled(app.handle());
             Ok(())
@@ -3533,7 +3582,16 @@ pub fn run() {
             island::island_set_enabled,
             island::island_toggle,
             island::island_set_expanded,
+            // 液态画布：前端上报主体（岛本体）尺寸（未上报回退 300×54）
+            island::island_set_body_size,
             island::island_set_hover_rect,
+            // 收起态右键菜单开关：菜单浮在胶囊热区外，打开期间冻结自动穿透
+            island::island_set_context_menu_open,
+            // 可穿透（WS_EX_TRANSPARENT + 右键/滚轮钩子）/ 右键菜单关闭后恢复
+            island::island_set_passthrough,
+            island::island_passthrough_restore,
+            // 记住上次标签页
+            island::island_set_last_tab,
             island::island_drag_begin,
             island::island_drag_step,
             island::island_drag_end,
@@ -3544,9 +3602,42 @@ pub fn run() {
             island::island_open_path,
             island::island_set_keyboard,
             island::island_quit,
+            // 灵动岛设置文档（~/.agenthud/settings.json）：重做后的 14 页设置窗
+            // 读写入口；文档与 IslandConfig 重叠字段双向同步，保存走点路径 patch
+            island::settings::island_settings_doc,
+            island::settings::island_settings_reload,
+            island::settings::island_settings_save,
+            island::settings::island_settings_reset,
+            island::settings::island_settings_import,
+            island::settings::island_settings_export,
+            island::settings::island_settings_open_file,
+            island::settings::island_settings_reveal_file,
+            island::settings::island_settings_paths,
+            island::settings::island_settings_window_hide,
+            island::settings::island_fonts,
+            island::settings::island_monitors,
+            island::settings::island_hotkey_status,
+            // 翻译（DeepSeek 兼容接口）
+            island::translate::island_translate,
+            island::translate::platforms::island_translation_platforms,
+            island::translate::platforms::island_translation_models,
+            // 实时字幕（系统声音 / 麦克风 → Silero VAD → 日语 ASR → 流式翻译）；
+            // 状态走 zbar://island-live，单条字幕走 zbar://island-live-caption
+            island::live::live_status,
+            island::live::live_start,
+            island::live::live_stop,
+            island::live::live_devices,
+            island::live::live_download_models,
+            island::live::live_cancel_download,
+            island::live::live_captions,
+            island::live::live_clear_captions,
             // 天气（Open-Meteo）
             island::weather::island_weather,
             island::weather::island_weather_refresh,
+            island::weather::island_weather_bind,
+            island::weather::island_weather_unbind,
+            island::weather::island_weather_add_city,
+            island::weather::island_weather_remove_city,
             island::weather::island_locate,
             // 股票（腾讯财经）
             island::stocks::island_stocks,
@@ -3556,6 +3647,8 @@ pub fn run() {
             // 媒体（Windows SMTC）
             island::media::island_media,
             island::media::island_media_action,
+            // 真实音频峰值（收起态音乐律动条；0..1，失败/非 Windows 返回 0）
+            island::audio_peak::island_audio_peak,
             // 歌词（网易云公开接口）
             island::lyrics::island_lyrics,
             // 系统（音量/亮度/Wi-Fi/蓝牙）
@@ -3565,6 +3658,10 @@ pub fn run() {
             island::system::island_set_brightness,
             island::system::island_toggle_radio,
             island::system::island_open_system_settings,
+            island::clash::island_clash_status,
+            island::clash::island_clash_open,
+            island::clash::island_clash_set,
+            island::clash::island_clash_set_mode,
             // 剪贴板
             island::clipboard::island_clipboard,
             island::clipboard::island_clipboard_copy,
@@ -3581,9 +3678,18 @@ pub fn run() {
             // 消息（Windows 通知数据库 + 飞书 / 钉钉通知浮窗）
             island::notify::island_notify,
             island::notify::island_notify_mark_read,
+            // 按模块（kind）清未读 / 读取模块开关快照（消息页磁贴）
+            island::notify::island_notify_mark_read_kind,
+            island::notify::island_notify_modules,
             island::notify::island_notify_clear,
             island::notify::island_notify_open,
             island::notify::island_notify_open_settings,
+            // 桌面消息玻璃浮窗（label notify-popup，独立透明置顶小窗）：
+            // 页面就绪握手（交出冷启动期间攒下的第一批）/ 按堆叠尺寸重新定位
+            // 并显示 / 清空后隐藏。出卡本身由 zbar://notify-popup-show 事件推。
+            island::popup::notify_popup_ready,
+            island::popup::notify_popup_resize,
+            island::popup::notify_popup_hide,
             // 截图工作台
             island::screenshot::shot_monitors,
             island::screenshot::shot_windows,
@@ -3628,6 +3734,9 @@ pub fn run() {
             island::screenshot::shot_qr,
             // 主窗口（Dashboard）：托盘菜单与悬浮窗统计页按钮共用的打开入口
             main_window::open_main_window,
+            // 灵动岛设置独立窗口：岛展开面板齿轮的打开入口（首开懒创建、
+            // 关闭=隐藏；建窗铁律与主窗口同源，见 island_settings_window.rs）
+            island_settings_window::open_island_settings_window,
             // 自定义托盘右键菜单（macOS/Windows）：轻量状态快照（文件读）+
             // 用量页汇总/趋势一次取数（async + spawn_blocking）+ 菜单项
             // 动作分发（同步命令 = 主线程执行，open-main/hud-toggle 的

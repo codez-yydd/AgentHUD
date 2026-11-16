@@ -1262,6 +1262,8 @@ export const en: typeof zh = {
 
   ...({
     "dashboard.subtitle": "Usage & quota console",
+    // Standalone island settings window title-bar subtitle (TitleBar.subtitle)
+    "dashboard.islandSettings.subtitle": "Island settings",
 
     // Self-drawn title bar window controls (tooltips + aria-labels)
     "dashboard.titlebar.minimize": "Minimize",

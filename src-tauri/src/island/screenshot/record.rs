@@ -793,16 +793,9 @@ pub async fn shot_record_export(
 pub async fn shot_record_close(app: AppHandle, record_id: u64) -> Result<(), String> {
     stop_and_wait_detached(record_id).await;
     remove_record(record_id);
-    let app_main = app.clone();
-    let _ = on_main_thread(&app, move || {
-        // 预览窗即录制条窗口（同一窗口复用）：关闭只隐藏保留，下次录制
-        // navigate 整页重载，不吃 WebView 冷启动
-        if let Some(win) = app_main.get_webview_window(REC_WINDOW_LABEL) {
-            let _ = win.hide();
-        }
-        Ok(())
-    })
-    .await;
+    // 关闭走 hide_recorder_window：板块可见时隐藏复用（下次录制 navigate
+    // 整页重载，不吃 WebView 冷启动），板块隐藏时销毁
+    hide_recorder_window(&app).await;
     close_shot(&app).await
 }
 
@@ -821,16 +814,9 @@ pub async fn shot_record_cancel(
     });
     stop_and_wait_detached(record_id).await;
     remove_record(record_id);
-    let app_main = app.clone();
-    let _ = on_main_thread(&app, move || {
-        // 录制条窗口只隐藏保留复用（隐藏前可能带着失败/取消态的内容，
-        // 下次录制会整页 navigate 重载掉）
-        if let Some(win) = app_main.get_webview_window(REC_WINDOW_LABEL) {
-            let _ = win.hide();
-        }
-        Ok(())
-    })
-    .await;
+    // 取消同样走 hide_recorder_window：板块可见时隐藏复用（隐藏前可能带着
+    // 失败/取消态的内容，下次录制会整页 navigate 重载掉），板块隐藏时销毁
+    hide_recorder_window(&app).await;
     if let Some(text) = message.filter(|text| !text.trim().is_empty()) {
         let _ = app.emit_to(super::SHOT_WINDOW_LABEL, super::SHOT_RECORD_ERROR_EVENT, text);
     }
@@ -849,6 +835,16 @@ pub fn is_recording() -> bool {
             map.values()
                 .any(|rec| rec.inner.lock().map(|i| i.running).unwrap_or(false))
         })
+        .unwrap_or(false)
+}
+
+/// 是否还有录制会话（录制中，或录完的预览窗还开着——两种状态都保留在
+/// `RECORDS` 里）。截图板块隐藏时据此拒绝销毁录制条/预览窗：会话还活着就
+/// 让窗口留着，等用户录完、关掉预览后再收敛。
+pub fn has_active_recordings() -> bool {
+    records()
+        .lock()
+        .map(|map| !map.is_empty())
         .unwrap_or(false)
 }
 
@@ -1128,14 +1124,25 @@ fn build_recorder_window(
     Ok(win)
 }
 
-/// 隐藏（不销毁）录制条 / 预览窗：窗口常驻复用，启动预热、录制、预览共用
+/// 隐藏录制条 / 预览窗：板块可见时窗口常驻复用，启动预热、录制、预览共用
 /// 同一个 WebView；销毁会让下次录制重新吃 WebView 冷启动。错误回滚路径
-/// （probe 失败 / 建窗失败 / 收起覆盖层失败）也只隐藏，留下的是待命窗口。
+/// （probe 失败 / 建窗失败 / 收起覆盖层失败）也走这里。
+///
+/// 截图板块已隐藏时不再保留待命窗口，直接销毁——与 `set_tab_visible` 的隐藏
+/// 分支同口径，否则这个隐藏的 WebView 会重新常驻到下次显隐切换。
 async fn hide_recorder_window(app: &AppHandle) {
+    let tab_hidden = super::super::load_config()
+        .hidden_tabs
+        .iter()
+        .any(|key| key == "shot");
     let app_main = app.clone();
     let _ = on_main_thread(app, move || {
         if let Some(win) = app_main.get_webview_window(REC_WINDOW_LABEL) {
-            let _ = win.hide();
+            if tab_hidden {
+                let _ = win.destroy();
+            } else {
+                let _ = win.hide();
+            }
         }
         Ok(())
     })
@@ -1150,6 +1157,15 @@ async fn hide_recorder_window(app: &AppHandle) {
 pub async fn prewarm_recorder_window(app: AppHandle) -> Result<(), String> {
     let app_main = app.clone();
     on_main_thread(&app, move || {
+        // 延迟预热期间板块可能已被隐藏：以最新配置为准，避免过期的预热
+        // 建出刚被隐藏路径销毁的窗（此时该由隐藏路径负责销毁，不该重建）。
+        if super::super::load_config()
+            .hidden_tabs
+            .iter()
+            .any(|key| key == "shot")
+        {
+            return Ok(());
+        }
         if app_main.get_webview_window(REC_WINDOW_LABEL).is_some() {
             return Ok(()); // 已有窗口（已预热 / 录制中 / 预览中），不动
         }

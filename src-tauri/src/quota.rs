@@ -480,7 +480,10 @@ pub(crate) fn query_quota_with(token: &str, base_url: &str) -> Result<QuotaResul
     }
 
     let data = resp.data.ok_or("额度响应缺少 data 字段")?;
+    Ok(quota_windows(data))
+}
 
+fn quota_windows(data: QuotaData) -> QuotaResult {
     // MCP 月度额度：type=TIME_LIMIT（与 token 额度区分开，先单独取）
     let mcp = data.limits.iter().find(|l| l.kind == "TIME_LIMIT").cloned();
 
@@ -503,17 +506,17 @@ pub(crate) fn query_quota_with(token: &str, base_url: &str) -> Result<QuotaResul
         matched.first().map(|l| (*l).clone())
     };
 
-    let hour5 = pick_stable(&|l| l.unit == 3 && l.number == 5)
-        // 兼容旧接口：刚刷新后的短窗口通常没有 nextResetTime。
-        .or_else(|| {
-            token_limits
-                .iter()
-                .find(|l| l.next_reset_time.is_none())
-                .cloned()
-        })
-        .or_else(|| token_limits.first().cloned());
+    let is_weekly = |limit: &QuotaLimit| (limit.unit, limit.number) == (6, 1);
+    let hour5 = pick_stable(&|l| l.unit == 3 && l.number == 5).or_else(|| {
+        // 兼容旧接口：优先取刚刷新、没有 nextResetTime 的窗口，排除已明确为周额度的条目。
+        token_limits
+            .iter()
+            .filter(|l| !is_weekly(l))
+            .min_by_key(|l| l.next_reset_time.is_some())
+            .cloned()
+    });
 
-    let weekly = pick_stable(&|l| l.unit == 6 && l.number == 1).or_else(|| {
+    let weekly = pick_stable(&is_weekly).or_else(|| {
         token_limits
             .iter()
             .find(|l| {
@@ -525,12 +528,12 @@ pub(crate) fn query_quota_with(token: &str, base_url: &str) -> Result<QuotaResul
             .cloned()
     });
 
-    Ok(QuotaResult {
+    QuotaResult {
         level: data.level,
         hour5,
         weekly,
         mcp,
-    })
+    }
 }
 
 /// 请求额度接口并解析（凭证自动推断版）。
@@ -629,6 +632,56 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn quota_windows_do_not_reuse_explicit_week_as_hour5() {
+        for reset in [None, Some(1_800_000_000_000_i64)] {
+            let data = serde_json::from_value(serde_json::json!({
+                "limits": [
+                    { "type": "TOKENS_LIMIT", "unit": 6, "number": 1, "percentage": 40, "nextResetTime": reset }
+                ]
+            }))
+            .unwrap();
+            let result = quota_windows(data);
+
+            assert!(result.hour5.is_none());
+            assert_eq!(result.weekly.unwrap().percentage, 40);
+        }
+    }
+
+    #[test]
+    fn quota_windows_preserve_legacy_short_window_selection() {
+        let data = serde_json::from_str(
+            r#"{
+                "limits": [
+                    { "type": "TOKENS_LIMIT", "unit": 6, "number": 1, "percentage": 40 },
+                    { "type": "TOKENS_LIMIT", "percentage": 10, "nextResetTime": 1800000000000 },
+                    { "type": "TOKENS_LIMIT", "percentage": 20 }
+                ]
+            }"#,
+        )
+        .unwrap();
+        let result = quota_windows(data);
+
+        assert_eq!(result.hour5.unwrap().percentage, 20);
+        assert_eq!(result.weekly.unwrap().percentage, 40);
+    }
+
+    #[test]
+    fn quota_windows_do_not_reuse_explicit_hour5_as_week() {
+        let data = serde_json::from_str(
+            r#"{
+                "limits": [
+                    { "type": "TOKENS_LIMIT", "unit": 3, "number": 5, "percentage": 30 }
+                ]
+            }"#,
+        )
+        .unwrap();
+        let result = quota_windows(data);
+
+        assert_eq!(result.hour5.unwrap().percentage, 30);
+        assert!(result.weekly.is_none());
+    }
 
     /// setting.json 的 dataBaseDir 解析：正常路径/前后空白可解析，
     /// 空串、缺失、坏 JSON、非字符串均回退 None（对应回退默认目录）

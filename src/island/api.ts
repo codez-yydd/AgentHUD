@@ -2,6 +2,8 @@
 
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { CANVAS_H, CANVAS_W, INSET } from "./liquid";
+import { advanceSpring, hasDragMovement, nearestScreenEdge, screenGap, springAt, type Spring } from "./motion";
 import {
   mockClipboardWithImage,
   mockConfig,
@@ -11,6 +13,7 @@ import {
   mockMinute,
   mockNotify,
   mockProjects,
+  MOCK_SETTINGS_STORE_KEY,
   mockSnippets,
   mockStocks,
   mockSystem,
@@ -20,14 +23,23 @@ import {
   mockWeather,
 } from "./mock";
 import type {
+  ClashMode,
+  ClashStatus,
+  ClashToggleKind,
   ClipItem,
   HudBarUsage,
   IslandConfig,
   IslandDragBegin,
   IslandDragEnd,
+  IslandDragSizes,
   IslandDragStep,
+  IslandEdge,
+  IslandQuotaDisplay,
   IslandState,
   LauncherProject,
+  LiveCaption,
+  LiveDevices,
+  LiveStatus,
   LocatedPlace,
   LyricsState,
   MediaState,
@@ -39,12 +51,14 @@ import type {
   MeetingSessionInfo,
   MeetingSettings,
   MeetingStopResult,
+  NotifyModules,
   NotifyState,
   Snippet,
   StockMinute,
   StockSearchItem,
   StocksState,
   SystemState,
+  TabKey,
   TodayUsageTotals,
   ToolboxImageInfo,
   ToolboxImageOut,
@@ -52,6 +66,7 @@ import type {
   ToolboxQrSaved,
   WeatherState,
 } from "./types";
+import { LIVE_CAPTION_LIMIT } from "./types";
 
 export const IS_TAURI =
   typeof window !== "undefined" &&
@@ -69,6 +84,40 @@ function clone<T>(value: T): T {
 let mockClipState: ClipItem[] = clone(mockClipboardWithImage());
 let mockSnippetState: Snippet[] = clone(mockSnippets);
 
+// ===== 实时字幕：浏览器预览用的空闲快照 / 空字幕 / 示例设备 =====
+/** 预览里的实时字幕状态（空闲；调 live_start 后转为 listening，便于验证开关态） */
+let mockLiveStatus: LiveStatus = {
+  running: false,
+  phase: "idle",
+  error: "",
+  modelReady: false,
+  source: "loopback",
+  device: "",
+  level: 0,
+  download: { state: "idle", done: 0, total: 0, label: "", message: "" },
+};
+let mockLiveCaptions: LiveCaption[] = [];
+/** 预览示例设备（与 Rust `live_devices()` 同结构：loopback / mic 两组名字） */
+const MOCK_LIVE_DEVICES: LiveDevices = {
+  loopback: ["扬声器 (Realtek High Definition Audio)", "耳机 (USB Audio Device)"],
+  mic: ["麦克风阵列 (Realtek High Definition Audio)", "麦克风 (USB Audio Device)"],
+};
+const mockClashStatus: ClashStatus = {
+  supported: true,
+  running: true,
+  installed: true,
+  mode: "rule",
+  mixedPort: 7897,
+  tun: false,
+  systemProxy: true,
+  canSetSystemProxy: true,
+  canSetTun: true,
+  canSetMode: true,
+  traffic: { uploadSpeed: 65_536, downloadSpeed: 1_572_864 },
+  subscription: { used: 33_500_745_728, total: 107_374_182_400 },
+  ipLocation: { ip: "203.0.113.18", region: "示例地区" },
+};
+
 /** 钉住的排前面（与 Rust 侧 sort_for_display 同语义的稳定分区） */
 function sortPinnedFirst(items: ClipItem[]): ClipItem[] {
   return [
@@ -77,14 +126,92 @@ function sortPinnedFirst(items: ClipItem[]): ClipItem[] {
   ];
 }
 
+const MOCK_DEFAULT_NOTIFY_MODULES = ["qq", "wechat", "mail"];
+
+/** 浏览器预览：按 mockConfig.notifyModules 过滤通知（与 Rust 的可见列表同口径） */
+function mockNotifySnapshot(): NotifyState {
+  const modules = mockConfig.notifyModules ?? MOCK_DEFAULT_NOTIFY_MODULES;
+  const items = mockNotify.items.filter((item) =>
+    modules.includes(item.kind) && (item.kind !== "wechat" || !item.read)
+  );
+  return {
+    items: clone(items),
+    unread: items.filter((item) => !item.read).length,
+    wechatUnread: items.filter((item) => item.kind === "wechat").length,
+  };
+}
+
+// 浏览器预览：把 mock 配置持久化到 sessionStorage，刷新后仍能验证
+// 「切页 → 改设置 → 重开仍停在该页」这类跨重启行为（真机由 Rust SQLite 落盘）。
+const MOCK_CONFIG_KEY = "agenthud.mock.islandConfig";
+const MOCK_DEFAULT_TRANSPARENCY = mockConfig.transparency;
+function mockStringList(value: unknown): string[] | undefined {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : undefined;
+}
+
+function readMockIslandPreferences(raw: string | null): {
+  quotaDisplay?: IslandQuotaDisplay;
+  hiddenTabs?: string[];
+  notifyModules?: string[];
+  transparency?: number;
+} {
+  try {
+    const settings = raw ? JSON.parse(raw) : null;
+    const data = settings?.data?.island;
+    const value = data?.quota_display;
+    return {
+      quotaDisplay: value === "rings" || value === "percent" ? value : undefined,
+      hiddenTabs: mockStringList(data?.hidden_tabs),
+      notifyModules: mockStringList(settings?.data?.notify?.modules),
+      transparency: Number.isFinite(data?.transparency)
+        ? Math.round(Math.max(0, Math.min(90, data.transparency)))
+        : undefined,
+    };
+  } catch {
+    return {};
+  }
+}
+
+try {
+  const raw = typeof sessionStorage === "undefined" ? null : sessionStorage.getItem(MOCK_CONFIG_KEY);
+  if (raw) Object.assign(mockConfig, JSON.parse(raw) as Partial<typeof mockConfig>);
+  if (!IS_TAURI) {
+    const { quotaDisplay, hiddenTabs, notifyModules, transparency } =
+      readMockIslandPreferences(localStorage.getItem(MOCK_SETTINGS_STORE_KEY));
+    if (quotaDisplay) mockConfig.quotaDisplay = quotaDisplay;
+    if (hiddenTabs) mockConfig.hiddenTabs = hiddenTabs;
+    if (notifyModules) mockConfig.notifyModules = notifyModules;
+    if (transparency !== undefined) mockConfig.transparency = transparency;
+  }
+} catch {
+  /* 隐私模式 / 存储不可用时退回内存 mock */
+}
+function persistMockConfig() {
+  try {
+    sessionStorage.setItem(MOCK_CONFIG_KEY, JSON.stringify(mockConfig));
+  } catch {
+    /* 忽略：预览不需要强一致 */
+  }
+}
+
 // ===== 窗口 / 配置 =====
+
+/** 浏览器预览：记录最后一次 island_set_expanded，刷新后模拟 WebView 重载恢复 */
+let mockExpanded = false;
+try {
+  mockExpanded =
+    typeof sessionStorage !== "undefined" &&
+    sessionStorage.getItem("agenthud.mock.expanded") === "1";
+} catch {
+  mockExpanded = false;
+}
 
 export async function getIslandState(): Promise<IslandState> {
   if (!IS_TAURI) {
     return delay({
       enabled: true,
       config: clone(mockConfig),
-      expanded: false,
+      expanded: mockExpanded,
     });
   }
   return invoke<IslandState>("island_state");
@@ -97,7 +224,32 @@ export async function getIslandConfig(): Promise<IslandConfig> {
 
 export async function setIslandConfig(config: IslandConfig): Promise<IslandConfig> {
   if (!IS_TAURI) {
+    const hiddenTabsChanged = mockConfig.hiddenTabs.join() !== config.hiddenTabs.join();
+    const modulesChanged = mockConfig.notifyModules?.join() !== config.notifyModules?.join();
+    const transparencyChanged = mockConfig.transparency !== config.transparency;
+    if (hiddenTabsChanged || modulesChanged || transparencyChanged) {
+      try {
+        const raw = localStorage.getItem(MOCK_SETTINGS_STORE_KEY);
+        const data = (raw && JSON.parse(raw)?.data) || {};
+        localStorage.setItem(MOCK_SETTINGS_STORE_KEY, JSON.stringify({
+          data: {
+            ...data,
+            ...(hiddenTabsChanged || transparencyChanged ? {
+              island: {
+                ...data.island,
+                ...(hiddenTabsChanged && { hidden_tabs: config.hiddenTabs }),
+                ...(transparencyChanged && { transparency: config.transparency }),
+              },
+            } : {}),
+            ...(modulesChanged && { notify: { ...data.notify, modules: config.notifyModules } }),
+          },
+        }));
+      } catch {
+        /* 存储不可用时仍更新本窗口。 */
+      }
+    }
     Object.assign(mockConfig, clone(config));
+    persistMockConfig();
     return delay(clone(mockConfig));
   }
   return invoke<IslandConfig>("island_set_config", { config });
@@ -114,8 +266,49 @@ export async function toggleIsland(): Promise<boolean> {
 }
 
 export async function setIslandExpanded(expanded: boolean): Promise<void> {
-  if (!IS_TAURI) return delay(undefined, 20);
+  if (!IS_TAURI) {
+    mockExpanded = expanded;
+    try {
+      sessionStorage.setItem("agenthud.mock.expanded", expanded ? "1" : "0");
+    } catch {
+      /* 预览会话存储不可用：仅内存 */
+    }
+    console.info("[island mock] set expanded", expanded);
+    return delay(undefined, 20);
+  }
   return invoke("island_set_expanded", { expanded });
+}
+
+/** 可穿透：窗口整体鼠标穿透（右键仍可用）。Rust 侧读 config.passthrough 落盘。 */
+export async function islandSetPassthrough(on: boolean): Promise<void> {
+  if (!IS_TAURI) {
+    mockConfig.passthrough = Boolean(on);
+    persistMockConfig();
+    return delay(undefined, 20);
+  }
+  return invoke("island_set_passthrough", { on });
+}
+
+/** 记住上次停留的标签：独立命令落盘，避免每次切页都整份写回 IslandConfig。 */
+/**
+ * 可穿透右键菜单关闭后调用：立刻结束 Rust 侧的「临时可点击」窗口期（把
+ * WS_EX_TRANSPARENT 加回去）。调用必须幂等；失败静默（Rust 侧还有 10s 兜底）。
+ */
+export async function islandPassthroughRestore(): Promise<void> {
+  if (!IS_TAURI) {
+    console.info("[island mock] passthrough restore");
+    return delay(undefined, 20);
+  }
+  return invoke("island_passthrough_restore");
+}
+
+export async function islandSetLastTab(key: TabKey): Promise<void> {
+  if (!IS_TAURI) {
+    mockConfig.lastTab = key;
+    persistMockConfig();
+    return delay(undefined, 10);
+  }
+  return invoke("island_set_last_tab", { key });
 }
 
 /** macOS 悬停展开用：把收起态胶囊的实际矩形（CSS px）告诉 Rust。 */
@@ -125,7 +318,16 @@ export async function islandSetHoverRect(
   width: number,
   height: number
 ): Promise<void> {
-  if (!IS_TAURI) return;
+  if (!IS_TAURI) {
+    console.info(
+      "[island mock] hover rect",
+      Math.round(x),
+      Math.round(y),
+      Math.round(width),
+      Math.round(height)
+    );
+    return;
+  }
   try {
     await invoke("island_set_hover_rect", { x, y, width, height });
   } catch {
@@ -133,30 +335,244 @@ export async function islandSetHoverRect(
   }
 }
 
+/**
+ * 收起态右键菜单开/关：菜单是浮在胶囊热区之外的绝对定位浮层，打开期间要让
+ * Rust 冻结「透明留白自动穿透」，否则光标一移到菜单上就会被判在热区外、窗口
+ * 被设成 WS_EX_TRANSPARENT，菜单随即点不动。关闭后下一拍恢复原判定。
+ */
+export async function islandSetContextMenuOpen(open: boolean): Promise<void> {
+  if (!IS_TAURI) {
+    console.info("[island mock] context menu", open);
+    return;
+  }
+  try {
+    await invoke("island_set_context_menu_open", { open });
+  } catch {
+    /* 失败只影响菜单期间的可点击性，不打断菜单交互 */
+  }
+}
+
 // ===== 拖拽 / 吸附 =====
 
-export async function beginIslandDrag(): Promise<IslandDragBegin> {
-  if (!IS_TAURI) return delay({ active: true }, 10);
-  return invoke<IslandDragBegin>("island_drag_begin");
+// 浏览器没有全局桌面坐标，以画布内缩线模拟工作区，使用同一组弹簧参数。
+const mockEdgeLines = { top: INSET, bottom: CANVAS_H - INSET, left: INSET, right: CANVAS_W - INSET };
+const mockHorizontal = (edge: IslandEdge) => edge === "top" || edge === "bottom";
+let mockDrag: {
+  edge: IslandEdge;
+  sizes: IslandDragSizes;
+  expanded: boolean;
+  navigation: boolean;
+  press: { x: number; y: number };
+  grab: { x: number; y: number };
+  x: Spring;
+  y: Spring;
+  w: Spring;
+  h: Spring;
+  last: number;
+  started: boolean;
+  snap?: { edge: IslandEdge; along: Spring; gap: Spring };
+} | null = null;
+let mockBodySize = { width: 300, height: 54, expanded: false };
+let mockCursor = { x: 0, y: 0 };
+let mockPointerDown = false;
+
+if (!IS_TAURI && typeof window !== "undefined") {
+  const updateCursor = (event: PointerEvent) => {
+    mockCursor = { x: event.clientX, y: event.clientY };
+  };
+  window.addEventListener("pointermove", updateCursor, true);
+  window.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0) return;
+    updateCursor(event);
+    mockPointerDown = true;
+  }, true);
+  const release = () => { mockPointerDown = false; };
+  window.addEventListener("pointerup", release, true);
+  window.addEventListener("pointercancel", release, true);
+  window.addEventListener("blur", release);
+}
+
+function mockCenter(edge: IslandEdge, along: number, gap: number, width: number, height: number) {
+  switch (edge) {
+    case "top": return { x: along, y: mockEdgeLines.top + gap + height / 2 };
+    case "bottom": return { x: along, y: mockEdgeLines.bottom - gap - height / 2 };
+    case "left": return { x: mockEdgeLines.left + gap + width / 2, y: along };
+    case "right": return { x: mockEdgeLines.right - gap - width / 2, y: along };
+  }
+}
+
+/** P4：把当前本体（640×H / 收起胶囊）的实际尺寸上报给 Rust。
+ * Rust 用它在 780×632 大画布内计算 bodyRect / 液桥几何；失败静默。 */
+export async function islandSetBodySize(
+  width: number,
+  height: number,
+  expanded: boolean
+): Promise<void> {
+  if (!IS_TAURI) {
+    mockBodySize = { width: Math.round(width), height: Math.round(height), expanded };
+    console.info(
+      "[island mock] body size",
+      Math.round(width),
+      Math.round(height),
+      expanded ? "expanded" : "collapsed"
+    );
+    return delay(undefined, 10);
+  }
+  try {
+    await invoke("island_set_body_size", {
+      width: Math.round(width),
+      height: Math.round(height),
+      expanded,
+    });
+  } catch {
+    /* Rust 任务尚未落地时静默：预览 / 旧后端仍能显示外壳 */
+  }
+}
+
+export async function beginIslandDrag(
+  sizes: IslandDragSizes,
+  navigation: boolean,
+  expanded: boolean,
+  edge: IslandEdge,
+  pointer: { x: number; y: number },
+): Promise<IslandDragBegin> {
+  if (!IS_TAURI) {
+    const { width, height } = mockBodySize;
+    const center = mockCenter(edge, mockHorizontal(edge) ? CANVAS_W / 2 : CANVAS_H / 2, 0, width, height);
+    mockDrag = {
+      edge, sizes, expanded, navigation,
+      press: mockCursor,
+      grab: { x: center.x - mockCursor.x, y: center.y - mockCursor.y },
+      x: springAt(center.x),
+      y: springAt(center.y),
+      w: springAt(width),
+      h: springAt(height),
+      last: performance.now(),
+      started: false,
+    };
+    return { active: true };
+  }
+  return invoke<IslandDragBegin>("island_drag_begin", { sizes, navigation, expanded, pointer });
 }
 
 export async function stepIslandDrag(): Promise<IslandDragStep> {
-  // 浏览器预览没有真实光标位移：一律按「只是按住没拖」处理（started=false）。
-  // 之前恒回 started=true，预览里点任何按钮都可能被判成拖拽而收起面板。
-  if (!IS_TAURI) return delay({ active: true, dx: 0, dy: 0, started: false }, 10);
-  return invoke<IslandDragStep>("island_drag_step");
+  if (IS_TAURI) return invoke<IslandDragStep>("island_drag_step");
+
+  const motion = mockDrag;
+  if (!motion) return { active: false, dx: 0, dy: 0, started: false, settled: true };
+  if (!motion.started) {
+    const dx = mockCursor.x - motion.press.x;
+    const dy = mockCursor.y - motion.press.y;
+    const moved = hasDragMovement(dx, dy, motion.navigation);
+    if (!mockPointerDown || !moved) {
+      if (!mockPointerDown) mockDrag = null;
+      return { active: mockPointerDown, dx: 0, dy: 0, started: false };
+    }
+    motion.started = true;
+    if (motion.expanded) {
+      motion.grab = { x: 0, y: 0 };
+      motion.x = springAt(mockCursor.x);
+      motion.y = springAt(mockCursor.y);
+    } else {
+      motion.grab = { x: motion.x.value - mockCursor.x, y: motion.y.value - mockCursor.y };
+    }
+  }
+  const now = performance.now();
+  const dt = Math.max(1 / 240, Math.min(1 / 30, (now - motion.last) / 1000));
+  motion.last = now;
+  const oldX = motion.x.value;
+  const oldY = motion.y.value;
+  let squash = 0;
+  let active = mockPointerDown;
+  let settled = false;
+
+  if (motion.snap) {
+    const { edge, along, gap } = motion.snap;
+    const horizontal = mockHorizontal(edge);
+    const size = horizontal ? motion.sizes.horizontal : motion.sizes.vertical;
+    advanceSpring(motion.w, size.width, 460, 0.64, dt, 0.2);
+    advanceSpring(motion.h, size.height, 460, 0.64, dt, 0.2);
+    const targetAlong = horizontal ? CANVAS_W / 2 : CANVAS_H / 2;
+    advanceSpring(along, targetAlong, 240, 0.74, dt, 0.2);
+    advanceSpring(gap, 0, 300, 0.38, dt, 0.2);
+    squash = Math.max(0, -gap.value);
+    const center = mockCenter(edge, along.value, Math.max(0, gap.value), motion.w.value, motion.h.value);
+    const normalVelocity = edge === "top" || edge === "left" ? gap.velocity : -gap.velocity;
+    motion.x = springAt(center.x, horizontal ? along.velocity : normalVelocity);
+    motion.y = springAt(center.y, horizontal ? normalVelocity : along.velocity);
+    settled = along.value === targetAlong && gap.value === 0 && motion.w.value === size.width && motion.h.value === size.height;
+    active = !settled;
+    if (settled) mockDrag = null;
+  } else if (mockPointerDown) {
+    const size = mockHorizontal(motion.edge) ? motion.sizes.horizontal : motion.sizes.vertical;
+    advanceSpring(motion.w, size.width, 300, 0.55, dt, 0.2);
+    advanceSpring(motion.h, size.height, 300, 0.55, dt, 0.2);
+    advanceSpring(motion.x, mockCursor.x + motion.grab.x, 900, 0.78, dt, 0.2);
+    advanceSpring(motion.y, mockCursor.y + motion.grab.y, 900, 0.78, dt, 0.2);
+  }
+
+  const width = motion.w.value;
+  const height = motion.h.value;
+  const bodyRect = { x: motion.x.value - width / 2, y: motion.y.value - height / 2, width, height };
+  const edge = motion.snap?.edge ?? nearestScreenEdge(bodyRect, mockEdgeLines);
+  return {
+    active, started: true, settled, edge, bodyRect, squash,
+    dx: motion.x.value - oldX,
+    dy: motion.y.value - oldY,
+    vx: motion.x.velocity,
+    vy: motion.y.velocity,
+    edgeLines: mockEdgeLines,
+    origin: { x: 0, y: 0 },
+  };
 }
 
-export async function endIslandDrag(started = true): Promise<IslandDragEnd> {
-  if (!IS_TAURI) return delay({ edge: "top", x: 0, y: 0, width: 552, height: 70 }, 10);
-  // Rust 的 drag_step 会在松手时先清掉会话，等淡出 130ms 后再 end 时
-  // 槽里可能已经空了。显式告诉 Rust 这次是真拖拽，才能保证左/顶也吸附。
-  return invoke<IslandDragEnd>("island_drag_end", { started });
+export async function endIslandDrag(): Promise<IslandDragEnd> {
+  if (IS_TAURI) return invoke<IslandDragEnd>("island_drag_end", { started: true });
+
+  const motion = mockDrag;
+  if (!motion?.started) throw new Error("拖动会话已结束");
+  const size = mockHorizontal(motion.edge) ? motion.sizes.horizontal : motion.sizes.vertical;
+  const body = {
+    x: motion.x.value - size.width / 2,
+    y: motion.y.value - size.height / 2,
+    ...size,
+  };
+  const edge = nearestScreenEdge(body, mockEdgeLines, 1.35);
+  const horizontal = mockHorizontal(edge);
+  const normal = horizontal ? motion.y.velocity : motion.x.velocity;
+  motion.snap = {
+    edge,
+    along: springAt(horizontal ? motion.x.value : motion.y.value, horizontal ? motion.x.velocity : motion.y.velocity),
+    gap: springAt(Math.max(-4, screenGap(edge, body, mockEdgeLines[edge])),
+      edge === "top" || edge === "left" ? normal : -normal),
+  };
+  mockConfig.edge = edge;
+  persistMockConfig();
+  return { edge, x: 0, y: 0, width: CANVAS_W, height: CANVAS_H };
 }
 
-/** 窗口身后的桌面缩略图（data URL）；浏览器预览返回空，让 CSS 渐变兜底。 */
+/** 玻璃使用的桌面纹理（data URL）。 */
 export async function getIslandBackdrop(): Promise<string> {
-  if (!IS_TAURI) return "";
+  if (!IS_TAURI) {
+    // 预览中的条纹便于观察边缘对采样坐标的位移。
+    if (new URLSearchParams(window.location.search).get("backdrop") === "1") {
+      return delay(
+        "data:image/svg+xml;charset=utf-8," +
+          encodeURIComponent(
+            '<svg xmlns="http://www.w3.org/2000/svg" width="780" height="632">' +
+              '<defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1">' +
+              '<stop offset="0" stop-color="#223a72"/><stop offset="0.55" stop-color="#4a2f6e"/>' +
+              '<stop offset="1" stop-color="#7a3357"/></linearGradient>' +
+              '<pattern id="lines" width="42" height="42" patternUnits="userSpaceOnUse">' +
+              '<path d="M0 0H42M0 0V42" stroke="#a7d8ff" stroke-opacity=".65" stroke-width="3"/>' +
+              '</pattern></defs><rect width="780" height="632" fill="url(#g)"/>' +
+              '<rect width="780" height="632" fill="url(#lines)"/></svg>'
+          ),
+        35
+      );
+    }
+    return "";
+  }
   return invoke<string>("island_backdrop");
 }
 
@@ -185,6 +601,34 @@ export async function openMainWindow(page?: string): Promise<void> {
     return delay(undefined, 20);
   }
   return invoke("open_main_window", { page: page ?? null });
+}
+
+/** 打开独立的「灵动岛设置」窗口（label island-settings，页面
+ *  island-settings.html，见 src-tauri/src/island_settings_window.rs）。
+ *
+ * 窗口是懒创建的：首次调用建窗并聚焦，之后（含关闭=隐藏后再开）只做
+ * show + unminimize + set_focus，秒开。命令无参数、无返回值，失败串由
+ * Rust 侧给出中文原因；调用方只需 catch 后 toast，不阻断岛内其它交互。
+ * 浏览器预览没有真实窗口，按本文件 mock 分支的既有风格打日志即可。 */
+export async function openIslandSettingsWindow(): Promise<void> {
+  if (!IS_TAURI) {
+    console.info("[island mock] open island settings window");
+    return delay(undefined, 20);
+  }
+  return invoke("open_island_settings_window");
+}
+
+/** 全局开关热键当前是否已成功注册（只读查询，不改注册）。
+ *
+ * 语义来自 Rust 侧 island_hotkey_registered：读配置里的 hotkeyToggle 再问
+ * global-shortcut 插件「是否注册着这个组合」。被其它软件占用、组合非法或
+ * 空串时返回 false。设置窗口据此显示「已生效 / 未生效」提示；保存热键后
+ * 注册发生在主线程（island_set_config 的命令返回之后），调用方需要延迟
+ * 一拍再查询才能读到新状态。
+ * 浏览器预览没有全局热键，统一返回 true（与 mockConfig 的默认组合自洽）。 */
+export async function islandHotkeyRegistered(): Promise<boolean> {
+  if (!IS_TAURI) return delay(true);
+  return invoke<boolean>("island_hotkey_registered");
 }
 
 // ===== 额度 =====
@@ -221,6 +665,46 @@ export async function getWeather(): Promise<WeatherState | null> {
 export async function refreshWeather(): Promise<void> {
   if (!IS_TAURI) return delay(undefined, 20);
   return invoke("island_weather_refresh");
+}
+
+/** 绑定主城市：把 name/lat/lon 写进 weather.city/lat/lon（settings.json 同步） */
+export async function bindWeatherCity(city: {
+  name: string;
+  lat: number | null;
+  lon: number | null;
+}): Promise<void> {
+  if (!IS_TAURI) return delay(undefined, 20);
+  return invoke("island_weather_bind", {
+    name: city.name,
+    lat: city.lat,
+    lon: city.lon,
+  });
+}
+
+/** 取消绑定：清空主城市，被解绑城市补回自定义列表并立即重新定位 IP */
+export async function unbindWeatherCity(): Promise<void> {
+  if (!IS_TAURI) return delay(undefined, 20);
+  return invoke("island_weather_unbind");
+}
+
+/** 添加自定义城市：城市名 geocode 或「纬度,经度」；成功返回可展示提示文案 */
+export async function addWeatherCity(query: string): Promise<string> {
+  if (!IS_TAURI) return delay(`已添加城市「${query.trim()}」`, 20);
+  return invoke<string>("island_weather_add_city", { query });
+}
+
+/** 删除自定义城市：只从 weather.cities 删除，主城市 / IP 城市不可删 */
+export async function removeWeatherCity(city: {
+  name: string;
+  lat: number | null;
+  lon: number | null;
+}): Promise<void> {
+  if (!IS_TAURI) return delay(undefined, 20);
+  return invoke("island_weather_remove_city", {
+    name: city.name,
+    lat: city.lat,
+    lon: city.lon,
+  });
 }
 
 export async function locateCurrentPlace(): Promise<LocatedPlace> {
@@ -286,15 +770,25 @@ export async function getMedia(): Promise<MediaState> {
   return invoke<MediaState>("island_media");
 }
 
-export async function mediaAction(action: "toggle" | "next" | "prev"): Promise<void> {
+export async function mediaAction(action: "toggle" | "next" | "prev", appId: string): Promise<void> {
   if (!IS_TAURI) {
     if (action === "toggle") mockMedia.playing = !mockMedia.playing;
     return delay(undefined, 40);
   }
-  return invoke("island_media_action", { action });
+  return invoke("island_media_action", { action, appId });
 }
 
-export async function getLyrics(title: string, artist: string): Promise<LyricsState> {
+/**
+ * 歌词：按后端配置的源顺序（`media.lyrics_sources`）逐个尝试。
+ * `album` / `duration` 供 lrclib 精确匹配与自定义接口占位符使用；缺失传 null
+ * （后端按 `Option` 处理）。
+ */
+export async function getLyrics(
+  title: string,
+  artist: string,
+  album?: string,
+  duration?: number
+): Promise<LyricsState> {
   if (!IS_TAURI) {
     return delay({
       ok: true,
@@ -306,7 +800,95 @@ export async function getLyrics(title: string, artist: string): Promise<LyricsSt
       source: "mock",
     });
   }
-  return invoke<LyricsState>("island_lyrics", { title, artist });
+  return invoke<LyricsState>("island_lyrics", {
+    title,
+    artist,
+    album: album ?? null,
+    duration: duration ?? null,
+  });
+}
+
+// ===== 实时字幕 =====
+// 后端：系统声音 / 麦克风 → VAD 断句 → 日语 ASR（定稿 + 草稿）→ 流式翻译。
+// 状态快照走 `zbar://island-live`，单条字幕走 `zbar://island-live-caption`。
+// 浏览器预览全部返回空闲快照 / 空字幕 / 示例设备，避免预览报错。
+
+/** 模型总大小的兜底估算（约 630MB；后端拿不到 total 时 UI 用它算百分比） */
+export const LIVE_MODEL_TOTAL_FALLBACK = 630 * 1024 * 1024;
+
+export async function liveStatus(): Promise<LiveStatus> {
+  if (!IS_TAURI) return delay(clone(mockLiveStatus), 40);
+  return invoke<LiveStatus>("live_status");
+}
+
+/** 开始聆听：模型未下载 / 设备不可用时后端返回 phase=error 的快照（不抛异常）。 */
+export async function liveStart(): Promise<LiveStatus> {
+  if (!IS_TAURI) {
+    // 预览不做真实采集：直接切到 listening，便于验证胶囊字幕层与开始/停止态。
+    mockLiveStatus = { ...mockLiveStatus, running: true, phase: "listening", error: "" };
+    return delay(clone(mockLiveStatus), 60);
+  }
+  return invoke<LiveStatus>("live_start");
+}
+
+export async function liveStop(): Promise<LiveStatus> {
+  if (!IS_TAURI) {
+    mockLiveStatus = { ...mockLiveStatus, running: false, phase: "idle", level: 0 };
+    return delay(clone(mockLiveStatus), 60);
+  }
+  return invoke<LiveStatus>("live_stop");
+}
+
+/** 可选音频设备：按 source 分 loopback（系统声音）/ mic（麦克风）两组。 */
+export async function liveDevices(): Promise<LiveDevices> {
+  if (!IS_TAURI) return delay(clone(MOCK_LIVE_DEVICES), 40);
+  return invoke<LiveDevices>("live_devices");
+}
+
+/** 下载 parakeet-ja + silero_vad 模型；进度通过 `zbar://island-live` 推送。 */
+export async function liveDownloadModels(): Promise<LiveStatus> {
+  if (!IS_TAURI) {
+    // 预览直接当作下载完成（约 630MB），便于验证「已下载」态。
+    mockLiveStatus = {
+      ...mockLiveStatus,
+      modelReady: true,
+      download: {
+        state: "done",
+        done: LIVE_MODEL_TOTAL_FALLBACK,
+        total: LIVE_MODEL_TOTAL_FALLBACK,
+        label: "模型已就绪",
+        message: "",
+      },
+    };
+    return delay(clone(mockLiveStatus), 80);
+  }
+  return invoke<LiveStatus>("live_download_models");
+}
+
+export async function liveCancelDownload(): Promise<LiveStatus> {
+  if (!IS_TAURI) {
+    mockLiveStatus = {
+      ...mockLiveStatus,
+      download: { state: "cancelled", done: 0, total: 0, label: "", message: "" },
+    };
+    return delay(clone(mockLiveStatus), 60);
+  }
+  return invoke<LiveStatus>("live_cancel_download");
+}
+
+/** 当前会话的字幕历史（旧 → 新；最多 80 条）。 */
+export async function liveCaptions(): Promise<LiveCaption[]> {
+  if (!IS_TAURI) return delay(clone(mockLiveCaptions), 40);
+  return invoke<LiveCaption[]>("live_captions");
+}
+
+/** 清空字幕历史（后端没有返回值约定，只用本地清空 + 事件收敛）。 */
+export async function liveClearCaptions(): Promise<void> {
+  if (!IS_TAURI) {
+    mockLiveCaptions = [];
+    return delay(undefined, 40);
+  }
+  return invoke("live_clear_captions");
 }
 
 // ===== 系统 =====
@@ -357,6 +939,32 @@ export async function openSystemSettings(kind: string): Promise<void> {
   return invoke("island_open_system_settings", { kind });
 }
 
+export async function getClashStatus(): Promise<ClashStatus> {
+  if (!IS_TAURI) return delay(clone(mockClashStatus));
+  return invoke<ClashStatus>("island_clash_status");
+}
+
+export async function setClashToggle(kind: ClashToggleKind, enabled: boolean): Promise<ClashStatus> {
+  if (!IS_TAURI) {
+    mockClashStatus[kind] = enabled;
+    return delay(clone(mockClashStatus));
+  }
+  return invoke<ClashStatus>("island_clash_set", { kind, enabled });
+}
+
+export async function setClashMode(mode: ClashMode): Promise<ClashStatus> {
+  if (!IS_TAURI) {
+    mockClashStatus.mode = mode;
+    return delay(clone(mockClashStatus));
+  }
+  return invoke<ClashStatus>("island_clash_set_mode", { mode });
+}
+
+export async function openClashVerge(): Promise<void> {
+  if (!IS_TAURI) return delay(undefined, 20);
+  return invoke("island_clash_open");
+}
+
 // ===== 剪贴板 =====
 
 export async function getClipboard(): Promise<ClipItem[]> {
@@ -381,7 +989,7 @@ export async function clearClipboard(): Promise<void> {
 // ===== 消息 =====
 
 export async function getNotify(): Promise<NotifyState> {
-  if (!IS_TAURI) return delay(clone(mockNotify));
+  if (!IS_TAURI) return delay(mockNotifySnapshot());
   return invoke<NotifyState>("island_notify");
 }
 
@@ -391,7 +999,7 @@ export async function markNotifyRead(): Promise<NotifyState> {
       i.read = true;
     });
     mockNotify.unread = 0;
-    return delay(clone(mockNotify), 20);
+    return delay(mockNotifySnapshot(), 20);
   }
   return invoke<NotifyState>("island_notify_mark_read");
 }
@@ -402,13 +1010,50 @@ export async function clearNotify(kind?: string): Promise<NotifyState> {
       ? mockNotify.items.filter((i) => i.kind !== kind)
       : [];
     mockNotify.unread = mockNotify.items.filter((i) => !i.read).length;
-    return delay(clone(mockNotify), 20);
+    return delay(mockNotifySnapshot(), 20);
   }
   return invoke<NotifyState>("island_notify_clear", { kind: kind ?? null });
 }
 
+/** 只把某个模块（kind）的消息标记为已读；返回最新可见状态。 */
+export async function markNotifyReadKind(kind: string): Promise<NotifyState> {
+  if (!IS_TAURI) {
+    mockNotify.items.forEach((item) => {
+      if (item.kind === kind) item.read = true;
+    });
+    mockNotify.unread = mockNotify.items.filter((item) => !item.read).length;
+    return delay(mockNotifySnapshot(), 20);
+  }
+  return invoke<NotifyState>("island_notify_mark_read_kind", { kind });
+}
+
+/** 消息模块开关快照（消息页磁贴据 config.notifyModules 渲染；这里单次读）。 */
+export async function getNotifyModules(): Promise<NotifyModules> {
+  if (!IS_TAURI) {
+    return delay({
+      modules: [...(mockConfig.notifyModules ?? MOCK_DEFAULT_NOTIFY_MODULES)],
+      bodyPreview: [...(mockConfig.notifyBodyPreview ?? ["feishu", "dingtalk"])],
+    });
+  }
+  return invoke<NotifyModules>("island_notify_modules");
+}
+
+/** 系统音频峰值（0..1，Rust 微秒级读取，无设备/无会话返回 0）；预览合成。 */
+export async function islandAudioPeak(): Promise<number> {
+  if (!IS_TAURI) {
+    if (!mockMedia.hasSession || !mockMedia.playing) return delay(0, 5);
+    const t = performance.now() / 1000;
+    const value =
+      0.44 +
+      0.28 * Math.sin(t * 7.7) * Math.sin(t * 3.1 + 1.2) +
+      0.12 * Math.sin(t * 23.0 + 0.4);
+    return delay(Math.max(0, Math.min(1, value)), 5);
+  }
+  return invoke<number>("island_audio_peak");
+}
+
 export async function openNotifyApp(kind: string, exe?: string): Promise<NotifyState> {
-  if (!IS_TAURI) return delay(clone(mockNotify), 20);
+  if (!IS_TAURI) return markNotifyReadKind(kind);
   return invoke<NotifyState>("island_notify_open", { kind, exe: exe || null });
 }
 
@@ -420,7 +1065,63 @@ export async function openNotifySettings(): Promise<void> {
 // ===== 事件 =====
 
 export function onEvent<T>(name: string, handler: (payload: T) => void): () => void {
-  if (!IS_TAURI) return () => {};
+  if (!IS_TAURI) {
+    // 浏览器预览：用 window CustomEvent 模拟 Tauri 事件总线。这样没有 Rust 也能
+    // 调收起态 / activity，并可在 Chrome headless 里用 CDP 注入事件做交互验证。
+    const listener = (event: Event) => {
+      const detail = (event as CustomEvent<T>).detail as unknown;
+      // 通知事件同步回写 mock 状态：页面注入/真实 Tauri 事件后，再调
+      // island_notify_* mock 命令时返回值仍是同一份数据（预览更接近真机）。
+      if (name === "zbar://island-notify" && detail && typeof detail === "object") {
+        const payload = detail as { items?: unknown; unread?: number };
+        if (Array.isArray(payload.items)) {
+          mockNotify.items = clone(payload.items as typeof mockNotify.items);
+          mockNotify.unread =
+            typeof payload.unread === "number"
+              ? payload.unread
+              : mockNotify.items.filter((item) => !item.read).length;
+        }
+      }
+      // 实时字幕：注入的状态 / 字幕事件同步回写 mock，之后调 live_status() /
+      // live_captions() 返回的还是同一份数据（预览更接近真机）。
+      if (name === "zbar://island-live" && detail && typeof detail === "object") {
+        mockLiveStatus = { ...mockLiveStatus, ...clone(detail as Partial<LiveStatus>) };
+      }
+      if (name === "zbar://island-live-caption" && detail && typeof detail === "object") {
+        const caption = clone(detail as LiveCaption);
+        const index = mockLiveCaptions.findIndex((item) => item.id === caption.id);
+        if (index >= 0) mockLiveCaptions[index] = caption;
+        else mockLiveCaptions = [...mockLiveCaptions, caption].slice(-LIVE_CAPTION_LIMIT);
+      }
+      handler(detail as T);
+    };
+    window.addEventListener(name, listener);
+    const onSettingsSaved = (event: StorageEvent) => {
+      if (event.key !== MOCK_SETTINGS_STORE_KEY && event.key !== null) return;
+      const next = readMockIslandPreferences(event.newValue);
+      const quotaDisplay = next.quotaDisplay ?? "percent";
+      const hiddenTabs = next.hiddenTabs ?? [];
+      const notifyModules = next.notifyModules ?? MOCK_DEFAULT_NOTIFY_MODULES;
+      const transparency = next.transparency ?? MOCK_DEFAULT_TRANSPARENCY;
+      if (
+        mockConfig.quotaDisplay === quotaDisplay &&
+        mockConfig.hiddenTabs.join() === hiddenTabs.join() &&
+        mockConfig.notifyModules?.join() === notifyModules.join() &&
+        mockConfig.transparency === transparency
+      ) return;
+      mockConfig.quotaDisplay = quotaDisplay;
+      mockConfig.hiddenTabs = hiddenTabs;
+      mockConfig.notifyModules = notifyModules;
+      mockConfig.transparency = transparency;
+      persistMockConfig();
+      handler(clone(mockConfig) as T);
+    };
+    if (name === "zbar://island-config") window.addEventListener("storage", onSettingsSaved);
+    return () => {
+      window.removeEventListener(name, listener);
+      if (name === "zbar://island-config") window.removeEventListener("storage", onSettingsSaved);
+    };
+  }
   let unlisten: UnlistenFn | null = null;
   let dead = false;
   listen<T>(name, (event) => handler(event.payload))
@@ -435,6 +1136,19 @@ export function onEvent<T>(name: string, handler: (payload: T) => void): () => v
     dead = true;
     if (unlisten) unlisten();
   };
+}
+
+/** 实时字幕状态快照（运行 / 模型 / 下载进度 / 电平），对应 `zbar://island-live`。 */
+export function onLiveStatus(handler: (status: LiveStatus) => void): () => void {
+  return onEvent<LiveStatus>("zbar://island-live", handler);
+}
+
+/**
+ * 单条字幕更新，对应 `zbar://island-live-caption`。
+ * 同一个 id 的草稿会反复推送（draft=true），定稿推送后不再变化。
+ */
+export function onLiveCaption(handler: (caption: LiveCaption) => void): () => void {
+  return onEvent<LiveCaption>("zbar://island-live-caption", handler);
 }
 
 // ===== 工具箱（二维码 / 图片压缩转换）=====

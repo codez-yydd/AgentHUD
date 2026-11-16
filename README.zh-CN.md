@@ -91,7 +91,7 @@ AgentHUD 是一个面向 AI 编程 Agent 的开源可观测性看板，统一监
 - **⌨️ 全局快捷键** — 默认 `alt+shift+z` 唤起 / 隐藏面板，可在设置中自定义或停用。
 - **🎨 动态壁纸** — 一键把动态视频壁纸注入 ZCode 桌面应用，作为对话背景；安装前自动备份原版、可随时还原。ZCode 升级后壁纸会失效，需重新安装；macOS 上注入后 ZCode 内置更新将不可用（还原也无法恢复），需前往官网重新下载。
 - **🖥 会话 Token 悬浮窗** — 免注入的桌面悬浮窗：按 agent 分组（ZCode / Claude / Codex / Kimi Code / DeepSeek Harness / OpenCode / MiniMax Code / Cursor）实时展示各会话累计 Token（输入 / 输出 / 缓存 / 请求数）、流式生成速度（t/s 与首字延迟）与实时状态点（有运行中信号的来源显示生成中 / 空闲，其余为中性灰点），底部按「来源 × 模型」给出窗口速度行（真生成窗口口径不带 ≈，整请求耗时口径带 ≈）。活跃窗口内无会话的 agent 回退展示「今日最近会话」并淡显标注，组头仍为该 agent 今日合计。支持拖拽边缘 / 四角自由调整大小（尺寸与位置自动记忆），标题栏内置设置面板（字体大小 / 窗口透明度）与一键关闭；语言、主题跟随主面板。在「皮肤」页开启。
-- **🫧 灵动岛 HUD（新增）** — 液态毛玻璃胶囊，视觉与交互参考 [Misaka273/wisland](https://github.com/Misaka273/wisland)。收起态**显示全部订阅的同心额度环 + 天气 + 今日 token / 预估花费**（不做宠物/表情）；同一来源的多账号、多凭证各占一枚环。悬停或点击展开为带标签栏的玻璃面板：主页 / 消息 / 股票 / 天气 / 控制 / 剪贴板 / **截图** / 工具 / 设置。首页额度卡每页 4 张，滚轮横向滑动，底部用白色细横条指示页码；胶囊可拖到屏幕上缘或左右边，贴边时变成 48×440 竖排并记住位置。功能还含 SMTC 媒体控制与网易云歌词、Windows 通知历史（含飞书 / 钉钉右下角浮窗识别与正文预览）、腾讯行情、Open-Meteo 天气（省/市/区县三级联动 + 获取当前位置）、DDC/CI 外接屏亮度（WMI 内屏回退）、iOS 控制中心式音量/亮度滑块与 Wi-Fi/蓝牙磁贴、剪贴板历史、深色毛玻璃与透明度调节（无外投影）、字体大小 10–18px 自定义（只缩放文字）、右键菜单、全屏隐藏与全局开关热键（`Ctrl+Alt+Shift+I`）。不再生成/暴露 `island.json`，也没有“编辑配置”入口。数据链路与未移植项见 [doc/island-hud.md](doc/island-hud.md)。
+- **🫧 灵动岛 HUD（新增）** — 液态毛玻璃胶囊，自带屏幕交互、液态轮廓和主题色，运行于 **Tauri 2 + React**。透明画布 780×632（面板 640），支持上 / 下 / 左 / 右四边吸附（bottom 时导航在面板底部）；悬停 120ms / 离开 320ms 可配、单击延迟展开 + 600ms pin、双击切长关、展开方式 hover/always/never；收起态四视图（额度环 54 / 时钟 34 / 特效眼 34 / 音乐 36，rings 每 agent 单环 + 5h 百分比；滚轮切换，宽度按内容公式自适应）+ 消息 / 音量 / 股票 activity（40）+ 彩色未读角标 + 30s 自动轮换（clock↔pet），音乐播放自动切视图、暂停 8s 回原视图、律动条读真实音频峰值；主题 auto/light/dark/rouge/sky（auto 按桌面亮度 0.64/0.42 + 3s 滞回）；主页额度卡 3 列 / 每页 3 张，余额卡独立全宽一行，四动作单行；按住胶囊或展开面板的导航空白区拖动可拉出液桥，离边超过 64 逻辑像素后断开并留下回缩的残滴，松手向加权最近边回弹吸附；消息页磁贴化（84px 模块磁贴、`+` 添加 / 右键移除 / 全部已读 / 清空、30 行历史），来源含 Windows toast 库、任务栏闪烁 `HSHELL_FLASH`、飞书 / 钉钉右下角浮窗 UIA，**Thunderbird mbox 未实现**；新消息还会在独立置顶小窗（`notify-popup`，透明、不抢焦点、空闲隐藏且尺寸紧贴卡片堆叠）里浮出 360×84 玻璃提示框：位置六选一（以岛所在屏工作区为基准、边距 16px，`center_*` 是贴上下沿 + 水平居中）、尺寸 70–160% 等比缩放、最多 5 条（超限秒删贴边最旧那条）、与岛端「惊讶 → 呼吸灯 + 活动卡」共用 1200ms 延迟（窗口内到达的合并成一批）、180ms 淡入、每条独立 3s、悬停暂停移出重新计满 3s、点击秒关并打开来源应用、到期 260ms 退场（朝贴边位移 10px + 缩到 86%）+ 其余条目 180ms 让位；可穿透（Windows `WS_EX_TRANSPARENT` + 低级鼠标钩子，右键菜单 / 滚轮事件 + 2s grace）与全屏隐藏、默认热键 `Ctrl+Alt+Shift+I`。设置仍在独立的 920×660「灵动岛设置」玻璃窗（草稿态 + 保存并应用，14 页：外观与交互 / 排序 / 全局热键 / 快捷操作 / 媒体与歌词 / 消息与邮件 / 股票 / 天气 / 翻译 / 实时字幕 / 剪贴板与启动器 / 系统与控制 / 高级 / 关于；支持取消、Ctrl+S、Esc 确认、恢复本页默认、导入导出与恢复出厂），岛内齿轮不再切页；配置以可手改的 `~/.agenthud/settings.json` 为权威文档（原子写、只写 patch 键），与运行时 `island.db` 双向同步。翻译可使用已配置的平台和模型，也可开启自定义接口。支持剪贴板翻译热键。实时字幕已上线（系统声音 / 麦克风 → Silero VAD → 日语 Parakeet 识别 → 流式中文翻译），IMAP 邮件、Clash、DSH 也已接线；设置窗只剩非 Windows 平台的差异项标「未接入」。数据链路与未实现项见 [doc/island-hud.md](doc/island-hud.md)。
 - **📸 截图工作台** — 截图页支持区域/窗口/全屏/延时截图、滚动长截图（逐帧滚动并按行签名拼接）、标注器（矩形/椭圆/箭头/画笔/高亮/文字/序号/马赛克/模糊）、贴图窗口、本地 OCR（Windows.Media.Ocr）、本地二维码（`rqrr`）与 8 秒 GIF 录制。保存 PNG/JPG 到 `图片/AgentHUD Screenshots`，可自动复制/贴图；最近截图支持打开、重新标注、复制、贴图和二次确认删除。抓屏用 GDI/PrintWindow，PNG 原始字节走 raw IPC，不上传任何图片。
 - **🐶 桌面宠物** — 内置智谱娘默认形象，支持 Petdex 自定义形象导入；七状态任务联动动画随 ZCode 任务状态实时切换；注入版（嵌入 ZCode 界面，可拖拽）与悬浮窗双形态按需选择，按屏幕比例提供尺寸档位，皮肤页统一管理。
 - **🖼 皮肤分类页** — 「皮肤」入口（调色板图标）改为分类导航：会话悬浮窗、桌面宠物等免注入功能独立成页、秒开即用；动态壁纸等需注入功能单独一页，进入时才检测 ZCode 注入环境。
@@ -173,7 +173,8 @@ AgentHUD/
 │   ├── RangePicker.tsx       # 时间范围选择器
 │   ├── session-hud-main.ts    # 会话 Token 悬浮窗入口（免注入独立页）
 │   ├── island-main.tsx        # 灵动岛 HUD 入口（顶部毛玻璃胶囊）
-│   ├── island/                # 灵动岛界面：外壳 / 页面 / 截图页 / 拖拽 / 天气三级数据 / CSS
+│   ├── island/                # 灵动岛界面：外壳 / 页面 / 收起态四视图 / 小形象 / 截图页 / 拖拽 / CSS
+│   ├── island-settings-main.tsx # 灵动岛设置独立窗口入口（920×660 透明圆角小窗）
 │   ├── shot-main.tsx          # 截图框选 + 标注器入口
 │   ├── shot/                  # 截图 API / 标注 canvas / 区域选择 / 样式 / mock
 │   ├── pin-main.tsx           # 截图贴图窗口入口
@@ -195,7 +196,7 @@ AgentHUD/
 │   │   ├── claude.rs         # Claude 用量统计（projects 解析 + OAuth 实时额度）
 │   │   ├── kimi.rs           # Kimi Code 用量统计（wire.jsonl 解析 + OAuth 内存续期额度）
 │   │   ├── session_hud.rs     # 会话 Token 悬浮窗（配置 / 建关窗 / 缩放记忆）
-│   │   ├── island/            # 灵动岛 HUD（窗口/拖拽吸附/内部配置 + 天气/股票/媒体/系统/剪贴板/通知/歌词/截图）
+│   │   ├── island/            # 灵动岛 HUD（窗口/拖拽吸附/内部配置 + 天气/股票/媒体/系统/剪贴板/通知/歌词/音频峰值/可穿透/截图）
 │   │   ├── pets.rs            # 桌面宠物（内置形象 / Petdex 导入）
 │   │   ├── agent_theme/       # ZCode 界面注入（动态壁纸 / 注入版速度聚合）
 │   │   ├── shortcut.rs       # 全局快捷键配置
@@ -475,6 +476,19 @@ python3 app.py                      # 启动后日志会打印 Master Token
 - 面板失焦自动隐藏，窗口常驻不销毁，点击托盘即可重新唤出。
 
 ---
+
+## 🌟 致谢
+  
+<a title="wisland-zus" target="_blank" href="https://cnb.cool/shiroki.live/wisland-zus">
+    <img alt="提供了灵动岛交互UI与功能模块" src="https://img.shields.io/github/v/release/Misaka273/wisland?logo=github">
+</a> ▶️ 提供了灵动岛交互UI与功能模块
+
+<p></p>
+
+<a title="electron-liquid-glass" target="_blank" href="https://github.com/Meridius-Labs/electron-liquid-glass">
+    <img alt="提供了 liquid 效果的渲染代码，用于模拟 liquid 效果" src="https://img.shields.io/github/v/release/Meridius-Labs/electron-liquid-glass?logo=github">
+</a> ▶️ 提供了 liquid 效果的渲染代码，用于模拟 liquid 效果
+
 
 ## 📄 License
 

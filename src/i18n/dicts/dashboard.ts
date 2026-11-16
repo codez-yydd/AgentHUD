@@ -9,6 +9,10 @@
 export const dashboard = {
   // 产品副标题（自绘标题栏品牌区：logo + AgentHUD + 本副标题）
   "dashboard.subtitle": "用量与额度管理",
+  // 灵动岛设置独立窗口（island-settings.html）的标题栏副标题：该窗复用
+  // TitleBar，通过 subtitle 参数覆盖本键；刻意不叫「设置」，避免与主窗口
+  // 的设置页（dashboard.settings）混淆
+  "dashboard.islandSettings.subtitle": "灵动岛设置",
 
   // 自绘标题栏的窗口控制按钮（图标按钮的 title 提示与 aria-label，
   // 措辞沿用 Windows 中文版：最小化 / 最大化 / 还原 / 关闭）

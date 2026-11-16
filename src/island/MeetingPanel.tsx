@@ -567,6 +567,29 @@ export function MeetingPanel({ onToast }: { onToast: (message: string) => void }
     return () => window.clearInterval(timer);
   }, [live]);
 
+  // 录音中兜底：工具板块关闭 / 灵动岛关闭时后端会停止并保存，
+  // 这里轮询发现后端会话消失就退出录音视图并刷新列表，避免停留在陈旧界面。
+  useEffect(() => {
+    if (!live) return;
+    let cancelled = false;
+    const check = () => {
+      meetingState()
+        .then((brief) => {
+          if (cancelled || brief) return;
+          setLive(null);
+          void reloadList();
+        })
+        .catch(() => {
+          /* 状态查询失败只影响兜底退出，不打扰当前录音 */
+        });
+    };
+    const timer = window.setInterval(check, 2500);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [live, reloadList]);
+
   const reallyStart = useCallback(async () => {
     setBusy(true);
     setError("");

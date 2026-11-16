@@ -54,7 +54,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
 /// zstd 帧 magic（小端 `0xFD2FB528`）。
-const ZSTD_MAGIC: [u8; 4] = [0x28, 0xB5, 0x2F, 0xFD];
+pub(crate) const ZSTD_MAGIC: [u8; 4] = [0x28, 0xB5, 0x2F, 0xFD];
 
 // ============================================================
 // 路径
@@ -74,7 +74,7 @@ fn dsh_home_path() -> PathBuf {
 }
 
 /// 会话事件日志根目录：<home>/sessions。
-fn sessions_root_path() -> PathBuf {
+pub(crate) fn sessions_root_path() -> PathBuf {
     dsh_home_path().join("sessions")
 }
 

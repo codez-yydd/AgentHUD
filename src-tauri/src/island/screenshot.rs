@@ -1487,6 +1487,15 @@ async fn hide_island_for_capture(app: &AppHandle) {
 pub async fn shot_prewarm(app: AppHandle) -> Result<(), String> {
     let app_inner = app.clone();
     on_main_thread(&app, move || {
+        // 延迟预热期间板块可能已被隐藏：以最新配置为准，避免过期的预热
+        // 建出刚被隐藏路径销毁的窗（此时该由隐藏路径负责销毁，不该重建）。
+        if super::load_config()
+            .hidden_tabs
+            .iter()
+            .any(|key| key == "shot")
+        {
+            return Ok(());
+        }
         if app_inner.get_webview_window(SHOT_WINDOW_LABEL).is_some() {
             return Ok(()); // 已经有窗口（复用中），无需预热
         }
@@ -1523,6 +1532,57 @@ pub async fn shot_prewarm(app: AppHandle) -> Result<(), String> {
     .await
 }
 
+/// 截图板块在标签栏显隐时收敛预热窗口（由 `island::sync_tab_services` 在后台
+/// 线程调用，本函数内部自己处理线程/延迟，调用方不必等待）。
+///
+/// - `visible = false`：没有进行中的截图会话、也没有录制/预览会话时才销毁
+///   `shot-overlay` 与 `shot-recorder` 两个常驻隐藏窗口。它们是全屏、且
+///   `backgroundThrottling` 关闭的 WebView，隐藏着也会一直占渲染进程内存；
+///   板块被关掉就没有理由继续预热。截图/录制进行中（或预览窗还挂着，会话
+///   仍在 RECORDS 里）一律不销毁，避免截图中途窗口消失、预览被强杀。
+/// - `visible = true`：延迟 1.5s 再预热（`shot_prewarm` /
+///   `prewarm_recorder_window` 都幂等），避开保存配置的主线程高峰；期间反复
+///   切换最多多起几个空转的延迟线程，预热本身不会重复建窗。
+pub async fn set_tab_visible(app: AppHandle, visible: bool) {
+    if visible {
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(1500));
+            // 延迟期间板块可能又被隐藏：以最新配置为准，避免过期的预热
+            // 把刚销毁的窗口又建回来（此时该由隐藏路径负责销毁）。
+            if super::load_config()
+                .hidden_tabs
+                .iter()
+                .any(|key| key == "shot")
+            {
+                return;
+            }
+            let _ = tauri::async_runtime::block_on(shot_prewarm(app.clone()));
+            let _ = tauri::async_runtime::block_on(record::prewarm_recorder_window(app));
+        });
+        return;
+    }
+    let app_inner = app.clone();
+    let _ = on_main_thread(&app, move || {
+        // 守卫放在主线程里再查一次：与 start_capture 的主线程建窗串行，
+        // 避免刚判断完没有会话、截图就建好窗又被这里销毁掉。
+        let session_active = session_slot()
+            .lock()
+            .map(|guard| guard.is_some())
+            .unwrap_or(false);
+        if session_active || record::has_active_recordings() {
+            return Ok(());
+        }
+        if let Some(win) = app_inner.get_webview_window(SHOT_WINDOW_LABEL) {
+            let _ = win.destroy();
+        }
+        if let Some(win) = app_inner.get_webview_window(record::REC_WINDOW_LABEL) {
+            let _ = win.destroy();
+        }
+        Ok(())
+    })
+    .await;
+}
+
 /// 覆盖窗口在多次截图之间复用：WebView 进程是热的，比每次重建快 ~100ms。
 /// 复用走 `navigate` 到带新 id 的 `shot.html`，前端照旧按 id 拉会话。
 fn reuse_overlay(app: &AppHandle, monitor: &ShotMonitor, id: u64) -> Result<(), String> {
@@ -1551,6 +1611,26 @@ fn reuse_overlay(app: &AppHandle, monitor: &ShotMonitor, id: u64) -> Result<(), 
 fn hide_overlay(app: &AppHandle) {
     if let Some(win) = app.get_webview_window(SHOT_WINDOW_LABEL) {
         let _ = win.hide();
+    }
+}
+
+/// 截图板块当前是否被隐藏（配置已在 `clamped()` 里做过白名单/排序/去重）。
+fn shot_tab_hidden() -> bool {
+    super::load_config()
+        .hidden_tabs
+        .iter()
+        .any(|key| key == "shot")
+}
+
+/// 一次截图/录制会话结束后的覆盖窗口收尾：板块可见时维持「只隐藏」复用
+/// （下次热键截图继续吃热 WebView）；板块已隐藏时直接销毁，否则全屏且关闭了
+/// `backgroundThrottling` 的隐藏 WebView 会一直占着渲染进程内存，直到下次
+/// 显隐切换（`set_tab_visible` 的隐藏分支）才被清掉。
+fn release_overlay_after_session(app: &AppHandle) {
+    if shot_tab_hidden() {
+        destroy_overlay(app);
+    } else {
+        hide_overlay(app);
     }
 }
 
@@ -2094,8 +2174,9 @@ pub async fn shot_close(app: AppHandle) -> Result<(), String> {
 pub async fn close_shot(app: &AppHandle) -> Result<(), String> {
     let app_main = app.clone();
     on_main_thread(app, move || {
-        // 只隐藏不销毁：下次截图复用同一个 WebView，省掉冷启动。
-        hide_overlay(&app_main);
+        // 板块可见：只隐藏不销毁，下次截图复用同一个 WebView 省掉冷启动；
+        // 板块已隐藏：直接销毁，别把热键截图刚建起来的预热窗又养回常驻。
+        release_overlay_after_session(&app_main);
         if let Ok(mut guard) = session_slot().lock() {
             *guard = None;
         }

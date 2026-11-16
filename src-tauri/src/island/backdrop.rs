@@ -1,26 +1,19 @@
-//! 灵动岛身后的桌面毛玻璃采样。
-//!
-//! WebView2 的 `backdrop-filter` 只能模糊同一页面里的内容，看不到窗口后面的
-//! 桌面；CSS 半透明玻璃于是只是"透"，不是"磨砂"。这里照着 wisland 的做法，
-//! 用 GDI 把窗口旁边一块屏幕区域缩成一张很小的图（缩略图本身就是面积平均），
-//! 前端再把它铺在玻璃底下并做一次高斯模糊。
-//!
-//! 以前抓屏前会临时给岛窗口设置 `WDA_EXCLUDEFROMCAPTURE` 把岛从画面里剔掉。
-//! 这个标志只对截屏 API 生效，却会让**所有**正在录屏/截图的人（OBS、飞书/
-//! Lark 录屏、系统截图……）的画面里岛周期性整块消失 1~2 帧：每次 650ms 的
-//! 底板采样都会闪一下。现在不再碰窗口的采集标志，改为采样窗口**旁边**一块
-//! 同尺寸的桌面区域——玻璃本来就是 22px 高斯模糊 + 深色染色，邻域颜色和正
-//! 后方在观感上分不出来，而任何录屏里岛都连续可见。
+//! 桌面底板采样。开启「不出现在截图和录屏里」时，DXGI 提供与面板位置对齐的
+//! 桌面纹理。允许录屏显示灵动岛时，使用同一显示器的相邻区域，避开窗口回采。
+//! 采集过程不修改窗口采集标志，避免录制画面闪烁。
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use std::sync::{Mutex, OnceLock};
 
-/// 物理像素 → 缩略图。6 倍下采样后再由 CSS 模糊，足够柔且 IPC 很小。
-const DOWNSCALE: u32 = 6;
+#[cfg(windows)]
+#[path = "backdrop/desktop.rs"]
+mod desktop;
+
+/// 相邻区域按比例下采样，保留边缘折射所需的细节。
+const DOWNSCALE: u32 = 3;
 
 /// 最近一次成功采到的底板（data URL）。本应用自己的截图/录屏进行中时直接
-/// 复用它，避免两边同时抢 GDI 桌面；毛玻璃底下本来就是模糊壁纸，冻结几秒
-/// 没有观感差别。
+/// 复用它，避免与录屏和截图同时读取桌面。
 static LAST_BACKDROP: OnceLock<Mutex<Option<String>>> = OnceLock::new();
 
 fn last_slot() -> &'static Mutex<Option<String>> {
@@ -37,9 +30,9 @@ fn store_backdrop(url: &str) {
     }
 }
 
-/// 窗口所在显示器的矩形 `(x, y, w, h)`（物理 px）。
+/// 窗口所在显示器的物理边界和句柄。
 #[cfg(target_os = "windows")]
-fn monitor_rect(hwnd: windows::Win32::Foundation::HWND) -> Option<(i32, i32, i32, i32)> {
+fn monitor_for(hwnd: windows::Win32::Foundation::HWND) -> Option<desktop::Monitor> {
     use windows::Win32::Graphics::Gdi::{
         GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST,
     };
@@ -51,46 +44,59 @@ fn monitor_rect(hwnd: windows::Win32::Foundation::HWND) -> Option<(i32, i32, i32
     if !unsafe { GetMonitorInfoW(monitor, &mut info) }.as_bool() {
         return None;
     }
-    let rect = info.rcMonitor;
-    Some((
-        rect.left,
-        rect.top,
-        rect.right - rect.left,
-        rect.bottom - rect.top,
-    ))
+    Some(desktop::Monitor { id: monitor.0 as usize, bounds: info.rcMonitor })
 }
 
-/// 选一块与窗口同尺寸、但不与窗口重叠的桌面区域来采样。
-///
-/// 优先取同一水平带的右侧 / 左侧（颜色和岛正后方最接近），放不下再取
-/// 下方 / 上方，最后才退回窗口矩形。纯计算，方便单测。
+/// 在显示器内取灵动岛附近的桌面区域，避免截入岛窗口和屏幕外的黑色像素。
+/// 优先取同一水平带的右侧 / 左侧，再试下方 / 上方。
 #[cfg(target_os = "windows")]
 fn sample_rect(
     (wx, wy, ww, wh): (i32, i32, u32, u32),
     (ax, ay, aw, ah): (i32, i32, i32, i32),
-) -> (i32, i32, u32, u32) {
-    let w = ww.max(1) as i32;
-    let h = wh.max(1) as i32;
+) -> Option<(i32, i32, u32, u32)> {
+    if aw <= 0 || ah <= 0 || ww == 0 || wh == 0 {
+        return None;
+    }
+    let w = i32::try_from(ww).ok()?;
+    let h = i32::try_from(wh).ok()?;
+    let window_right = wx.saturating_add(w);
+    let window_bottom = wy.saturating_add(h);
+    let area_right = ax.saturating_add(aw);
+    let area_bottom = ay.saturating_add(ah);
+
+    // 画布比可见本体大，停靠时它自然伸出屏幕。侧带使用可见区间。
+    let visible_x = wx.max(ax);
+    let visible_y = wy.max(ay);
+    let visible_w = window_right.min(area_right).saturating_sub(visible_x);
+    let visible_h = window_bottom.min(area_bottom).saturating_sub(visible_y);
+
     // 至少留 64px 才值得拉伸；再窄就会把一列像素拉成竖条纹。
     const MIN_SIDE: i32 = 64;
-    let right = ax + aw - (wx + w);
-    let left = wx - ax;
-    let below = ay + ah - (wy + h);
-    let above = wy - ay;
-    if right >= MIN_SIDE.min(w) {
-        return (wx + w, wy, right.min(w) as u32, wh);
+    if visible_h > 0 {
+        let right_x = window_right.max(ax);
+        let left_x = wx.min(area_right);
+        let right_w = area_right.saturating_sub(right_x).min(w);
+        let left_w = left_x.saturating_sub(ax).min(w);
+        if right_w >= MIN_SIDE.min(w) {
+            return Some((right_x, visible_y, right_w as u32, visible_h as u32));
+        }
+        if left_w >= MIN_SIDE.min(w) {
+            return Some((left_x - left_w, visible_y, left_w as u32, visible_h as u32));
+        }
     }
-    if left >= MIN_SIDE.min(w) {
-        return (wx - left.min(w), wy, left.min(w) as u32, wh);
+    if visible_w > 0 {
+        let below_y = window_bottom.max(ay);
+        let above_y = wy.min(area_bottom);
+        let below_h = area_bottom.saturating_sub(below_y).min(h);
+        let above_h = above_y.saturating_sub(ay).min(h);
+        if below_h >= MIN_SIDE.min(h) {
+            return Some((visible_x, below_y, visible_w as u32, below_h as u32));
+        }
+        if above_h >= MIN_SIDE.min(h) {
+            return Some((visible_x, above_y - above_h, visible_w as u32, above_h as u32));
+        }
     }
-    if below >= MIN_SIDE.min(h) {
-        return (wx, wy + h, ww, below.min(h) as u32);
-    }
-    if above >= MIN_SIDE.min(h) {
-        return (wx, wy - above.min(h), ww, above.min(h) as u32);
-    }
-    // 窗口几乎占满显示器：没有可用的邻域，退回窗口区域。
-    (wx, wy, ww.min(aw.max(1) as u32), wh.min(ah.max(1) as u32))
+    None
 }
 
 #[cfg(all(test, target_os = "windows"))]
@@ -99,44 +105,56 @@ mod tests {
 
     #[test]
     fn centered_island_samples_the_right_band() {
+        // 液态画布窗口 780×632：右侧只剩 456px，取右侧带（同尺寸拉伸）
         assert_eq!(
-            sample_rect((684, 0, 552, 520), (0, 0, 1920, 1080)),
-            (1236, 0, 552, 520)
+            sample_rect((684, 0, 780, 632), (0, 0, 1920, 1080)),
+            Some((1464, 0, 456, 632))
         );
     }
 
     #[test]
     fn right_docked_island_samples_the_left_band() {
         assert_eq!(
-            sample_rect((1368, 0, 552, 520), (0, 0, 1920, 1080)),
-            (816, 0, 552, 520)
+            sample_rect((1368, 0, 780, 632), (0, 0, 1920, 1080)),
+            Some((588, 0, 780, 632))
         );
     }
 
     #[test]
     fn narrow_screen_shrinks_the_sample_instead_of_overlapping() {
-        let (sx, sy, sw, sh) = sample_rect((407, 0, 552, 520), (0, 0, 1366, 768));
-        assert_eq!((sx, sy, sw, sh), (959, 0, 407, 520));
-        assert!(sx >= 407 + 552, "采样不能压在窗口上");
+        let (sx, sy, sw, sh) = sample_rect((407, 0, 780, 632), (0, 0, 1366, 768)).unwrap();
+        assert_eq!((sx, sy, sw, sh), (1187, 0, 179, 632));
+        assert!(sx >= 407 + 780, "采样不能压在窗口上");
     }
 
     #[test]
-    fn small_screen_still_gets_a_side_band() {
-        let (sx, sy, sw, sh) = sample_rect((0, 0, 552, 520), (0, 0, 800, 600));
-        assert_eq!((sx, sy, sw, sh), (552, 0, 248, 520));
-        assert!(sx + sw as i32 <= 800 && sy + sh as i32 <= 600);
-    }
-
-    #[test]
-    fn full_monitor_falls_back_to_the_window_rect() {
+    fn top_and_bottom_docked_bands_exclude_offscreen_rows() {
         assert_eq!(
-            sample_rect((0, 0, 552, 520), (0, 0, 552, 520)),
-            (0, 0, 552, 520)
+            sample_rect((570, -70, 780, 632), (0, 0, 1920, 1080)),
+            Some((1350, 0, 570, 562))
         );
+        assert_eq!(
+            sample_rect((570, 518, 780, 632), (0, 0, 1920, 1080)),
+            Some((1350, 518, 570, 562))
+        );
+    }
+
+    #[test]
+    fn vertical_fallback_excludes_columns_in_other_monitors() {
+        assert_eq!(
+            sample_rect((-970, -100, 930, 600), (-900, -200, 900, 1000)),
+            Some((-900, 500, 860, 300))
+        );
+    }
+
+    #[test]
+    fn no_usable_neighbor_skips_sampling_instead_of_capturing_the_island() {
+        assert_eq!(sample_rect((0, 0, 780, 632), (0, 0, 800, 600)), None);
+        assert_eq!(sample_rect((0, 0, 780, 632), (0, 0, 780, 632)), None);
     }
 }
 
-/// 抓取窗口矩形下的桌面，返回可直接塞进 CSS `url(...)` 的 data URL。
+/// 抓取用于液态玻璃纹理的桌面底板，以图片 data URL 返回。
 ///
 /// `hwnd` 用 `isize` 传递，避免原始 HWND 指针跨线程的 `Send` 限制。
 #[cfg(target_os = "windows")]
@@ -144,29 +162,58 @@ pub fn capture(hwnd: isize, x: i32, y: i32, width: u32, height: u32) -> Result<S
     use image::{codecs::png::PngEncoder, ExtendedColorType, ImageEncoder, RgbaImage};
     use std::ffi::c_void;
     use std::mem::size_of;
-    use windows::Win32::Foundation::HWND;
+    use windows::Win32::Foundation::{HWND, RECT};
     use windows::Win32::Graphics::Gdi::{
         CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetDC, ReleaseDC,
         SelectObject, SetBrushOrgEx, SetStretchBltMode, StretchBlt, BITMAPINFO, BITMAPINFOHEADER,
         DIB_RGB_COLORS, HALFTONE, HGDIOBJ, SRCCOPY,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetWindowDisplayAffinity, WDA_EXCLUDEFROMCAPTURE,
     };
 
     if width < 4 || height < 4 {
         return Err("窗口尺寸过小".into());
     }
 
-    // 本应用自己的截图/录屏正在抓屏时复用上一张，避免两边同时抢 GDI 桌面。
+    // 本应用自己的截图/录屏正在抓屏时复用上一张。
     if crate::island::capture_guard::active() {
         return cached_backdrop().ok_or_else(|| "正在录屏或截图，跳过桌面底板采样".to_string());
     }
 
     let hwnd = HWND(hwnd as *mut c_void);
-    let (sx, sy, sw, sh) = sample_rect(
-        (x, y, width, height),
-        monitor_rect(hwnd).unwrap_or((x, y, width as i32, height as i32)),
-    );
-    let tw = (sw / DOWNSCALE).clamp(2, 240) as i32;
-    let th = (sh / DOWNSCALE).clamp(2, 240) as i32;
+    let Some(monitor) = monitor_for(hwnd) else {
+        return cached_backdrop().ok_or_else(|| "没有可用的桌面底板采样区域".to_string());
+    };
+    let excluded = || {
+        let mut affinity = 0;
+        unsafe { GetWindowDisplayAffinity(hwnd, &mut affinity) }.is_ok()
+            && affinity == WDA_EXCLUDEFROMCAPTURE.0
+    };
+    if excluded() {
+        let w = i32::try_from(width).map_err(|_| "窗口宽度过大")?;
+        let h = i32::try_from(height).map_err(|_| "窗口高度过大")?;
+        let canvas = RECT {
+            left: x,
+            top: y,
+            right: x.checked_add(w).ok_or("窗口横坐标无效")?,
+            bottom: y.checked_add(h).ok_or("窗口纵坐标无效")?,
+        };
+        if let Some(url) = desktop::capture(monitor, canvas).filter(|_| excluded()) {
+            store_backdrop(&url);
+            return Ok(url);
+        }
+    }
+    if !excluded() {
+        desktop::reset();
+    }
+    let r = monitor.bounds;
+    let area = (r.left, r.top, r.right - r.left, r.bottom - r.top);
+    let Some((sx, sy, sw, sh)) = sample_rect((x, y, width, height), area) else {
+        return cached_backdrop().ok_or_else(|| "没有可用的桌面底板采样区域".to_string());
+    };
+    let tw = (sw / DOWNSCALE).clamp(2, 320) as i32;
+    let th = (sh / DOWNSCALE).clamp(2, 320) as i32;
 
     let result = (|| -> Result<RgbaImage, String> {
         unsafe {

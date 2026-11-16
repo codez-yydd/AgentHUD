@@ -1,0 +1,252 @@
+/* 消息玻璃提示框（notify-popup 窗口）。
+ *
+ * 卡片按设计稿 360×84 绘制，整体用 `transform: scale(notify.popup.size/100)`
+ * 等比缩放（外层布局盒同步用 calc 后的宽高，保证堆叠测量准确、间距仍是 4px）。
+ *
+ * 色板（tint / card / rim1 / outline / text /
+ * text2 / on），四套主题 + auto（跟随系统深浅色）。玻璃在这里只做半透明
+ * 叠色：窗口是透明窗，`backdrop-filter` 在 WebView2 里拿不到桌面像素，
+ * 所以底色 alpha 取到 ≈0.96，保证小字可读。
+ *
+ * 窗口本身没有任何留白（尺寸 = 卡片堆叠），所以这里**不画外投影**：
+ * 投影会落在窗口外被裁掉，反而在窗口矩形内留下一圈半透明像素吃点击。
+ */
+
+:root {
+  --np-tint: rgba(28, 28, 34, 0.96);
+  --np-card: rgba(255, 255, 255, 0.102);
+  --np-rim: rgba(255, 255, 255, 0.235);
+  --np-outline: rgba(0, 0, 0, 0.275);
+  --np-text: #fff;
+  --np-text2: rgba(255, 255, 255, 0.66);
+  --np-accent: #3b82f6;
+}
+
+html[data-theme="light"] {
+  --np-tint: rgba(238, 240, 245, 0.96);
+  --np-card: rgba(255, 255, 255, 0.588);
+  --np-rim: rgba(255, 255, 255, 0.784);
+  --np-outline: rgba(0, 0, 0, 0.157);
+  --np-text: rgb(16, 18, 24);
+  --np-text2: rgba(16, 18, 24, 0.74);
+  --np-accent: #2f6fe0;
+}
+
+html[data-theme="rouge"] {
+  --np-tint: rgba(0, 0, 0, 0.96);
+  --np-card: rgba(255, 255, 255, 0.094);
+  --np-rim: rgba(255, 124, 162, 0.667);
+  --np-outline: rgba(0, 0, 0, 0.549);
+  --np-text: #fff;
+  --np-text2: rgba(255, 255, 255, 0.7);
+  --np-accent: #ff7ca2;
+}
+
+html[data-theme="sky"] {
+  --np-tint: rgba(50, 171, 253, 0.96);
+  --np-tint2: rgba(247, 239, 225, 0.96);
+  --np-card: rgba(255, 255, 255, 0.412);
+  --np-rim: rgba(255, 255, 255, 0.824);
+  --np-outline: rgba(12, 32, 56, 0.235);
+  --np-text: rgb(12, 32, 56);
+  --np-text2: rgba(12, 32, 56, 0.78);
+  --np-accent: #1667c9;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: transparent;
+  overflow: hidden;
+}
+
+body {
+  font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI",
+    "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+  cursor: default;
+}
+
+#root {
+  height: 100%;
+}
+
+/* 堆叠容器：宽度由卡片撑开（不设 right），高度 = 卡片 + 间距。
+ *
+ * 贴边语义：贴下边的位置用 column-reverse —— cards[0]（最早到达、最贴边的
+ * 那条）落在窗口底边；贴上边的位置用 column，cards[0] 落在窗口顶边。
+ *
+ * 贴边一侧再让出 `pad`（组件用内联 style 写，= 10px × size/100）：退场时卡片
+ * 会朝贴边方向位移 10px，这条透明带就是它的落脚处，窗口因此不会把动画裁掉。
+ * 卡片本体仍距屏幕工作区边 16px（Rust 按 pad 反算窗口坐标）。
+ * 另一侧只多出不到 1px（窗口尺寸取整向上），所以固定左对齐（right 位置改右
+ * 对齐），绝不让贴边那一侧出现缝。
+ */
+.np-stack {
+  position: fixed;
+  left: 0;
+  bottom: 0;
+  display: flex;
+  flex-direction: column-reverse;
+  gap: 4px;
+}
+
+.np-stack[data-side="top"] {
+  top: 0;
+  bottom: auto;
+  flex-direction: column;
+}
+
+.np-stack[data-align="right"] {
+  left: auto;
+  right: 0;
+}
+
+/* 卡片外层 = 布局盒（真实占位，供堆叠测量与 FLIP 起止位）；内层 = 设计稿
+ * 360×84，用 transform 缩放到外层尺寸。 */
+.np-card {
+  position: relative;
+  display: block;
+  flex: none;
+  overflow: visible;
+  cursor: pointer;
+  /* 退场缩放的锚点固定在贴边那一侧 */
+  transform-origin: 50% 50%;
+  will-change: transform, opacity;
+}
+
+.np-stack[data-side="bottom"] .np-card {
+  transform-origin: 50% 100%;
+}
+
+.np-stack[data-side="top"] .np-card {
+  transform-origin: 50% 0%;
+}
+
+.np-card__inner {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 360px;
+  height: 84px;
+  transform-origin: 0 0;
+  border-radius: 18px;
+  overflow: hidden;
+  /* 1px 描边（外框）+ 半透明玻璃底 */
+  border: 1px solid var(--np-outline);
+  background: var(--np-tint);
+  background-image: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.05),
+    rgba(255, 255, 255, 0) 55%
+  );
+  box-sizing: border-box;
+}
+
+html[data-theme="sky"] .np-card__inner {
+  background: linear-gradient(135deg, var(--np-tint), var(--np-tint2));
+}
+
+/* 内层卡片（半透明卡色，内缩 1px） */
+.np-card__plate {
+  position: absolute;
+  inset: 1px;
+  border-radius: 17px;
+  background: var(--np-card);
+  pointer-events: none;
+}
+
+/* 1px 边缘高光 */
+.np-card__rim {
+  position: absolute;
+  inset: 1.5px;
+  border-radius: 16.5px;
+  border: 1px solid var(--np-rim);
+  pointer-events: none;
+}
+
+/* 左侧 3px 品牌强调条：距上下边各 16px */
+.np-card__accent {
+  position: absolute;
+  left: 2.5px;
+  top: 16px;
+  width: 3px;
+  height: 52px;
+  border-radius: 1.5px;
+  pointer-events: none;
+}
+
+/* 图标 chip 38×38：白底圆角 + 品牌图（inset 9%，同 paint_icon_chip） */
+.np-card__icon {
+  position: absolute;
+  left: 14px;
+  top: 23px;
+  width: 38px;
+  height: 38px;
+  border-radius: 10.26px;
+  background: rgb(250, 250, 252);
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.11);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.np-card__icon img {
+  width: 31.2px;
+  height: 31.2px;
+  border-radius: 7.4px;
+  object-fit: contain;
+  display: block;
+}
+
+.np-card__icon-fallback {
+  width: 31.2px;
+  height: 31.2px;
+  border-radius: 7.4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+/* 标题 13.5px 半粗 / 副标题 11.5px 次级色，均单行省略 */
+.np-card__title,
+.np-card__sub {
+  position: absolute;
+  left: 64px;
+  width: 282px;
+  height: 20px;
+  line-height: 20px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+
+.np-card__title {
+  top: 14px;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--np-text);
+  letter-spacing: 0.1px;
+}
+
+.np-card__sub {
+  top: 40px;
+  font-size: 11.5px;
+  font-weight: 400;
+  color: var(--np-text2);
+}
+
+/* hover：用强调色描一圈，提示这一条可以点击打开来源应用 */
+.np-card:hover .np-card__inner {
+  border-color: var(--np-accent);
+  box-shadow: inset 0 0 0 1px var(--np-accent);
+}

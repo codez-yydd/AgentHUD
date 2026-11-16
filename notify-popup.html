@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AgentHUD Notify Popup</title>
+    <!--
+      新消息桌面玻璃提示框（notify-popup）：独立 Tauri 窗口的页面入口。
+      - Rust 侧 src-tauri/src/island/popup.rs 懒创建本窗口（label
+        `notify-popup`，透明无边框、置顶、不进任务栏、focusable=false、
+        尺寸紧贴卡片堆叠，空闲 hide），以 WebviewUrl::App("notify-popup.html")
+        加载本文件；
+      - 页面只有一层卡片堆叠（React，见 src/island/NotifyPopup.tsx），
+        body / html 必须全透明，圆角玻璃由 .np-card 自己画；
+      - 入口登记在 vite.config.ts 的 rollupOptions.input，capabilities/
+        notify-popup.json 的 windows 白名单同名，三处改名需同步。
+    -->
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: transparent;
+        overflow: hidden;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/notify-popup-main.tsx"></script>
+  </body>
+</html>

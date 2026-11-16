@@ -394,6 +394,16 @@ fn set_brightness_inner(value: f64) -> Result<f64, String> {
 #[cfg(not(target_os = "macos"))]
 fn set_brightness_inner(value: f64) -> Result<f64, String> {
     let value = value.clamp(0.0, 100.0).round();
+    // Twinkle 路径有效时优先走它的命令行（`--All --Set`），成功即返回，
+    // 不再叠加 DDC/WMI（双重设置会让滑块位置和实际亮度打架）；路径为空
+    // 或调用失败时保持原来的 DDC/CI → WMI 兜底。
+    #[cfg(target_os = "windows")]
+    if let Some(exe) = twinkle::exe() {
+        match twinkle::set(&exe, value) {
+            Ok(()) => return Ok(value),
+            Err(e) => eprintln!("[zbar-island-system] Twinkle 设置亮度失败，回退 DDC/CI: {e}"),
+        }
+    }
     #[cfg(target_os = "windows")]
     if ddc::set(value)? {
         return Ok(value);
@@ -404,6 +414,144 @@ fn set_brightness_inner(value: f64) -> Result<f64, String> {
     run_powershell(&script)
         .ok_or_else(|| "设置亮度失败（显示器未启用 DDC/CI，且系统没有 WMI 亮度接口）".to_string())?;
     Ok(value)
+}
+
+/// Twinkle Tray 命令行亮度（Windows-only）：便携版 / 安装版设置页里填的
+/// 可执行文件路径在这里被消费。Twinkle 自己最终也是走 DDC/CI 或 WMI，
+/// 所以 `read_brightness` 不用改——回读到的仍是显示器真实亮度。
+///
+/// 三个约束都来自 Twinkle 便携版的行为（Electron Portable，每次启动会先
+/// 解包并弹「安装中」进度）：
+///
+/// - **串行**：拖动滑块时前端 120ms 一拍，并发拉起多个 CLI 进程会互相
+///   覆盖参数；已有调用在跑时本次直接跳过（下一拍 / 松手后还会再调）；
+/// - **去重**：同一个整数亮度在 800ms 内只真正发一次；
+/// - **不 kill**：首次启动可能在解包，等到上限还没退出就按「已受理」处理，
+///   kill 掉会中断参数转发；
+/// - **退出码**：exe 存在但执行失败（参数不兼容 / 无权限等）时进程会以非 0
+///   退出，必须报给调用方才能回退 DDC/CI → WMI，不能假装设置成功。
+#[cfg(target_os = "windows")]
+mod twinkle {
+    use std::os::windows::process::CommandExt;
+    use std::path::{Path, PathBuf};
+    use std::process::{Command, Stdio};
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
+
+    /// 串行锁：同一时间只允许一个 Twinkle 调用在跑。
+    static LOCK: Mutex<()> = Mutex::new(());
+    /// 上次真正发出的整数亮度 + 时间（去重窗口内同值不再发）。
+    static LAST: Mutex<Option<(i64, Instant)>> = Mutex::new(None);
+
+    const DEDUP_WINDOW: Duration = Duration::from_millis(800);
+    const WAIT_LIMIT: Duration = Duration::from_secs(5);
+    const WAIT_POLL: Duration = Duration::from_millis(50);
+    /// `CREATE_NO_WINDOW`：不闪控制台窗口（与 powershell 兜底同口径）。
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+    /// `--All --Set=<0-100>`：所有显示器一起调，与 DDC 分支「全部显示器都
+    /// 写」保持同一语义。
+    pub(super) fn args(value: i64) -> [String; 2] {
+        let value = value.clamp(0, 100);
+        ["--All".to_string(), format!("--Set={value}")]
+    }
+
+    /// 只接受「绝对路径 + `.exe` + 文件存在」：注册表残留、失效快捷方式、
+    /// 手填的目录都在这里被挡掉。
+    pub(super) fn usable(path: &Path) -> bool {
+        path.is_absolute()
+            && path
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("exe"))
+            && path.is_file()
+    }
+
+    /// `brightness.twinkle` → 可执行文件路径。
+    ///
+    /// trim + 去首尾引号（从资源管理器复制路径常见 `"C:\...\Twinkle.exe"`）
+    /// + `%VAR%` 展开（与设置窗其它路径项同口径）；为空或无效返回 None，
+    /// 调用方继续走 DDC/CI → WMI。`lookup` 只为单测注入环境变量。
+    pub(super) fn resolve_with<F>(raw: &str, lookup: F) -> Option<PathBuf>
+    where
+        F: Fn(&str) -> Option<String>,
+    {
+        let raw = raw.trim().trim_matches('"').trim();
+        if raw.is_empty() {
+            return None;
+        }
+        let expanded = super::super::notify::expand_env_vars(raw, lookup);
+        let path = PathBuf::from(expanded.trim());
+        usable(&path).then_some(path)
+    }
+
+    fn resolve(raw: &str) -> Option<PathBuf> {
+        resolve_with(raw, |name| std::env::var(name).ok())
+    }
+
+    /// 读设置文档里的 Twinkle 路径。每次调用都重新读盘：设置页保存后
+    /// 下一拍亮度调用立刻生效，不用重启。
+    pub(super) fn exe() -> Option<PathBuf> {
+        resolve(&super::super::settings::load().brightness.twinkle)
+    }
+
+    /// 用 Twinkle 设置亮度；`exe` 由调用方先校验（`exe()`）。
+    ///
+    /// 串行锁被占 / 同值去重时返回 `Ok(())`——本次跳过不算失败，调用方
+    /// 照常更新内存态即可。等到进程退出但退出码非 0 时返回 `Err`，调用方
+    /// 据此回退 DDC/CI → WMI；5 秒内没退出（可能在解包 / 转发参数）仍按
+    /// 「已受理」返回 `Ok(())`。
+    pub(super) fn set(exe: &Path, value: f64) -> Result<(), String> {
+        let value = value.clamp(0.0, 100.0).round() as i64;
+        // 串行：已有调用在跑就直接跳过，绝不叠进程。
+        let Ok(_running) = LOCK.try_lock() else {
+            return Ok(());
+        };
+        // 去重：拖动时 120ms 一拍，同值 800ms 内只真正发一次。
+        if let Ok(last) = LAST.lock() {
+            if let Some((prev, at)) = *last {
+                if prev == value && at.elapsed() < DEDUP_WINDOW {
+                    return Ok(());
+                }
+            }
+        }
+        let mut command = Command::new(exe);
+        command.args(args(value));
+        command.stdout(Stdio::null());
+        command.stderr(Stdio::null());
+        command.creation_flags(CREATE_NO_WINDOW);
+        let mut child = command
+            .spawn()
+            .map_err(|e| format!("启动 Twinkle 失败（{}）: {e}", exe.display()))?;
+        // 正常情况 Twinkle 把参数转给已运行实例后立刻退出；便携版首次
+        // 启动在解包，最多等 5 秒，超时也不 kill（可能正在转发参数）。
+        // 退出码必须检查：exe 存在但参数不兼容 / 无权限时进程会非 0 退出，
+        // 此时 HUD 不能显示成功，也不写去重记录（下一拍要能重试 / 回退）。
+        let started = Instant::now();
+        let outcome: Option<Option<i32>> = loop {
+            match child.try_wait() {
+                // 已退出：交给下面统一判定退出码
+                Ok(Some(status)) => break Some(status.code()),
+                // 超时：按「已受理」处理，不 kill
+                Ok(None) if started.elapsed() >= WAIT_LIMIT => break None,
+                Ok(None) => std::thread::sleep(WAIT_POLL),
+                // 等不到退出（极少见）：同样按「已受理」处理
+                Err(_) => break None,
+            }
+        };
+        if let Some(err) = outcome.flatten().and_then(exit_code_error) {
+            return Err(err);
+        }
+        // 成功或超时（已受理）：记下去重窗口，避免拖动时反复拉起进程。
+        if let Ok(mut last) = LAST.lock() {
+            *last = Some((value, Instant::now()));
+        }
+        Ok(())
+    }
+
+    /// 退出码 → 错误：0 = 成功；非 0 = 执行失败（调用方回退 DDC/CI → WMI）。
+    pub(super) fn exit_code_error(code: i32) -> Option<String> {
+        (code != 0).then(|| format!("Twinkle 退出码 {code}"))
+    }
 }
 
 /// macOS 亮度：走私有框架 DisplayServices（和系统亮度键同一套接口），
@@ -984,6 +1132,90 @@ mod mac_brightness_tests {
         assert!(
             (written - current).abs() <= 2.0,
             "写回后不一致: {current} -> {written}"
+        );
+    }
+}
+
+#[cfg(all(test, target_os = "windows"))]
+mod twinkle_tests {
+    use super::twinkle::{args, exit_code_error, resolve_with, usable};
+    use std::path::{Path, PathBuf};
+
+    /// 用测试进程自身的 exe 当「真实存在的 .exe」样本，不依赖本机装没装 Twinkle。
+    fn real_exe() -> PathBuf {
+        std::env::current_exe().expect("测试进程自身路径")
+    }
+
+    fn no_env(_name: &str) -> Option<String> {
+        None
+    }
+
+    #[test]
+    fn usable_requires_absolute_existing_exe() {
+        let exe = real_exe();
+        assert!(usable(&exe), "测试进程自身应是合法 exe: {}", exe.display());
+        assert!(!usable(Path::new("Twinkle.exe")), "相对路径要拒绝");
+        assert!(!usable(Path::new(r"C:\Windows")), "目录要拒绝");
+        assert!(
+            !usable(Path::new(r"C:\Windows\notepad.txt")),
+            "非 exe 扩展名要拒绝"
+        );
+        assert!(
+            !usable(Path::new(r"C:\__agent_hud_no_such__\Twinkle.exe")),
+            "不存在的文件要拒绝"
+        );
+    }
+
+    #[test]
+    fn resolve_trim_quotes_and_expand_env_vars() {
+        let exe = real_exe();
+        let name = exe
+            .file_name()
+            .expect("exe 文件名")
+            .to_string_lossy()
+            .to_string();
+        let dir = exe.parent().expect("exe 父目录").display().to_string();
+
+        // 空串 / 空白 / 未配置 → None（调用方回退 DDC/WMI）
+        assert_eq!(resolve_with("", no_env), None);
+        assert_eq!(resolve_with("   ", no_env), None);
+        // 相对路径、不存在路径 → None
+        assert_eq!(resolve_with("Twinkle.exe", no_env), None);
+        assert_eq!(
+            resolve_with(r"C:\__agent_hud_no_such__\Twinkle.exe", no_env),
+            None
+        );
+
+        // 从资源管理器复制的带引号路径照样能解析
+        let quoted = format!("  \"{}\"  ", exe.display());
+        assert_eq!(resolve_with(&quoted, no_env), Some(exe.clone()));
+
+        // `%VAR%` 展开后再做「存在性」校验
+        let raw = format!("%AGENT_HUD_TEST_DIR%\\{name}");
+        let lookup = |var: &str| (var == "AGENT_HUD_TEST_DIR").then(|| dir.clone());
+        assert_eq!(resolve_with(&raw, lookup), Some(exe));
+    }
+
+    #[test]
+    fn set_args_are_all_monitors_and_clamped() {
+        assert_eq!(args(0), ["--All", "--Set=0"]);
+        assert_eq!(args(37), ["--All", "--Set=37"]);
+        assert_eq!(args(100), ["--All", "--Set=100"]);
+        // 传入越界值也只会拼出合法整数（调用方已 clamp，这里再兜一层）
+        assert_eq!(args(-1), ["--All", "--Set=0"]);
+        assert_eq!(args(101), ["--All", "--Set=100"]);
+    }
+
+    /// 退出码判定：0 = 成功；非 0 必须报错（调用方据此回退 DDC/CI → WMI），
+    /// 不能像旧实现那样把失败当成已受理。
+    #[test]
+    fn exit_code_decides_success_or_fallback() {
+        assert_eq!(exit_code_error(0), None);
+        assert_eq!(exit_code_error(1).as_deref(), Some("Twinkle 退出码 1"));
+        // 崩溃 / 权限错误的退出码可能是负数（如 STATUS_ACCESS_DENIED 展开值）
+        assert_eq!(
+            exit_code_error(-1073741790).as_deref(),
+            Some("Twinkle 退出码 -1073741790")
         );
     }
 }

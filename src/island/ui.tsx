@@ -42,6 +42,7 @@ export type IconName =
   | "weather"
   | "sliders"
   | "clipboard"
+  | "translate"
   | "settings"
   | "refresh"
   | "chevron"
@@ -94,6 +95,7 @@ export type IconName =
   | "toolbox";
 
 const PATHS: Record<IconName, ReactNode> = {
+  translate: <path d="M3 6h11M8.5 3v3m3 0C10 12 7 15 3.5 17m2-8c1.4 3 3.4 5.3 6 7m.5 5 4.5-10 4.5 10m-7.5-3.5h6" />,
   home: <path d="M3.5 10.6 12 3.5l8.5 7.1V20a1 1 0 0 1-1 1h-5v-6h-5v6h-5a1 1 0 0 1-1-1z" />,
   message: (
     <>

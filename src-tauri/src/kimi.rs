@@ -3230,6 +3230,45 @@ pub(crate) fn fetch_quota_entries(
     entries
 }
 
+// ============================================================
+// 翻译链路（只读登录态探测 + 按需换新，供 island/translate/platforms 使用）
+// ============================================================
+
+/// 翻译链路：本机 Kimi Code CLI 登录态是否可用于翻译（只读文件探测，不刷新）。
+pub(crate) fn has_local_translation_login() -> bool {
+    scan_cli_credentials().is_ok()
+}
+
+/// 翻译链路：读取本机 CLI 登录态的 Bearer 与区域（api.kimi.ai → Some("global")）。
+/// 复用 resolve_request_token 的既有内存缓存/换新/熔断逻辑；错误为中文且不含
+/// secret。刷新失败时沿既有口径回退文件旧 token，由实际翻译请求的 401 兜底。
+pub(crate) fn local_translation_bearer() -> Result<(String, Option<String>), String> {
+    let token = resolve_request_token()?;
+    let region = (kimi_endpoints().api_base == "https://api.kimi.ai/coding/v1")
+        .then(|| "global".to_string());
+    Ok((token, region))
+}
+
+/// 翻译链路：凭证体系里的 Kimi 凭证 → Bearer 与 API 基址。
+/// apiKey 直接作 Bearer；token 型 secret 是 refresh_token，复用既有换新/缓存/
+/// 熔断链路。失败返回中文原因（不含 secret）。
+pub(crate) fn translation_bearer_for_credential(
+    credential_id: &str,
+    kind: &str,
+    secret: &str,
+    region: Option<&str>,
+) -> Result<(String, &'static str), String> {
+    let endpoints = endpoints_for_region(region.unwrap_or(""));
+    let token = resolve_credential_token(credential_id, kind, secret, endpoints.oauth_host)
+        .map_err(|failure| match failure {
+            CredentialTokenFailure::Rejected => {
+                "Kimi 登录已失效，请删除该凭证后重新添加（支持网页登录）".to_string()
+            }
+            CredentialTokenFailure::Network(message) => message,
+        })?;
+    Ok((token, endpoints.api_base))
+}
+
 // ===== 诊断 =====
 
 /// Kimi 诊断信息（排查"无数据"问题）
