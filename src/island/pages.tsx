@@ -1,37 +1,46 @@
-/** 灵动岛各页面：主页 / 消息 / 股票 / 天气 / 控制 / 剪贴板 / 设置 */
+/** 灵动岛各页面：主页 / 消息 / 股票 / 天气 / 控制 / 剪贴板（设置已迁到独立窗口） */
 
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { getStockMinute, locateCurrentPlace, mediaAction as runMediaAction, searchStock } from "./api";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type MouseEvent as ReactMouseEvent,
+  type WheelEvent as ReactWheelEvent,
+} from "react";
+import { getStockMinute, searchStock } from "./api";
+import { ClashPanel } from "./ClashPanel";
+import { PetFace, type CompactPointerSample } from "./PetFace";
+import {
+  KIND_COLORS,
+  NOTIFY_BRAND_ICONS,
+  NOTIFY_BRAND_LABELS,
+  NOTIFY_MODULE_KEYS,
+  NotifyBrandIcon,
+} from "./notifyBrand";
 import type {
   ClipItem,
   HudBarAgent,
   HudBarUsage,
+  ExpandMode,
   IslandConfig,
-  LyricsState,
+  LauncherItem,
   MediaState,
   NotifyItem,
   NotifyState,
   StockMinute,
   StocksState,
   SystemState,
+  WeatherCityState,
   WeatherState,
 } from "./types";
-import { hotkeyText } from "../shortcuts";
-import type { TabKey } from "./types";
-import {
-  citiesOf,
-  districtsOf,
-  divisionsLoaded,
-  findDivisionPath,
-  loadDivisions,
-  matchPlace,
-  provinces,
-} from "./china";
+import { tempUnitSuffix, windUnitSuffix } from "./types";
 import {
   agentColor,
   agentLabel,
   BrandMark,
-  currentLyricLine,
   EmptyState,
   fmtClock,
   fmtCountdown,
@@ -40,15 +49,12 @@ import {
   fmtMoney,
   Icon,
   type IconName,
-  parseLyrics,
   QuotaBar,
   quotaLabel,
   quotaTone,
   remainingPct,
   SectionHead,
-  Slider,
   timeAgo,
-  Toggle,
   useNow,
   WeatherGlyph,
 } from "./ui";
@@ -116,43 +122,80 @@ function AgentCard({ agent, compact = false }: { agent: HudBarAgent; compact?: b
   );
 }
 
+/** 主页小形象相对收起态的放大倍率（CSS 缩放；指针坐标同比归一） */
+const HOME_PET_SCALE = 2.3;
+
 export function HomePage({
   usage,
   weather,
   media,
-  lyrics,
   muted,
   config,
+  expandMode,
+  passthrough,
+  active,
   refreshing,
   onRefresh,
-  onNavigate,
   onToggleMute,
+  onToggleAlways,
+  onTogglePassthrough,
+  onMediaAction,
   onOpenMain,
   onLaunch,
+  onAddLauncher,
+  onLauncherContextMenu,
+  liveOn,
+  liveBusy = false,
+  onToggleLive,
 }: {
   usage: HudBarUsage | null;
   weather: WeatherState | null;
   media: MediaState;
-  lyrics: LyricsState | null;
   muted: boolean;
   config: IslandConfig;
+  expandMode: ExpandMode;
+  passthrough: boolean;
+  /** 面板展开且页面可见：控制小形象 rAF 是否运行 */
+  active: boolean;
   refreshing: boolean;
   onRefresh: () => void;
-  onNavigate: (tab: TabKey) => void;
   onToggleMute: () => void;
+  /** 「保持展开」：expandMode always ↔ hover */
+  onToggleAlways: () => void;
+  /** 「可穿透」：islandSetPassthrough，打开后面板会收起 */
+  onTogglePassthrough: () => void;
+  onMediaAction: (action: "toggle" | "next" | "prev") => void;
   onOpenMain: () => void;
   onLaunch: (path: string) => void;
+  onAddLauncher: () => void;
+  onLauncherContextMenu: (item: LauncherItem, x: number, y: number) => void;
+  /** 实时字幕是否在聆听 */
+  liveOn: boolean;
+  /** 开始 / 停止请求进行中（防连点） */
+  liveBusy?: boolean;
+  /** 开始 / 停止实时字幕 */
+  onToggleLive: () => void;
 }) {
   const now = useNow();
   const agents = usage?.agents ?? [];
   const pageRef = useRef<HTMLDivElement>(null);
+  const stripRef = useRef<HTMLDivElement | null>(null);
+  const petRef = useRef<HTMLDivElement | null>(null);
+  const petPointerRef = useRef<CompactPointerSample>({ x: 9999, y: 9999, inside: false });
   const [page, setPage] = useState(0);
   const wheelAt = useRef(0);
-  const pageCount = Math.max(1, Math.ceil(agents.length / 4));
+  // P0：余额卡不再参与 agent-grid 自动排布（否则 grid-column:1/-1 会留下
+  // 整格空洞）；订阅卡 3 列/页，余额卡单独全宽一行。
+  const quotaAgents = useMemo(() => agents.filter((agent) => !agent.balance), [agents]);
+  const balanceAgents = useMemo(() => agents.filter((agent) => Boolean(agent.balance)), [agents]);
+  const pageCount = Math.max(1, Math.ceil(quotaAgents.length / 3));
   const safePage = Math.min(page, pageCount - 1);
   const pageAgents = useMemo(
-    () => Array.from({ length: pageCount }, (_, index) => agents.slice(index * 4, index * 4 + 4)),
-    [agents, pageCount]
+    () =>
+      Array.from({ length: pageCount }, (_, index) =>
+        quotaAgents.slice(index * 3, index * 3 + 3)
+      ),
+    [quotaAgents, pageCount]
   );
 
   useEffect(() => {
@@ -166,22 +209,37 @@ export function HomePage({
     setPage((current) => Math.max(0, Math.min(pageCount - 1, current + direction)));
   };
 
-  const lyricLine = useMemo(() => {
-    if (!lyrics?.ok || !media.hasSession) return null;
-    return currentLyricLine(parseLyrics(lyrics.lrc, lyrics.translation), media.position);
-  }, [lyrics, media.hasSession, media.position]);
+  // 主页小形象：面板展开时监听窗口指针，换算成「相对小形象中心」的坐标。
+  // PetFace 内部按 scale 归一化视线/靠近阈值；页面隐藏或收起时父层传
+  // active=false，rAF 会暂停。
+  useEffect(() => {
+    if (!active) return;
+    const onMove = (event: PointerEvent) => {
+      const rect = petRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      // 主页小形象用 CSS 放大到 2.3 倍（PetFace 内部仍是 1x 逻辑坐标）：
+      // 指针位移也按倍率归一，视线/靠近阈值才与收起态同一套手感。
+      petPointerRef.current = {
+        x: (event.clientX - (rect.left + rect.width / 2)) / HOME_PET_SCALE,
+        y: (event.clientY - (rect.top + rect.height / 2)) / HOME_PET_SCALE,
+        inside: true,
+      };
+    };
+    window.addEventListener("pointermove", onMove);
+    return () => window.removeEventListener("pointermove", onMove);
+  }, [active]);
 
-  // 面板高度固定（492），媒体条 / 3 行额度卡 / 大字号都可能把主页顶出滚动条。
-  // 这里按**展开态**的内容盒把整页等比缩到刚好放下：不出现滚动条，也不裁内容。
+  // 面板高度按标签常量表变化（home 492 / 其它按内容），媒体卡 + 小形象 +
+  // 四动作 + 额度卡 + 启动器可能把主页顶出滚动条。这里仍按**展开态**的内容盒
+  // 把整页等比缩到刚好放下：不裁切、不出现滚动条（P0 逻辑，布局改版后继续复用）。
   //
   // 三条约束（改之前先读一遍，都是实测踩过的坑）：
   // 1. **在展开态宽度下量**：收起态侧边胶囊只有 70px 宽，按当前宽度量会让整页
   //    自然高度因超窄宽度暴涨，把主页缩到 0.65；展开后又要跳回正常比例——
   //    就是「打开 1~2 秒后字体突然变大」。这里始终把页面临时撑到目标宽度
-  //    （518 = 岛 520 - 1px 边框）再量，收起态也能算出正确比例，展开前就已生效。
-  // 2. **展开后冻结小波动**：数据刷新（媒体条出现 / 消失、行数变化）会让自然
-  //    高度小幅波动；已缩放显示时只要还装得下（留 24px 余量）就不动比例，
-  //    避免字号在打开后 1~2 秒又跳一下。
+  //    （638 = 面板 640 - 1px 边框 ×2）再量，收起态也能算出正确比例。
+  // 2. **展开后冻结小波动**：数据刷新（媒体卡 / 账号数变化）会让自然高度小幅
+  //    波动；已缩放显示时只要还装得下（留 24px 余量）就不动比例。
   // 3. 真正需要改比例时（首次量、内容明显变多）由 CSS transition 平滑过去，
   //    见 island.css 的 .home-page。
   const fitScaleRef = useRef(0);
@@ -192,7 +250,7 @@ export function HomePage({
     const contentEl = pageEl?.parentElement;
     if (!pageEl || !panelEl || !islandEl || !contentEl) return;
     const maxWidth = parseFloat(getComputedStyle(islandEl).maxWidth);
-    const width = Number.isFinite(maxWidth) && maxWidth > 0 ? maxWidth - 2 : 518;
+    const width = Number.isFinite(maxWidth) && maxWidth > 0 ? maxWidth - 2 : 638;
     const cs = getComputedStyle(contentEl);
     const available =
       panelEl.clientHeight -
@@ -202,8 +260,8 @@ export function HomePage({
     if (width < 360 || available < 200) return;
     // 量自然高度前先把页面撑到展开态宽度，且还原成 1:1（不带上一轮的补偿）。
     // 关键机制：读 offsetHeight 会强制一次同步样式落账，把测量用的中间宽度
-    // （518px）提交成补间基准；如果之后恢复 transition 和写最终宽度落在
-    // 同一次样式变更里，浏览器就会从 518px 补间到目标宽度，横向挤压一次——
+    // （638px）提交成补间基准；如果之后恢复 transition 和写最终宽度落在
+    // 同一次样式变更里，浏览器就会从 638px 补间到目标宽度，横向挤压一次——
     // useLayoutEffect 每次渲染都跑（时钟每秒一跳），展开后便成了“挤一下又
     // 恢复”的无限循环。所以测量后必须先把宽度写回原值，并趁 transition 仍
     // 为 none 再次强制落账，让中间值永远当不成补间起点；决策无变化时整趟
@@ -215,11 +273,8 @@ export function HomePage({
     const natural = pageEl.offsetHeight;
     const applied = fitScaleRef.current;
     let scale = applied || 1;
-    // 各分支只计算并记录最终宽度（finalWidth）与是否改比例（finalScale），
-    // 统一交给函数末尾的“写回收尾”逻辑落账，不再各自提前 return。
     let finalWidth: string;
     let finalScale: number | null = null; // null 表示本轮不改比例
-    // 已缩放（<1）且面板展开时：装得下就不动，避免数据晚到导致字号二次跳动
     if (
       islandEl.classList.contains("open") &&
       applied > 0 &&
@@ -228,39 +283,33 @@ export function HomePage({
     ) {
       finalWidth = `${(100 / applied).toFixed(3)}%`;
     } else if (natural * scale > available + 4) {
-      // 装不下：按可用高度缩到刚好放下；只允许继续缩小，不回头放大
-      scale = Math.min(scale, Math.max(0.65, available / natural));
+      // P0：主页自然高度已按 3 列/单行动作压实；默认字号 fit 下限 0.92，
+      // 避免整页被缩到 0.86 后小字只剩 6.9–8.6px。大字号（>1.2 倍）仍允许
+      // 继续缩，保留 fit 兜底、不裁切内容。
+      const fsScale =
+        parseFloat(getComputedStyle(pageEl).getPropertyValue("--fs-scale")) || 1;
+      const floor = fsScale > 1.2 ? 0.78 : 0.92;
+      scale = Math.min(scale, Math.max(floor, available / natural));
       fitScaleRef.current = scale;
       pageEl.style.transformOrigin = "top left";
       finalScale = scale;
       finalWidth = scale >= 0.999 ? "" : `${(100 / scale).toFixed(3)}%`;
     } else if (natural * scale < available * 0.9) {
-      // 只缩不放：媒体条 / 歌词行 / 额度数据刷新会让内容高度反复变化，
-      // 一缩一放就是用户看到的“整页从右往左挤一下又恢复”。保持当前比例，
-      // 切页/重开时 fitScaleRef 归零会自然恢复到 1:1。
       finalWidth =
         applied > 0 && applied < 0.999 ? `${(100 / applied).toFixed(3)}%` : "";
     } else {
-      // 装得下且比例合适：按当前比例落账（含首次量与常规稳态）
       fitScaleRef.current = scale;
       pageEl.style.transformOrigin = "top left";
       finalScale = scale;
       finalWidth = scale >= 0.999 ? "" : `${(100 / scale).toFixed(3)}%`;
     }
-    // 写回收尾：先把宽度写回测量前的原值，并趁 transition 仍为 none 再落账
-    // 一次——测量用的 width px 只是中间值，永远不会成为补间起点。
     pageEl.style.width = previousWidth;
     void pageEl.offsetHeight;
     pageEl.style.transition = previousTransition;
-    // 决策真的变化时才写新宽度：从真实旧值出发，走 CSS 的 180ms 过渡。
     if (finalWidth !== previousWidth) {
       pageEl.style.width = finalWidth;
     }
-    // 比例写回收尾：放在恢复过渡之后，与宽度变更合并成同一次样式变更事件，
-    // 真正改比例时仍由 .home-page 的 scale 过渡平滑过去。
     if (finalScale !== null) {
-      // 优先用独立的 scale 属性：它和页面入场动画的 transform 互不覆盖，
-      // 老 WebView 不支持时再退回 transform。
       if (finalScale >= 0.999) {
         pageEl.style.scale = "";
         pageEl.style.transform = "";
@@ -274,7 +323,7 @@ export function HomePage({
     }
   }, []);
 
-  // 不写依赖数组：账号数量 / 媒体条 / 字号任一变化都要重新量
+  // 不写依赖数组：账号数量 / 媒体 / 字号任一变化都要重新量
   useLayoutEffect(() => {
     fitPage();
   });
@@ -296,26 +345,45 @@ export function HomePage({
     };
   }, [fitPage]);
 
+  // 启动器横向条滚轮：把纵向滚轮折算成横向滚动（参考 LaunchStrip）
+  const scrollLauncher = (event: ReactWheelEvent<HTMLDivElement>) => {
+    const element = stripRef.current;
+    if (!element || element.scrollWidth <= element.clientWidth) return;
+    const delta = Math.abs(event.deltaY) > Math.abs(event.deltaX) ? event.deltaY : event.deltaX;
+    if (Math.abs(delta) < 2) return;
+    event.preventDefault();
+    event.stopPropagation();
+    element.scrollLeft += delta;
+  };
+
+  const progress =
+    media.duration > 0
+      ? Math.max(0, Math.min(100, (media.position / media.duration) * 100))
+      : 0;
+  const holdOpen = expandMode === "always";
+  // 温度单位跟随数据源（imperial → °F），其余按摄氏度 °。
+  const unit = tempUnitSuffix(weather);
+
   return (
     <div className="page home-page" ref={pageRef}>
       <div className="home-hero">
         <div className="home-weather">
           <div className="home-weather-glyph">
-            <WeatherGlyph icon={weather?.icon ?? "cloudy"} size={44} />
+            <WeatherGlyph icon={weather?.icon ?? "cloudy"} size={40} />
           </div>
           <div>
             <div className="home-weather-temp">
-              {weather ? `${Math.round(weather.temp)}°` : "--°"}
+              {weather ? `${Math.round(weather.temp)}${unit}` : "--°"}
               <span className="home-weather-desc">{weather?.desc ?? "天气加载中"}</span>
             </div>
             <div className="home-weather-meta">
               <span>
                 <Icon name="mapPin" size={11} /> {weather?.city ?? config.weatherCity}
               </span>
-              <span>体感 {weather ? Math.round(weather.feelsLike) : "--"}°</span>
+              <span>体感 {weather ? Math.round(weather.feelsLike) : "--"}{unit}</span>
               <span>
-                高 {weather?.daily[0] ? Math.round(weather.daily[0].max) : "--"}° / 低{" "}
-                {weather?.daily[0] ? Math.round(weather.daily[0].min) : "--"}°
+                高 {weather?.daily[0] ? Math.round(weather.daily[0].max) : "--"}{unit} / 低{" "}
+                {weather?.daily[0] ? Math.round(weather.daily[0].min) : "--"}{unit}
               </span>
             </div>
           </div>
@@ -323,6 +391,115 @@ export function HomePage({
         <div className="home-clock">
           <div className="home-clock-time">{fmtClock(now)}</div>
           <div className="home-clock-date">{fmtDate(now)}</div>
+        </div>
+      </div>
+
+      <div className="home-main">
+        {/* 媒体卡：封面 58 + 标题 Elide + 只读进度条 + 上一首/播放暂停/下一首 */}
+        <div className="home-media-card">
+          <span className="home-media-cover">
+            {media.cover ? (
+              <img src={media.cover} alt="" draggable={false} />
+            ) : (
+              <Icon name="music" size={22} />
+            )}
+          </span>
+          <span className="home-media-body">
+            <span className="home-media-title" title={media.title || "未在播放"}>
+              {media.hasSession ? media.title || "未命名曲目" : "未在播放"}
+            </span>
+            <span className="home-media-sub">
+              {media.hasSession
+                ? media.artist || media.appName || "系统媒体"
+                : "打开播放器后自动接入系统媒体"}
+            </span>
+            <span className="home-media-progress" aria-hidden="true">
+              <i style={{ width: `${progress}%` }} />
+            </span>
+            <span className="home-media-times">
+              <span>{fmtDuration(media.position)}</span>
+              <span>{fmtDuration(media.duration)}</span>
+            </span>
+          </span>
+          <span className="home-media-controls">
+            <button
+              type="button"
+              className="home-media-btn"
+              onClick={() => onMediaAction("prev")}
+              aria-label="上一首"
+              disabled={!media.canPrev}
+            >
+              <Icon name="prev" size={15} />
+            </button>
+            <button
+              type="button"
+              className="home-media-btn is-primary"
+              disabled={!media.canToggle}
+              onClick={() => onMediaAction("toggle")}
+              aria-label={media.playing ? "暂停" : "播放"}
+            >
+              <Icon name={media.playing ? "pause" : "play"} size={16} />
+            </button>
+            <button
+              type="button"
+              className="home-media-btn"
+              onClick={() => onMediaAction("next")}
+              aria-label="下一首"
+              disabled={!media.canNext}
+            >
+              <Icon name="next" size={15} />
+            </button>
+          </span>
+        </div>
+
+        {/* 小形象：复用收起态的 PetFace，用 CSS 放大到 2.3 倍，眼睛跟随鼠标 */}
+        <div className="home-pet" ref={petRef} aria-hidden="true">
+          <span className="home-pet-canvas">
+            <PetFace active={active} pointerRef={petPointerRef} />
+          </span>
+        </div>
+
+        {/* 四动作：保持展开 / 可穿透 / 静音 / 实时字幕（开关，聆听中高亮） */}
+        <div className="home-actions">
+          <button
+            type="button"
+            className={`home-action ${holdOpen ? "is-on" : ""}`}
+            onClick={onToggleAlways}
+            title={holdOpen ? "恢复悬停展开" : "保持展开（常驻展开）"}
+          >
+            <Icon name={holdOpen ? "pin" : "eye"} size={17} />
+            <span>保持展开</span>
+          </button>
+          <button
+            type="button"
+            className={`home-action ${passthrough ? "is-on" : ""}`}
+            onClick={onTogglePassthrough}
+            title="可穿透（右键菜单可关闭）"
+          >
+            <Icon name="monitor" size={17} />
+            <span>可穿透</span>
+          </button>
+          <button
+            type="button"
+            className={`home-action ${muted ? "is-on" : ""}`}
+            onClick={onToggleMute}
+            title={muted ? "取消静音" : "静音"}
+          >
+            <Icon name={muted ? "volumeOff" : "volume"} size={17} />
+            <span>{muted ? "已静音" : "静音"}</span>
+          </button>
+          <button
+            type="button"
+            className={`home-action ${liveOn ? "is-on" : ""}`}
+            onClick={onToggleLive}
+            disabled={liveBusy}
+            title={liveOn ? "停止实时字幕（收起后显示最新一句）" : "实时字幕（开始聆听）"}
+            aria-pressed={liveOn}
+          >
+            <Icon name="mic" size={17} />
+            <span>实时字幕</span>
+            {liveOn ? <em className="home-action-badge is-live">聆听中</em> : null}
+          </button>
         </div>
       </div>
 
@@ -342,8 +519,14 @@ export function HomePage({
           >
             <Icon name="refresh" size={13} />
           </button>
-          <button type="button" className="mini-text-btn" onClick={() => onNavigate("settings")}>
-            设置
+          <button
+            type="button"
+            className="mini-icon-btn"
+            onClick={onOpenMain}
+            title="打开主窗口"
+            aria-label="打开主窗口"
+          >
+            <Icon name="external" size={13} />
           </button>
         </div>
       </div>
@@ -362,116 +545,97 @@ export function HomePage({
           </div>
         </div>
       ) : (
-        <div
-          className="agent-pager"
-          onWheel={(e) => {
-            if (pageCount <= 1) return;
-            const delta = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
-            if (Math.abs(delta) < 4) return;
-            e.preventDefault();
-            e.stopPropagation();
-            turnPage(delta > 0 ? 1 : -1);
-          }}
-        >
-          <div className="agent-pager-viewport">
-            <div className="agent-pager-track" style={{ transform: `translateX(-${safePage * 100}%)` }}>
-              {pageAgents.map((items, index) => (
-                <div className="agent-grid agent-page" key={index} aria-hidden={index !== safePage}>
-                  {items.map((agent) => (
-                    <AgentCard key={agent.id} agent={agent} compact />
-                  ))}
-                </div>
-              ))}
-            </div>
-          </div>
-          {pageCount > 1 ? (
-            <div className="agent-page-dots" role="tablist" aria-label="额度分页">
-              {Array.from({ length: pageCount }, (_, index) => (
-                <button
-                  key={index}
-                  type="button"
-                  className={`agent-page-bar ${index === safePage ? "active" : ""}`}
-                  onClick={() => setPage(index)}
-                  aria-label={`第 ${index + 1} 页`}
-                  aria-selected={index === safePage}
-                  role="tab"
-                />
+        <>
+          {/* 余额 / 按量卡：单行全宽，不进入订阅卡网格 */}
+          {balanceAgents.length > 0 ? (
+            <div className="agent-balance-row">
+              {balanceAgents.map((agent) => (
+                <AgentCard key={agent.id} agent={agent} compact />
               ))}
             </div>
           ) : null}
-        </div>
+          {quotaAgents.length > 0 ? (
+            <div
+              className="agent-pager"
+              onWheel={(e) => {
+                if (pageCount <= 1) return;
+                const delta = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
+                if (Math.abs(delta) < 4) return;
+                e.preventDefault();
+                e.stopPropagation();
+                turnPage(delta > 0 ? 1 : -1);
+              }}
+            >
+              <div className="agent-pager-viewport">
+                <div className="agent-pager-track" style={{ transform: `translateX(-${safePage * 100}%)` }}>
+                  {pageAgents.map((items, index) => (
+                    <div
+                      className={`agent-grid agent-page ${
+                        items.length === 2 ? "is-two" : items.length === 1 ? "is-one" : ""
+                      }`}
+                      key={index}
+                      aria-hidden={index !== safePage}
+                    >
+                      {items.map((agent) => (
+                        <AgentCard key={agent.id} agent={agent} compact />
+                      ))}
+                    </div>
+                  ))}
+                </div>
+              </div>
+              {pageCount > 1 ? (
+                <div className="agent-page-dots" role="tablist" aria-label="额度分页">
+                  {Array.from({ length: pageCount }, (_, index) => (
+                    <button
+                      key={index}
+                      type="button"
+                      className={`agent-page-bar ${index === safePage ? "active" : ""}`}
+                      onClick={() => setPage(index)}
+                      aria-label={`第 ${index + 1} 页`}
+                      aria-selected={index === safePage}
+                      role="tab"
+                    />
+                  ))}
+                </div>
+              ) : null}
+            </div>
+          ) : (
+            <div className="home-agent-empty">暂无订阅额度（余额卡见上方）</div>
+          )}
+        </>
       )}
 
-      {media.hasSession ? (
-        <div className="media-strip">
-          <div className="media-cover">
-            {media.cover ? (
-              <img src={media.cover} alt="" />
-            ) : (
-              <span className="media-cover-fallback">
-                <Icon name="music" size={20} />
-              </span>
-            )}
-          </div>
-          <div className="media-main">
-            <div className="media-title">{media.title || "未命名曲目"}</div>
-            <div className="media-sub">
-              {media.artist || media.appName}
-              {media.album ? ` · ${media.album}` : ""}
-            </div>
-            {/* 有歌词的曲目固定占一行（空行用 nbsp 撑住）：逐行歌词在
-                有/无之间切换时，媒体条高度会一涨一缩，整页自适应比例也
-                跟着反复缩放，看起来就是“面板从右往左挤一下又恢复”。 */}
-            {lyrics?.ok ? (
-              <div className="media-lyric">
-                {lyricLine ? lyricLine.trans || lyricLine.text : "\u00a0"}
-              </div>
-            ) : null}
-            <div className="media-progress">
-              <span style={{ width: `${media.duration > 0 ? (media.position / media.duration) * 100 : 0}%` }} />
-            </div>
-          </div>
-          <div className="media-time">
-            {fmtDuration(media.position)} / {fmtDuration(media.duration)}
-          </div>
-          <div className="media-controls">
-            <button type="button" onClick={() => void runMediaAction("prev")} aria-label="上一首" disabled={!media.canPrev}>
-              <Icon name="prev" size={15} />
-            </button>
-            <button type="button" className="primary" onClick={() => void runMediaAction("toggle")} aria-label="播放/暂停">
-              <Icon name={media.playing ? "pause" : "play"} size={16} />
-            </button>
-            <button type="button" onClick={() => void runMediaAction("next")} aria-label="下一首" disabled={!media.canNext}>
-              <Icon name="next" size={15} />
-            </button>
-          </div>
-        </div>
-      ) : null}
-
-      <div className="quick-actions">
-        <button type="button" className="quick-action" onClick={onToggleMute} title="静音">
-          <Icon name={muted ? "volumeOff" : "volume"} size={15} />
-          <span>{muted ? "取消静音" : "静音"}</span>
+      {/* 启动器：横向条（高 46、图标 44），滚轮横向滚动，点击打开 */}
+      <div
+        className="launcher-strip"
+        ref={stripRef}
+        onWheel={scrollLauncher}
+        title="启动器（滚轮横向滚动）"
+      >
+        <button
+          type="button"
+          className="launcher-strip-item"
+          title="添加应用或文件"
+          aria-label="添加应用或文件"
+          onClick={onAddLauncher}
+        >
+          <Icon name="plus" size={20} />
         </button>
-        <button type="button" className="quick-action" onClick={onOpenMain} title="打开主窗口">
-          <Icon name="external" size={15} />
-          <span>主窗口</span>
-        </button>
-      </div>
-
-      <div className="launcher-row">
-        {config.launcher.slice(0, 6).map((item) => (
+        {config.launcher.map((item, index) => (
           <button
-            key={`${item.name}-${item.path}`}
+            key={`${item.name}-${item.path}-${index}`}
             type="button"
-            className="launcher-item"
-            title={item.path}
+            className="launcher-strip-item"
+            title={`${item.name} · ${item.path}`}
+            aria-label={item.name}
             onClick={() => onLaunch(item.path)}
+            onContextMenu={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              onLauncherContextMenu(item, event.clientX, event.clientY);
+            }}
           >
-            <span className="launcher-icon">
-              <Icon name={(item.icon as IconName) || "folder"} size={17} />
-            </span>
-            <span>{item.name}</span>
+            <Icon name={(item.icon as IconName) || "folder"} size={20} />
           </button>
         ))}
       </div>
@@ -483,119 +647,340 @@ export function HomePage({
 // 消息
 // ============================================================
 
-const MODULE_META: Record<string, { label: string; icon: IconName; tone: string }> = {
-  qq: { label: "QQ", icon: "message", tone: "#5eb7ff" },
-  wechat: { label: "微信", icon: "message", tone: "#3ddc84" },
-  mail: { label: "邮件", icon: "note", tone: "#ffb65c" },
-  feishu: { label: "飞书", icon: "message", tone: "#7aa2ff" },
-  dingtalk: { label: "钉钉", icon: "message", tone: "#5ea9ff" },
-};
+const DEFAULT_NOTIFY_MODULES = ["qq", "wechat", "mail"];
+
+function normalizeModules(value: string[] | undefined): string[] {
+  const wanted = new Set((value ?? DEFAULT_NOTIFY_MODULES).map((kind) => kind.trim().toLowerCase()));
+  return NOTIFY_MODULE_KEYS.filter((kind) => wanted.has(kind));
+}
+
+function moduleMeta(kind: string): { label: string; icon: IconName; tone: string } {
+  return {
+    label: NOTIFY_BRAND_LABELS[kind] ?? kind,
+    icon: kind === "mail" ? "note" : "message",
+    tone: KIND_COLORS[kind] ?? KIND_COLORS.other,
+  };
+}
+
+/** 通知时间：Rust 是 UNIX 秒；mock / 个别事件可能给毫秒，统一成 HH:MM */
+function moduleClock(ts: number): string {
+  if (!Number.isFinite(ts) || ts <= 0) return "";
+  const date = new Date(ts > 1e12 ? ts : ts * 1000);
+  return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
+}
+
+/** 历史行描述规则（参考 compact.py / app.py 的通知口径） */
+function messageDescription(item: NotifyItem): string {
+  const body = (item.body ?? "").trim();
+  const sender = (item.sender ?? "").trim();
+  if (body) return sender ? `${sender}：${body}` : body;
+  if (item.kind === "mail") return "新邮件";
+  if (sender) return `${sender} 发来消息`;
+  return "新消息";
+}
+
+function messageSortTime(item: NotifyItem): number {
+  return item.time > 1e12 ? item.time : item.time * 1000;
+}
+
+type MsgMenu =
+  | { mode: "plus"; x: number; y: number; kind?: undefined }
+  | { mode: "tile"; x: number; y: number; kind: string }
+  | { mode: "clear"; x: number; y: number; kind?: undefined };
 
 export function MessagesPage({
   notify,
-  onMarkRead,
+  config,
+  onMarkReadAll,
+  onMarkReadKind,
   onClear,
+  onModulesChange,
   onOpenItem,
+  onOpenModule,
   onOpenSettings,
 }: {
   notify: NotifyState;
-  onMarkRead: () => void;
+  config: IslandConfig;
+  /** 每个显示模块调 island_notify_mark_read_kind（只清未读，不删历史） */
+  onMarkReadAll: (kinds: string[]) => void;
+  onMarkReadKind: (kind: string) => void;
   onClear: (kind?: string) => void;
+  /** 写 config.notifyModules（"+" 添加 / 右键移除） */
+  onModulesChange: (modules: string[]) => void;
   onOpenItem: (item: NotifyItem) => void;
+  onOpenModule: (kind: string, exe?: string) => void;
   onOpenSettings: () => void;
 }) {
-  const now = useNow();
-  const [filter, setFilter] = useState<string>("all");
-  const counts = useMemo(() => {
-    const map: Record<string, number> = {};
-    for (const item of notify.items) {
-      map[item.kind] = (map[item.kind] ?? 0) + (item.read ? 0 : 1);
-    }
-    return map;
-  }, [notify.items]);
-  const visible = useMemo(
-    () => (filter === "all" ? notify.items : notify.items.filter((i) => i.kind === filter)),
-    [filter, notify.items]
+  const pageRef = useRef<HTMLDivElement | null>(null);
+  const addBtnRef = useRef<HTMLButtonElement | null>(null);
+  const [menu, setMenu] = useState<MsgMenu | null>(null);
+  const enabled = useMemo(() => normalizeModules(config.notifyModules), [config.notifyModules]);
+  const enabledSet = useMemo(() => new Set(enabled), [enabled]);
+  const visibleItems = useMemo(
+    () =>
+      notify.items
+        .filter((item) => enabledSet.has(item.kind) && (item.kind !== "wechat" || !item.read))
+        .sort((a, b) => messageSortTime(b) - messageSortTime(a)),
+    [notify.items, enabledSet]
   );
-  const kinds = useMemo(() => {
-    const set = new Set<string>();
-    for (const item of notify.items) set.add(item.kind);
-    return Array.from(set);
-  }, [notify.items]);
+  const latestWechat = visibleItems.find((item) => item.kind === "wechat");
+  const wechatUnread = latestWechat
+    ? notify.wechatUnread ?? visibleItems.filter((item) => item.kind === "wechat").length
+    : 0;
+  const history = useMemo(() => {
+    const others = visibleItems.filter((item) => item.kind !== "wechat");
+    if (!latestWechat || !wechatUnread) return others.slice(0, 30);
+    return [...others.slice(0, 29), latestWechat]
+      .sort((a, b) => messageSortTime(b) - messageSortTime(a));
+  }, [visibleItems, latestWechat, wechatUnread]);
+  const stats = useMemo(() => {
+    const map: Record<string, { unread: number; last: number }> = {};
+    for (const item of visibleItems) {
+      const entry = map[item.kind] ?? { unread: 0, last: 0 };
+      if (!item.read) entry.unread += 1;
+      entry.last = Math.max(entry.last, messageSortTime(item));
+      map[item.kind] = entry;
+    }
+    if (map.wechat) map.wechat.unread = wechatUnread;
+    return map;
+  }, [visibleItems, wechatUnread]);
+  const missingModules = NOTIFY_MODULE_KEYS.filter((kind) => !enabledSet.has(kind));
+  const denseTiles = enabled.length === NOTIFY_MODULE_KEYS.length;
+
+  const closeMenu = () => setMenu(null);
+
+  // Esc 关闭页面菜单（点击外部由 backdrop 负责）
+  useEffect(() => {
+    if (!menu) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setMenu(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [menu]);
+
+  /** 以 client 坐标打开页面内菜单（坐标按页面左上角换算，避免面板 transform 偏移） */
+  const openMenu = (clientX: number, clientY: number, next: Omit<MsgMenu, "x" | "y">) => {
+    const rect = pageRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const x = Math.max(6, Math.min(clientX - rect.left, Math.max(6, rect.width - 188)));
+    const y = Math.max(6, Math.min(clientY - rect.top, Math.max(6, rect.height - 140)));
+    setMenu({ ...next, x, y } as MsgMenu);
+  };
+
+  const handlePageContextMenu = (event: ReactMouseEvent) => {
+    event.preventDefault();
+    event.stopPropagation();
+    openMenu(event.clientX, event.clientY, { mode: "clear" });
+  };
+
+  const handleTileContextMenu = (event: ReactMouseEvent, kind: string) => {
+    event.preventDefault();
+    event.stopPropagation();
+    openMenu(event.clientX, event.clientY, { mode: "tile", kind });
+  };
+
+  const handlePlusMenu = () => {
+    const rect = addBtnRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    openMenu(rect.right - 178, rect.bottom + 6, { mode: "plus" });
+  };
+
+  const addModule = (kind: string) => {
+    const next = normalizeModules([...enabled, kind]);
+    onModulesChange(next);
+    closeMenu();
+  };
+
+  const removeModule = (kind: string) => {
+    onModulesChange(normalizeModules(enabled.filter((item) => item !== kind)));
+    closeMenu();
+  };
+
+  const openModule = (kind: string) => {
+    const latest = visibleItems.find((item) => item.kind === kind);
+    onOpenModule(kind, latest?.exe);
+    onMarkReadKind(kind);
+  };
 
   return (
-    <div className="page messages-page">
+    <div
+      className="page messages-page"
+      ref={pageRef}
+      onContextMenu={handlePageContextMenu}
+    >
       <SectionHead
         title="消息"
-        hint={`${notify.unread} 条未读 · 系统通知 + 飞书 / 钉钉浮窗`}
+        hint={`${notify.unread} 条未读 · ${enabled.length} 个模块`}
         action={
-          <div className="head-actions">
-            <button type="button" className="mini-text-btn" onClick={onMarkRead}>
+          <div className="head-actions msg-head-actions">
+            <button
+              type="button"
+              ref={addBtnRef}
+              className="mini-icon-btn msg-add"
+              onClick={handlePlusMenu}
+              title="添加消息模块"
+              aria-label="添加消息模块"
+            >
+              <Icon name="plus" size={13} />
+            </button>
+            <button
+              type="button"
+              className="mini-text-btn"
+              onClick={() => onMarkReadAll(enabled)}
+            >
               全部已读
             </button>
-            <button type="button" className="mini-icon-btn" onClick={onOpenSettings} title="通知设置">
+            <button
+              type="button"
+              className="mini-icon-btn"
+              onClick={onOpenSettings}
+              title="打开系统通知设置"
+              aria-label="打开系统通知设置"
+            >
               <Icon name="settings" size={13} />
             </button>
           </div>
         }
       />
-      <div className="module-tabs">
-        <button type="button" className={filter === "all" ? "active" : ""} onClick={() => setFilter("all")}>
-          全部
-          {notify.unread > 0 ? <span className="module-count">{notify.unread}</span> : null}
-        </button>
-        {kinds.map((kind) => {
-          const meta = MODULE_META[kind] ?? { label: kind, icon: "message" as IconName, tone: "#8fa3c8" };
+
+      {/* 模块磁贴：84px，色圆图标 + 名称 + 未读数 + 最近一条 HH:MM */}
+      <div className={`msg-tiles${denseTiles ? " is-dense" : ""}`}>
+        {enabled.map((kind) => {
+          const meta = moduleMeta(kind);
+          const stat = stats[kind];
           return (
             <button
               key={kind}
               type="button"
-              className={filter === kind ? "active" : ""}
-              onClick={() => setFilter(kind)}
+              className="msg-tile"
+              onClick={() => openModule(kind)}
+              onContextMenu={(event) => handleTileContextMenu(event, kind)}
+              title={`${meta.label} · 右键管理模块`}
             >
-              <span className="module-dot" style={{ background: meta.tone }} />
-              {meta.label}
-              {counts[kind] ? <span className="module-count">{counts[kind]}</span> : null}
+              <span className="msg-tile-head">
+                {NOTIFY_BRAND_ICONS[kind] ? (
+                  <NotifyBrandIcon kind={kind} size={denseTiles ? 21 : 30} />
+                ) : (
+                  <span className="msg-tile-icon" style={{ background: meta.tone }}>
+                    <Icon name={meta.icon} size={15} />
+                  </span>
+                )}
+                <span className="msg-tile-name">{meta.label}</span>
+              </span>
+              <span className="msg-tile-foot">
+                <b className={stat?.unread ? "has-unread" : ""} style={stat?.unread ? { color: meta.tone } : undefined}>
+                  {stat?.unread ?? 0}
+                </b>
+                <em>{stat ? moduleClock(stat.last) : ""}</em>
+              </span>
             </button>
           );
         })}
-        {notify.items.length > 0 ? (
-          <button type="button" className="module-clear" title="清空当前筛选" onClick={() => onClear(filter === "all" ? undefined : filter)}>
-            <Icon name="trash" size={13} />
-          </button>
+        {enabled.length === 0 ? (
+          <div className="msg-tiles-empty">点右上角 + 添加消息模块</div>
         ) : null}
       </div>
-      <div className="message-list">
-        {visible.length === 0 ? (
-          <EmptyState icon="message" title="没有新消息" hint="QQ / 微信 / 邮件读系统通知，飞书 / 钉钉读右下角通知浮窗" />
+
+      {/* 历史：最多 30 行 × 30px；点击仍打开来源应用（AgentHUD 既有能力） */}
+      <div className="msg-history" onContextMenu={handlePageContextMenu}>
+        {history.length === 0 ? (
+          <div className="msg-history-empty">
+            <Icon name="message" size={18} />
+            <span>没有新消息</span>
+            <em>可在「灵动岛设置 → 消息与邮件」配置通知来源</em>
+          </div>
         ) : (
-          visible.map((item) => {
-            const meta = MODULE_META[item.kind] ?? { label: item.name, icon: "message" as IconName, tone: "#8fa3c8" };
+          history.map((item) => {
+            const meta = moduleMeta(item.kind);
+            const isWechat = item.kind === "wechat";
+            const description = isWechat ? `${wechatUnread} 条未读消息` : messageDescription(item);
             return (
               <button
-                key={item.id}
+                key={isWechat ? "wechat-summary" : item.id}
                 type="button"
-                className={`message-item ${item.read ? "read" : "unread"}`}
+                className={`msg-history-row ${item.read ? "is-read" : ""}`}
                 onClick={() => onOpenItem(item)}
-                title={`打开${item.name}`}
+                title={`${meta.label} · ${description}`}
               >
-                <span className="message-icon" style={{ background: `${meta.tone}20`, color: meta.tone }}>
-                  <Icon name={meta.icon} size={16} />
-                </span>
-                <div className="message-main">
-                  <div className="message-top">
-                    <span className="message-sender">{item.sender || item.name}</span>
-                    <span className="message-app">{meta.label}</span>
-                    <span className="message-time">{timeAgo(item.time, now)}</span>
-                  </div>
-                  <div className="message-body">{item.body || "新消息"}</div>
-                </div>
-                {!item.read ? <span className="unread-dot" /> : null}
+                {NOTIFY_BRAND_ICONS[item.kind] ? (
+                  <NotifyBrandIcon kind={item.kind} size={18} />
+                ) : (
+                  <i style={{ background: meta.tone }} />
+                )}
+                <span className="msg-history-name">{meta.label}</span>
+                <span className="msg-history-desc">{description}</span>
+                <span className="msg-history-time">{moduleClock(item.time)}</span>
               </button>
             );
           })
         )}
       </div>
+
+      {menu ? (
+        <>
+          <div
+            className="msg-menu-backdrop"
+            onPointerDown={closeMenu}
+            onContextMenu={(event) => {
+              event.preventDefault();
+              closeMenu();
+            }}
+          />
+          <div
+            className="msg-menu"
+            style={{ left: menu.x, top: menu.y }}
+            onPointerDown={(event) => event.stopPropagation()}
+          >
+            {menu.mode === "plus" ? (
+              missingModules.length === 0 ? (
+                <button type="button" disabled>
+                  所有模块都已添加
+                </button>
+              ) : (
+                missingModules.map((kind) => {
+                  const meta = moduleMeta(kind);
+                  return (
+                    <button key={kind} type="button" onClick={() => addModule(kind)}>
+                      <i style={{ background: meta.tone }} />
+                      添加 {meta.label}
+                    </button>
+                  );
+                })
+              )
+            ) : menu.mode === "tile" ? (
+              <>
+                <button
+                  type="button"
+                  onClick={() => {
+                    onClear(menu.kind);
+                    closeMenu();
+                  }}
+                >
+                  清空「{moduleMeta(menu.kind).label}」消息
+                </button>
+                <div className="msg-menu-divider" />
+                <button type="button" onClick={() => removeModule(menu.kind)}>
+                  移除「{moduleMeta(menu.kind).label}」模块
+                </button>
+              </>
+            ) : (
+              <>
+                <button
+                  type="button"
+                  disabled={visibleItems.length === 0}
+                  onClick={() => {
+                    onClear(undefined);
+                    closeMenu();
+                  }}
+                >
+                  清空全部消息
+                </button>
+              </>
+            )}
+          </div>
+        </>
+      ) : null}
     </div>
   );
 }
@@ -880,112 +1265,370 @@ export function StocksPage({
 export function WeatherPage({
   weather,
   onRefresh,
-  onOpenSettings,
+  onBind,
+  onUnbind,
+  onRemoveCity,
+  onAddCity,
 }: {
   weather: WeatherState | null;
   onRefresh: () => void;
-  onOpenSettings: () => void;
+  onBind: (city: WeatherCityState) => void;
+  onUnbind: () => void;
+  onRemoveCity: (city: WeatherCityState) => void;
+  onAddCity: (query: string) => Promise<string>;
 }) {
+  const pageRef = useRef<HTMLDivElement | null>(null);
+  const addInputRef = useRef<HTMLInputElement | null>(null);
+  const noteTimer = useRef<number | null>(null);
+  const [selected, setSelected] = useState(0);
+  const [adding, setAdding] = useState(false);
+  const [query, setQuery] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState<{ text: string; tone: "ok" | "error" } | null>(null);
+  const [menu, setMenu] = useState<{ index: number; x: number; y: number } | null>(null);
+  const cities = weather?.cities ?? [];
+  const cityCount = cities.length;
+
+  // 城市列表变化（绑定 / 取消绑定 / 增删）后夹取选中下标，避免指向已消失的城市。
+  useEffect(() => {
+    setSelected((current) => (cityCount === 0 ? 0 : Math.min(current, cityCount - 1)));
+  }, [cityCount]);
+
+  // 添加输入框打开后自动聚焦（面板展开动画期间也能立即输入）。
+  useEffect(() => {
+    if (!adding) return;
+    const timer = window.setTimeout(() => addInputRef.current?.focus(), 0);
+    return () => window.clearTimeout(timer);
+  }, [adding]);
+
+  // Esc 关闭右键菜单（点击外部由 backdrop 负责）。
+  useEffect(() => {
+    if (!menu) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setMenu(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [menu]);
+
+  useEffect(
+    () => () => {
+      if (noteTimer.current != null) window.clearTimeout(noteTimer.current);
+    },
+    []
+  );
+
+  const flashNote = (text: string, tone: "ok" | "error") => {
+    setNote({ text, tone });
+    if (noteTimer.current != null) window.clearTimeout(noteTimer.current);
+    noteTimer.current = window.setTimeout(() => setNote(null), 3600);
+  };
+
+  /** 以 client 坐标打开页面内菜单（坐标按页面左上角换算，避免面板 transform 偏移） */
+  const openMenu = (event: ReactMouseEvent, index: number) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const rect = pageRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const x = Math.max(6, Math.min(event.clientX - rect.left, Math.max(6, rect.width - 210)));
+    const y = Math.max(6, Math.min(event.clientY - rect.top, Math.max(6, rect.height - 156)));
+    setMenu({ index, x, y });
+  };
+
+  const submitAdd = async () => {
+    const value = query.trim();
+    if (!value || busy) return;
+    setBusy(true);
+    try {
+      const message = await onAddCity(value);
+      flashNote(message, "ok");
+      setQuery("");
+      setAdding(false);
+    } catch (error) {
+      flashNote(String(error), "error");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   if (!weather) {
     return (
       <div className="page">
-        <EmptyState icon="weather" title="天气加载中" hint="正在向 Open-Meteo 请求当前天气与预报" />
+        <EmptyState icon="weather" title="天气加载中" hint="正在请求当前天气与预报" />
       </div>
     );
   }
 
-  const daily = weather.daily.slice(0, 5);
+  const selectedCity = cityCount === 0 ? null : cities[Math.min(selected, cityCount - 1)];
+  const menuCity = menu && menu.index < cityCount ? cities[menu.index] : null;
+  const daily = selectedCity?.daily.slice(0, 5) ?? [];
   const today = daily[0];
+  // 温度单位跟随数据源（imperial → °F），其余按摄氏度 °；风速同理（mph / km/h）。
+  const unit = tempUnitSuffix(weather);
+  const windUnit = windUnitSuffix(weather);
   const lo = daily.length ? Math.min(...daily.map((d) => d.min)) : 0;
   const hi = daily.length ? Math.max(...daily.map((d) => d.max)) : 1;
   const span = Math.max(1, hi - lo);
-  const rain = weather.hourly.slice(0, 6).reduce((max, h) => Math.max(max, h.precip), 0);
-  const facts: [string, string][] = [
-    ["体感", `${Math.round(weather.feelsLike)}°`],
-    ["湿度", `${Math.round(weather.humidity)}%`],
-    ["风速", `${Math.round(weather.wind)} km/h`],
-    ["降水", rain > 0 ? `${Math.round(rain)}%` : "—"],
-    ["日出", weather.sunrise || "—"],
-    ["日落", weather.sunset || "—"],
-    ["最高", today ? `${Math.round(today.max)}°` : "—"],
-    ["最低", today ? `${Math.round(today.min)}°` : "—"],
-  ];
-  const updated = weather.ok ? `更新于 ${fmtClock(weather.updatedAt)}` : weather.error;
+  const rain = selectedCity
+    ? selectedCity.hourly.slice(0, 6).reduce((max, h) => Math.max(max, h.precip), 0)
+    : 0;
+  const facts: [string, string][] = selectedCity
+    ? [
+        ["体感", `${Math.round(selectedCity.feelsLike)}${unit}`],
+        ["湿度", `${Math.round(selectedCity.humidity)}%`],
+        ["风速", `${Math.round(selectedCity.wind)} ${windUnit}`],
+        ["降水", rain > 0 ? `${Math.round(rain)}%` : "—"],
+        ["日出", selectedCity.sunrise || "—"],
+        ["日落", selectedCity.sunset || "—"],
+        ["最高", today ? `${Math.round(today.max)}${unit}` : "—"],
+        ["最低", today ? `${Math.round(today.min)}${unit}` : "—"],
+      ]
+    : [];
+  const hasData = Boolean(selectedCity && (selectedCity.daily.length > 0 || selectedCity.hourly.length > 0));
+  const updated = selectedCity
+    ? selectedCity.ok
+      ? `更新于 ${fmtClock(selectedCity.updatedAt)}`
+      : selectedCity.error || "更新失败"
+    : "";
+
+  const menuStatus = (city: WeatherCityState): string => {
+    if (city.isMain) {
+      if (!weather.followsIp) return "主城市：已绑定";
+      return city.isIp ? "主城市：跟随公网 IP" : "主城市：IP 不可用，暂用自定义城市";
+    }
+    return city.isIp ? "当前网络城市（跟随公网 IP）" : "";
+  };
+
+  const bindCity = (city: WeatherCityState) => {
+    setMenu(null);
+    setSelected(0);
+    onBind(city);
+  };
+
+  const unbindCity = () => {
+    setMenu(null);
+    setSelected(0);
+    onUnbind();
+  };
+
+  const removeCity = (city: WeatherCityState) => {
+    setMenu(null);
+    setSelected(0);
+    onRemoveCity(city);
+  };
 
   return (
-    <div className="page weather-page">
+    <div className="page weather-page" ref={pageRef}>
       <div className="weather-top">
-        <button type="button" className="weather-city" onClick={onOpenSettings} title="切换天气城市">
-          <WeatherGlyph icon={weather.icon} size={17} />
-          <b>{weather.city}</b>
-          <span>{Math.round(weather.temp)}°</span>
-        </button>
-        <span className="weather-updated" title={updated}>
-          {updated}
-        </span>
+        {adding ? (
+          <div className="weather-add-box">
+            <input
+              ref={addInputRef}
+              value={query}
+              disabled={busy}
+              placeholder="城市名或 纬度,经度"
+              aria-label="添加天气城市"
+              onChange={(event) => setQuery(event.target.value)}
+              onKeyDown={(event) => {
+                // 中文输入法组合中的 Enter/Esc 交给 IME，避免确认候选词时误提交
+                if (event.nativeEvent.isComposing) return;
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  void submitAdd();
+                } else if (event.key === "Escape") {
+                  event.preventDefault();
+                  if (busy) return;
+                  setAdding(false);
+                  setQuery("");
+                }
+              }}
+            />
+            <button
+              type="button"
+              className="weather-add-submit"
+              disabled={busy || !query.trim()}
+              onClick={() => void submitAdd()}
+              title="添加城市"
+              aria-label="添加城市"
+            >
+              <Icon name="check" size={13} />
+            </button>
+            <button
+              type="button"
+              className="weather-add-cancel"
+              disabled={busy}
+              onClick={() => {
+                setAdding(false);
+                setQuery("");
+              }}
+              title="取消"
+              aria-label="取消添加"
+            >
+              <Icon name="close" size={13} />
+            </button>
+          </div>
+        ) : (
+          <>
+            <div className="weather-cities">
+              {cities.map((city, index) => (
+                <button
+                  key={city.name}
+                  type="button"
+                  className={`weather-chip ${index === selected ? "is-active" : ""}`}
+                  onClick={() => setSelected(index)}
+                  onContextMenu={(event) => openMenu(event, index)}
+                  title={`${city.label} · 右键管理城市`}
+                >
+                  {city.isMain ? <span className="weather-chip-dot" /> : null}
+                  <b>{city.label}</b>
+                  <span className="weather-chip-temp">{city.ok ? `${Math.round(city.temp)}${unit}` : "--°"}</span>
+                  {city.isIp ? <span className="weather-chip-ip">IP</span> : null}
+                </button>
+              ))}
+            </div>
+            <button
+              type="button"
+              className="weather-add"
+              onClick={() => {
+                setAdding(true);
+                setQuery("");
+              }}
+              title="添加城市"
+              aria-label="添加城市"
+            >
+              <Icon name="plus" size={13} />
+            </button>
+          </>
+        )}
+        {note ? (
+          <span className={`weather-note ${note.tone === "error" ? "error" : ""}`} title={note.text}>
+            {note.text}
+          </span>
+        ) : updated ? (
+          <span className="weather-updated" title={updated}>
+            {updated}
+          </span>
+        ) : null}
         <button type="button" className="weather-refresh" onClick={onRefresh} title="刷新天气" aria-label="刷新天气">
           <Icon name="refresh" size={14} />
         </button>
       </div>
 
-      <div className="weather-body">
-        <div className="weather-now">
-          <div className="weather-now-main">
-            <WeatherGlyph icon={weather.icon} size={70} className="weather-now-glyph" />
-            <span className="weather-temp">{Math.round(weather.temp)}°</span>
-          </div>
-          <div className="weather-desc">{weather.desc}</div>
-          <div className="weather-cityline">
-            {weather.city}
-            {today ? ` · 最低 ${Math.round(today.min)}°  最高 ${Math.round(today.max)}°` : ""}
-          </div>
+      {cityCount === 0 ? (
+        <div className="weather-empty">
+          <Icon name="weather" size={26} />
+          <b>还没有城市</b>
+          <span>点右上角 + 搜索添加，或在设置 → 天气 → 城市列表里添加</span>
         </div>
-
-        <div className="weather-forecast">
-          {daily.map((d, i) => {
-            const start = Math.max(0, Math.min(100, ((d.min - lo) / span) * 100));
-            const end = Math.max(start, Math.min(100, ((d.max - lo) / span) * 100));
-            return (
-              <div className={`forecast-row ${i === 0 ? "today" : ""}`} key={d.date}>
-                <span className="forecast-day">{i === 0 ? "今天" : d.weekday}</span>
-                <WeatherGlyph icon={d.icon} size={18} />
-                <span className="forecast-min">{Math.round(d.min)}°</span>
-                <span className="forecast-bar">
-                  <i
-                    style={{
-                      clipPath: `inset(0 ${100 - end}% 0 ${start}% round 999px)`,
-                    }}
-                  />
-                </span>
-                <span className="forecast-max">{Math.round(d.max)}°</span>
+      ) : !selectedCity || !hasData ? (
+        <div className={`weather-empty ${selectedCity && !selectedCity.ok ? "is-error" : ""}`}>
+          <Icon name="weather" size={26} />
+          <b>{selectedCity && !selectedCity.ok ? `${selectedCity.label} 天气获取失败` : "暂无天气数据"}</b>
+          <span>{selectedCity?.error || "点右上角刷新重试"}</span>
+        </div>
+      ) : (
+        <>
+          <div className="weather-body">
+            <div className="weather-now">
+              <div className="weather-now-main">
+                <WeatherGlyph icon={selectedCity.icon} size={70} className="weather-now-glyph" />
+                <span className="weather-temp">{Math.round(selectedCity.temp)}{unit}</span>
               </div>
-            );
-          })}
-        </div>
-      </div>
+              <div className="weather-desc">{selectedCity.desc}</div>
+              <div className="weather-cityline">
+                {selectedCity.label}
+                {today ? ` · 最低 ${Math.round(today.min)}${unit}  最高 ${Math.round(today.max)}${unit}` : ""}
+              </div>
+            </div>
 
-      <div className="weather-facts">
-        {facts.map(([label, value]) => (
-          <div className="weather-fact" key={label}>
-            <span>{label}</span>
-            <b>{value}</b>
+            <div className="weather-forecast">
+              {daily.map((d, i) => {
+                const start = Math.max(0, Math.min(100, ((d.min - lo) / span) * 100));
+                const end = Math.max(start, Math.min(100, ((d.max - lo) / span) * 100));
+                return (
+                  <div className={`forecast-row ${i === 0 ? "today" : ""}`} key={d.date}>
+                    <span className="forecast-day">{i === 0 ? "今天" : d.weekday}</span>
+                    <WeatherGlyph icon={d.icon} size={18} />
+                    <span className="forecast-min">{Math.round(d.min)}{unit}</span>
+                    <span className="forecast-bar">
+                      <i
+                        style={{
+                          clipPath: `inset(0 ${100 - end}% 0 ${start}% round 999px)`,
+                        }}
+                      />
+                    </span>
+                    <span className="forecast-max">{Math.round(d.max)}{unit}</span>
+                  </div>
+                );
+              })}
+            </div>
           </div>
-        ))}
-      </div>
 
-      <div className="weather-hours">
-        {weather.hourly.slice(0, 8).map((h) => (
-          <div className="weather-hour" key={h.time}>
-            <span className="weather-hour-label">{h.label.replace(":00", "时")}</span>
-            <WeatherGlyph icon={h.icon} size={19} />
-            <span className="weather-hour-temp">{Math.round(h.temp)}°</span>
-            <span className={`weather-hour-rain ${h.precip >= 20 ? "show" : ""}`}>
-              {h.precip >= 20 ? `${Math.round(h.precip)}%` : ""}
-            </span>
+          <div className="weather-facts">
+            {facts.map(([label, value]) => (
+              <div className="weather-fact" key={label}>
+                <span>{label}</span>
+                <b>{value}</b>
+              </div>
+            ))}
           </div>
-        ))}
-      </div>
 
+          <div className="weather-hours">
+            {selectedCity.hourly.slice(0, 8).map((h) => (
+              <div className="weather-hour" key={h.time}>
+                <span className="weather-hour-label">{h.label.replace(":00", "时")}</span>
+                <WeatherGlyph icon={h.icon} size={19} />
+                <span className="weather-hour-temp">{Math.round(h.temp)}{unit}</span>
+                <span className={`weather-hour-rain ${h.precip >= 20 ? "show" : ""}`}>
+                  {h.precip >= 20 ? `${Math.round(h.precip)}%` : ""}
+                </span>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+
+      {menu && menuCity ? (
+        <>
+          <div
+            className="msg-menu-backdrop"
+            onPointerDown={() => setMenu(null)}
+            onContextMenu={(event) => {
+              event.preventDefault();
+              setMenu(null);
+            }}
+          />
+          <div
+            className="msg-menu weather-menu"
+            style={{ left: menu.x, top: menu.y }}
+            onPointerDown={(event) => event.stopPropagation()}
+          >
+            {menuCity.isMain || menuCity.isIp ? (
+              <button type="button" disabled className="weather-menu-status">
+                {menuStatus(menuCity)}
+              </button>
+            ) : null}
+            {!menuCity.isMain || weather.followsIp ? (
+              <button type="button" onClick={() => bindCity(menuCity)}>
+                绑定主城市
+              </button>
+            ) : null}
+            {!weather.followsIp ? (
+              <button type="button" onClick={unbindCity}>
+                {menuCity.isMain || menuCity.isIp ? "取消绑定（恢复跟随公网 IP）" : "取消绑定"}
+              </button>
+            ) : null}
+            {(menuCity.isMain ? weather.followsIp && menuCity.isUser : menuCity.isUser && !menuCity.isIp) ? (
+              <>
+                <div className="msg-menu-divider" />
+                <button type="button" className="danger" onClick={() => removeCity(menuCity)}>
+                  删除该城市
+                </button>
+              </>
+            ) : null}
+          </div>
+        </>
+      ) : null}
     </div>
   );
 }
@@ -996,20 +1639,26 @@ export function WeatherPage({
 
 export function ControlsPage({
   system,
+  active,
   onVolume,
   onMute,
   onBrightness,
   onRadio,
   onOpenSettings,
   onOpenMain,
+  onConfigureClash,
+  onClashError,
 }: {
   system: SystemState;
+  active: boolean;
   onVolume: (v: number) => void;
   onMute: () => void;
   onBrightness: (v: number) => void;
   onRadio: (kind: "wifi" | "bluetooth", on: boolean) => void;
   onOpenSettings: (kind: string) => void;
   onOpenMain: () => void;
+  onConfigureClash: () => void;
+  onClashError: (error: string) => void;
 }) {
   const [volume, setVolumeDraft] = useState(Math.round(system.volume * 100));
   const [brightness, setBrightnessDraft] = useState(Math.round(system.brightness ?? 0));
@@ -1162,19 +1811,9 @@ export function ControlsPage({
           </span>
         </button>
 
-        <button type="button" className="ctl-tile" onClick={() => onOpenSettings("home")}>
-          <span className="ctl-tile-icon">
-            <Icon name="settings" size={19} />
-          </span>
-          <span className="ctl-tile-copy">
-            <b>系统设置</b>
-            <span>声音 / 显示 / 网络</span>
-          </span>
-          <span className="ctl-tile-tail">
-            <Icon name="external" size={12} />
-          </span>
-        </button>
       </div>
+
+      <ClashPanel active={active} onConfigure={onConfigureClash} onError={onClashError} />
 
       {system.error ? (
         <div className="ctl-error">
@@ -1366,575 +2005,6 @@ export function ClipboardPage({
           ))}
         </div>
       )}
-    </div>
-  );
-}
-
-// ============================================================
-// 设置
-// ============================================================
-
-const HUD_FONT_MIN = 10;
-const HUD_FONT_MAX = 18;
-const HUD_FONT_DEFAULT = 13;
-const HUD_FONT_PRESETS = [
-  { value: 11.7, label: "小" },
-  { value: 13, label: "标准" },
-  { value: 14.3, label: "大" },
-  { value: 16.25, label: "特大" },
-];
-
-function formatFontPx(px: number): string {
-  if (Number.isInteger(px)) return String(px);
-  return px.toFixed(2).replace(/0+$/u, "").replace(/\.$/u, "");
-}
-
-function FontSizeField({
-  value,
-  onCommit,
-}: {
-  value: number;
-  onCommit: (px: number) => void;
-}) {
-  const [draft, setDraft] = useState(() => formatFontPx(value));
-  const [error, setError] = useState("");
-  const focusedRef = useRef(false);
-
-  useEffect(() => {
-    if (!focusedRef.current) {
-      setDraft(formatFontPx(value));
-      setError("");
-    }
-  }, [value]);
-
-  const commit = () => {
-    const next = parseFloat(draft);
-    if (!Number.isFinite(next) || next < HUD_FONT_MIN || next > HUD_FONT_MAX) {
-      setError(`请输入 ${HUD_FONT_MIN}–${HUD_FONT_MAX} 之间的字号`);
-      setDraft(formatFontPx(value));
-      return;
-    }
-    setError("");
-    const clean = Math.round(next * 100) / 100;
-    setDraft(formatFontPx(clean));
-    onCommit(clean);
-  };
-
-  const step = (direction: 1 | -1) => {
-    const snapped = Math.round(value * 2) / 2;
-    const next = Math.max(HUD_FONT_MIN, Math.min(HUD_FONT_MAX, snapped + direction * 0.5));
-    setDraft(formatFontPx(next));
-    setError("");
-    onCommit(next);
-  };
-
-  return (
-    <>
-      <div className="segmented">
-        {HUD_FONT_PRESETS.map((preset) => {
-          const active = Math.abs(value - preset.value) < 0.001;
-          return (
-            <button
-              type="button"
-              key={preset.value}
-              className={active ? "active" : ""}
-              onClick={() => {
-                setDraft(formatFontPx(preset.value));
-                setError("");
-                onCommit(preset.value);
-              }}
-            >
-              {preset.label}
-              {active ? <Icon name="check" size={10} /> : null}
-            </button>
-          );
-        })}
-      </div>
-      <div className="font-size-row">
-        <button
-          type="button"
-          className="font-size-step"
-          aria-label="减小字号"
-          title="减小 0.5px"
-          onClick={() => step(-1)}
-        >
-          −
-        </button>
-        <label className="font-size-field">
-          <input
-            type="number"
-            inputMode="decimal"
-            min={HUD_FONT_MIN}
-            max={HUD_FONT_MAX}
-            step={0.5}
-            value={draft}
-            aria-label="自定义基准字号"
-            onFocus={() => {
-              focusedRef.current = true;
-            }}
-            onChange={(event) => {
-              setDraft(event.target.value);
-              setError("");
-            }}
-            onBlur={() => {
-              focusedRef.current = false;
-              commit();
-            }}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") {
-                event.preventDefault();
-                (event.currentTarget as HTMLInputElement).blur();
-              }
-            }}
-          />
-          <span>px</span>
-        </label>
-        <button
-          type="button"
-          className="font-size-step"
-          aria-label="增大字号"
-          title="增大 0.5px"
-          onClick={() => step(1)}
-        >
-          +
-        </button>
-        <button
-          type="button"
-          className="font-size-reset"
-          onClick={() => {
-            setDraft(String(HUD_FONT_DEFAULT));
-            setError("");
-            onCommit(HUD_FONT_DEFAULT);
-          }}
-        >
-          恢复默认
-        </button>
-      </div>
-      {error ? <div className="font-size-error">{error}</div> : null}
-      <div className="settings-row-hint">
-        基准 {HUD_FONT_DEFAULT}px，可输入 {HUD_FONT_MIN}–{HUD_FONT_MAX}px；只缩放文字，图标和窗口尺寸不变。
-      </div>
-    </>
-  );
-}
-
-export function SettingsPage({
-  config,
-  agents,
-  onChange,
-  onOpenMain,
-  onQuit,
-  onClose,
-  onToast,
-}: {
-  config: IslandConfig;
-  /** 当前读到的账号（已按用户的顺序排好），用于「排序」一栏 */
-  agents: HudBarAgent[];
-  onChange: (patch: Partial<IslandConfig>) => void;
-  onOpenMain: () => void;
-  onQuit: () => void;
-  onClose: () => void;
-  onToast: (msg: string) => void;
-}) {
-  const [provinceCode, setProvinceCode] = useState("");
-  const [cityCode, setCityCode] = useState("");
-  const [districtCode, setDistrictCode] = useState("");
-  const [hotkey, setHotkey] = useState(config.hotkeyToggle);
-  const [locating, setLocating] = useState(false);
-  // 省市区数据就绪标记（内存压降专项）：china-pca.json 动态 import，设置
-  // 页天气区块挂载时才触发加载；就绪后置位驱动重渲染，级联选择器与初始
-  // 回填 effect（下方依赖含本标记）在数据到达后补齐。
-  const [divisionsReady, setDivisionsReady] = useState(divisionsLoaded);
-
-  useEffect(() => setHotkey(config.hotkeyToggle), [config.hotkeyToggle]);
-
-  useEffect(() => {
-    let cancelled = false;
-    void loadDivisions()
-      .then(() => {
-        if (!cancelled) setDivisionsReady(true);
-      })
-      .catch(() => {
-        // 加载失败静默（选择器保持空占位），重进设置页时 loadDivisions
-        // 会重新触发加载（失败不缓存 rejected promise）
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  useEffect(() => {
-    const path = findDivisionPath("", config.weatherCity, config.weatherLabel || config.weatherCity);
-    if (path.province) setProvinceCode(String(path.province.c));
-    if (path.city) setCityCode(String(path.city.c));
-    if (path.district) setDistrictCode(String(path.district.c));
-  }, [config.weatherCity, config.weatherLabel, divisionsReady]);
-
-  const province = provinces().find((item) => String(item.c) === provinceCode);
-  const cityList = citiesOf(provinceCode);
-  const city = cityList.find((item) => String(item.c) === cityCode);
-  const districtList = districtsOf(provinceCode, cityCode);
-
-  const save = (patch: Partial<IslandConfig>, message = "已保存") => {
-    onChange(patch);
-    onToast(message);
-  };
-
-  const commitWeather = (
-    nextProvince: string,
-    nextCity: string,
-    nextDistrict: string,
-    override?: { lat: number; lon: number; label?: string }
-  ) => {
-    const cityNode = citiesOf(nextProvince).find((item) => String(item.c) === nextCity);
-    if (!cityNode) return;
-    const districtNode = districtsOf(nextProvince, nextCity).find(
-      (item) => String(item.c) === nextDistrict
-    );
-    const shortCity = cityNode.n.replace(/(特别行政区|自治州|地区|市|盟)$/u, "");
-    const label =
-      override?.label ??
-      (districtNode ? `${shortCity} · ${districtNode.n}` : shortCity);
-    save(
-      {
-        weatherCity: cityNode.n,
-        weatherLabel: label,
-        weatherLat: override?.lat ?? null,
-        weatherLon: override?.lon ?? null,
-      },
-      `天气位置已切换到 ${label}`
-    );
-  };
-
-  const locate = async () => {
-    if (locating) return;
-    setLocating(true);
-    try {
-      const place = await locateCurrentPlace();
-      if (!place.ok) throw new Error(place.error || "定位失败");
-      const path = matchPlace(place.province, place.city);
-      if (path.province && path.city) {
-        const nextProvince = String(path.province.c);
-        const nextCity = String(path.city.c);
-        setProvinceCode(nextProvince);
-        setCityCode(nextCity);
-        setDistrictCode("");
-        commitWeather(nextProvince, nextCity, "", {
-          lat: place.lat,
-          lon: place.lon,
-          label: path.city.n.replace(/(特别行政区|自治州|地区|市|盟)$/u, ""),
-        });
-      } else {
-        save(
-          {
-            weatherCity: place.city,
-            weatherLabel: place.label || place.city,
-            weatherLat: place.lat,
-            weatherLon: place.lon,
-          },
-          `已定位到 ${place.label || place.city}`
-        );
-      }
-    } catch (e) {
-      onToast(`定位失败: ${String(e)}`);
-    } finally {
-      setLocating(false);
-    }
-  };
-
-  // 上移 / 下移一个账号：把当前顺序整份落盘（不在表里的新账号自然排在后面）
-  const moveAgent = (index: number, delta: number) => {
-    const to = index + delta;
-    if (to < 0 || to >= agents.length) return;
-    const ids = agents.map((agent) => agent.id);
-    const [moving] = ids.splice(index, 1);
-    ids.splice(to, 0, moving);
-    save({ agentOrder: ids }, "顺序已保存");
-  };
-  const agentSub = (agent: HudBarAgent) =>
-    [agent.account, agent.plan].filter((part) => Boolean(part && part.trim())).join(" · ");
-
-  return (
-    <div className="page settings-page">
-      <SectionHead title="设置" hint="所有改动即时生效，只保存在应用内部状态中" />
-
-      <div className="settings-block">
-        <div className="settings-label">排序</div>
-        <div className="settings-row-hint">
-          收起胶囊里的环和主页额度卡按这里的顺序排列；新出现的账号排到最后
-        </div>
-        {agents.length === 0 ? (
-          <div className="settings-row-hint">还没读到账号数据</div>
-        ) : (
-          <div className="agent-order">
-            {agents.map((agent, index) => (
-              <div className="agent-order-row" key={agent.id}>
-                <BrandMark source={agent.source} size={18} />
-                <span className="agent-order-copy">
-                  <b>{agentLabel(agent.source)}</b>
-                  {agentSub(agent) ? <span>{agentSub(agent)}</span> : null}
-                </span>
-                <button
-                  type="button"
-                  className="agent-order-btn"
-                  disabled={index === 0}
-                  onClick={() => moveAgent(index, -1)}
-                  title="上移"
-                  aria-label={`${agentLabel(agent.source)} 上移`}
-                >
-                  <Icon name="arrowUp" size={12} />
-                </button>
-                <button
-                  type="button"
-                  className="agent-order-btn"
-                  disabled={index === agents.length - 1}
-                  onClick={() => moveAgent(index, 1)}
-                  title="下移"
-                  aria-label={`${agentLabel(agent.source)} 下移`}
-                >
-                  <Icon name="arrowDown" size={12} />
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
-        {agents.length > 0 && (config.agentOrder?.length ?? 0) > 0 ? (
-          <button
-            type="button"
-            className="agent-order-reset"
-            onClick={() => save({ agentOrder: [] }, "已恢复默认顺序")}
-          >
-            恢复默认顺序
-          </button>
-        ) : null}
-      </div>
-
-      <div className="settings-block">
-        <div className="settings-label">深色毛玻璃</div>
-        <div className="settings-row">
-          <div>
-            <div className="settings-row-title">透明度</div>
-            <div className="settings-row-hint">
-              越高越能透出桌面壁纸；只调玻璃底色，不影响文字和图标
-            </div>
-          </div>
-          <div className="settings-inline-value">{config.transparency}%</div>
-        </div>
-        <Slider
-          value={config.transparency}
-          min={0}
-          max={90}
-          step={1}
-          onChange={(v) => onChange({ transparency: v })}
-          ariaLabel="毛玻璃透明度"
-        />
-      </div>
-
-      <div className="settings-block">
-        <div className="settings-row">
-          <div>
-            <div className="settings-row-title">字体大小</div>
-            <div className="settings-row-hint">
-              收起胶囊和展开面板一起缩放；只改文字，不改图标和窗口尺寸
-            </div>
-          </div>
-          <div className="settings-inline-value">{formatFontPx(config.fontSize ?? 13)} px</div>
-        </div>
-        <FontSizeField
-          value={config.fontSize ?? 13}
-          onCommit={(px) =>
-            save({ fontSize: px }, `字体大小已设为 ${formatFontPx(px)}px`)
-          }
-        />
-      </div>
-
-      <div className="settings-block">
-        <div className="settings-label">展开方式</div>
-        <div className="segmented">
-          {[
-            { key: "hover", label: "悬停展开" },
-            { key: "never", label: "长关" },
-          ].map((mode) => (
-            <button
-              type="button"
-              key={mode.key}
-              className={config.expandMode === mode.key ? "active" : ""}
-              onClick={() => save({ expandMode: mode.key as IslandConfig["expandMode"] })}
-            >
-              {mode.label}
-              {config.expandMode === mode.key ? <Icon name="check" size={10} /> : null}
-            </button>
-          ))}
-        </div>
-        <div className="settings-row-hint">长关：悬停不自动展开，点击胶囊展开；移出后仍会收起。</div>
-      </div>
-
-      <div className="settings-block">
-        <div className="settings-label">窗口</div>
-        <div className="settings-row">
-          <div>
-            <div className="settings-row-title">全屏时自动隐藏</div>
-            <div className="settings-row-hint">游戏 / 全屏视频时让出屏幕，退出后自动回来</div>
-          </div>
-          <Toggle
-            checked={config.hideFullscreen}
-            onChange={(next) => save({ hideFullscreen: next })}
-            label="全屏时自动隐藏"
-          />
-        </div>
-      </div>
-
-      <div className="settings-block">
-        <div className="settings-label-row">
-          <span className="settings-label">天气位置</span>
-          <button
-            type="button"
-            className={`settings-locate ${locating ? "busy" : ""}`}
-            onClick={() => void locate()}
-            disabled={locating}
-          >
-            <Icon name={locating ? "refresh" : "mapPin"} size={12} />
-            {locating ? "定位中" : "获取当前位置"}
-          </button>
-        </div>
-        <div className="weather-cascade">
-          <label>
-            <span>省份</span>
-            <select
-              value={provinceCode}
-              onChange={(e) => {
-                const next = e.target.value;
-                setProvinceCode(next);
-                const first = citiesOf(next)[0];
-                setCityCode(first ? String(first.c) : "");
-                setDistrictCode("");
-              }}
-            >
-              <option value="">选择省份</option>
-              {provinces().map((item) => (
-                <option value={String(item.c)} key={item.c}>
-                  {item.n}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label>
-            <span>城市</span>
-            <select
-              value={cityCode}
-              disabled={!provinceCode}
-              onChange={(e) => {
-                const next = e.target.value;
-                setCityCode(next);
-                setDistrictCode("");
-                commitWeather(provinceCode, next, "");
-              }}
-            >
-              <option value="">选择城市</option>
-              {cityList.map((item) => (
-                <option value={String(item.c)} key={item.c}>
-                  {item.n}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label>
-            <span>区县</span>
-            <select
-              value={districtCode}
-              disabled={!cityCode}
-              onChange={(e) => {
-                const next = e.target.value;
-                setDistrictCode(next);
-                commitWeather(provinceCode, cityCode, next);
-              }}
-            >
-              <option value="">全市</option>
-              {districtList.map((item) => (
-                <option value={String(item.c)} key={item.c}>
-                  {item.n}
-                </option>
-              ))}
-            </select>
-          </label>
-        </div>
-        <div className="settings-row-hint">
-          三级联动选择，无需输入。当前：{config.weatherLabel || city?.n || province?.n || config.weatherCity}
-        </div>
-      </div>
-
-      <div className="settings-block">
-        <div className="settings-label">股票</div>
-        <div className="settings-row">
-          <div>
-            <div className="settings-row-title">涨跌提醒阈值</div>
-            <div className="settings-row-hint">达到阈值时在收起态弹出一次提醒</div>
-          </div>
-          <div className="settings-inline-value">{config.stockAlertPct.toFixed(1)}%</div>
-        </div>
-        <Slider
-          value={config.stockAlertPct}
-          min={0.5}
-          max={10}
-          step={0.5}
-          onChange={(v) => onChange({ stockAlertPct: v })}
-          ariaLabel="涨跌提醒阈值"
-        />
-        <div className="settings-row">
-          <div>
-            <div className="settings-row-title">刷新间隔</div>
-            <div className="settings-row-hint">行情轮询频率</div>
-          </div>
-          <div className="segmented small">
-            {[3, 5, 10, 30].map((sec) => (
-              <button
-                type="button"
-                key={sec}
-                className={config.stockIntervalSec === sec ? "active" : ""}
-                onClick={() => save({ stockIntervalSec: sec })}
-              >
-                {sec}s
-              </button>
-            ))}
-          </div>
-        </div>
-      </div>
-
-      <div className="settings-block">
-        <div className="settings-label">快捷操作</div>
-        <div className="settings-input-row">
-          <input
-            value={hotkey}
-            placeholder="Ctrl+Alt+Shift+I"
-            onChange={(e) => setHotkey(e.target.value)}
-          />
-          <button
-            type="button"
-            className="settings-save"
-            onClick={() => save({ hotkeyToggle: hotkey.trim() || "Ctrl+Alt+Shift+I" }, "热键已保存")}
-          >
-            保存热键
-          </button>
-        </div>
-        <div className="settings-row-hint">
-          开关灵动岛的全局热键（Tauri accelerator 格式，当前显示为{" "}
-          <b>{hotkeyText(hotkey.trim() || "Ctrl+Alt+Shift+I")}</b>）；被其它软件占用时不会生效。
-        </div>
-        <div className="settings-action-row">
-          <button type="button" onClick={onOpenMain}>
-            <Icon name="external" size={14} /> 打开主窗口
-          </button>
-          <button type="button" onClick={onClose}>
-            <Icon name="eyeOff" size={14} /> 关闭灵动岛
-          </button>
-          <button type="button" className="danger" onClick={onQuit}>
-            <Icon name="power" size={14} /> 退出 AgentHUD
-          </button>
-        </div>
-        <div className="settings-footnote">
-          全局热键 {config.hotkeyToggle} · 版本 1.8.1 · 灵感来自 Misaka273/wisland（MIT）
-        </div>
-      </div>
     </div>
   );
 }

@@ -5,12 +5,19 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>AgentHUD Island</title>
     <!--
-      灵动岛 HUD 入口（island）：顶部居中、贴屏幕上缘的毛玻璃胶囊。
-      - Rust 侧 src-tauri/src/island/ 负责透明置顶窗口、展开/收起改高度、
-        顶部居中定位、全屏隐藏与所有数据服务；
-      - 默认收起态只显示 Agent 额度 + 天气 + 今日 token/花费（不渲染宠物/表情）；
-      - 悬停展开为多页面板：主页 / 消息 / 股票 / 天气 / 控制 / 剪贴板 /
-        截图 / 设置；主题、右键菜单、滚轮切换等见 island.css。
+      灵动岛 HUD 入口（island）：毛玻璃胶囊 + 展开面板，窗口 672×520（面板 640）。
+      - Rust 侧 src-tauri/src/island/ 负责透明置顶窗口、四边吸附（top/bottom/
+        left/right）、展开/收起、拖拽弹簧、全屏隐藏、可穿透与所有数据服务；
+        bottom 吸附时窗口贴工作区下沿、胶囊在窗口底部，面板从底部向上生长，
+        导航栏在面板靠近底边一侧。
+      - 收起态四视图：额度环 rings / 时钟 clock / 特效眼 pet / 音乐 music
+        （高度 54/34/34/36，rings 每 agent 单环 + 5h 百分比；滚轮切换），
+        另有消息/音量/股票 activity（40）与
+        彩色未读角标；主题 auto/light/dark/rouge/sky，交互与右键菜单见
+        IslandApp.tsx / island.css。
+      - 展开面板标签：主页 / 消息 / 股票 / 天气 / 控制 / 剪贴板 / 截图 / 工具；
+        右上角齿轮不在岛内切页，而是调用 open_island_settings_window 打开
+        独立的「灵动岛设置」大窗（island-settings.html，1100×720 自绘标题栏）。
       - 页面为独立 HTML 入口（vite.config.ts 的 island input），窗口以
         WebviewUrl::App("island.html") 加载。
     -->

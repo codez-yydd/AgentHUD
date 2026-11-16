@@ -107,6 +107,37 @@ fn has_go_login(root: &Path) -> bool {
         .unwrap_or(false)
 }
 
+// ============================================================
+// 翻译链路（只读登录态探测 + 取 Bearer，供 island/translate/platforms 使用）
+// ============================================================
+
+/// 翻译链路：本机 OpenCode Go 登录态是否可用于翻译（只读文件探测，不联网）。
+pub(crate) fn has_local_translation_login() -> bool {
+    has_go_login(&opencode_root())
+}
+
+/// 翻译链路：读取本机 OpenCode Go 登录态的 Bearer（auth.json 顶层
+/// "opencode-go".key）。失败返回中文原因，不含 key。
+pub(crate) fn local_translation_bearer() -> Result<String, String> {
+    let path = opencode_root().join("auth.json");
+    let data = std::fs::read_to_string(&path).map_err(|_| {
+        "未找到 OpenCode Go 登录态，请先在终端登录 OpenCode".to_string()
+    })?;
+    let value = serde_json::from_str::<serde_json::Value>(&data).map_err(|_| {
+        "OpenCode 登录态文件解析失败，请在终端重新登录 OpenCode".to_string()
+    })?;
+    value
+        .get("opencode-go")
+        .and_then(|go| go.get("key"))
+        .and_then(|k| k.as_str())
+        .map(str::trim)
+        .filter(|key| !key.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| {
+            "OpenCode Go 登录态已失效，请在终端重新登录 OpenCode".to_string()
+        })
+}
+
 /// 以只读方式打开本地库：READONLY（绝不写用户数据）+ busy_timeout 250ms
 /// （OpenCode 正在写入时短暂等待而非立即报错；估算用途失败可容忍）。
 fn open_readonly(path: &Path) -> Result<Connection, String> {

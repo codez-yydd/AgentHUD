@@ -14,6 +14,9 @@ import type {
   StockMinute,
   StocksState,
   SystemState,
+  WeatherCityState,
+  WeatherDay,
+  WeatherHour,
   WeatherState,
 } from "./types";
 
@@ -35,48 +38,133 @@ const weatherCodes = [
   { code: 0, icon: "sun", desc: "晴" },
 ];
 
+const mockWeatherHourly: WeatherHour[] = Array.from({ length: 12 }, (_, i) => {
+  const d = new Date(now + i * HOUR);
+  const w = weatherCodes[(i + 2) % weatherCodes.length];
+  return {
+    time: isoLocal(d),
+    label: `${String(d.getHours()).padStart(2, "0")}:00`,
+    temp: Math.round(22 + Math.sin(i / 2.2) * 4 + (i > 7 ? -2 : 0)),
+    code: w.code,
+    icon: w.icon,
+    desc: w.desc,
+    precip: i % 4 === 3 ? 35 : i % 3 === 0 ? 10 : 0,
+  };
+});
+
+const mockWeatherDaily: WeatherDay[] = Array.from({ length: 6 }, (_, i) => {
+  const d = new Date(now + i * 86_400_000);
+  const w = weatherCodes[(i + 1) % weatherCodes.length];
+  const names = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
+  return {
+    date: d.toISOString().slice(0, 10),
+    weekday: i === 0 ? "今天" : names[d.getDay()],
+    code: w.code,
+    icon: w.icon,
+    desc: w.desc,
+    max: [25, 24, 22, 20, 23, 26][i],
+    min: [17, 16, 15, 14, 16, 18][i],
+  };
+});
+
+/** 预览用的城市详情：缺省字段取与主城市一致的晴天。 */
+function mockCityState(
+  overrides: Partial<WeatherCityState> & Pick<WeatherCityState, "name" | "label">
+): WeatherCityState {
+  return {
+    lat: null,
+    lon: null,
+    isMain: false,
+    isIp: false,
+    isUser: false,
+    ok: true,
+    error: "",
+    updatedAt: now,
+    temp: 23,
+    feelsLike: 24,
+    humidity: 61,
+    wind: 12,
+    code: 2,
+    desc: "多云",
+    icon: "partly",
+    isDay: true,
+    sunrise: "06:18",
+    sunset: "17:02",
+    hourly: mockWeatherHourly,
+    daily: mockWeatherDaily,
+    ...overrides,
+  };
+}
+
+/** 浏览器预览：主城市「西安」来自 IP，另有两个自定义城市（多城市列表样式）。 */
 export const mockWeather: WeatherState = {
   ok: true,
   error: "",
-  city: "上海",
+  city: "陕西 · 西安",
   updatedAt: now,
-  temp: 23,
-  feelsLike: 24,
-  humidity: 61,
-  wind: 12,
-  code: 2,
-  desc: "多云",
-  icon: "partly",
+  temp: 18,
+  feelsLike: 18,
+  humidity: 52,
+  wind: 9,
+  code: 1,
+  desc: "晴",
+  icon: "sun",
   isDay: true,
-  sunrise: "06:18",
-  sunset: "17:02",
-  hourly: Array.from({ length: 12 }, (_, i) => {
-    const d = new Date(now + i * HOUR);
-    const w = weatherCodes[(i + 2) % weatherCodes.length];
-    return {
-      time: isoLocal(d),
-      label: `${String(d.getHours()).padStart(2, "0")}:00`,
-      temp: Math.round(22 + Math.sin(i / 2.2) * 4 + (i > 7 ? -2 : 0)),
-      code: w.code,
-      icon: w.icon,
-      desc: w.desc,
-      precip: i % 4 === 3 ? 35 : i % 3 === 0 ? 10 : 0,
-    };
-  }),
-  daily: Array.from({ length: 6 }, (_, i) => {
-    const d = new Date(now + i * 86_400_000);
-    const w = weatherCodes[(i + 1) % weatherCodes.length];
-    const names = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
-    return {
-      date: d.toISOString().slice(0, 10),
-      weekday: i === 0 ? "今天" : names[d.getDay()],
-      code: w.code,
-      icon: w.icon,
-      desc: w.desc,
-      max: [25, 24, 22, 20, 23, 26][i],
-      min: [17, 16, 15, 14, 16, 18][i],
-    };
-  }),
+  sunrise: "06:42",
+  sunset: "17:38",
+  hourly: mockWeatherHourly,
+  daily: mockWeatherDaily,
+  cities: [
+    mockCityState({
+      name: "西安",
+      label: "陕西 · 西安",
+      lat: 34.34,
+      lon: 108.94,
+      isMain: true,
+      isIp: true,
+      temp: 18,
+      feelsLike: 18,
+      humidity: 52,
+      wind: 9,
+      code: 1,
+      desc: "晴",
+      icon: "sun",
+      sunrise: "06:42",
+      sunset: "17:38",
+    }),
+    mockCityState({
+      name: "上海",
+      label: "上海",
+      lat: 31.23,
+      lon: 121.47,
+      isUser: true,
+      temp: 23,
+      feelsLike: 24,
+      humidity: 61,
+      wind: 12,
+      code: 2,
+      desc: "多云",
+      icon: "partly",
+    }),
+    mockCityState({
+      name: "杭州",
+      label: "杭州",
+      lat: 30.27,
+      lon: 120.15,
+      isUser: true,
+      temp: 21,
+      feelsLike: 22,
+      humidity: 66,
+      wind: 8,
+      code: 3,
+      desc: "阴",
+      icon: "cloudy",
+    }),
+  ],
+  mainIndex: 0,
+  ipIndex: null,
+  followsIp: true,
+  units: "metric",
 };
 
 export const mockAgents: HudBarAgent[] = [
@@ -220,10 +308,11 @@ export const mockStocks: StocksState = {
 
 export const mockMedia: MediaState = {
   hasSession: true,
+  canToggle: true,
   appId: "Spotify.exe",
   appName: "Spotify",
   title: "Sample Song",
-  artist: "wisland",
+  artist: "Sample Artist",
   album: "Ambient Works",
   playing: true,
   position: 82,
@@ -263,8 +352,8 @@ export const mockClipboard: ClipItem[] = [
   {
     id: 2,
     kind: "text",
-    text: "https://github.com/Misaka273/wisland",
-    preview: "https://github.com/Misaka273/wisland",
+    text: "https://example.com/agenthud",
+    preview: "https://example.com/agenthud",
     image: "",
     time: now - 540_000,
     width: 0,
@@ -285,8 +374,28 @@ export const mockClipboard: ClipItem[] = [
 ];
 
 export const mockNotify: NotifyState = {
-  unread: 2,
+  unread: 4,
   items: [
+    {
+      id: 6,
+      kind: "dsh",
+      name: "DeepSeek",
+      sender: "整理项目周报",
+      body: "已将本周的进展按项目整理。",
+      time: now - 100_000,
+      read: false,
+      exe: "",
+    },
+    {
+      id: 5,
+      kind: "mail",
+      name: "邮件",
+      sender: "demo@example.com",
+      body: "2 封新邮件",
+      time: now - 160_000,
+      read: false,
+      exe: "",
+    },
     {
       id: 4,
       kind: "wechat",
@@ -330,25 +439,55 @@ export const mockNotify: NotifyState = {
   ],
 };
 
+export const MOCK_SETTINGS_STORE_KEY = "agenthud.mock.islandSettings.v1";
+
 export const mockConfig: IslandConfig = {
   enabled: true,
-  transparency: 40,
+  transparency: 0,
   fontSize: 13,
   expandMode: "hover",
+  keepOnTop: true,
+  // P0 新增字段的浏览器预览默认值（与 Rust 侧默认一致）
+  theme: "dark",
+  hoverExpand: true,
+  hoverExpandMs: 120,
+  collapseDelayMs: 320,
+  compactView: "rings",
+  quotaDisplay: "percent",
+  autoCycleSec: 30,
+  passthrough: false,
+  lastTab: null,
+  blurFps: 8,
+  fontFamily: "",
+  // 媒体 / 「打开应用」接线（与 Rust 侧默认一致）
+  mediaAutoShow: true,
+  mediaLyrics: true,
+  mediaNeteaseLog: true,
+  mediaPlaybackLogs: [],
+  mediaLyricsSources: "netease,lrclib,custom",
+  mediaLyricsCustomUrl: "",
+  mediaPriority: ["cloudmusic", "bilibili", "chrome", "zen", "msedge", "firefox"],
+  notifyOpen: {},
+  defaultTab: "home",
   replaceLegacyBar: true,
-  weatherCity: "上海",
-  weatherLabel: "上海 · 徐汇区",
-  weatherLat: 31.22,
-  weatherLon: 121.46,
+  // 未绑定主城市 = 跟随 IP（与 Rust 默认一致）；浏览器预览的多城市数据在
+  // mockWeather 里，主城市「西安」由 IP 定位得到。
+  weatherCity: "",
+  weatherLabel: "",
+  weatherLat: null,
+  weatherLon: null,
+  weatherCities: [],
   edge: "top",
   posFrac: 0.5,
   agentOrder: [],
   stocks: mockStocks.quotes.map((q) => q.code),
   stockIntervalSec: 5,
   stockAlertPct: 3,
-  hotkeyToggle: "Ctrl+Alt+I",
-  hideFullscreen: true,
+  hotkeyToggle: "Ctrl+Alt+Shift+I",
+  hideFullscreen: false,
   hiddenTabs: [],
+  notifyModules: ["qq", "wechat", "mail"],
+  notifyBodyPreview: ["feishu", "dingtalk"],
   launcher: [
     { name: "资源管理器", path: "explorer.exe", icon: "folder" },
     { name: "浏览器", path: "https://www.bing.com", icon: "browser" },

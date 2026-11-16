@@ -44,7 +44,7 @@ function swallowMouseDown(e: ReactMouseEvent<HTMLElement>) {
   e.stopPropagation();
 }
 
-export function TitleBar() {
+export function TitleBar({ subtitle }: { subtitle?: string }) {
   const { t } = useI18n();
   // 窗口句柄：非 Tauri 宿主（浏览器直接开 dev server）下 getCurrentWindow()
   // 会抛错，兜底为 null（按钮禁用 + 拖拽无效），不影响页面其余部分渲染
@@ -136,7 +136,11 @@ export function TitleBar() {
           draggable={false}
         />
         <span className="db-titlebar__name">AgentHUD</span>
-        <span className="db-titlebar__tagline">{t("dashboard.subtitle")}</span>
+        {/* 副标题：默认主窗口的「用量与额度管理」，灵动岛设置窗口传入自己的
+            标题（见文件头）；品牌名 AgentHUD 本身不随窗口变化 */}
+        <span className="db-titlebar__tagline">
+          {subtitle ?? t("dashboard.subtitle")}
+        </span>
       </div>
 
       {/* 窗口控制：与 Windows 标题栏同序（最小化 / 最大化↔还原 / 关闭），

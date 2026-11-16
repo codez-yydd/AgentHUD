@@ -1,65 +1,130 @@
-//! 灵动岛身后的桌面毛玻璃采样。
-//!
-//! WebView2 的 `backdrop-filter` 只能模糊同一页面里的内容，看不到窗口后面的
-//! 桌面；CSS 半透明玻璃于是只是"透"，不是"磨砂"。这里照着 wisland 的做法，
-//! 用 GDI 把窗口旁边一块屏幕区域缩成一张很小的图（缩略图本身就是面积平均），
-//! 前端再把它铺在玻璃底下并做一次高斯模糊。
-//!
-//! 以前抓屏前会临时给岛窗口设置 `WDA_EXCLUDEFROMCAPTURE` 把岛从画面里剔掉。
-//! 这个标志只对截屏 API 生效，却会让**所有**正在录屏/截图的人（OBS、飞书/
-//! Lark 录屏、系统截图……）的画面里岛周期性整块消失 1~2 帧：每次 650ms 的
-//! 底板采样都会闪一下。现在不再碰窗口的采集标志，改为采样窗口**旁边**一块
-//! 同尺寸的桌面区域——玻璃本来就是 22px 高斯模糊 + 深色染色，邻域颜色和正
-//! 后方在观感上分不出来，而任何录屏里岛都连续可见。
+//! 桌面底板采样。开启「不出现在截图和录屏里」时，DXGI 提供与面板位置对齐的
+//! 桌面纹理。相邻区域只用于自动主题的亮度判断，采样避开窗口回采。
+//! 采集过程不修改窗口采集标志，避免录制画面闪烁。
 
+#[cfg(windows)]
 use base64::{engine::general_purpose::STANDARD, Engine as _};
-use std::sync::{Mutex, OnceLock};
+use std::sync::Arc;
+#[cfg(windows)]
+use std::sync::Mutex;
+#[cfg(windows)]
+use windows::Win32::Foundation::{HWND, RECT};
 
-/// 物理像素 → 缩略图。6 倍下采样后再由 CSS 模糊，足够柔且 IPC 很小。
-const DOWNSCALE: u32 = 6;
+#[cfg(windows)]
+#[path = "backdrop/desktop.rs"]
+mod desktop;
 
-/// 最近一次成功采到的底板（data URL）。本应用自己的截图/录屏进行中时直接
-/// 复用它，避免两边同时抢 GDI 桌面；毛玻璃底下本来就是模糊壁纸，冻结几秒
-/// 没有观感差别。
-static LAST_BACKDROP: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+/// 相邻区域按比例下采样，保留边缘折射所需的细节。
+#[cfg(windows)]
+const DOWNSCALE: u32 = 3;
 
-/// 最近一次采样的缩略图内容哈希（内存压降专项：桌面画面没变时跳过 PNG
-/// 编码与 base64，返回空串哨兵，前端据此跳过 CSS 变量更新与解码）。
-static LAST_HASH: OnceLock<Mutex<Option<u64>>> = OnceLock::new();
-
-fn last_slot() -> &'static Mutex<Option<String>> {
-    LAST_BACKDROP.get_or_init(|| Mutex::new(None))
+#[derive(Clone, serde::Serialize)]
+pub struct BackdropFrame {
+    pub revision: u32,
+    pub url: Option<Arc<str>>,
+    pub aligned: bool,
 }
 
-fn last_hash_slot() -> &'static Mutex<Option<u64>> {
-    LAST_HASH.get_or_init(|| Mutex::new(None))
+#[cfg(any(windows, test))]
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FrameSource {
+    Aligned,
+    Neighbor { width: u32, height: u32, hash: u64 },
+    Unavailable,
 }
 
-/// 清空上一拍内容哈希，强制下一拍 capture 必定重新编码并回传完整 data URL。
-///
-/// 用途：前端页面重载（renderer 崩溃自动恢复等）后 CSS `--backdrop` 从零
-/// 开始，若桌面与采样区域都没变，哈希恒命中会让重载后的前端持续拿到空串
-/// 哨兵、底图缺失。前端在每轮轮询的首拍带 force=true 调用 island_backdrop，
-/// 命令层据此调用本函数；后续拍恢复哨兵去重，不损失省益。
-pub fn invalidate_last_hash() {
-    if let Ok(mut slot) = last_hash_slot().lock() {
-        *slot = None;
+#[cfg(any(windows, test))]
+#[derive(Default)]
+struct FrameCache {
+    latest: Option<(FrameSource, BackdropFrame)>,
+}
+
+#[cfg(windows)]
+static BACKDROP: Mutex<FrameCache> = Mutex::new(FrameCache { latest: None });
+
+#[cfg(any(windows, test))]
+impl FrameCache {
+    fn reply(&self, known_revision: Option<u32>) -> Option<BackdropFrame> {
+        self.latest
+            .as_ref()
+            .map(|(_, frame)| frame)
+            .filter(|frame| Some(frame.revision) != known_revision)
+            .cloned()
+    }
+
+    fn update(&mut self, source: FrameSource, url: Option<String>) {
+        let revision = self
+            .latest
+            .as_ref()
+            .map_or(1, |(_, frame)| frame.revision.wrapping_add(1));
+        self.latest = Some((
+            source,
+            BackdropFrame {
+                revision,
+                url: url.map(Arc::from),
+                aligned: source == FrameSource::Aligned,
+            },
+        ));
+    }
+
+    fn aligned(&mut self, url: String, known_revision: Option<u32>) -> Option<BackdropFrame> {
+        let unchanged = self.latest.as_ref().is_some_and(|(source, frame)| {
+            *source == FrameSource::Aligned && frame.url.as_deref() == Some(url.as_str())
+        });
+        if !unchanged {
+            self.update(FrameSource::Aligned, Some(url));
+        }
+        self.reply(known_revision)
+    }
+
+    fn neighbor(
+        &mut self,
+        source: FrameSource,
+        known_revision: Option<u32>,
+        encode: impl FnOnce() -> Result<String, String>,
+    ) -> Result<Option<BackdropFrame>, String> {
+        if !self
+            .latest
+            .as_ref()
+            .is_some_and(|(latest, _)| *latest == source)
+        {
+            self.update(source, Some(encode()?));
+        }
+        Ok(self.reply(known_revision))
+    }
+
+    fn unavailable(&mut self, known_revision: Option<u32>) -> Option<BackdropFrame> {
+        if !matches!(self.latest.as_ref(), Some((FrameSource::Unavailable, _))) {
+            self.update(FrameSource::Unavailable, None);
+        }
+        self.reply(known_revision)
+    }
+
+    fn during_capture(
+        &mut self,
+        excluded: bool,
+        sample_neighbor: bool,
+        known_revision: Option<u32>,
+    ) -> Option<BackdropFrame> {
+        match self.latest.as_ref().map(|(source, _)| *source) {
+            Some(FrameSource::Aligned) if excluded => self.reply(known_revision),
+            Some(FrameSource::Neighbor { .. }) if sample_neighbor => self.reply(known_revision),
+            _ => self.unavailable(known_revision),
+        }
     }
 }
 
-fn cached_backdrop() -> Option<String> {
-    last_slot().lock().ok().and_then(|slot| slot.clone())
-}
-
-fn store_backdrop(url: &str) {
-    if let Ok(mut slot) = last_slot().lock() {
-        *slot = Some(url.to_string());
-    }
+#[cfg(windows)]
+fn backdrop_cache() -> Result<std::sync::MutexGuard<'static, FrameCache>, String> {
+    BACKDROP
+        .lock()
+        .map_err(|_| "桌面底板缓存不可用".to_string())
 }
 
 /// 缩略图像素的 FNV-1a 64 位内容哈希（无依赖；只为相邻两拍的等值判断，
 /// 不承担抗碰撞安全职责——壁纸类画面哈希碰撞时最坏表现为少更新一拍底板，
 /// 下一拍内容变化自愈）。
+#[cfg(windows)]
 fn thumbnail_hash(image: &image::RgbaImage) -> u64 {
     let mut hash: u64 = 0xcbf29ce484222325;
     for byte in image.as_raw() {
@@ -69,9 +134,125 @@ fn thumbnail_hash(image: &image::RgbaImage) -> u64 {
     hash
 }
 
-/// 窗口所在显示器的矩形 `(x, y, w, h)`（物理 px）。
+#[cfg(test)]
+mod cache_tests {
+    use super::*;
+
+    fn neighbor(width: u32, height: u32) -> FrameSource {
+        FrameSource::Neighbor {
+            width,
+            height,
+            hash: 7,
+        }
+    }
+
+    #[test]
+    fn resends_unacknowledged_neighbor_without_encoding_again() {
+        let mut cache = FrameCache::default();
+        let source = neighbor(10, 16);
+        let first = cache
+            .neighbor(source, None, || Ok("neighbor".into()))
+            .unwrap()
+            .unwrap();
+        let no_reencode = || panic!("cached pixels must not be re-encoded");
+        let missed = cache
+            .neighbor(source, None, no_reencode)
+            .unwrap()
+            .unwrap();
+        assert_eq!(first.revision, missed.revision);
+        assert!(!missed.aligned);
+        assert!(Arc::ptr_eq(&first.url.unwrap(), &missed.url.unwrap()));
+        assert!(cache
+            .neighbor(source, Some(first.revision), no_reencode)
+            .unwrap()
+            .is_none());
+        let resized = cache
+            .neighbor(neighbor(16, 10), Some(first.revision), || {
+                Ok("resized".into())
+            })
+            .unwrap()
+            .unwrap();
+        assert_ne!(resized.revision, first.revision);
+    }
+
+    #[test]
+    fn returning_to_same_neighbor_pixels_after_aligned_frame_publishes_them() {
+        let mut cache = FrameCache::default();
+        let source = neighbor(10, 16);
+        let initial = cache
+            .neighbor(source, None, || Ok("neighbor".into()))
+            .unwrap()
+            .unwrap();
+        let aligned = cache
+            .aligned("aligned".into(), Some(initial.revision))
+            .unwrap();
+        assert!(aligned.aligned);
+        assert!(cache
+            .aligned("aligned".into(), Some(aligned.revision))
+            .is_none());
+        let neighbor_again = cache
+            .neighbor(source, Some(aligned.revision), || Ok("neighbor".into()))
+            .unwrap()
+            .unwrap();
+        assert_ne!(aligned.revision, neighbor_again.revision);
+        assert!(!neighbor_again.aligned);
+        assert_eq!(neighbor_again.url.as_deref(), Some("neighbor"));
+    }
+
+    #[test]
+    fn unavailable_clears_aligned_frame_and_is_resendable_until_acknowledged() {
+        let mut cache = FrameCache::default();
+        let aligned = cache.aligned("aligned".into(), None).unwrap();
+        let missing = cache.unavailable(Some(aligned.revision)).unwrap();
+        assert_ne!(missing.revision, aligned.revision);
+        assert!(!missing.aligned);
+        assert_eq!(
+            serde_json::to_value(&missing).unwrap().get("url"),
+            Some(&serde_json::Value::Null)
+        );
+        assert_eq!(cache.unavailable(None).unwrap().revision, missing.revision);
+        assert!(cache.unavailable(Some(missing.revision)).is_none());
+
+        let recovered = cache
+            .aligned("aligned".into(), Some(missing.revision))
+            .unwrap();
+        assert_ne!(recovered.revision, missing.revision);
+        assert!(recovered.aligned);
+    }
+
+    #[test]
+    fn paused_capture_only_reuses_frames_allowed_in_the_current_mode() {
+        let mut cache = FrameCache::default();
+        let aligned = cache.aligned("aligned".into(), None).unwrap();
+        assert_eq!(
+            cache.during_capture(true, false, None).unwrap().revision,
+            aligned.revision
+        );
+        let missing = cache
+            .during_capture(false, true, Some(aligned.revision))
+            .unwrap();
+        assert!(missing.url.is_none());
+        let neighbor = cache
+            .neighbor(neighbor(10, 16), Some(missing.revision), || {
+                Ok("neighbor".into())
+            })
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            cache.during_capture(false, true, None).unwrap().revision,
+            neighbor.revision
+        );
+        assert!(cache
+            .during_capture(false, false, Some(neighbor.revision))
+            .unwrap()
+            .url
+            .is_none());
+    }
+}
+
+/// 窗口所在显示器的物理边界和句柄。
 #[cfg(target_os = "windows")]
-fn monitor_rect(hwnd: windows::Win32::Foundation::HWND) -> Option<(i32, i32, i32, i32)> {
+fn monitor_for(hwnd: HWND) -> Option<desktop::Monitor> {
     use windows::Win32::Graphics::Gdi::{
         GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST,
     };
@@ -83,124 +264,300 @@ fn monitor_rect(hwnd: windows::Win32::Foundation::HWND) -> Option<(i32, i32, i32
     if !unsafe { GetMonitorInfoW(monitor, &mut info) }.as_bool() {
         return None;
     }
-    let rect = info.rcMonitor;
-    Some((
-        rect.left,
-        rect.top,
-        rect.right - rect.left,
-        rect.bottom - rect.top,
-    ))
+    Some(desktop::Monitor { id: monitor.0 as usize, bounds: info.rcMonitor })
 }
 
-/// 选一块与窗口同尺寸、但不与窗口重叠的桌面区域来采样。
-///
-/// 优先取同一水平带的右侧 / 左侧（颜色和岛正后方最接近），放不下再取
-/// 下方 / 上方，最后才退回窗口矩形。纯计算，方便单测。
+#[cfg(windows)]
+fn window_rect(hwnd: HWND) -> Option<RECT> {
+    use windows::Win32::UI::WindowsAndMessaging::GetWindowRect;
+
+    let mut rect = RECT::default();
+    unsafe { GetWindowRect(hwnd, &mut rect) }.ok()?;
+    (rect.right > rect.left && rect.bottom > rect.top).then_some(rect)
+}
+
+#[cfg(windows)]
+fn bounding_rect(a: RECT, b: RECT) -> RECT {
+    RECT {
+        left: a.left.min(b.left),
+        top: a.top.min(b.top),
+        right: a.right.max(b.right),
+        bottom: a.bottom.max(b.bottom),
+    }
+}
+
+#[cfg(windows)]
+fn sample_outside_motion(sample: RECT, before: RECT, after: RECT) -> bool {
+    let window = bounding_rect(before, after);
+    sample.right <= window.left
+        || window.right <= sample.left
+        || sample.bottom <= window.top
+        || window.bottom <= sample.top
+}
+
+/// 背景合成也可能晚于窗口移动，邻域取样避开请求时和当前的窗口位置。
+#[cfg(windows)]
+fn neighbor_outside_window(
+    (x, y, w, h): (i32, i32, u32, u32),
+    current: RECT,
+    monitor: RECT,
+) -> Option<(i32, i32, u32, u32)> {
+    let requested = RECT {
+        left: x,
+        top: y,
+        right: x.checked_add(i32::try_from(w).ok()?)?,
+        bottom: y.checked_add(i32::try_from(h).ok()?)?,
+    };
+    let window = bounding_rect(requested, current);
+    sample_rect(
+        (
+            window.left,
+            window.top,
+            u32::try_from(window.right.checked_sub(window.left)?).ok()?,
+            u32::try_from(window.bottom.checked_sub(window.top)?).ok()?,
+        ),
+        (
+            monitor.left,
+            monitor.top,
+            monitor.right - monitor.left,
+            monitor.bottom - monitor.top,
+        ),
+    )
+}
+
+/// 在显示器内取灵动岛附近的桌面区域，避免截入岛窗口和屏幕外的黑色像素。
+/// 优先取同一水平带的右侧 / 左侧，再试下方 / 上方。
 #[cfg(target_os = "windows")]
 fn sample_rect(
     (wx, wy, ww, wh): (i32, i32, u32, u32),
     (ax, ay, aw, ah): (i32, i32, i32, i32),
-) -> (i32, i32, u32, u32) {
-    let w = ww.max(1) as i32;
-    let h = wh.max(1) as i32;
+) -> Option<(i32, i32, u32, u32)> {
+    if aw <= 0 || ah <= 0 || ww == 0 || wh == 0 {
+        return None;
+    }
+    let w = i32::try_from(ww).ok()?;
+    let h = i32::try_from(wh).ok()?;
+    let window_right = wx.saturating_add(w);
+    let window_bottom = wy.saturating_add(h);
+    let area_right = ax.saturating_add(aw);
+    let area_bottom = ay.saturating_add(ah);
+
+    // 画布比可见本体大，停靠时它自然伸出屏幕。侧带使用可见区间。
+    let visible_x = wx.max(ax);
+    let visible_y = wy.max(ay);
+    let visible_w = window_right.min(area_right).saturating_sub(visible_x);
+    let visible_h = window_bottom.min(area_bottom).saturating_sub(visible_y);
+
     // 至少留 64px 才值得拉伸；再窄就会把一列像素拉成竖条纹。
     const MIN_SIDE: i32 = 64;
-    let right = ax + aw - (wx + w);
-    let left = wx - ax;
-    let below = ay + ah - (wy + h);
-    let above = wy - ay;
-    if right >= MIN_SIDE.min(w) {
-        return (wx + w, wy, right.min(w) as u32, wh);
+    if visible_h > 0 {
+        let right_x = window_right.max(ax);
+        let left_x = wx.min(area_right);
+        let right_w = area_right.saturating_sub(right_x).min(w);
+        let left_w = left_x.saturating_sub(ax).min(w);
+        if right_w >= MIN_SIDE.min(w) {
+            return Some((right_x, visible_y, right_w as u32, visible_h as u32));
+        }
+        if left_w >= MIN_SIDE.min(w) {
+            return Some((left_x - left_w, visible_y, left_w as u32, visible_h as u32));
+        }
     }
-    if left >= MIN_SIDE.min(w) {
-        return (wx - left.min(w), wy, left.min(w) as u32, wh);
+    if visible_w > 0 {
+        let below_y = window_bottom.max(ay);
+        let above_y = wy.min(area_bottom);
+        let below_h = area_bottom.saturating_sub(below_y).min(h);
+        let above_h = above_y.saturating_sub(ay).min(h);
+        if below_h >= MIN_SIDE.min(h) {
+            return Some((visible_x, below_y, visible_w as u32, below_h as u32));
+        }
+        if above_h >= MIN_SIDE.min(h) {
+            return Some((visible_x, above_y - above_h, visible_w as u32, above_h as u32));
+        }
     }
-    if below >= MIN_SIDE.min(h) {
-        return (wx, wy + h, ww, below.min(h) as u32);
-    }
-    if above >= MIN_SIDE.min(h) {
-        return (wx, wy - above.min(h), ww, above.min(h) as u32);
-    }
-    // 窗口几乎占满显示器：没有可用的邻域，退回窗口区域。
-    (wx, wy, ww.min(aw.max(1) as u32), wh.min(ah.max(1) as u32))
+    None
 }
 
 #[cfg(all(test, target_os = "windows"))]
 mod tests {
-    use super::sample_rect;
+    use super::{neighbor_outside_window, sample_outside_motion, sample_rect, RECT};
 
     #[test]
     fn centered_island_samples_the_right_band() {
+        // 液态画布窗口 780×632：右侧只剩 456px，取右侧带（同尺寸拉伸）
         assert_eq!(
-            sample_rect((684, 0, 552, 520), (0, 0, 1920, 1080)),
-            (1236, 0, 552, 520)
+            sample_rect((684, 0, 780, 632), (0, 0, 1920, 1080)),
+            Some((1464, 0, 456, 632))
         );
     }
 
     #[test]
     fn right_docked_island_samples_the_left_band() {
         assert_eq!(
-            sample_rect((1368, 0, 552, 520), (0, 0, 1920, 1080)),
-            (816, 0, 552, 520)
+            sample_rect((1368, 0, 780, 632), (0, 0, 1920, 1080)),
+            Some((588, 0, 780, 632))
         );
     }
 
     #[test]
     fn narrow_screen_shrinks_the_sample_instead_of_overlapping() {
-        let (sx, sy, sw, sh) = sample_rect((407, 0, 552, 520), (0, 0, 1366, 768));
-        assert_eq!((sx, sy, sw, sh), (959, 0, 407, 520));
-        assert!(sx >= 407 + 552, "采样不能压在窗口上");
+        let (sx, sy, sw, sh) = sample_rect((407, 0, 780, 632), (0, 0, 1366, 768)).unwrap();
+        assert_eq!((sx, sy, sw, sh), (1187, 0, 179, 632));
+        assert!(sx >= 407 + 780, "采样不能压在窗口上");
     }
 
     #[test]
-    fn small_screen_still_gets_a_side_band() {
-        let (sx, sy, sw, sh) = sample_rect((0, 0, 552, 520), (0, 0, 800, 600));
-        assert_eq!((sx, sy, sw, sh), (552, 0, 248, 520));
-        assert!(sx + sw as i32 <= 800 && sy + sh as i32 <= 600);
-    }
-
-    #[test]
-    fn full_monitor_falls_back_to_the_window_rect() {
+    fn top_and_bottom_docked_bands_exclude_offscreen_rows() {
         assert_eq!(
-            sample_rect((0, 0, 552, 520), (0, 0, 552, 520)),
-            (0, 0, 552, 520)
+            sample_rect((570, -70, 780, 632), (0, 0, 1920, 1080)),
+            Some((1350, 0, 570, 562))
         );
+        assert_eq!(
+            sample_rect((570, 518, 780, 632), (0, 0, 1920, 1080)),
+            Some((1350, 518, 570, 562))
+        );
+    }
+
+    #[test]
+    fn vertical_fallback_excludes_columns_in_other_monitors() {
+        assert_eq!(
+            sample_rect((-970, -100, 930, 600), (-900, -200, 900, 1000)),
+            Some((-900, 500, 860, 300))
+        );
+    }
+
+    #[test]
+    fn no_usable_neighbor_skips_sampling_instead_of_capturing_the_island() {
+        assert_eq!(sample_rect((0, 0, 780, 632), (0, 0, 800, 600)), None);
+        assert_eq!(sample_rect((0, 0, 780, 632), (0, 0, 780, 632)), None);
+    }
+
+    #[test]
+    fn moving_window_samples_outside_its_old_and_current_bounds() {
+        let monitor = rect(0, 0, 1920, 1080);
+        let current = rect(630, 20, 1410, 652);
+        assert_eq!(
+            neighbor_outside_window((570, 20, 780, 632), current, monitor),
+            Some((1410, 20, 510, 632)),
+        );
+        assert_eq!(
+            neighbor_outside_window((690, 20, 780, 632), current, monitor),
+            Some((1470, 20, 450, 632)),
+        );
+    }
+
+    #[test]
+    fn moving_window_rejects_overlap_without_rejecting_parallel_motion() {
+        let sample = rect(900, 50, 1200, 600);
+        let before = rect(100, 50, 880, 682);
+        assert!(sample_outside_motion(sample, before, rect(100, 95, 880, 727)));
+        assert!(sample_outside_motion(sample, before, rect(80, 95, 860, 727)));
+        assert!(!sample_outside_motion(sample, before, rect(130, 50, 910, 682)));
+        assert!(!sample_outside_motion(sample, before, rect(1210, 50, 1990, 682)));
+    }
+
+    fn rect(left: i32, top: i32, right: i32, bottom: i32) -> RECT {
+        RECT { left, top, right, bottom }
     }
 }
 
-/// 抓取窗口矩形下的桌面，返回可直接塞进 CSS `url(...)` 的 data URL。
+/// 抓取液态玻璃底板。只有来方已经确认显示最新版本时才省略图片。
 ///
 /// `hwnd` 用 `isize` 传递，避免原始 HWND 指针跨线程的 `Send` 限制。
 #[cfg(target_os = "windows")]
-pub fn capture(hwnd: isize, x: i32, y: i32, width: u32, height: u32) -> Result<String, String> {
+pub fn capture(
+    hwnd: isize,
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+    known_revision: Option<u32>,
+    sample_neighbor: bool,
+) -> Result<Option<BackdropFrame>, String> {
     use image::{codecs::png::PngEncoder, ExtendedColorType, ImageEncoder, RgbaImage};
     use std::ffi::c_void;
     use std::mem::size_of;
-    use windows::Win32::Foundation::HWND;
     use windows::Win32::Graphics::Gdi::{
-        CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetDC, ReleaseDC,
+        CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GdiFlush, GetDC, ReleaseDC,
         SelectObject, SetBrushOrgEx, SetStretchBltMode, StretchBlt, BITMAPINFO, BITMAPINFOHEADER,
         DIB_RGB_COLORS, HALFTONE, HGDIOBJ, SRCCOPY,
     };
-
-    if width < 4 || height < 4 {
-        return Err("窗口尺寸过小".into());
-    }
-
-    // 本应用自己的截图/录屏正在抓屏时复用上一张，避免两边同时抢 GDI 桌面。
-    if crate::island::capture_guard::active() {
-        return cached_backdrop().ok_or_else(|| "正在录屏或截图，跳过桌面底板采样".to_string());
-    }
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetWindowDisplayAffinity, WDA_EXCLUDEFROMCAPTURE,
+    };
 
     let hwnd = HWND(hwnd as *mut c_void);
-    let (sx, sy, sw, sh) = sample_rect(
-        (x, y, width, height),
-        monitor_rect(hwnd).unwrap_or((x, y, width as i32, height as i32)),
-    );
-    let tw = (sw / DOWNSCALE).clamp(2, 240) as i32;
-    let th = (sh / DOWNSCALE).clamp(2, 240) as i32;
+    let excluded = || {
+        let mut affinity = 0;
+        unsafe { GetWindowDisplayAffinity(hwnd, &mut affinity) }.is_ok()
+            && affinity == WDA_EXCLUDEFROMCAPTURE.0
+    };
+    let paused = || {
+        let excluded = excluded();
+        backdrop_cache()
+            .map(|mut cache| cache.during_capture(excluded, sample_neighbor, known_revision))
+    };
+    let unavailable = || {
+        if crate::island::capture_guard::active() {
+            return paused();
+        }
+        backdrop_cache().map(|mut cache| cache.unavailable(known_revision))
+    };
 
-    let result = (|| -> Result<RgbaImage, String> {
+    // 本应用截图或录屏期间只复用与当前采样模式匹配的帧。
+    if crate::island::capture_guard::active() {
+        return paused();
+    }
+    if width < 4 || height < 4 {
+        return unavailable();
+    }
+
+    if excluded() {
+        let aligned = (|| {
+            let monitor = monitor_for(hwnd)?;
+            let canvas = RECT {
+                left: x,
+                top: y,
+                right: x.checked_add(i32::try_from(width).ok()?)?,
+                bottom: y.checked_add(i32::try_from(height).ok()?)?,
+            };
+            desktop::capture(monitor, canvas)
+        })();
+        if crate::island::capture_guard::active() {
+            return paused();
+        }
+        if let Some(url) = aligned.filter(|_| excluded()) {
+            return backdrop_cache().map(|mut cache| cache.aligned(url, known_revision));
+        }
+    }
+    if !excluded() {
+        desktop::reset();
+    }
+    if !sample_neighbor {
+        return unavailable();
+    }
+    let Some(window) = window_rect(hwnd) else {
+        return unavailable();
+    };
+    let Some((sx, sy, sw, sh)) = monitor_for(hwnd)
+        .and_then(|monitor| neighbor_outside_window((x, y, width, height), window, monitor.bounds))
+    else {
+        return unavailable();
+    };
+    let tw = (sw / DOWNSCALE).clamp(2, 320) as i32;
+    let th = (sh / DOWNSCALE).clamp(2, 320) as i32;
+    let sample = RECT {
+        left: sx,
+        top: sy,
+        right: sx.saturating_add(sw as i32),
+        bottom: sy.saturating_add(sh as i32),
+    };
+    let capture_bounds = || {
+        if crate::island::capture_guard::active() {
+            return None;
+        }
+        window_rect(hwnd)
+    };
+    let result = (|| -> Result<Option<RgbaImage>, String> {
         unsafe {
             let screen = GetDC(None);
             if screen.is_invalid() {
@@ -238,21 +595,30 @@ pub fn capture(hwnd: isize, x: i32, y: i32, width: u32, height: u32) -> Result<S
             let old = SelectObject(mem, HGDIOBJ(bitmap.0));
             let _ = SetStretchBltMode(mem, HALFTONE);
             let _ = SetBrushOrgEx(mem, 0, 0, None);
-            let ok = StretchBlt(
-                mem,
-                0,
-                0,
-                tw,
-                th,
-                Some(screen),
-                sx,
-                sy,
-                sw as i32,
-                sh as i32,
-                SRCCOPY,
-            );
+            let verified = capture_bounds()
+                .filter(|before| sample_outside_motion(sample, window, *before))
+                .and_then(|before| {
+                    let copied = StretchBlt(
+                        mem,
+                        0,
+                        0,
+                        tw,
+                        th,
+                        Some(screen),
+                        sx,
+                        sy,
+                        sw as i32,
+                        sh as i32,
+                        SRCCOPY,
+                    );
+                    // 等待本轮 GDI 写入，再检查实际窗口并读取位图内存。
+                    let flushed = GdiFlush();
+                    let after = capture_bounds()?;
+                    sample_outside_motion(sample, before, after)
+                        .then_some(copied.as_bool() && flushed.as_bool())
+                });
 
-            let image = if ok.as_bool() && !bits.is_null() {
+            let image = if verified == Some(true) && !bits.is_null() {
                 let len = (tw * th * 4) as usize;
                 let raw = std::slice::from_raw_parts(bits as *const u8, len);
                 let mut rgba = Vec::with_capacity(len);
@@ -270,39 +636,39 @@ pub fn capture(hwnd: isize, x: i32, y: i32, width: u32, height: u32) -> Result<S
             let _ = DeleteDC(mem);
             ReleaseDC(None, screen);
 
-            image.ok_or_else(|| "StretchBlt 抓取桌面失败".to_string())
+            if verified.is_none() {
+                return Ok(None);
+            }
+            image.map(Some).ok_or_else(|| "StretchBlt 抓取桌面失败".to_string())
         }
     })();
 
-    let image = result?;
-    // 内容去重（内存压降专项）：PNG 编码 + base64 + IPC 传输是每拍最大的
-    // 开销，桌面静止时（长时间挂机的大多数时刻）缩略图逐字节相同，哈希
-    // 相同即返回空串哨兵，前端跳过 CSS 更新。哈希在编码前算，省掉的就是
-    // 整段编码。
-    let hash = thumbnail_hash(&image);
-    if last_hash_slot()
-        .lock()
-        .ok()
-        .map(|slot| slot.as_ref() == Some(&hash))
-        .unwrap_or(false)
-    {
-        return Ok(String::new());
+    if crate::island::capture_guard::active() {
+        return paused();
     }
-    let mut png = Vec::new();
-    PngEncoder::new(&mut png)
-        .write_image(
-            image.as_raw(),
-            image.width(),
-            image.height(),
-            ExtendedColorType::Rgba8,
-        )
-        .map_err(|e| format!("编码桌面背景失败: {e}"))?;
-    let url = format!("data:image/png;base64,{}", STANDARD.encode(png));
-    store_backdrop(&url);
-    if let Ok(mut slot) = last_hash_slot().lock() {
-        *slot = Some(hash);
-    }
-    Ok(url)
+    let Ok(Some(image)) = result else {
+        return unavailable();
+    };
+    // 比较相邻取样本身，未变化时复用已编码的图；客户端尚未收到就重发。
+    let source = FrameSource::Neighbor {
+        width: image.width(),
+        height: image.height(),
+        hash: thumbnail_hash(&image),
+    };
+    let mut cache = backdrop_cache()?;
+    let result = cache.neighbor(source, known_revision, || {
+        let mut png = Vec::new();
+        PngEncoder::new(&mut png)
+            .write_image(
+                image.as_raw(),
+                image.width(),
+                image.height(),
+                ExtendedColorType::Rgba8,
+            )
+            .map_err(|error| format!("编码桌面背景失败: {error}"))?;
+        Ok(format!("data:image/png;base64,{}", STANDARD.encode(png)))
+    });
+    Ok(result.unwrap_or_else(|_| cache.unavailable(known_revision)))
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -312,6 +678,8 @@ pub fn capture(
     _y: i32,
     _width: u32,
     _height: u32,
-) -> Result<String, String> {
-    cached_backdrop().ok_or_else(|| "桌面毛玻璃采样仅支持 Windows".to_string())
+    _known_revision: Option<u32>,
+    _sample_neighbor: bool,
+) -> Result<Option<BackdropFrame>, String> {
+    Err("桌面毛玻璃采样仅支持 Windows".into())
 }

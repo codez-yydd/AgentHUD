@@ -54,7 +54,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
 /// zstd 帧 magic（小端 `0xFD2FB528`）。
-const ZSTD_MAGIC: [u8; 4] = [0x28, 0xB5, 0x2F, 0xFD];
+pub(crate) const ZSTD_MAGIC: [u8; 4] = [0x28, 0xB5, 0x2F, 0xFD];
 
 // ============================================================
 // 路径
@@ -74,7 +74,7 @@ fn dsh_home_path() -> PathBuf {
 }
 
 /// 会话事件日志根目录：<home>/sessions。
-fn sessions_root_path() -> PathBuf {
+pub(crate) fn sessions_root_path() -> PathBuf {
     dsh_home_path().join("sessions")
 }
 
@@ -608,7 +608,7 @@ pub fn import_incremental_force() -> Result<(), String> {
         let key = path.to_string_lossy().to_string();
         let known = progress.get(&key).copied();
         if let Err(e) = import_one_file(&mut conn, path, known) {
-            eprintln!("[zbar-dsh] 导入 {} 失败（下次重试）: {e}", path.display());
+            eprintln!("[agenthud-dsh] 导入 {} 失败（下次重试）: {e}", path.display());
         }
     }
     Ok(())

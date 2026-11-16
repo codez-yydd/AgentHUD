@@ -63,6 +63,7 @@ ios/**/build/
 /scripts/ui-layout-tests.mjs
 /scripts/font-settings-tests.mjs
 /scripts/run-speed-tests.mjs
+/scripts/notify-pulse-tests.mjs
 /server/test_*.py
 /doc/manual-test.md
 

@@ -68,13 +68,16 @@ fn read_db() -> Result<Option<IslandConfig>, String> {
         return Ok(None);
     };
     let payload: String = row.get(0).map_err(|e| format!("读取灵动岛配置失败: {e}"))?;
-    let cfg = deserialize_config(&payload)?;
+    let cfg = deserialize_config(&payload, super::settings::saved_hover_expand)?;
     Ok(Some(cfg))
 }
 
 /// 解析配置，并迁移上一版内部字段 `fontScale`（倍率）到新的 `fontSize`
 ///（基准逻辑 px）。上一版已让用户选过 1.25 等档位，不能升级后静默回到 13px。
-fn deserialize_config(payload: &str) -> Result<IslandConfig, String> {
+fn deserialize_config(
+    payload: &str,
+    saved_hover_expand: impl FnOnce() -> Option<bool>,
+) -> Result<IslandConfig, String> {
     let mut value: serde_json::Value =
         serde_json::from_str(payload).map_err(|e| format!("解析灵动岛配置失败: {e}"))?;
     if value.get("fontSize").is_none() {
@@ -84,6 +87,14 @@ fn deserialize_config(payload: &str) -> Result<IslandConfig, String> {
                 if let Some(obj) = value.as_object_mut() {
                     obj.insert("fontSize".into(), serde_json::json!(px));
                 }
+            }
+        }
+    }
+    // 旧版设置文档保留了悬停开关，但运行时的配置库没有保存该字段。
+    if let Some(obj) = value.as_object_mut() {
+        if !obj.contains_key("hoverExpand") {
+            if let Some(enabled) = saved_hover_expand() {
+                obj.insert("hoverExpand".into(), serde_json::json!(enabled));
             }
         }
     }
@@ -108,7 +119,7 @@ fn write_db(config: &IslandConfig) -> Result<(), String> {
 fn migrate_legacy() -> Option<IslandConfig> {
     let path = legacy_path().ok()?;
     let text = std::fs::read_to_string(&path).ok()?;
-    let cfg = deserialize_config(&text).ok()?;
+    let cfg = deserialize_config(&text, super::settings::saved_hover_expand).ok()?;
     if write_db(&cfg).is_ok() {
         let _ = std::fs::remove_file(&path);
     }
@@ -125,7 +136,10 @@ pub fn load() -> IslandConfig {
         .ok()
         .flatten()
         .or_else(migrate_legacy)
-        .unwrap_or_default()
+        .unwrap_or_else(|| IslandConfig {
+            hover_expand: super::settings::saved_hover_expand().unwrap_or(true),
+            ..IslandConfig::default()
+        })
         .clamped();
     if let Ok(mut guard) = cache().lock() {
         *guard = Some(loaded.clone());
@@ -309,15 +323,24 @@ mod tests {
 
     #[test]
     fn migrates_legacy_font_scale_to_px() {
-        let cfg = deserialize_config(r#"{"enabled":true,"fontScale":1.25}"#).unwrap();
+        let cfg = deserialize_config(r#"{"enabled":true,"fontScale":1.25}"#, || None).unwrap();
         assert!((cfg.font_size - 16.25).abs() < 1e-9);
     }
 
     #[test]
     fn font_size_wins_over_legacy_font_scale() {
-        let cfg =
-            deserialize_config(r#"{"enabled":true,"fontSize":14.5,"fontScale":1.25}"#).unwrap();
+        let cfg = deserialize_config(r#"{"enabled":true,"fontSize":14.5,"fontScale":1.25}"#, || None)
+            .unwrap();
         assert!((cfg.font_size - 14.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn saved_hover_preference_only_fills_older_configs() {
+        let cfg = deserialize_config(r#"{"enabled":true}"#, || Some(false)).unwrap();
+        assert!(!cfg.hover_expand);
+        let cfg =
+            deserialize_config(r#"{"enabled":true,"hoverExpand":true}"#, || Some(false)).unwrap();
+        assert!(cfg.hover_expand);
     }
 
     #[test]

@@ -4,14 +4,14 @@
  * 四类目标（顺序即默认排序）：
  *  - 岛内页面：直接切标签（主页 / 消息 / 剪贴板 / 截图 / 工具 …）
  *  - 主窗口页面：调 open_main_window(page) 跳页（用量总览 / 请求日志 / 额度驾驶舱 …）
- *  - 快捷动作：截图、录屏、打开截图文件夹、打开主窗口
+ *  - 快捷动作：截图、录屏、打开截图文件夹、打开主窗口、打开灵动岛设置窗口
  *  - 项目目录：近 30 天有会话的项目，回车用系统默认方式打开目录
  *
  * 键盘：↑↓ 选择、回车执行、Esc 清空搜索。搜索是大小写不敏感的子串匹配，
  * 命中 label / 关键词任一即可（关键词里放了拼音首字母与英文名，方便盲打）。
  */
 import { useEffect, useMemo, useRef, useState } from "react";
-import { launcherProjects } from "./api";
+import { launcherProjects, openIslandSettingsWindow } from "./api";
 import { openShotFolder, startShot } from "../shot/api";
 import type { LauncherProject, TabKey } from "./types";
 import { Icon, type IconName } from "./ui";
@@ -35,7 +35,6 @@ const ISLAND_TABS: { key: TabKey; label: string; icon: IconName; keywords: strin
   { key: "clip", label: "剪贴板", icon: "clipboard", keywords: "clipboard jiantieban copy" },
   { key: "shot", label: "截图", icon: "camera", keywords: "screenshot jietu record" },
   { key: "tool", label: "工具", icon: "toolbox", keywords: "tool gongju qr image snippet" },
-  { key: "settings", label: "设置", icon: "settings", keywords: "settings shezhi" },
 ];
 
 /** 主窗口可跳页（与 DashboardApp / main_window 白名单同源，缺页只会安全失败） */
@@ -126,6 +125,18 @@ export function LauncherPanel({
         icon: "folder",
         run: () => {
           void openShotFolder().catch((error) => onToast(String(error)));
+        },
+      },
+      {
+        id: "action:island-settings",
+        label: "灵动岛设置",
+        hint: "在新窗口打开完整设置",
+        keywords: "settings shezhi island window 设置",
+        icon: "settings",
+        run: () => {
+          // 设置已迁到独立大窗（island-settings.html）；这里与齿轮同一条
+          // 命令，失败沿用启动器统一的 toast 出口
+          void openIslandSettingsWindow().catch((error) => onToast(String(error)));
         },
       },
       {

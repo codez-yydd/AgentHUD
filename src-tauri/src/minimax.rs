@@ -671,6 +671,27 @@ pub(crate) fn fetch_local_login_entry() -> Option<ProviderQuotaEntry> {
     entry_from_local_raw(&raw, login.region.as_deref())
 }
 
+// ============================================================
+// 翻译链路（只读登录态探测 + 取 Bearer，供 island/translate/platforms 使用）
+// ============================================================
+
+/// 翻译链路：本机 MiniMax Code 登录态是否可用于翻译（只读文件探测，不刷新）。
+/// 与额度链路同口径：token 过期/即将过期即视为不可用。
+pub(crate) fn has_local_translation_login() -> bool {
+    let auth_root = crate::minimaxcode::data_root().join("auth");
+    load_local_login(&auth_root, now_ms()).is_some()
+}
+
+/// 翻译链路：读取本机 MiniMax Code 登录态的 Bearer 与区域提示。只读文件、
+/// 不刷新；失败返回中文原因，不含 token。
+pub(crate) fn local_translation_bearer() -> Result<(String, Option<String>), String> {
+    let auth_root = crate::minimaxcode::data_root().join("auth");
+    let login = load_local_login(&auth_root, now_ms()).ok_or_else(|| {
+        "未找到可用的 MiniMax Code 登录态，请先在终端登录 MiniMax Code".to_string()
+    })?;
+    Ok((login.access_token, login.region))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

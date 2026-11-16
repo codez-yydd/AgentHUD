@@ -6,7 +6,7 @@ AgentHUD is an open-source observability dashboard for AI coding agents, providi
 
 ![Tauri](https://img.shields.io/badge/Tauri-2.0-orange) ![React](https://img.shields.io/badge/React-19-blue) ![TypeScript](https://img.shields.io/badge/TypeScript-5.8-3178c6) ![TailwindCSS](https://img.shields.io/badge/Tailwind-v4-38bdf8) ![Rust](https://img.shields.io/badge/Rust-edition%202021-dea584) ![License](https://img.shields.io/badge/License-MIT-yellow) ![Platform](https://img.shields.io/badge/Platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey) [![GitHub Repo](https://img.shields.io/badge/GitHub-codez--yydd%2FAgentHUD-181717?logo=github)](https://github.com/codez-yydd/AgentHUD) [![Gitee Repo](https://img.shields.io/badge/Gitee-codezwx%2FAgentHUD-C71D23?logo=gitee)](https://gitee.com/codezwx/AgentHUD)
 
-A lightweight tray-resident monitoring companion that tracks Token usage, subscription quotas and spending across multiple CLI agents in real time — [Z.ai (ZCode)](https://z.ai), Codex, Claude, Cursor, Kimi Code, and more. Summon a vibrancy floating panel from the tray for today / 7-day / 30-day breakdowns grouped by model; a full dashboard window (usage overview / request logs / weekly quota compare / pricing settings), a session token HUD, a desktop pet and cross-device sync are also included.
+A lightweight tray-resident monitoring companion that tracks Token usage, subscription quotas and spending across multiple CLI agents in real time — [Z.ai (ZCode)](https://z.ai), Codex, Claude, Cursor, Kimi Code, and more. Summon a vibrancy floating panel from the tray for today / 7-day / 30-day breakdowns grouped by model; a full dashboard window (usage overview / request logs / weekly quota compare / pricing settings), a dynamic island HUD, a session token HUD, a desktop pet and cross-device sync are also included.
 
 > On macOS: the menu bar shows the app icon only (no text, to save menu-bar space); clicking it pops a popover panel hugging the menu bar; the Dock icon is hidden, and the panel auto-dismisses on blur.
 
@@ -91,7 +91,7 @@ Both repositories have exactly the same content — the latest version can be ob
 - **⌨️ Global hotkey** — summon / hide the panel with `alt+shift+z` by default; customizable or disable-able in settings.
 - **🎨 Dynamic wallpaper** — inject a live video wallpaper into the ZCode desktop app as the conversation background in one click; the original app is backed up automatically before installation and can be restored anytime. The wallpaper is invalidated after a ZCode upgrade and needs to be reinstalled; on macOS, ZCode's built-in updater becomes unavailable after injection (even restoring cannot bring it back) — re-download ZCode from the official site.
 - **🖥 Session token HUD** — an injection-free desktop overlay grouped by agent (ZCode / Claude / Codex / Kimi Code / DeepSeek Harness / OpenCode / MiniMax Code / Cursor) showing live per-session cumulative tokens (input / output / cache / request count), streaming speed (t/s & first-token latency) and a live state dot (sources with a real running signal read generating / idle, the rest stay a neutral grey dot), with per-source × per-model window speed rows at the bottom (true generation window has no ≈, whole-request estimates carry ≈). Agents with no session inside the active window fall back to showing their latest session today, dimmed and labelled, while the group header still shows that agent's today total. Resize freely by dragging edges / corners (size & position remembered); a built-in settings panel (font size / opacity) and a one-click close button live in the title bar; language & theme follow the main panel. Enable it from the "Skins" page.
-- **🫧 Dynamic island HUD (new)** — a liquid-glass capsule inspired by [Misaka273/wisland](https://github.com/Misaka273/wisland). Collapsed state shows **all subscription rings + weather + today's tokens and estimated cost** (no pet/emoji); multiple accounts/credentials of the same provider each get their own ring. Hover or click expands into a glass panel with tabs for Home / Messages / Stocks / Weather / Controls / Clipboard / **Screenshot** / Settings. Quota cards page four at a time with a wheel-driven horizontal slide and thin white page bars. The capsule can be dragged to the top or either side; side edges switch it to a vertical 48×440 layout and remember the position. Includes SMTC media control with NetEase lyrics, Windows toast-history messages (plus Feishu / DingTalk notification-popup capture with sender and body preview), Tencent stock quotes, an Open-Meteo weather layout with a province/city/district cascade and current-location lookup, DDC/CI monitor brightness (WMI fallback), iOS-control-center-style volume/brightness sliders and Wi-Fi / Bluetooth tiles, clipboard history, adjustable dark-glass transparency without outer shadow, custom 10–18px text-only font sizing, right-click menu, wheel cycling, fullscreen auto-hide and a global toggle hotkey (`Ctrl+Alt+Shift+I`). The old exposed `island.json` config and “edit config” menu are gone; settings persist in an internal store. See [doc/island-hud.md](doc/island-hud.md) for the data flow and not-yet-ported wisland features.
+- **🫧 Dynamic island HUD (new)** — a liquid-glass capsule with built-in screen interactions, liquid geometry and color palettes, running on **Tauri 2 + React**. The 780×632 transparent canvas hosts a 640-wide panel and snaps to all four work-area edges (top / bottom / left / right; the nav bar sits at the panel's bottom edge when docked at the bottom). Hover expands after 120ms / collapses after 320ms (configurable), a click expands after the double-click window with a 600ms pin, double-click toggles long-off, and `expandMode` supports hover / always / never. Collapsed views: quota rings 54 / clock 34 / pet 34 / music 36 (one ring per agent with its 5h percentage; wheel cycles; widths follow content formulas), plus notification / volume / stock activity (40), colored unread badges, 30s clock↔pet auto-cycling, auto-switch to music on playback with an 8s return after pause, and a real audio-peak meter. Themes: auto / light / dark / rouge / sky (auto uses desktop luminance 0.64/0.42 with a 3s hysteresis). Home shows quota cards in 3 columns (3 per page) with the balance card on its own full-width row and a single row of four action buttons. Press and drag the capsule or the panel's blank navigation area to stretch the liquid bridge. The bridge breaks after 64 logical pixels, leaving a retracting drop at the edge. On release, the capsule springs to the nearest weighted edge. Messages use 84px module tiles with `+` add / right-click remove / mark-all-read / clear and a 30-row history, sourced from the Windows toast database, taskbar `HSHELL_FLASH`, and Feishu / DingTalk popup UIA (**Thunderbird mbox not implemented**). New messages also raise a 360×84 glass popup in its own always-on-top window (`notify-popup`, transparent, never focused, hidden while idle and sized exactly to the card stack): six positions inside the island monitor's work area with a 16px margin (`center_*` = flush to the top/bottom edge + centered horizontally), 70–160% card scaling, at most 5 cards where the edge-most oldest one is dropped without an exit animation, a 1200ms wave delay shared with the island's surprise reaction (messages arriving inside the window are batched), a 180ms fade-in, per-card 3s timers, hover pause with a full 3s restart on leave, click to close instantly and open the source app, and a 260ms exit (10px toward the edge + 86% scale) with a 180ms reflow of the remaining cards. Passthrough uses `WS_EX_TRANSPARENT` + a low-level mouse hook with right-click menu / wheel forwarding and a 2s grace; fullscreen auto-hide and the default hotkey `Ctrl+Alt+Shift+I` are included. Settings still live in a standalone 920×660 island-settings glass window (draft model with Save & Apply; 14 pages: Appearance & interaction / Ordering / Global hotkeys / Quick actions / Media & lyrics / Messages & mail / Stocks / Weather / Translate / Live captions / Clipboard & launcher / System & controls / Advanced / About; Cancel, Ctrl+S, Esc-with-confirm, per-page reset, JSON import/export and factory reset), and the island gear no longer switches an in-island page. Config is the user-editable `~/.agenthud/settings.json` (atomic patch writes, kept in sync both ways with the runtime `island.db`). Translation uses a configured platform and model or an optional custom endpoint. The clipboard translation hotkey is available. Realtime captions are implemented (system audio or microphone → Silero VAD → Japanese Parakeet ASR → streaming Chinese translation); IMAP mail, Clash and DSH are wired too. Only platform-specific capabilities are marked "not wired" in the window. See [doc/island-hud.md](doc/island-hud.md) for data flow and not-yet-ported items.
 - **📸 Screenshot workbench** — region / focused-window / monitor / delayed capture, scrolling capture with row-signature stitching, an annotation canvas (rect / ellipse / arrow / pen / highlighter / text / numbered steps / mosaic / blur), pin windows, local Windows OCR, local QR decoding (`rqrr`) and 8-second GIF recording. Saves PNG/JPG to `Pictures/AgentHUD Screenshots`, can auto-copy/pin, and keeps recent captures with open / re-annotate / copy / pin / confirmed delete. Capture uses GDI/PrintWindow; raw PNG bytes travel over raw IPC and never leave the machine.
 - **🐶 Desktop pet** — ships with the default Zhipu-chan character and supports Petdex custom imports; a 7-state task-linked animation reacts to ZCode task states in real time; choose between the injected form (embedded in the ZCode UI, draggable) and the floating form, with screen-proportional size tiers; managed on the Skins page.
 - **🖼 Skins hub** — the "Skins" entry (palette icon) is now a category page: injection-free features (session HUD, desktop pet) get their own page and open instantly, while injection-required features (dynamic wallpaper) live on a separate page where the ZCode install is only scanned on entry.
@@ -159,7 +159,10 @@ AgentHUD/
 │   ├── StatsPanel.tsx        # Stats panel (device filter + local/remote merge)
 │   ├── SummaryTab.tsx        # Summary view (multi-service totals / trend / model ranking)
 │   ├── CursorPanel.tsx       # Cursor view (quotas + usage stats)
-│   ├── KimiPanel.tsx         # Kimi Code view (quotas + usage stats)
+│   ├── AgentUsagePanel.tsx   # Shared usage panel for single CLI agents (used by Codex / Claude)
+│   ├── CodexPanel.tsx        # Codex view (AgentUsagePanel brand skin)
+│   ├── ClaudePanel.tsx       # Claude view (AgentUsagePanel brand skin)
+│   ├── KimiPanel.tsx         # Kimi Code view (AgentUsagePanel brand skin)
 │   ├── SkinHubPanel.tsx       # Skins hub navigation page (injection-free / injection-required cards)
 │   ├── PricingPanel.tsx      # Pricing config panel
 │   ├── SettingsPanel.tsx     # Settings page (opacity / language / autostart / sources / FX rate / hotkey)
@@ -170,7 +173,8 @@ AgentHUD/
 │   ├── RangePicker.tsx       # Time-range picker
 │   ├── session-hud-main.ts    # Session token HUD entry (standalone injection-free page)
 │   ├── island-main.tsx        # Dynamic island HUD entry (top-center glass capsule)
-│   ├── island/                # Island UI: shell, pages, screenshot launcher, drag, CSS
+│   ├── island/                # Island UI: shell, pages, compact views, pet face, screenshot launcher, drag, CSS
+│   ├── island-settings-main.tsx # Standalone island settings window entry (920×660 glass card)
 │   ├── shot-main.tsx          # Screenshot selection + annotation entry
 │   ├── shot/                  # Capture API, canvas annotations, region select, CSS/mock
 │   ├── pin-main.tsx           # Pinned screenshot window entry
@@ -188,9 +192,11 @@ AgentHUD/
 │   │   ├── quota.rs          # Coding Plan quota queries (auto ZCode-client credentials; 5h / weekly / MCP)
 │   │   ├── quota_history.rs  # Quota snapshot history (JSONL, 90-day retention)
 │   │   ├── cursor.rs         # Cursor usage stats (auto credentials / cookie / API)
+│   │   ├── codex.rs          # Codex usage stats (sessions parsing + live subscription quotas)
+│   │   ├── claude.rs         # Claude usage stats (projects parsing + OAuth live quotas)
 │   │   ├── kimi.rs           # Kimi Code usage stats (wire.jsonl parsing + OAuth in-memory renewal for live quotas)
 │   │   ├── session_hud.rs     # Session token HUD (config / open-close / resize memory)
-│   │   ├── island/            # Dynamic island HUD (window/drag snapping/internal config + weather/stocks/media/system/clipboard/notify/lyrics/screenshot)
+│   │   ├── island/            # Dynamic island HUD (window/drag snapping/internal config + weather/stocks/media/system/clipboard/notify/lyrics/audio peak/passthrough/screenshot)
 │   │   ├── pets.rs            # Desktop pets (built-in character / Petdex import)
 │   │   ├── agent_theme/       # ZCode UI injection (dynamic wallpaper / injected speed aggregates)
 │   │   ├── shortcut.rs       # Global hotkey config
@@ -198,6 +204,12 @@ AgentHUD/
 │   │   └── main.rs
 │   ├── capabilities/         # Tauri permissions
 │   └── tauri.conf.json       # Window / bundling config
+├── server/                   # Self-hosted sync server (Python + Flask)
+│   ├── app.py                # Flask app + all endpoints
+│   ├── db.py                 # SQLite operations (auto-creates DB & tables)
+│   ├── auth.py               # Auth (master token / device token)
+│   ├── config.py             # Config (port / data directory)
+│   └── README.md             # Deployment docs
 ├── session-hud.html           # Session token HUD page
 ├── pet.html                   # Desktop pet page
 ├── index.html
@@ -294,6 +306,10 @@ The pipeline (`.github/workflows/release.yml`) automatically: builds and signs t
 ---
 
 ## ⚙️ Configuration
+
+### Data Directory
+
+All of AgentHUD's local data (pricing config, credentials, account snapshots, pet library, etc.) is stored under **`~/.agenthud/`**. Versions from before the rename used `~/.zbar/` — on first launch the new version migrates `~/.zbar` to `~/.agenthud` transparently (if the migration fails it keeps using the old directory and retries on next launch), so no manual move is needed.
 
 ### Database Path
 
@@ -460,6 +476,19 @@ The panel and the collapsed island share the same Rust today-usage calculation, 
 - The panel hides on blur; the window stays alive (not destroyed) and can be re-summoned by clicking the tray.
 
 ---
+
+## 🌟 Acknowledgements
+
+<a title="wisland-zus" target="_blank" href="https://cnb.cool/shiroki.live/wisland-zus">
+    <img alt="Provided the dynamic island interaction UI and feature modules" src="https://img.shields.io/github/v/release/Misaka273/wisland?logo=github">
+</a> ▶️ Provided the dynamic island interaction UI and feature modules
+
+<p></p>
+
+<a title="electron-liquid-glass" target="_blank" href="https://github.com/Meridius-Labs/electron-liquid-glass">
+    <img alt="Provided the liquid-effect rendering code used to simulate the liquid effect" src="https://img.shields.io/github/v/release/Meridius-Labs/electron-liquid-glass?logo=github">
+</a> ▶️ Provided the liquid-effect rendering code used to simulate the liquid effect
+
 
 ## 📄 License
 

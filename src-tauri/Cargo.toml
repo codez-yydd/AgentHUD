@@ -1,6 +1,6 @@
 [package]
 name = "zai-floating-monitor"
-version = "2.0.1"
+version = "2.0.4"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
@@ -37,6 +37,12 @@ chrono = { version = "0.4", features = ["serde"] }
 time = { version = "0.3", features = ["formatting"] }
 open = "5"
 ureq = { version = "2", features = ["json", "socks-proxy"] }
+# 灵动岛邮件检查：通过隐式 TLS 只读查询 IMAP 收件箱。
+async-imap = { version = "0.12", default-features = false, features = ["runtime-tokio"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+tokio = { version = "1", features = ["net", "rt", "time"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+webpki-roots = "1"
 base64 = "0.22"
 # 账号切换与额度查询：解密 ZCode 凭证（AES-256-GCM）
 aes-gcm = "0.10"
@@ -61,6 +67,10 @@ qrcode = { version = "0.14.1", default-features = false }
 # 会议录音（工具箱「会议」子页）：跨平台音频输入采集（Windows WASAPI /
 # macOS CoreAudio），只要采集不要 jack / asio 特性；会议页不依赖 ffmpeg
 cpal = "0.15"
+# 实时字幕：本地 VAD / 日语离线识别（sherpa-onnx 官方安全封装）。
+# 构建期由 sherpa-onnx-sys 的 build.rs 自动下载预编译原生库，构建机无需
+# cmake / bindgen；也可用 SHERPA_ONNX_ARCHIVE_DIR 指定本地归档免下载。
+sherpa-onnx = "2"
 
 [target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]
 tauri-plugin-autostart = "2.5.1"
@@ -82,6 +92,7 @@ objc2-foundation = { version = "0.3", features = ["NSProcessInfo"] }
 [target.'cfg(windows)'.dependencies]
 # 读取 Windows 系统代理设置（HKCU Internet Settings），wham/usage 实时额度查询用
 winreg = "0.52"
+yaml_serde = "0.10"
 # 截图复制兜底：arboard 的 CF_DIBV5 写失败时改走「只写 PNG 格式」
 clipboard-win = { version = "5.3", features = ["std"] }
 # 灵动岛：SMTC 媒体会话、Core Audio 音量、Wi-Fi/蓝牙电台、全屏检测
@@ -96,14 +107,22 @@ windows = { version = "0.61", features = [
   "Devices_Radios",
   "Win32_Devices_Display",
   "Win32_Foundation",
+  "Win32_Graphics_Direct3D",
+  "Win32_Graphics_Direct3D11",
   "Win32_Graphics_Dwm",
+  "Win32_Graphics_Dxgi",
+  "Win32_Graphics_Dxgi_Common",
   "Win32_Graphics_Gdi",
   "Win32_Media_Audio",
   "Win32_Media_Audio_Endpoints",
+  "Win32_Networking_WinInet",
   "Win32_Security_Credentials",
   "Win32_System_Com",
+  "Win32_System_Diagnostics_ToolHelp",
   "Win32_System_Console",
   "Win32_System_JobObjects",
+  "Win32_System_Pipes",
+  "Win32_System_SystemInformation",
   "Win32_System_Com_StructuredStorage",
   "Win32_System_Threading",
   "Win32_System_Variant",

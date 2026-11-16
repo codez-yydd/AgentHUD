@@ -385,7 +385,7 @@ fn probe_encoder_with(ffmpeg: &Ffmpeg, candidates: &[H264Encoder]) -> H264Encode
 pub(crate) fn select_encoder(ffmpeg: &Ffmpeg) -> H264Encoder {
     *ENCODER_CACHE.get_or_init(|| {
         let picked = probe_encoder_with(ffmpeg, HARDWARE_ENCODERS);
-        eprintln!("[zbar-rec] 录制编码器: {}（硬编探测后选定）", picked.name());
+        eprintln!("[agenthud-rec] 录制编码器: {}（硬编探测后选定）", picked.name());
         picked
     })
 }
@@ -537,7 +537,7 @@ fn install_ffmpeg(app: &AppHandle, bin_dir: &Path) -> Result<(), String> {
         match download_and_extract(app, url, bin_dir, source_index) {
             Ok(()) => return Ok(()),
             Err(error) => {
-                eprintln!("[zbar-rec] ffmpeg 下载源 {source_index} 失败: {error}");
+                eprintln!("[agenthud-rec] ffmpeg 下载源 {source_index} 失败: {error}");
                 last_error = format!("下载源 {source_index}（{url}）: {error}");
                 let _ = app.emit(
                     "zbar://ffmpeg-download",
@@ -1192,7 +1192,7 @@ impl FfmpegRecording {
         let job = assign_child_to_job(&child);
         #[cfg(windows)]
         if job.is_none() {
-            eprintln!("[zbar-rec] ffmpeg 未挂进 Job Object（防孤儿进程兜底失效，不影响本次录制）");
+            eprintln!("[agenthud-rec] ffmpeg 未挂进 Job Object（防孤儿进程兜底失效，不影响本次录制）");
         }
         Ok(Self {
             child,
@@ -1227,7 +1227,7 @@ impl FfmpegRecording {
                     }
                     std::thread::sleep(Duration::from_millis(50));
                 }
-                eprintln!("[zbar-rec] ffmpeg 收到 CTRL_BREAK 后 2 秒未退出，强制结束");
+                eprintln!("[agenthud-rec] ffmpeg 收到 CTRL_BREAK 后 2 秒未退出，强制结束");
             }
         }
         let _ = self.child.kill();

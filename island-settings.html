@@ -1,0 +1,119 @@
+<!doctype html>
+<html class="island-settings" lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- 窗口图标：与标题栏品牌标识同源（Vite 会打包该资源；dev 走 dev server） -->
+    <link rel="icon" type="image/png" href="/src/assets/logo.png" />
+    <title>AgentHUD 灵动岛设置</title>
+    <!--
+      灵动岛设置入口（island-settings）：920×660 透明无边框窗口 —— 圆角 24 的
+      玻璃卡、64px 自绘标题栏、208px 分类侧栏、62px 状态
+      页脚、右侧滚动表单。标题栏 / 侧栏 / 页脚 / 控件库全部由本页自绘（样式在
+      src/island-settings.css，只被本入口引入），不再复用主窗口 dashboard 的
+      TitleBar 与 db-* 外壳。
+
+      入口拆分：设置窗是独立 Tauri 窗口（label island-settings），由 Rust 侧
+      island_settings_window.rs 以 WebviewUrl::App 加载本文件；dev 模式下 Vite
+      直接服务本文件，浏览器打开 http://127.0.0.1:1420/island-settings.html
+      即可预览（没有 Tauri 时数据层全走 mock，见 wset/settingsApi.ts）。
+
+      前端结构：
+        /src/island-settings-main.tsx                 入口（首帧前对齐 .dark，挂载）
+        /src/dashboard/islandSettings/SettingsWindow.tsx  外壳（标题栏/侧栏/页脚）
+        /src/dashboard/islandSettings/wset/*          控件库 / 草稿态 / 四页表单
+
+      窗口本体透明（Rust 侧 transparent + shadow(false)）：body 必须透明，圆角
+      卡片由 .wset 画；首帧占位也画成同一张圆角深色卡，避免白闪。
+    -->
+    <script>
+      // 首帧前兜底：只决定 html.dark（auto 主题、以及首帧占位卡的深浅都看它）。
+      // 只读不写；来源偏好为「跟随系统」时改读系统当前深浅色，避免存储值过期
+      // 导致打开瞬间跳变（与 appearance.ts 的 bootstrapTheme 同语义）。
+      try {
+        var dark =
+          localStorage.getItem("zbar-theme-pref") === "system"
+            ? window.matchMedia("(prefers-color-scheme: dark)").matches
+            : localStorage.getItem("zbar-theme") === "dark";
+        if (dark) {
+          document.documentElement.classList.add("dark");
+        }
+      } catch (_) {
+        /* 忽略：localStorage 不可用（隐私模式等） */
+      }
+    </script>
+    <style>
+      /* 首帧占位样式：React 尚未挂载时也先画一张 920×660 的圆角深色卡，
+         不出现透明→深色的白闪。挂载后 createRoot 会清空 #root 里的占位。 */
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: transparent;
+        overflow: hidden;
+      }
+      .wset-boot {
+        position: fixed;
+        inset: 0;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 10px;
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        border-radius: 24px;
+        background:
+          radial-gradient(circle at 8% -15%, rgba(59, 130, 246, 0.17), transparent 62%),
+          rgba(36, 36, 40, 0.941);
+        font-family: "HarmonyOS Sans", "MiSans", "Segoe UI Variable Text",
+          "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
+      }
+      .wset-boot__name {
+        font-size: 15px;
+        font-weight: 600;
+        color: rgba(255, 255, 255, 0.7);
+        letter-spacing: 0.5px;
+      }
+      .wset-boot__dots {
+        display: flex;
+        gap: 5px;
+      }
+      .wset-boot__dots span {
+        width: 5px;
+        height: 5px;
+        border-radius: 50%;
+        background: rgba(255, 255, 255, 0.4);
+        animation: wset-pulse 1.2s infinite ease-in-out both;
+      }
+      .wset-boot__dots span:nth-child(2) {
+        animation-delay: 0.15s;
+      }
+      .wset-boot__dots span:nth-child(3) {
+        animation-delay: 0.3s;
+      }
+      @keyframes wset-pulse {
+        0%,
+        80%,
+        100% {
+          opacity: 0.25;
+          transform: scale(0.8);
+        }
+        40% {
+          opacity: 1;
+          transform: scale(1);
+        }
+      }
+    </style>
+  </head>
+
+  <body>
+    <div id="root">
+      <!-- React 挂载前的首帧占位：与最终外壳同色同圆角 -->
+      <div class="wset-boot">
+        <div class="wset-boot__name">AgentHUD 设置</div>
+        <div class="wset-boot__dots"><span></span><span></span><span></span></div>
+      </div>
+    </div>
+    <script type="module" src="/src/island-settings-main.tsx"></script>
+  </body>
+</html>

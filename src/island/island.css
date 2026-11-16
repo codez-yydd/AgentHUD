@@ -1,5 +1,4 @@
-/* AgentHUD 灵动岛：顶部液态毛玻璃胶囊 + 展开面板。
-   参考 Misaka273/wisland 的形态与配色，代码与实现均为本项目自写。 */
+/* AgentHUD 灵动岛：液态毛玻璃胶囊 + 展开面板。 */
 
 :root {
   color-scheme: dark;
@@ -22,9 +21,19 @@ body {
 }
 
 body {
-  font-family:
-    "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
-    "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  /* island.font_family 非空时由 IslandApp 写到 <html> 的 --island-font-family，
+     变量值本身带完整回退栈；空串回退同一套内置字体栈。 */
+  font-family: var(
+    --island-font-family,
+    "HarmonyOS Sans",
+    "MiSans",
+    "Segoe UI Variable Text",
+    "Microsoft YaHei UI",
+    "Microsoft YaHei",
+    "Segoe UI",
+    system-ui,
+    sans-serif
+  );
   font-size: calc(12px * var(--fs-scale, 1));
   -webkit-font-smoothing: antialiased;
   user-select: none;
@@ -84,36 +93,35 @@ html.island-preview body::after {
   display: none;
 }
 
-/* ============================================================
-   深色毛玻璃 token（不再提供主题切换）
-   ============================================================ */
+/* 四套主题色板。auto 由桌面亮度解析。 */
 
 .island-root {
-  --glass-solid: #0e1119;
-  --glass-edge: rgba(255, 255, 255, 0.16);
-  --glass-highlight: rgba(255, 255, 255, 0.2);
-  --text: #f1f4fb;
-  --text-soft: #cbd3e4;
-  --muted: #9aa6bd;
-  --faint: #707c94;
-  --hairline: rgba(255, 255, 255, 0.08);
-  --panel: rgba(255, 255, 255, 0.052);
-  --panel-strong: rgba(255, 255, 255, 0.095);
-  --input: rgba(255, 255, 255, 0.07);
-  --accent: #7ea6ff;
-  --accent-2: #c0a8ff;
-  --accent-soft: rgba(126, 166, 255, 0.18);
+  /* 语义色（不随主题变）：额度环 / 额度条阈值 绿黄红 */
   --ok: #4ade80;
   --warn: #fbbf24;
   --low: #fb7185;
-  --stock-up: #ff6b7d;
-  --stock-down: #3ddc84;
-  --ring-track: rgba(255, 255, 255, 0.14);
-  --menu-bg: rgba(16, 19, 28, 0.94);
-  --toast-bg: rgba(9, 11, 17, 0.86);
-  --shadow: 0 28px 70px -22px rgba(0, 0, 0, 0.86);
-  --glow-1: rgba(112, 152, 255, 0.2);
-  --glow-2: rgba(190, 130, 255, 0.13);
+  --quota-ring-week: #facc15;
+  --quota-ring-month: #60a5fa;
+  --glass-solid: color-mix(in srgb, rgb(var(--tint-rgb)) calc(var(--tint-alpha) * 100%), #808080);
+  --accent: rgb(var(--accent-rgb));
+  --accent-link: color-mix(in srgb, var(--accent) 62%, white);
+  --accent-fg: #fff;
+  --accent-2-rgb: var(--accent-rgb);
+  --text: rgb(var(--ink-rgb));
+  --text-soft: rgba(var(--ink-rgb), 0.92);
+  --muted: rgba(var(--ink-rgb), var(--text-secondary-alpha));
+  --faint: rgba(var(--ink-rgb), var(--text-tertiary-alpha));
+  --input: var(--panel);
+  --toast-bg: var(--menu-bg);
+  --slider-fill-fg: #1e1e22;
+  --nav-pill-fg: var(--text);
+  --glass-gloss-top: calc(14 / 255);
+  --flow-alpha: calc(55 / 255);
+  --glass-tint-top: rgba(var(--tint-rgb), var(--tint-alpha));
+  --glass-tint-bottom: var(--glass-tint-top);
+  /* 弹簧曲线：Spring(440, 0.6) 与 Spring(260, 0.56) 的 CSS 近似 */
+  --spring-panel: cubic-bezier(0.22, 1.16, 0.28, 1);
+  --spring-nav: cubic-bezier(0.16, 1.16, 0.24, 1);
   /* 字体大小倍率由 IslandApp 按配置写到 style；这里给预览/首帧兜底 */
   --fs-scale: 1;
   width: 100%;
@@ -126,6 +134,136 @@ html.island-preview body::after {
   padding: 6px 16px 16px;
   position: relative;
   color: var(--text);
+  color-scheme: dark;
+}
+
+/* ---- 深色毛玻璃（默认）---- */
+.island-root[data-theme="dark"] {
+  color-scheme: dark;
+  --ink-rgb: 255, 255, 255;
+  --text-secondary-alpha: 0.66;
+  --text-tertiary-alpha: 0.45;
+  --tint-rgb: 28, 28, 34;
+  --tint-alpha: calc(120 / 255);
+  --glass-direct-alpha: 0.81;
+  --glass-edge: rgba(0, 0, 0, calc(70 / 255));
+  --glass-highlight: rgba(255, 255, 255, calc(60 / 255));
+  --glass-rim-bottom: rgba(255, 255, 255, calc(14 / 255));
+  --hairline: rgba(255, 255, 255, 0.08);
+  --panel: rgba(255, 255, 255, calc(26 / 255));
+  --panel-strong: rgba(255, 255, 255, calc(30 / 255));
+  --accent-rgb: 59, 130, 246;
+  --slider-fill: rgba(255, 255, 255, calc(235 / 255));
+  --accent-soft: rgba(var(--accent-rgb), 0.18);
+  --stock-up: #ff5a52;
+  --stock-down: #35c98e;
+  --ring-track: rgba(255, 255, 255, calc(34 / 255));
+  --menu-bg: rgba(36, 36, 40, calc(240 / 255));
+  --menu-fg: #fff;
+  --menu-hover: rgba(255, 255, 255, calc(40 / 255));
+  --shadow: 0 28px 70px -22px rgba(0, 0, 0, 0.86);
+  --nav-pill: rgba(255, 255, 255, calc(52 / 255));
+}
+
+/* ---- 浅色毛玻璃 ---- */
+.island-root[data-theme="light"] {
+  color-scheme: light;
+  --accent-link: color-mix(in srgb, var(--accent) 73%, black);
+  --ink-rgb: 16, 18, 24;
+  --text-secondary-alpha: 0.74;
+  --text-tertiary-alpha: 0.56;
+  --tint-rgb: 238, 240, 245;
+  --tint-alpha: calc(205 / 255);
+  --glass-edge: rgba(0, 0, 0, calc(40 / 255));
+  --glass-highlight: rgba(255, 255, 255, calc(200 / 255));
+  --glass-rim-bottom: rgba(255, 255, 255, calc(60 / 255));
+  --glass-gloss-top: calc(26 / 255);
+  --flow-alpha: calc(80 / 255);
+  --hairline: rgba(16, 18, 24, 0.1);
+  --panel: rgba(255, 255, 255, calc(150 / 255));
+  --panel-strong: rgba(0, 0, 0, calc(14 / 255));
+  --accent-rgb: 47, 111, 224;
+  --slider-fill: #fff;
+  --accent-soft: rgba(var(--accent-rgb), 0.14);
+  --stock-up: #d42c25;
+  --stock-down: #08875a;
+  /* 绿黄红语义色在浅色玻璃上加深一档，保证可读（仍是绿 / 黄 / 红） */
+  --ok: #16a34a;
+  --warn: #d97706;
+  --low: #dc2626;
+  --ring-track: rgba(0, 0, 0, calc(30 / 255));
+  --menu-bg: rgba(248, 248, 250, calc(245 / 255));
+  --menu-fg: #14161c;
+  --menu-hover: rgba(0, 0, 0, calc(18 / 255));
+  --shadow: 0 24px 60px -24px rgba(20, 24, 35, 0.45);
+  --nav-pill: rgba(255, 255, 255, calc(250 / 255));
+}
+
+/* ---- 胭脂撞色：墨黑玻璃 + 胭脂粉强调色 ---- */
+.island-root[data-theme="rouge"] {
+  color-scheme: dark;
+  --ink-rgb: 255, 255, 255;
+  --text-secondary-alpha: 0.70;
+  --text-tertiary-alpha: 0.50;
+  --tint-rgb: 0, 0, 0;
+  --tint-alpha: calc(205 / 255);
+  --glass-direct-alpha: 0.81;
+  --glass-edge: rgba(0, 0, 0, calc(140 / 255));
+  --glass-highlight: rgba(255, 124, 162, calc(170 / 255));
+  --glass-rim-bottom: rgba(255, 124, 162, calc(40 / 255));
+  --hairline: rgba(255, 255, 255, 0.10);
+  --panel: rgba(255, 255, 255, calc(24 / 255));
+  --panel-strong: rgba(255, 255, 255, calc(34 / 255));
+  --accent-rgb: 255, 124, 162;
+  --accent-fg: #000;
+  --slider-fill: var(--accent);
+  --accent-soft: rgba(var(--accent-rgb), 0.2);
+  --stock-up: var(--accent);
+  --stock-down: #5fe0b0;
+  --ring-track: rgba(255, 255, 255, calc(36 / 255));
+  --menu-bg: rgba(8, 8, 10, calc(245 / 255));
+  --menu-fg: #fff;
+  --menu-hover: rgba(255, 124, 162, calc(90 / 255));
+  --shadow: 0 28px 70px -22px rgba(0, 0, 0, 0.9);
+  --nav-pill: rgba(255, 124, 162, calc(235 / 255));
+  --nav-pill-fg: #000;
+}
+
+/* ---- 晴空渐变：晴空蓝 → 柔白浅杏，正文深海军蓝 ---- */
+.island-root[data-theme="sky"] {
+  color-scheme: light;
+  --accent-link: color-mix(in srgb, var(--accent) 73%, black);
+  --ink-rgb: 12, 32, 56;
+  --text-secondary-alpha: 0.78;
+  --text-tertiary-alpha: 0.60;
+  --tint-rgb: 50, 171, 253;
+  --tint-alpha: calc(215 / 255);
+  --glass-tint-bottom: rgba(247, 239, 225, calc(230 / 255));
+  --glass-direct-bottom: rgb(247, 239, 225);
+  --glass-edge: rgba(12, 32, 56, calc(60 / 255));
+  --glass-highlight: rgba(255, 255, 255, calc(210 / 255));
+  --glass-rim-bottom: rgba(255, 255, 255, calc(70 / 255));
+  --glass-gloss-top: calc(26 / 255);
+  --flow-alpha: calc(80 / 255);
+  --hairline: rgba(12, 32, 56, 0.12);
+  --panel: rgba(255, 255, 255, calc(105 / 255));
+  --panel-strong: rgba(255, 255, 255, calc(120 / 255));
+  --accent-rgb: 22, 103, 201;
+  --accent-2-rgb: var(--tint-rgb);
+  --slider-fill: rgba(255, 255, 255, calc(250 / 255));
+  --accent-soft: rgba(var(--accent-rgb), 0.14);
+  --stock-up: #d42c25;
+  --stock-down: #06805a;
+  /* 晴空渐变是亮底：额度环绿黄红同样加深一档 */
+  --ok: #15803d;
+  --warn: #b45309;
+  --low: #b91c1c;
+  --ring-track: rgba(12, 32, 56, calc(34 / 255));
+  --menu-bg: rgba(247, 239, 225, calc(248 / 255));
+  --menu-fg: #0c2038;
+  --menu-hover: rgba(50, 171, 253, calc(70 / 255));
+  --shadow: 0 24px 60px -24px rgba(12, 32, 56, 0.4);
+  --nav-pill: rgba(255, 255, 255, calc(190 / 255));
 }
 
 /* ============================================================
@@ -133,47 +271,36 @@ html.island-preview body::after {
    ============================================================ */
 
 .island {
-  /* 收起时是 500px 胶囊；悬停展开到 520px 面板。窗口宽度 552，左右各留
+  /* 收起时是 500px 胶囊；悬停展开到 640px 面板。窗口宽度 672，左右各留
      16px 透明余量。 */
   width: 500px;
-  max-width: 520px;
+  max-width: 640px;
   height: 48px;
   margin-top: 0;
   position: relative;
   overflow: hidden;
   isolation: isolate;
   /* 没有抓到桌面缩略图时的兜底底色；有图时由 ::after 覆盖。 */
-  background: #0b0e15;
+  background: var(--glass-solid, #0b0e15);
   border: 1px solid var(--glass-edge);
-  border-radius: 24px;
+  /* 收起态圆角随当前视图高度变化（IslandApp 写 --compact-r）；展开 26px、
+     左右竖胶囊 24px 由各自规则覆盖。贴边侧的内凹圆角见 P3 liquid 段。 */
+  border-radius: var(--compact-r, 24px);
   /* 只保留内侧高光。外投影会在透明窗口边缘形成一圈可见的暗边，
      彻底移除后 HUD 四周才是干净的透明留白。 */
   box-shadow:
     inset 0 1px 0 var(--glass-highlight),
-    inset 0 -1px 0 rgba(0, 0, 0, 0.4);
+    inset 0 -1px 0 var(--glass-rim-bottom);
   transition:
-    width 500ms cubic-bezier(0.2, 1.12, 0.28, 1),
-    height 500ms cubic-bezier(0.2, 1.12, 0.28, 1),
-    margin-top 500ms cubic-bezier(0.2, 1.06, 0.28, 1),
+    /* 展开/收起宽度：Spring(420, 0.62) 近似；高度与切页共用 440ms/0.6 */
+    width 460ms cubic-bezier(0.2, 1.08, 0.28, 1),
+    height 440ms var(--spring-panel, cubic-bezier(0.22, 1.16, 0.28, 1)),
+    margin-top 440ms var(--spring-panel, cubic-bezier(0.22, 1.16, 0.28, 1)),
     border-radius 420ms cubic-bezier(0.2, 0.9, 0.28, 1),
     opacity 130ms ease,
     transform 130ms ease;
   will-change: width, height, border-radius;
   transform-origin: 50% 50%;
-}
-
-/* 拖拽中的液态形变：位移只做很小的反向滞后，让本体看起来有惯性；
-   stretch 由前端按每帧光标速度写入。 */
-.island-root.is-dragging .island {
-  transform: translate(
-      calc(var(--drag-vx, 0px) * -0.15),
-      calc(var(--drag-vy, 0px) * -0.15)
-    )
-    scale(var(--drag-sx, 1), var(--drag-sy, 1));
-  /* 从展开面板/竖胶囊开始拖时，几何要立刻切成横条，不能播 500ms 的
-     展开/收起宽度动画。 */
-  transition: none;
-  cursor: grabbing;
 }
 
 /* 拖动开始后面板立即让位给胶囊，不等收起动画的 260ms 延迟。 */
@@ -187,11 +314,6 @@ html.island-preview body::after {
   opacity: 1;
   transform: none;
   transition: none;
-}
-
-.island-root.is-snap-hiding .island {
-  opacity: 0;
-  transform: scale(0.92);
 }
 
 .island-root.is-dragging .pill {
@@ -214,25 +336,16 @@ html.island-preview body::after {
   pointer-events: none;
 }
 
-/* 深色染色 + 顶部高光。透明度只作用在这一层，文字/环/图标始终清晰。 */
+/* 玻璃色调与边缘高光。 */
 .island::before {
   content: "";
   position: absolute;
   inset: 0;
   z-index: 1;
-  opacity: var(--glass-tint, 0.56);
-  background:
-    radial-gradient(ellipse 55% 75% at 18% -12%, var(--glow-1), transparent 68%),
-    radial-gradient(ellipse 45% 65% at 86% -4%, var(--glow-2), transparent 72%),
-    linear-gradient(
-      180deg,
-      rgba(24, 27, 37, 0.97) 0%,
-      rgba(15, 18, 26, 0.97) 46%,
-      rgba(7, 9, 14, 0.99) 100%
-    );
+  background: linear-gradient(var(--glass-tint-top), var(--glass-tint-bottom));
   box-shadow:
     inset 0 1px 0 var(--glass-highlight),
-    inset 0 -1px 0 rgba(0, 0, 0, 0.5);
+    inset 0 -1px 0 var(--glass-rim-bottom);
   pointer-events: none;
 }
 
@@ -247,8 +360,10 @@ html.island-preview .island::after {
 }
 
 .island.open {
-  width: 520px;
-  height: 492px;
+  width: var(--panel-w, 640px);
+  /* 每个标签一张高度常量表（IslandApp 的 PANEL_HEIGHT 写进 --panel-h）；
+     切页时由 440ms / 阻尼 0.6 的近弹簧曲线补间高度。 */
+  height: var(--panel-h, 492px);
   /* 根容器已有 6px 顶部间隙，这里再加 3px，展开面板距屏幕顶仍是 9px */
   margin-top: 3px;
   border-radius: 26px;
@@ -270,7 +385,7 @@ html.island-preview .island::after {
   align-items: center;
 }
 
-/* 收起动画期间窗口仍是 552 宽，竖胶囊必须继续贴对应边，不能回退到
+/* 收起动画期间窗口仍是 672 宽，竖胶囊必须继续贴对应边，不能回退到
    居中，否则 520→48 的宽度收缩会从中间往两边缩，像“关掉”而不是“推回”。 */
 .island-root.edge-left.is-collapsed {
   justify-content: flex-start;
@@ -282,26 +397,24 @@ html.island-preview .island::after {
 
 .island-root.edge-left.is-collapsed .island,
 .island-root.edge-right.is-collapsed .island {
-  width: 48px;
-  height: 440px;
+  width: var(--side-compact-w, 48px);
+  height: var(--side-compact-h, 440px);
   /* 收起用的宽度曲线带 1.12 过冲，尾段会短暂压到 46px 左右，把竖胶囊
      左边裁掉 1~2px 再弹回来（看起来像左边缘在呼吸）。钳住下限，过冲
      只允许往上，不允许把内容裁掉。 */
-  min-width: 48px;
-  min-height: 440px;
+  min-width: var(--side-compact-w, 48px);
+  min-height: var(--side-compact-h, 440px);
   border-radius: 24px;
 }
 
-/* 胶囊外框：固定 48×440，贴住吸附边并垂直居中（440/2 = 220）。
-   收起态岛高 440、展开态 492，top:50% 让它在高度动画里也保持屏幕位置
-   不动；胶囊只做原地淡出，不会被面板的宽度带着走。 */
+/* 侧边胶囊按收起尺寸居中，展开时原地淡出。 */
 .island-root.edge-left .pill-wrap,
 .island-root.edge-right .pill-wrap {
-  width: 48px;
-  height: 440px;
+  width: var(--side-compact-w, 48px);
+  height: var(--side-compact-h, 440px);
   top: 50%;
   bottom: auto;
-  margin-top: -220px;
+  margin-top: calc(-0.5 * var(--side-compact-h, 440px));
 }
 
 .island-root.edge-left .pill-wrap {
@@ -314,72 +427,63 @@ html.island-preview .island::after {
   right: 0;
 }
 
-.island-root.edge-left .pill,
-.island-root.edge-right .pill {
-  width: 48px;
-  height: 440px;
+.quota-presentation.is-vertical {
+  min-width: 64px;
   flex-direction: column;
-  flex-wrap: nowrap;
   gap: 8px;
-  padding: 13px 0;
+  padding: 13px 6px;
 }
 
-.island-root.edge-left .pill-weather,
-.island-root.edge-right .pill-weather {
+.quota-presentation.is-vertical .pill-weather-current {
   flex-direction: column;
   gap: 3px;
 }
 
-.island-root.edge-left .pill-weather-city,
-.island-root.edge-right .pill-weather-city {
+.quota-presentation.is-vertical .pill-weather-city {
   display: none;
 }
 
-.island-root.edge-left .pill-weather-temp,
-.island-root.edge-right .pill-weather-temp {
+.quota-presentation.is-vertical .pill-weather-temp {
   font-size: calc(12px * var(--fs-scale, 1));
 }
 
-.island-root.edge-left .pill-divider,
-.island-root.edge-right .pill-divider {
+.quota-presentation.is-vertical .pill-divider {
   width: 22px;
   height: 1px;
 }
 
-.island-root.edge-left .pill-agents,
-.island-root.edge-right .pill-agents {
+.quota-presentation.is-vertical .pill-agents {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: max-content;
+  grid-template-rows: repeat(var(--quota-side-rows, 1), auto);
+  justify-items: center;
   flex: 0 0 auto;
-  flex-direction: column;
-  gap: 5px;
-  overflow: visible;
-  transform: none;
+  gap: 5px 9px;
+  max-width: 100%;
+  max-height: none;
+  overflow-x: auto;
+  overflow-y: hidden;
 }
 
-.island-root.edge-left .pill-agent-empty,
-.island-root.edge-right .pill-agent-empty {
+.quota-presentation.is-vertical .pill-agent-empty {
   flex-direction: column;
   gap: 4px;
   font-size: calc(8.5px * var(--fs-scale, 1));
   writing-mode: vertical-rl;
 }
 
-.island-root.edge-left .pill-usage,
-.island-root.edge-right .pill-usage {
+.quota-presentation.is-vertical .pill-usage {
   flex-direction: column;
   align-items: center;
   gap: 2px;
-  /* 竖胶囊只有 48px 宽，基类的 min-width:64px 会把数字顶出胶囊。 */
-  width: 100%;
+  width: auto;
   min-width: 0;
   padding: 0;
-  border-left: 0;
   text-align: center;
 }
 
-.island-root.edge-left .pill-usage-tokens,
-.island-root.edge-right .pill-usage-tokens {
-  /* 竖排用更短的数字（1091M），字号反而可以放大到 10.5px；仍按 48px
-     宽度收住，超长值省略。 */
+.quota-presentation.is-vertical .pill-usage-tokens {
   max-width: 100%;
   font-size: clamp(7.5px, calc(10px * var(--fs-scale, 1)), 11px);
   letter-spacing: -0.04em;
@@ -388,8 +492,7 @@ html.island-preview .island::after {
   text-overflow: ellipsis;
 }
 
-.island-root.edge-left .pill-usage-cost,
-.island-root.edge-right .pill-usage-cost {
+.quota-presentation.is-vertical .pill-usage-cost {
   max-width: 100%;
   font-size: clamp(7px, calc(7.5px * var(--fs-scale, 1)), 10.5px);
   font-weight: 600;
@@ -399,30 +502,28 @@ html.island-preview .island::after {
   text-overflow: ellipsis;
 }
 
-.island-root.edge-left .pill-tail,
-.island-root.edge-right .pill-tail {
+.quota-presentation.is-vertical .pill-tail {
   margin: auto 0 0;
   flex-direction: column;
   gap: 4px;
 }
 
-.island-root.edge-left .pill-ring,
-.island-root.edge-right .pill-ring {
-  width: 32px !important;
-  height: 32px !important;
+/* 48px 竖排没有横向空间：未读品牌簇只在横排显示（activity 品牌图标仍显示）。 */
+.quota-presentation.is-vertical .pill-unread {
+  display: none;
 }
 
 .island-root.edge-left .island.open,
 .island-root.edge-right .island.open {
-  width: 520px;
-  height: 492px;
-  /* 竖排胶囊本身在 520 高窗口里垂直居中；展开保持居中，高度从 440
-     长到 492 时上下一起长，不做纵向跳变。 */
+  width: var(--panel-w, 640px);
+  height: var(--panel-h, 492px);
+  /* 竖排胶囊本身在窗口里垂直居中；展开保持居中，高度变化时上下一起长，
+     不做纵向跳变。 */
   margin-top: 0;
 }
 
 /* 左右吸附的展开是抽屉：左贴边向右推，右贴边向左推。窗口宽度从
-   70 到 552 时，island 的锚点必须固定在对应边（left: flex-start /
+   70 到 672 时，island 的锚点必须固定在对应边（left: flex-start /
    right: flex-end），宽度动画才会看起来从屏幕边滑出，而不是整块跳。 */
 .island-root.edge-left.is-open,
 .island-root.edge-right.is-open {
@@ -455,12 +556,12 @@ html.island-preview .island::after {
   position: absolute;
   top: 0;
   left: 0;
-  /* 页面始终按**展开态宽度**排版（520 - 左右各 1px 边框）：折叠动画期间
-     只被卡片裁切，不跟着 520 → 48 的宽度逐帧重排。之前用 width:100% 时，
+  /* 页面始终按**展开态宽度**排版（640 - 左右各 1px 边框）：折叠动画期间
+     只被卡片裁切，不跟着 640 → 48 的宽度逐帧重排。之前用 width:100% 时，
      收起前 200ms 整页文字会不断换行，看起来就是「关闭后字号突然变小」。
      竖排胶囊同理，见上方 edge-* 规则。 */
-  width: 518px;
-  height: 492px;
+  width: calc(var(--panel-w, 640px) - 2px);
+  height: var(--panel-h, 492px);
   display: flex;
   flex-direction: column;
   z-index: 2;
@@ -473,6 +574,8 @@ html.island-preview .island::after {
   transition:
     opacity 180ms ease,
     transform 520ms cubic-bezier(0.2, 1.02, 0.28, 1),
+    /* 切页高度与 .island 同步补间，避免内容盒先跳变再被玻璃追上的错位 */
+    height 440ms var(--spring-panel, cubic-bezier(0.22, 1.16, 0.28, 1)),
     visibility 0s linear 200ms;
 }
 
@@ -488,11 +591,13 @@ html.island-preview .island::after {
   right: 0;
 }
 
-/* 未吸附（顶部横条）时岛是居中的，面板居中锚定才不会在展开时横向漂移。 */
+/* 未吸附（顶部横条）时岛是居中的，面板居中锚定才不会在展开时横向漂移。
+   left:50% 是 padding box 的中点（640-2=638 → 319），面板宽也是 638，
+   所以 margin-left 取 -319 = -(640-2)/2。 */
 .island-root.edge-top .island-panel {
   left: 50%;
   right: auto;
-  margin-left: -259px;
+  margin-left: calc((var(--panel-w, 640px) - 2px) / -2);
 }
 
 .island.open .island-panel {
@@ -500,7 +605,7 @@ html.island-preview .island::after {
   visibility: visible;
   pointer-events: auto;
   transform: none;
-  /* 玻璃先长高，内容在尾段才淡入——和 wisland 的 content_a 一致 */
+  /* 玻璃先长高，内容在尾段才淡入 */
   transition-delay: 300ms, 300ms, 0s;
 }
 
@@ -509,12 +614,15 @@ html.island-preview .island::after {
   top: 0;
   left: 0;
   width: 100%;
-  height: 48px;
+  /* 收起态高度随视图变（--compact-h 由 IslandApp 写入）：rings 48 / clock
+     pet 34 / music 36 / activity 40；左右贴边仍固定 440 的竖条。 */
+  height: var(--compact-h, 48px);
   z-index: 3;
   opacity: 1;
   transform: none;
   transition:
     opacity 220ms ease,
+    height 440ms var(--spring-panel, cubic-bezier(0.22, 1.16, 0.28, 1)),
     transform 320ms cubic-bezier(0.2, 0.9, 0.28, 1);
 }
 
@@ -540,8 +648,10 @@ html.island-preview .island::after {
 .pill {
   position: relative;
   z-index: 1;
-  width: 100%;
-  height: 48px;
+  width: max-content;
+  max-width: var(--quota-max-w, 640px);
+  height: auto;
+  min-height: 54px;
   display: flex;
   /* 显式锁定单行横排：按钮同时带 pill-quota / pill-clock / pill-music
      变体类，防止后续变体样式误改主轴把额度区挤出胶囊。 */
@@ -555,15 +665,29 @@ html.island-preview .island::after {
   cursor: grab;
 }
 
+.pill.is-size-probe {
+  position: absolute;
+  inset: 0 auto auto 0;
+  pointer-events: none;
+  visibility: hidden;
+}
+
 .pill:active {
   cursor: grabbing;
 }
 
 .pill-weather {
   display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  flex: none;
+}
+
+.pill-weather-current {
+  display: flex;
   align-items: center;
   gap: 5px;
-  flex: none;
 }
 
 .pill-weather svg {
@@ -581,8 +705,9 @@ html.island-preview .island::after {
 
 .pill-weather-city {
   font-size: calc(9px * var(--fs-scale, 1));
+  line-height: 1.2;
   color: var(--muted);
-  max-width: 48px;
+  max-width: 7em;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -598,22 +723,23 @@ html.island-preview .island::after {
 .pill-agents {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 5px;
   min-width: 0;
-  /* 账号标签挂在环下方，必须允许纵向溢出（环数上限由前端 5/6 条控制，
-     横向不会撑出胶囊）。 */
-  overflow: visible;
-  flex: 1;
+  max-height: var(--quota-max-h, 492px);
+  overflow: auto;
+  scrollbar-width: none;
+  flex: 0 1 auto;
 }
 
-/* 环下标显示订阅档位（MAX / Pro / Plus / Go 等）：整组上移 6px，
-   让 32px 环 + 10px 标签刚好落在 48px 胶囊内。 */
 .pill-agents.has-plans {
   gap: 9px;
-  transform: translateY(-6px);
 }
 
-/* 收起态右侧：今日 token + 预估花费（标签已去掉，两行数字居中） */
+/* 收起态右侧：今日 token + 预估花费（标签已去掉，两行数字居中）。
+   用量块左侧的分隔线改由独立的 .pill-divider 承担（1px × 18px、7px 间距），
+   这里不再自带 border-left / padding-left：那条边框的高度跟着两行内容走，
+   和另外两条分割线对不齐。 */
 .pill-usage {
   display: flex;
   flex-direction: column;
@@ -622,8 +748,6 @@ html.island-preview .island::after {
   gap: 2px;
   flex: none;
   min-width: 64px;
-  padding-left: 8px;
-  border-left: 1px solid var(--hairline);
   font-variant-numeric: tabular-nums;
   line-height: 1.15;
 }
@@ -655,39 +779,73 @@ html.island-preview .island::after {
   color: var(--text);
 }
 
-/* 旧版 HUD 的「球」：每个 Agent 一枚同心环，环心品牌图标；每圈一个
-   额度窗口（5h / 周 / 月），弧长 = 已用%，颜色按已用阈值分档。 */
+/* 周期剩余百分比在单环右侧，订阅档位在下方。 */
 .pill-ring {
   position: relative;
-  display: inline-grid;
-  place-items: center;
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
   flex: none;
-  width: 32px;
-  height: 32px;
-  border-radius: 50%;
-  transition: transform 220ms cubic-bezier(0.2, 0.9, 0.28, 1), filter 220ms ease;
+  width: max-content;
+  min-width: 42px;
+  height: 54px;
 }
 
-.pill-ring::before {
+.pill-ring-main {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  transition: transform 220ms cubic-bezier(0.2, 0.9, 0.28, 1);
+}
+
+.pill-ring-periods {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+}
+
+.pill-ring-ball {
+  position: relative;
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 26px;
+  height: 26px;
+}
+
+.pill-ring-ball.is-concentric {
+  width: 32px;
+  height: 32px;
+}
+
+.island-root:is([data-theme="light"], [data-theme="sky"]) {
+  --quota-ring-week: #a16207;
+  --quota-ring-month: #2563eb;
+}
+
+.pill-ring-ball::before {
   content: "";
   position: absolute;
   inset: 2px;
   border-radius: 50%;
-  background: radial-gradient(circle at 50% 35%, rgba(255, 255, 255, 0.08), transparent 68%);
+  background: radial-gradient(circle at 50% 35%, rgba(var(--ink-rgb, 255, 255, 255), 0.08), transparent 68%);
   opacity: 0;
   transition: opacity 220ms ease;
   pointer-events: none;
 }
 
-.pill-ring:hover {
+.pill-ring:hover .pill-ring-main {
   transform: translateY(-1px) scale(1.06);
 }
 
-.pill-ring:hover::before {
+.pill-ring:hover .pill-ring-ball::before {
   opacity: 1;
 }
 
-.pill-ring svg {
+.pill-ring-ball > svg {
   position: absolute;
   inset: 0;
   width: 100%;
@@ -701,7 +859,8 @@ html.island-preview .island::after {
 }
 
 .pill-ring-icon {
-  position: relative;
+  position: absolute;
+  inset: 0;
   z-index: 1;
   display: inline-flex;
   align-items: center;
@@ -717,29 +876,28 @@ html.island-preview .island::after {
   flex: none;
 }
 
-/* 订阅档位标签：环下居中，显示 MAX / Pro / Plus / Go 等套餐名；
-   空间不够时省略尾部（档位名通常很短，实际不会截断）。 */
 .pill-ring-plan {
-  position: absolute;
-  left: 50%;
-  bottom: -10px;
-  transform: translateX(-50%);
-  z-index: 2;
-  max-width: 40px;
-  height: 10px;
-  padding: 0 1px;
   color: var(--text-soft);
-  font-size: clamp(6.5px, calc(7px * var(--fs-scale, 1)), 8px);
+  font-size: calc(8.5px * var(--fs-scale, 1));
   font-weight: 650;
-  line-height: 9px;
+  line-height: 1;
   text-align: center;
   letter-spacing: 0.02em;
   text-transform: uppercase;
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.9);
-  white-space: nowrap;
+  max-width: 275px;
   overflow: hidden;
   text-overflow: ellipsis;
-  pointer-events: none;
+  white-space: nowrap;
+}
+
+.pill-ring-pct {
+  font-size: clamp(8px, calc(9.5px * var(--fs-scale, 1)), 11px);
+  font-weight: 700;
+  color: var(--text-soft);
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 .pill-ring.is-offline {
@@ -747,28 +905,32 @@ html.island-preview .island::after {
   filter: saturate(0.45);
 }
 
-/* 竖排胶囊只有 48px 宽：档位标签仍挂在环下，但环间距要加大到 12px，
-   否则标签会压到下一枚环上。7 个条目仍能放进 440px 高。
-   （同上面一整套：只跟吸附方向走，展开淡出期间也保持竖排。） */
-.island-root.edge-left .pill-agents.has-plans,
-.island-root.edge-right .pill-agents.has-plans {
-  gap: 12px;
-  padding-bottom: 10px;
+.quota-presentation.is-vertical .pill-ring {
+  min-width: 0;
+  min-height: 32px;
+  height: auto;
 }
 
-.pill-more {
-  width: 28px;
-  height: 28px;
-  font-size: calc(9px * var(--fs-scale, 1));
-  font-weight: 600;
-  color: var(--muted);
-  background: rgba(255, 255, 255, 0.045);
-  border: 1px solid var(--hairline);
-  border-radius: 50%;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex: none;
+.quota-presentation.is-vertical .pill-ring-main {
+  gap: 3px;
+}
+
+.quota-presentation.is-vertical .pill-ring-ball {
+  width: 22px;
+  height: 22px;
+}
+
+.quota-presentation.is-vertical .pill-ring-ball.is-concentric {
+  width: 29px;
+  height: 29px;
+}
+
+.quota-presentation.is-vertical .pill-ring-pct {
+  font-size: clamp(8px, calc(9px * var(--fs-scale, 1)), 10px);
+}
+
+.quota-presentation.is-vertical .pill-ring-plan {
+  font-size: clamp(7px, calc(7.5px * var(--fs-scale, 1)), 8.5px);
 }
 
 .pill-agent-empty {
@@ -809,20 +971,46 @@ html.island-preview .island::after {
   flex: none;
 }
 
+/* 收起态没有未读 / 静音 / 会议指示时 tail 为空：胶囊本身有 7px gap，空 span
+   会多占一道间距，右侧留白就比左侧宽。空 tail 直接不参与布局。 */
+.pill-tail:empty {
+  display: none;
+}
+
+/* 未读消息模块品牌图标簇：activity 结束后常驻在 chevron 左侧，按模块去重，
+   模块已读（badgeCounts 归零）后自动消失。 */
+.pill-unread {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex: none;
+}
+
+.pill-unread-item {
+  display: inline-flex;
+  flex: none;
+}
+
+.pill-unread-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: block;
+}
+
+/* 未读品牌簇出现时放宽胶囊宽度上限：640 会把最后一个额度环挤到第二行。
+   780 画布 − 左右各 16 留白 = 748，5 个 20px 图标 + 间距刚好放得下；
+   未读清空后 :has 不再匹配，宽度自动回落到原来的上限。
+   仅放宽 max-width，不改图标尺寸 / 顺序 / ring 布局。 */
+.island:has(.pill-unread),
+.quota-presentation:has(.pill-unread) {
+  max-width: 748px;
+}
+
 .pill-clock-small {
   font-size: calc(10.5px * var(--fs-scale, 1));
   font-variant-numeric: tabular-nums;
   letter-spacing: 0.01em;
-}
-
-.pill-chevron {
-  display: inline-flex;
-  color: var(--faint);
-  transition: transform 0.25s ease;
-}
-
-.is-open .pill-chevron {
-  transform: rotate(180deg);
 }
 
 /* 收起态：时钟 / 音乐 */
@@ -956,8 +1144,8 @@ html.island-preview .island::after {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 9px;
-  padding: 8px 44px 2px;
+  gap: 2px;
+  padding: 8px 56px 2px;
   flex: none;
   position: relative;
   cursor: grab;
@@ -972,7 +1160,7 @@ html.island-preview .island::after {
   height: 3px;
   margin-left: -14px;
   border-radius: 2px;
-  background: rgba(255, 255, 255, 0.18);
+  background: rgba(var(--ink-rgb, 255, 255, 255), 0.18);
   pointer-events: none;
 }
 
@@ -980,58 +1168,71 @@ html.island-preview .island::after {
   cursor: grabbing;
 }
 
+/* 导航项：当前项展开文字 + 半透明药丸底；其余只留图标、整体 alpha 0.55。
+   宽度过渡用 cubic-bezier 近似 Spring(260, 0.56)（440ms，带一点回弹）。 */
 .nav-tab {
-  height: 32px;
+  height: 30px;
   padding: 0 9px;
   border-radius: 999px;
   display: inline-flex;
   align-items: center;
   gap: 0;
-  color: rgba(255, 255, 255, 0.46);
+  color: var(--text);
   font-size: calc(11.5px * var(--fs-scale, 1));
   font-weight: 600;
   letter-spacing: -0.01em;
+  opacity: 0.55;
   transition:
     background 0.22s ease,
     color 0.22s ease,
-    padding 0.28s cubic-bezier(0.2, 0.9, 0.28, 1);
+    opacity 0.18s ease,
+    padding 440ms var(--spring-nav, cubic-bezier(0.16, 1.16, 0.24, 1));
   position: relative;
   white-space: nowrap;
 }
 
 .nav-tab svg {
-  opacity: 0.68;
+  opacity: 1;
   transition: opacity 0.2s ease;
 }
 
-.nav-tab span {
+.nav-tab .nav-label {
   max-width: 0;
   margin-left: 0;
   opacity: 0;
   overflow: hidden;
+  white-space: nowrap;
   transition:
-    max-width 0.3s cubic-bezier(0.2, 0.9, 0.28, 1),
+    max-width 440ms var(--spring-nav, cubic-bezier(0.16, 1.16, 0.24, 1)),
     opacity 0.18s ease,
-    margin-left 0.3s cubic-bezier(0.2, 0.9, 0.28, 1);
+    margin-left 440ms var(--spring-nav, cubic-bezier(0.16, 1.16, 0.24, 1));
+}
+
+/* 未读红点不能被 0.55 的整项透明度压暗：带徽标的项保持全亮。 */
+.nav-tab:has(.nav-badge) {
+  opacity: 1;
 }
 
 .nav-tab:hover:not(.active) {
-  background: rgba(255, 255, 255, 0.055);
-  color: rgba(255, 255, 255, 0.8);
+  background: var(--panel);
+  opacity: 0.92;
+  color: var(--text);
 }
 
 .nav-tab.active {
-  background: rgba(255, 255, 255, 0.135);
-  color: var(--text);
+  background: var(--nav-pill);
+  color: var(--nav-pill-fg, var(--text));
+  opacity: 1;
+  padding: 0 12px;
 }
 
 .nav-tab.active svg {
   opacity: 1;
-  color: var(--text);
+  color: inherit;
 }
 
-.nav-tab.active span {
-  max-width: 68px;
+.nav-tab.active .nav-label {
+  max-width: 72px;
   margin-left: 6px;
   opacity: 1;
 }
@@ -1055,11 +1256,18 @@ html.island-preview .island::after {
   display: none;
 }
 
+/* 齿轮固定在右侧，不参与中间标签组的弹簧宽度变化。 */
 .nav-tab.gear {
   position: absolute;
-  right: 14px;
+  right: 16px;
   top: 8px;
   padding: 0 8px;
+  opacity: 0.72;
+}
+
+.nav-tab.gear:hover {
+  opacity: 1;
+  background: var(--panel);
 }
 
 /* ============================================================
@@ -1071,32 +1279,33 @@ html.island-preview .island::after {
   min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
-  padding: 8px 14px 10px;
-  scrollbar-width: thin;
-  scrollbar-color: var(--hairline) transparent;
+  /* 640 宽比原来 520 每侧多 4px：页面内部左右留白同步放大，避免内容贴边 */
+  padding: 8px 18px 12px;
+  /* 面板高度按 tab 常量表补间，过渡途中内容盒会短暂小于自然高度；这里
+     保留可滚（大字号 / 极端内容仍能操作），但隐藏滚动条，避免切页高度
+     动画时右侧闪一条滚动条。列表类页面（消息 / 剪贴板 / 股票）各自在
+     列表内部用细滚动条。 */
+  scrollbar-width: none;
 }
 
 /* 主页由 HomePage 按可用高度整体缩放（见 fit 逻辑），不再需要滚动条；
-   其他页面（消息 / 设置等）内容天然不定长，保留滚动。 */
+   其他页面高度由 PANEL_HEIGHT 常量表保证，内容定长时也不会滚动。 */
 .island-content.tab-home {
   overflow: hidden;
 }
 
 .island-content::-webkit-scrollbar {
-  width: 4px;
+  width: 0;
+  height: 0;
 }
 
-.island-content::-webkit-scrollbar-thumb {
-  background: var(--hairline);
-  border-radius: 4px;
-}
-
+/* 去掉切页淡入：面板高度本身在做 440ms 弹簧过渡，再叠一层 page-in 会让
+   内容在高度还在变时又淡入一次，观感像「闪一下」。 */
 .page {
   display: flex;
   flex-direction: column;
   gap: 9px;
   min-height: 100%;
-  animation: page-in 0.22s ease;
 }
 
 /* 主页自适应缩放（见 pages.tsx fitPage）：数据波动引起的比例微调走 180ms
@@ -1106,17 +1315,6 @@ html.island-preview .island::after {
   transition:
     scale 180ms ease,
     width 180ms ease;
-}
-
-@keyframes page-in {
-  from {
-    opacity: 0;
-    transform: translateY(4px);
-  }
-  to {
-    opacity: 1;
-    transform: none;
-  }
 }
 
 .section-head {
@@ -1195,6 +1393,87 @@ html.island-preview .island::after {
 
 .mini-text-btn:disabled {
   opacity: 0.5;
+}
+
+.translate-page {
+  gap: 12px;
+}
+
+.translate-fields {
+  flex: 1;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.translate-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.translate-field-label {
+  min-height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: var(--text-soft);
+  font-size: calc(12px * var(--fs-scale, 1));
+  font-weight: 650;
+}
+
+.translate-field textarea {
+  flex: 1;
+  min-height: 130px;
+  width: 100%;
+  resize: none;
+  padding: 10px 12px;
+  color: var(--text);
+  background: var(--input);
+  border: 1px solid var(--hairline);
+  border-radius: 12px;
+  font-size: calc(13px * var(--fs-scale, 1));
+  line-height: 1.55;
+}
+
+.translate-field textarea:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+
+.translate-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.translate-status {
+  flex: 1;
+  min-width: 0;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+  font-size: calc(11px * var(--fs-scale, 1));
+}
+
+.translate-status.is-error {
+  color: var(--low);
+}
+
+.translate-copy,
+.translate-submit {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  flex: none;
+}
+
+.translate-submit {
+  height: 30px;
+  padding: 0 12px;
+  color: var(--text);
+  background: var(--accent-soft);
+  font-size: calc(11px * var(--fs-scale, 1));
 }
 
 /* ============================================================
@@ -1364,19 +1643,19 @@ html.island-preview .island::after {
   width: 13px;
   height: 2px;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.22);
+  background: rgba(var(--ink-rgb, 255, 255, 255), 0.22);
   transition:
     width 260ms cubic-bezier(0.2, 0.9, 0.28, 1),
     background 220ms ease;
 }
 
 .agent-page-bar:hover {
-  background: rgba(255, 255, 255, 0.55);
+  background: rgba(var(--ink-rgb, 255, 255, 255), 0.55);
 }
 
 .agent-page-bar.active {
   width: 24px;
-  background: rgba(255, 255, 255, 0.94);
+  background: rgba(var(--ink-rgb, 255, 255, 255), 0.94);
 }
 
 .agent-card {
@@ -1417,7 +1696,7 @@ html.island-preview .island::after {
   content: "";
   position: absolute;
   inset: 0;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.035), transparent 42%);
+  background: linear-gradient(180deg, rgba(var(--ink-rgb, 255, 255, 255), 0.035), transparent 42%);
   pointer-events: none;
 }
 
@@ -1750,7 +2029,7 @@ html.island-preview .island::after {
 
 .media-controls button.primary {
   background: var(--accent);
-  color: #fff;
+  color: var(--accent-fg);
   box-shadow: 0 4px 12px -4px var(--accent);
 }
 
@@ -1914,6 +2193,20 @@ html.island-preview .island::after {
   flex-direction: column;
   gap: 1px;
   flex: 1;
+  /* 消息条数不定：滚动收在列表内部，面板本身不出滚动条（PANEL_HEIGHT.msg） */
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--scroll-thumb, var(--hairline)) transparent;
+}
+
+.message-list::-webkit-scrollbar {
+  width: 4px;
+}
+
+.message-list::-webkit-scrollbar-thumb {
+  background: var(--scroll-thumb, var(--hairline));
+  border-radius: 4px;
 }
 
 .message-item {
@@ -2169,6 +2462,21 @@ html.island-preview .island::after {
   display: flex;
   flex-direction: column;
   gap: 1px;
+  /* 自选可随时增删：滚动收在列表内部，面板高度固定 440 不出滚动条 */
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--scroll-thumb, var(--hairline)) transparent;
+}
+
+.stock-list::-webkit-scrollbar {
+  width: 4px;
+}
+
+.stock-list::-webkit-scrollbar-thumb {
+  background: var(--scroll-thumb, var(--hairline));
+  border-radius: 4px;
 }
 
 .stock-empty {
@@ -2288,6 +2596,7 @@ html.island-preview .island::after {
    ============================================================ */
 
 .weather-page {
+  position: relative;
   min-height: 100%;
   gap: 10px;
   justify-content: space-between;
@@ -2301,40 +2610,185 @@ html.island-preview .island::after {
   min-height: 30px;
 }
 
-.weather-city {
+/* 胶囊行：占满剩余宽度，城市多时横向滚动（隐藏滚动条），不挤更新时间 */
+.weather-cities {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 1px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  white-space: nowrap;
+  scrollbar-width: none;
+}
+
+.weather-cities::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+
+.weather-chip {
   display: inline-flex;
   align-items: center;
-  gap: 7px;
+  gap: 6px;
+  flex: none;
   height: 30px;
-  padding: 0 12px 0 10px;
+  padding: 0 11px 0 10px;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.13);
+  background: rgba(var(--ink-rgb, 255, 255, 255), 0.1);
+  color: var(--muted);
+  transition:
+    background 0.18s ease,
+    color 0.18s ease;
+}
+
+.weather-chip:hover {
+  background: rgba(var(--ink-rgb, 255, 255, 255), 0.16);
   color: var(--text);
-  transition: background 0.18s ease;
 }
 
-.weather-city:hover {
-  background: rgba(255, 255, 255, 0.2);
+.weather-chip.is-active {
+  background: rgba(var(--ink-rgb, 255, 255, 255), 0.2);
+  color: var(--text);
+  box-shadow: inset 0 0 0 1px rgba(var(--ink-rgb, 255, 255, 255), 0.14);
 }
 
-.weather-city svg {
-  color: rgba(255, 255, 255, 0.86);
-}
-
-.weather-city b {
-  font-size: calc(12px * var(--fs-scale, 1));
+.weather-chip b {
+  max-width: 118px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: calc(11.5px * var(--fs-scale, 1));
   font-weight: 600;
 }
 
-.weather-city span {
+.weather-chip-temp {
   font-size: calc(11px * var(--fs-scale, 1));
-  color: var(--muted);
+  color: var(--text-soft);
   font-variant-numeric: tabular-nums;
+}
+
+/* 主城市小圆点 */
+.weather-chip-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  flex: none;
+  background: #ffcc66;
+  box-shadow: 0 0 0 2px rgba(255, 204, 102, 0.16);
+}
+
+/* 当前网络城市（IP）标记 */
+.weather-chip-ip {
+  height: 14px;
+  padding: 0 4px;
+  border-radius: 4px;
+  flex: none;
+  font-size: calc(8.5px * var(--fs-scale, 1));
+  line-height: 14px;
+  color: var(--text-soft);
+  background: rgba(var(--ink-rgb, 255, 255, 255), 0.14);
+}
+
+.weather-add {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  flex: none;
+  color: var(--muted);
+  background: rgba(var(--ink-rgb, 255, 255, 255), 0.07);
+  transition:
+    background 0.18s ease,
+    color 0.18s ease;
+}
+
+.weather-add:hover {
+  background: rgba(var(--ink-rgb, 255, 255, 255), 0.15);
+  color: var(--text);
+}
+
+/* 添加城市：内嵌输入（替换胶囊行），Enter 提交 / Esc 取消 */
+.weather-add-box {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.weather-add-box input {
+  flex: 1;
+  min-width: 0;
+  height: 30px;
+  padding: 0 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(var(--ink-rgb, 255, 255, 255), 0.14);
+  background: rgba(var(--ink-rgb, 255, 255, 255), 0.1);
+  color: var(--text);
+  font-size: calc(11px * var(--fs-scale, 1));
+  outline: none;
+}
+
+.weather-add-box input::placeholder {
+  color: var(--faint);
+}
+
+.weather-add-box input:focus {
+  border-color: var(--accent-soft);
+  background: rgba(var(--ink-rgb, 255, 255, 255), 0.14);
+}
+
+.weather-add-box input:disabled {
+  opacity: 0.6;
+}
+
+.weather-add-box button {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  flex: none;
+  color: var(--muted);
+  background: rgba(var(--ink-rgb, 255, 255, 255), 0.07);
+  transition:
+    background 0.18s ease,
+    color 0.18s ease;
+}
+
+.weather-add-box button:hover:not(:disabled) {
+  background: rgba(var(--ink-rgb, 255, 255, 255), 0.15);
+  color: var(--text);
+}
+
+.weather-add-box button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* 添加成功 / 失败提示：占用更新时间的位置，避免顶部行多出一行 */
+.weather-note {
+  margin-left: auto;
+  max-width: 168px;
+  flex: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: calc(10px * var(--fs-scale, 1));
+  color: var(--text-soft);
+}
+
+.weather-note.error {
+  color: #ff9f9f;
 }
 
 .weather-updated {
   margin-left: auto;
-  max-width: 210px;
+  max-width: 168px;
+  flex: none;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -2349,7 +2803,7 @@ html.island-preview .island::after {
   display: grid;
   place-items: center;
   color: var(--muted);
-  background: rgba(255, 255, 255, 0.07);
+  background: rgba(var(--ink-rgb, 255, 255, 255), 0.07);
   flex: none;
   transition:
     background 0.18s ease,
@@ -2357,8 +2811,62 @@ html.island-preview .island::after {
 }
 
 .weather-refresh:hover {
-  background: rgba(255, 255, 255, 0.15);
+  background: rgba(var(--ink-rgb, 255, 255, 255), 0.15);
   color: var(--text);
+}
+
+/* 空态 / 选中城市抓取失败（完全无旧数据）：居中提示，不画假天气 */
+.weather-empty {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 8px;
+  text-align: center;
+}
+
+.weather-empty svg {
+  color: var(--faint);
+}
+
+.weather-empty b {
+  font-size: calc(12px * var(--fs-scale, 1));
+  font-weight: 600;
+  color: var(--text-soft);
+}
+
+.weather-empty span {
+  max-width: 380px;
+  font-size: calc(9.5px * var(--fs-scale, 1));
+  line-height: 1.55;
+  color: var(--faint);
+}
+
+.weather-empty.is-error b {
+  color: #ffb0b0;
+}
+
+/* 城市右键菜单：复用消息页 .msg-menu 视觉，仅收窄/覆盖禁用态与危险项 */
+.msg-menu.weather-menu {
+  width: 204px;
+}
+
+.weather-menu button.weather-menu-status:disabled {
+  opacity: 1;
+  color: var(--faint);
+  cursor: default;
+}
+
+.weather-menu button.danger {
+  color: #ff9f9f;
+}
+
+.weather-menu button.danger:hover:not(:disabled) {
+  background: rgba(255, 90, 90, 0.14);
+  color: #ffc4c4;
 }
 
 .weather-body {
@@ -2385,7 +2893,7 @@ html.island-preview .island::after {
 }
 
 .weather-now-glyph {
-  color: rgba(255, 255, 255, 0.92);
+  color: rgba(var(--ink-rgb, 255, 255, 255), 0.92);
   filter: drop-shadow(0 6px 16px rgba(0, 0, 0, 0.16));
 }
 
@@ -2455,7 +2963,7 @@ html.island-preview .island::after {
   position: relative;
   height: 5px;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.13);
+  background: rgba(var(--ink-rgb, 255, 255, 255), 0.13);
   overflow: hidden;
 }
 
@@ -2471,8 +2979,8 @@ html.island-preview .island::after {
   grid-template-columns: repeat(4, 1fr);
   gap: 2px 8px;
   padding: 8px 4px;
-  border-top: 1px solid rgba(255, 255, 255, 0.08);
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  border-top: 1px solid rgba(var(--ink-rgb, 255, 255, 255), 0.08);
+  border-bottom: 1px solid rgba(var(--ink-rgb, 255, 255, 255), 0.08);
   flex: none;
 }
 
@@ -2522,7 +3030,7 @@ html.island-preview .island::after {
 }
 
 .weather-hour:hover {
-  background: rgba(255, 255, 255, 0.05);
+  background: rgba(var(--ink-rgb, 255, 255, 255), 0.05);
 }
 
 .weather-hour-label {
@@ -2571,7 +3079,7 @@ html.island-preview .island::after {
 }
 
 .wg-cloud {
-  fill: rgba(255, 255, 255, 0.13);
+  fill: rgba(var(--ink-rgb, 255, 255, 255), 0.13);
   stroke: #dbe6ff;
 }
 
@@ -2586,17 +3094,17 @@ html.island-preview .island::after {
   stroke: #ffd45a;
 }
 
-/* 天气页改成 wisland 式的单色玻璃线条，避免彩色图标把整页拉花 */
+/* 天气页用单色玻璃线条，避免彩色图标把整页拉花 */
 .weather-page .wg-sun-core,
 .weather-page .wg-moon,
 .weather-page .wg-cloud {
-  fill: rgba(255, 255, 255, 0.1);
-  stroke: rgba(255, 255, 255, 0.9);
+  fill: rgba(var(--ink-rgb, 255, 255, 255), 0.1);
+  stroke: rgba(var(--ink-rgb, 255, 255, 255), 0.9);
 }
 
 .weather-page .wg-sun-ray,
 .weather-page .wg-star {
-  stroke: rgba(255, 255, 255, 0.82);
+  stroke: rgba(var(--ink-rgb, 255, 255, 255), 0.82);
 }
 
 .weather-page .wg-rain,
@@ -2606,8 +3114,8 @@ html.island-preview .island::after {
 }
 
 .weather-page .wg-bolt {
-  fill: rgba(255, 255, 255, 0.16);
-  stroke: rgba(255, 255, 255, 0.92);
+  fill: rgba(var(--ink-rgb, 255, 255, 255), 0.16);
+  stroke: rgba(var(--ink-rgb, 255, 255, 255), 0.92);
 }
 
 /* ============================================================
@@ -2631,7 +3139,7 @@ html.island-preview .island::after {
   height: 56px;
   border-radius: 18px;
   overflow: hidden;
-  background: rgba(255, 255, 255, 0.1);
+  background: rgba(var(--ink-rgb, 255, 255, 255), 0.1);
   isolation: isolate;
   transition:
     background 0.18s ease,
@@ -2639,11 +3147,11 @@ html.island-preview .island::after {
 }
 
 .ctl-slider:hover {
-  background: rgba(255, 255, 255, 0.13);
+  background: rgba(var(--ink-rgb, 255, 255, 255), 0.13);
 }
 
 .ctl-slider:focus-within {
-  box-shadow: 0 0 0 2px rgba(126, 166, 255, 0.7);
+  box-shadow: 0 0 0 2px rgba(var(--accent-rgb, 126, 166, 255), 0.7);
 }
 
 .ctl-slider.disabled {
@@ -2658,7 +3166,7 @@ html.island-preview .island::after {
   z-index: 0;
   min-width: 56px;
   border-radius: 18px;
-  background: rgba(255, 255, 255, 0.88);
+  background: var(--slider-fill, rgba(255, 255, 255, 0.88));
   transition: width 0.2s cubic-bezier(0.2, 0.9, 0.28, 1);
   pointer-events: none;
 }
@@ -2679,13 +3187,13 @@ html.island-preview .island::after {
   height: 28px;
   display: grid;
   place-items: center;
-  color: #1b1c22;
+  color: var(--slider-fill-fg, #1b1c22);
   background: transparent;
   pointer-events: auto;
 }
 
 .ctl-slider.disabled .ctl-slider-icon {
-  color: rgba(255, 255, 255, 0.86);
+  color: rgba(var(--ink-rgb, 255, 255, 255), 0.86);
 }
 
 .ctl-slider-value {
@@ -2696,13 +3204,13 @@ html.island-preview .island::after {
   z-index: 2;
   font-size: calc(13px * var(--fs-scale, 1));
   font-weight: 600;
-  color: rgba(255, 255, 255, 0.82);
+  color: rgba(var(--ink-rgb, 255, 255, 255), 0.82);
   font-variant-numeric: tabular-nums;
   pointer-events: none;
 }
 
 .ctl-slider-value.on-fill {
-  color: rgba(20, 22, 28, 0.72);
+  color: var(--slider-fill-fg, #1b1c22);
 }
 
 .ctl-slider.disabled .ctl-slider-value {
@@ -2735,8 +3243,8 @@ html.island-preview .island::after {
 
 .ctl-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  grid-auto-rows: 128px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-auto-rows: minmax(62px, auto);
   gap: 10px;
   flex: none;
 }
@@ -2747,7 +3255,7 @@ html.island-preview .island::after {
   gap: 10px;
   padding: 14px;
   border-radius: 18px;
-  background: rgba(255, 255, 255, 0.085);
+  background: var(--panel);
   color: var(--text);
   text-align: left;
   transition:
@@ -2756,7 +3264,7 @@ html.island-preview .island::after {
 }
 
 .ctl-tile:hover {
-  background: rgba(255, 255, 255, 0.14);
+  background: var(--panel-strong);
 }
 
 .ctl-tile:active {
@@ -2769,8 +3277,8 @@ html.island-preview .island::after {
   border-radius: 50%;
   display: grid;
   place-items: center;
-  background: rgba(255, 255, 255, 0.13);
-  color: rgba(255, 255, 255, 0.85);
+  background: rgba(var(--ink-rgb, 255, 255, 255), 0.13);
+  color: rgba(var(--ink-rgb, 255, 255, 255), 0.85);
   flex: none;
   transition:
     background 0.2s ease,
@@ -2779,9 +3287,9 @@ html.island-preview .island::after {
 }
 
 .ctl-tile.on .ctl-tile-icon {
-  background: #3b82f6;
-  color: #fff;
-  box-shadow: 0 8px 18px -10px rgba(59, 130, 246, 0.9);
+  background: var(--accent);
+  color: var(--accent-fg);
+  box-shadow: 0 8px 18px -10px var(--accent);
 }
 
 .ctl-tile-copy {
@@ -2812,6 +3320,162 @@ html.island-preview .island::after {
   padding-top: 2px;
   color: var(--faint);
   flex: none;
+}
+
+.clash-panel {
+  display: grid;
+  gap: 11px;
+  padding: 12px 14px;
+  border-radius: 18px;
+  background: var(--panel);
+  flex: none;
+}
+
+.clash-heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.clash-heading h3 {
+  margin: 0;
+  font-size: calc(14px * var(--fs-scale, 1));
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.clash-mark {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  color: var(--accent-link);
+  background: var(--accent-soft);
+  flex: none;
+}
+
+.clash-activity,
+.clash-details,
+.clash-metric-label,
+.clash-location-empty,
+.clash-address > span,
+.clash-switch-state {
+  color: var(--muted);
+  font-size: calc(11px * var(--fs-scale, 1));
+}
+
+.clash-activity {
+  white-space: nowrap;
+}
+
+.clash-activity.running {
+  color: var(--ok);
+}
+
+.clash-open {
+  margin-left: auto;
+  flex: none;
+}
+
+.clash-metrics {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  align-items: start;
+}
+
+.clash-usage,
+.clash-speed {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
+.clash-metric-label {
+  display: inline-flex;
+  gap: 5px;
+  align-items: center;
+  flex: none;
+}
+
+.clash-metric-value,
+.clash-address > b {
+  color: var(--text);
+  font-size: calc(13px * var(--fs-scale, 1));
+  font-variant-numeric: tabular-nums;
+}
+
+.clash-progress {
+  appearance: none;
+  width: 100%;
+  height: 5px;
+  overflow: hidden;
+  border: 0;
+  border-radius: 999px;
+  background: var(--hairline);
+  accent-color: var(--accent);
+}
+
+.clash-progress::-webkit-progress-bar {
+  background: var(--hairline);
+}
+
+.clash-progress::-webkit-progress-value {
+  border-radius: inherit;
+  background: var(--accent);
+}
+
+.clash-location,
+.clash-address,
+.clash-mode,
+.clash-switch {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.clash-address > span,
+.clash-address > b {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.clash-mode .segmented {
+  width: 172px;
+  max-width: 100%;
+}
+
+.clash-mode .segmented button {
+  font-size: calc(12px * var(--fs-scale, 1));
+}
+
+.clash-mode .segmented button:hover:not(:disabled) {
+  color: var(--text);
+}
+
+.clash-mode .segmented button:disabled:not(.active) {
+  opacity: 0.5;
+}
+
+.clash-switches {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  border-top: 1px solid var(--hairline);
+  padding-top: 8px;
+}
+
+.clash-switch {
+  min-height: 23px;
+  font-size: calc(12px * var(--fs-scale, 1));
+}
+
+.clash-switch .toggle {
+  margin-left: auto;
 }
 
 .ctl-error {
@@ -2913,6 +3577,22 @@ html.island-preview .island::after {
   display: flex;
   flex-direction: column;
   gap: 5px;
+  /* 剪贴板条数不定（最多 10 条）：滚动收在列表内部，面板高度用常量表，
+     列表放得下时完全看不到滚动条。 */
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--scroll-thumb, var(--hairline)) transparent;
+}
+
+.clip-list::-webkit-scrollbar {
+  width: 4px;
+}
+
+.clip-list::-webkit-scrollbar-thumb {
+  background: var(--scroll-thumb, var(--hairline));
+  border-radius: 4px;
 }
 
 .clip-item {
@@ -3172,7 +3852,7 @@ html.island-preview .island::after {
   min-height: 26px;
   padding: 3px 4px 3px 6px;
   border-radius: 9px;
-  background: rgba(255, 255, 255, 0.035);
+  background: rgba(var(--ink-rgb, 255, 255, 255), 0.035);
 }
 
 .agent-order-copy {
@@ -3206,12 +3886,12 @@ html.island-preview .island::after {
   place-items: center;
   border-radius: 7px;
   color: var(--text-soft);
-  background: rgba(255, 255, 255, 0.06);
+  background: rgba(var(--ink-rgb, 255, 255, 255), 0.06);
   transition: background 0.15s ease, color 0.15s ease;
 }
 
 .agent-order-btn:hover:not(:disabled) {
-  background: rgba(255, 255, 255, 0.13);
+  background: rgba(var(--ink-rgb, 255, 255, 255), 0.13);
   color: var(--text);
 }
 
@@ -3465,8 +4145,8 @@ html.island-preview .island::after {
   padding: 6px 12px;
   border-radius: 999px;
   background: var(--toast-bg);
-  color: #f4f7ff;
-  border: 1px solid rgba(255, 255, 255, 0.14);
+  color: var(--text);
+  border: 1px solid rgba(var(--ink-rgb, 255, 255, 255), 0.14);
   box-shadow: 0 10px 28px -12px rgba(0, 0, 0, 0.7);
   backdrop-filter: blur(18px);
   font-size: calc(9.5px * var(--fs-scale, 1));
@@ -3497,9 +4177,10 @@ html.island-preview .island::after {
 .island-context-menu {
   position: absolute;
   z-index: 31;
-  width: 188px;
-  max-height: calc(100% - 24px);
-  overflow-y: auto;
+  width: 196px;
+  /* 子菜单是绝对定位的 flyout，菜单本身不能再形成滚动裁剪；
+     菜单高度由 IslandApp 按当前面板高度夹住 top，保证不出面板。 */
+  overflow: visible;
   padding: 5px;
   border-radius: 13px;
   background: var(--menu-bg);
@@ -3531,13 +4212,12 @@ html.island-preview .island::after {
   align-items: center;
   gap: 7px;
   font-size: calc(9.5px * var(--fs-scale, 1));
-  color: var(--text-soft);
+  color: var(--menu-fg);
   text-align: left;
 }
 
 .island-context-menu button:hover {
-  background: var(--panel-strong);
-  color: var(--text);
+  background: var(--menu-hover);
 }
 
 .island-context-menu button.danger {
@@ -3578,13 +4258,1384 @@ html.island-preview .island::after {
   height: 3px;
 }
 
+/* ===== P0：菜单分组 / 子菜单（主题 ▸ / 展开方式 ▸ / 显示板块 ▸） ===== */
+.context-group {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.context-check {
+  width: 12px;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--accent);
+}
+
+.context-hint {
+  margin-left: auto;
+  max-width: 70px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--faint);
+  font-size: calc(8.5px * var(--fs-scale, 1));
+}
+
+.context-arrow {
+  flex: none;
+  color: var(--faint);
+  transform: rotate(-90deg);
+  transition: transform 0.18s ease;
+}
+
+.context-parent.is-open {
+  background: var(--menu-hover);
+  color: var(--menu-fg);
+}
+
+.context-parent.is-open .context-arrow {
+  transform: rotate(90deg);
+}
+
+.context-check-row.selected {
+  color: var(--text);
+}
+
+.context-submenu {
+  position: absolute;
+  top: -5px;
+  left: calc(100% + 4px);
+  z-index: 32;
+  width: 158px;
+  padding: 5px;
+  border-radius: 12px;
+  background: var(--menu-bg);
+  border: 1px solid var(--glass-edge);
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(24px) saturate(160%);
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  animation: menu-in 0.14s ease;
+}
+
+.context-submenu.context-submenu-left {
+  left: auto;
+  right: calc(100% + 4px);
+}
+
+.island-context-menu .context-submenu button {
+  height: 27px;
+  padding: 0 7px;
+  border-radius: 6px;
+  font-size: calc(9.5px * var(--fs-scale, 1));
+  color: var(--menu-fg);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.island-context-menu .context-submenu button.selected {
+  color: var(--menu-fg);
+  background: var(--panel);
+}
+
+.island-context-menu .context-submenu button:hover {
+  background: var(--menu-hover);
+}
+
 .island-boot {
   width: 100%;
   height: 100%;
   background: transparent;
 }
 
-/* 收窄：窗口仍按 520 设计，此断点只用于浏览器预览的窄视口 */
+/* ============================================================
+   P1 收起态四视图：clock / pet / music / activity + 未读角标
+   （rings 仍由 CollapsedPill 渲染；高度由 --compact-h 驱动）
+   ============================================================ */
+
+.compact-surface {
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  overflow: hidden;
+  cursor: pointer;
+}
+
+.compact-surface.has-quota {
+  display: flex;
+  align-items: center;
+}
+
+.compact-surface.has-quota .compact-view {
+  flex: 1 0 min(100%, var(--compact-content-extent));
+  min-height: 0;
+}
+
+.compact-quotas {
+  display: flex;
+  flex: 0 1 var(--compact-quota-extent);
+  align-items: center;
+  min-width: 0;
+  min-height: 0;
+  width: var(--compact-quota-extent);
+  padding-inline-end: 9px;
+  border-inline-start: 1px solid var(--hairline);
+  overflow: auto hidden;
+  scrollbar-width: none;
+}
+
+.compact-quotas .pill-ring {
+  width: var(--compact-quota-cell);
+  min-width: 0;
+  height: var(--compact-quota-cell);
+}
+
+.compact-quotas .pill-ring-ball.is-concentric {
+  width: 30px;
+  height: 30px;
+}
+
+.compact-quotas .pill-agent-empty {
+  margin-inline: auto;
+  white-space: nowrap;
+}
+
+.compact-view {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  padding: 0 14px;
+  gap: 8px;
+}
+
+/* ---- 未读角标：20px 消息来源图标或 8px 圆点 ---- */
+.compact-badges {
+  display: flex;
+  flex-direction: row-reverse;
+  align-items: center;
+  gap: 5px;
+  flex: none;
+}
+
+.compact-badges i {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: block;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.12);
+}
+
+.compact-message-badge {
+  display: inline-flex;
+  flex: none;
+  color: var(--text-soft);
+}
+
+/* ---- clock ---- */
+.compact-clock {
+  padding-left: 18px;
+}
+
+.compact-clock-time {
+  flex: none;
+  font-size: calc(15px * var(--fs-scale, 1));
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+  color: var(--text);
+}
+
+.compact-clock-tail {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.compact-weather {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--text-soft);
+}
+
+.compact-weather b {
+  font-size: calc(13px * var(--fs-scale, 1));
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+
+.compact-weather svg {
+  opacity: 0.9;
+}
+
+/* ---- pet ---- */
+.compact-pet {
+  padding-left: 16px;
+  padding-right: 14px;
+  gap: 4px;
+}
+
+.compact-pet-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.pet-face {
+  display: block;
+  color: var(--pet-eye, var(--text));
+  overflow: visible;
+  --pet-sparkle: var(--glass-solid);
+}
+
+/* 暗色主题下眼睛的粉色光晕（参考 theme.dark 才画 glow） */
+.island-root[data-theme="dark"] .pet-glowable,
+.island-root[data-theme="rouge"] .pet-glowable {
+  filter: drop-shadow(0 0 5px rgba(255, 92, 138, 0.55));
+}
+
+/* ---- music ---- */
+.compact-music {
+  padding-left: 6px;
+  padding-right: 14px;
+  gap: 8px;
+}
+
+.compact-cover {
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  flex: none;
+  overflow: hidden;
+  display: grid;
+  place-items: center;
+  background: var(--panel-strong);
+  color: var(--text-soft);
+}
+
+.compact-cover img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.compact-music-text {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  overflow: hidden;
+}
+
+.compact-music-line {
+  display: block;
+  width: 100%;
+  overflow: hidden;
+  white-space: nowrap;
+  animation: compact-line-in 0.32s ease-out;
+}
+
+.compact-music-line-inner {
+  display: inline-block;
+  white-space: nowrap;
+  font-size: calc(13px * var(--fs-scale, 1));
+  font-weight: 500;
+  letter-spacing: -0.01em;
+}
+
+.compact-music-line.is-lyric .compact-music-line-inner {
+  color: var(--text);
+}
+
+.compact-music-line.is-title .compact-music-line-inner {
+  color: var(--text-soft);
+}
+
+@keyframes compact-line-in {
+  from {
+    opacity: 0;
+    transform: translateY(7px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.compact-bars {
+  display: flex;
+  align-items: center;
+  gap: 3.4px;
+  flex: none;
+}
+
+.compact-bars i {
+  display: block;
+  width: 3.6px;
+  border-radius: 1.8px;
+  background: var(--text);
+  opacity: 0.85;
+}
+
+.compact-bars:not(.is-playing) i {
+  opacity: 0.4;
+}
+
+.compact-play {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  flex: none;
+  display: grid;
+  place-items: center;
+  color: var(--text);
+}
+
+.compact-play:hover {
+  background: var(--panel-strong);
+}
+
+.compact-music .compact-badges {
+  margin-left: 2px;
+}
+
+/* ---- activity ---- */
+.compact-activity {
+  gap: 10px;
+  padding-left: 9px;
+  padding-right: 14px;
+  animation: compact-activity-in 0.35s ease-out;
+}
+
+@keyframes compact-activity-in {
+  from {
+    opacity: 0;
+    transform: translateY(5px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.compact-activity-icon {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  flex: none;
+  display: grid;
+  place-items: center;
+  background: var(--panel-strong);
+  color: var(--text);
+}
+
+.compact-activity-icon.is-tinted {
+  color: #fff;
+}
+
+.compact-activity-icon.is-up {
+  background: var(--stock-up);
+  color: #fff;
+}
+
+.compact-activity-icon.is-down {
+  background: var(--stock-down);
+  color: #fff;
+}
+
+/* 品牌 chip 自带白底圆角，外层圆底让开（否则圆色会从圆角外露出来）。 */
+.compact-activity-icon.is-brand {
+  background: transparent;
+}
+
+.compact-activity-copy {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.compact-activity-copy b {
+  font-size: calc(13px * var(--fs-scale, 1));
+  font-weight: 650;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.compact-activity-copy em {
+  font-style: normal;
+  font-size: calc(12px * var(--fs-scale, 1));
+  color: var(--text-soft);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.compact-activity-copy b.tone-up,
+.compact-activity-copy em.tone-up {
+  color: var(--stock-up);
+}
+
+.compact-activity-copy b.tone-down,
+.compact-activity-copy em.tone-down {
+  color: var(--stock-down);
+}
+
+.compact-activity.is-volume {
+  align-items: center;
+}
+
+.compact-activity-icon.is-plain {
+  background: var(--panel);
+}
+
+.compact-volume-track {
+  flex: 1;
+  min-width: 0;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--ring-track);
+  overflow: hidden;
+}
+
+.compact-volume-track i {
+  display: block;
+  height: 100%;
+  border-radius: 3px;
+  background: var(--text);
+  transition: width 80ms linear;
+}
+
+.compact-volume-value {
+  flex: none;
+  min-width: 34px;
+  text-align: right;
+  font-size: calc(12.5px * var(--fs-scale, 1));
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+
+/* ---- 左右贴边（竖排 48×440）：上下堆叠的简化形态，不溢出 ---- */
+.compact-surface.is-vertical {
+  overflow: hidden;
+}
+
+.compact-surface.is-vertical.has-quota {
+  flex-direction: column;
+}
+
+.compact-surface.is-vertical .compact-quotas {
+  flex-direction: column;
+  width: 100%;
+  height: var(--compact-quota-extent);
+  padding-inline-end: 0;
+  padding-block-end: 9px;
+  border-inline-start: 0;
+  border-block-start: 1px solid var(--hairline);
+  overflow: hidden auto;
+}
+
+.compact-surface.is-vertical .compact-quotas .pill-agent-empty {
+  margin: auto;
+  width: 3em;
+  text-align: center;
+  white-space: normal;
+}
+
+.compact-surface.is-vertical .compact-view {
+  flex-direction: column;
+  justify-content: flex-start;
+  gap: 10px;
+  padding: 18px 0 13px;
+  height: 100%;
+}
+
+.compact-surface.is-vertical .compact-badges {
+  flex-direction: column;
+  gap: 5px;
+}
+
+.compact-surface.is-vertical .compact-clock {
+  align-items: center;
+}
+
+.compact-surface.is-vertical .compact-clock-tail {
+  margin-left: 0;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 8px;
+}
+
+.compact-surface.is-vertical .compact-weather {
+  flex-direction: column;
+  gap: 3px;
+}
+
+.compact-surface.is-vertical .compact-pet {
+  align-items: center;
+}
+
+.compact-surface.is-vertical .compact-pet-body {
+  flex: 0 0 34px;
+  width: 100%;
+}
+
+/* 竖排胶囊只有 48px 宽：小形象按 44px 缩放，避免眼睛超出玻璃 */
+.compact-surface.is-vertical .pet-face {
+  width: 44px;
+  height: 27px;
+}
+
+.compact-surface.is-vertical .compact-music {
+  align-items: center;
+}
+
+.compact-surface.is-vertical .compact-music-text {
+  flex: 1;
+  width: 100%;
+  height: auto;
+  min-height: 0;
+  justify-content: center;
+  writing-mode: vertical-rl;
+}
+
+.compact-surface.is-vertical .compact-music-line {
+  width: auto;
+  height: 100%;
+}
+
+.compact-surface.is-vertical .compact-music-line-inner {
+  writing-mode: vertical-rl;
+  font-size: calc(12px * var(--fs-scale, 1));
+}
+
+.compact-surface.is-vertical .compact-activity {
+  align-items: center;
+}
+
+.compact-surface.is-vertical .compact-activity-copy {
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+}
+
+.compact-surface.is-vertical .compact-activity-copy b,
+.compact-surface.is-vertical .compact-activity-copy em {
+  max-width: 100%;
+  width: 100%;
+  text-align: center;
+}
+
+.compact-surface.is-vertical .compact-volume-track {
+  width: 100%;
+  flex: 0 0 6px;
+}
+
+/* ============================================================
+   P3-1 bottom 吸附（窗口贴工作区下沿，条在窗口底部 70px）
+   ============================================================ */
+
+/* 镜像 top：上 16 是投影留白、下 6 是贴边呼吸位；岛在底部对齐，
+   展开时高度向上生长（bottom 固定，不用改 margin-top）。 */
+.island-root[data-edge="bottom"] {
+  padding: 16px 16px 6px;
+  align-items: flex-end;
+}
+
+.island-root[data-edge="bottom"] .island {
+  transform-origin: 50% 100%;
+}
+
+.island-root[data-edge="bottom"] .island.open {
+  margin-top: 0;
+  margin-bottom: 3px;
+}
+
+/* 面板钉在窗口底部：高度动画时内容从底部被「揭开」，而不是从顶部往下长。 */
+.island-root[data-edge="bottom"] .island-panel {
+  top: auto;
+  bottom: 0;
+  transform-origin: 50% 100%;
+  transform: translateY(-7px);
+  /* 导航靠近底边一侧（参考 island.py `_place_nav`）：内容在上、导航在下 */
+  flex-direction: column-reverse;
+}
+
+.island-root[data-edge="bottom"].is-open .island-panel {
+  transform: none;
+}
+
+.island-root[data-edge="bottom"] .pill-wrap {
+  top: auto;
+  bottom: 0;
+  transform-origin: 50% 100%;
+}
+
+.island-root[data-edge="bottom"] .island.open .pill-wrap {
+  transform: translateY(5px);
+}
+
+/* 导航靠底边：handle 在导航下沿，齿轮也贴底 */
+.island-root[data-edge="bottom"] .island-nav {
+  padding: 2px 56px 8px;
+}
+
+.island-root[data-edge="bottom"] .island-nav::before {
+  top: auto;
+  bottom: 1px;
+}
+
+.island-root[data-edge="bottom"] .nav-tab.gear {
+  top: auto;
+  bottom: 8px;
+}
+
+.island-root[data-edge="bottom"] .island-content {
+  /* 内容靠近导航的一侧留白镜像加大 */
+  padding: 12px 18px 8px;
+}
+
+/* ============================================================
+   P3-2 液态玻璃：贴边内凹圆角 + 圆角呼吸 + 沿边流光
+   ============================================================ */
+
+/* 可动画的长度自定义属性（Chromium/WebView2 支持 @property） */
+@property --fillet-r {
+  syntax: "<length>";
+  inherits: true;
+  initial-value: 13px;
+}
+
+.island-root {
+  --fillet-r: 13px; /* FILLET = 13（参考 shape.py） */
+}
+
+/* 贴边侧两角半径收缩（gap 常态 6 / BREAK 64 → corner_r≈2px），另外两角保持
+   当前胶囊圆角；再用 mask 在贴边两角挖出 1/4 圆，形成内凹弧（FILLET=13）。 */
+.island-root.is-collapsed:not(.is-dragging)[data-edge="top"] .island {
+  border-radius: calc(var(--compact-r, 24px) * 0.076) calc(var(--compact-r, 24px) * 0.076)
+    var(--compact-r, 24px) var(--compact-r, 24px);
+  -webkit-mask-image:
+    radial-gradient(circle at 0 0, transparent calc(var(--fillet-r) - 0.75px), #000 var(--fillet-r)),
+    radial-gradient(circle at 100% 0, transparent calc(var(--fillet-r) - 0.75px), #000 var(--fillet-r));
+  -webkit-mask-composite: source-in;
+  mask-image:
+    radial-gradient(circle at 0 0, transparent calc(var(--fillet-r) - 0.75px), #000 var(--fillet-r)),
+    radial-gradient(circle at 100% 0, transparent calc(var(--fillet-r) - 0.75px), #000 var(--fillet-r));
+  mask-composite: intersect;
+}
+
+.island-root.is-collapsed:not(.is-dragging)[data-edge="bottom"] .island {
+  border-radius: var(--compact-r, 24px) var(--compact-r, 24px)
+    calc(var(--compact-r, 24px) * 0.076) calc(var(--compact-r, 24px) * 0.076);
+  -webkit-mask-image:
+    radial-gradient(circle at 0 100%, transparent calc(var(--fillet-r) - 0.75px), #000 var(--fillet-r)),
+    radial-gradient(circle at 100% 100%, transparent calc(var(--fillet-r) - 0.75px), #000 var(--fillet-r));
+  -webkit-mask-composite: source-in;
+  mask-image:
+    radial-gradient(circle at 0 100%, transparent calc(var(--fillet-r) - 0.75px), #000 var(--fillet-r)),
+    radial-gradient(circle at 100% 100%, transparent calc(var(--fillet-r) - 0.75px), #000 var(--fillet-r));
+  mask-composite: intersect;
+}
+
+.island-root.is-collapsed:not(.is-dragging)[data-edge="left"] .island {
+  border-radius: calc(var(--compact-r, 24px) * 0.076) var(--compact-r, 24px)
+    var(--compact-r, 24px) calc(var(--compact-r, 24px) * 0.076);
+  -webkit-mask-image:
+    radial-gradient(circle at 0 0, transparent calc(var(--fillet-r) - 0.75px), #000 var(--fillet-r)),
+    radial-gradient(circle at 0 100%, transparent calc(var(--fillet-r) - 0.75px), #000 var(--fillet-r));
+  -webkit-mask-composite: source-in;
+  mask-image:
+    radial-gradient(circle at 0 0, transparent calc(var(--fillet-r) - 0.75px), #000 var(--fillet-r)),
+    radial-gradient(circle at 0 100%, transparent calc(var(--fillet-r) - 0.75px), #000 var(--fillet-r));
+  mask-composite: intersect;
+}
+
+.island-root.is-collapsed:not(.is-dragging)[data-edge="right"] .island {
+  border-radius: var(--compact-r, 24px) calc(var(--compact-r, 24px) * 0.076)
+    calc(var(--compact-r, 24px) * 0.076) var(--compact-r, 24px);
+  -webkit-mask-image:
+    radial-gradient(circle at 100% 0, transparent calc(var(--fillet-r) - 0.75px), #000 var(--fillet-r)),
+    radial-gradient(circle at 100% 100%, transparent calc(var(--fillet-r) - 0.75px), #000 var(--fillet-r));
+  -webkit-mask-composite: source-in;
+  mask-image:
+    radial-gradient(circle at 100% 0, transparent calc(var(--fillet-r) - 0.75px), #000 var(--fillet-r)),
+    radial-gradient(circle at 100% 100%, transparent calc(var(--fillet-r) - 0.75px), #000 var(--fillet-r));
+  mask-composite: intersect;
+}
+
+/* 圆角呼吸：anchored 未展开时 fillet 幅度 ±7%，角频率 1.7rad/s（周期≈3.7s） */
+@keyframes island-fillet-breathe {
+  0%,
+  100% {
+    --fillet-r: calc(13px * 0.93);
+  }
+  50% {
+    --fillet-r: calc(13px * 1.07);
+  }
+}
+
+.island-root.is-collapsed:not(.is-dragging) {
+  /* 动画挂在 root 上（--fillet-r inherits），这样 .island 上的吸附挤压
+     animation 不会被这条规则覆盖。 */
+  animation: island-fillet-breathe 3.7s ease-in-out infinite;
+}
+
+/* 沿边流光：贴着玻璃描边走的一团柔和白光（相位 sin(t*0.55) 往返）。 */
+.island-flow {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  border-radius: inherit;
+  overflow: hidden;
+  pointer-events: none;
+  transition: opacity 220ms ease;
+}
+
+.island-root.is-open .island-flow {
+  opacity: 0;
+}
+
+.island-flow::after {
+  content: "";
+  position: absolute;
+  border-radius: 999px;
+  background: radial-gradient(
+    ellipse 55% 100% at 50% 50%,
+    rgba(255, 255, 255, var(--flow-alpha, 0.22)),
+    rgba(255, 255, 255, 0) 70%
+  );
+  filter: blur(0.7px);
+  will-change: transform;
+}
+
+.island-root[data-edge="top"] .island-flow::after {
+  left: 0;
+  bottom: 1px;
+  width: 52%;
+  height: 2px;
+  animation: island-flow-x 11.4s cubic-bezier(0.45, 0, 0.55, 1) infinite alternate;
+}
+
+.island-root[data-edge="bottom"] .island-flow::after {
+  left: 0;
+  top: 1px;
+  width: 52%;
+  height: 2px;
+  animation: island-flow-x 11.4s cubic-bezier(0.45, 0, 0.55, 1) infinite alternate;
+}
+
+.island-root[data-edge="left"] .island-flow::after {
+  right: 1px;
+  top: 0;
+  width: 2px;
+  height: 52%;
+  animation: island-flow-y 11.4s cubic-bezier(0.45, 0, 0.55, 1) infinite alternate;
+}
+
+.island-root[data-edge="right"] .island-flow::after {
+  left: 1px;
+  top: 0;
+  width: 2px;
+  height: 52%;
+  animation: island-flow-y 11.4s cubic-bezier(0.45, 0, 0.55, 1) infinite alternate;
+}
+
+@keyframes island-flow-x {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(92%);
+  }
+}
+
+@keyframes island-flow-y {
+  from {
+    transform: translateY(0);
+  }
+  to {
+    transform: translateY(92%);
+  }
+}
+
+/* ============================================================
+   P2 主页改版（媒体卡 + 小形象 + 四动作 + 横向启动器）
+   与消息页磁贴化（84px 磁贴 + 30 行历史 + 页内菜单）
+   ============================================================ */
+
+.home-page {
+  gap: 6px;
+}
+
+/* ---- 主行：媒体卡 / 小形象 / 四动作 ---- */
+.home-main {
+  display: flex;
+  align-items: stretch;
+  gap: 10px;
+  height: 136px;
+  flex: none;
+}
+
+.home-media-card {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 14px;
+  background: var(--panel);
+  border: 1px solid var(--hairline);
+}
+
+.home-media-cover {
+  width: 58px;
+  height: 58px;
+  border-radius: 13px;
+  flex: none;
+  overflow: hidden;
+  display: grid;
+  place-items: center;
+  background: var(--panel-strong);
+  color: var(--text-soft);
+}
+
+.home-media-cover img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.home-media-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.home-media-title {
+  font-size: calc(14px * var(--fs-scale, 1));
+  font-weight: 650;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.home-media-sub {
+  font-size: calc(10.5px * var(--fs-scale, 1));
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.home-media-progress {
+  height: 3px;
+  border-radius: 2px;
+  background: var(--ring-track);
+  overflow: hidden;
+}
+
+.home-media-progress i {
+  display: block;
+  height: 100%;
+  border-radius: 2px;
+  background: var(--text);
+  transition: width 200ms linear;
+}
+
+.home-media-times {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: calc(8.5px * var(--fs-scale, 1));
+  color: var(--faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.home-media-controls {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex: none;
+}
+
+.home-media-btn {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  color: var(--text-soft);
+}
+
+.home-media-btn:hover:not(:disabled) {
+  background: var(--panel-strong);
+  color: var(--text);
+}
+
+.home-media-btn.is-primary {
+  width: 34px;
+  height: 34px;
+  background: var(--panel-strong);
+  color: var(--text);
+}
+
+.home-media-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+/* 小形象：复用收起态 PetFace（scale 2.3，SVG 尺寸 129×78） */
+.island-root[data-theme="dark"] .home-pet .pet-glowable,
+.island-root[data-theme="rouge"] .home-pet .pet-glowable {
+  filter: drop-shadow(0 0 9px rgba(255, 92, 138, 0.55));
+}
+
+.home-pet {
+  width: 150px;
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.home-pet-canvas {
+  width: calc(56px * 2.3);
+  height: calc(34px * 2.3);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* PetFace 输出 56×34 的 SVG，这里只放大显示，不改组件内部逻辑 */
+.home-pet-canvas .pet-face {
+  display: block;
+  flex: none;
+  width: calc(56px * 2.3);
+  height: calc(34px * 2.3);
+}
+
+/* 四动作：2×2，高亮 = 开启态 */
+.home-actions {
+  width: 150px;
+  flex: none;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  grid-template-rows: 1fr 1fr;
+  gap: 6px;
+}
+
+.home-action {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  border-radius: 12px;
+  background: var(--panel);
+  border: 1px solid var(--hairline);
+  color: var(--text-soft);
+  font-size: calc(10px * var(--fs-scale, 1));
+  transition:
+    background 160ms ease,
+    color 160ms ease,
+    border-color 160ms ease;
+}
+
+.home-action:hover:not(:disabled) {
+  background: var(--panel-strong);
+  color: var(--text);
+}
+
+.home-action.is-on {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.home-action.is-on svg {
+  color: var(--accent);
+}
+
+.home-action:disabled {
+  opacity: 0.42;
+  cursor: default;
+}
+
+/* 额度卡在 640 宽下更紧凑，尽量少触发整页缩放 */
+.home-page .agent-grid {
+  gap: 5px;
+}
+
+.home-page .agent-pager {
+  gap: 4px;
+}
+
+.home-page .agent-card {
+  padding: 6px 8px 7px;
+  gap: 4px;
+}
+
+/* ---- 启动器横向条：高 46、图标 44、滚轮横向滚动、点击打开 ---- */
+.launcher-strip {
+  flex: none;
+  height: 46px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 0 2px;
+  scrollbar-width: none;
+}
+
+.launcher-strip::-webkit-scrollbar {
+  display: none;
+}
+
+.launcher-strip-item {
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  background: var(--panel);
+  border: 1px solid var(--hairline);
+  color: var(--text-soft);
+  transition:
+    background 150ms ease,
+    color 150ms ease,
+    border-color 150ms ease;
+}
+
+.launcher-strip-item:hover {
+  background: var(--panel-strong);
+  border-color: var(--accent-soft);
+  color: var(--text);
+}
+
+/* ============================================================
+   消息页：模块磁贴 + 历史 + 页内菜单
+   ============================================================ */
+
+.messages-page {
+  position: relative;
+  gap: 8px;
+  /* 面板高度固定：页面占满内容盒，历史列表在内部滚动（最多 30 行） */
+  height: 100%;
+  min-height: 0;
+}
+
+.msg-head-actions {
+  gap: 4px;
+}
+
+.msg-add {
+  font-weight: 700;
+}
+
+.msg-tiles {
+  display: flex;
+  gap: 8px;
+  height: 84px;
+  flex: none;
+}
+
+.msg-tile {
+  flex: 1 1 0;
+  min-width: 96px;
+  height: 84px;
+  border-radius: 16px;
+  background: var(--panel);
+  border: 1px solid var(--hairline);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  text-align: left;
+  transition:
+    background 150ms ease,
+    border-color 150ms ease;
+}
+
+.msg-tile:hover {
+  background: var(--panel-strong);
+  border-color: var(--accent-soft);
+}
+
+.msg-tiles.is-dense .msg-tile {
+  min-width: 0;
+  padding-inline: 6px;
+}
+
+.msg-tiles.is-dense .msg-tile-head {
+  gap: 4px;
+}
+
+.msg-tiles.is-dense .msg-tile-name {
+  font-size: calc(12px * var(--fs-scale, 1));
+}
+
+.msg-tile-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.msg-tile-icon {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  flex: none;
+  display: grid;
+  place-items: center;
+  color: #fff;
+}
+
+.msg-tile-name {
+  font-size: calc(13px * var(--fs-scale, 1));
+  font-weight: 650;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.msg-tile-foot {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.msg-tile-foot b {
+  font-size: calc(22px * var(--fs-scale, 1));
+  font-weight: 750;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  color: var(--faint);
+}
+
+.msg-tile-foot em {
+  font-style: normal;
+  font-size: calc(10.5px * var(--fs-scale, 1));
+  color: var(--faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.msg-tiles-empty {
+  flex: 1;
+  height: 84px;
+  display: grid;
+  place-items: center;
+  border: 1px dashed var(--hairline);
+  border-radius: 16px;
+  color: var(--faint);
+  font-size: calc(11px * var(--fs-scale, 1));
+}
+
+.msg-history {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  scrollbar-width: thin;
+  scrollbar-color: var(--scroll-thumb, var(--hairline)) transparent;
+}
+
+.msg-history::-webkit-scrollbar {
+  width: 4px;
+}
+
+.msg-history::-webkit-scrollbar-thumb {
+  background: var(--scroll-thumb, var(--hairline));
+  border-radius: 4px;
+}
+
+.msg-history-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 30px;
+  flex: none;
+  padding: 0 8px;
+  border-radius: 8px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.msg-history-row:hover {
+  background: var(--panel);
+}
+
+.msg-history-row.is-read {
+  opacity: 0.6;
+}
+
+.msg-history-row i {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: none;
+}
+
+/* 品牌图标 chip：白底圆角 + 图标四边内缩约 9%。
+   尺寸由组件内联 style 决定（磁贴 30px / 历史行 18px），这里只给默认值。 */
+.msg-brand-chip {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 27%;
+  background: #fafafc;
+  /* 用 inset 阴影代替 border，描边不吃盒模型，图标区保持 100% 尺寸 */
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.11);
+  overflow: hidden;
+}
+
+.msg-brand-chip img {
+  width: 82%;
+  height: 82%;
+  display: block;
+  object-fit: contain;
+  border-radius: 24%;
+  pointer-events: none;
+  -webkit-user-drag: none;
+  user-select: none;
+}
+
+.msg-history-name {
+  width: 52px;
+  flex: none;
+  font-size: calc(12px * var(--fs-scale, 1));
+  font-weight: 600;
+}
+
+.msg-history-desc {
+  flex: 1;
+  min-width: 0;
+  font-size: calc(11.5px * var(--fs-scale, 1));
+  color: var(--text-soft);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.msg-history-time {
+  flex: none;
+  font-size: calc(10.5px * var(--fs-scale, 1));
+  color: var(--faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.msg-history-empty {
+  height: 100%;
+  min-height: 120px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  color: var(--faint);
+  font-size: calc(11px * var(--fs-scale, 1));
+}
+
+.msg-history-empty em {
+  font-style: normal;
+  font-size: calc(9.5px * var(--fs-scale, 1));
+  color: var(--faint);
+  max-width: 420px;
+  text-align: center;
+}
+
+/* 页内菜单（“+” 添加 / 磁贴右键 / 空白右键清空） */
+.msg-menu-backdrop {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+}
+
+.msg-menu {
+  position: absolute;
+  z-index: 21;
+  width: 182px;
+  padding: 5px;
+  border-radius: 12px;
+  background: var(--menu-bg);
+  border: 1px solid var(--glass-edge);
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(24px) saturate(160%);
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  animation: menu-in 0.16s ease;
+}
+
+.msg-menu button {
+  height: 28px;
+  border-radius: 7px;
+  padding: 0 8px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: calc(10px * var(--fs-scale, 1));
+  color: var(--text-soft);
+  text-align: left;
+}
+
+.msg-menu button:hover:not(:disabled) {
+  background: var(--panel-strong);
+  color: var(--text);
+}
+
+.msg-menu button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.msg-menu button i {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: none;
+}
+
+.msg-menu-divider {
+  height: 1px;
+  background: var(--hairline);
+  margin: 3px 4px;
+}
+
+/* 收窄：窗口按 672（面板 640）设计，此断点只用于浏览器预览的窄视口 */
 @media (max-width: 500px) {
   .island-root {
     padding: 6px 8px 12px;
@@ -3638,7 +5689,7 @@ html.island-preview .island::after {
   border-radius: 12px;
   border: 1px solid var(--hairline);
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.035), transparent 55%),
+    linear-gradient(180deg, rgba(var(--ink-rgb, 255, 255, 255), 0.035), transparent 55%),
     var(--panel);
   display: grid;
   grid-template-columns: 31px minmax(0, 1fr) auto;
@@ -3653,9 +5704,9 @@ html.island-preview .island::after {
 }
 
 .shot-launch:hover:not(:disabled) {
-  border-color: rgba(126, 166, 255, 0.34);
+  border-color: rgba(var(--accent-rgb, 126, 166, 255), 0.34);
   background:
-    linear-gradient(180deg, rgba(126, 166, 255, 0.08), transparent 62%),
+    linear-gradient(180deg, rgba(var(--accent-rgb, 126, 166, 255), 0.08), transparent 62%),
     var(--panel-strong);
 }
 
@@ -3664,17 +5715,17 @@ html.island-preview .island::after {
 }
 
 .shot-launch.primary {
-  border-color: rgba(126, 166, 255, 0.34);
+  border-color: rgba(var(--accent-rgb, 126, 166, 255), 0.34);
   background:
-    radial-gradient(circle at 12% 20%, rgba(126, 166, 255, 0.24), transparent 55%),
-    linear-gradient(135deg, rgba(126, 166, 255, 0.17), rgba(192, 168, 255, 0.08));
+    radial-gradient(circle at 12% 20%, rgba(var(--accent-rgb, 126, 166, 255), 0.24), transparent 55%),
+    linear-gradient(135deg, rgba(var(--accent-rgb, 126, 166, 255), 0.17), rgba(var(--accent-2-rgb, 192, 168, 255), 0.08));
 }
 
 .shot-launch.primary:hover:not(:disabled) {
   border-color: rgba(151, 185, 255, 0.55);
   background:
-    radial-gradient(circle at 12% 20%, rgba(126, 166, 255, 0.32), transparent 58%),
-    linear-gradient(135deg, rgba(126, 166, 255, 0.22), rgba(192, 168, 255, 0.11));
+    radial-gradient(circle at 12% 20%, rgba(var(--accent-rgb, 126, 166, 255), 0.32), transparent 58%),
+    linear-gradient(135deg, rgba(var(--accent-rgb, 126, 166, 255), 0.22), rgba(var(--accent-2-rgb, 192, 168, 255), 0.11));
 }
 
 .shot-launch:disabled {
@@ -3699,7 +5750,7 @@ html.island-preview .island::after {
 }
 
 .shot-launch.primary .shot-launch-icon {
-  background: linear-gradient(180deg, rgba(126, 166, 255, 0.3), rgba(94, 124, 238, 0.18));
+  background: linear-gradient(180deg, rgba(var(--accent-rgb, 126, 166, 255), 0.3), rgba(94, 124, 238, 0.18));
   color: #dbe7ff;
   box-shadow: inset 0 0 0 1px rgba(169, 193, 255, 0.18);
 }
@@ -3735,8 +5786,8 @@ html.island-preview .island::after {
   height: 14px;
   padding: 0 4px;
   border-radius: 4px;
-  border: 1px solid rgba(255, 255, 255, 0.07);
-  background: rgba(255, 255, 255, 0.045);
+  border: 1px solid rgba(var(--ink-rgb, 255, 255, 255), 0.07);
+  background: rgba(var(--ink-rgb, 255, 255, 255), 0.045);
   color: var(--faint);
   font-family: inherit;
   font-size: calc(6.8px * var(--fs-scale, 1));
@@ -3785,8 +5836,8 @@ html.island-preview .island::after {
 }
 
 .shot-option select option {
-  background: #121722;
-  color: #e8edf7;
+  background: var(--menu-bg);
+  color: var(--text);
 }
 
 .shot-format {
@@ -3844,7 +5895,7 @@ html.island-preview .island::after {
 
 .shot-toggles button.active {
   color: var(--accent);
-  border-color: rgba(126, 166, 255, 0.3);
+  border-color: rgba(var(--accent-rgb, 126, 166, 255), 0.3);
   background: var(--accent-soft);
 }
 
@@ -3919,7 +5970,7 @@ html.island-preview .island::after {
 
 .shot-history-item:hover {
   background: var(--panel-strong);
-  border-color: rgba(255, 255, 255, 0.12);
+  border-color: rgba(var(--ink-rgb, 255, 255, 255), 0.12);
 }
 
 .shot-history-item.pending-delete {
@@ -3934,7 +5985,7 @@ html.island-preview .island::after {
   overflow: hidden;
   background: #0a0d14;
   flex: none;
-  border: 1px solid rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(var(--ink-rgb, 255, 255, 255), 0.06);
 }
 
 .shot-history-thumb img {
@@ -4009,7 +6060,7 @@ html.island-preview .island::after {
   min-height: 66px;
   padding: 9px 10px;
   border-radius: 10px;
-  border: 1px dashed rgba(255, 255, 255, 0.08);
+  border: 1px dashed rgba(var(--ink-rgb, 255, 255, 255), 0.08);
   display: flex;
   align-items: center;
   gap: 9px;
@@ -4140,7 +6191,7 @@ html.island-preview .island::after {
 .tool-switch button.active {
   background: var(--panel-strong);
   color: var(--text);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  box-shadow: inset 0 1px 0 rgba(var(--ink-rgb, 255, 255, 255), 0.08);
 }
 
 .tool-qr,
@@ -4336,13 +6387,13 @@ html.island-preview .island::after {
 }
 
 .tool-btn.primary {
-  border-color: rgba(126, 166, 255, 0.45);
+  border-color: rgba(var(--accent-rgb, 126, 166, 255), 0.45);
   background: var(--accent-soft);
-  color: #dbe6ff;
+  color: var(--accent-link);
 }
 
 .tool-btn.primary:hover:not(:disabled) {
-  background: rgba(126, 166, 255, 0.28);
+  background: rgba(var(--accent-rgb, 126, 166, 255), 0.28);
 }
 
 .tool-range {
@@ -4548,7 +6599,7 @@ html.island-preview .island::after {
 }
 
 .launch-item.active {
-  border-color: rgba(126, 166, 255, 0.35);
+  border-color: rgba(var(--accent-rgb, 126, 166, 255), 0.35);
   background: var(--accent-soft);
   color: var(--text);
 }
@@ -4566,7 +6617,7 @@ html.island-preview .island::after {
 }
 
 .launch-item.active .launch-icon {
-  background: rgba(126, 166, 255, 0.2);
+  background: rgba(var(--accent-rgb, 126, 166, 255), 0.2);
   color: var(--text);
 }
 
@@ -4701,7 +6752,7 @@ html.island-preview .island::after {
 }
 
 .clip-item.pinned {
-  border-color: rgba(126, 166, 255, 0.28);
+  border-color: rgba(var(--accent-rgb, 126, 166, 255), 0.28);
 }
 .launch-enter {
   flex: none;
@@ -4786,9 +6837,7 @@ html.island-preview .island::after {
   padding: 3px;
   border-radius: 10px;
   border: 1px solid var(--glass-edge);
-  /* 弹层直接压在正文上：--menu-bg 的 0.94 会让下方的「开始录音」按钮透出来，
-     这里单独提到 0.985（列表要比右键菜单更实，否则选项文字和背后的按钮叠在一起） */
-  background: rgba(15, 18, 27, 0.985);
+  background: var(--menu-bg);
   backdrop-filter: blur(18px) saturate(150%);
   box-shadow: 0 16px 34px -14px rgba(0, 0, 0, 0.82);
   scrollbar-width: thin;
@@ -4929,7 +6978,7 @@ html.island-preview .island::after {
   gap: 8px;
   padding: 8px 9px;
   border-radius: 9px;
-  border: 1px solid rgba(126, 166, 255, 0.32);
+  border: 1px solid rgba(var(--accent-rgb, 126, 166, 255), 0.32);
   background: var(--panel);
 }
 
@@ -5229,4 +7278,1091 @@ html.island-preview .island::after {
   color: #ff5d6c;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
+}
+
+
+/* P2-13：收起态 toast 相对胶囊定位（top 边在下方、bottom 边在上方），
+   不再固定落在窗口另一端。 */
+.island-root.is-collapsed[data-edge="top"] .island-toast {
+  top: 62px;
+  bottom: auto;
+}
+
+.island-root.is-collapsed[data-edge="bottom"] .island-toast {
+  top: auto;
+  bottom: 62px;
+}
+
+
+/* ============================================================
+   P4 UI 打磨（ui-reviewer：主页密度/字号、浅色对比度、卡片分层）
+   ============================================================ */
+
+/* ---- 1. 主页密度：fit 0.92+、3 列额度、动作单行、余额独立行 ---- */
+.home-page {
+  gap: 5px;
+}
+
+.home-hero {
+  padding: 0 2px 2px;
+}
+
+.home-weather-glyph {
+  width: 38px;
+  height: 38px;
+}
+
+.home-hero .home-weather-glyph svg {
+  width: 34px;
+  height: 34px;
+}
+
+.home-weather-temp {
+  font-size: calc(23px * var(--fs-scale, 1));
+}
+
+.home-weather-meta {
+  margin-top: 3px;
+  font-size: calc(10.5px * var(--fs-scale, 1));
+}
+
+.home-clock-time {
+  font-size: calc(17px * var(--fs-scale, 1));
+}
+
+.home-main {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: stretch;
+  gap: 8px 10px;
+  height: auto;
+}
+
+.home-media-card {
+  flex: 1 1 42%;
+  min-width: 0;
+  height: 96px;
+  padding: 7px 10px;
+  gap: 9px;
+  border: 0;
+  background: var(--panel);
+  box-shadow: inset 0 1px 0 rgba(var(--ink-rgb, 255, 255, 255), 0.05);
+}
+
+.home-media-cover {
+  width: 52px;
+  height: 52px;
+  border-radius: 12px;
+}
+
+.home-media-main {
+  gap: 3px;
+}
+
+.home-media-title {
+  font-size: calc(13.5px * var(--fs-scale, 1));
+}
+
+.home-media-sub {
+  font-size: calc(11.5px * var(--fs-scale, 1));
+}
+
+.home-media-times {
+  font-size: calc(10px * var(--fs-scale, 1));
+}
+
+.home-media-btn {
+  width: 30px;
+  height: 30px;
+}
+
+.home-media-btn.is-primary {
+  width: 36px;
+  height: 36px;
+}
+
+/* pet 列弹性收缩：媒体正文优先，pet 只占剩余 */
+.home-pet {
+  flex: 1 1 90px;
+  min-width: 90px;
+  width: auto;
+  height: 96px;
+}
+
+.home-pet-canvas {
+  width: calc(56px * 2.15);
+  height: calc(34px * 2.15);
+}
+
+.home-pet-canvas .pet-face {
+  width: calc(56px * 2.15);
+  height: calc(34px * 2.15);
+}
+
+/* 四动作：整行 4 等分，单行、标签 11.5px */
+.home-actions {
+  flex: 1 0 100%;
+  width: auto;
+  height: 50px;
+  display: flex;
+  flex-direction: row;
+  grid-template-columns: none;
+  grid-template-rows: none;
+  gap: 6px;
+}
+
+.home-action {
+  position: relative;
+  flex: 1 1 0;
+  flex-direction: row;
+  gap: 6px;
+  min-width: 0;
+  padding: 0 8px;
+  border: 0;
+  background: transparent;
+  color: var(--text-soft);
+  font-size: calc(11.5px * var(--fs-scale, 1));
+  font-weight: 600;
+}
+
+.home-action:hover:not(:disabled) {
+  background: var(--panel);
+  color: var(--text);
+}
+
+.home-action.is-on {
+  background: var(--accent-soft);
+  border: 0;
+  color: var(--text);
+}
+
+.home-action:disabled {
+  opacity: 0.5;
+}
+
+.home-action-badge {
+  font-style: normal;
+  font-size: calc(9.5px * var(--fs-scale, 1));
+  font-weight: 600;
+  line-height: 1;
+  padding: 2px 4px;
+  border-radius: 4px;
+  background: var(--panel-strong);
+  color: var(--muted);
+}
+
+/* 额度网格：3 列；余额卡独立全宽行；每个订阅卡更紧凑 */
+.agent-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.agent-balance-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: none;
+}
+
+.agent-balance-row .agent-card.balance-card {
+  width: 100%;
+  padding: 8px 12px;
+}
+
+.agent-card {
+  border: 0;
+  background: var(--panel);
+  box-shadow: inset 0 1px 0 rgba(var(--ink-rgb, 255, 255, 255), 0.05);
+  padding: 7px 9px 8px;
+  gap: 4px;
+}
+
+.agent-card.balance-card {
+  grid-column: auto;
+}
+
+.agent-name {
+  font-size: calc(12.5px * var(--fs-scale, 1));
+}
+
+.agent-account {
+  font-size: calc(10.5px * var(--fs-scale, 1));
+  color: var(--text-soft);
+}
+
+.agent-plan,
+.agent-badge {
+  font-size: calc(10.5px * var(--fs-scale, 1));
+}
+
+.quota-row {
+  font-size: calc(11px * var(--fs-scale, 1));
+  gap: 4px;
+}
+
+.quota-label {
+  color: var(--text-soft);
+}
+
+.quota-pct {
+  font-size: calc(11px * var(--fs-scale, 1));
+}
+
+.quota-reset {
+  font-size: calc(10.5px * var(--fs-scale, 1));
+  color: var(--muted);
+}
+
+.quota-list {
+  gap: 4px;
+}
+
+.agent-empty {
+  font-size: calc(10.5px * var(--fs-scale, 1));
+  color: var(--muted);
+}
+
+.balance-label,
+.balance-split {
+  font-size: calc(10.5px * var(--fs-scale, 1));
+  color: var(--text-soft);
+}
+
+.balance-amount {
+  font-size: calc(17px * var(--fs-scale, 1));
+}
+
+.home-section-title {
+  font-size: calc(12px * var(--fs-scale, 1));
+}
+
+.home-section-count {
+  font-size: calc(9.5px * var(--fs-scale, 1));
+}
+
+.home-agent-empty {
+  flex: none;
+  padding: 14px 10px;
+  border-radius: 12px;
+  background: var(--panel);
+  color: var(--muted);
+  font-size: calc(11px * var(--fs-scale, 1));
+  text-align: center;
+}
+
+/* 翻页条：视觉仍是细横条，但点击区 ≥24×8 */
+.agent-page-dots {
+  height: 9px;
+  gap: 2px;
+}
+
+.agent-page-bar {
+  /* 页面 fit 0.977 后仍要保证实际命中区 ≥24×8，所以按 26×9 设计 */
+  width: 26px;
+  height: 9px;
+  background: transparent;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+}
+
+.agent-page-bar::before {
+  content: "";
+  display: block;
+  width: 100%;
+  height: 2px;
+  border-radius: 999px;
+  background: rgba(var(--ink-rgb, 255, 255, 255), 0.22);
+  transition:
+    background 220ms ease,
+    height 220ms ease;
+}
+
+.agent-page-bar:hover::before {
+  background: rgba(var(--ink-rgb, 255, 255, 255), 0.55);
+}
+
+.agent-page-bar.active {
+  width: 34px;
+  background: transparent;
+}
+
+.agent-page-bar.active::before {
+  height: 3px;
+  background: rgba(var(--ink-rgb, 255, 255, 255), 0.94);
+}
+
+/* 启动器：去掉常驻边框/底色，hover 才出现 */
+.launcher-strip {
+  margin-top: auto;
+}
+
+.launcher-strip-item {
+  border: 0;
+  background: transparent;
+  color: var(--text-soft);
+}
+
+.launcher-strip-item:hover {
+  background: var(--panel);
+  border: 0;
+  color: var(--text);
+}
+
+/* 磁贴：去掉常驻 1px 描边，靠明度分层 */
+.msg-tile {
+  border: 0;
+  background: var(--panel);
+  box-shadow: inset 0 1px 0 rgba(var(--ink-rgb, 255, 255, 255), 0.05);
+}
+
+.msg-tile:hover {
+  background: var(--panel-strong);
+  border: 0;
+}
+
+/* ---- 3. music：暂停键常驻圆形底；律动条降透明 ---- */
+.compact-play {
+  background: var(--panel-strong);
+  color: var(--text);
+  opacity: 0.92;
+}
+
+.compact-play:hover {
+  background: var(--panel);
+}
+
+.compact-play:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.compact-bars i {
+  opacity: 0.62;
+}
+
+.compact-bars:not(.is-playing) i {
+  opacity: 0.28;
+}
+
+/* P4：其余页面的卡片/磁贴同样去掉常驻 1px 描边，靠面板明度与内高光分层；
+   输入框、选择器、开关等控件仍保留边框（不属于卡片）。 */
+.media-strip,
+.stock-detail,
+.stock-market,
+.clip-item,
+.shot-history-item,
+.tool-switch,
+.snip-item,
+.meet-item,
+.settings-block,
+.quick-action,
+.mini-icon-btn,
+.mini-text-btn,
+.launcher-icon {
+  border: 0;
+}
+
+.quick-action,
+.mini-icon-btn,
+.mini-text-btn,
+.launcher-icon {
+  background: transparent;
+}
+
+.quick-action:hover,
+.mini-icon-btn:hover,
+.mini-text-btn:hover,
+.launcher-icon:hover {
+  background: var(--panel);
+}
+
+/* 末页只有 1–2 张额度卡时，卡片按剩余列宽铺满，避免出现空整格 */
+.agent-page.is-two {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.agent-page.is-one {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+/* ============================================================
+   P4 液态外壳：780×632 画布 + 单一外轮廓（贴边融合 / 液桥 / 残滴）
+   旧的 .island 背景、描边、mask 全部退役；玻璃在 .liquid-glass 上按
+   clip-path 裁剪，描边走 SVG 同一条 path，避免内部接缝线。
+   ============================================================ */
+
+html,
+body,
+#root {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  background: transparent;
+}
+
+.island-root {
+  width: 780px;
+  height: 632px;
+  min-width: 780px;
+  min-height: 632px;
+  display: block;
+  padding: 0;
+  overflow: hidden;
+  position: relative;
+  pointer-events: none;
+}
+
+.island-root.edge-top,
+.island-root.edge-bottom,
+.island-root.edge-left,
+.island-root.edge-right {
+  padding: 0;
+  align-items: initial;
+  justify-content: initial;
+}
+
+/* ---- 玻璃层（全画布，clip-path 由 liquid.ts 每帧写入） ---- */
+.liquid-glass {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  background: rgba(var(--tint-rgb), var(--glass-base-alpha, 0));
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.liquid-glass,
+.liquid-content-clip,
+.liquid-outline {
+  clip-path: var(--liquid-clip, inset(50%));
+}
+
+.liquid-backdrops {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  isolation: isolate;
+  pointer-events: none;
+  opacity: var(--glass-backdrop-opacity, calc(0.93 - 0.3 * var(--glass-transmission, 0)));
+}
+
+.glass-refraction,
+.island-backdrop {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+}
+
+.glass-refraction.is-ready,
+.island-backdrop[src] {
+  opacity: 1;
+}
+
+.island-backdrop {
+  object-fit: fill;
+  filter: blur(5px) saturate(140%);
+}
+
+.liquid-tint {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  background: linear-gradient(
+    var(--glass-tint-angle, 180deg) in srgb,
+    var(--glass-overlay-top, rgb(var(--tint-rgb))) var(--glass-tint-start, 0%),
+    var(--glass-overlay-bottom, var(--glass-direct-bottom, rgb(var(--tint-rgb)))) var(--glass-tint-end, 100%)
+  );
+  opacity: var(--glass-overlay-alpha, calc(var(--glass-direct-alpha, 0.67) * (1 - 0.75 * var(--glass-transmission, 0))));
+  pointer-events: none;
+}
+
+/* 对齐底板缺失时由系统合成正后方的桌面，玻璃上只有一层半透明染色。 */
+.liquid-glass:has(.glass-refraction.is-ready, .island-backdrop[src]) {
+  --glass-base-alpha: calc(1 - 0.85 * var(--glass-transmission, 0));
+  --glass-overlay-top: var(--glass-tint-top);
+  --glass-overlay-bottom: var(--glass-tint-bottom);
+  --glass-overlay-alpha: calc(var(--glass-tint-weight, 1) * var(--glass-base-alpha));
+}
+
+.liquid-glass:has(.glass-refraction.is-ready) {
+  --glass-backdrop-opacity: calc(1 - 0.25 * var(--glass-transmission, 0));
+  --glass-tint-weight: 0.64;
+}
+
+.island-root[data-theme="dark"] .liquid-glass:has(.glass-refraction.is-ready) {
+  --glass-tint-weight: 0.94;
+}
+
+.liquid-gloss {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  background: linear-gradient(
+    rgba(255, 255, 255, var(--glass-gloss-top)) var(--liquid-body-top, 0%),
+    rgba(255, 255, 255, 0) calc((var(--liquid-body-top, 0%) + var(--liquid-body-bottom, 100%)) / 2),
+    rgba(255, 255, 255, calc(10 / 255)) var(--liquid-body-bottom, 100%)
+  );
+  pointer-events: none;
+}
+
+/* ---- 主题高光和流光裁在液态轮廓内部 ---- */
+.liquid-outline {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  width: 780px;
+  height: 632px;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.liquid-stroke-rim,
+.liquid-stroke-flow {
+  fill: none;
+  stroke-linejoin: round;
+}
+
+.liquid-stroke-rim {
+  stroke: url(#liquid-rim-gradient) var(--glass-highlight);
+  stroke-width: 2;
+}
+
+.liquid-rim-top {
+  stop-color: var(--glass-highlight);
+}
+
+.liquid-rim-bottom {
+  stop-color: var(--glass-rim-bottom);
+}
+
+.liquid-stroke-flow {
+  stroke: url(#liquid-flow-gradient);
+  stroke-width: 2;
+  transition: opacity 120ms ease;
+}
+
+.liquid-flow-center {
+  stop-color: rgba(255, 255, 255, var(--flow-alpha));
+}
+
+.island-root.is-open .liquid-stroke-flow,
+.island-root.is-dragging .liquid-stroke-flow {
+  opacity: 0;
+}
+
+/* ---- 内容壳：只负责内容裁切与指针事件；背景/描边/阴影全部在 liquid 层 ---- */
+.liquid-content-clip {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  pointer-events: none;
+}
+
+.liquid-body {
+  position: absolute;
+  left: 0;
+  top: 0;
+  z-index: 3;
+  width: 0;
+  height: 0;
+  pointer-events: none;
+  will-change: transform;
+}
+
+.island {
+  position: relative;
+  display: block;
+  margin: 0 !important;
+  padding: 0;
+  width: auto;
+  height: auto;
+  max-width: none;
+  min-width: 0;
+  min-height: 0;
+  background: none !important;
+  border: 0 !important;
+  box-shadow: none !important;
+  border-radius: var(--body-r-tl, 0) var(--body-r-tr, 0) var(--body-r-br, 0)
+    var(--body-r-bl, 0);
+  overflow: hidden;
+  isolation: isolate;
+  transform: none !important;
+  pointer-events: auto;
+  transition: none;
+}
+
+.island::before,
+.island::after {
+  content: none !important;
+  display: none !important;
+}
+
+.island-root[data-edge="top"] .island,
+.island-root[data-edge="bottom"] .island,
+.island-root[data-edge="left"] .island,
+.island-root[data-edge="right"] .island {
+  width: auto;
+  height: auto;
+  min-width: 0;
+  min-height: 0;
+  margin: 0 !important;
+  border-radius: var(--body-r-tl, 0) var(--body-r-tr, 0) var(--body-r-br, 0)
+    var(--body-r-bl, 0);
+}
+
+.island-root.is-open .island {
+  width: auto;
+  height: auto;
+}
+
+.island-root.edge-left .island.open,
+.island-root.edge-right .island.open,
+.island-root[data-edge="bottom"] .island.open {
+  width: auto;
+  height: auto;
+  margin: 0 !important;
+}
+
+.island-root.is-dragging .island {
+  transition: none;
+  cursor: grabbing;
+}
+
+/* 旧版内凹 mask / 流光 / 外投影全部停用（新外轮廓已包含这些语义） */
+.island-root .island,
+.island-root.is-collapsed .island {
+  -webkit-mask-image: none !important;
+  mask-image: none !important;
+  animation: none !important;
+}
+
+.island-flow {
+  display: none !important;
+}
+
+.liquid-stage .island .island-panel {
+  opacity: 0;
+  pointer-events: none;
+  visibility: hidden;
+  transition: none;
+}
+
+.liquid-stage .island.open.panel-ready .island-panel {
+  opacity: var(--panel-opacity, 1);
+  pointer-events: auto;
+  visibility: visible;
+}
+
+.liquid-stage .island .pill-wrap {
+  opacity: var(--compact-opacity, 1);
+  transition: none;
+}
+
+/* 贴边挤压和吸附过冲共享当前帧的内容变换。 */
+.island-root.is-collapsed .pill-wrap,
+.island-root.is-collapsed.is-dragging .pill-wrap {
+  transform: translate(var(--poke-x, 0px), var(--poke-y, 0px))
+    scale(var(--poke-sx, 1), var(--poke-sy, 1));
+  transform-origin: 50% 50%;
+}
+
+/* 旧的 root flex 定位不参与新画布；面板仍按 body 宽度居中 */
+.island-root.edge-top.is-open,
+.island-root.edge-bottom.is-open,
+.island-root.edge-left.is-open,
+.island-root.edge-right.is-open {
+  padding: 0;
+  align-items: initial;
+  justify-content: initial;
+}
+
+/* 面板在 body 内按 640-2 排版；top 居中锚定沿用原来的 left:50% 规则 */
+.island-root[data-edge="left"] .island-panel,
+.island-root[data-edge="right"] .island-panel {
+  height: var(--panel-h, 492px);
+}
+
+.island-root[data-edge="bottom"] .island-panel {
+  height: var(--panel-h, 492px);
+}
+
+.liquid-stage {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+}
+
+/* clip-path 也裁剪指针命中区，边缘液脚可以和本体一样响应。 */
+.liquid-stage .liquid-glass {
+  pointer-events: auto;
+}
+
+.island-root.is-dragging .liquid-glass {
+  cursor: grabbing;
+}
+
+.liquid-stage .liquid-outline,
+.liquid-stage .liquid-body {
+  pointer-events: none;
+}
+
+.liquid-stage .island {
+  pointer-events: auto;
+}
+
+/* 新外壳下内容裁切必须跟 body 四角一致（旧 .island.open / edge-* 的
+   26/24px 圆角会盖掉贴边侧直角）。 */
+.island-root .island,
+.island-root .island.open,
+.island-root .island.collapsed,
+.island-root.edge-left .island,
+.island-root.edge-right .island,
+.island-root.edge-left .island.open,
+.island-root.edge-right .island.open {
+  border-radius: var(--body-r-tl, 0) var(--body-r-tr, 0) var(--body-r-br, 0)
+    var(--body-r-bl, 0) !important;
+}
+
+
+/* 根节点为 pointer-events:none（透明画布不吃鼠标），菜单/遮罩/toast
+   必须显式恢复命中，否则真实鼠标点不到菜单项。 */
+.island-root .context-backdrop,
+.island-root .island-context-menu,
+.island-root .island-context-menu *,
+.island-root .island-toast {
+  pointer-events: auto;
+}
+
+/* ============================================================
+   新消息贴边呼吸灯（岛端先动）
+
+   元素在 .island 内部绝对定位：pointer-events:none、不参与布局，所以既
+   不影响胶囊点击，也不会撑大 .island 的外接矩形（island_set_hover_rect
+   按 .island 的 bounding rect 上报）。.island 自带 overflow:hidden 与
+   border-radius，光带天然被裁到胶囊圆角内，方向跟着 config.edge 走。
+   - 厚度：本体厚度 × 0.55，夹到 [10, 34]px
+   - 剖面：离吸附边 0/7/17/30/52/100% 的 α = 1/.92/.55/.26/.09/0
+   - 0.5Hz 呼吸与 450ms 起 / 1100ms 收的 smoothstep 包络由 IslandApp 的
+     rAF 写 opacity（notifyPulse.ts 的 notifyPulseIntensity），这里只管
+     几何与渐变。
+   ============================================================ */
+
+.island .notify-pulse {
+  position: absolute;
+  z-index: 1;
+  display: block;
+  pointer-events: none;
+  opacity: 0;
+  background-repeat: no-repeat;
+  /* 颜色由 handleNotify 按来源 kind 写到元素 style（浅色品牌色 / accent） */
+  --notify-pulse-color: var(--accent, #8fd3ff);
+  /* 横向胶囊本体高度；竖向胶囊在下面的 edge 规则里换成 --liquid-w。
+     注意 CSS clamp 的参数顺序是 (min, value, max)，与参考项目 Python 的
+     clamp(value, lo, hi) 不同。 */
+  --notify-pulse-band: clamp(10px, calc(0.55 * var(--liquid-h, 54px)), 34px);
+  --notify-pulse-stops:
+    var(--notify-pulse-color) 0%,
+    color-mix(in srgb, var(--notify-pulse-color) 92%, transparent) 7%,
+    color-mix(in srgb, var(--notify-pulse-color) 55%, transparent) 17%,
+    color-mix(in srgb, var(--notify-pulse-color) 26%, transparent) 30%,
+    color-mix(in srgb, var(--notify-pulse-color) 9%, transparent) 52%,
+    transparent 100%;
+  background-image: linear-gradient(
+    var(--notify-pulse-dir, to bottom),
+    var(--notify-pulse-stops)
+  );
+}
+
+/* 横向胶囊（贴屏幕上下边）：吸附边一条横向光带 */
+.island-root[data-edge="top"] .notify-pulse,
+.island-root[data-edge="bottom"] .notify-pulse {
+  left: 0;
+  right: 0;
+  height: var(--notify-pulse-band);
+}
+
+.island-root[data-edge="top"] .notify-pulse {
+  top: 0;
+  --notify-pulse-dir: to bottom;
+}
+
+.island-root[data-edge="bottom"] .notify-pulse {
+  bottom: 0;
+  --notify-pulse-dir: to top;
+}
+
+/* 竖向胶囊（贴屏幕左右边）：厚度按本体宽度算，光带沿贴边的侧边往内衰减 */
+.island-root[data-edge="left"] .notify-pulse,
+.island-root[data-edge="right"] .notify-pulse {
+  top: 0;
+  bottom: 0;
+  width: var(--notify-pulse-band);
+  --notify-pulse-band: clamp(10px, calc(0.55 * var(--liquid-w, 48px)), 34px);
+}
+
+.island-root[data-edge="left"] .notify-pulse {
+  left: 0;
+  --notify-pulse-dir: to right;
+}
+
+.island-root[data-edge="right"] .notify-pulse {
+  right: 0;
+  --notify-pulse-dir: to left;
+}
+
+/* 展开面板接管胶囊时兜底隐藏（JS 在展开时也会停掉呼吸灯）。 */
+.island-root.is-open .notify-pulse {
+  opacity: 0 !important;
+}
+
+
+/* ============================================================
+   实时字幕：收起态两行字幕层 + 翻译页字幕历史 + 主页开关
+   （收起态胶囊：上日文 12px/0.62、下中文 15px/加粗；最后一句后 7 秒回原视图）
+   ============================================================ */
+
+/* 主页四动作的「聆听中」小标签：强调色底，与「未上线」灰底区分 */
+.home-action-badge.is-live {
+  background: var(--accent);
+  color: var(--accent-fg);
+}
+
+/* ---- 收起态字幕层：出现时覆盖 rings / clock / pet / music（原内容不渲染） ---- */
+@keyframes compact-live-in {
+  from {
+    opacity: 0;
+    transform: translateY(2px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.compact-live {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+  width: 100%;
+  height: 100%;
+  padding: 0 18px;
+  overflow: hidden;
+  /* 280ms 淡入：从音乐/时间/小形象切到字幕时不要硬切 */
+  animation: compact-live-in 280ms ease both;
+}
+
+.compact-live-jp,
+.compact-live-zh {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  white-space: nowrap;
+  text-align: center;
+  text-overflow: clip;
+  line-height: 1.3;
+}
+
+.compact-live-jp {
+  font-size: calc(12px * var(--fs-scale, 1));
+  font-weight: 400;
+  color: rgba(var(--ink-rgb), 0.62);
+}
+
+.compact-live-zh {
+  font-size: calc(15px * var(--fs-scale, 1));
+  font-weight: 700;
+  color: var(--text);
+}
+
+/* 竖胶囊（48 宽）放不下两行字幕：即使有字幕也保持原视图 */
+.compact-surface.is-vertical .compact-live {
+  display: none;
+}
+
+/* ---- 翻译页：实时字幕区块（翻译表单之后） ---- */
+.live-panel {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 10px;
+  border-top: 1px solid var(--hairline);
+}
+
+.live-panel-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.live-panel-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: none;
+  color: var(--text-soft);
+  font-size: calc(12px * var(--fs-scale, 1));
+  font-weight: 650;
+}
+
+.live-panel-title svg {
+  color: var(--accent);
+}
+
+.live-panel-state {
+  flex: 1;
+  min-width: 0;
+  color: var(--muted);
+  font-size: calc(11px * var(--fs-scale, 1));
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.live-panel-state.is-error {
+  color: var(--low);
+}
+
+.live-toggle {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.live-toggle.is-on {
+  color: var(--accent);
+}
+
+/* 电平条：宽度 = level × 100%；未聆听时压暗但仍保留位置，避免行高跳动 */
+.live-level {
+  flex: none;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--panel-strong);
+  overflow: hidden;
+}
+
+.live-level i {
+  display: block;
+  height: 100%;
+  width: 0;
+  border-radius: 2px;
+  background: var(--accent);
+  opacity: 0.35;
+  transition: width 120ms linear, opacity 160ms ease;
+}
+
+.live-level.is-active i {
+  opacity: 1;
+}
+
+/* 字幕历史：定高内部滚动，最新在底部；看历史时浮出「回到最新」 */
+.live-history-wrap {
+  position: relative;
+  flex: none;
+  height: 128px;
+}
+
+.live-history {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  height: 100%;
+  padding: 7px 10px;
+  overflow-y: auto;
+  border: 1px solid var(--hairline);
+  border-radius: 12px;
+  background: var(--input);
+  scrollbar-width: thin;
+  scrollbar-color: var(--hairline) transparent;
+}
+
+.live-history::-webkit-scrollbar {
+  width: 6px;
+}
+
+.live-history::-webkit-scrollbar-thumb {
+  border-radius: 3px;
+  background: var(--hairline);
+}
+
+.live-line {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  flex: none;
+}
+
+.live-line-jp {
+  color: var(--text-soft);
+  font-size: calc(12px * var(--fs-scale, 1));
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.live-line-zh {
+  color: var(--text);
+  font-size: calc(13.5px * var(--fs-scale, 1));
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+/* 草稿行：日文淡、中文 0.8 透明；定稿行正常 */
+.live-line.is-draft .live-line-jp {
+  color: var(--faint);
+}
+
+.live-line.is-draft .live-line-zh {
+  opacity: 0.8;
+}
+
+.live-empty {
+  margin: auto;
+  color: var(--faint);
+  font-size: calc(11.5px * var(--fs-scale, 1));
+  text-align: center;
+}
+
+.live-jump {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 9px;
+  border: 1px solid var(--hairline);
+  border-radius: 11px;
+  background: var(--panel-strong);
+  color: var(--text);
+  font-size: calc(10.5px * var(--fs-scale, 1));
+  font-weight: 600;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.22);
+}
+
+.live-jump:hover {
+  background: var(--accent-soft);
+}
+
+.live-panel-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.live-panel-count {
+  color: var(--faint);
+  font-size: calc(10.5px * var(--fs-scale, 1));
 }

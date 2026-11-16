@@ -1241,23 +1241,23 @@ pub fn reinject_if_theme_base_changed(handle: AppHandle) {
                 // （ZCode 未运行时）再试。手动安装路径有确认文案，不受影响
                 if app.running() {
                     eprintln!(
-                        "[zbar-agent-theme] 检测到 ZCode 正在运行，已跳过自动重注入，将在下次启动重试：{}",
+                        "[agenthud-agent-theme] 检测到 ZCode 正在运行，已跳过自动重注入，将在下次启动重试：{}",
                         app.display_name()
                     );
                     continue;
                 }
                 eprintln!(
-                    "[zbar-agent-theme] 检测到数据目录变化（asar 注入引用指向旧目录），开始强制重注入：{}",
+                    "[agenthud-agent-theme] 检测到数据目录变化（asar 注入引用指向旧目录），开始强制重注入：{}",
                     app.display_name()
                 );
                 match install_impl(&handle, app.id(), None) {
                     Ok(()) => eprintln!(
-                        "[zbar-agent-theme] 数据目录变化后的强制重注入完成：{}",
+                        "[agenthud-agent-theme] 数据目录变化后的强制重注入完成：{}",
                         app.display_name()
                     ),
                     Err(e) => {
                         eprintln!(
-                            "[zbar-agent-theme] 数据目录变化后的强制重注入失败（下次启动自动重试）：{e}"
+                            "[agenthud-agent-theme] 数据目录变化后的强制重注入失败（下次启动自动重试）：{e}"
                         );
                         // 失败路径 install_impl 会把 state 复位为未安装，
                         // 重注入的重试条件随之消失；而失败路径上 asar 要么
@@ -1288,7 +1288,7 @@ pub fn reinject_if_theme_base_changed(handle: AppHandle) {
             }
         });
     if let Err(e) = spawned {
-        eprintln!("[zbar-agent-theme] 强制重注入线程启动失败（下次启动重试）: {e}");
+        eprintln!("[agenthud-agent-theme] 强制重注入线程启动失败（下次启动重试）: {e}");
     }
 }
 
@@ -1536,7 +1536,7 @@ fn install_steps(
     // （pet.json）为 custom:<id> 时重新写 pet-custom.js（失败不阻断
     // 安装，注入版壳读不到资产时宠物暂隐，下次保存参数会重试）
     if let Err(e) = crate::pets::sync_theme_custom_pet() {
-        eprintln!("[zbar-agent-theme] 安装后同步自定义宠物物化失败: {e}");
+        eprintln!("[agenthud-agent-theme] 安装后同步自定义宠物物化失败: {e}");
     }
     let index_html = staging.join(app.renderer_entry_rel());
     if !index_html.is_file() {
@@ -2006,7 +2006,7 @@ pub async fn set_agent_theme_params(
         // 内建形象，下次保存参数会重试）
         if app_id == "zcode" {
             if let Err(e) = crate::pets::sync_theme_custom_pet() {
-                eprintln!("[zbar-agent-theme] 同步自定义宠物物化失败: {e}");
+                eprintln!("[agenthud-agent-theme] 同步自定义宠物物化失败: {e}");
             }
         }
         Ok(())

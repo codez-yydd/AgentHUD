@@ -268,7 +268,7 @@ pub fn start(app: AppHandle) {
             let mut clip = match arboard::Clipboard::new() {
                 Ok(c) => c,
                 Err(e) => {
-                    eprintln!("[zbar-island] 剪贴板不可用: {e}");
+                    eprintln!("[agenthud-island] 剪贴板不可用: {e}");
                     return;
                 }
             };

@@ -425,7 +425,7 @@ pub async fn set_pet_config(config: PetConfig, app: AppHandle) -> Result<PetConf
     // 热重载生效）。失败静默不阻断配置保存（与 mod.rs 的
     // set_agent_theme_params 同口径），下次保存或皮肤页状态轮询重试
     if let Err(e) = crate::pets::sync_theme_custom_pet() {
-        eprintln!("[zbar-pet] 保存配置后同步注入版宠物渲染失败: {e}");
+        eprintln!("[agenthud-pet] 保存配置后同步注入版宠物渲染失败: {e}");
     }
 
     // 窗口创建/尺寸同步/关闭全部投递主线程事件循环执行
@@ -514,7 +514,7 @@ pub fn start_if_enabled(app: &AppHandle) {
         return;
     }
     if let Err(e) = ensure_pet_window(app, &cfg) {
-        eprintln!("[zbar-pet] 恢复宠物窗口失败: {e}");
+        eprintln!("[agenthud-pet] 恢复宠物窗口失败: {e}");
         return;
     }
     start_feed(app.clone());

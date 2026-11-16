@@ -1,0 +1,15 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "island-settings",
+  "description": "Capability for the standalone dynamic-island settings window (created lazily by Rust, see island_settings_window.rs; custom commands like open_island_settings_window / island_settings_doc are not ACL-gated). The window is a 920x660 transparent frameless card whose 64px title bar is drawn by the page: start-dragging backs the drag-anywhere header, allow-hide backs the close button / Esc path (island_settings_window_hide is a custom command, the permission is the fallback when the frontend hides the window directly), allow-close is kept for the lib.rs close=hide handler. dialog open/save back the settings import/export pickers and path browse buttons. opener backs the About page's repository / issues / license links (openUrl, with a window.open fallback outside Tauri). No minimize/maximize here: this page has no such buttons.",
+  "windows": ["island-settings"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-start-dragging",
+    "core:window:allow-hide",
+    "core:window:allow-close",
+    "dialog:allow-open",
+    "dialog:allow-save",
+    "opener:default"
+  ]
+}

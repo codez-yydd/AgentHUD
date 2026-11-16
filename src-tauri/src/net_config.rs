@@ -39,7 +39,7 @@ pub fn load_proxy_config() -> Result<ProxyConfig, String> {
     }
     let data = fs::read_to_string(&path).map_err(|e| format!("读取代理配置失败: {e}"))?;
     serde_json::from_str::<ProxyConfig>(&data).or_else(|e| {
-        eprintln!("[zbar-net] 代理配置文件损坏，回退默认直连（重新保存即可覆盖修复）: {e}");
+        eprintln!("[agenthud-net] 代理配置文件损坏，回退默认直连（重新保存即可覆盖修复）: {e}");
         Ok(ProxyConfig::default())
     })
 }

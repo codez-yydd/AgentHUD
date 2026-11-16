@@ -64,7 +64,7 @@ fn load_from(path: &Path) -> Store {
             store
         }
         Err(error) => {
-            eprintln!("[zbar-snippets] 片段文件无法解析，按空库处理: {error}");
+            eprintln!("[agenthud-snippets] 片段文件无法解析，按空库处理: {error}");
             Store::empty()
         }
     }

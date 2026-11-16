@@ -141,7 +141,7 @@ fn schedule_idle_destroy(app: &AppHandle) {
                     let last = LAST_MENU_ACTIVITY_MS.load(Ordering::Relaxed);
                     if now_ms().saturating_sub(last) >= IDLE_DESTROY_DELAY_MS {
                         let _ = win.destroy();
-                        eprintln!("[zbar-tray-menu] 菜单窗口空闲超时，已销毁释放 WebView");
+                        eprintln!("[agenthud-tray-menu] 菜单窗口空闲超时，已销毁释放 WebView");
                     }
                 }
             }
@@ -243,7 +243,7 @@ pub(crate) fn ensure_tray_menu_window(app: &AppHandle) -> Result<(), String> {
 /// 建窗合法上下文。
 pub(crate) fn show_tray_menu(app: &AppHandle, click_pos: (f64, f64)) {
     if let Err(e) = ensure_tray_menu_window(app) {
-        eprintln!("[zbar-tray-menu] {e}");
+        eprintln!("[agenthud-tray-menu] {e}");
         return;
     }
     let Some(win) = app.get_webview_window(TRAY_MENU_WINDOW_LABEL) else {
@@ -523,7 +523,7 @@ pub fn tray_menu_action(app: AppHandle, action: String) -> Result<(), String> {
         // 打开主窗口（默认停留在上次页面）
         "open-main" => {
             if let Err(e) = crate::main_window::open_main_window_on_main_thread(&app, None) {
-                eprintln!("[zbar-tray-menu] 打开主窗口失败: {e}");
+                eprintln!("[agenthud-tray-menu] 打开主窗口失败: {e}");
             }
         }
         // 主窗口定向页：白名单见 main_window.rs DASHBOARD_PAGES
@@ -531,21 +531,21 @@ pub fn tray_menu_action(app: AppHandle, action: String) -> Result<(), String> {
             if let Err(e) =
                 crate::main_window::open_main_window_on_main_thread(&app, Some("logs"))
             {
-                eprintln!("[zbar-tray-menu] 打开请求日志页失败: {e}");
+                eprintln!("[agenthud-tray-menu] 打开请求日志页失败: {e}");
             }
         }
         "open-main-pricing" => {
             if let Err(e) =
                 crate::main_window::open_main_window_on_main_thread(&app, Some("pricing"))
             {
-                eprintln!("[zbar-tray-menu] 打开定价页失败: {e}");
+                eprintln!("[agenthud-tray-menu] 打开定价页失败: {e}");
             }
         }
         "open-main-settings" => {
             if let Err(e) =
                 crate::main_window::open_main_window_on_main_thread(&app, Some("settings"))
             {
-                eprintln!("[zbar-tray-menu] 打开设置页失败: {e}");
+                eprintln!("[agenthud-tray-menu] 打开设置页失败: {e}");
             }
         }
         // 悬浮面板：show_tray_menu 弹出前已把可见 panel 收起，这里的
@@ -555,7 +555,7 @@ pub fn tray_menu_action(app: AppHandle, action: String) -> Result<(), String> {
         // 灵动岛开关：与面板顶部 HUD 按钮同源（内部状态库）
         "hud-toggle" => {
             if let Err(e) = crate::island::toggle_from_tray(&app) {
-                eprintln!("[zbar-tray-menu] 切换灵动岛失败: {e}");
+                eprintln!("[agenthud-tray-menu] 切换灵动岛失败: {e}");
                 return Err(format!("切换灵动岛失败: {e}"));
             }
         }

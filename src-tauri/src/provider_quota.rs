@@ -141,7 +141,7 @@ pub(crate) fn quota_http_agent_timeout(secs: u64) -> ureq::Agent {
     if let Some(url) = crate::codex::resolve_proxy() {
         match ureq::Proxy::new(&url) {
             Ok(p) => builder = builder.proxy(p),
-            Err(e) => eprintln!("[zbar-quota] 代理地址无效（改为直连）: {url} ({e})"),
+            Err(e) => eprintln!("[agenthud-quota] 代理地址无效（改为直连）: {url} ({e})"),
         }
     }
     builder.build()
@@ -274,7 +274,7 @@ pub(crate) fn query_provider_quota(
             provider_credentials::record_check(provider, &entry.credential_id, status, message)
         {
             eprintln!(
-                "[zbar-quota] 回写 {provider} 凭证 {} 校验状态失败: {e}",
+                "[agenthud-quota] 回写 {provider} 凭证 {} 校验状态失败: {e}",
                 entry.credential_id
             );
         }

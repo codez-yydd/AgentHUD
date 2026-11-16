@@ -1109,7 +1109,7 @@ fn export_once(
             let n = FEED_FAIL_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
             if n % FEED_FAIL_LOG_EVERY == 0 {
                 eprintln!(
-                    "[zbar-usage-feed] 导出已连续失败 {n} 轮（每 {INTERVAL_MS}ms 重试）: {e}"
+                    "[agenthud-usage-feed] 导出已连续失败 {n} 轮（每 {INTERVAL_MS}ms 重试）: {e}"
                 );
             }
         }

@@ -536,14 +536,14 @@ where
         if let Err(e) = import(&mut tx, path) {
             // 丢弃事务（循环体末尾 drop）→ 本文件已写行整体回滚
             eprintln!(
-                "[zbar-codex] {fail_log_prefix} {} 失败（已回滚，下次重试）: {e}",
+                "[agenthud-codex] {fail_log_prefix} {} 失败（已回滚，下次重试）: {e}",
                 path.display()
             );
             continue;
         }
         if let Err(e) = tx.commit() {
             eprintln!(
-                "[zbar-codex] 提交导入事务失败（{}，下次重试）: {e}",
+                "[agenthud-codex] 提交导入事务失败（{}，下次重试）: {e}",
                 path.display()
             );
         }
@@ -629,7 +629,7 @@ pub fn import_incremental_force() -> Result<(), String> {
 
     // 存量会话的项目维度回填（节流 + 每批限量，幂等说明见函数注释）
     if let Err(e) = backfill_session_meta_locked(&mut conn) {
-        eprintln!("[zbar-codex] 会话项目维度回填失败（下次重试）: {e}");
+        eprintln!("[agenthud-codex] 会话项目维度回填失败（下次重试）: {e}");
     }
     Ok(())
 }
@@ -2128,7 +2128,7 @@ pub fn fetch_live_rate_limits_with_freshness(
                 }
                 // 超时（leader 意外挂死）：放弃等待，本线程直接请求
                 //（退化为无 single-flight 的旧行为，多发一次无害）
-                eprintln!("[zbar-codex] 实时额度在途请求等待超时，本线程改为直接请求");
+                eprintln!("[agenthud-codex] 实时额度在途请求等待超时，本线程改为直接请求");
             }
             *inflight = true;
         }
@@ -2155,7 +2155,7 @@ fn fetch_live_rate_limits_uncached() -> Result<Option<CodexRateLimits>, String> 
     if let Some(url) = resolve_proxy() {
         match ureq::Proxy::new(&url) {
             Ok(p) => builder = builder.proxy(p),
-            Err(e) => eprintln!("[zbar-codex] 代理地址无效（改为直连）: {url} ({e})"),
+            Err(e) => eprintln!("[agenthud-codex] 代理地址无效（改为直连）: {url} ({e})"),
         }
     }
     let agent = builder.build();
@@ -2224,7 +2224,7 @@ pub struct CodexDebugInfo {
 /// 恰恰要靠这些字段定位问题。诊断必须真实执行导入（绕过节流）。
 pub fn debug_info() -> Result<CodexDebugInfo, String> {
     if let Err(e) = import_incremental_force() {
-        eprintln!("[zbar-codex] 诊断时增量导入失败: {e}");
+        eprintln!("[agenthud-codex] 诊断时增量导入失败: {e}");
     }
 
     let dir = sessions_dir_path();

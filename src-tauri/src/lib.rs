@@ -19,6 +19,9 @@ mod gemini;
 mod grok;
 mod hud_bar;
 mod island;
+// 灵动岛设置独立窗口：岛展开面板齿轮打开的 1100×720 无边框大窗，建窗铁律
+// 与 main_window 同源（懒创建、关闭=隐藏），见模块 doc
+mod island_settings_window;
 mod kimi;
 mod kimi_oauth;
 mod local_agents;
@@ -1241,7 +1244,7 @@ async fn get_codex_usage(req: CodexUsageRequest) -> Result<CodexSnapshot, String
         let stats = codex::query_stats(req.from_ms, req.to_ms)?;
         if let Ok(added) = codex::backfill_today_rate_limit_history() {
             if added > 0 {
-                eprintln!("[zbar-codex] 已补齐今日 {added} 条额度快照");
+                eprintln!("[agenthud-codex] 已补齐今日 {added} 条额度快照");
             }
         }
         let buckets = codex::query_trend(req.from_ms, req.to_ms, &req.bucket)?;
@@ -2385,7 +2388,7 @@ pub(crate) fn tune_panel_vibrancy(window: &tauri::WebviewWindow) {
 fn toggle_panel(app: &AppHandle, click_pos: Option<(f64, f64)>) {
     if app.get_webview_window("panel").is_none() {
         if let Err(e) = panel::ensure_panel_window(app) {
-            eprintln!("[zbar-panel] 呼出悬浮窗失败: {e}");
+            eprintln!("[agenthud-panel] 呼出悬浮窗失败: {e}");
             return;
         }
     }
@@ -2474,7 +2477,7 @@ fn toggle_panel(app: &AppHandle, click_pos: Option<(f64, f64)>) {
     // 顶部移动会被岛当成悬停而反复撑开 / 收起。
     if crate::island::island_state().expanded {
         if let Err(e) = crate::island::set_expanded_on_main(app, false) {
-            eprintln!("[zbar-island] 收起灵动岛失败: {e}");
+            eprintln!("[agenthud-island] 收起灵动岛失败: {e}");
         }
     }
     // WKWebView 已知问题：长期隐藏的窗口 show 后首帧可能不立即重绘（白屏）。
@@ -2716,51 +2719,123 @@ fn prevent_app_nap() {
 }
 
 // ============================================================
-// 更名遗留清理：旧应用名（ZBar）的开机自启项一次性移除
+// 更名遗留清理：旧应用名（ZBar）与旧 exe 文件名（zai-floating-monitor）
+// 的开机自启项一次性移除
 // ============================================================
 
-/// 更名遗留清理（ZBar → AgentHUD）：删除旧应用名注册的开机自启项，
+/// 更名遗留清理（旧名 → AgentHUD）：删除旧应用名注册的开机自启项，
 /// 防止更名后旧版自启仍随系统拉起造成新旧双开。启动期幂等执行一次：
 /// 目标不存在时静默跳过，失败只记中文日志不阻断启动。
+/// 返回 true 表示发现"用户曾启用自启、但注册指向旧 exe 文件名"的遗留
+/// （2.0.3 及以前主程序名为 zai-floating-monitor.exe，2.0.4 起改名为
+/// AgentHUD.exe，旧注册升级后会指向不存在的文件），调用方需在
+/// autostart 插件初始化后按启用状态用当前 exe 路径重注册。
 #[cfg(windows)]
-fn cleanup_legacy_autostart() {
+fn cleanup_legacy_autostart() -> bool {
     use winreg::enums::{HKEY_CURRENT_USER, KEY_READ, KEY_WRITE};
     use winreg::RegKey;
-    // 与 tauri-plugin-autostart 同款的 HKCU Run 键；只删旧值名 "ZBar"，
-    // 绝不触碰新名 "AgentHUD" 及其他任何值
+    // 与 tauri-plugin-autostart 同款的 HKCU Run 键。清理两类遗留：
+    // 1. 旧应用名值 "ZBar"（更名前的 autostart 注册）整条删除；
+    // 2. 数据指向旧 exe 文件名的自启值（典型为值名 "AgentHUD" 指向
+    //    安装目录里的旧 exe）——删除后由调用方按启用状态重注册新路径，
+    //    数据不指向旧 exe 文件名的值（本版或其他程序）一律不触碰
+    const OLD_EXE_FILE: &str = "zai-floating-monitor.exe";
     let run_key = r"Software\Microsoft\Windows\CurrentVersion\Run";
     let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-    match hkcu.open_subkey_with_flags(run_key, KEY_READ | KEY_WRITE) {
-        Ok(key) => match key.delete_value("ZBar") {
-            Ok(()) => eprintln!("[zbar-startup] 已清理更名遗留的旧自启项（ZBar）"),
-            // 值不存在 = 无遗留可清，静默
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => eprintln!("[zbar-startup] 清理更名遗留旧自启项失败（不影响启动）: {e}"),
-        },
+    let key = match hkcu.open_subkey_with_flags(run_key, KEY_READ | KEY_WRITE) {
+        Ok(key) => key,
         // Run 键不存在 = 从未配置过自启，静默
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return false,
+        Err(e) => {
+            eprintln!("[agenthud-startup] 打开注册表自启键失败（不影响启动）: {e}");
+            return false;
+        }
+    };
+    // 清理一：旧应用名值 "ZBar"
+    match key.delete_value("ZBar") {
+        Ok(()) => eprintln!("[agenthud-startup] 已清理更名遗留的旧自启项（ZBar）"),
+        // 值不存在 = 无遗留可清，静默
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) => eprintln!("[zbar-startup] 打开注册表自启键失败（不影响启动）: {e}"),
+        Err(e) => eprintln!("[agenthud-startup] 清理更名遗留旧自启项失败（不影响启动）: {e}"),
     }
+    // 清理二：指向旧 exe 文件名的自启值。先枚举值名快照再逐个判断删除，
+    // 避免边枚举边删导致漏项
+    let mut need_reregister = false;
+    let value_names: Vec<String> = key
+        .enum_values()
+        .filter_map(|r| r.ok())
+        .map(|(name, _)| name)
+        .collect();
+    for name in value_names {
+        let data = match key.get_value::<String, _>(&name) {
+            Ok(data) => data,
+            // 非 REG_SZ 值（其他程序写的二进制项等）不参与判断
+            Err(_) => continue,
+        };
+        if data.contains(OLD_EXE_FILE) {
+            match key.delete_value(&name) {
+                Ok(()) => {
+                    eprintln!(
+                        "[agenthud-startup] 已清理指向旧程序名（{OLD_EXE_FILE}）的自启项（{name}）"
+                    );
+                    // 该值存在即代表用户此前处于自启启用状态，删除后按
+                    // 新 exe 路径重注册（调用方在插件初始化后执行）
+                    need_reregister = true;
+                }
+                Err(e) => eprintln!(
+                    "[agenthud-startup] 清理指向旧程序名的自启项失败（不影响启动）: {name}: {e}"
+                ),
+            }
+        }
+    }
+    need_reregister
 }
 
 /// macOS 同款清理：删除旧 identifier（com.chacca.zbar）派生的
-/// LaunchAgent，同样 best-effort。
+/// LaunchAgent，以及 autostart 插件注册的 AgentHUD.plist 中
+/// ProgramArguments 仍指向旧二进制名（zai-floating-monitor）的遗留，
+/// 同样 best-effort。返回 true 表示需按启用状态用新路径重注册。
 #[cfg(target_os = "macos")]
-fn cleanup_legacy_autostart() {
-    let Some(home) = dirs::home_dir() else { return };
-    let plist = home.join("Library/LaunchAgents/com.chacca.zbar.plist");
-    if !plist.exists() {
-        return; // 无旧 LaunchAgent，静默
+fn cleanup_legacy_autostart() -> bool {
+    let Some(home) = dirs::home_dir() else { return false };
+    // 清理一：旧 identifier 派生的 LaunchAgent
+    let legacy_plist = home.join("Library/LaunchAgents/com.chacca.zbar.plist");
+    if legacy_plist.exists() {
+        match std::fs::remove_file(&legacy_plist) {
+            Ok(()) => {
+                eprintln!("[agenthud-startup] 已清理更名遗留的旧 LaunchAgent（com.chacca.zbar）")
+            }
+            Err(e) => {
+                eprintln!("[agenthud-startup] 清理更名遗留旧 LaunchAgent 失败（不影响启动）: {e}")
+            }
+        }
     }
-    match std::fs::remove_file(&plist) {
-        Ok(()) => eprintln!("[zbar-startup] 已清理更名遗留的旧 LaunchAgent（com.chacca.zbar）"),
-        Err(e) => eprintln!("[zbar-startup] 清理更名遗留旧 LaunchAgent 失败（不影响启动）: {e}"),
+    // 清理二：指向旧二进制文件名的自启 LaunchAgent
+    let mut need_reregister = false;
+    let plist = home.join("Library/LaunchAgents/AgentHUD.plist");
+    if let Ok(content) = std::fs::read_to_string(&plist) {
+        if content.contains("zai-floating-monitor") {
+            match std::fs::remove_file(&plist) {
+                Ok(()) => {
+                    eprintln!(
+                        "[agenthud-startup] 已清理指向旧程序名（zai-floating-monitor）的自启 LaunchAgent（AgentHUD.plist）"
+                    );
+                    need_reregister = true;
+                }
+                Err(e) => eprintln!(
+                    "[agenthud-startup] 清理指向旧程序名的自启 LaunchAgent 失败（不影响启动）: {e}"
+                ),
+            }
+        }
     }
+    need_reregister
 }
 
 /// 其他平台无注册表 / LaunchAgent 机制，无遗留可清。
 #[cfg(not(any(windows, target_os = "macos")))]
-fn cleanup_legacy_autostart() {}
+fn cleanup_legacy_autostart() -> bool {
+    false
+}
 
 /// 应用快捷键配置：先注销全部，再按配置注册。
 fn apply_shortcut(app: &AppHandle, cfg: &shortcut::ShortcutConfig) -> Result<(), String> {
@@ -2787,7 +2862,7 @@ fn apply_shortcut(app: &AppHandle, cfg: &shortcut::ShortcutConfig) -> Result<(),
 pub(crate) fn refresh_global_shortcuts(app: &AppHandle) {
     let sc = shortcut::load_shortcut();
     if let Err(e) = apply_shortcut(app, &sc) {
-        eprintln!("[zbar-shortcut] {e}");
+        eprintln!("[agenthud-shortcut] {e}");
     }
 }
 
@@ -2812,7 +2887,7 @@ fn spawn_fx_rate_refresher() {
             if let Ok(cfg) = cursor::load_cursor_config() {
                 if cfg.fx_rate_auto {
                     if let Err(e) = cursor::fetch_fx_rate() {
-                        eprintln!("[zbar-fx-rate] 每日汇率刷新失败（明日重试）: {e}");
+                        eprintln!("[agenthud-fx-rate] 每日汇率刷新失败（明日重试）: {e}");
                     }
                 }
             }
@@ -2859,7 +2934,7 @@ pub(crate) fn refresh_tray_menu(app: &AppHandle) {
                 Ok(next) => {
                     let _ = tray.set_menu(Some(next));
                 }
-                Err(e) => eprintln!("[zbar-tray] 重建托盘菜单失败: {e}"),
+                Err(e) => eprintln!("[agenthud-tray] 重建托盘菜单失败: {e}"),
             }
         }
     }
@@ -2908,14 +2983,14 @@ fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
                     "open-main" => {
                         // page 传 None：托盘入口只开窗不导航，停留在上次页面
                         if let Err(e) = main_window::open_main_window_on_main_thread(app, None) {
-                            eprintln!("[zbar-main-window] 打开主窗口失败: {e}");
+                            eprintln!("[agenthud-main-window] 打开主窗口失败: {e}");
                         }
                     }
                     // 灵动岛开关：on_menu_event 本身在主线程回调，可直接
                     // 走建窗/隐藏主体。切换后重建菜单刷新勾选态
                     "hud-bar-toggle" => match island::toggle_from_tray(app) {
                         Ok(_) => refresh_tray_menu(app),
-                        Err(e) => eprintln!("[zbar-island] 切换灵动岛失败: {e}"),
+                        Err(e) => eprintln!("[agenthud-island] 切换灵动岛失败: {e}"),
                     },
                     _ => {}
                 }
@@ -3182,7 +3257,7 @@ pub fn run() {
                     .is_none()
                 {
                     if let Err(e) = panel::ensure_panel_window(&app_main) {
-                        eprintln!("[zbar-panel] 单实例唤醒建窗失败: {e}");
+                        eprintln!("[agenthud-panel] 单实例唤醒建窗失败: {e}");
                     }
                 }
                 if let Some(win) =
@@ -3230,16 +3305,28 @@ pub fn run() {
                         hud_bar::handle_hud_bar_window_destroyed(window.app_handle());
                     }
                 }
-                // 主窗口（Dashboard）：省内存改造后"关闭即销毁"。原先点标题
-                // 栏"×"走隐藏保留 WebView（常驻秒开），代价是 dashboard 的
-                // WebView 渲染进程常驻内存；现在放行默认关闭 = 销毁窗口，
-                // 下次打开走 open_main_window_on_main_thread 的现场建窗路径
-                // （带页跳转经 pending page 补发，见 main_window.rs，导航
-                // 事件不会丢）。应用退出仍由托盘"退出 AgentHUD"完成。
-                // panel/pet/session-hud 的关闭路径（各自 Destroyed 挂点）
-                // 不受影响；灵动岛仍保留"关闭=隐藏"（默认开启的常驻 HUD）。
+                // 主窗口（Dashboard）：**关闭即销毁**——本挂点不拦截 main-window，
+                // 放行默认关闭即销毁窗口（省内存改造后不再"关闭=隐藏"：原先隐藏
+                // 保留 WebView 常驻秒开，代价是 dashboard 的渲染进程常驻内存）。
+                // 下次打开走 open_main_window_on_main_thread 的现场建窗路径，
+                // 带页跳转经 pending page 补发（见 main_window.rs 的 PENDING_PAGE，
+                // 导航事件不会丢）。应用退出仍由托盘"退出 AgentHUD"完成。
+                //
+                // 本分支只拦"关闭=隐藏"的常驻窗口：设置窗（保住 WebView 与表单/
+                // 滚动状态）与灵动岛（默认开启的常驻 HUD）；panel/pet/session-hud
+                // 的关闭路径（各自 Destroyed 挂点）不受影响
                 WindowEvent::CloseRequested { api, .. } => {
-                    if window.label() == island::ISLAND_WINDOW_LABEL {
+                    if window.label()
+                        == island_settings_window::ISLAND_SETTINGS_WINDOW_LABEL
+                    {
+                        // 灵动岛设置独立窗口："关闭=隐藏"（常驻秒开，见
+                        // island_settings_window.rs 模块 doc）。标题栏由设置页
+                        // 前端自绘，关闭按钮同样走 close() 触发本挂点；
+                        // prevent_close + hide 保住 WebView 与表单/滚动状态。
+                        // 岛被总开关关闭时另有收窗分支（island::set_enabled_on_main）
+                        api.prevent_close();
+                        let _ = window.hide();
+                    } else if window.label() == island::ISLAND_WINDOW_LABEL {
                         // 灵动岛「关闭」= 隐藏，不销毁 WebView；再次开启秒开
                         api.prevent_close();
                         let _ = window.hide();
@@ -3283,9 +3370,12 @@ pub fn run() {
             // 启动自动重试
             pricing::migrate_data_dir();
 
-            // 更名遗留清理：删除旧应用名（ZBar）的开机自启项，防止更名后
-            // 旧版随系统启动双开（幂等一次性动作，best-effort 不阻断启动）
-            cleanup_legacy_autostart();
+            // 更名遗留清理：删除旧应用名（ZBar）及旧 exe 文件名
+            // （zai-floating-monitor.exe）的开机自启项，防止更名后旧版随系统
+            // 启动双开（幂等一次性动作，best-effort 不阻断启动）。返回 true
+            // 表示用户此前启用过自启但注册指向旧 exe，需在下方 autostart
+            // 插件初始化后用当前 exe 路径重注册，升级后自启不丢
+            let reregister_legacy_autostart = cleanup_legacy_autostart();
 
             // 注册官方开机自启插件：Windows 使用注册表，macOS 使用 LaunchAgent。
             // 插件只在桌面目标启用，移动端不参与构建。
@@ -3295,6 +3385,19 @@ pub fn run() {
                     tauri_plugin_autostart::MacosLauncher::LaunchAgent,
                     None,
                 ))?;
+                // 旧自启项曾指向旧 exe 且用户处于启用状态：用当前 exe 路径
+                // 重注册（enable 为覆盖写，语义与设置页开关一致）
+                if reregister_legacy_autostart {
+                    use tauri_plugin_autostart::ManagerExt;
+                    match app.autolaunch().enable() {
+                        Ok(()) => eprintln!(
+                            "[agenthud-startup] 已按启用状态重注册开机自启（新程序路径）"
+                        ),
+                        Err(e) => eprintln!(
+                            "[agenthud-startup] 重注册开机自启失败（可在设置页重新开启）: {e}"
+                        ),
+                    }
+                }
                 // 应用内更新：检查/下载/安装由前端 @tauri-apps/plugin-updater 驱动
                 app.handle().plugin(tauri_plugin_updater::Builder::new().build())?;
                 app.handle().plugin(tauri_plugin_process::init())?;
@@ -3321,19 +3424,82 @@ pub fn run() {
                 prevent_app_nap();
             }
             setup_tray(app.handle())?;
-            // 省内存改造：托盘菜单 / 主窗口 / 截图覆盖层 / 录制条的启动预热
-            // 全部取消——不再有"启动即常驻的隐藏 WebView"。四个窗口改为
-            // 按需现场建窗（建窗函数保留且幂等）：
+            // 托盘菜单窗口按需现场建窗（建窗函数幂等）：
             // - tray-menu：首次右键托盘时 show_tray_menu 现场建（隐藏后
             //   120s 无再次使用自动销毁，见 tray_menu.rs）；
-            // - main-window：首次「打开主窗口」时 ensure_main_window 现场
-            //   建（关闭即销毁，见 main_window.rs）；
-            // - shot / rec：热键或 HUD 按钮触发截图 / 录屏时 reuse_overlay
-            //   / build_recorder_window 的冷建路径现场建（窗口缺失时各自
-            //   建窗函数内部兜底，reveal 顺序修复不依赖预热窗口存在）。
+            // - shot / rec：启动 2.5s 后由下方「截图覆盖窗口预热」块隐藏预建
+            //   （板块隐藏时整段跳过）；热键早于预热、或板块隐藏时，仍由
+            //   reuse_overlay / build_recorder_window 的冷建路径现场建。
+            // 主窗口预热 v2.0.4 恢复（省内存改造曾取消）：取消预建后改为
+            // 点击时冷建，dev 模式 vite 按需编译 dashboard.html 首次加载
+            // 8-10 秒，点击「打开主窗口」时主线程同步冷建重页面 WebView
+            // 撞上初始化死锁窗口 → 白屏 + 窗口消息泵挂死（PrintWindow 对
+            // 挂死窗口阻塞 2 分钟以上是硬证据）。预建把重页面加载藏进
+            // 启动期即可根治；关闭即销毁不变，第二次及以后的打开走冷建
+            // 兜底（vite 已热 / 生产版资源本地加载，秒建低风险）。失败只
+            // 记日志，首次打开仍能正常建窗（见 main_window.rs 的
+            // prebuild_main_window 注释）。
+            if let Err(e) = main_window::prebuild_main_window(app.handle()) {
+                eprintln!("[zbar-main-window] 预建主窗口失败: {e}");
+            }
             spawn_today_usage_updater(app.handle().clone());
             // 额度重置提醒后台线程：每 30s 读一次内存登记表，不额外发请求
             quota_reminder::spawn();
+            // 截图覆盖窗口预热：启动 2.5s（避开启动高峰：托盘/主窗/岛都在
+            // 抢 WebView 资源）后把隐藏的 shot.html 建好，之后无论走热键还是
+            // HUD 按钮，第一次截图都不再冷启动 WebView，也不会出现「前端
+            // 2.5s 内没画好冻结帧、兜底强制 reveal 深色窗」的整屏闪黑。
+            // shot_prewarm 自身幂等（窗口已存在直接返回），HUD 截图页打开时
+            // 的重复预热是空操作；窗口以 visible(false)+focused(false) 常驻，
+            // 不显示、不抢焦点，等真正的截图会话经 reuse_overlay 复用。
+            {
+                let handle = app.handle().clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_millis(2500));
+                    // 截图板块在设置里被隐藏时整段跳过：覆盖窗 / 录制条都是
+                    // 全屏、backgroundThrottling 关闭的隐藏 WebView，建好就
+                    // 一直占渲染进程内存，正是「关掉的板块不占资源」要避免的。
+                    // 此时不建窗，真正的截图 / 录屏入口仍会现场建窗（只吃一次
+                    // WebView 冷启动）；等用户在设置里重新显示，由
+                    // island::sync_tab_services → screenshot::set_tab_visible
+                    // 延迟预热。
+                    if island::load_config()
+                        .hidden_tabs
+                        .iter()
+                        .any(|key| key == "shot")
+                    {
+                        eprintln!("[zbar-shot] 截图板块已隐藏，跳过启动预热");
+                        return;
+                    }
+                    let app_warm = handle.clone();
+                    let _ = tauri::async_runtime::block_on(
+                        island::screenshot::shot_prewarm(app_warm),
+                    );
+                    // 截图覆盖窗口热身后顺带预热录制条窗口（rec.html 空白
+                    // 待命页，再延迟 1.5s 避开启动高峰抢 WebView 资源）：
+                    // 首次录制复用窗口只走 navigate + 定位 + show，省掉
+                    // WebView 冷启动的几百毫秒。失败只记日志，首次录制
+                    // 仍能现场建窗。
+                    std::thread::sleep(std::time::Duration::from_millis(1500));
+                    // 这 1.5s 里用户可能在设置里刚隐藏截图板块：预热前再复查一次
+                    //（与 screenshot::set_tab_visible 的延迟复查同款），隐藏就不再
+                    // 建录制条窗口，避免关掉的板块留一个隐藏 WebView 占内存。
+                    if island::load_config()
+                        .hidden_tabs
+                        .iter()
+                        .any(|key| key == "shot")
+                    {
+                        eprintln!("[zbar-rec] 截图板块已隐藏，跳过录制窗口预热");
+                        return;
+                    }
+                    let app_rec = handle.clone();
+                    if let Err(e) = tauri::async_runtime::block_on(
+                        island::screenshot::prewarm_recorder_window(app_rec),
+                    ) {
+                        eprintln!("[zbar-rec] 预热录制窗口失败: {e}");
+                    }
+                });
+            }
             spawn_fx_rate_refresher();
             // 参考价表后台刷新（models.dev）：新模型发布后「等价花费」选择器
             // 自动跟上，编译期内置表只作离线兜底
@@ -3351,7 +3517,7 @@ pub fn run() {
             // 应用全局快捷键配置（启动时若已启用则注册）
             let sc = shortcut::load_shortcut();
             if let Err(e) = apply_shortcut(app.handle(), &sc) {
-                eprintln!("[zbar-shortcut] {e}");
+                eprintln!("[agenthud-shortcut] {e}");
             }
 
             // Windows 启动时恢复置顶常驻状态：若用户上次开启了置顶，
@@ -3385,7 +3551,7 @@ pub fn run() {
             // 宠物窗口恢复/主题渲染之前就位（默认 style 指向它）；失败仅
             // 记日志不阻断启动（下次启动或导入流程重试）
             if let Err(e) = pets::ensure_builtin_pet() {
-                eprintln!("[zbar-pets] 释放内置形象失败: {e}");
+                eprintln!("[agenthud-pets] 释放内置形象失败: {e}");
             }
             // 释放/升级后立即同步注入版物化（pet-custom.js）：升级把新版
             // states（V9 细分键等）落到用户库后，注入版资产要等这里重物
@@ -3393,7 +3559,7 @@ pub fn run() {
             // 内容同比对跳写、皮肤未安装直接返回；失败同样仅记日志不阻断
             // 启动（与上方释放挂点同口径，下次启动或改设置时重试）
             if let Err(e) = pets::sync_theme_custom_pet() {
-                eprintln!("[zbar-pets] 同步注入版宠物物化失败: {e}");
+                eprintln!("[agenthud-pets] 同步注入版宠物物化失败: {e}");
             }
             // 独立桌面宠物（第二阶段）：配置开启时恢复透明悬浮窗并启动
             // 独立状态轮询（未开启零开销，与皮肤安装状态互不依赖）
@@ -3407,6 +3573,15 @@ pub fn run() {
             // 恢复逻辑，避免两套 HUD 同时出现。
             island::prepare_legacy_bar();
             hud_bar::start_if_enabled(app.handle());
+            // 消息等后台服务启动前，先准备 settings.json 并同步剪贴板上限。
+            island::settings::ensure_document(app.handle());
+            // 「打开应用 / Clash Verge 程序」的启动自动探测：只填空项、不覆盖
+            // 用户手动保存过（含显式清空）的值。探测要枚举进程 / 读卸载表，
+            // 放后台线程，不阻塞 setup（失败只记日志）。
+            let seed_app = app.handle().clone();
+            std::thread::spawn(move || {
+                tauri::async_runtime::block_on(island::settings::seed_detected_paths(&seed_app));
+            });
             // 灵动岛 HUD：顶部毛玻璃胶囊 + 多页展开（默认开启）
             island::start_if_enabled(app.handle());
             Ok(())
@@ -3571,7 +3746,16 @@ pub fn run() {
             island::island_set_enabled,
             island::island_toggle,
             island::island_set_expanded,
+            // 液态画布：前端上报主体（岛本体）尺寸（未上报回退 300×54）
+            island::island_set_body_size,
             island::island_set_hover_rect,
+            // 收起态右键菜单开关：菜单浮在胶囊热区外，打开期间冻结自动穿透
+            island::island_set_context_menu_open,
+            // 可穿透（WS_EX_TRANSPARENT + 右键/滚轮钩子）/ 右键菜单关闭后恢复
+            island::island_set_passthrough,
+            island::island_passthrough_restore,
+            // 记住上次标签页
+            island::island_set_last_tab,
             island::island_drag_begin,
             island::island_drag_step,
             island::island_drag_end,
@@ -3582,9 +3766,42 @@ pub fn run() {
             island::island_open_path,
             island::island_set_keyboard,
             island::island_quit,
+            // 灵动岛设置文档（~/.agenthud/settings.json）：重做后的 14 页设置窗
+            // 读写入口；文档与 IslandConfig 重叠字段双向同步，保存走点路径 patch
+            island::settings::island_settings_doc,
+            island::settings::island_settings_reload,
+            island::settings::island_settings_save,
+            island::settings::island_settings_reset,
+            island::settings::island_settings_import,
+            island::settings::island_settings_export,
+            island::settings::island_settings_open_file,
+            island::settings::island_settings_reveal_file,
+            island::settings::island_settings_paths,
+            island::settings::island_settings_window_hide,
+            island::settings::island_fonts,
+            island::settings::island_monitors,
+            island::settings::island_hotkey_status,
+            // 翻译（DeepSeek 兼容接口）
+            island::translate::island_translate,
+            island::translate::platforms::island_translation_platforms,
+            island::translate::platforms::island_translation_models,
+            // 实时字幕（系统声音 / 麦克风 → Silero VAD → 日语 ASR → 流式翻译）；
+            // 状态走 zbar://island-live，单条字幕走 zbar://island-live-caption
+            island::live::live_status,
+            island::live::live_start,
+            island::live::live_stop,
+            island::live::live_devices,
+            island::live::live_download_models,
+            island::live::live_cancel_download,
+            island::live::live_captions,
+            island::live::live_clear_captions,
             // 天气（Open-Meteo）
             island::weather::island_weather,
             island::weather::island_weather_refresh,
+            island::weather::island_weather_bind,
+            island::weather::island_weather_unbind,
+            island::weather::island_weather_add_city,
+            island::weather::island_weather_remove_city,
             island::weather::island_locate,
             // 股票（腾讯财经）
             island::stocks::island_stocks,
@@ -3594,6 +3811,8 @@ pub fn run() {
             // 媒体（Windows SMTC）
             island::media::island_media,
             island::media::island_media_action,
+            // 真实音频峰值（收起态音乐律动条；0..1，失败/非 Windows 返回 0）
+            island::audio_peak::island_audio_peak,
             // 歌词（网易云公开接口）
             island::lyrics::island_lyrics,
             // 系统（音量/亮度/Wi-Fi/蓝牙）
@@ -3603,6 +3822,10 @@ pub fn run() {
             island::system::island_set_brightness,
             island::system::island_toggle_radio,
             island::system::island_open_system_settings,
+            island::clash::island_clash_status,
+            island::clash::island_clash_open,
+            island::clash::island_clash_set,
+            island::clash::island_clash_set_mode,
             // 剪贴板
             island::clipboard::island_clipboard,
             island::clipboard::island_clipboard_copy,
@@ -3619,9 +3842,18 @@ pub fn run() {
             // 消息（Windows 通知数据库 + 飞书 / 钉钉通知浮窗）
             island::notify::island_notify,
             island::notify::island_notify_mark_read,
+            // 按模块（kind）清未读 / 读取模块开关快照（消息页磁贴）
+            island::notify::island_notify_mark_read_kind,
+            island::notify::island_notify_modules,
             island::notify::island_notify_clear,
             island::notify::island_notify_open,
             island::notify::island_notify_open_settings,
+            // 桌面消息玻璃浮窗（label notify-popup，独立透明置顶小窗）：
+            // 页面就绪握手（交出冷启动期间攒下的第一批）/ 按堆叠尺寸重新定位
+            // 并显示 / 清空后隐藏。出卡本身由 zbar://notify-popup-show 事件推。
+            island::popup::notify_popup_ready,
+            island::popup::notify_popup_resize,
+            island::popup::notify_popup_hide,
             // 截图工作台
             island::screenshot::shot_monitors,
             island::screenshot::shot_windows,
@@ -3666,6 +3898,9 @@ pub fn run() {
             island::screenshot::shot_qr,
             // 主窗口（Dashboard）：托盘菜单与悬浮窗统计页按钮共用的打开入口
             main_window::open_main_window,
+            // 灵动岛设置独立窗口：岛展开面板齿轮的打开入口（首开懒创建、
+            // 关闭=隐藏；建窗铁律与主窗口同源，见 island_settings_window.rs）
+            island_settings_window::open_island_settings_window,
             // 冷建跳页补发：DashboardApp 挂载完成后取走建窗时暂存的跳页
             // 意图（关闭即销毁后 emit 可能赶在监听注册前被丢弃，见
             // main_window.rs 的 PENDING_PAGE）

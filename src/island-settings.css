@@ -1,0 +1,1746 @@
+/*
+ * 灵动岛设置窗（island-settings 入口专用样式）。
+ */
+
+/* ============================================================ 根 / 变量 */
+
+html.island-settings {
+  /* 字体栈：正文 / 数字 */
+  --w-font: "HarmonyOS Sans", "MiSans", "Segoe UI Variable Text",
+    "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
+  --w-num-font: "HarmonyOS Sans", "Segoe UI Variable Display", "Segoe UI",
+    system-ui, sans-serif;
+
+  /* 深色毛玻璃（默认） */
+  --w-text: #ffffff;
+  --w-text2: rgba(255, 255, 255, 0.66);
+  --w-text3: rgba(255, 255, 255, 0.45);
+  --w-text-92: rgba(255, 255, 255, 0.92);
+  --w-nav: rgba(255, 255, 255, 0.72);
+  --w-hover: rgba(255, 255, 255, 0.118);
+  --w-pill: rgba(255, 255, 255, 0.22);
+  --w-pill-fg: rgba(255, 255, 255, 0.95);
+  --w-field: rgba(255, 255, 255, 0.145);
+  --w-stroke: rgba(255, 255, 255, 0.11);
+  --w-card: rgba(255, 255, 255, 0.102);
+  --w-track: rgba(255, 255, 255, 0.133);
+  --w-knob: #ffffff;
+  --w-on: #3b82f6;
+  --w-on-fg: #ffffff;
+  --w-on-soft: rgba(59, 130, 246, 0.165);
+  --w-danger: #ff5a52;
+  --w-danger-soft: rgba(255, 90, 82, 0.063);
+  --w-ok: #35c98e;
+  --w-ok-soft: rgba(53, 201, 142, 0.125);
+  --w-accent: #86b2f9;
+  --w-tag-soft: rgba(134, 178, 249, 0.125);
+  --w-panel: rgba(36, 36, 40, 0.941);
+  --w-menu: rgba(36, 36, 40, 0.98);
+  /* 窗口描边：内圈 1px 亮边（255,255,255,60）+ 外圈 1px 暗线
+     （0,0,0,70）；--w-rim-inset 给浅色面板补内圈深描边 */
+  --w-rim: rgba(255, 255, 255, 0.235);
+  --w-ring: rgba(0, 0, 0, 0.27);
+  --w-rim-inset: inset 0 0 0 1px rgba(0, 0, 0, 0);
+  --w-scroll: rgba(255, 255, 255, 0.25);
+  --w-pop-shadow: 0 18px 48px rgba(0, 0, 0, 0.45);
+  --w-glow1: rgba(59, 130, 246, 0.17);
+  --w-glow2: rgba(59, 130, 246, 0.086);
+
+  color-scheme: dark;
+  height: 100%;
+  margin: 0;
+  background: transparent;
+  font-family: var(--w-font);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+/* 浅色毛玻璃：面板更「实」、文字更深，输入底接近白 */
+html.island-settings[data-wtheme="light"] {
+  --w-text: #101218;
+  --w-text2: rgba(16, 18, 24, 0.74);
+  --w-text3: rgba(16, 18, 24, 0.56);
+  --w-text-92: rgba(16, 18, 24, 0.92);
+  --w-nav: rgba(16, 18, 24, 0.72);
+  --w-hover: rgba(0, 0, 0, 0.055);
+  --w-pill: rgba(255, 255, 255, 0.98);
+  --w-pill-fg: rgba(20, 22, 28, 0.95);
+  --w-field: rgba(255, 255, 255, 0.863);
+  --w-stroke: rgba(16, 18, 24, 0.11);
+  --w-card: rgba(15, 20, 30, 0.059);
+  --w-track: rgba(0, 0, 0, 0.118);
+  --w-knob: #ffffff;
+  --w-on: #2f6fe0;
+  --w-on-fg: #ffffff;
+  --w-on-soft: rgba(47, 111, 224, 0.165);
+  --w-danger: #d42c25;
+  --w-danger-soft: rgba(212, 44, 37, 0.063);
+  --w-ok: #066b47;
+  --w-ok-soft: rgba(6, 107, 71, 0.125);
+  --w-accent: #2251a4;
+  --w-tag-soft: rgba(34, 81, 164, 0.125);
+  /* 原版浅色面板 #EBEEF8（偏蓝灰），比纯白更像「玻璃上的纸」 */
+  --w-panel: rgba(235, 238, 248, 0.97);
+  --w-menu: rgba(248, 248, 250, 0.98);
+  --w-rim: rgba(16, 18, 24, 0.14);
+  --w-ring: rgba(0, 0, 0, 0.27);
+  /* 浅色面板上的深描边（原版浅色 rim 是白圈 + 深 outline，这里补内圈深线） */
+  --w-rim-inset: inset 0 0 0 1px rgba(12, 32, 56, 0.24);
+  --w-scroll: rgba(16, 18, 24, 0.25);
+  --w-pop-shadow: 0 18px 48px rgba(16, 18, 24, 0.18);
+  --w-glow1: rgba(47, 111, 224, 0.1);
+  --w-glow2: rgba(47, 111, 224, 0.05);
+  color-scheme: light;
+}
+
+/* 胭脂撞色：墨黑玻璃 + 胭脂粉强调色，正文白色 */
+html.island-settings[data-wtheme="rouge"] {
+  --w-text: #ffffff;
+  --w-text2: rgba(255, 255, 255, 0.7);
+  --w-text3: rgba(255, 255, 255, 0.5);
+  --w-text-92: rgba(255, 255, 255, 0.92);
+  --w-nav: rgba(255, 255, 255, 0.72);
+  --w-hover: rgba(255, 255, 255, 0.133);
+  --w-pill: rgba(255, 124, 162, 0.92);
+  --w-pill-fg: rgba(0, 0, 0, 0.95);
+  --w-field: rgba(255, 255, 255, 0.133);
+  --w-stroke: rgba(255, 255, 255, 0.11);
+  --w-card: rgba(255, 255, 255, 0.094);
+  --w-track: rgba(255, 255, 255, 0.141);
+  --w-knob: #ffffff;
+  --w-on: #ff7ca2;
+  --w-on-fg: #000000;
+  --w-on-soft: rgba(255, 124, 162, 0.165);
+  --w-danger: #ff7ca2;
+  --w-danger-soft: rgba(255, 124, 162, 0.063);
+  --w-ok: #5fe0b0;
+  --w-ok-soft: rgba(95, 224, 176, 0.125);
+  --w-accent: #ffaec5;
+  --w-tag-soft: rgba(255, 174, 197, 0.125);
+  --w-panel: rgba(8, 8, 10, 0.961);
+  --w-menu: rgba(8, 8, 10, 0.98);
+  --w-rim: rgba(255, 255, 255, 0.235);
+  --w-ring: rgba(0, 0, 0, 0.27);
+  --w-rim-inset: inset 0 0 0 1px rgba(0, 0, 0, 0);
+  --w-scroll: rgba(255, 255, 255, 0.25);
+  --w-pop-shadow: 0 18px 48px rgba(0, 0, 0, 0.5);
+  --w-glow1: rgba(255, 124, 162, 0.18);
+  --w-glow2: rgba(255, 124, 162, 0.09);
+  color-scheme: dark;
+}
+
+/* 晴空渐变：晴空亮蓝 → 柔白浅杏，正文深海军蓝 */
+html.island-settings[data-wtheme="sky"] {
+  --w-text: #0c2038;
+  --w-text2: rgba(12, 32, 56, 0.78);
+  --w-text3: rgba(12, 32, 56, 0.6);
+  --w-text-92: rgba(12, 32, 56, 0.92);
+  --w-nav: rgba(12, 32, 56, 0.72);
+  --w-hover: rgba(255, 255, 255, 0.47);
+  --w-pill: rgba(255, 255, 255, 0.745);
+  --w-pill-fg: rgba(12, 32, 56, 0.95);
+  --w-field: rgba(255, 255, 255, 0.863);
+  --w-stroke: rgba(12, 32, 56, 0.11);
+  --w-card: rgba(255, 255, 255, 0.412);
+  --w-track: rgba(12, 32, 56, 0.133);
+  --w-knob: #ffffff;
+  --w-on: #1667c9;
+  --w-on-fg: #ffffff;
+  --w-on-soft: rgba(22, 103, 201, 0.165);
+  --w-danger: #d42c25;
+  --w-danger-soft: rgba(212, 44, 37, 0.063);
+  --w-ok: #066b47;
+  --w-ok-soft: rgba(6, 107, 71, 0.125);
+  --w-accent: #104b93;
+  --w-tag-soft: rgba(16, 75, 147, 0.125);
+  /* 晴空渐变：亮蓝 → 柔白天蓝 → 右下暖杏（原版 tint 32ABFD → tint2 F7EFE1；
+     160° 的渐变终点就是右下角；88% 就收到暖杏，右下才不会停在半暖的中间色） */
+  --w-panel: linear-gradient(
+    160deg,
+    rgba(50, 171, 253, 0.96) 0%,
+    rgba(142, 203, 243, 0.96) 55%,
+    rgba(247, 239, 225, 0.96) 88%,
+    rgba(247, 239, 225, 0.96) 100%
+  );
+  --w-menu: rgba(247, 239, 225, 0.98);
+  --w-rim: rgba(255, 255, 255, 0.6);
+  --w-ring: rgba(12, 32, 56, 0.2);
+  --w-rim-inset: inset 0 0 0 1px rgba(12, 32, 56, 0.24);
+  --w-scroll: rgba(12, 32, 56, 0.25);
+  --w-pop-shadow: 0 18px 48px rgba(12, 32, 56, 0.22);
+  /* 左上白雾收一点；右下的雾改成暖杏同色（原来那层蓝雾正好压在右下角，
+     把暖杏冲成偏冷的 #E7EEF1） */
+  --w-glow1: rgba(255, 255, 255, 0.12);
+  --w-glow2: rgba(247, 239, 225, 0.1);
+  color-scheme: light;
+}
+
+html.island-settings body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: transparent;
+  color: var(--w-text);
+  font-family: var(--w-font);
+}
+
+html.island-settings #root {
+  height: 100%;
+}
+
+html.island-settings * {
+  box-sizing: border-box;
+}
+
+/* ============================================================ 窗口主体 */
+
+.wset {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+  border: 1px solid var(--w-rim);
+  border-radius: 24px;
+  background:
+    radial-gradient(circle at 8% -15%, var(--w-glow1), transparent 62%),
+    radial-gradient(circle at 102% 105%, var(--w-glow2), transparent 55%),
+    var(--w-panel);
+  color: var(--w-text);
+  /* 透明窗口：外圈 1px 暗线勾出窗口边缘（原版 outline 0,0,0,70），
+     浅色 / 晴空再叠一圈内描边；圆角由 border-radius 裁切，不会被盖住 */
+  box-shadow: 0 0 0 1px var(--w-ring), var(--w-rim-inset);
+}
+
+/* ------------------------------------------------------------ 标题栏 */
+
+.wset__header {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 12px;
+  height: 64px;
+  /* 上下 7/9：补偿 .wset 的 1px 描边，使 logo 落在 y=12、主标题落在
+     y≈14；左右取 22 / 18 */
+  padding: 7px 18px 9px 22px;
+  user-select: none;
+  cursor: default;
+}
+
+.wset__logo {
+  width: 40px;
+  height: 40px;
+  flex: none;
+  border-radius: 11px;
+  object-fit: cover;
+  background: rgba(255, 255, 255, 0.08);
+  box-shadow: inset 0 0 0 1px var(--w-rim);
+  -webkit-user-drag: none;
+}
+
+.wset__titles {
+  display: flex;
+  flex-direction: column;
+  /* 原版标题底到副标题顶 13px：15/1.25 + 11/1.3 的字体盒之间补 8px */
+  gap: 8px;
+  min-width: 0;
+}
+
+.wset__title {
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.25;
+  color: var(--w-text);
+  white-space: nowrap;
+}
+
+.wset__sub {
+  font-size: 11px;
+  line-height: 1.3;
+  color: var(--w-text3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.wset__spacer {
+  flex: 1;
+}
+
+/* ------------------------------------------------------------ 主体 / 侧栏 */
+
+.wset__body {
+  display: flex;
+  flex: 1;
+  gap: 14px;
+  min-height: 0;
+  padding: 0 18px 0 16px;
+}
+
+.wset__side {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  gap: 2px;
+  width: 208px;
+  min-height: 0;
+  padding: 6px 0 8px;
+}
+
+.wset-nav__item {
+  display: flex;
+  flex: 0 1 auto;
+  align-items: center;
+  gap: 8px;
+  width: 200px;
+  height: 38px;
+  min-height: 24px;
+  padding: 0 10px 0 12px;
+  border: 0;
+  border-radius: 11px;
+  background: transparent;
+  color: var(--w-nav);
+  font-family: inherit;
+  font-size: 12.5px;
+  font-weight: 400;
+  line-height: 1.2;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    background-color 0.12s ease,
+    color 0.12s ease;
+}
+
+.wset-nav__item:hover {
+  background: var(--w-hover);
+}
+
+.wset-nav__item:focus-visible {
+  outline: none;
+  background: var(--w-hover);
+}
+
+.wset-nav__item--active,
+.wset-nav__item--active:hover {
+  /* 激活态：不透明胶囊，无短条 / 描边 / 投影 */
+  background: var(--w-pill);
+  color: var(--w-pill-fg);
+  font-weight: 600;
+}
+
+.wset-nav__icon {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  opacity: 0.92;
+}
+
+.wset-nav__label {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* ------------------------------------------------------------ 滚动内容区 */
+
+.wset__content {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding: 2px 10px 18px 4px;
+  /* 固定预留 6px 滚动条槽：有 / 无滚动条时控件右缘一致（≈867）。
+     注意不要写 scrollbar-width / scrollbar-color —— Chromium 会用它覆盖
+     ::-webkit-scrollbar（轨道变 11px、内容整体左移 5px）。 */
+  scrollbar-gutter: stable;
+}
+
+.wset__content::-webkit-scrollbar {
+  width: 6px;
+}
+
+.wset__content::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.wset__content::-webkit-scrollbar-thumb {
+  border-radius: 3px;
+  background: var(--w-scroll);
+}
+
+.wset__content::-webkit-scrollbar-button {
+  display: none;
+}
+
+/* ------------------------------------------------------------ 页脚 */
+
+.wset__foot {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+  height: 62px;
+  padding: 0 20px 10px 24px;
+}
+
+.wset-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font-size: 11.5px;
+  line-height: 1.3;
+}
+
+.wset-status__text {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.wset-status--hint .wset-status__text {
+  color: var(--w-text3);
+}
+
+.wset-status--accent .wset-status__text {
+  color: var(--w-accent);
+}
+
+.wset-status--ok .wset-status__text {
+  color: var(--w-ok);
+}
+
+.wset-status--danger .wset-status__text {
+  color: var(--w-danger);
+}
+
+.wset-dot {
+  display: inline-block;
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.wset-dot--hint {
+  background: var(--w-text3);
+}
+
+.wset-dot--accent {
+  background: var(--w-accent);
+}
+
+.wset-dot--ok {
+  background: var(--w-ok);
+}
+
+.wset-dot--danger {
+  background: var(--w-danger);
+}
+
+.wset__footbtns {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-left: auto;
+}
+
+/* ============================================================ 页面骨架 */
+
+.wset-page__title {
+  margin: 0;
+  padding: 6px 0 0 8px;
+  font-size: 21px;
+  font-weight: 600;
+  line-height: 1.25;
+  color: var(--w-text);
+}
+
+.wset-page__desc {
+  max-width: 620px;
+  margin: 0;
+  padding: 4px 0 0 8px;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--w-text2);
+}
+
+.wset-sec {
+  margin-top: 14px;
+}
+
+.wset-sec__head {
+  display: flex;
+  align-items: center;
+  height: 18px;
+  padding: 0 8px;
+  font-size: 11.5px;
+  font-weight: 600;
+  line-height: 1.3;
+  color: var(--w-text3);
+}
+
+.wset-group {
+  margin-top: 7px;
+  padding: 4px 8px;
+  border-radius: 16px;
+  background: var(--w-card);
+}
+
+.wset-row {
+  display: flex;
+  gap: 18px;
+  align-items: center;
+  padding: 9px 10px;
+  border-radius: 12px;
+}
+
+.wset-row--wide {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
+}
+
+.wset-row__text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.wset-row--wide .wset-row__text {
+  max-width: 620px;
+}
+
+.wset-row__title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.35;
+  color: var(--w-text);
+}
+
+.wset-row__desc {
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--w-text2);
+}
+
+.wset-row__err {
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--w-danger);
+}
+
+.wset-row--error {
+  background: var(--w-danger-soft);
+  box-shadow: inset 0 0 0 1px var(--w-danger);
+}
+
+.wset-row__ctl {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: flex-end;
+}
+
+.wset-row--wide .wset-row__ctl {
+  /* 宽行（列表 / 多选 / 说明）里的控件区纵向排列，多段内容不会挤成一行 */
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  width: 100%;
+}
+
+.wset-note {
+  max-width: 600px;
+  padding: 6px 10px 10px;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--w-text3);
+}
+
+.wset-pagefoot {
+  display: flex;
+  justify-content: flex-end;
+  padding: 14px 8px 0;
+}
+
+.wset-footnote {
+  max-width: 620px;
+  margin: 14px 8px 0;
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--w-text3);
+}
+
+.wset-footnote b {
+  color: var(--w-text2);
+  font-weight: 600;
+}
+
+.wset-inline-foot {
+  display: flex;
+  justify-content: flex-end;
+  padding: 2px 0 0;
+}
+
+.wset-empty {
+  margin: 0;
+  padding: 6px 2px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--w-text3);
+}
+
+/* 占位页 / 读取失败面板 */
+.wset-placeholder {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 14px;
+  padding: 18px 20px;
+  border-radius: 16px;
+  background: var(--w-card);
+}
+
+.wset-placeholder__badge {
+  align-self: flex-start;
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: var(--w-tag-soft);
+  color: var(--w-accent);
+  font-size: 11.5px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.wset-placeholder__text {
+  max-width: 620px;
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--w-text2);
+}
+
+.wset-panel {
+  padding: 40px 8px;
+}
+
+.wset-panel__title {
+  margin: 0;
+  font-size: 21px;
+  font-weight: 600;
+  line-height: 1.3;
+  color: var(--w-text);
+}
+
+.wset-panel__desc {
+  max-width: 560px;
+  margin: 8px 0 0;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--w-text2);
+}
+
+.wset-panel__actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+/* ============================================================ 按钮 / 标签 */
+
+.wset-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 11px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: transparent;
+  font-family: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    background-color 0.12s ease,
+    opacity 0.12s ease;
+}
+
+.wset-btn--sm {
+  height: 28px;
+  padding: 0 11px;
+  font-size: 12px;
+}
+
+/* 次级按钮：原版只有一层 field 底、没有描边（浅描边会读成「框套框」） */
+.wset-btn--ghost {
+  border-color: transparent;
+  background-color: var(--w-field);
+  color: var(--w-text-92);
+}
+
+.wset-btn--ghost:hover {
+  background-image: linear-gradient(var(--w-hover), var(--w-hover));
+}
+
+.wset-btn--primary {
+  background-color: var(--w-on);
+  color: var(--w-on-fg);
+}
+
+.wset-btn--primary:hover {
+  background-image: linear-gradient(rgba(255, 255, 255, 0.12), rgba(255, 255, 255, 0.12));
+}
+
+.wset-btn--danger {
+  border-color: var(--w-danger);
+  color: var(--w-danger);
+}
+
+.wset-btn--danger:hover {
+  background-color: var(--w-danger-soft);
+}
+
+.wset-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.wset-btn:focus-visible {
+  outline: 2px solid var(--w-accent);
+  outline-offset: 2px;
+}
+
+.wset-btn__icon {
+  display: flex;
+  align-items: center;
+}
+
+.wset-iconbtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--w-text2);
+  font-family: inherit;
+  cursor: pointer;
+  transition:
+    background-color 0.12s ease,
+    color 0.12s ease;
+}
+
+.wset-iconbtn:hover {
+  background: var(--w-hover);
+  color: var(--w-text-92);
+}
+
+.wset-iconbtn:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+
+.wset-iconbtn:focus-visible {
+  outline: none;
+  background: var(--w-hover);
+}
+
+.wset-iconbtn--round {
+  border-radius: 999px;
+}
+
+.wset-tag {
+  display: inline-flex;
+  align-items: center;
+  height: 18px;
+  padding: 0 7px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  font-weight: 600;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.wset-tag--accent {
+  background: var(--w-tag-soft);
+  color: var(--w-accent);
+}
+
+.wset-tag--ok {
+  background: var(--w-ok-soft);
+  color: var(--w-ok);
+}
+
+.wset-tag--danger {
+  background: var(--w-danger-soft);
+  color: var(--w-danger);
+}
+
+.wset-tag--hint {
+  background: var(--w-hover);
+  color: var(--w-text3);
+}
+
+.wset-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+/* ============================================================ 开关 */
+
+.wset-switch {
+  position: relative;
+  flex: none;
+  width: 46px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 13px;
+  background: var(--w-track);
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+}
+
+.wset-switch[aria-checked="true"] {
+  background: var(--w-on);
+}
+
+.wset-switch__knob {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--w-knob);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.28);
+  transition: transform 0.15s cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+.wset-switch[aria-checked="true"] .wset-switch__knob {
+  transform: translateX(20px);
+}
+
+.wset-switch:focus-visible {
+  outline: 2px solid var(--w-accent);
+  outline-offset: 2px;
+}
+
+.wset-quota-display {
+  position: relative;
+  isolation: isolate;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  min-width: 160px;
+  padding: 3px;
+  border-radius: 999px;
+  background: var(--w-track);
+  box-shadow: inset 0 2px 5px var(--w-ring), inset 0 -1px 0 var(--w-stroke);
+}
+
+.wset-quota-display::before {
+  content: "";
+  position: absolute;
+  inset: 3px auto 3px 3px;
+  z-index: -1;
+  width: calc(50% - 3px);
+  border-radius: inherit;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.24), transparent), var(--w-field);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.28),
+    inset 0 0 0 1px var(--w-stroke),
+    0 2px 5px var(--w-ring);
+  pointer-events: none;
+  transition: transform 0.22s cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+.wset-quota-display[data-view="percent"]::before {
+  transform: translateX(100%);
+}
+
+.wset-quota-display__option {
+  position: relative;
+  cursor: pointer;
+}
+
+.wset-quota-display__option input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: 0;
+  opacity: 0;
+}
+
+.wset-quota-display__option span {
+  display: grid;
+  place-items: center;
+  min-height: 28px;
+  padding: 0 10px;
+  border-radius: 999px;
+  color: var(--w-text2);
+  font-size: 12px;
+  line-height: 1.25;
+  white-space: nowrap;
+}
+
+.wset-quota-display__option input:checked + span {
+  color: var(--w-text);
+  font-weight: 650;
+}
+
+.wset-quota-display__option input:focus-visible + span {
+  outline: 2px solid var(--w-accent);
+  outline-offset: -2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .wset-quota-display::before {
+    transition: none;
+  }
+}
+
+@media (forced-colors: active) {
+  .wset-quota-display {
+    outline: 1px solid ButtonText;
+  }
+
+  .wset-quota-display::before {
+    forced-color-adjust: none;
+    background: Highlight;
+  }
+
+  .wset-quota-display__option input:checked + span {
+    forced-color-adjust: none;
+    color: HighlightText;
+  }
+}
+
+/* ============================================================ 数字步进 */
+
+.wset-step {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  height: 34px;
+  padding: 3px;
+  border: 1px solid var(--w-stroke);
+  border-radius: 10px;
+  background: var(--w-field);
+}
+
+.wset-step--158 {
+  width: 158px;
+}
+
+.wset-step--138 {
+  width: 138px;
+}
+
+.wset-step__btn {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  /* −/+ 是次级符号：用 text2，纯白会盖过输入数字 */
+  color: var(--w-text2);
+  font-family: var(--w-num-font);
+  font-size: 15px;
+  font-weight: 500;
+  line-height: 1;
+  cursor: pointer;
+  transition: background-color 0.12s ease;
+}
+
+.wset-step__btn:hover {
+  background: var(--w-hover);
+}
+
+.wset-step__input {
+  flex: 1;
+  min-width: 0;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--w-text);
+  font-family: var(--w-num-font);
+  font-size: 12.5px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  outline: none;
+}
+
+.wset-step__suffix {
+  flex: none;
+  padding-right: 2px;
+  color: var(--w-text3);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+/* ============================================================ 下拉选择 */
+
+.wset-select {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  height: 34px;
+  padding: 0 10px 0 12px;
+  border: 1px solid var(--w-stroke);
+  border-radius: 10px;
+  background-color: var(--w-field);
+  color: var(--w-text-92);
+  font-family: inherit;
+  font-size: 12.5px;
+  line-height: 1.2;
+  cursor: pointer;
+  transition: background-color 0.12s ease;
+}
+
+.wset-select:hover {
+  background-image: linear-gradient(var(--w-hover), var(--w-hover));
+}
+
+.wset-select:focus-visible {
+  outline: none;
+  border-color: var(--w-accent);
+}
+
+.wset-select__label {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.wset-select__chev {
+  display: flex;
+  flex: none;
+  align-items: center;
+  color: var(--w-text3);
+  /* 16px 图标盒里字形只有 8px 宽（居中留白 4px）：抵消留白，
+     让字形右缘距边框仍是原版的 10px（select 的 padding-right） */
+  margin-right: -4px;
+}
+
+.wset-pop {
+  position: fixed;
+  z-index: 60;
+  padding: 6px;
+  border: 1px solid var(--w-stroke);
+  border-radius: 14px;
+  background: var(--w-menu);
+  box-shadow: var(--w-pop-shadow);
+  backdrop-filter: blur(18px);
+}
+
+.wset-pop__item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  height: 32px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--w-text-92);
+  font-family: inherit;
+  font-size: 12.5px;
+  line-height: 1.2;
+  white-space: nowrap;
+  text-align: left;
+  cursor: pointer;
+}
+
+.wset-pop__item:hover {
+  background: var(--w-hover);
+}
+
+.wset-pop__item--on {
+  color: var(--w-accent);
+  font-weight: 600;
+}
+
+.wset-pop__check {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+}
+
+/* ============================================================ 输入 / 热键 / 字体 */
+
+.wset-input {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  height: 34px;
+  padding: 0 5px 0 10px;
+  border: 1px solid var(--w-stroke);
+  border-radius: 10px;
+  background: var(--w-field);
+  transition: border-color 0.12s ease;
+}
+
+.wset-input--wide {
+  width: 100%;
+}
+
+.wset-input:focus-within {
+  border-color: var(--w-accent);
+}
+
+.wset-input--error {
+  border-color: var(--w-danger);
+}
+
+.wset-input input {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--w-text);
+  font-family: inherit;
+  font-size: 12.5px;
+  outline: none;
+}
+
+.wset-input input::placeholder {
+  color: var(--w-text3);
+}
+
+/* 带一个后缀图标（浏览 / 眼睛）的输入：图标贴右内缘（5px），文字右侧预留 34px，
+   长路径 / 长密钥不会压到图标下面 */
+.wset-input--suffix {
+  position: relative;
+  padding-right: 34px;
+}
+
+.wset-input--suffix .wset-input__btn {
+  position: absolute;
+  top: 50%;
+  right: 5px;
+  transform: translateY(-50%);
+}
+
+.wset-input__btn {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--w-text2);
+  cursor: pointer;
+}
+
+.wset-input__btn:hover {
+  background: var(--w-hover);
+}
+
+.wset-hotkey {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: 186px;
+  height: 34px;
+  padding: 0 4px 0 12px;
+  border: 1px solid var(--w-stroke);
+  border-radius: 10px;
+  background: var(--w-field);
+  cursor: pointer;
+  outline: none;
+  transition: box-shadow 0.12s ease;
+}
+
+.wset-hotkey--rec {
+  box-shadow: inset 0 0 0 1.4px var(--w-on);
+}
+
+.wset-hotkey:focus-visible {
+  box-shadow: inset 0 0 0 1.4px var(--w-on);
+}
+
+.wset-hotkey__label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--w-text);
+  font-size: 12.5px;
+  font-weight: 500;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.wset-hotkey__label--hint {
+  color: var(--w-text3);
+  font-weight: 400;
+}
+
+.wset-hotkey__label--accent {
+  color: var(--w-accent);
+}
+
+.wset-hotkey__label--danger {
+  color: var(--w-danger);
+}
+
+.wset-hotkey__clear {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--w-text3);
+  cursor: pointer;
+}
+
+.wset-hotkey__clear:hover {
+  background: var(--w-hover);
+  color: var(--w-text-92);
+}
+
+.wset-font {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 226px;
+  height: 34px;
+  padding: 0 10px 0 12px;
+  border: 1px solid var(--w-stroke);
+  border-radius: 10px;
+  background-color: var(--w-field);
+  font-family: inherit;
+  cursor: pointer;
+  transition: background-color 0.12s ease;
+}
+
+.wset-font:hover {
+  background-image: linear-gradient(var(--w-hover), var(--w-hover));
+}
+
+.wset-font:focus-visible {
+  outline: none;
+  border-color: var(--w-accent);
+}
+
+.wset-font__label {
+  overflow: hidden;
+  color: var(--w-text-92);
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.wset-font__label--hint {
+  color: var(--w-text3);
+  font-size: 12.5px;
+  font-weight: 400;
+}
+
+.wset-font__chev {
+  display: flex;
+  flex: none;
+  align-items: center;
+  color: var(--w-text3);
+  /* 同 select：抵消 16px 图标盒的居中留白，字形右缘距边框 10px */
+  margin-right: -4px;
+}
+
+/* ============================================================ 多选胶囊 */
+
+.wset-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.wset-chip {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 5px;
+  height: 28px;
+  padding: 0 12px;
+  border: 1px solid var(--w-stroke);
+  border-radius: 999px;
+  background: var(--w-field);
+  color: var(--w-text2);
+  font-family: inherit;
+  font-size: 12.5px;
+  font-weight: 400;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    background-color 0.12s ease,
+    color 0.12s ease;
+}
+
+.wset-chip:hover {
+  background-image: linear-gradient(var(--w-hover), var(--w-hover));
+}
+
+.wset-chip--on {
+  border-color: var(--w-on);
+  background: var(--w-on-soft);
+  color: var(--w-on);
+  font-weight: 500;
+}
+
+.wset-chip--on:hover {
+  background-image: none;
+}
+
+.wset-chip:focus-visible {
+  outline: 2px solid var(--w-accent);
+  outline-offset: 1px;
+}
+
+/* ============================================================ 列表 / 记录编辑器 */
+
+.wset-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+}
+
+.wset-list__row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.wset-list__add {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.wset-list__empty {
+  padding: 4px 0;
+  color: var(--w-text3);
+  font-size: 12px;
+}
+
+.wset-record {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+  /* 行容器不再是「框」：底色交给行内输入框，外层只留间距 */
+  padding: 2px 0;
+  border-radius: 12px;
+}
+
+.wset-record__fields {
+  display: flex;
+  flex: 1;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+}
+
+.wset-record__field {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 120px;
+  color: var(--w-text3);
+  font-size: 11px;
+}
+
+.wset-record__ops {
+  display: flex;
+  flex: none;
+  gap: 6px;
+  padding-bottom: 4px;
+}
+
+/* 行内操作（上移 / 下移 / 删除）：最小 24×24 点击热区 */
+.wset-record__ops .wset-iconbtn {
+  min-width: 24px;
+  min-height: 24px;
+}
+
+/* ============================================================ 排序页账号列表 */
+
+.wset-agents {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+}
+
+.wset-agent {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 5px 4px;
+  border-radius: 10px;
+}
+
+.wset-agent:hover {
+  background: var(--w-hover);
+}
+
+.wset-agent__icon {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+}
+
+.wset-agent__text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.wset-agent__text b {
+  color: var(--w-text);
+  font-size: 12.5px;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.wset-agent__text span {
+  overflow: hidden;
+  color: var(--w-text3);
+  font-size: 11px;
+  line-height: 1.3;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.wset-agent__ops {
+  display: flex;
+  flex: none;
+  gap: 2px;
+}
+
+/* 岛内品牌标记在设置窗里的兜底样式（island.css 不参与本入口） */
+.wset .brand-mark {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+}
+
+.wset .brand-letter {
+  border-radius: 7px;
+  color: #ffffff;
+  font-weight: 600;
+}
+
+/* ============================================================ 弹层：确认框 / 字体库 */
+
+.wset-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(8, 10, 16, 0.32);
+}
+
+.wset-modal__card {
+  border: 1px solid var(--w-rim);
+  background: var(--w-menu);
+  color: var(--w-text);
+  box-shadow: var(--w-pop-shadow);
+}
+
+.wset-confirm {
+  width: 420px;
+  max-width: 100%;
+  padding: 20px 22px 16px;
+  border-radius: 18px;
+}
+
+.wset-confirm__title {
+  color: var(--w-text);
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.wset-confirm__body {
+  margin-top: 8px;
+  color: var(--w-text2);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.wset-confirm__foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 18px;
+}
+
+.wset-fontmodal {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 620px;
+  max-width: 100%;
+  height: 560px;
+  max-height: 100%;
+  padding: 20px 22px 16px;
+  border-radius: 20px;
+}
+
+.wset-fontmodal__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.wset-fontmodal__title {
+  flex: 1;
+  color: var(--w-text);
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.wset-fontmodal__count {
+  color: var(--w-text3);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
+.wset-fontmodal__search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.wset-fontlist {
+  flex: 1;
+  min-height: 0;
+  margin: 0 -2px;
+  padding: 0 2px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--w-scroll) transparent;
+}
+
+.wset-fontlist::-webkit-scrollbar {
+  width: 6px;
+}
+
+.wset-fontlist::-webkit-scrollbar-thumb {
+  border-radius: 3px;
+  background: var(--w-scroll);
+}
+
+.wset-fontlist::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.wset-fontrow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  height: 38px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--w-text-92);
+  font-family: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.wset-fontrow:hover {
+  background: var(--w-hover);
+}
+
+.wset-fontrow--on {
+  background: var(--w-on-soft);
+  color: var(--w-text);
+}
+
+.wset-fontrow__name {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.wset-fontrow__note {
+  flex: none;
+  color: var(--w-text3);
+  font-size: 11px;
+}
+
+.wset-fontrow__badge {
+  flex: none;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--w-tag-soft);
+  color: var(--w-accent);
+  font-family: var(--w-font);
+  font-size: 10.5px;
+  font-weight: 600;
+}
+
+.wset-fontlist__empty {
+  padding: 16px 12px;
+  color: var(--w-text3);
+  font-size: 12px;
+}
+
+.wset-fontpreview {
+  display: flex;
+  align-items: center;
+  min-height: 56px;
+  padding: 9px 14px;
+  border-radius: 12px;
+  background: var(--w-card);
+  color: var(--w-text);
+  font-size: 19px;
+  font-weight: 500;
+  line-height: 1.4;
+}
+
+.wset-fontnote {
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.wset-fontnote--hint {
+  color: var(--w-text3);
+}
+
+.wset-fontnote--ok {
+  color: var(--w-ok);
+}
+
+.wset-fontnote--accent {
+  color: var(--w-accent);
+}
+
+.wset-fontnote--danger {
+  color: var(--w-danger);
+}
+
+.wset-fontmodal__foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+/* ============================================================ 记录编辑器补充 / 高级页 / 关于页 */
+
+/* 开关列：与 34 高输入底部对齐并视觉居中（26 高开关 + 4 内边距） */
+.wset-record__field--switch {
+  flex: 0 0 auto;
+  align-self: flex-end;
+  min-width: 0;
+  padding-bottom: 4px;
+}
+
+/* 行内并排按钮（高级页配置文件行 / 关于页版本与协议行） */
+.wset-rowbtns {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+/* 关于页 Hero 卡：圆角 18、最小高 88、logo 64、应用名 24/600 */
+.wset-about-hero {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  min-height: 88px;
+  margin-bottom: 4px;
+  padding: 10px 18px;
+  border-radius: 18px;
+  background: var(--w-card);
+}
+
+.wset-about-hero__logo {
+  flex: none;
+  width: 64px;
+  height: 64px;
+  object-fit: contain;
+}
+
+.wset-about-hero__titles {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.wset-about-hero__name {
+  color: var(--w-text);
+  font-size: 24px;
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.wset-about-hero__tagline {
+  color: var(--w-text3);
+  font-size: 11.5px;
+  line-height: 1.45;
+}
+
+.wset-about-hero > .wset-tag {
+  align-self: flex-start;
+}
+

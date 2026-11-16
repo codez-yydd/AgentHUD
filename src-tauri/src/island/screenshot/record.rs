@@ -15,10 +15,9 @@
 //! - MP4 用 VideoToolbox 硬编 H.264，再用纯 Rust 的 `mp4` 写封装，边录边写，
 //!   内存占用与时长无关；
 //! - GIF 先把 JPEG 帧落到临时目录，停止时统一编码，这样裁剪可以按帧重编；
-//! - 录制条/预览窗是同一个窗口：省内存改造后按需建、用完销毁——启动不再
-//!   预热，首次录制（或会话内连续录制时窗口尚存）由 build_recorder_window
-//!   建窗/复用，录制结束/取消/关预览直接销毁，下次录制现场重建（首次多
-//!   几百 ms WebView 冷启动，省内存改造已接受该代价）；
+//! - 录制条/预览窗是同一个常驻窗口：应用启动时预热隐藏预建（rec.html 空白
+//!   待命页），录制时 navigate 整页重载复用（WebView 进程热着，省冷启动），
+//!   录制结束/取消/关预览只 hide 不销毁，下次录制继续复用；
 //! - 录制条窗口由于有独立标题，抓帧时用 `OnScreenBelowWindow` 把它自己排除
 //!   在画面之外，录出来的区域里不会出现录制条。
 
@@ -255,10 +254,10 @@ pub async fn shot_record_start(
     let outcome = start_recording(app, id, rect, options).await;
     match &outcome {
         Ok(started) => eprintln!(
-            "[zbar-rec] 开始录制 id={} 格式={} {}×{}",
+            "[agenthud-rec] 开始录制 id={} 格式={} {}×{}",
             started.record_id, started.format, started.width, started.height
         ),
-        Err(e) => eprintln!("[zbar-rec] 开始录制失败: {e}"),
+        Err(e) => eprintln!("[agenthud-rec] 开始录制失败: {e}"),
     }
     outcome
 }
@@ -392,7 +391,7 @@ async fn start_recording(
         // 的录制条窗口（复用模式下 navigate 失败会留下隐藏窗）；覆盖层从未
         // 缩过（缩窗在两者都成功之后），restore 只是幂等兜底
         remove_record(record_id);
-        destroy_recorder_window(&app).await;
+        hide_recorder_window(&app).await;
         let _ = restore_overlay_for_record(&app, session.monitor.x, session.monitor.y).await;
         return Err(e);
     }
@@ -410,7 +409,7 @@ async fn start_recording(
                 Ok((spec, notice)) => (spec, notice),
                 Err(e) => {
                     remove_record(record_id);
-                    destroy_recorder_window(&app).await;
+                    hide_recorder_window(&app).await;
                     let _ =
                         restore_overlay_for_record(&app, session.monitor.x, session.monitor.y)
                             .await;
@@ -429,7 +428,7 @@ async fn start_recording(
     // 失败时覆盖层保持原样，不会出现「提前缩窗又被打回」的闪动。
     if let Err(e) = park_overlay_for_record(&app).await {
         remove_record(record_id);
-        destroy_recorder_window(&app).await;
+        hide_recorder_window(&app).await;
         let _ = restore_overlay_for_record(&app, session.monitor.x, session.monitor.y).await;
         return Err(e);
     }
@@ -532,7 +531,7 @@ pub async fn shot_record_gif_fps(record_id: u64, fps: u32) -> Result<RecordState
         return Err("只有 GIF 可以调整帧率".into());
     }
     let fps = fps.clamp(1, 30);
-    eprintln!("[zbar-rec] 改 GIF 帧率 id={record_id} -> {fps}fps");
+    eprintln!("[agenthud-rec] 改 GIF 帧率 id={record_id} -> {fps}fps");
     let result = {
         let inner = rec
             .inner
@@ -586,7 +585,7 @@ pub async fn shot_record_gif_fps(record_id: u64, fps: u32) -> Result<RecordState
     })
     .await
     .map_err(|e| join_error_message("重新生成 GIF", e))??;
-    eprintln!("[zbar-rec] GIF 重编码完成 id={record_id}");
+    eprintln!("[agenthud-rec] GIF 重编码完成 id={record_id}");
     shot_record_state(record_id)
 }
 
@@ -723,14 +722,14 @@ pub async fn shot_record_export(
     let end = end_ms.clamp(0.0, duration).max(start + 1.0);
     let trimmed = start > 60.0 || end < duration - 60.0;
     eprintln!(
-        "[zbar-rec] 导出请求 id={record_id} {:.0}ms~{:.0}ms action={action} 裁剪={trimmed}",
+        "[agenthud-rec] 导出请求 id={record_id} {:.0}ms~{:.0}ms action={action} 裁剪={trimmed}",
         start, end
     );
     tauri::async_runtime::spawn_blocking(move || {
         let source = PathBuf::from(&result.path);
         let path = if trimmed {
             let trimmed_path = trim_recording(&rec, &source, &result, start, end)?;
-            eprintln!("[zbar-rec] 裁剪完成 {}", trimmed_path.display());
+            eprintln!("[agenthud-rec] 裁剪完成 {}", trimmed_path.display());
             trimmed_path
         } else {
             source
@@ -738,10 +737,10 @@ pub async fn shot_record_export(
         match action.as_str() {
             "copy" => {
                 if let Err(e) = clipboard_file(&path) {
-                    eprintln!("[zbar-rec] 复制失败: {e}");
+                    eprintln!("[agenthud-rec] 复制失败: {e}");
                     return Err(e);
                 }
-                eprintln!("[zbar-rec] 已复制 {}", path.display());
+                eprintln!("[agenthud-rec] 已复制 {}", path.display());
                 Ok(Some(path.to_string_lossy().to_string()))
             }
             "save" => {
@@ -780,7 +779,7 @@ pub async fn shot_record_export(
                     .into_path()
                     .map_err(|e| format!("解析保存路径失败: {e}"))?;
                 std::fs::copy(&path, &target).map_err(|e| format!("写入录屏文件失败: {e}"))?;
-                eprintln!("[zbar-rec] 已保存 {}", target.display());
+                eprintln!("[agenthud-rec] 已保存 {}", target.display());
                 Ok(Some(target.to_string_lossy().to_string()))
             }
             other => Err(format!("未知操作: {other}")),
@@ -795,22 +794,13 @@ pub async fn shot_record_export(
 pub async fn shot_record_close(app: AppHandle, record_id: u64) -> Result<(), String> {
     stop_and_wait_detached(record_id).await;
     remove_record(record_id);
-    let app_main = app.clone();
-    let _ = on_main_thread(&app, move || {
-        // 预览窗即录制条窗口（同一窗口）：关闭即销毁（省内存改造，原先
-        // 只 hide 保留热 WebView 供下次复用），下次录制由
-        // build_recorder_window 冷建分支现场重建；预览产物（MP4/GIF 文件）
-        // 落在磁盘，不受窗口销毁影响
-        if let Some(win) = app_main.get_webview_window(REC_WINDOW_LABEL) {
-            let _ = win.destroy();
-        }
-        Ok(())
-    })
-    .await;
+    // 关闭走 hide_recorder_window：板块可见时隐藏复用（下次录制 navigate
+    // 整页重载，不吃 WebView 冷启动），板块隐藏时销毁
+    hide_recorder_window(&app).await;
     close_shot(&app).await
 }
 
-/// 出错 / 用户取消：销毁录制窗，把覆盖层放回原位让用户重选。
+/// 出错 / 用户取消：收起录制窗，把覆盖层放回原位让用户重选。
 #[tauri::command]
 pub async fn shot_record_cancel(
     app: AppHandle,
@@ -825,17 +815,9 @@ pub async fn shot_record_cancel(
     });
     stop_and_wait_detached(record_id).await;
     remove_record(record_id);
-    let app_main = app.clone();
-    let _ = on_main_thread(&app, move || {
-        // 录制条窗口直接销毁（省内存改造）：窗口可能带着失败/取消态的
-        // 内容，没有保留价值；下次录制由 build_recorder_window 冷建分支
-        // 现场重建
-        if let Some(win) = app_main.get_webview_window(REC_WINDOW_LABEL) {
-            let _ = win.destroy();
-        }
-        Ok(())
-    })
-    .await;
+    // 取消同样走 hide_recorder_window：板块可见时隐藏复用（隐藏前可能带着
+    // 失败/取消态的内容，下次录制会整页 navigate 重载掉），板块隐藏时销毁
+    hide_recorder_window(&app).await;
     if let Some(text) = message.filter(|text| !text.trim().is_empty()) {
         let _ = app.emit_to(super::SHOT_WINDOW_LABEL, super::SHOT_RECORD_ERROR_EVENT, text);
     }
@@ -854,6 +836,16 @@ pub fn is_recording() -> bool {
             map.values()
                 .any(|rec| rec.inner.lock().map(|i| i.running).unwrap_or(false))
         })
+        .unwrap_or(false)
+}
+
+/// 是否还有录制会话（录制中，或录完的预览窗还开着——两种状态都保留在
+/// `RECORDS` 里）。截图板块隐藏时据此拒绝销毁录制条/预览窗：会话还活着就
+/// 让窗口留着，等用户录完、关掉预览后再收敛。
+pub fn has_active_recordings() -> bool {
+    records()
+        .lock()
+        .map(|map| !map.is_empty())
         .unwrap_or(false)
 }
 
@@ -1066,11 +1058,10 @@ fn resolve_recorder_bar_position(
 
 /// 录制条 / 预览窗窗口（同一个窗口：录制中是右下角录制条，结束后原地放大
 /// 成预览）。已存在则复用——整页 navigate 到新会话参数（WebView 进程热着，
-/// 与截图覆盖层 reuse_overlay 同模式），恢复录制条尺寸并按选区避让重新
-/// 落位后 show；不存在才新建（省内存改造后的常态主路径：启动不再预热、
-/// 录制结束即销毁，每次录制首次进录制条都要吃一次 WebView 冷启动的几百
-/// 毫秒——URL 直接带 id/format，RecApp 首次加载即拿到会话参数，倒计时
-/// 与启动黑屏根治的时序只依赖建窗后的先后关系，见下方建窗分支注释）。
+/// 与截图覆盖层 reuse_overlay 同模式，省 WebView 冷启动的几百毫秒），恢复
+/// 录制条尺寸并按选区避让重新落位后 show；不存在才新建。窗口的消失统一
+/// 收敛为 hide（录制结束/取消/关预览，见 hide_recorder_window 与
+/// shot_record_close/cancel），让下一次录制继续吃到热 WebView。
 fn build_recorder_window(
     app: &AppHandle,
     record_id: u64,
@@ -1140,19 +1131,88 @@ fn build_recorder_window(
     Ok(win)
 }
 
-/// 销毁录制条 / 预览窗：省内存改造后窗口不再常驻（启动预热已删、录制
-/// 结束/取消/关预览即销毁），下次录制走 build_recorder_window 冷建分支
-/// 现场重建。错误回滚路径（probe 失败 / 建窗失败 / 收起覆盖层失败）同样
-/// 销毁刚建好/复用的窗口——录制没开始，不留待命 WebView。
-async fn destroy_recorder_window(app: &AppHandle) {
+/// 隐藏录制条 / 预览窗：板块可见时窗口常驻复用，启动预热、录制、预览共用
+/// 同一个 WebView；销毁会让下次录制重新吃 WebView 冷启动。错误回滚路径
+/// （probe 失败 / 建窗失败 / 收起覆盖层失败）也走这里。
+///
+/// 截图板块已隐藏时不再保留待命窗口，直接销毁——与 `set_tab_visible` 的隐藏
+/// 分支同口径，否则这个隐藏的 WebView 会重新常驻到下次显隐切换。
+async fn hide_recorder_window(app: &AppHandle) {
+    let tab_hidden = super::super::load_config()
+        .hidden_tabs
+        .iter()
+        .any(|key| key == "shot");
     let app_main = app.clone();
     let _ = on_main_thread(app, move || {
         if let Some(win) = app_main.get_webview_window(REC_WINDOW_LABEL) {
-            let _ = win.destroy();
+            if tab_hidden {
+                let _ = win.destroy();
+            } else {
+                let _ = win.hide();
+            }
         }
         Ok(())
     })
     .await;
+}
+
+/// 预热录制条窗口：应用启动线程（lib.rs）在截图覆盖窗口预热完成后顺带
+/// 调用，隐藏预建 rec.html 空白待命页。首次录制由 [`build_recorder_window`]
+/// 复用该窗口：只走 navigate + 定位 + show，省掉 WebView 冷启动。幂等：
+/// 窗口已存在（已预热 / 录制中 / 预览中）直接返回。待命页无 id 参数，
+/// RecApp 渲染全透明空白页，不起轮询、不报错、不触发任何取消副作用。
+pub async fn prewarm_recorder_window(app: AppHandle) -> Result<(), String> {
+    let app_main = app.clone();
+    on_main_thread(&app, move || {
+        // 延迟预热期间板块可能已被隐藏：以最新配置为准，避免过期的预热
+        // 建出刚被隐藏路径销毁的窗（此时该由隐藏路径负责销毁，不该重建）。
+        if super::super::load_config()
+            .hidden_tabs
+            .iter()
+            .any(|key| key == "shot")
+        {
+            return Ok(());
+        }
+        if app_main.get_webview_window(REC_WINDOW_LABEL).is_some() {
+            return Ok(()); // 已有窗口（已预热 / 录制中 / 预览中），不动
+        }
+        let monitor = monitor_list(&app_main)
+            .into_iter()
+            .find(|m| m.primary)
+            .or_else(|| monitor_list(&app_main).into_iter().next())
+            .ok_or_else(|| "没有检测到显示器".to_string())?;
+        // 窗口保持隐藏，位置随手落在录制条默认位（右下角），只为让 WebView
+        // 提前加载 rec.html；真正显示时 build_recorder_window 会重新定位
+        let work = monitor_work_area(&monitor);
+        let ((x, y), _) = resolve_recorder_bar_position(&monitor, work, None);
+        let win = WebviewWindowBuilder::new(
+            &app_main,
+            REC_WINDOW_LABEL,
+            WebviewUrl::App("rec.html".into()),
+        )
+        .title(REC_WINDOW_TITLE)
+        .inner_size(REC_BAR_W, REC_BAR_H)
+        .decorations(false)
+        .transparent(true)
+        .always_on_top(true)
+        .skip_taskbar(true)
+        .shadow(false)
+        .resizable(false)
+        .maximizable(false)
+        .minimizable(false)
+        .closable(false)
+        .visible(false)
+        .focused(false)
+        .background_throttling(tauri::utils::config::BackgroundThrottlingPolicy::Disabled)
+        // 合并 WebView2 渲染进程（内存压降专项，见 webview_args.rs 模块注释）
+        .merged_renderer()
+        .build()
+        .map_err(|e| format!("预热录制窗口失败: {e}"))?;
+        let _ = win.set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
+        let _ = win.set_position(PhysicalPosition::new(x, y));
+        Ok(())
+    })
+    .await
 }
 
 // ============================================================
@@ -1279,7 +1339,7 @@ fn run_ffmpeg_recording(rec: Arc<Recording>, spec: CaptureSpec, dir: PathBuf) {
             let mut downgraded: Option<ffmpeg::FfmpegRecording> = None;
             if encoder != ffmpeg::H264Encoder::X264 {
                 eprintln!(
-                    "[zbar-rec] 硬件编码器 {} 启动失败（退出码 {}），降级 libx264 重试",
+                    "[agenthud-rec] 硬件编码器 {} 启动失败（退出码 {}），降级 libx264 重试",
                     encoder.name(),
                     status.code().unwrap_or(-1)
                 );
@@ -1297,7 +1357,7 @@ fn run_ffmpeg_recording(rec: Arc<Recording>, spec: CaptureSpec, dir: PathBuf) {
             match downgraded {
                 Some(retried) => {
                     proc = retried;
-                    eprintln!("[zbar-rec] 已切换为 libx264（软件编码）继续本次录制");
+                    eprintln!("[agenthud-rec] 已切换为 libx264（软件编码）继续本次录制");
                     // 时长基准重置到软编真正开始抓帧的时刻（降级重启拖了约 1.2s）
                     rec.started_ms
                         .store(super::now_ms() as u64, Ordering::Relaxed);
@@ -1428,7 +1488,7 @@ fn run_recording(rec: Arc<Recording>, spec: CaptureSpec, dir: PathBuf) {
                 return;
             }
             Err(error) => {
-                eprintln!("[zbar-rec] ScreenCaptureKit 起流失败，回退逐帧抓屏: {error}");
+                eprintln!("[agenthud-rec] ScreenCaptureKit 起流失败，回退逐帧抓屏: {error}");
             }
         }
     }

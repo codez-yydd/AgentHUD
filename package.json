@@ -1,7 +1,7 @@
 {
   "name": "zai-floating-monitor",
   "private": true,
-  "version": "2.0.1",
+  "version": "2.0.4",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -11,6 +11,7 @@
     "test:speed": "tsc -p scripts/tsconfig.speed.json && node scripts/run-speed-tests.mjs",
     "test:layout": "node --experimental-strip-types scripts/ui-layout-tests.mjs",
     "test:font": "node --experimental-strip-types scripts/font-settings-tests.mjs",
+    "test:notify": "node --experimental-strip-types scripts/notify-pulse-tests.mjs",
     "tauri": "tauri"
   },
   "dependencies": {

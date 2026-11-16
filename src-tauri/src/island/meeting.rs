@@ -1018,6 +1018,27 @@ fn stop_session() -> Result<MeetingStopResult, String> {
     })
 }
 
+/// 面板关闭兜底停止：工具板块被隐藏 / 灵动岛总开关关闭时由 `sync_tab_services`
+/// 与 `stop_services` 调用。
+///
+/// 有活动会话时走与 `meeting_stop` 完全相同的 `stop_session`：finalize 回填
+/// WAV 头 → 自动音量 → rename 成正式文件 → 写侧车 JSON，已录内容正常保存；
+/// 同时 `ControlMsg::Stop` 让 `agenthud-meeting-rec` keeper 线程在本线程 drop
+/// Stream 后 `return` 退出，不保留后台录音线程。没有活动会话返回 `None`，
+/// 不做任何事（也不产生「没有进行中的录音」错误日志）。
+///
+/// 本函数只负责停：`stop_session` 的 finalize / 自动音量会整段读写 WAV，
+/// 长录音可能耗时数秒，调用方必须放到后台线程执行，不能阻塞配置应用。
+pub fn stop_on_panel_close() -> Option<Result<MeetingStopResult, String>> {
+    // 面板关闭时很可能本来就没在录音，先看一眼会话槽，直接 None 返回。
+    // 检查与 stop 之间若被前端同时点「结束」（极小概率），stop_session 返回
+    // Err，调用方记一条日志即可——数据已由先到的那次 stop 正常落盘，不会丢。
+    if session_lock().is_none() {
+        return None;
+    }
+    Some(stop_session())
+}
+
 // ============================================================
 // 列表 / 管理
 // ============================================================
@@ -1563,5 +1584,13 @@ mod tests {
         assert!(sanitize_meeting_name("a*b").is_err());
         assert!(sanitize_meeting_name(&"名".repeat(101)).is_err());
         assert_eq!(sanitize_meeting_name(&"名".repeat(100)).unwrap().chars().count(), 100);
+    }
+
+    #[test]
+    fn stop_on_panel_close_without_session_is_none() {
+        // 单测不启动真实录音会话：空闲时面板关闭 / 岛总开关关闭必须返回 None，
+        // 不写文件也不报错（兜底停止只在有活动会话时动手）。
+        assert!(stop_on_panel_close().is_none());
+        assert!(stop_on_panel_close().is_none());
     }
 }

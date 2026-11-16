@@ -2114,7 +2114,7 @@ pub fn start_if_enabled(app: &AppHandle) {
     }
     CURRENT_EDGE.store(cfg.edge_of().index(), Ordering::Relaxed);
     if let Err(e) = ensure_hud_bar_window(app) {
-        eprintln!("[zbar-hud-bar] 恢复停靠条失败: {e}");
+        eprintln!("[agenthud-hud-bar] 恢复停靠条失败: {e}");
         return;
     }
     start_feed(app.clone());

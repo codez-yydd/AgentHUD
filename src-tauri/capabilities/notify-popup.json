@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "notify-popup",
+  "description": "Capability for the new-message glass popup window (label notify-popup), created lazily by Rust (see island/popup.rs). This window never takes focus and only draws cards; it needs event listen/emit for zbar://notify-popup-show and zbar://notify-popup-config. Window geometry is owned by Rust, so no window permissions are required; custom commands (notify_popup_ready / notify_popup_resize / notify_popup_hide / island_notify_open) are not ACL-gated.",
+  "windows": ["notify-popup"],
+  "permissions": ["core:event:default"]
+}

@@ -10,14 +10,18 @@
 //!   阴影默认），标题栏由 dashboard 前端自绘（拖拽 / 最大化 / 关闭见
 //!   src/dashboard/TitleBar.tsx），边缘缩放走 tao 在不透明窗上的
 //!   WM_NCHITTEST 系统热区（前端不挂 resize 热区）；用户点标题栏"×"时
-//!   **关闭即销毁**（省内存改造，lib.rs 的 CloseRequested 挂点已不再拦截
-//!   本窗口）——dashboard 的 WebView 渲染进程随之释放，下次打开（托盘
-//!   右键"打开主窗口" / 悬浮窗统计页按钮）走现场建窗，接受首次几百 ms
-//!   冷启动；应用退出仍由托盘"退出 AgentHUD"完成。
-//! - 启动预热（已取消）：原先应用 setup 阶段即预建隐藏的主窗口
-//!   （prebuild_main_window，visible(false)），首次打开只剩 show + focus；
-//!   省内存改造删除该预热——主窗口属于"用户没打开就不该占内存"的窗体，
-//!   冷建路径成为主路径（本文件下方 open_main_window_on_main_thread）。
+//!   **关闭即销毁**（lib.rs 的 CloseRequested 挂点不拦截本窗口）——
+//!   dashboard 的 WebView 渲染进程随之释放，第二次及以后的打开走现场
+//!   建窗（此时 vite 已热 / 生产版资源本地加载，秒建低风险）；应用退出
+//!   仍由托盘"退出 AgentHUD"完成。
+//! - 启动预热（v2.0.4 恢复）：应用 setup 阶段即预建隐藏的主窗口
+//!   （prebuild_main_window，visible(false)），dashboard.html 重页面的
+//!   加载藏进启动期，首次打开只剩 show + focus。恢复原因：v2.0.2 省内存
+//!   改造删除预热后改为点击时冷建，dev 模式 vite 按需编译 dashboard.html
+//!   首次加载 8-10 秒，点击打开时主线程同步冷建重页面 WebView 撞上
+//!   初始化死锁窗口 → 白屏 + 窗口消息泵挂死（生产版同样受首次冷建拖累，
+//!   PrintWindow 对挂死窗口阻塞 2 分钟以上是硬证据）；v2.0.1 预建模式
+//!   无此问题。冷建兜底路径保留（prebuild 失败 / 关闭销毁后的再次打开）。
 //! - 跳页：open_main_window 可带 page（Dashboard 侧栏页 id，白名单见
 //!   DASHBOARD_PAGES），开窗/聚焦后经 zbar://dashboard-navigate 事件让
 //!   DashboardApp 切到对应页（面板价格入口 → 主窗口定价页走此通道）。
@@ -161,13 +165,14 @@ pub fn open_main_window_on_main_thread(
     page: Option<&str>,
 ) -> Result<(), String> {
     if let Some(win) = app.get_webview_window(MAIN_WINDOW_LABEL) {
-        // 已存在（用户没关 / 关闭后又被别的路径重建）的秒开路径：显示 →
-        // 取消最小化 → 聚焦（顺序固定，最小化状态下直接 set_focus 在
-        // Windows 上不会还原窗口）。WebView 与页面监听均已就绪，跳页
-        // 事件必达，不需要 pending 补发；但 PENDING_PAGE 要同步为
-        // 「最近一次打开意图」：带 page 写入新值、不带 page 清空——
-        // 否则更早一次冷开残留的待补发页，会被后续某次窗口重建后的
-        // 前端挂载误消费，落到旧意图的页
+        // 秒开路径：显示 → 取消最小化 → 聚焦（顺序固定，最小化状态下
+        // 直接 set_focus 在 Windows 上不会还原窗口）。启动期预建的隐藏
+        // 窗口（prebuild_main_window）与用户没关的窗口都走这条分支：
+        // WebView 已预热/常驻，只剩 show + focus。WebView 与页面监听
+        // 均已就绪，跳页事件必达，不需要 pending 补发；但 PENDING_PAGE
+        // 要同步为「最近一次打开意图」：带 page 写入新值、不带 page
+        // 清空——否则更早一次冷开残留的待补发页，会被后续某次窗口
+        // 重建后的前端挂载误消费，落到旧意图的页
         let _ = win.show();
         let _ = win.unminimize();
         let _ = win.set_focus();
@@ -180,15 +185,17 @@ pub fn open_main_window_on_main_thread(
         emit_dashboard_navigate(app, page);
         return Ok(());
     }
-    // 冷建路径（省内存改造后的主路径）：关闭即销毁后，每次打开都是现场
-    // 建窗。带 page 时先把跳页意图存入 PENDING_PAGE 再建窗——dashboard
-    // 前端挂载完成后会主动 invoke take_pending_dashboard_page 取走，emit
-    // 只是尽力而为的双保险（此时监听多半未注册，事件可能被丢弃）。
-    // 丢失时主窗口落在默认总览页的老问题由 pending 补发兜住
+    // 冷建兜底路径（v2.0.4 恢复预建后不再是最早打开的主路径）：prebuild
+    // 失败 / 关闭即销毁后的再次打开走这里——此时 vite 已热 / 生产版资源
+    // 本地加载，秒建低风险。带 page 时先把跳页意图存入 PENDING_PAGE 再
+    // 建窗——dashboard 前端挂载完成后会主动 invoke
+    // take_pending_dashboard_page 取走，emit 只是尽力而为的双保险（此时
+    // 监听多半未注册，事件可能被丢弃）。丢失时主窗口落在默认总览页的
+    // 老问题由 pending 补发兜住
     if let Some(p) = normalize_dashboard_page(page) {
         set_pending_page(p);
     }
-    let outcome = ensure_main_window(app);
+    let outcome = ensure_main_window(app, true);
     if outcome.is_ok() {
         emit_dashboard_navigate(app, page);
     } else {
@@ -196,6 +203,24 @@ pub fn open_main_window_on_main_thread(
         let _ = take_pending_page();
     }
     outcome
+}
+
+/// 应用启动时预建主窗口（隐藏，v2.0.4 恢复，省内存改造曾删除）：把
+/// dashboard.html 重页面的加载成本从「首次打开」的等待路径挪到启动阶段
+/// ——首次点击「打开主窗口」（托盘菜单 / 悬浮窗统计页按钮）时窗口已
+/// 存在，只剩 show + focus。恢复原因：点击时冷建在 dev 模式下撞上 vite
+/// 按需编译（dashboard.html 首次加载 8-10s），主线程同步冷建重页面
+/// WebView 撞上初始化死锁窗口 → 白屏 + 窗口消息泵挂死（详见模块 doc）。
+///
+/// 调用时机与线程：与建窗铁律同源，必须在 setup 阶段的主线程事件循环
+/// 上下文调用（setup 闭包本身在主线程执行，可直接调用）。
+/// 隐藏窗口不出现在任务栏：Windows 下任务栏按钮由窗口的 WS_VISIBLE 决定，
+/// `visible(false)` 建出的窗口没有任务栏按钮，`show()` 之后才出现（本机
+/// 实测类推）；因此不需要额外调 skip_taskbar，形态与正常打开时完全一致。
+/// 失败只记日志、不阻断启动：首次打开会走 open_main_window_on_main_thread
+/// 的「窗口不存在」冷建兜底分支按可见窗口重新创建。
+pub fn prebuild_main_window(app: &AppHandle) -> Result<(), String> {
+    ensure_main_window(app, false)
 }
 
 /// 创建 "main-window" 主窗口（必须在主线程事件循环上下文调用，见模块
@@ -206,10 +231,10 @@ pub fn open_main_window_on_main_thread(
 /// shadow，交给系统），保证是标准桌面大窗而非悬浮工具窗。已存在时提前
 /// 返回 Ok（幂等，避免同名重复建窗报错）。
 ///
-/// 省内存改造后本函数只有一种创建形态：可见直建（关闭即销毁，每次打开
-/// 都走这里），原先隐藏预建的 visible(false) 分支随 prebuild_main_window
-/// 一并删除。
-fn ensure_main_window(app: &AppHandle) -> Result<(), String> {
+/// `visible` 区分两种创建路径：启动预热用 false（隐藏建窗，首次打开时
+/// show + focus，见 prebuild_main_window）；打开命令在窗口缺失时用 true
+/// （冷建兜底路径，行为与直接建窗一致）。
+fn ensure_main_window(app: &AppHandle, visible: bool) -> Result<(), String> {
     if app.get_webview_window(MAIN_WINDOW_LABEL).is_some() {
         return Ok(());
     }
@@ -231,7 +256,7 @@ fn ensure_main_window(app: &AppHandle) -> Result<(), String> {
     .decorations(false)
     .resizable(true)
     .center()
-    .visible(true)
+    .visible(visible)
     // 合并 WebView2 渲染进程（内存压降专项，见 webview_args.rs 模块注释）
     .merged_renderer()
     .build()

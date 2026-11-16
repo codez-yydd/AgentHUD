@@ -158,7 +158,7 @@ pub fn start_if_enabled(app: &AppHandle) {
         return;
     }
     if let Err(e) = ensure_panel_window(app) {
-        eprintln!("[zbar-panel] 恢复悬浮窗失败: {e}");
+        eprintln!("[agenthud-panel] 恢复悬浮窗失败: {e}");
     }
 }
 
