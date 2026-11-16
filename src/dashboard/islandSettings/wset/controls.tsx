@@ -122,7 +122,7 @@ export function PageResetBar({ onReset }: { onReset: () => void }) {
       <Confirm
         open={open}
         title="恢复本页默认值？"
-        body="这一页的设置会全部恢复为出厂默认；点「保存并应用」之后才会写入 settings.json。"
+        body="这一页的设置会全部恢复为出厂默认，并自动保存、立即生效。"
         okText="恢复本页"
         onOk={() => {
           setOpen(false);
@@ -257,6 +257,64 @@ export function Stepper({
       >
         +
       </button>
+    </div>
+  );
+}
+
+/** 由 step 推断显示小数位（0.5 → 1 位，0.05 → 2 位，整数 → 0 位） */
+function stepDecimals(step: number): number {
+  if (!Number.isFinite(step) || step >= 1) return 0;
+  const text = String(step);
+  const dot = text.indexOf(".");
+  return dot < 0 ? 0 : text.length - dot - 1;
+}
+
+/**
+ * 滑动条：原生 input[type=range] + 同风格包装。
+ * 滑块旁常驻显示「当前值 + 单位」，拖动时同步刷新；支持小数 step（字号 0.5）。
+ */
+export function Slider({
+  value,
+  min,
+  max,
+  step = 1,
+  suffix,
+  onChange,
+  ariaLabel,
+  disabled,
+}: {
+  value: number;
+  min: number;
+  max: number;
+  step?: number;
+  suffix?: string;
+  onChange: (next: number) => void;
+  ariaLabel?: string;
+  disabled?: boolean;
+}) {
+  const decimals = stepDecimals(step);
+  const safe = Number.isFinite(value) ? value : min;
+  // 已填充比例：用 CSS 变量画双色轨道（原生 range 不能用 ::before 改已填充色）
+  const pct = max > min ? Math.min(100, Math.max(0, ((safe - min) / (max - min)) * 100)) : 0;
+  const shown = decimals > 0 ? safe.toFixed(decimals) : String(Math.round(safe));
+  return (
+    <div className={`wset-slider${disabled ? " wset-slider--disabled" : ""}`}>
+      <input
+        className="wset-slider__input"
+        type="range"
+        min={min}
+        max={max}
+        step={step}
+        value={safe}
+        disabled={disabled}
+        aria-label={ariaLabel}
+        style={{ "--w-slider-pct": `${pct}%` } as CSSProperties}
+        onChange={(event) => onChange(Number(event.target.value))}
+      />
+      <span className="wset-slider__value" aria-hidden="true">
+        {shown}
+        {suffix ? <span className="wset-slider__suffix">{suffix}</span> : null}
+      </span>
     </div>
   );
 }

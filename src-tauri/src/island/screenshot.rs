@@ -1759,16 +1759,36 @@ async fn start_capture_inner(
 
     let started = std::time::Instant::now();
     let app_main = app.clone();
+    // 普通截图（框选 / 全屏 / 窗口）保留全部自家常规窗口，让用户能用自己的
+    // 截图功能截到 AgentHUD；滚动截图 / 录屏的窗口拾取与无缝过渡依赖「自家
+    // 窗口已隐藏」，仍只保留岛 + 主窗口（详见 screen_windows 处的注释）。
+    let keep_all_own = mode != "scroll" && mode != "record";
     let hidden = on_main_thread(&app, move || {
         hide_overlay(&app_main);
-        // 灵动岛 + 主窗口先留着：抓屏画面里要有 HUD / Dashboard，用户才能
-        // 截到它们；抓完（画面已冻结）再统一藏起来让位给覆盖层。
+        let island_and_main: Vec<&str> = vec![
+            super::ISLAND_WINDOW_LABEL,
+            crate::main_window::MAIN_WINDOW_LABEL,
+        ];
+        let all_regular: Vec<&str> = vec![
+            super::ISLAND_WINDOW_LABEL,
+            crate::main_window::MAIN_WINDOW_LABEL,
+            crate::island_settings_window::ISLAND_SETTINGS_WINDOW_LABEL,
+            crate::hud_bar::HUD_BAR_WINDOW_LABEL,
+            crate::hud_bar::HUD_CARD_WINDOW_LABEL,
+            crate::pet::PET_WINDOW_LABEL,
+            crate::panel::PANEL_WINDOW_LABEL,
+            crate::session_hud::SESSION_HUD_WINDOW_LABEL,
+            super::popup::POPUP_WINDOW_LABEL,
+        ];
+        // 抓完（画面已冻结）再统一藏起保留窗口让位给覆盖层：shot_ready 里
+        // 会先显示冻结帧、再 hide_own_windows(&[]) 藏掉全部，全程看不到桌面。
         let hidden = hide_own_windows(
             &app_main,
-            &[
-                super::ISLAND_WINDOW_LABEL,
-                crate::main_window::MAIN_WINDOW_LABEL,
-            ],
+            if keep_all_own {
+                &all_regular
+            } else {
+                &island_and_main
+            },
         );
         if let Ok(mut guard) = hidden_slot().lock() {
             *guard = hidden.clone();

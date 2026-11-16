@@ -15,10 +15,9 @@ import logoMark from "../../assets/logo-mark.png";
 import { APPEARANCE_CHANGED_EVENT } from "../../appearance";
 import { fontFamilyWithFallback, SETTINGS_FONT_STACK, SETTINGS_NUM_FONT_STACK } from "../../island/fontFamily";
 import { onEvent } from "../../island/api";
-import { Button, Confirm, IconButton, StatusDot } from "./wset/controls";
+import { Button, IconButton, StatusDot } from "./wset/controls";
 import {
   ActionsIcon,
-  CheckIcon,
   CloseIcon,
   GearIcon,
   HotkeyIcon,
@@ -28,7 +27,6 @@ import {
   LookIcon,
   MediaIcon,
   MessageIcon,
-  OpenIcon,
   OrderIcon,
   StockIcon,
   SystemIcon,
@@ -43,7 +41,7 @@ import {
   type PageKey,
   type PageMeta,
 } from "./wset/schema";
-import { hideSettingsWindow, openSettingsFile, startWindowDrag } from "./wset/settingsApi";
+import { hideSettingsWindow, startWindowDrag } from "./wset/settingsApi";
 import { useSettingsDraft } from "./wset/useSettingsDraft";
 import { AppearancePage } from "./wset/pages/AppearancePage";
 import { OrderPage } from "./wset/pages/OrderPage";
@@ -93,7 +91,6 @@ export function SettingsWindow() {
   const draft = useSettingsDraft();
   const [page, setPage] = useState<PageKey>("look");
   const [recording, setRecording] = useState(false);
-  const [confirmClose, setConfirmClose] = useState(false);
   /** 外观事件计数：只用来让 auto 主题重新解析（.dark 由别处切换） */
   const [appearanceTick, setAppearanceTick] = useState(0);
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -166,46 +163,26 @@ export function SettingsWindow() {
     return () => cancelAnimationFrame(raf);
   }, [firstErrorKey, page]);
 
+  const flushPendingSave = draft.flushPendingSave;
   const hide = useCallback(() => {
+    // 关窗前尽力冲刷一次尚未提交的防抖保存（来不及也无妨，
+    // 设计上以「最后一次已提交保存」为界，不追求绝对不丢）
+    flushPendingSave();
     void hideSettingsWindow();
-  }, []);
+  }, [flushPendingSave]);
 
-  /** 关闭 / 取消 / Esc：有未保存改动先确认 */
-  const requestClose = useCallback(() => {
-    if (draft.dirtyCount > 0) {
-      setConfirmClose(true);
-      return;
-    }
-    hide();
-  }, [draft.dirtyCount, hide]);
-
-  const handleSave = useCallback(() => {
-    // 输入框里的半截编辑（例如步进框里刚敲的数字）先提交再保存：
-    // blur 会同步触发 onBlur → setValue，draftRef 随即就是最新值
-    const active = document.activeElement;
-    if (active instanceof HTMLElement) active.blur();
-    void draft.save();
-  }, [draft]);
-
-  // 键盘：Ctrl/Cmd+S 保存；Esc 关闭（录制中 / 弹层打开时由对应控件接管）
+  // 键盘：Esc 直接关窗（录制中 / 弹层打开时由对应控件接管）
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (recording) return;
-      const mod = event.ctrlKey || event.metaKey;
-      if (mod && (event.key === "s" || event.key === "S")) {
-        event.preventDefault();
-        handleSave();
-        return;
-      }
       if (event.key === "Escape") {
-        if (confirmClose) return;
         event.preventDefault();
-        requestClose();
+        hide();
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [confirmClose, handleSave, recording, requestClose]);
+  }, [hide, recording]);
 
   /** 标题栏整条可拖动；按钮区排除（否则点按钮会先触发拖动） */
   const onHeaderMouseDown = (event: ReactMouseEvent<HTMLElement>) => {
@@ -213,14 +190,6 @@ export function SettingsWindow() {
     const target = event.target as HTMLElement | null;
     if (target?.closest("button, a, input, [data-no-drag]")) return;
     void startWindowDrag();
-  };
-
-  const openConfig = () => {
-    void openSettingsFile().catch((error) => {
-      const reason =
-        typeof error === "string" ? error : error instanceof Error ? error.message : String(error);
-      draft.setStatus(`打开配置文件失败：${reason}`, "danger", true);
-    });
   };
 
   const renderPage = (): ReactNode => {
@@ -243,7 +212,7 @@ export function SettingsWindow() {
     if (!draft.doc) {
       return (
         <div className="wset-panel">
-          <p className="wset-panel__desc">正在读取 settings.json…</p>
+          <p className="wset-panel__desc">正在读取设置…</p>
         </div>
       );
     }
@@ -293,13 +262,9 @@ export function SettingsWindow() {
         <img className="wset__logo" src={logoMark} alt="" draggable={false} />
         <div className="wset__titles">
           <div className="wset__title">AgentHUD 设置</div>
-          <div className="wset__sub">settings.json · 修改后点「保存并应用」立即生效</div>
         </div>
         <div className="wset__spacer" />
-        <IconButton ariaLabel="打开配置文件" title="打开 settings.json" onClick={openConfig}>
-          <OpenIcon size={14} />
-        </IconButton>
-        <IconButton ariaLabel="关闭" title="关闭" onClick={requestClose}>
+        <IconButton ariaLabel="关闭" title="关闭" onClick={hide}>
           <CloseIcon size={14} />
         </IconButton>
       </header>
@@ -338,32 +303,7 @@ export function SettingsWindow() {
             {draft.status.text}
           </span>
         </div>
-        <div className="wset__footbtns">
-          <Button onClick={requestClose}>取消</Button>
-          <Button
-            variant="primary"
-            icon={<CheckIcon size={12} />}
-            onClick={handleSave}
-            disabled={draft.loading && !draft.doc}
-          >
-            保存并应用
-          </Button>
-        </div>
       </footer>
-
-      <Confirm
-        open={confirmClose}
-        title="放弃未保存的修改？"
-        body={`还有 ${draft.dirtyCount} 项修改没有保存，关闭后这些修改会丢失。`}
-        okText="放弃修改"
-        danger
-        onOk={() => {
-          setConfirmClose(false);
-          draft.discard();
-          hide();
-        }}
-        onCancel={() => setConfirmClose(false)}
-      />
     </div>
   );
 }

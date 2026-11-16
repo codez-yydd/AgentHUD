@@ -10,7 +10,7 @@ import {
   Row,
   Section,
   Select,
-  Stepper,
+  Slider,
   Switch,
 } from "../controls";
 import {
@@ -167,7 +167,7 @@ export function AppearancePage({ draft }: PageProps) {
           tag={<UnsupportedTag draft={draft} keyName="island.pos" />}
           rowKey="island.pos"
         >
-          <Stepper
+          <Slider
             value={posPct}
             min={0}
             max={100}
@@ -265,7 +265,7 @@ export function AppearancePage({ draft }: PageProps) {
           tag={<UnsupportedTag draft={draft} keyName="island.blur_fps" />}
           rowKey="island.blur_fps"
         >
-          <Stepper
+          <Slider
             value={num("island.blur_fps", 12)}
             min={2}
             max={30}
@@ -282,7 +282,7 @@ export function AppearancePage({ draft }: PageProps) {
           tag={<UnsupportedTag draft={draft} keyName="island.transparency" />}
           rowKey="island.transparency"
         >
-          <Stepper
+          <Slider
             value={num("island.transparency", 0)}
             min={0}
             max={90}
@@ -299,12 +299,11 @@ export function AppearancePage({ draft }: PageProps) {
           tag={<UnsupportedTag draft={draft} keyName="island.font_size" />}
           rowKey="island.font_size"
         >
-          <Stepper
+          <Slider
             value={num("island.font_size", 13)}
             min={10}
             max={18}
             step={0.5}
-            decimals={1}
             suffix="px"
             ariaLabel="界面字号"
             onChange={(next) => draft.setValue("island.font_size", next)}
@@ -345,7 +344,7 @@ export function AppearancePage({ draft }: PageProps) {
           tag={<UnsupportedTag draft={draft} keyName="island.hover_expand_ms" />}
           rowKey="island.hover_expand_ms"
         >
-          <Stepper
+          <Slider
             value={num("island.hover_expand_ms", 180)}
             min={0}
             max={1000}
@@ -362,7 +361,7 @@ export function AppearancePage({ draft }: PageProps) {
           tag={<UnsupportedTag draft={draft} keyName="island.collapse_delay_ms" />}
           rowKey="island.collapse_delay_ms"
         >
-          <Stepper
+          <Slider
             value={num("island.collapse_delay_ms", 260)}
             min={0}
             max={2000}
@@ -446,7 +445,7 @@ export function AppearancePage({ draft }: PageProps) {
           tag={<UnsupportedTag draft={draft} keyName="island.auto_cycle_s" />}
           rowKey="island.auto_cycle_s"
         >
-          <Stepper
+          <Slider
             value={num("island.auto_cycle_s", 0)}
             min={0}
             max={600}

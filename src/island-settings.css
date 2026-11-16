@@ -34,8 +34,8 @@ html.island-settings {
   --w-ok-soft: rgba(53, 201, 142, 0.125);
   --w-accent: #86b2f9;
   --w-tag-soft: rgba(134, 178, 249, 0.125);
-  --w-panel: rgba(36, 36, 40, 0.941);
-  --w-menu: rgba(36, 36, 40, 0.98);
+  --w-panel: rgb(36, 36, 40);
+  --w-menu: rgb(36, 36, 40);
   /* 窗口描边：内圈 1px 亮边（255,255,255,60）+ 外圈 1px 暗线
      （0,0,0,70）；--w-rim-inset 给浅色面板补内圈深描边 */
   --w-rim: rgba(255, 255, 255, 0.235);
@@ -81,8 +81,8 @@ html.island-settings[data-wtheme="light"] {
   --w-accent: #2251a4;
   --w-tag-soft: rgba(34, 81, 164, 0.125);
   /* 原版浅色面板 #EBEEF8（偏蓝灰），比纯白更像「玻璃上的纸」 */
-  --w-panel: rgba(235, 238, 248, 0.97);
-  --w-menu: rgba(248, 248, 250, 0.98);
+  --w-panel: rgb(235, 238, 248);
+  --w-menu: rgb(248, 248, 250);
   --w-rim: rgba(16, 18, 24, 0.14);
   --w-ring: rgba(0, 0, 0, 0.27);
   /* 浅色面板上的深描边（原版浅色 rim 是白圈 + 深 outline，这里补内圈深线） */
@@ -118,8 +118,8 @@ html.island-settings[data-wtheme="rouge"] {
   --w-ok-soft: rgba(95, 224, 176, 0.125);
   --w-accent: #ffaec5;
   --w-tag-soft: rgba(255, 174, 197, 0.125);
-  --w-panel: rgba(8, 8, 10, 0.961);
-  --w-menu: rgba(8, 8, 10, 0.98);
+  --w-panel: rgb(8, 8, 10);
+  --w-menu: rgb(8, 8, 10);
   --w-rim: rgba(255, 255, 255, 0.235);
   --w-ring: rgba(0, 0, 0, 0.27);
   --w-rim-inset: inset 0 0 0 1px rgba(0, 0, 0, 0);
@@ -158,12 +158,12 @@ html.island-settings[data-wtheme="sky"] {
      160° 的渐变终点就是右下角；88% 就收到暖杏，右下才不会停在半暖的中间色） */
   --w-panel: linear-gradient(
     160deg,
-    rgba(50, 171, 253, 0.96) 0%,
-    rgba(142, 203, 243, 0.96) 55%,
-    rgba(247, 239, 225, 0.96) 88%,
-    rgba(247, 239, 225, 0.96) 100%
+    rgb(50, 171, 253) 0%,
+    rgb(142, 203, 243) 55%,
+    rgb(247, 239, 225) 88%,
+    rgb(247, 239, 225) 100%
   );
-  --w-menu: rgba(247, 239, 225, 0.98);
+  --w-menu: rgb(247, 239, 225);
   --w-rim: rgba(255, 255, 255, 0.6);
   --w-ring: rgba(12, 32, 56, 0.2);
   --w-rim-inset: inset 0 0 0 1px rgba(12, 32, 56, 0.24);
@@ -242,8 +242,6 @@ html.island-settings * {
 .wset__titles {
   display: flex;
   flex-direction: column;
-  /* 原版标题底到副标题顶 13px：15/1.25 + 11/1.3 的字体盒之间补 8px */
-  gap: 8px;
   min-width: 0;
 }
 
@@ -253,15 +251,6 @@ html.island-settings * {
   line-height: 1.25;
   color: var(--w-text);
   white-space: nowrap;
-}
-
-.wset__sub {
-  font-size: 11px;
-  line-height: 1.3;
-  color: var(--w-text3);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 .wset__spacer {
@@ -1001,6 +990,152 @@ html.island-settings * {
   color: var(--w-text3);
   font-size: 11px;
   white-space: nowrap;
+}
+
+/* ============================================================ 滑动条 */
+
+.wset-slider {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 236px;
+  height: 34px;
+  box-sizing: border-box;
+}
+
+.wset-slider__input {
+  flex: 1;
+  min-width: 0;
+  height: 20px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  appearance: none;
+  -webkit-appearance: none;
+  cursor: pointer;
+  outline: none;
+}
+
+/* 4px 胶囊细轨道：已填充段用主题 accent（低饱和），未填充段用低调灰 */
+.wset-slider__input::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 999px;
+  background: linear-gradient(
+    to right,
+    var(--w-accent) 0%,
+    var(--w-accent) var(--w-slider-pct, 0%),
+    var(--w-track) var(--w-slider-pct, 0%),
+    var(--w-track) 100%
+  );
+}
+
+.wset-slider__input::-moz-range-track {
+  height: 4px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--w-track);
+}
+
+.wset-slider__input::-moz-range-progress {
+  height: 4px;
+  border-radius: 999px;
+  background: var(--w-accent);
+}
+
+/* 浅色实心圆滑块：13px + 1px 半透明细边 + 轻阴影，hover/拖动平滑放大到 ~16px */
+.wset-slider__input::-webkit-slider-thumb {
+  /* 伪元素不受全局 border-box 继承，显式声明：13px 含 1px 边框，渲染即 13px */
+  box-sizing: border-box;
+  width: 13px;
+  height: 13px;
+  /* (轨道 4 - 滑块 13) / 2，让滑块对齐细轨道中心 */
+  margin-top: -4.5px;
+  border: 1px solid rgba(0, 0, 0, 0.16);
+  border-radius: 50%;
+  background: var(--w-knob);
+  appearance: none;
+  -webkit-appearance: none;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.26);
+  cursor: grab;
+  transition:
+    transform 0.14s ease,
+    box-shadow 0.14s ease;
+}
+
+.wset-slider__input::-moz-range-thumb {
+  box-sizing: border-box;
+  width: 13px;
+  height: 13px;
+  border: 1px solid rgba(0, 0, 0, 0.16);
+  border-radius: 50%;
+  background: var(--w-knob);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.26);
+  cursor: grab;
+  transition:
+    transform 0.14s ease,
+    box-shadow 0.14s ease;
+}
+
+.wset-slider__input:hover::-webkit-slider-thumb,
+.wset-slider__input:active::-webkit-slider-thumb {
+  transform: scale(1.23);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.32);
+}
+
+.wset-slider__input:hover::-moz-range-thumb,
+.wset-slider__input:active::-moz-range-thumb {
+  transform: scale(1.23);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.32);
+}
+
+.wset-slider__input:active::-webkit-slider-thumb,
+.wset-slider__input:active::-moz-range-thumb {
+  cursor: grabbing;
+}
+
+/* 禁用态：thumb 的 grab 与 hover 放大都要压掉，与 input 的 not-allowed 一致 */
+.wset-slider__input:disabled::-webkit-slider-thumb,
+.wset-slider__input:disabled::-moz-range-thumb {
+  cursor: not-allowed;
+  transform: none;
+}
+
+/* 焦点态：与按钮/开关一致的 2px accent 细 ring */
+.wset-slider__input:focus-visible {
+  outline: 2px solid var(--w-accent);
+  outline-offset: 2px;
+}
+
+.wset-slider--disabled .wset-slider__input {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.wset-slider__value {
+  flex: none;
+  min-width: 56px;
+  color: var(--w-text);
+  font-family: var(--w-num-font);
+  font-size: 12.5px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.wset-slider__suffix {
+  margin-left: 2px;
+  color: var(--w-text3);
+  font-size: 11px;
+  font-weight: 400;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .wset-slider__input::-webkit-slider-thumb,
+  .wset-slider__input::-moz-range-thumb {
+    transition: none;
+  }
 }
 
 /* ============================================================ 下拉选择 */
