@@ -650,7 +650,7 @@ fn merge_remote_usage(
         let remote = match crate::sync::fetch_remote_usage(request) {
             Ok(remote) => remote,
             Err(e) => {
-                eprintln!("[zbar-request-logs] 远端用量查询失败，已跳过: {e}");
+                eprintln!("[agenthud-request-logs] 远端用量查询失败，已跳过: {e}");
                 failed_sources.push("remote".to_string());
                 break;
             }
@@ -903,7 +903,7 @@ pub fn collect_usage_overview(from_ms: i64, to_ms: i64, bucket: &str) -> UsageOv
             Ok(Some(conn)) => conn,
             Ok(None) => continue,
             Err(e) => {
-                eprintln!("[zbar-request-logs] 来源 {source} 打开失败，已跳过: {e}");
+                eprintln!("[agenthud-request-logs] 来源 {source} 打开失败，已跳过: {e}");
                 failed_sources.push(source.to_string());
                 continue;
             }
@@ -911,7 +911,7 @@ pub fn collect_usage_overview(from_ms: i64, to_ms: i64, bucket: &str) -> UsageOv
         match query_source_totals(&conn, from_ms, to_ms, None) {
             Ok(source_totals) => totals.push((source, source_totals)),
             Err(e) => {
-                eprintln!("[zbar-request-logs] 来源 {source} 汇总查询失败，已跳过: {e}");
+                eprintln!("[agenthud-request-logs] 来源 {source} 汇总查询失败，已跳过: {e}");
                 failed_sources.push(source.to_string());
             }
         }
@@ -934,7 +934,7 @@ pub fn collect_usage_overview(from_ms: i64, to_ms: i64, bucket: &str) -> UsageOv
                 }
             }
             Err(e) => {
-                eprintln!("[zbar-request-logs] 来源 {source} 趋势查询失败，已跳过: {e}");
+                eprintln!("[agenthud-request-logs] 来源 {source} 趋势查询失败，已跳过: {e}");
                 failed_sources.push(source.to_string());
             }
         }
@@ -1276,7 +1276,7 @@ where
                 rows.extend(list);
             }
             Err(e) => {
-                eprintln!("[zbar-request-logs] 来源 {source} 查询失败，已跳过: {e}");
+                eprintln!("[agenthud-request-logs] 来源 {source} 查询失败，已跳过: {e}");
                 failed.push((*source).to_string());
             }
         }
@@ -1325,7 +1325,7 @@ where
                 merge_remote_lanes(&mut totals, &mut merged, lanes);
             }
             Err(e) => {
-                eprintln!("[zbar-request-logs] 远端请求明细查询失败，已跳过: {e}");
+                eprintln!("[agenthud-request-logs] 远端请求明细查询失败，已跳过: {e}");
                 failed_sources.push("remote".to_string());
             }
         }
@@ -1435,7 +1435,7 @@ pub fn collect_request_log_models(
                     *counts.entry(item.model_id).or_insert(0) += item.count;
                 }
             }
-            Err(e) => eprintln!("[zbar-request-logs] 来源 {source} 模型清单查询失败，已跳过: {e}"),
+            Err(e) => eprintln!("[agenthud-request-logs] 来源 {source} 模型清单查询失败，已跳过: {e}"),
         }
     }
     // 远端（仅「全部设备」口径）：按真实 source 归并，只认本次来源集合里的
@@ -1451,7 +1451,7 @@ pub fn collect_request_log_models(
                 }
             }
             Err(e) => {
-                eprintln!("[zbar-request-logs] 远端模型清单查询失败，已跳过: {e}");
+                eprintln!("[agenthud-request-logs] 远端模型清单查询失败，已跳过: {e}");
             }
         }
     }

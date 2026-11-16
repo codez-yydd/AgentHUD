@@ -94,7 +94,7 @@ fn read_state_locked() -> PricingSyncState {
     let path = match state_path() {
         Ok(p) => p,
         Err(e) => {
-            eprintln!("[zbar-pricing] 无法定位价格同步状态文件: {e}");
+            eprintln!("[agenthud-pricing] 无法定位价格同步状态文件: {e}");
             return PricingSyncState::default();
         }
     };
@@ -107,7 +107,7 @@ fn read_state_locked() -> PricingSyncState {
     {
         Ok(state) => state,
         Err(e) => {
-            eprintln!("[zbar-pricing] 价格同步状态损坏，按未初始化处理: {e}");
+            eprintln!("[agenthud-pricing] 价格同步状态损坏，按未初始化处理: {e}");
             PricingSyncState::default()
         }
     }
@@ -154,7 +154,7 @@ pub fn record_local_change(old: &PricingConfig, new: &PricingConfig) {
         return;
     }
     if let Err(e) = write_state_locked(&state) {
-        eprintln!("[zbar-pricing] 记录待同步价格失败: {e}");
+        eprintln!("[agenthud-pricing] 记录待同步价格失败: {e}");
     }
 }
 
@@ -217,7 +217,7 @@ pub fn reset_state() {
     state.initialized = false;
     state.last_fx = None;
     if let Err(e) = write_state_locked(&state) {
-        eprintln!("[zbar-pricing] 重置价格同步状态失败: {e}");
+        eprintln!("[agenthud-pricing] 重置价格同步状态失败: {e}");
     }
 }
 
@@ -414,7 +414,7 @@ fn commit(
                 Ok(changed) => fx_changed = changed,
                 Err(e) => {
                     fx_ok = false;
-                    eprintln!("[zbar-pricing] 应用服务端汇率失败: {e}");
+                    eprintln!("[agenthud-pricing] 应用服务端汇率失败: {e}");
                 }
             }
         }

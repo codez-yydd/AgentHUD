@@ -45,6 +45,7 @@ use std::time::Duration;
 use tauri::{
     AppHandle, Emitter, LogicalSize, Manager, WebviewUrl, WebviewWindowBuilder,
 };
+use crate::webview_args::MergedRendererBuilder;
 
 // ============================================================
 // 常量
@@ -424,7 +425,7 @@ pub async fn set_pet_config(config: PetConfig, app: AppHandle) -> Result<PetConf
     // 热重载生效）。失败静默不阻断配置保存（与 mod.rs 的
     // set_agent_theme_params 同口径），下次保存或皮肤页状态轮询重试
     if let Err(e) = crate::pets::sync_theme_custom_pet() {
-        eprintln!("[zbar-pet] 保存配置后同步注入版宠物渲染失败: {e}");
+        eprintln!("[agenthud-pet] 保存配置后同步注入版宠物渲染失败: {e}");
     }
 
     // 窗口创建/尺寸同步/关闭全部投递主线程事件循环执行
@@ -513,7 +514,7 @@ pub fn start_if_enabled(app: &AppHandle) {
         return;
     }
     if let Err(e) = ensure_pet_window(app, &cfg) {
-        eprintln!("[zbar-pet] 恢复宠物窗口失败: {e}");
+        eprintln!("[agenthud-pet] 恢复宠物窗口失败: {e}");
         return;
     }
     start_feed(app.clone());
@@ -576,7 +577,9 @@ fn ensure_pet_window(app: &AppHandle, cfg: &PetConfig) -> Result<(), String> {
     // 建控件的副作用，实测建窗后本窗口即前台），focusable(false) 映射
     // WS_EX_NOACTIVATE 从根上不激活；宠物无键盘交互，拖动不需要激活
     .focusable(false)
-    .focused(false); /* 创建时不抢焦点（不惊扰当前输入焦点） */
+    .focused(false) /* 创建时不抢焦点（不惊扰当前输入焦点） */
+    // 合并 WebView2 渲染进程（内存压降专项，见 webview_args.rs 模块注释）
+    .merged_renderer();
 
     // 位置：持久化逻辑坐标优先，无记录默认主显示器右下角
     let (x, y) = match cfg.pos {

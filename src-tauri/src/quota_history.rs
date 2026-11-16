@@ -8,15 +8,16 @@
 //! - 周期划分：用 weekly_reset (nextResetTime) 的变化点切分"智谱重置周期"。
 //! - 去重/限频：同账号同秒内只写一条（尾部窗口回读该账号最后一条防抖）。
 //! - 滚动保留：定期（每 24h 至多一次）删除超过保留期的行，防止文件无限增长。
-//! - 进程内缓存：load_all 以 (路径, mtime, len) 判断命中，未变时直接返回内存
-//!   副本，免去 90 天约 38MB JSONL 的反复逐行解析；本模块写入/清理成功后
-//!   同步联动缓存，磁盘文件被外部改动时自动失效重读（正确性优先）。
+//! - 进程内缓存：load_all 以 (路径, mtime, len) 判断命中，未变时直接返回
+//!   缓存快照的 Arc 共享引用（零克隆），免去 90 天约 38MB JSONL 的反复逐行
+//!   解析与反复整份克隆；本模块写入/清理成功后同步联动缓存，磁盘文件被外部
+//!   改动时自动失效重读（正确性优先）。
 
 use serde::{Deserialize, Serialize};
 use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, SystemTime};
 
 use crate::pricing::config_dir;
@@ -35,6 +36,8 @@ static LAST_CLEANUP: OnceLock<Mutex<Option<SystemTime>>> = OnceLock::new();
 // 有效性——任何一方变化（本模块写入、滚动清理重写、外部改动）都自动失效重读，
 // 正确性优先于命中率。锁只保护内存结构，文件读取/解析在锁外进行（读期间不持
 // 锁，不阻塞写路径）；并发同时未命中至多多读一次，无害。
+// 缓存内容存 Arc<Vec<_>>：命中路径返回 Arc 克隆（引用计数），不再整份克隆
+// 90 天快照；只有写路径的追加用 Arc::make_mut 写时复制（低频，允许单次复制）。
 
 /// 缓存条目：文件身份（路径 + mtime + len）+ 全量快照（按 ts 升序）。
 /// mtime/len 双 None 表示"文件不存在"的占位状态。
@@ -42,7 +45,7 @@ struct CachedSnaps {
     path: PathBuf,
     mtime: Option<SystemTime>,
     len: Option<u64>,
-    snaps: Vec<QuotaSnapshot>,
+    snaps: Arc<Vec<QuotaSnapshot>>,
 }
 
 static SNAPS_CACHE: OnceLock<Mutex<Option<CachedSnaps>>> = OnceLock::new();
@@ -51,29 +54,34 @@ fn snaps_cache() -> &'static Mutex<Option<CachedSnaps>> {
     SNAPS_CACHE.get_or_init(|| Mutex::new(None))
 }
 
-/// 命中判断 + 克隆返回（快照条目小，全量克隆远低于 38MB 逐行解析）。
-/// 锁中毒等异常按未命中处理，退回全量重读，不影响正确性。
+/// 命中判断 + Arc 共享返回（零克隆）。锁中毒等异常按未命中处理，
+/// 退回全量重读，不影响正确性。
 fn cache_hit(
     path: &std::path::Path,
     mtime: Option<SystemTime>,
     len: Option<u64>,
-) -> Option<Vec<QuotaSnapshot>> {
+) -> Option<Arc<Vec<QuotaSnapshot>>> {
     let guard = snaps_cache().lock().ok()?;
     let c = guard.as_ref()?;
     if c.path == path && c.mtime == mtime && c.len == len {
-        return Some(c.snaps.clone());
+        return Some(Arc::clone(&c.snaps));
     }
     None
 }
 
 /// 写回缓存；拿不到锁只是丢一次缓存机会，下次读取重建。
-fn cache_store(path: PathBuf, mtime: Option<SystemTime>, len: Option<u64>, snaps: &[QuotaSnapshot]) {
+fn cache_store(
+    path: PathBuf,
+    mtime: Option<SystemTime>,
+    len: Option<u64>,
+    snaps: Arc<Vec<QuotaSnapshot>>,
+) {
     if let Ok(mut guard) = snaps_cache().lock() {
         *guard = Some(CachedSnaps {
             path,
             mtime,
             len,
-            snaps: snaps.to_vec(),
+            snaps,
         });
     }
 }
@@ -114,9 +122,12 @@ fn cache_after_append(path: &std::path::Path, snap: &QuotaSnapshot) {
         return;
     }
     // 常规场景新快照 ts 为当前时刻（大于等于全部历史），push 后仍保持升序；
-    // 时钟回拨等极端场景 sort 一次兜底，当前条目量级下开销可忽略
-    c.snaps.push(snap.clone());
-    c.snaps.sort_by_key(|s| s.ts);
+    // 时钟回拨等极端场景 sort 一次兜底，当前条目量级下开销可忽略。
+    // Arc::make_mut：无并发读者（引用计数 1）时原地追加；仍有调用方持有
+    // 上一份快照时写时复制一次（追加低频，单次复制可接受，读取路径零克隆）
+    let snaps = Arc::make_mut(&mut c.snaps);
+    snaps.push(snap.clone());
+    snaps.sort_by_key(|s| s.ts);
 }
 
 /// 缓存失效：磁盘文件被结构性改写（清理重写 / 删除）时调用，下次读取重建。
@@ -169,7 +180,7 @@ pub fn history_path() -> Result<PathBuf, String> {
 /// 写失败不影响调用方（额度查询本身），因此静默降级。
 pub fn append_snapshot(snap: &QuotaSnapshot) {
     if let Err(e) = try_append(snap) {
-        eprintln!("[zbar-history] 写快照失败: {e}");
+        eprintln!("[agenthud-history] 写快照失败: {e}");
     }
 }
 
@@ -274,7 +285,7 @@ fn maybe_cleanup(path: &PathBuf) {
     drop(last);
 
     if let Err(e) = try_cleanup(path) {
-        eprintln!("[zbar-history] 滚动清理失败（24h 后重试）: {e}");
+        eprintln!("[agenthud-history] 滚动清理失败（24h 后重试）: {e}");
     }
 }
 
@@ -356,7 +367,7 @@ fn try_cleanup(path: &std::path::Path) -> Result<(), String> {
     // 在旧缓存基础上 push 增量，会把已被清理的过期行继续留在内存里。
     cache_invalidate();
     if unattributed > 0 {
-        eprintln!("[zbar-history] 清理无账号归属的快照 {unattributed} 条");
+        eprintln!("[agenthud-history] 清理无账号归属的快照 {unattributed} 条");
     }
     Ok(())
 }
@@ -419,17 +430,17 @@ fn read_recent_entries(path: &std::path::Path) -> Result<Vec<QuotaSnapshot>, Str
 }
 
 /// 读取全部快照（按 ts 升序）。损坏的行跳过，不整体失败。
-/// 进程内缓存：文件 (路径, mtime, len) 未变时直接返回内存副本，避免高频
-/// 调用方（对比页 / 今日增量 / 同步 worker / 托盘刷新）反复全量解析。
+/// 进程内缓存：文件 (路径, mtime, len) 未变时直接返回缓存快照的 Arc
+/// （引用计数克隆，零深拷贝），避免高频调用方（对比页 / 今日增量 /
+/// 同步 worker / 托盘刷新）反复全量解析、也不再反复整份克隆 90 天数据。
 /// append-only 文件任何写入都会变长，mtime 精度不足的场景由 len 双重校验兜底。
-pub fn load_all() -> Result<Vec<QuotaSnapshot>, String> {
+pub fn load_all() -> Result<Arc<Vec<QuotaSnapshot>>, String> {
     let path = history_path()?;
     if !path.exists() {
         // 文件不存在：缓存"空"占位，文件随后出现（外部新建 / 本模块 append
         // 创建）时元数据由 None 变 Some，自动失效重读
-        let empty: Vec<QuotaSnapshot> = Vec::new();
-        cache_store(path, None, None, &empty);
-        return Ok(empty);
+        cache_store(path, None, None, Arc::new(Vec::new()));
+        return Ok(Arc::new(Vec::new()));
     }
     // 元数据在锁外获取（IO 不持锁）
     let meta = fs::metadata(&path).ok();
@@ -439,8 +450,8 @@ pub fn load_all() -> Result<Vec<QuotaSnapshot>, String> {
         return Ok(snaps);
     }
     // 未命中：全量重读（锁外 IO + 解析），完成后写回缓存
-    let snaps = read_all_from(&path)?;
-    cache_store(path, mtime, len, &snaps);
+    let snaps = Arc::new(read_all_from(&path)?);
+    cache_store(path, mtime, len, Arc::clone(&snaps));
     Ok(snaps)
 }
 
@@ -486,17 +497,17 @@ pub fn clear_history() -> Result<(), String> {
 ///   仍在其视图内，随 90 天滚动清理自然消退）；
 /// - 带指纹的快照：仅保留当前账号——多账号并行采样不得混入；
 /// - 拿不到当前指纹（未登录等）：只剩旧版快照可看。
-pub fn filter_for_current(
-    snaps: Vec<QuotaSnapshot>,
-    current: &Option<String>,
-) -> Vec<QuotaSnapshot> {
+/// 借用入参：调用方拿到的 load_all() 是缓存 Arc 共享，这里只克隆过滤后的
+/// 子集（展示数据本就需要拥有），不再要求调用方交出整份全量所有权。
+pub fn filter_for_current(snaps: &[QuotaSnapshot], current: &Option<String>) -> Vec<QuotaSnapshot> {
     snaps
-        .into_iter()
+        .iter()
         .filter(|s| match (&s.account, current) {
             (None, _) => true,
             (Some(acc), Some(cur)) => acc == cur,
             (Some(_), None) => false,
         })
+        .cloned()
         .collect()
 }
 
@@ -622,6 +633,7 @@ fn build_period(
 }
 
 /// 取"今日"快照（本地 0 点之后，含全部账号）。
+/// 借用遍历缓存 Arc，只克隆今日子集（量级为一天，而非 90 天全量）。
 fn today_snapshots() -> Result<Vec<QuotaSnapshot>, String> {
     let all = load_all()?;
     let today_start = chrono::Local::now()
@@ -632,7 +644,11 @@ fn today_snapshots() -> Result<Vec<QuotaSnapshot>, String> {
         .single()
         .map(|d| d.timestamp_millis())
         .unwrap_or(0);
-    Ok(all.into_iter().filter(|s| s.ts >= today_start).collect())
+    Ok(all
+        .iter()
+        .filter(|s| s.ts >= today_start)
+        .cloned()
+        .collect())
 }
 
 /// 回落切段上限：今日序列中 weekly_pct 的回落次数超过此值即判定数据源异常，
@@ -813,7 +829,7 @@ mod tests {
 
         // ===== 命中/未命中：三元组各分量变化 =====
         let snaps = vec![snap_of(1_000, "A", 20), snap_of(2_000, "B", 50)];
-        cache_store(path.clone(), Some(mtime), Some(10), &snaps);
+        cache_store(path.clone(), Some(mtime), Some(10), Arc::new(snaps));
         assert_eq!(
             cache_hit(&path, Some(mtime), Some(10)).unwrap().len(),
             2,
@@ -848,7 +864,7 @@ mod tests {
         );
 
         // ===== 写路径联动：已有条目时 append 后缓存增量与磁盘一致 =====
-        cache_store(path.clone(), None, None, &[]);
+        cache_store(path.clone(), None, None, Arc::new(Vec::new()));
         append_to(&path, &snap_of(4_000, "A", 40)).unwrap();
         {
             let guard = snaps_cache().lock().unwrap();
@@ -866,7 +882,7 @@ mod tests {
         // 模拟竞态窗口：并发 load_all 已把含 A@5000 新行的磁盘内容整体写入
         // 缓存，随后同一快照的 cache_after_append 迟到——不得再 push 成重复条目
         let fresh = vec![snap_of(4_000, "A", 40), snap_of(5_000, "A", 50)];
-        cache_store(path.clone(), None, None, &fresh);
+        cache_store(path.clone(), None, None, Arc::new(fresh));
         append_to(&path, &snap_of(5_000, "A", 50)).unwrap();
         {
             let guard = snaps_cache().lock().unwrap();

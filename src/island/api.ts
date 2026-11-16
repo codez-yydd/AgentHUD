@@ -4,24 +4,6 @@ import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { CANVAS_H, CANVAS_W, INSET } from "./liquid";
 import { advanceSpring, hasDragMovement, nearestScreenEdge, screenGap, springAt, type Spring } from "./motion";
-import {
-  mockClipboardWithImage,
-  mockConfig,
-  mockMedia,
-  mockMeetingDevices,
-  mockMeetings,
-  mockMinute,
-  mockNotify,
-  mockProjects,
-  MOCK_SETTINGS_STORE_KEY,
-  mockSnippets,
-  mockStocks,
-  mockSystem,
-  mockToolboxImagePreview,
-  mockToolboxQr,
-  mockUsage,
-  mockWeather,
-} from "./mock";
 import type {
   ClashMode,
   ClashStatus,
@@ -51,6 +33,7 @@ import type {
   MeetingSessionInfo,
   MeetingSettings,
   MeetingStopResult,
+  NotifyItem,
   NotifyModules,
   NotifyState,
   Snippet,
@@ -80,9 +63,57 @@ function clone<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
 }
 
-// 浏览器预览用的可变状态（真机上不参与：全部走 invoke）
-let mockClipState: ClipItem[] = clone(mockClipboardWithImage());
-let mockSnippetState: Snippet[] = clone(mockSnippets);
+// ===== mock 模块动态加载（内存压降专项）=====
+// mock.ts 只有浏览器预览用（真机全部走 invoke）。原先静态 import 会把它
+// 打进 island 主 chunk 且常驻内存；改为动态 import 后 Vite 拆独立 chunk，
+// 真机运行永远不会触发下载。所有回退分支先 `await mocks()` 再取种子数据。
+type MockModule = typeof import("./mock");
+type MockConfig = MockModule["mockConfig"];
+let mockModulePromise: Promise<MockModule> | null = null;
+// 浏览器预览配置持久化：真机由 Rust SQLite 落盘；这里只服务预览验证。
+const MOCK_CONFIG_KEY = "agenthud.mock.islandConfig";
+// 与 mock.ts 的 MOCK_SETTINGS_STORE_KEY 同值：不能静态 import（否则 mock.ts
+// 会重新进主 chunk），两处改值需同步。
+const MOCK_SETTINGS_STORE_KEY = "agenthud.mock.islandSettings.v1";
+// mock 模块里 mockConfig.transparency 的初始值（首次加载时读一次，供预览的
+// settings 变更事件在缺省透明度时回落）。
+let mockDefaultTransparency = 0;
+
+/**
+ * 首次真正需要 mock 种子数据时加载模块，并完成一次性水合（原先的模块级
+ * `try { ... }` 静态块）。sessionStorage 的预览配置 / 展开态与 localStorage
+ * 的设置窗写回都必须等 mock 模块就绪后再叠加，所以统一放进 boot，只跑一次。
+ */
+async function bootMock(): Promise<MockModule> {
+  const m = await import("./mock");
+  mockDefaultTransparency = m.mockConfig.transparency;
+  try {
+    const raw =
+      typeof sessionStorage === "undefined" ? null : sessionStorage.getItem(MOCK_CONFIG_KEY);
+    if (raw) Object.assign(m.mockConfig, JSON.parse(raw) as Partial<MockConfig>);
+    if (!IS_TAURI) {
+      const { quotaDisplay, hiddenTabs, notifyModules, transparency } =
+        readMockIslandPreferences(localStorage.getItem(MOCK_SETTINGS_STORE_KEY));
+      if (quotaDisplay) m.mockConfig.quotaDisplay = quotaDisplay;
+      if (hiddenTabs) m.mockConfig.hiddenTabs = hiddenTabs;
+      if (notifyModules) m.mockConfig.notifyModules = notifyModules;
+      if (transparency !== undefined) m.mockConfig.transparency = transparency;
+    }
+  } catch {
+    /* 隐私模式 / 存储不可用时退回内存 mock */
+  }
+  return m;
+}
+
+function mocks(): Promise<MockModule> {
+  if (!mockModulePromise) mockModulePromise = bootMock();
+  return mockModulePromise;
+}
+
+// 浏览器预览用的可变状态（真机上不参与：全部走 invoke）。种子数据依赖
+// mock 模块，首次进入预览回退分支时才惰性初始化。
+let mockClipState: ClipItem[] | null = null;
+let mockSnippetState: Snippet[] | null = null;
 
 // ===== 实时字幕：浏览器预览用的空闲快照 / 空字幕 / 示例设备 =====
 /** 预览里的实时字幕状态（空闲；调 live_start 后转为 listening，便于验证开关态） */
@@ -129,9 +160,10 @@ function sortPinnedFirst(items: ClipItem[]): ClipItem[] {
 const MOCK_DEFAULT_NOTIFY_MODULES = ["qq", "wechat", "mail"];
 
 /** 浏览器预览：按 mockConfig.notifyModules 过滤通知（与 Rust 的可见列表同口径） */
-function mockNotifySnapshot(): NotifyState {
-  const modules = mockConfig.notifyModules ?? MOCK_DEFAULT_NOTIFY_MODULES;
-  const items = mockNotify.items.filter((item) =>
+async function mockNotifySnapshot(): Promise<NotifyState> {
+  const m = await mocks();
+  const modules = m.mockConfig.notifyModules ?? MOCK_DEFAULT_NOTIFY_MODULES;
+  const items = m.mockNotify.items.filter((item) =>
     modules.includes(item.kind) && (item.kind !== "wechat" || !item.read)
   );
   return {
@@ -143,8 +175,7 @@ function mockNotifySnapshot(): NotifyState {
 
 // 浏览器预览：把 mock 配置持久化到 sessionStorage，刷新后仍能验证
 // 「切页 → 改设置 → 重开仍停在该页」这类跨重启行为（真机由 Rust SQLite 落盘）。
-const MOCK_CONFIG_KEY = "agenthud.mock.islandConfig";
-const MOCK_DEFAULT_TRANSPARENCY = mockConfig.transparency;
+// MOCK_CONFIG_KEY 定义见上方动态加载区。
 function mockStringList(value: unknown): string[] | undefined {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : undefined;
 }
@@ -172,23 +203,10 @@ function readMockIslandPreferences(raw: string | null): {
   }
 }
 
-try {
-  const raw = typeof sessionStorage === "undefined" ? null : sessionStorage.getItem(MOCK_CONFIG_KEY);
-  if (raw) Object.assign(mockConfig, JSON.parse(raw) as Partial<typeof mockConfig>);
-  if (!IS_TAURI) {
-    const { quotaDisplay, hiddenTabs, notifyModules, transparency } =
-      readMockIslandPreferences(localStorage.getItem(MOCK_SETTINGS_STORE_KEY));
-    if (quotaDisplay) mockConfig.quotaDisplay = quotaDisplay;
-    if (hiddenTabs) mockConfig.hiddenTabs = hiddenTabs;
-    if (notifyModules) mockConfig.notifyModules = notifyModules;
-    if (transparency !== undefined) mockConfig.transparency = transparency;
-  }
-} catch {
-  /* 隐私模式 / 存储不可用时退回内存 mock */
-}
-function persistMockConfig() {
+// 模块级预热已随动态加载挪进 bootMock（首次 await mocks() 时执行一次）。
+async function persistMockConfig() {
   try {
-    sessionStorage.setItem(MOCK_CONFIG_KEY, JSON.stringify(mockConfig));
+    sessionStorage.setItem(MOCK_CONFIG_KEY, JSON.stringify((await mocks()).mockConfig));
   } catch {
     /* 忽略：预览不需要强一致 */
   }
@@ -208,9 +226,10 @@ try {
 
 export async function getIslandState(): Promise<IslandState> {
   if (!IS_TAURI) {
+    const m = await mocks();
     return delay({
       enabled: true,
-      config: clone(mockConfig),
+      config: clone(m.mockConfig),
       expanded: mockExpanded,
     });
   }
@@ -218,15 +237,17 @@ export async function getIslandState(): Promise<IslandState> {
 }
 
 export async function getIslandConfig(): Promise<IslandConfig> {
-  if (!IS_TAURI) return delay(clone(mockConfig));
+  if (!IS_TAURI) return delay(clone((await mocks()).mockConfig));
   return invoke<IslandConfig>("island_config");
 }
 
 export async function setIslandConfig(config: IslandConfig): Promise<IslandConfig> {
   if (!IS_TAURI) {
-    const hiddenTabsChanged = mockConfig.hiddenTabs.join() !== config.hiddenTabs.join();
-    const modulesChanged = mockConfig.notifyModules?.join() !== config.notifyModules?.join();
-    const transparencyChanged = mockConfig.transparency !== config.transparency;
+    const m = await mocks();
+    const live = m.mockConfig;
+    const hiddenTabsChanged = live.hiddenTabs.join() !== config.hiddenTabs.join();
+    const modulesChanged = live.notifyModules?.join() !== config.notifyModules?.join();
+    const transparencyChanged = live.transparency !== config.transparency;
     if (hiddenTabsChanged || modulesChanged || transparencyChanged) {
       try {
         const raw = localStorage.getItem(MOCK_SETTINGS_STORE_KEY);
@@ -248,9 +269,9 @@ export async function setIslandConfig(config: IslandConfig): Promise<IslandConfi
         /* 存储不可用时仍更新本窗口。 */
       }
     }
-    Object.assign(mockConfig, clone(config));
-    persistMockConfig();
-    return delay(clone(mockConfig));
+    Object.assign(live, clone(config));
+    await persistMockConfig();
+    return delay(clone(live));
   }
   return invoke<IslandConfig>("island_set_config", { config });
 }
@@ -282,8 +303,8 @@ export async function setIslandExpanded(expanded: boolean): Promise<void> {
 /** 可穿透：窗口整体鼠标穿透（右键仍可用）。Rust 侧读 config.passthrough 落盘。 */
 export async function islandSetPassthrough(on: boolean): Promise<void> {
   if (!IS_TAURI) {
-    mockConfig.passthrough = Boolean(on);
-    persistMockConfig();
+    (await mocks()).mockConfig.passthrough = Boolean(on);
+    await persistMockConfig();
     return delay(undefined, 20);
   }
   return invoke("island_set_passthrough", { on });
@@ -304,8 +325,8 @@ export async function islandPassthroughRestore(): Promise<void> {
 
 export async function islandSetLastTab(key: TabKey): Promise<void> {
   if (!IS_TAURI) {
-    mockConfig.lastTab = key;
-    persistMockConfig();
+    (await mocks()).mockConfig.lastTab = key;
+    await persistMockConfig();
     return delay(undefined, 10);
   }
   return invoke("island_set_last_tab", { key });
@@ -546,13 +567,18 @@ export async function endIslandDrag(): Promise<IslandDragEnd> {
     gap: springAt(Math.max(-4, screenGap(edge, body, mockEdgeLines[edge])),
       edge === "top" || edge === "left" ? normal : -normal),
   };
-  mockConfig.edge = edge;
-  persistMockConfig();
+  (await mocks()).mockConfig.edge = edge;
+  await persistMockConfig();
   return { edge, x: 0, y: 0, width: CANVAS_W, height: CANVAS_H };
 }
 
-/** 玻璃使用的桌面纹理（data URL）。 */
-export async function getIslandBackdrop(): Promise<string> {
+/**
+ * 玻璃使用的桌面纹理（data URL）；浏览器预览返回空，让 CSS 渐变兜底。
+ * force=true：绕过 Rust 侧内容哈希去重，本拍必定回传完整 data URL——页面
+ * 重载（renderer 崩溃自动恢复等）后 CSS 底图从零开始，轮询首拍带 force
+ * 自愈；后续拍不传（去重照常生效）。
+ */
+export async function getIslandBackdrop(force = false): Promise<string> {
   if (!IS_TAURI) {
     // 预览中的条纹便于观察边缘对采样坐标的位移。
     if (new URLSearchParams(window.location.search).get("backdrop") === "1") {
@@ -573,7 +599,7 @@ export async function getIslandBackdrop(): Promise<string> {
     }
     return "";
   }
-  return invoke<string>("island_backdrop");
+  return invoke<string>("island_backdrop", { force });
 }
 
 /** 输入框聚焦时临时激活窗口；false = 恢复不可聚焦，不抢编辑器焦点 */
@@ -634,7 +660,7 @@ export async function islandHotkeyRegistered(): Promise<boolean> {
 // ===== 额度 =====
 
 export async function getQuotaSnapshot(): Promise<HudBarUsage | null> {
-  if (!IS_TAURI) return delay(clone(mockUsage));
+  if (!IS_TAURI) return delay(clone((await mocks()).mockUsage));
   return invoke<HudBarUsage | null>("island_quota_snapshot");
 }
 
@@ -658,7 +684,7 @@ export async function getTodayUsage(): Promise<TodayUsageTotals | null> {
 // ===== 天气 =====
 
 export async function getWeather(): Promise<WeatherState | null> {
-  if (!IS_TAURI) return delay(clone(mockWeather));
+  if (!IS_TAURI) return delay(clone((await mocks()).mockWeather));
   return invoke<WeatherState | null>("island_weather");
 }
 
@@ -727,7 +753,7 @@ export async function locateCurrentPlace(): Promise<LocatedPlace> {
 // ===== 股票 =====
 
 export async function getStocks(): Promise<StocksState | null> {
-  if (!IS_TAURI) return delay(clone(mockStocks));
+  if (!IS_TAURI) return delay(clone((await mocks()).mockStocks));
   return invoke<StocksState | null>("island_stocks");
 }
 
@@ -759,20 +785,21 @@ export async function searchStock(query: string): Promise<StockSearchItem[]> {
 }
 
 export async function getStockMinute(code: string): Promise<StockMinute> {
-  if (!IS_TAURI) return delay({ ...clone(mockMinute), code });
+  if (!IS_TAURI) return delay({ ...clone((await mocks()).mockMinute), code });
   return invoke<StockMinute>("island_stock_minute", { code });
 }
 
 // ===== 媒体 =====
 
 export async function getMedia(): Promise<MediaState> {
-  if (!IS_TAURI) return delay(clone(mockMedia), 40);
+  if (!IS_TAURI) return delay(clone((await mocks()).mockMedia), 40);
   return invoke<MediaState>("island_media");
 }
 
 export async function mediaAction(action: "toggle" | "next" | "prev", appId: string): Promise<void> {
   if (!IS_TAURI) {
-    if (action === "toggle") mockMedia.playing = !mockMedia.playing;
+    const m = await mocks();
+    if (action === "toggle") m.mockMedia.playing = !m.mockMedia.playing;
     return delay(undefined, 40);
   }
   return invoke("island_media_action", { action, appId });
@@ -894,30 +921,33 @@ export async function liveClearCaptions(): Promise<void> {
 // ===== 系统 =====
 
 export async function getSystem(): Promise<SystemState> {
-  if (!IS_TAURI) return delay(clone(mockSystem));
+  if (!IS_TAURI) return delay(clone((await mocks()).mockSystem));
   return invoke<SystemState>("island_system");
 }
 
 export async function setVolume(volume: number): Promise<SystemState> {
   if (!IS_TAURI) {
-    mockSystem.volume = Math.min(1, Math.max(0, volume));
-    return delay(clone(mockSystem), 20);
+    const m = await mocks();
+    m.mockSystem.volume = Math.min(1, Math.max(0, volume));
+    return delay(clone(m.mockSystem), 20);
   }
   return invoke<SystemState>("island_set_volume", { volume });
 }
 
 export async function toggleMute(): Promise<SystemState> {
   if (!IS_TAURI) {
-    mockSystem.muted = !mockSystem.muted;
-    return delay(clone(mockSystem), 20);
+    const m = await mocks();
+    m.mockSystem.muted = !m.mockSystem.muted;
+    return delay(clone(m.mockSystem), 20);
   }
   return invoke<SystemState>("island_toggle_mute");
 }
 
 export async function setBrightness(value: number): Promise<SystemState> {
   if (!IS_TAURI) {
-    mockSystem.brightness = value;
-    return delay(clone(mockSystem), 20);
+    const m = await mocks();
+    m.mockSystem.brightness = value;
+    return delay(clone(m.mockSystem), 20);
   }
   return invoke<SystemState>("island_set_brightness", { value });
 }
@@ -927,9 +957,10 @@ export async function toggleRadio(
   on: boolean
 ): Promise<SystemState> {
   if (!IS_TAURI) {
-    if (kind === "wifi") mockSystem.wifi = on;
-    else mockSystem.bluetooth = on;
-    return delay(clone(mockSystem), 20);
+    const m = await mocks();
+    if (kind === "wifi") m.mockSystem.wifi = on;
+    else m.mockSystem.bluetooth = on;
+    return delay(clone(m.mockSystem), 20);
   }
   return invoke<SystemState>("island_toggle_radio", { kind, on });
 }
@@ -968,7 +999,10 @@ export async function openClashVerge(): Promise<void> {
 // ===== 剪贴板 =====
 
 export async function getClipboard(): Promise<ClipItem[]> {
-  if (!IS_TAURI) return delay(clone(mockClipState));
+  if (!IS_TAURI) {
+    mockClipState ??= clone((await mocks()).mockClipboardWithImage());
+    return delay(clone(mockClipState));
+  }
   return invoke<ClipItem[]>("island_clipboard");
 }
 
@@ -979,6 +1013,7 @@ export async function copyClipboard(id: number): Promise<void> {
 
 export async function clearClipboard(): Promise<void> {
   if (!IS_TAURI) {
+    mockClipState ??= clone((await mocks()).mockClipboardWithImage());
     // 与 Rust 侧一致：清空保留钉住的条目
     mockClipState = mockClipState.filter((item) => item.pinned);
     return delay(undefined, 20);
@@ -989,28 +1024,30 @@ export async function clearClipboard(): Promise<void> {
 // ===== 消息 =====
 
 export async function getNotify(): Promise<NotifyState> {
-  if (!IS_TAURI) return delay(mockNotifySnapshot());
+  if (!IS_TAURI) return delay(await mockNotifySnapshot());
   return invoke<NotifyState>("island_notify");
 }
 
 export async function markNotifyRead(): Promise<NotifyState> {
   if (!IS_TAURI) {
-    mockNotify.items.forEach((i) => {
+    const m = await mocks();
+    m.mockNotify.items.forEach((i) => {
       i.read = true;
     });
-    mockNotify.unread = 0;
-    return delay(mockNotifySnapshot(), 20);
+    m.mockNotify.unread = 0;
+    return delay(await mockNotifySnapshot(), 20);
   }
   return invoke<NotifyState>("island_notify_mark_read");
 }
 
 export async function clearNotify(kind?: string): Promise<NotifyState> {
   if (!IS_TAURI) {
-    mockNotify.items = kind
-      ? mockNotify.items.filter((i) => i.kind !== kind)
+    const m = await mocks();
+    m.mockNotify.items = kind
+      ? m.mockNotify.items.filter((i) => i.kind !== kind)
       : [];
-    mockNotify.unread = mockNotify.items.filter((i) => !i.read).length;
-    return delay(mockNotifySnapshot(), 20);
+    m.mockNotify.unread = m.mockNotify.items.filter((i) => !i.read).length;
+    return delay(await mockNotifySnapshot(), 20);
   }
   return invoke<NotifyState>("island_notify_clear", { kind: kind ?? null });
 }
@@ -1018,11 +1055,12 @@ export async function clearNotify(kind?: string): Promise<NotifyState> {
 /** 只把某个模块（kind）的消息标记为已读；返回最新可见状态。 */
 export async function markNotifyReadKind(kind: string): Promise<NotifyState> {
   if (!IS_TAURI) {
-    mockNotify.items.forEach((item) => {
+    const m = await mocks();
+    m.mockNotify.items.forEach((item) => {
       if (item.kind === kind) item.read = true;
     });
-    mockNotify.unread = mockNotify.items.filter((item) => !item.read).length;
-    return delay(mockNotifySnapshot(), 20);
+    m.mockNotify.unread = m.mockNotify.items.filter((item) => !item.read).length;
+    return delay(await mockNotifySnapshot(), 20);
   }
   return invoke<NotifyState>("island_notify_mark_read_kind", { kind });
 }
@@ -1030,9 +1068,10 @@ export async function markNotifyReadKind(kind: string): Promise<NotifyState> {
 /** 消息模块开关快照（消息页磁贴据 config.notifyModules 渲染；这里单次读）。 */
 export async function getNotifyModules(): Promise<NotifyModules> {
   if (!IS_TAURI) {
+    const m = await mocks();
     return delay({
-      modules: [...(mockConfig.notifyModules ?? MOCK_DEFAULT_NOTIFY_MODULES)],
-      bodyPreview: [...(mockConfig.notifyBodyPreview ?? ["feishu", "dingtalk"])],
+      modules: [...(m.mockConfig.notifyModules ?? MOCK_DEFAULT_NOTIFY_MODULES)],
+      bodyPreview: [...(m.mockConfig.notifyBodyPreview ?? ["feishu", "dingtalk"])],
     });
   }
   return invoke<NotifyModules>("island_notify_modules");
@@ -1041,7 +1080,8 @@ export async function getNotifyModules(): Promise<NotifyModules> {
 /** 系统音频峰值（0..1，Rust 微秒级读取，无设备/无会话返回 0）；预览合成。 */
 export async function islandAudioPeak(): Promise<number> {
   if (!IS_TAURI) {
-    if (!mockMedia.hasSession || !mockMedia.playing) return delay(0, 5);
+    const m = await mocks();
+    if (!m.mockMedia.hasSession || !m.mockMedia.playing) return delay(0, 5);
     const t = performance.now() / 1000;
     const value =
       0.44 +
@@ -1075,11 +1115,15 @@ export function onEvent<T>(name: string, handler: (payload: T) => void): () => v
       if (name === "zbar://island-notify" && detail && typeof detail === "object") {
         const payload = detail as { items?: unknown; unread?: number };
         if (Array.isArray(payload.items)) {
-          mockNotify.items = clone(payload.items as typeof mockNotify.items);
-          mockNotify.unread =
-            typeof payload.unread === "number"
-              ? payload.unread
-              : mockNotify.items.filter((item) => !item.read).length;
+          // mock 模块可能还没加载完：事件先到也无所谓，拿到模块后按同一份
+          // payload 回写，保持「注入事件 → 再调 mock 命令」数据一致。
+          void mocks().then((m) => {
+            m.mockNotify.items = clone(payload.items as NotifyItem[]);
+            m.mockNotify.unread =
+              typeof payload.unread === "number"
+                ? payload.unread
+                : m.mockNotify.items.filter((item) => !item.read).length;
+          });
         }
       }
       // 实时字幕：注入的状态 / 字幕事件同步回写 mock，之后调 live_status() /
@@ -1098,23 +1142,29 @@ export function onEvent<T>(name: string, handler: (payload: T) => void): () => v
     window.addEventListener(name, listener);
     const onSettingsSaved = (event: StorageEvent) => {
       if (event.key !== MOCK_SETTINGS_STORE_KEY && event.key !== null) return;
-      const next = readMockIslandPreferences(event.newValue);
-      const quotaDisplay = next.quotaDisplay ?? "percent";
-      const hiddenTabs = next.hiddenTabs ?? [];
-      const notifyModules = next.notifyModules ?? MOCK_DEFAULT_NOTIFY_MODULES;
-      const transparency = next.transparency ?? MOCK_DEFAULT_TRANSPARENCY;
-      if (
-        mockConfig.quotaDisplay === quotaDisplay &&
-        mockConfig.hiddenTabs.join() === hiddenTabs.join() &&
-        mockConfig.notifyModules?.join() === notifyModules.join() &&
-        mockConfig.transparency === transparency
-      ) return;
-      mockConfig.quotaDisplay = quotaDisplay;
-      mockConfig.hiddenTabs = hiddenTabs;
-      mockConfig.notifyModules = notifyModules;
-      mockConfig.transparency = transparency;
-      persistMockConfig();
-      handler(clone(mockConfig) as T);
+      // storage 事件是同步回调，而 mock 配置要等动态模块：整段包进 IIFE，
+      // 比较 / 回写 / 回调都落在同一份配置上（预览不要求同步送达）。
+      void (async () => {
+        const next = readMockIslandPreferences(event.newValue);
+        const quotaDisplay = next.quotaDisplay ?? "percent";
+        const hiddenTabs = next.hiddenTabs ?? [];
+        const notifyModules = next.notifyModules ?? MOCK_DEFAULT_NOTIFY_MODULES;
+        const m = await mocks();
+        const live = m.mockConfig;
+        const transparency = next.transparency ?? mockDefaultTransparency;
+        if (
+          live.quotaDisplay === quotaDisplay &&
+          live.hiddenTabs.join() === hiddenTabs.join() &&
+          live.notifyModules?.join() === notifyModules.join() &&
+          live.transparency === transparency
+        ) return;
+        live.quotaDisplay = quotaDisplay;
+        live.hiddenTabs = hiddenTabs;
+        live.notifyModules = notifyModules;
+        live.transparency = transparency;
+        await persistMockConfig();
+        handler(clone(live) as T);
+      })();
     };
     if (name === "zbar://island-config") window.addEventListener("storage", onSettingsSaved);
     return () => {
@@ -1160,7 +1210,7 @@ export async function toolboxQrPng(
   scale: number,
   quiet: number
 ): Promise<ToolboxQrPng> {
-  if (!IS_TAURI) return delay(mockToolboxQr(text, scale, quiet));
+  if (!IS_TAURI) return delay((await mocks()).mockToolboxQr(text, scale, quiet));
   return invoke<ToolboxQrPng>("toolbox_qr_png", { text, ecLevel, scale, quiet });
 }
 
@@ -1173,7 +1223,7 @@ export async function toolboxQrSave(
   outPath: string
 ): Promise<ToolboxQrSaved> {
   if (!IS_TAURI) {
-    const png = mockToolboxQr(text, scale, quiet);
+    const png = (await mocks()).mockToolboxQr(text, scale, quiet);
     return delay({ path: outPath, bytes: png.bytes, size: png.size });
   }
   return invoke<ToolboxQrSaved>("toolbox_qr_save", {
@@ -1196,7 +1246,7 @@ export async function toolboxImageInspect(
       height: 1440,
       bytes: 3_912_448,
       format: "png",
-      preview: mockToolboxImagePreview(),
+      preview: (await mocks()).mockToolboxImagePreview(),
     });
   }
   return invoke<ToolboxImageInfo>("toolbox_image_inspect", { path });
@@ -1238,6 +1288,7 @@ export async function clipboardPin(
   pinned: boolean
 ): Promise<ClipItem[]> {
   if (!IS_TAURI) {
+    mockClipState ??= clone((await mocks()).mockClipboardWithImage());
     const next = mockClipState.map((item) =>
       item.id === id ? { ...item, pinned } : item
     );
@@ -1250,6 +1301,7 @@ export async function clipboardPin(
 /** 删除单条（钉住的也能删） */
 export async function clipboardDelete(id: number): Promise<ClipItem[]> {
   if (!IS_TAURI) {
+    mockClipState ??= clone((await mocks()).mockClipboardWithImage());
     mockClipState = mockClipState.filter((item) => item.id !== id);
     return delay(mockClipState);
   }
@@ -1259,6 +1311,7 @@ export async function clipboardDelete(id: number): Promise<ClipItem[]> {
 /** 调整条数上限（后端夹到 5–100 并立即淘汰） */
 export async function clipboardSetLimit(limit: number): Promise<ClipItem[]> {
   if (!IS_TAURI) {
+    mockClipState ??= clone((await mocks()).mockClipboardWithImage());
     mockClipState = mockClipState.slice(0, Math.max(5, Math.min(100, limit)));
     return delay(mockClipState);
   }
@@ -1297,7 +1350,10 @@ export async function ocrImage(dataUrl: string): Promise<{
 // ===== 片段库 =====
 
 export async function listSnippets(): Promise<Snippet[]> {
-  if (!IS_TAURI) return delay(mockSnippetState);
+  if (!IS_TAURI) {
+    mockSnippetState ??= clone((await mocks()).mockSnippets);
+    return delay(mockSnippetState);
+  }
   return invoke<Snippet[]>("list_snippets");
 }
 
@@ -1307,6 +1363,7 @@ export async function saveSnippet(
   body: string
 ): Promise<Snippet> {
   if (!IS_TAURI) {
+    mockSnippetState ??= clone((await mocks()).mockSnippets);
     const now = Date.now();
     const existing = id ? mockSnippetState.find((item) => item.id === id) : null;
     const next: Snippet = existing
@@ -1326,6 +1383,7 @@ export async function saveSnippet(
 
 export async function deleteSnippet(id: string): Promise<void> {
   if (!IS_TAURI) {
+    mockSnippetState ??= clone((await mocks()).mockSnippets);
     mockSnippetState = mockSnippetState.filter((item) => item.id !== id);
     return delay(undefined, 40);
   }
@@ -1336,7 +1394,7 @@ export async function deleteSnippet(id: string): Promise<void> {
 
 /** 近 30 天的项目清单（只取展示字段） */
 export async function launcherProjects(): Promise<LauncherProject[]> {
-  if (!IS_TAURI) return delay(mockProjects);
+  if (!IS_TAURI) return delay((await mocks()).mockProjects);
   const to = Date.now();
   const from = to - 30 * 86_400_000;
   const rows = await invoke<
@@ -1351,7 +1409,7 @@ export async function launcherProjects(): Promise<LauncherProject[]> {
 
 // ===== 会议录音 =====
 
-let mockMeetingItems: MeetingItem[] = clone(mockMeetings);
+let mockMeetingItems: MeetingItem[] | null = null;
 let mockPrivacyConfirmed = false;
 let mockAutoGain = true;
 const MOCK_MEETING_DIR = "C:\\Users\\demo\\.agenthud\\meetings";
@@ -1417,7 +1475,7 @@ function mockMeetingStamp(): string {
 
 /** 枚举音频输入设备（下拉用） */
 export async function meetingDevices(): Promise<MeetingAudioDevice[]> {
-  if (!IS_TAURI) return delay(clone(mockMeetingDevices));
+  if (!IS_TAURI) return delay(clone((await mocks()).mockMeetingDevices));
   return invoke<MeetingAudioDevice[]>("meeting_devices");
 }
 
@@ -1557,6 +1615,7 @@ export async function meetingStop(): Promise<MeetingStopResult> {
       sample_rate: session.sampleRate,
       warning: null,
     };
+    mockMeetingItems ??= clone((await mocks()).mockMeetings);
     mockMeetingItems = [
       {
         id: session.id,
@@ -1578,12 +1637,16 @@ export async function meetingStop(): Promise<MeetingStopResult> {
 
 /** 最近录音列表（started_at 倒序） */
 export async function meetingList(): Promise<MeetingItem[]> {
-  if (!IS_TAURI) return delay(clone(mockMeetingItems));
+  if (!IS_TAURI) {
+    mockMeetingItems ??= clone((await mocks()).mockMeetings);
+    return delay(clone(mockMeetingItems));
+  }
   return invoke<MeetingItem[]>("meeting_list");
 }
 
 export async function meetingDelete(id: string): Promise<void> {
   if (!IS_TAURI) {
+    mockMeetingItems ??= clone((await mocks()).mockMeetings);
     mockMeetingItems = mockMeetingItems.filter((item) => item.id !== id);
     return delay(undefined, 40);
   }
@@ -1593,6 +1656,7 @@ export async function meetingDelete(id: string): Promise<void> {
 /** 重命名（wav 与侧车 json 一起改名），返回改名后的条目 */
 export async function meetingRename(id: string, newName: string): Promise<MeetingItem> {
   if (!IS_TAURI) {
+    mockMeetingItems ??= clone((await mocks()).mockMeetings);
     const target = mockMeetingItems.find((item) => item.id === id);
     if (!target) throw new Error("录音不存在或已被删除");
     // 按显示名查重（真实后端按文件主干查，主干恒等于名称；mock 种子数据的

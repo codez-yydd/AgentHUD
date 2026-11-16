@@ -5,6 +5,7 @@ import {
   applyPanelAlpha,
   bootstrapTheme,
   loadPanelAlpha,
+  watchSystemTheme,
 } from "./appearance";
 import { applyFontSettings, watchFontChanges } from "./fontSettings";
 import { applyLocale, detectLocale, loadLocale } from "./i18n/locale";
@@ -22,6 +23,15 @@ applyFontSettings();
 // 主窗口「设置」页改字号后跨窗同步（本窗常驻，监听随窗口销毁自动清理）
 watchFontChanges();
 applyLocale(loadLocale() ?? detectLocale());
+
+// 系统主题跟随（「跟随系统」来源时系统切深浅色立即广播）：原先唯一宿主
+// 是主窗口（dashboard-main 挂载），省内存改造后主窗口关闭即销毁——主窗
+// 不在场时系统切换不再广播，面板/托盘菜单/灵动岛停在旧主题。panel 常驻
+// （默认开启），在此补挂为宿主：watchSystemTheme 自带幂等标记与广播回声
+// 守卫，与 dashboard-main 双挂载安全。残余限制：悬浮窗开关关闭（本窗销毁）
+// 且主窗口也不在场时仍无宿主，彻底解法是把监听下沉 Rust（更新机制之外
+// 的遗留项，暂不做）
+watchSystemTheme();
 
 // 恢复持久化的窗口尺寸（百分比 → 当前显示器像素）：未存储时内部早退保持默认，
 // 窗口此时仍隐藏无闪烁；fire-and-forget 不阻塞首帧

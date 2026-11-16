@@ -36,6 +36,7 @@ import {
 import { useDataCache } from "./DataCache";
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { useI18n } from "./i18n";
+import { useNow } from "./nowClock";
 import { ModelUsageExportModal } from "./ModelUsageExport";
 import type { AgentId, AgentVisibility } from "./agentVisibility";
 import { AGENT_COLOR } from "./agentVisibility";
@@ -806,12 +807,8 @@ export function SummaryTab({
   const [exportOpen, setExportOpen] = useState(false);
   const [trendMetric, setTrendMetric] = useState<"cost" | "token">("cost");
   const [sortBy, setSortBy] = useState<"cost" | "token" | "requests">("cost");
-  const [now, setNow] = useState(Date.now());
-
-  useEffect(() => {
-    const tick = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(tick);
-  }, []);
+  // 倒计时显示用时钟：收敛为共享 context（内存压降专项 6，见 nowClock.tsx）
+  const now = useNow();
 
   // ZCode 额度（与范围无关，读全局缓存，与 QuotaPanel 同源）
   const {

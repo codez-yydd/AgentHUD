@@ -114,31 +114,31 @@ pub enum DataDirOutcome {
 pub fn migrate_data_dir() {
     let Some(home) = dirs::home_dir() else {
         // 无法定位主目录时 config_dir() 同样会失败，不固定 BASE_DIR
-        eprintln!("[zbar-migrate] 无法定位用户主目录，跳过数据目录迁移");
+        eprintln!("[agenthud-migrate] 无法定位用户主目录，跳过数据目录迁移");
         return;
     };
     let (outcome, base) = migrate_data_dir_in(&home);
     let _ = BASE_DIR.set(base);
     match outcome {
         DataDirOutcome::Fresh => {
-            eprintln!("[zbar-migrate] 未发现旧数据目录 ~/.zbar，按全新安装使用 ~/.agenthud");
+            eprintln!("[agenthud-migrate] 未发现旧数据目录 ~/.zbar，按全新安装使用 ~/.agenthud");
         }
         DataDirOutcome::Renamed => {
-            eprintln!("[zbar-migrate] 数据目录已原子迁移：~/.zbar → ~/.agenthud（rename）");
+            eprintln!("[agenthud-migrate] 数据目录已原子迁移：~/.zbar → ~/.agenthud（rename）");
         }
         DataDirOutcome::Copied => {
             eprintln!(
-                "[zbar-migrate] 数据目录已复制迁移：~/.zbar → ~/.agenthud（rename 失败走复制兜底，旧目录保留未删）"
+                "[agenthud-migrate] 数据目录已复制迁移：~/.zbar → ~/.agenthud（rename 失败走复制兜底，旧目录保留未删）"
             );
         }
         DataDirOutcome::BothExist => {
             eprintln!(
-                "[zbar-migrate] 新旧数据目录同时存在，以 ~/.agenthud 为准（不合并、不动 ~/.zbar）"
+                "[agenthud-migrate] 新旧数据目录同时存在，以 ~/.agenthud 为准（不合并、不动 ~/.zbar）"
             );
         }
         DataDirOutcome::FallbackOld => {
             eprintln!(
-                "[zbar-migrate] 数据目录迁移失败，本次运行回退使用 ~/.zbar（下次启动自动重试）"
+                "[agenthud-migrate] 数据目录迁移失败，本次运行回退使用 ~/.zbar（下次启动自动重试）"
             );
         }
     }
@@ -162,11 +162,11 @@ pub(crate) fn migrate_data_dir_in(home: &Path) -> (DataDirOutcome, PathBuf) {
     match fs::rename(&old_dir, &new_dir) {
         Ok(()) => (DataDirOutcome::Renamed, new_dir),
         Err(e) => {
-            eprintln!("[zbar-migrate] 原子改名失败（{e}），改走复制兜底路径");
+            eprintln!("[agenthud-migrate] 原子改名失败（{e}），改走复制兜底路径");
             match migrate_by_copy(&old_dir, &new_dir) {
                 Ok(()) => (DataDirOutcome::Copied, new_dir),
                 Err(e2) => {
-                    eprintln!("[zbar-migrate] 复制兜底也失败（{e2}），本次运行回退旧目录");
+                    eprintln!("[agenthud-migrate] 复制兜底也失败（{e2}），本次运行回退旧目录");
                     (DataDirOutcome::FallbackOld, old_dir)
                 }
             }
@@ -465,10 +465,10 @@ pub fn spawn_reference_refresher() {
             if stale {
                 match fetch_modelsdev_diff() {
                     Ok((_, fetched_at, from_cache)) => eprintln!(
-                        "[zbar-pricing] 参考价表刷新完成（{}，fetched_at={fetched_at}）",
+                        "[agenthud-pricing] 参考价表刷新完成（{}，fetched_at={fetched_at}）",
                         if from_cache { "网络失败，沿用缓存" } else { "在线" }
                     ),
-                    Err(e) => eprintln!("[zbar-pricing] 参考价表后台刷新失败: {e}"),
+                    Err(e) => eprintln!("[agenthud-pricing] 参考价表后台刷新失败: {e}"),
                 }
             }
             std::thread::sleep(std::time::Duration::from_secs(6 * 60 * 60));
@@ -1864,14 +1864,14 @@ pub fn fetch_modelsdev_diff() -> Result<(PricingDiff, i64, bool), String> {
                 usd: prices.clone(),
             };
             if let Err(e) = save_modelsdev_cache(&cache) {
-                eprintln!("[zbar-pricing] models.dev 缓存写入失败: {e}");
+                eprintln!("[agenthud-pricing] models.dev 缓存写入失败: {e}");
             }
             (prices, at, false)
         }
         Err(net_err) => match load_modelsdev_cache() {
             // 合法缓存才降级：空表缓存与无缓存同等对待
             Ok(cache) if !cache.usd.is_empty() => {
-                eprintln!("[zbar-pricing] models.dev 拉取失败，降级用本地缓存: {net_err}");
+                eprintln!("[agenthud-pricing] models.dev 拉取失败，降级用本地缓存: {net_err}");
                 (cache.usd, cache.fetched_at, true)
             }
             _ => return Err(net_err),

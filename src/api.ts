@@ -464,16 +464,38 @@ export async function setPanelSticky(sticky: boolean): Promise<void> {
   await invoke("set_panel_sticky", { sticky });
 }
 
+// ===== 悬浮窗启用开关（panel 窗口按需建/销毁）=====
+
+/** 读取悬浮窗启用状态（~/.agenthud/panel.json，缺省 true） */
+export async function getPanelEnabled(): Promise<boolean> {
+  return invoke<boolean>("get_panel_enabled");
+}
+
+/** 设置悬浮窗启用状态并立即应用：true 由 Rust 侧现场建窗并显示聚焦；
+ *  false 销毁 panel 窗口释放 WebView 渲染进程（托盘左键 / 快捷键 / 托盘
+ *  菜单「打开悬浮窗」随时可作为重开入口）。失败 reject，调用方提示 */
+export async function setPanelEnabled(enabled: boolean): Promise<void> {
+  await invoke("set_panel_enabled", { enabled });
+}
+
 /** 打开主窗口（Dashboard 管理/分析大窗）：窗口已存在则显示并聚焦，
  *  不存在则由 Rust 侧 main_window.rs 建窗（1100×720 普通系统窗）。
- *  主窗口"关闭=隐藏不销毁"，所以反复调用即秒开；建窗失败时 reject，
+ *  省内存改造后主窗口"关闭即销毁"，每次冷开多几百 ms；建窗失败时 reject，
  *  调用方自行决定是否提示（面板侧静默，不打断交互）。
  *  page（可选）：Dashboard 侧栏页 id（"overview" | "logs" | "compare" |
  *  "pricing"，窄窗二期减负后面板价格入口传 "pricing" 直达主窗口定价页）。
  *  合法时开窗/聚焦后由 Rust 侧 emit zbar://dashboard-navigate 跳页
- *  （DashboardApp.tsx 监听）；缺省/非法只开窗不导航。 */
+ *  （DashboardApp.tsx 监听；冷建时由 takePendingDashboardPage 补发，
+ *  见该函数注释）；缺省/非法只开窗不导航。 */
 export async function openMainWindow(page?: string): Promise<void> {
   await invoke("open_main_window", { page: page ?? null });
+}
+
+/** 主窗口挂载完成后取走冷建时暂存的跳页意图（None = 无待补发）。
+ *  只应由 dashboard.html 的 DashboardApp 调用一次：Rust 侧原子取出并
+ *  清空，重复调用恒为 None。 */
+export async function takePendingDashboardPage(): Promise<string | null> {
+  return invoke<string | null>("take_pending_dashboard_page");
 }
 
 // ===== 周额度追踪 / 对比页 =====

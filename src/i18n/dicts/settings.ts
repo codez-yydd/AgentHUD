@@ -30,6 +30,15 @@ export const settings = {
   "settings.langZh": "简体中文",
   "settings.langEn": "English",
 
+  // ===== 悬浮窗开关 =====
+  "settings.floatWindow": "悬浮窗",
+  "settings.floatWindowHint":
+    "关闭后销毁悬浮窗以省内存（用量监控改用灵动岛 / 托盘菜单）。仍可随时从托盘左键、全局快捷键或托盘菜单「打开悬浮窗」临时唤出；下次启动按本开关决定是否常驻。注意：关闭后将暂停自动更新检查，可随时从托盘菜单打开悬浮窗恢复。",
+  "settings.floatWindowReadFail": "读取悬浮窗状态失败：{msg}",
+  "settings.floatWindowFailOn": "开启悬浮窗失败：{msg}",
+  "settings.floatWindowFailOff": "关闭悬浮窗失败：{msg}",
+  "settings.floatWindowFailNote": "若面板状态与开关不一致，以重启后的实际状态为准。",
+
   // ===== 开机自启 =====
   "settings.autostart": "开机自启",
   "settings.enable": "启用",

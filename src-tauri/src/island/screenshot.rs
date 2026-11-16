@@ -28,6 +28,8 @@ use tauri::{
     WebviewWindowBuilder,
 };
 
+use crate::webview_args::MergedRendererBuilder;
+
 /// 截图选择/编辑器窗口 label（capabilities/shot.json 同步）
 pub const SHOT_WINDOW_LABEL: &str = "shot-overlay";
 /// 贴图窗口 label 前缀，后缀为 pin id
@@ -441,7 +443,7 @@ pub(crate) fn join_error_message(context: &str, error: tauri::Error) -> String {
         other => other.to_string(),
     };
     let message = format!("{context}任务失败: {reason}");
-    eprintln!("[zbar-shot] {message}");
+    eprintln!("[agenthud-shot] {message}");
     message
 }
 
@@ -1522,6 +1524,8 @@ pub async fn shot_prewarm(app: AppHandle) -> Result<(), String> {
         .visible(false)
         .focused(false)
         .background_throttling(tauri::utils::config::BackgroundThrottlingPolicy::Disabled)
+        // 合并 WebView2 渲染进程（内存压降专项，见 webview_args.rs 模块注释）
+        .merged_renderer()
         .build()
         .map_err(|e| format!("预热截图窗口失败: {e}"))?;
         let _ = win.set_background_color(Some(tauri::window::Color(9, 11, 17, 255)));
@@ -1657,7 +1661,9 @@ fn build_overlay(app: &AppHandle, monitor: &ShotMonitor, id: u64) -> Result<Webv
     .visible(false)
     .focusable(true)
     .focused(false)
-    .background_throttling(tauri::utils::config::BackgroundThrottlingPolicy::Disabled);
+    .background_throttling(tauri::utils::config::BackgroundThrottlingPolicy::Disabled)
+    // 合并 WebView2 渲染进程（内存压降专项，见 webview_args.rs 模块注释）
+    .merged_renderer();
 
     let win = builder
         .build()
@@ -1735,7 +1741,7 @@ async fn start_capture_inner(
                 .map(|w| w.is_visible().unwrap_or(false))
                 .unwrap_or(false);
             eprintln!(
-                "[zbar-shot] 会话占用中 id={} mode={} 覆盖层可见={visible}",
+                "[agenthud-shot] 会话占用中 id={} mode={} 覆盖层可见={visible}",
                 session.id, session.mode
             );
             return Err("截图窗口已经打开".into());
@@ -1865,7 +1871,7 @@ async fn start_capture_inner(
         .map_err(|e| join_error_message("截图", e))??;
 
     eprintln!(
-        "[zbar-shot] 抓屏+编码完成 {}×{} @({}, {})，耗时 {}ms",
+        "[agenthud-shot] 抓屏+编码完成 {}×{} @({}, {})，耗时 {}ms",
         captured.width,
         captured.height,
         monitor.x,
@@ -1902,6 +1908,12 @@ async fn start_capture_inner(
     let app_build = app.clone();
     let mon_build = monitor.clone();
     let id_build = id;
+    // 记录本次创建路径（建窗前的窗口存在性）：冷建（板块被隐藏 / 热键早
+    // 于启动预热时走这条）比复用（navigate 整页重载）多一次 WebView 进程冷
+    // 启动，shot_ready 兜底预算相应放宽。预判与 reuse_overlay 内部的
+    // 实际分支存在极小竞态（预判复用但窗口恰好消失），代价只是兜底
+    // 偏紧一档，不影响正确性
+    let cold_build = app.get_webview_window(SHOT_WINDOW_LABEL).is_none();
     if let Err(e) = on_main_thread(&app, move || {
         reuse_overlay(&app_build, &mon_build, id_build)?;
         Ok(())
@@ -1916,10 +1928,15 @@ async fn start_capture_inner(
     }
 
     // 前端如果因为 WebView 加载失败/图片过大而没有调用 shot_ready，窗口会
-    // 永远隐藏、HUD 也一直不回来。2.5s 后兜底显示，至少让用户能取消。
+    // 永远隐藏、HUD 也一直不回来。到时兜底显示（深色未渲染窗），至少让
+    // 用户能取消。时限按创建路径分档：复用 2.5s；冷建放宽到 4s——WebView
+    // 进程冷启动吃掉一部分预算，2.5s 在低配机上有「前端还在正常加载却被
+    // 兜底强制 reveal 深色窗」的误触发风险，放宽的代价只是真失败场景下
+    // 晚 1.5s 才能取消
+    let ready_fallback_ms: u64 = if cold_build { 4000 } else { 2500 };
     let app_watch = app.clone();
     std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_millis(2500));
+        std::thread::sleep(Duration::from_millis(ready_fallback_ms));
         let alive = session_slot()
             .lock()
             .map(|g| g.as_ref().map(|s| s.id == id).unwrap_or(false))
@@ -1941,7 +1958,7 @@ async fn start_capture_inner(
     });
 
     eprintln!(
-        "[zbar-shot] 截图窗口就绪，端到端 {}ms",
+        "[agenthud-shot] 截图窗口就绪，端到端 {}ms",
         started.elapsed().as_millis()
     );
     Ok(id)
@@ -2143,7 +2160,7 @@ pub async fn shot_ready(app: AppHandle, id: u64) -> Result<(), String> {
         .and_then(|g| g.as_ref().map(|s| s.created_at))
     {
         eprintln!(
-            "[zbar-shot] 前端就绪（图片解码+首帧），距抓屏开始 {}ms",
+            "[agenthud-shot] 前端就绪（图片解码+首帧），距抓屏开始 {}ms",
             (now_ms() - created).max(0)
         );
     }
@@ -2160,7 +2177,7 @@ pub fn shot_mark_painted(id: u64) {
         .and_then(|g| g.as_ref().filter(|s| s.id == id).map(|s| s.created_at))
     {
         eprintln!(
-            "[zbar-shot] 首帧已绘制，距抓屏开始 {}ms",
+            "[agenthud-shot] 首帧已绘制，距抓屏开始 {}ms",
             (now_ms() - created).max(0)
         );
     }
@@ -2580,7 +2597,9 @@ fn build_pin_window(app: &AppHandle, id: u64) -> Result<WebviewWindow, String> {
     .visible(false)
     .focusable(true)
     .focused(false)
-    .background_throttling(tauri::utils::config::BackgroundThrottlingPolicy::Disabled);
+    .background_throttling(tauri::utils::config::BackgroundThrottlingPolicy::Disabled)
+    // 合并 WebView2 渲染进程（内存压降专项，见 webview_args.rs 模块注释）
+    .merged_renderer();
     let win = builder
         .build()
         .map_err(|e| format!("创建贴图窗口失败: {e}"))?;
@@ -3154,11 +3173,11 @@ pub fn register_hotkeys(app: &AppHandle) {
         return;
     }
     if let Err(e) = register_shot_hotkey(app, &key) {
-        eprintln!("[zbar-shot] 注册截图快捷键 {key} 失败（可能被占用）: {e}");
+        eprintln!("[agenthud-shot] 注册截图快捷键 {key} 失败（可能被占用）: {e}");
         // 不静默失效：换一个常见冲突更少的组合键，并明确告诉用户是谁占了
         const FALLBACK: &str = "Ctrl+Alt+Shift+A";
         if register_shot_hotkey(app, FALLBACK).is_ok() {
-            eprintln!("[zbar-shot] 已临时改用截图快捷键 {FALLBACK}");
+            eprintln!("[agenthud-shot] 已临时改用截图快捷键 {FALLBACK}");
             crate::notify(
                 "AgentHUD · 截图快捷键被占用".to_string(),
                 format!(
@@ -3191,7 +3210,7 @@ fn register_shot_hotkey(app: &AppHandle, key: &str) -> Result<(), String> {
             tauri::async_runtime::spawn(async move {
                 // 统一以区域模式呼出：覆盖层里可以切到窗口/全屏。
                 if let Err(e) = start_capture(app, "region".into(), 0, None).await {
-                    eprintln!("[zbar-shot] 快捷键截图失败: {e}");
+                    eprintln!("[agenthud-shot] 快捷键截图失败: {e}");
                 }
             });
         })

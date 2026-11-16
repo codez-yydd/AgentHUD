@@ -4,6 +4,7 @@ import { getModelSpeed } from "./api";
 import { formatSeconds, formatTokens, formatTps } from "./format";
 import { displayModelName } from "./modelName";
 import { useI18n } from "./i18n";
+import { useNow } from "./nowClock";
 import type { MessageKey } from "./i18n";
 import { sourceMeta } from "./agentVisibility";
 import { BrandIcon } from "./BrandIcon";
@@ -337,7 +338,8 @@ export function ModelSpeedPanel({ refreshToken = 0 }: { refreshToken?: number })
   // 页面弱提示而非报错——对齐日志页 failed_sources 的容错精神）
   const [remoteFailed, setRemoteFailed] = useState(false);
   const [updatedAt, setUpdatedAt] = useState<number | null>(null);
-  const [now, setNow] = useState(() => Date.now());
+  // 「xx 秒前」刷新时间显示用时钟：收敛为共享 context（内存压降专项 6）
+  const now = useNow();
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
@@ -401,11 +403,6 @@ export function ModelSpeedPanel({ refreshToken = 0 }: { refreshToken?: number })
       window.clearInterval(timer);
     };
   }, [load, refreshToken]);
-
-  useEffect(() => {
-    const timer = window.setInterval(() => setNow(Date.now()), 1000);
-    return () => window.clearInterval(timer);
-  }, []);
 
   const rows = useMemo(() => (stats ? sortByP50(stats) : []), [stats]);
   const maxP50 = rows.reduce((max, row) => Math.max(max, row.p50Tps ?? 0), 0);

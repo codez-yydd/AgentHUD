@@ -16,8 +16,28 @@ const DOWNSCALE: u32 = 3;
 /// 复用它，避免与录屏和截图同时读取桌面。
 static LAST_BACKDROP: OnceLock<Mutex<Option<String>>> = OnceLock::new();
 
+/// 最近一次采样的缩略图内容哈希（内存压降专项：桌面画面没变时跳过 PNG
+/// 编码与 base64，返回空串哨兵，前端据此跳过 CSS 变量更新与解码）。
+static LAST_HASH: OnceLock<Mutex<Option<u64>>> = OnceLock::new();
+
 fn last_slot() -> &'static Mutex<Option<String>> {
     LAST_BACKDROP.get_or_init(|| Mutex::new(None))
+}
+
+fn last_hash_slot() -> &'static Mutex<Option<u64>> {
+    LAST_HASH.get_or_init(|| Mutex::new(None))
+}
+
+/// 清空上一拍内容哈希，强制下一拍 capture 必定重新编码并回传完整 data URL。
+///
+/// 用途：前端页面重载（renderer 崩溃自动恢复等）后 CSS `--backdrop` 从零
+/// 开始，若桌面与采样区域都没变，哈希恒命中会让重载后的前端持续拿到空串
+/// 哨兵、底图缺失。前端在每轮轮询的首拍带 force=true 调用 island_backdrop，
+/// 命令层据此调用本函数；后续拍恢复哨兵去重，不损失省益。
+pub fn invalidate_last_hash() {
+    if let Ok(mut slot) = last_hash_slot().lock() {
+        *slot = None;
+    }
 }
 
 fn cached_backdrop() -> Option<String> {
@@ -28,6 +48,18 @@ fn store_backdrop(url: &str) {
     if let Ok(mut slot) = last_slot().lock() {
         *slot = Some(url.to_string());
     }
+}
+
+/// 缩略图像素的 FNV-1a 64 位内容哈希（无依赖；只为相邻两拍的等值判断，
+/// 不承担抗碰撞安全职责——壁纸类画面哈希碰撞时最坏表现为少更新一拍底板，
+/// 下一拍内容变化自愈）。
+fn thumbnail_hash(image: &image::RgbaImage) -> u64 {
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for byte in image.as_raw() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
 }
 
 /// 窗口所在显示器的物理边界和句柄。
@@ -290,6 +322,19 @@ pub fn capture(hwnd: isize, x: i32, y: i32, width: u32, height: u32) -> Result<S
     })();
 
     let image = result?;
+    // 内容去重（内存压降专项）：PNG 编码 + base64 + IPC 传输是每拍最大的
+    // 开销，桌面静止时（长时间挂机的大多数时刻）缩略图逐字节相同，哈希
+    // 相同即返回空串哨兵，前端跳过 CSS 更新。哈希在编码前算，省掉的就是
+    // 整段编码。
+    let hash = thumbnail_hash(&image);
+    if last_hash_slot()
+        .lock()
+        .ok()
+        .map(|slot| slot.as_ref() == Some(&hash))
+        .unwrap_or(false)
+    {
+        return Ok(String::new());
+    }
     let mut png = Vec::new();
     PngEncoder::new(&mut png)
         .write_image(
@@ -301,6 +346,9 @@ pub fn capture(hwnd: isize, x: i32, y: i32, width: u32, height: u32) -> Result<S
         .map_err(|e| format!("编码桌面背景失败: {e}"))?;
     let url = format!("data:image/png;base64,{}", STANDARD.encode(png));
     store_backdrop(&url);
+    if let Ok(mut slot) = last_hash_slot().lock() {
+        *slot = Some(hash);
+    }
     Ok(url)
 }
 

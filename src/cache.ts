@@ -36,3 +36,33 @@ export function removeCache(key: string): void {
     // 忽略：隐私模式等
   }
 }
+
+/**
+ * 按前缀聚合读取缓存子键（拆 key 持久化的读路径）。
+ *
+ * 拆 key 持久化把一个大缓存（原整键全量 JSON）拆成
+ * `{前缀}{条目key}` 独立子键，冷启动时用本函数一次遍历 localStorage
+ * 聚合恢复成完整 Record。单键损坏（JSON 解析失败）跳过该键不拖垮整体；
+ * 隐私模式等异常整体静默降级为空对象，与三件套同款兜底口径。
+ */
+export function loadCacheByPrefix<T>(prefix: string): Record<string, T> {
+  const out: Record<string, T> = {};
+  try {
+    // 快照长度：遍历中不会新增键，但防御性缓存上限，避免依赖实现细节
+    const len = localStorage.length;
+    for (let i = 0; i < len; i++) {
+      const key = localStorage.key(i);
+      if (!key || !key.startsWith(prefix)) continue;
+      const raw = localStorage.getItem(key);
+      if (!raw) continue;
+      try {
+        out[key.slice(prefix.length)] = JSON.parse(raw) as T;
+      } catch {
+        // 单键损坏：跳过，等后台刷新轮重拉覆盖
+      }
+    }
+  } catch {
+    // 忽略：隐私模式等，返回已聚合部分（或空对象）
+  }
+  return out;
+}

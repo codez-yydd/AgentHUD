@@ -87,7 +87,7 @@ pub fn append_snapshot(snapshot: &AgentQuotaSnapshot) {
         return;
     }
     if let Err(e) = try_append(&sanitized) {
-        eprintln!("[zbar-agent-history] 写额度快照失败: {e}");
+        eprintln!("[agenthud-agent-history] 写额度快照失败: {e}");
     }
 }
 
@@ -189,7 +189,7 @@ fn maybe_cleanup(path: &PathBuf) {
     drop(last);
 
     if let Err(e) = try_cleanup(path) {
-        eprintln!("[zbar-agent-history] 滚动清理失败（24h 后重试）: {e}");
+        eprintln!("[agenthud-agent-history] 滚动清理失败（24h 后重试）: {e}");
     }
 }
 
@@ -256,7 +256,7 @@ pub fn remove_inflated_cursor_samples(reset_at: Option<i64>, current_used_pct: f
     let path = match history_path() {
         Ok(path) => path,
         Err(e) => {
-            eprintln!("[zbar-agent-history] 清理 Cursor 失真快照失败: {e}");
+            eprintln!("[agenthud-agent-history] 清理 Cursor 失真快照失败: {e}");
             return;
         }
     };
@@ -268,7 +268,7 @@ pub fn remove_inflated_cursor_samples(reset_at: Option<i64>, current_used_pct: f
                 }
             }
         }
-        Err(e) => eprintln!("[zbar-agent-history] 清理 Cursor 失真快照失败: {e}"),
+        Err(e) => eprintln!("[agenthud-agent-history] 清理 Cursor 失真快照失败: {e}"),
     }
 }
 

@@ -801,7 +801,7 @@ fn fetch_entries_from(home: &std::path::Path) -> Vec<ProviderQuotaEntry> {
                 // 写回失败不阻断本轮查询（新 token 本轮仍可用），只记日志；
                 // 文件未更新的后果是下一轮重新刷新一次，可接受
                 if let Err(e) = write_back_creds(&creds_path, &outcome) {
-                    eprintln!("[zbar-gemini] 刷新后写回凭证文件失败（下一轮将重新刷新）: {e}");
+                    eprintln!("[agenthud-gemini] 刷新后写回凭证文件失败（下一轮将重新刷新）: {e}");
                 }
                 creds.access_token = Some(outcome.access_token);
                 if outcome.id_token.is_some() {
@@ -813,7 +813,7 @@ fn fetch_entries_from(home: &std::path::Path) -> Vec<ProviderQuotaEntry> {
                 if gemini_circuit_after_refresh(credential_hash, outcome) {
                     // 只打一条汇总日志，之后静默（逐轮刷屏到此为止）
                     eprintln!(
-                        "[zbar-gemini] OAuth 续期连续 {MAX_REFRESH_FAILURES} 次失败（refresh_token 已失效），已停止自动重试；请在终端重新运行 gemini 登录"
+                        "[agenthud-gemini] OAuth 续期连续 {MAX_REFRESH_FAILURES} 次失败（refresh_token 已失效），已停止自动重试；请在终端重新运行 gemini 登录"
                     );
                 }
                 // 「需重登」类文案已自带重登指引，不再重复追加；网络类保持原追加口径
@@ -839,7 +839,7 @@ fn fetch_entries_from(home: &std::path::Path) -> Vec<ProviderQuotaEntry> {
             }
             project_id = status.project_id;
         }
-        Err(e) => eprintln!("[zbar-gemini] loadCodeAssist 失败（继续回退项目发现）: {e}"),
+        Err(e) => eprintln!("[agenthud-gemini] loadCodeAssist 失败（继续回退项目发现）: {e}"),
     }
     if project_id.is_none() {
         project_id = discover_project(&agent, access_token);

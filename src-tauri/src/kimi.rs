@@ -555,14 +555,14 @@ where
         if let Err(e) = import(&mut tx, path) {
             // 丢弃事务（循环体末尾 drop）→ 本文件已写行整体回滚
             eprintln!(
-                "[zbar-kimi] {fail_log_prefix} {} 失败（已回滚，下次重试）: {e}",
+                "[agenthud-kimi] {fail_log_prefix} {} 失败（已回滚，下次重试）: {e}",
                 path.display()
             );
             continue;
         }
         if let Err(e) = tx.commit() {
             eprintln!(
-                "[zbar-kimi] 提交导入事务失败（{}，下次重试）: {e}",
+                "[agenthud-kimi] 提交导入事务失败（{}，下次重试）: {e}",
                 path.display()
             );
         }
@@ -622,7 +622,7 @@ fn import_incremental_into(dir: &Path, db_path: &Path) -> Result<(), String> {
     // sessions 目录，保持单测隔离）。
     if db_path == kimi_db_path()?.as_path() {
         if let Err(e) = backfill_session_meta_locked(&mut conn, dir) {
-            eprintln!("[zbar-kimi] 会话项目维度回填失败（下次重试）: {e}");
+            eprintln!("[agenthud-kimi] 会话项目维度回填失败（下次重试）: {e}");
         }
     }
     Ok(())
@@ -2016,7 +2016,7 @@ pub(crate) fn build_kimi_agent() -> ureq::Agent {
     if let Some(url) = crate::codex::resolve_proxy() {
         match ureq::Proxy::new(&url) {
             Ok(p) => builder = builder.proxy(p),
-            Err(e) => eprintln!("[zbar-kimi] 代理地址无效（改为直连）: {url} ({e})"),
+            Err(e) => eprintln!("[agenthud-kimi] 代理地址无效（改为直连）: {url} ({e})"),
         }
     }
     builder.build()
@@ -2313,11 +2313,11 @@ fn resolve_request_token() -> Result<String, String> {
                     if just_tripped {
                         // 只打一条汇总日志，之后静默（逐轮刷屏到此为止）
                         eprintln!(
-                            "[zbar-kimi] OAuth 续期连续 {MAX_REFRESH_FAILURES} 次失败（refresh_token 已失效），已停止自动重试；请重新登录 Kimi Code CLI 或在应用内重新网页登录"
+                            "[agenthud-kimi] OAuth 续期连续 {MAX_REFRESH_FAILURES} 次失败（refresh_token 已失效），已停止自动重试；请重新登录 Kimi Code CLI 或在应用内重新网页登录"
                         );
                     } else {
                         eprintln!(
-                            "[zbar-kimi] OAuth token 自动续期失败（回退凭据文件 token 重试）: {e}"
+                            "[agenthud-kimi] OAuth token 自动续期失败（回退凭据文件 token 重试）: {e}"
                         );
                     }
                     Ok(oauth.access_token)
@@ -2609,7 +2609,7 @@ pub fn fetch_live_rate_limits_with_freshness(
                 }
                 // 超时（leader 意外挂死）：放弃等待，本线程直接请求
                 //（退化为无 single-flight 的旧行为，多发一次无害）
-                eprintln!("[zbar-kimi] 实时额度在途请求等待超时，本线程改为直接请求");
+                eprintln!("[agenthud-kimi] 实时额度在途请求等待超时，本线程改为直接请求");
             }
             *inflight = true;
         }
@@ -2704,12 +2704,12 @@ fn fetch_user_level_name() -> Option<String> {
             Ok(resp) => match resp.into_string() {
                 Ok(body) => parse_user_level_name(&body),
                 Err(e) => {
-                    eprintln!("[zbar-kimi] 读取 /me 响应体失败（回退 usages 枚举档位）: {e}");
+                    eprintln!("[agenthud-kimi] 读取 /me 响应体失败（回退 usages 枚举档位）: {e}");
                     None
                 }
             },
             Err(e) => {
-                eprintln!("[zbar-kimi] 获取官方会员档位失败（回退 usages 枚举档位）: {e}");
+                eprintln!("[agenthud-kimi] 获取官方会员档位失败（回退 usages 枚举档位）: {e}");
                 None
             }
         }
@@ -2999,7 +2999,7 @@ fn resolve_credential_token(
                 credential_circuit_after_refresh(credential_id, credential_hash, outcome);
             if just_tripped {
                 eprintln!(
-                    "[zbar-kimi] 凭证 {credential_id} 的 OAuth 续期连续 {MAX_REFRESH_FAILURES} 次失败（refresh_token 已失效），已停止自动重试；请删除该凭证后重新添加（支持网页登录）"
+                    "[agenthud-kimi] 凭证 {credential_id} 的 OAuth 续期连续 {MAX_REFRESH_FAILURES} 次失败（refresh_token 已失效），已停止自动重试；请删除该凭证后重新添加（支持网页登录）"
                 );
             }
             Err(failure)
@@ -3290,7 +3290,7 @@ pub struct KimiDebugInfo {
 /// 恰恰要靠这些字段定位问题。诊断必须真实执行导入（绕过节流）。
 pub fn debug_info() -> Result<KimiDebugInfo, String> {
     if let Err(e) = import_incremental_force() {
-        eprintln!("[zbar-kimi] 诊断时增量导入失败: {e}");
+        eprintln!("[agenthud-kimi] 诊断时增量导入失败: {e}");
     }
 
     let dir = sessions_dir_path();

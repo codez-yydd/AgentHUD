@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
+import { NowProvider } from "./nowClock";
 import { StatsPanel } from "./StatsPanel";
 import { SettingsPanel } from "./SettingsPanel";
 import { SyncPanel } from "./SyncPanel";
@@ -403,6 +404,9 @@ export default function App() {
   };
 
   return (
+    /* 共享 1s 时钟（内存压降专项 6）：面板各处倒计时不再各自挂定时器，
+       全树每秒一次重渲染；窗口 hidden 时暂停（见 nowClock.tsx） */
+    <NowProvider>
     <DataProvider pricing={pricing} credentialPresence={credentialPresence}>
       <div className="panel-shell">
         {view === "stats" ? (
@@ -448,5 +452,6 @@ export default function App() {
         <ResizeHandles />
       </div>
     </DataProvider>
+    </NowProvider>
   );
 }

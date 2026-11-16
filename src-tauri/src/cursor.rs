@@ -165,7 +165,7 @@ pub fn migrate_legacy_cookie() {
     let cfg = match load_cursor_config() {
         Ok(cfg) => cfg,
         Err(e) => {
-            eprintln!("[zbar-cursor] 旧 cookie 迁移跳过（读取配置失败）: {e}");
+            eprintln!("[agenthud-cursor] 旧 cookie 迁移跳过（读取配置失败）: {e}");
             return;
         }
     };
@@ -195,11 +195,11 @@ pub fn migrate_legacy_cookie() {
                 })
                 .unwrap_or_else(|_| "credentials/cursor.json".to_string());
             eprintln!(
-                "[zbar-cursor] 已把旧手动 cookie 迁移到凭证体系（{cred_path}，原文件保留）"
+                "[agenthud-cursor] 已把旧手动 cookie 迁移到凭证体系（{cred_path}，原文件保留）"
             )
         }
         Ok(false) => {} // 并发下已被其他调用创建：视为已迁移
-        Err(e) => eprintln!("[zbar-cursor] 旧 cookie 迁移失败（下次启动重试）: {e}"),
+        Err(e) => eprintln!("[agenthud-cursor] 旧 cookie 迁移失败（下次启动重试）: {e}"),
     }
 }
 
@@ -578,7 +578,7 @@ fn first_manual_cookie() -> Option<String> {
         Ok(snapshots) => pick_first_cookie(&snapshots),
         Err(e) => {
             // 凭证文件损坏时降级为"未配置"（回落 auto），不让手动路径卡死主链路
-            eprintln!("[zbar-cursor] 读取手动 cookie 凭证失败: {e}");
+            eprintln!("[agenthud-cursor] 读取手动 cookie 凭证失败: {e}");
             None
         }
     }

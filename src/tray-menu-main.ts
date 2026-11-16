@@ -12,8 +12,8 @@
  * - 动作流：快捷入口与底栏 invoke tray_menu_action（open-main /
  *   open-panel / hud-toggle / quit），后端执行后统一 hide 菜单窗口；
  *   开机自启直接走官方 autostart 插件（本地 LaunchAgent/注册表，无需
- *   自定义命令）；Esc 直接 getCurrentWindow().hide() 兜底（失焦自动
- *   收起由 Rust 侧完成）。
+ *   自定义命令）；Esc 走 tray_menu_action("close") 统一收起（hide +
+ *   挂空闲销毁调度），命令失败再兜底 getCurrentWindow().hide()。
  * - 用量页：档位（当天 / 7 天 / 30 天 / 全部）每次显示默认回到「当天」
  *   （不落 localStorage，打开期间可自由切换）；指标（Tokens / 请求 /
  *   成本）仍记忆在 localStorage。趋势图为纯 DOM/CSS 柱状图（不引入图表
@@ -1126,8 +1126,13 @@ function bindEvents(): void {
 }
 
 function hideWindow(): void {
-  void getCurrentWindow().hide().catch(() => {
-    /* 权限/窗口异常：忽略，Rust 侧还会按失焦收起 */
+  // 收起统一走 Rust 命令（hide + 挂空闲销毁调度，120s 无再次使用自动
+  // 销毁窗口释放 WebView）；失败再兜底直接 hide（无调度，窗口留待下次
+  // 弹出/收起刷新调度）
+  invoke("tray_menu_action", { action: "close" }).catch(() => {
+    void getCurrentWindow().hide().catch(() => {
+      /* 权限/窗口异常：忽略，Rust 侧还会按失焦收起 */
+    });
   });
 }
 

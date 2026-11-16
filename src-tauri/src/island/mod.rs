@@ -52,6 +52,8 @@ use tauri::{
     WebviewWindowBuilder,
 };
 
+use crate::webview_args::MergedRendererBuilder;
+
 /// 灵动岛窗口 label（capabilities/island.json 白名单同步）
 pub const ISLAND_WINDOW_LABEL: &str = "island";
 /// 配置变更广播（透明度 / 板块显隐 / 城市 / 自选股等）
@@ -147,7 +149,7 @@ pub fn island_set_hover_rect(x: f64, y: f64, width: f64, height: f64) {
         return;
     }
     if std::env::var_os("ZBAR_ISLAND_DEBUG").is_some() {
-        eprintln!("[zbar-island] hover rect {x:.0},{y:.0} {width:.0}x{height:.0}");
+        eprintln!("[agenthud-island] hover rect {x:.0},{y:.0} {width:.0}x{height:.0}");
     }
     if let Ok(mut slot) = hover_rect_slot().lock() {
         *slot = Some((x, y, width, height));
@@ -451,7 +453,7 @@ fn start_hover_watcher(app: AppHandle) {
                 }
                 if motion_in_progress() {
                     if trace {
-                        eprintln!("[zbar-island] hover skip: drag session");
+                        eprintln!("[agenthud-island] hover skip: drag session");
                     }
                     outside = 0;
                     inside = 0;
@@ -461,7 +463,7 @@ fn start_hover_watcher(app: AppHandle) {
                 // 胶囊换掉，拖拽因此中断。
                 if left_button_down() {
                     if trace {
-                        eprintln!("[zbar-island] hover skip: left button down");
+                        eprintln!("[agenthud-island] hover skip: left button down");
                     }
                     outside = 0;
                     inside = 0;
@@ -491,7 +493,7 @@ fn start_hover_watcher(app: AppHandle) {
                 let expanded = LAST_EXPANDED.load(Ordering::Relaxed);
                 if trace {
                     eprintln!(
-                        "[zbar-island] trace pos=({},{}) size={}x{} scale={scale} cursor=({cx:.0},{cy:.0}) expanded={expanded}",
+                        "[agenthud-island] trace pos=({},{}) size={}x{} scale={scale} cursor=({cx:.0},{cy:.0}) expanded={expanded}",
                         pos.x, pos.y, size.width, size.height
                     );
                 }
@@ -529,7 +531,7 @@ fn start_hover_watcher(app: AppHandle) {
                     entered_fired = false;
                     if win.is_focused().unwrap_or(false) {
                         if trace {
-                            eprintln!("[zbar-island] hover skip: window focused");
+                            eprintln!("[agenthud-island] hover skip: window focused");
                         }
                         outside = 0; // 正在输入，别收
                         continue;
@@ -2132,7 +2134,7 @@ pub fn prepare_legacy_bar() {
     if bar.enabled {
         bar.enabled = false;
         if let Err(e) = crate::hud_bar::save_hud_bar_config(&bar) {
-            eprintln!("[zbar-island] 关闭旧 HUD 停靠条失败: {e}");
+            eprintln!("[agenthud-island] 关闭旧 HUD 停靠条失败: {e}");
         }
     }
 }
@@ -2489,7 +2491,9 @@ pub fn ensure_window(app: &AppHandle) -> Result<WebviewWindow, String> {
     .min_inner_size(1.0, 1.0)
     .background_throttling(tauri::utils::config::BackgroundThrottlingPolicy::Disabled)
     .focusable(false)
-    .focused(false);
+    .focused(false)
+    // 合并 WebView2 渲染进程（内存压降专项，见 webview_args.rs 模块注释）
+    .merged_renderer();
 
     // Windows：隐藏建窗 → 修正尺寸 → 显示，规避 tao 对极窄窗口的默认钳宽。
     #[cfg(target_os = "windows")]
@@ -3124,7 +3128,7 @@ pub fn start_if_enabled(app: &AppHandle) {
         return;
     }
     if let Err(e) = ensure_window(app) {
-        eprintln!("[zbar-island] 恢复灵动岛失败: {e}");
+        eprintln!("[agenthud-island] 恢复灵动岛失败: {e}");
         return;
     }
     arm_window_after_show(app);
@@ -3599,10 +3603,17 @@ pub fn island_set_last_tab(key: String, app: AppHandle) -> Result<IslandConfig, 
 ///
 /// 前端在展开时约 7fps、收起时约 1fps 轮询；抓屏是阻塞的 GDI 操作，
 /// 放到 blocking 线程池里，避免卡住 Tauri 的异步运行时和 UI。
+/// `force`：true 时清空上一拍内容哈希，本拍必定重新编码并回传完整 data
+/// URL——前端页面重载（renderer 崩溃自动恢复等）后 CSS 底图从零开始，
+/// 哈希命中会持续返回空串哨兵导致底图缺失，重载后的轮询首拍带 force
+/// 自愈（见 backdrop::invalidate_last_hash）。
 #[tauri::command]
-pub async fn island_backdrop(app: AppHandle) -> Result<String, String> {
+pub async fn island_backdrop(app: AppHandle, force: Option<bool>) -> Result<String, String> {
     #[cfg(target_os = "windows")]
     {
+        if force.unwrap_or(false) {
+            backdrop::invalidate_last_hash();
+        }
         let win = app
             .get_webview_window(ISLAND_WINDOW_LABEL)
             .ok_or_else(|| "灵动岛窗口不存在".to_string())?;
@@ -3625,6 +3636,7 @@ pub async fn island_backdrop(app: AppHandle) -> Result<String, String> {
     #[cfg(not(target_os = "windows"))]
     {
         let _ = app;
+        let _ = force;
         Err("桌面毛玻璃采样仅支持 Windows".into())
     }
 }

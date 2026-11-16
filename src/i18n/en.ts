@@ -549,6 +549,15 @@ export const en: typeof zh = {
     "settings.langZh": "简体中文",
     "settings.langEn": "English",
 
+    "settings.floatWindow": "Floating panel",
+    "settings.floatWindowHint":
+      "Turning it off destroys the floating panel to save memory (use the island or tray menu for usage monitoring). You can still summon it anytime via tray left-click, the global shortcut, or \"Open panel\" in the tray menu; this switch decides whether it is restored on startup. Note: automatic update checks pause while it is off — reopen the floating panel from the tray menu anytime to resume.",
+    "settings.floatWindowReadFail": "Failed to read floating panel state: {msg}",
+    "settings.floatWindowFailOn": "Failed to enable the floating panel: {msg}",
+    "settings.floatWindowFailOff": "Failed to disable the floating panel: {msg}",
+    "settings.floatWindowFailNote":
+      "If the panel state doesn't match the switch, the state after the next launch prevails.",
+
     "settings.autostart": "Launch at login",
     "settings.enable": "Enable",
     "settings.applying": "Applying…",

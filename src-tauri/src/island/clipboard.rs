@@ -9,12 +9,12 @@
 //! （前端复用截图 OCR 命令，本模块不管）。
 
 use base64::Engine;
-use serde::Serialize;
+use serde::{Serialize, Serializer};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::io::Cursor;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
@@ -28,7 +28,9 @@ const MAX_LIMIT: usize = 100;
 static STOP: AtomicBool = AtomicBool::new(false);
 static GEN: AtomicU64 = AtomicU64::new(0);
 static APP: OnceLock<Mutex<Option<AppHandle>>> = OnceLock::new();
-static ITEMS: OnceLock<Mutex<Vec<ClipItem>>> = OnceLock::new();
+/// 历史容器存 Arc 条目：emit / 命令拉取只克隆指针列表（条数 ≤ 上限），
+/// png 大缓冲与文本长串不再随每次推送/拉取整份复制。
+static ITEMS: OnceLock<Mutex<Vec<Arc<ClipItem>>>> = OnceLock::new();
 static LAST_HASH: AtomicU64 = AtomicU64::new(0);
 /// 当前条数上限（AtomicUsize 读多写少：轮询线程每拍都要读）
 static LIMIT: AtomicUsize = AtomicUsize::new(DEFAULT_LIMIT);
@@ -80,25 +82,53 @@ fn is_writing() -> bool {
 fn app_slot() -> &'static Mutex<Option<AppHandle>> {
     APP.get_or_init(|| Mutex::new(None))
 }
-fn items_slot() -> &'static Mutex<Vec<ClipItem>> {
+fn items_slot() -> &'static Mutex<Vec<Arc<ClipItem>>> {
     ITEMS.get_or_init(|| Mutex::new(Vec::new()))
 }
 
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
+/// 剪贴板历史条目。图片只存一份 PNG 原始字节（png 字段）；此前的 base64
+/// data URL 副本（1.33 倍膨胀）已移除，改为序列化出口按需生成——emit /
+/// 命令响应是人工触发的低频路径，几毫秒编码换掉常驻的双份大缓冲。
+/// 历史容器以 Arc 共享（ITEMS），emit / 拉取只克隆指针列表，不复制大缓冲。
+#[derive(Debug, Clone)]
 pub struct ClipItem {
     pub id: u64,
     pub kind: String,
     pub text: String,
     pub preview: String,
-    pub image: String,
     pub time: i64,
     pub width: u32,
     pub height: u32,
     /// 钉住：不会被新内容挤出、也不会被「清空」清掉
     pub pinned: bool,
-    #[serde(skip)]
+    /// 图片条目的 PNG 原始字节（唯一内存副本；文本条目为空）
     pub png: Vec<u8>,
+}
+
+impl Serialize for ClipItem {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        use serde::ser::SerializeStruct;
+        // 字段名与前端既有契约一致（原 serde rename_all = "camelCase" 下的字段）
+        let image = if self.kind == "image" {
+            png_data_url(&self.png)
+        } else {
+            String::new()
+        };
+        let mut s = serializer.serialize_struct("ClipItem", 9)?;
+        s.serialize_field("id", &self.id)?;
+        s.serialize_field("kind", &self.kind)?;
+        s.serialize_field("text", &self.text)?;
+        s.serialize_field("preview", &self.preview)?;
+        s.serialize_field("image", &image)?;
+        s.serialize_field("time", &self.time)?;
+        s.serialize_field("width", &self.width)?;
+        s.serialize_field("height", &self.height)?;
+        s.serialize_field("pinned", &self.pinned)?;
+        s.end()
+    }
 }
 
 fn hash_bytes(bytes: &[u8]) -> u64 {
@@ -109,15 +139,15 @@ fn hash_bytes(bytes: &[u8]) -> u64 {
 
 /// 展示顺序：钉住的在前，其余保持插入顺序（新的在前）。
 /// 用稳定分区，避免交换法把未钉住条目之间的先后顺序打乱。
-fn sort_for_display(items: &mut Vec<ClipItem>) {
-    let (pinned, rest): (Vec<ClipItem>, Vec<ClipItem>) =
+fn sort_for_display(items: &mut Vec<Arc<ClipItem>>) {
+    let (pinned, rest): (Vec<Arc<ClipItem>>, Vec<Arc<ClipItem>>) =
         items.drain(..).partition(|item| item.pinned);
     items.extend(pinned);
     items.extend(rest);
 }
 
 /// 超限淘汰：只淘汰最旧的**未钉住**条目；全钉住时宁可超出上限也不丢。
-fn prune_to_limit(items: &mut Vec<ClipItem>, limit: usize) {
+fn prune_to_limit(items: &mut Vec<Arc<ClipItem>>, limit: usize) {
     while items.len() > limit {
         match items.iter().rposition(|item| !item.pinned) {
             Some(index) => {
@@ -133,6 +163,8 @@ fn clamp_limit(limit: usize) -> usize {
 }
 
 fn emit(app: &AppHandle) {
+    // 锁内只克隆 Arc 指针列表（≤ 上限 100 条），png / 文本大缓冲零复制；
+    // 排序在克隆列表上进行，不改动存储顺序（与事件推送同口径）
     let mut items = items_slot().lock().map(|g| g.clone()).unwrap_or_default();
     sort_for_display(&mut items);
     let _ = app.emit(CLIPBOARD_EVENT, items);
@@ -144,7 +176,7 @@ fn push_item(item: ClipItem) {
         Err(p) => p.into_inner(),
     };
     guard.retain(|i| i.preview != item.preview || i.kind != item.kind);
-    guard.insert(0, item);
+    guard.insert(0, Arc::new(item));
     prune_to_limit(&mut guard, LIMIT.load(Ordering::Relaxed));
 }
 
@@ -172,12 +204,13 @@ fn poll_once(clip: &mut arboard::Clipboard, next_id: &mut u64) -> bool {
                     if buffer.write_to(&mut png, image::ImageFormat::Png).is_ok() {
                         let bytes = png.into_inner();
                         *next_id += 1;
+                        // data URL 不再在此生成常驻（旧实现与 png 双份存储），
+                        // 序列化出口按需编码，见 ClipItem 的 Serialize
                         let item = ClipItem {
                             id: *next_id,
                             kind: "image".into(),
                             text: String::new(),
                             preview: format!("图片 {width}×{height}"),
-                            image: png_data_url(&bytes),
                             time: chrono::Utc::now().timestamp_millis(),
                             width,
                             height,
@@ -209,7 +242,6 @@ fn poll_once(clip: &mut arboard::Clipboard, next_id: &mut u64) -> bool {
                     kind: "text".into(),
                     text,
                     preview,
-                    image: String::new(),
                     time: chrono::Utc::now().timestamp_millis(),
                     width: 0,
                     height: 0,
@@ -236,7 +268,7 @@ pub fn start(app: AppHandle) {
             let mut clip = match arboard::Clipboard::new() {
                 Ok(c) => c,
                 Err(e) => {
-                    eprintln!("[zbar-island] 剪贴板不可用: {e}");
+                    eprintln!("[agenthud-island] 剪贴板不可用: {e}");
                     return;
                 }
             };
@@ -273,7 +305,7 @@ pub fn stop() {
 }
 
 #[tauri::command]
-pub fn island_clipboard() -> Vec<ClipItem> {
+pub fn island_clipboard() -> Vec<Arc<ClipItem>> {
     let mut items = items_slot().lock().map(|g| g.clone()).unwrap_or_default();
     // 与事件推送同一口径：钉住的在前，保证启动后首次拉取顺序一致
     sort_for_display(&mut items);
@@ -353,7 +385,7 @@ pub fn island_clipboard_clear() -> Result<(), String> {
 
 /// 钉住 / 取消钉住，返回调整后的完整列表（前端直接替换，省一次全量拉取）。
 #[tauri::command]
-pub fn island_clipboard_pin(id: u64, pinned: bool) -> Result<Vec<ClipItem>, String> {
+pub fn island_clipboard_pin(id: u64, pinned: bool) -> Result<Vec<Arc<ClipItem>>, String> {
     let list = {
         let mut guard = items_slot()
             .lock()
@@ -362,7 +394,8 @@ pub fn island_clipboard_pin(id: u64, pinned: bool) -> Result<Vec<ClipItem>, Stri
             .iter_mut()
             .find(|item| item.id == id)
             .ok_or_else(|| "剪贴板记录不存在".to_string())?;
-        item.pinned = pinned;
+        // 修改共享条目走写时复制：只有该条目被克隆，其余条目仍共享
+        Arc::make_mut(item).pinned = pinned;
         guard.clone()
     };
     notify_changed();
@@ -371,7 +404,7 @@ pub fn island_clipboard_pin(id: u64, pinned: bool) -> Result<Vec<ClipItem>, Stri
 
 /// 删除单条（钉住的也能删——这是显式操作）。
 #[tauri::command]
-pub fn island_clipboard_delete(id: u64) -> Result<Vec<ClipItem>, String> {
+pub fn island_clipboard_delete(id: u64) -> Result<Vec<Arc<ClipItem>>, String> {
     let list = {
         let mut guard = items_slot()
             .lock()
@@ -385,7 +418,7 @@ pub fn island_clipboard_delete(id: u64) -> Result<Vec<ClipItem>, String> {
 
 /// 调整条数上限（5–100）：立即按新上限淘汰最旧的未钉住条目。
 #[tauri::command]
-pub fn island_clipboard_set_limit(limit: u32) -> Result<Vec<ClipItem>, String> {
+pub fn island_clipboard_set_limit(limit: u32) -> Result<Vec<Arc<ClipItem>>, String> {
     let next = clamp_limit(limit as usize);
     LIMIT.store(next, Ordering::Relaxed);
     let list = {
@@ -405,7 +438,7 @@ pub fn island_clipboard_limit() -> u32 {
     LIMIT.load(Ordering::Relaxed) as u32
 }
 
-fn display_list(mut items: Vec<ClipItem>) -> Vec<ClipItem> {
+fn display_list(mut items: Vec<Arc<ClipItem>>) -> Vec<Arc<ClipItem>> {
     sort_for_display(&mut items);
     items
 }
@@ -426,7 +459,6 @@ mod tests {
             kind: "text".into(),
             text: format!("t{id}"),
             preview: format!("t{id}"),
-            image: String::new(),
             time: id as i64,
             width: 0,
             height: 0,
@@ -435,14 +467,19 @@ mod tests {
         }
     }
 
-    fn ids(items: &[ClipItem]) -> Vec<u64> {
+    fn ids(items: &[Arc<ClipItem>]) -> Vec<u64> {
         items.iter().map(|item| item.id).collect()
     }
 
     /// 超限时淘汰最旧的未钉住条目，钉住的必须活着
     #[test]
     fn prune_drops_oldest_unpinned_only() {
-        let mut items = vec![item(4, false), item(3, true), item(2, false), item(1, false)];
+        let mut items = vec![
+            Arc::new(item(4, false)),
+            Arc::new(item(3, true)),
+            Arc::new(item(2, false)),
+            Arc::new(item(1, false)),
+        ];
         prune_to_limit(&mut items, 3);
         assert_eq!(ids(&items), vec![4, 3, 2]);
     }
@@ -450,7 +487,11 @@ mod tests {
     /// 全部钉住时宁可超出上限，也不能悄悄丢用户钉住的东西
     #[test]
     fn prune_keeps_all_when_everything_pinned() {
-        let mut items = vec![item(3, true), item(2, true), item(1, true)];
+        let mut items = vec![
+            Arc::new(item(3, true)),
+            Arc::new(item(2, true)),
+            Arc::new(item(1, true)),
+        ];
         prune_to_limit(&mut items, 2);
         assert_eq!(ids(&items), vec![3, 2, 1]);
     }
@@ -458,7 +499,12 @@ mod tests {
     /// 展示顺序：钉住的在前，未钉住的相对顺序不变（稳定分区）
     #[test]
     fn display_order_is_stable_partition() {
-        let mut items = vec![item(4, false), item(3, true), item(2, false), item(1, true)];
+        let mut items = vec![
+            Arc::new(item(4, false)),
+            Arc::new(item(3, true)),
+            Arc::new(item(2, false)),
+            Arc::new(item(1, true)),
+        ];
         sort_for_display(&mut items);
         assert_eq!(ids(&items), vec![3, 1, 4, 2]);
     }
@@ -482,5 +528,33 @@ mod tests {
             assert!(!PAUSED.load(Ordering::SeqCst), "让行标志用完即清");
         }
         assert!(!is_writing(), "guard drop 后写计数必须归零");
+    }
+
+    /// 图片的 base64 data URL 只在序列化出口按需生成：内存条目只存一份
+    /// png 原始字节；文本条目 image 序列化为空串（前端契约不变）。
+    #[test]
+    fn serialization_builds_image_data_url_on_demand() {
+        let png = b"not-a-real-png".to_vec();
+        let image_item = ClipItem {
+            id: 1,
+            kind: "image".into(),
+            text: String::new(),
+            preview: "图片".into(),
+            time: 1,
+            width: 2,
+            height: 3,
+            pinned: false,
+            png: png.clone(),
+        };
+        let json = serde_json::to_string(&image_item).unwrap();
+        let expected = format!(
+            "data:image/png;base64,{}",
+            base64::engine::general_purpose::STANDARD.encode(&png)
+        );
+        assert!(json.contains(&expected), "序列化应输出按需生成的 data URL");
+
+        let text_item = item(2, false);
+        let json = serde_json::to_string(&text_item).unwrap();
+        assert!(json.contains("\"image\":\"\""), "文本条目 image 应为空串");
     }
 }

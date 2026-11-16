@@ -1,5 +1,6 @@
-import { useEffect, useState, type CSSProperties } from "react";
+import type { CSSProperties } from "react";
 import { useDataCache } from "./DataCache";
+import { useNow } from "./nowClock";
 import {
   formatCountdownCore,
   formatResetStamp,
@@ -24,13 +25,9 @@ export function QuotaPanel() {
   // 卡片内嵌账号切换（全部账号区各非当前账号行）
   const sw = useAccountSwitch();
   const { t } = useI18n();
-  const [now, setNow] = useState(Date.now());
-
-  // 每秒更新倒计时显示
-  useEffect(() => {
-    const tickTimer = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(tickTimer);
-  }, []);
+  // 倒计时显示用时钟：收敛为共享 context（内存压降专项 6，见 nowClock.tsx），
+  // 不再自己挂 1s 定时器；窗口 hidden 时由 Provider 统一暂停
+  const now = useNow();
 
   // 本地凭证缺失（未在 ZCode 客户端登录 Coding Plan）→ 显示登录引导
   // 注意：正则匹配 Rust 后端返回的中文错误串（quota.rs 的固定前缀文案），仅做布尔分支，不能翻译

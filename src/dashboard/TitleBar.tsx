@@ -2,6 +2,28 @@
  * 自绘标题栏：主窗口 decorations: false（见 src-tauri/src/main_window.rs）
  * 之后替代系统标题栏——左侧品牌区（logo + AgentHUD + 副标题，原侧栏 db-brand
  * 上移），右侧窗口控制按钮（最小化 / 最大化↔还原 / 关闭）。
+ *
+ * 交互语义对齐 Windows 标题栏：
+ * - 拖拽：全栏按下左键 → getCurrentWindow().startDragging()（手动挂法
+ *   对齐 StatsPanel.tsx 的窗口拖头：不用 data-tauri-drag-region——子元素会
+ *   吞事件；按钮上 stopPropagation 防拖拽误触，其余子元素（logo/文字）
+ *   照常可拖）；
+ * - 双击空白处 = 最大化 / 还原切换。刻意不挂 React onDoubleClick：Windows /
+ *   Linux 的 startDragging 是原生模态拖拽循环，WebView 收不到当次 mouseup
+ *   （mouseup 被循环吃掉，tauri#11945 有记载），浏览器 click → dblclick
+ *   序列不可靠；因此双击分支改在 mousedown 上按 e.detail 分派（双击不走
+ *   startDragging），macOS 则放在 mouseup（detail===2 且指针未移动）——
+ *   与 Tauri 官方 data-tauri-drag-region 脚本（tauri/src/window/scripts/
+ *   drag.js）同款做法；
+ * - 关闭按钮走 close()：省内存改造后 Rust 侧不再拦截 main-window 的
+ *   CloseRequested，默认关闭 = 销毁窗口（WebView 渲染进程随之释放，下次
+ *   打开走现场建窗，见 lib.rs / main_window.rs），前端无需感知差异；
+ * - 最大化状态：挂载时查一次 isMaximized()，onResized 监听刷新（覆盖
+ *   按钮点击、双击、系统热区缩放三条路径），卸载时退订。
+ *
+ * 边缘缩放不需要本组件参与：Windows 下 tao 对不透明无边框窗提供
+ * WM_NCHITTEST 系统热区（见 src/ResizeHandles.tsx 头注释），故本窗不挂
+ * ResizeHandles（它绑定的是面板专用的窗口尺寸落盘逻辑）。
  */
 import { useEffect, useRef, useState } from "react";
 import type { MouseEvent as ReactMouseEvent } from "react";

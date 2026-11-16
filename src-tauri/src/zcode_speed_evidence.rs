@@ -23,11 +23,19 @@ use std::{
 
 const SQL_FUNCTION: &str = "agenthud_zcode_first_content";
 
+/// 证据保留窗（毫秒）：与 quota_history.rs 的 RETENTION_MS（90 天）口径对齐。
+/// sync.rs 的 speed_backfill 历史证据回传范围本就 ≤90 天（zcode_speed_replay_since
+/// 仅回补近 10 分钟完成的行、游标不超过保留期），窗口外的证据不参与任何查询；
+/// 不淘汰则索引与快照随进程寿命无上限增长（此前旋转文件的证据保留至进程退出）。
+const EVIDENCE_RETENTION_MS: i64 = 90 * 86_400_000;
+
+/// 标识键。字段用 Arc<str>：first 与 bridges 两张索引共享同一份字符串
+/// （此前同一 trace/session/request 在两张表里各存一份深拷贝）。
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct AttemptKey {
-    trace: String,
-    session: String,
-    request: String,
+    trace: Arc<str>,
+    session: Arc<str>,
+    request: Arc<str>,
     attempt: u32,
 }
 
@@ -44,12 +52,15 @@ struct Evidence {
     completed_at: i64,
 }
 
-type Snapshot = HashMap<String, HashMap<String, Evidence>>;
+/// 单个 trace 下全部 span 的证据。外层按 trace 分片持 Arc：refresh 重建时
+/// 只克隆指针表与受影响分片，不再整份克隆 90 天证据。
+type Spans = HashMap<String, Evidence>;
+type Snapshot = HashMap<Arc<str>, Arc<Spans>>;
 
 #[derive(Default)]
 struct LogIndex {
     first: HashMap<AttemptKey, Option<i64>>,
-    bridges: HashMap<(String, String), Option<Bridge>>,
+    bridges: HashMap<(Arc<str>, Arc<str>), Option<Bridge>>,
 }
 
 #[derive(Deserialize)]
@@ -121,9 +132,9 @@ impl LogIndex {
             return;
         }
         let key = AttemptKey {
-            trace: line.trace_id.clone(),
-            session: line.session_id,
-            request: line.context.request_id,
+            trace: line.trace_id.into(),
+            session: line.session_id.into(),
+            request: line.context.request_id.into(),
             attempt: line.context.attempt,
         };
         match line.event.as_str() {
@@ -138,7 +149,7 @@ impl LogIndex {
             "model.request.completed" if !line.span_id.is_empty() => {
                 insert_unique(
                     &mut self.bridges,
-                    (line.trace_id, line.span_id),
+                    (key.trace.clone(), line.span_id.into()),
                     Bridge {
                         request: key,
                         completed_at: at,
@@ -147,6 +158,18 @@ impl LogIndex {
             }
             _ => {}
         }
+    }
+
+    /// 时间窗淘汰：删除 completed_at 早于 cutoff 的 bridge 与 first 条目
+    /// （窗口口径见 EVIDENCE_RETENTION_MS 注释）。值为 None 的冲突哨兵
+    /// 不带时间信息且数量极少，保留以维持 fail-closed 语义。
+    fn evict_before(&mut self, cutoff: i64) {
+        self.bridges.retain(|_, bridge| {
+            bridge
+                .as_ref()
+                .is_none_or(|bridge| bridge.completed_at >= cutoff)
+        });
+        self.first.retain(|_, at| at.is_none_or(|at| at >= cutoff));
     }
 
     fn snapshot(&self) -> Snapshot {
@@ -161,10 +184,11 @@ impl LogIndex {
             if *first_at > bridge.completed_at {
                 continue;
             }
-            result.entry(trace.clone()).or_default().insert(
-                span.clone(),
+            let spans = Arc::make_mut(result.entry(trace.clone()).or_default());
+            spans.insert(
+                span.to_string(),
                 Evidence {
-                    session: bridge.request.session.clone(),
+                    session: bridge.request.session.to_string(),
                     first_at: *first_at,
                     completed_at: bridge.completed_at,
                 },
@@ -189,10 +213,17 @@ struct CachedLogs {
     cache_file: Option<PathBuf>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Deserialize)]
 struct SavedSnapshot {
     version: u32,
     snapshot: Snapshot,
+}
+
+/// 写盘用的借用视图：避免为序列化再整份克隆一次快照。
+#[derive(Serialize)]
+struct SavedSnapshotRef<'a> {
+    version: u32,
+    snapshot: &'a Snapshot,
 }
 
 impl CachedLogs {
@@ -215,9 +246,9 @@ impl CachedLogs {
         let Some(path) = &self.cache_file else {
             return;
         };
-        let Ok(bytes) = serde_json::to_vec(&SavedSnapshot {
+        let Ok(bytes) = serde_json::to_vec(&SavedSnapshotRef {
             version: 1,
-            snapshot: self.snapshot.as_ref().clone(),
+            snapshot: &self.snapshot,
         }) else {
             return;
         };
@@ -250,7 +281,8 @@ impl CachedLogs {
             .collect();
         files.sort_by(|a, b| a.0.cmp(&b.0));
         // Replacement/truncation invalidates old associations. Removed rotated
-        // files may retain already observed evidence until this process exits.
+        // files may retain already observed evidence until the retention window
+        // evicts it (see below). Newly conflicting identities drop it at once.
         if files.iter().any(|(path, meta)| {
             self.files.get(path).is_some_and(|old| {
                 meta.len() < old.offset
@@ -291,8 +323,14 @@ impl CachedLogs {
         }
         if changed {
             // Retain verified historical evidence after normal log rotation and
-            // app restart. Newly conflicting identities explicitly invalidate it.
-            let mut next = self.snapshot.as_ref().clone();
+            // app restart, bounded by the 90-day retention window aligned with
+            // quota_history (backfill never queries beyond it). Newly conflicting
+            // identities explicitly invalidate their saved proof.
+            let cutoff = chrono::Utc::now().timestamp_millis() - EVIDENCE_RETENTION_MS;
+            self.index.evict_before(cutoff);
+            // 只读收集变更集：失效条目、快照内超窗条目、新增配对。三者皆空时
+            // 保持原快照不动——无关新行（此前每 30s 的空转重建）不再触发整份克隆。
+            let mut removals: Vec<(&Arc<str>, &str)> = Vec::new();
             for ((trace, span), bridge) in &self.index.bridges {
                 let invalid = match bridge {
                     None => true,
@@ -303,19 +341,59 @@ impl CachedLogs {
                     },
                 };
                 if invalid {
-                    if let Some(spans) = next.get_mut(trace) {
-                        spans.remove(span);
+                    removals.push((trace, span));
+                }
+            }
+            let mut expired: Vec<(&Arc<str>, &str)> = Vec::new();
+            for (trace, spans) in self.snapshot.iter() {
+                for (span, evidence) in spans.iter() {
+                    if evidence.completed_at < cutoff {
+                        expired.push((trace, span.as_str()));
                     }
                 }
             }
-            for (trace, spans) in self.index.snapshot() {
-                next.entry(trace).or_default().extend(spans);
-            }
-            next.retain(|_, spans| !spans.is_empty());
-            if next != *self.snapshot {
+            let additions = self.index.snapshot();
+            if !removals.is_empty() || !expired.is_empty() || !additions.is_empty() {
+                // 写时复制：外层只克隆指针表，trace 分片按 Arc 共享，
+                // 真正深拷贝的只有被增删触碰到的分片。
+                let mut next = (*self.snapshot).clone();
+                for (trace, span) in removals.iter().copied().chain(expired.iter().copied()) {
+                    let Some(spans) = next.get_mut(trace) else {
+                        continue;
+                    };
+                    Arc::make_mut(spans).remove(span);
+                    if spans.is_empty() {
+                        next.remove(trace);
+                    }
+                }
+                for (trace, spans) in additions {
+                    match next.get_mut(&trace) {
+                        Some(existing) => Arc::make_mut(existing).extend(
+                            spans.iter().map(|(span, ev)| (span.clone(), ev.clone())),
+                        ),
+                        None => {
+                            next.insert(trace, spans);
+                        }
+                    }
+                }
                 self.snapshot = Arc::new(next);
                 self.save();
             }
+            // 已配对成功的 first 条目完成使命：证据已持久进快照，后续失效校验
+            // 对缺失的 first 走「保留已存证明」分支（None => false），语义不变；
+            // 保留未配对（等待 completed 事件）与冲突（None 哨兵）条目。
+            let paired: std::collections::HashSet<AttemptKey> = self
+                .index
+                .bridges
+                .values()
+                .filter_map(|bridge| {
+                    let bridge = bridge.as_ref()?;
+                    let first_at = (*self.index.first.get(&bridge.request)?)?;
+                    (first_at <= bridge.completed_at)
+                        .then(|| bridge.request.clone())
+                })
+                .collect();
+            self.index.first.retain(|key, _| !paired.contains(key));
         }
         self.snapshot.clone()
     }
@@ -576,12 +654,21 @@ mod tests {
     #[test]
     fn incremental_reader_retries_partial_lines_and_rebuilds_on_truncation() {
         use std::io::Write;
+        // 时间窗淘汰按真实挂钟切 90 天窗口，测试事件时间戳必须落在窗口内
+        let base = chrono::Utc::now().timestamp_millis();
         let dir =
             std::env::temp_dir().join(format!("agenthud-speed-evidence-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&dir).unwrap();
         let path = dir.join("zcode-test.jsonl");
-        let first = event("ttft.model.first_content", 2000, "parent", "a", 1, "tool");
-        let done = event("model.request.completed", 3000, "span", "a", 1, "");
+        let first = event(
+            "ttft.model.first_content",
+            base + 2000,
+            "parent",
+            "a",
+            1,
+            "tool",
+        );
+        let done = event("model.request.completed", base + 3000, "span", "a", 1, "");
         let mut file = File::create(&path).unwrap();
         file.write_all(&first).unwrap();
         file.write_all(b"\n").unwrap();
@@ -602,7 +689,7 @@ mod tests {
             cache.files[&path].offset,
             fs::metadata(&path).unwrap().len()
         );
-        assert_eq!(snapshot["trace"]["span"].first_at, 2000);
+        assert_eq!(snapshot["trace"]["span"].first_at, base + 2000);
         assert!(cache.files[&path].offset > offset);
         drop(file);
         fs::write(&path, b"{}\n").unwrap();
@@ -615,24 +702,33 @@ mod tests {
 
     #[test]
     fn persisted_evidence_survives_rotation_but_not_conflicting_identity() {
+        // 时间窗淘汰按真实挂钟切 90 天窗口，测试事件时间戳必须落在窗口内
+        let base = chrono::Utc::now().timestamp_millis();
         let dir =
             std::env::temp_dir().join(format!("agenthud-speed-evidence-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&dir).unwrap();
         let path = dir.join("zcode-test.jsonl");
         let saved = dir.join("evidence.json");
-        let mut lines = event("ttft.model.first_content", 2000, "parent", "a", 1, "tool");
+        let mut lines = event(
+            "ttft.model.first_content",
+            base + 2000,
+            "parent",
+            "a",
+            1,
+            "tool",
+        );
         lines.push(b'\n');
-        lines.extend(event("model.request.completed", 3000, "span", "a", 1, ""));
+        lines.extend(event("model.request.completed", base + 3000, "span", "a", 1, ""));
         lines.push(b'\n');
         fs::write(&path, lines).unwrap();
         let mut cache = CachedLogs::load(Some(saved.clone()));
-        assert_eq!(cache.refresh(&dir)["trace"]["span"].first_at, 2000);
+        assert_eq!(cache.refresh(&dir)["trace"]["span"].first_at, base + 2000);
         fs::remove_file(&path).unwrap();
         let mut restarted = CachedLogs::load(Some(saved.clone()));
-        assert_eq!(restarted.refresh(&dir)["trace"]["span"].first_at, 2000);
-        let mut conflict = event("model.request.completed", 3000, "span", "a", 1, "");
+        assert_eq!(restarted.refresh(&dir)["trace"]["span"].first_at, base + 2000);
+        let mut conflict = event("model.request.completed", base + 3000, "span", "a", 1, "");
         conflict.push(b'\n');
-        conflict.extend(event("model.request.completed", 3000, "span", "b", 1, ""));
+        conflict.extend(event("model.request.completed", base + 3000, "span", "b", 1, ""));
         conflict.push(b'\n');
         fs::write(&path, conflict).unwrap();
         assert!(restarted.refresh(&dir).is_empty());
@@ -641,5 +737,37 @@ mod tests {
             .unwrap()
             .starts_with(fs::canonicalize(std::env::temp_dir()).unwrap()));
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// 时间窗淘汰：超过 90 天保留窗的 bridge / first 条目被删除，窗口内条目
+    /// 与冲突哨兵（None 值，fail-closed 语义）保留；窗口与 quota_history 的
+    /// RETENTION_MS（90 天）对齐，speed_backfill 的回传范围不受影响。
+    #[test]
+    fn evict_before_drops_only_expired_entries() {
+        let cutoff = 1_000_000;
+        let mut index = LogIndex::default();
+        // 窗口内的一对：保留
+        index.ingest(&event("ttft.model.first_content", cutoff + 1000, "parent", "a", 1, "tool"));
+        index.ingest(&event("model.request.completed", cutoff + 2000, "span", "a", 1, ""));
+        // 超窗的一对：淘汰
+        index.ingest(&event("ttft.model.first_content", cutoff - 2000, "parent", "b", 1, "tool"));
+        index.ingest(&event("model.request.completed", cutoff - 1000, "old", "b", 1, ""));
+        // 冲突哨兵（同键不同值）：无论时间一律保留
+        index.ingest(&event("ttft.model.first_content", cutoff + 3000, "parent", "c", 1, "tool"));
+        index.ingest(&event("ttft.model.first_content", cutoff + 4000, "parent", "c", 1, "text"));
+
+        index.evict_before(cutoff);
+        assert!(index.bridges.contains_key(&("trace".into(), "span".into())));
+        assert!(!index.bridges.contains_key(&("trace".into(), "old".into())));
+        let conflict_key = AttemptKey {
+            trace: "trace".into(),
+            session: "session".into(),
+            request: "c".into(),
+            attempt: 1,
+        };
+        assert_eq!(index.first.get(&conflict_key), Some(&None));
+        assert_eq!(index.first.len(), 2, "超窗 first 淘汰、冲突哨兵保留");
+        // 窗口内配对仍可产出证据
+        assert_eq!(index.snapshot()["trace"]["span"].first_at, cutoff + 1000);
     }
 }

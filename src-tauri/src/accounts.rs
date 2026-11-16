@@ -253,7 +253,7 @@ fn load_snapshots_at(base: &Path) -> Vec<AccountSnapshot> {
             .and_then(|s| serde_json::from_str::<AccountSnapshot>(&s).map_err(|e| e.to_string()))
         {
             Ok(s) => out.push(s),
-            Err(e) => eprintln!("[zbar-accounts] 跳过损坏的快照文件 {name}: {e}"),
+            Err(e) => eprintln!("[agenthud-accounts] 跳过损坏的快照文件 {name}: {e}"),
         }
     }
     out.sort_by_key(|s| s.created_at);
@@ -566,7 +566,7 @@ fn auto_capture_once() -> Option<CaptureOutcome> {
         Ok(_) => None,
         // 快照落盘失败：低频日志 + 下一轮重试，不让线程退出
         Err(e) => {
-            eprintln!("[zbar-accounts] 自动捕获落盘失败（下轮重试）: {e}");
+            eprintln!("[agenthud-accounts] 自动捕获落盘失败（下轮重试）: {e}");
             None
         }
     }

@@ -1,8 +1,9 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "AgentHUD",
-  "version": "2.0.1",
+  "version": "2.0.4",
   "identifier": "com.chacca.agenthud",
+  "mainBinaryName": "AgentHUD",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
@@ -10,31 +11,7 @@
     "frontendDist": "../dist"
   },
   "app": {
-    "windows": [
-      {
-        "label": "panel",
-        "title": "AgentHUD",
-        "width": 300,
-        "height": 500,
-        "minWidth": 260,
-        "minHeight": 430,
-        "maxWidth": 420,
-        "maxHeight": 760,
-        "resizable": true,
-        "decorations": false,
-        "transparent": true,
-        "alwaysOnTop": true,
-        "skipTaskbar": true,
-        "visible": false,
-        "shadow": false,
-        "center": false,
-        "windowEffects": {
-          "effects": ["popover"],
-          "state": "active",
-          "radius": 16.0
-        }
-      }
-    ],
+    "windows": [],
     "security": {
       "csp": null,
       "assetProtocol": {

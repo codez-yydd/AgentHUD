@@ -42,6 +42,7 @@ use super::{
     park_overlay_for_record, restore_overlay_for_record, shot_dir, shot_session,
     show_island_for_capture, RecordResult, ShotMonitor, ShotRect,
 };
+use crate::webview_args::MergedRendererBuilder;
 
 /// 录制条 / 预览窗的窗口 label（capabilities/rec.json 同步）
 pub const REC_WINDOW_LABEL: &str = "shot-recorder";
@@ -253,10 +254,10 @@ pub async fn shot_record_start(
     let outcome = start_recording(app, id, rect, options).await;
     match &outcome {
         Ok(started) => eprintln!(
-            "[zbar-rec] 开始录制 id={} 格式={} {}×{}",
+            "[agenthud-rec] 开始录制 id={} 格式={} {}×{}",
             started.record_id, started.format, started.width, started.height
         ),
-        Err(e) => eprintln!("[zbar-rec] 开始录制失败: {e}"),
+        Err(e) => eprintln!("[agenthud-rec] 开始录制失败: {e}"),
     }
     outcome
 }
@@ -530,7 +531,7 @@ pub async fn shot_record_gif_fps(record_id: u64, fps: u32) -> Result<RecordState
         return Err("只有 GIF 可以调整帧率".into());
     }
     let fps = fps.clamp(1, 30);
-    eprintln!("[zbar-rec] 改 GIF 帧率 id={record_id} -> {fps}fps");
+    eprintln!("[agenthud-rec] 改 GIF 帧率 id={record_id} -> {fps}fps");
     let result = {
         let inner = rec
             .inner
@@ -584,7 +585,7 @@ pub async fn shot_record_gif_fps(record_id: u64, fps: u32) -> Result<RecordState
     })
     .await
     .map_err(|e| join_error_message("重新生成 GIF", e))??;
-    eprintln!("[zbar-rec] GIF 重编码完成 id={record_id}");
+    eprintln!("[agenthud-rec] GIF 重编码完成 id={record_id}");
     shot_record_state(record_id)
 }
 
@@ -721,14 +722,14 @@ pub async fn shot_record_export(
     let end = end_ms.clamp(0.0, duration).max(start + 1.0);
     let trimmed = start > 60.0 || end < duration - 60.0;
     eprintln!(
-        "[zbar-rec] 导出请求 id={record_id} {:.0}ms~{:.0}ms action={action} 裁剪={trimmed}",
+        "[agenthud-rec] 导出请求 id={record_id} {:.0}ms~{:.0}ms action={action} 裁剪={trimmed}",
         start, end
     );
     tauri::async_runtime::spawn_blocking(move || {
         let source = PathBuf::from(&result.path);
         let path = if trimmed {
             let trimmed_path = trim_recording(&rec, &source, &result, start, end)?;
-            eprintln!("[zbar-rec] 裁剪完成 {}", trimmed_path.display());
+            eprintln!("[agenthud-rec] 裁剪完成 {}", trimmed_path.display());
             trimmed_path
         } else {
             source
@@ -736,10 +737,10 @@ pub async fn shot_record_export(
         match action.as_str() {
             "copy" => {
                 if let Err(e) = clipboard_file(&path) {
-                    eprintln!("[zbar-rec] 复制失败: {e}");
+                    eprintln!("[agenthud-rec] 复制失败: {e}");
                     return Err(e);
                 }
-                eprintln!("[zbar-rec] 已复制 {}", path.display());
+                eprintln!("[agenthud-rec] 已复制 {}", path.display());
                 Ok(Some(path.to_string_lossy().to_string()))
             }
             "save" => {
@@ -778,7 +779,7 @@ pub async fn shot_record_export(
                     .into_path()
                     .map_err(|e| format!("解析保存路径失败: {e}"))?;
                 std::fs::copy(&path, &target).map_err(|e| format!("写入录屏文件失败: {e}"))?;
-                eprintln!("[zbar-rec] 已保存 {}", target.display());
+                eprintln!("[agenthud-rec] 已保存 {}", target.display());
                 Ok(Some(target.to_string_lossy().to_string()))
             }
             other => Err(format!("未知操作: {other}")),
@@ -1115,8 +1116,14 @@ fn build_recorder_window(
     .visible(false)
     .focused(false)
     .background_throttling(tauri::utils::config::BackgroundThrottlingPolicy::Disabled)
+    // 合并 WebView2 渲染进程（内存压降专项，见 webview_args.rs 模块注释）
+    .merged_renderer()
     .build()
     .map_err(|e| format!("创建录制窗口失败: {e}"))?;
+    // 冷建分支与复用分支同一套收尾：透明底 + 按选区避让落位 + show。
+    // 窗口隐藏出生、show 前背景已置全透明，页面未加载完只会短暂透明空白
+    //（录制条从无到有），不会出现黑屏；倒计时由 rec.html 加载后按 URL
+    // 参数自行驱动（倒计时根治批次的行为，不依赖窗口提前存在）。
     let _ = win.set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
     win.set_position(PhysicalPosition::new(x, y))
         .map_err(|e| format!("定位录制窗口失败: {e}"))?;
@@ -1197,6 +1204,8 @@ pub async fn prewarm_recorder_window(app: AppHandle) -> Result<(), String> {
         .visible(false)
         .focused(false)
         .background_throttling(tauri::utils::config::BackgroundThrottlingPolicy::Disabled)
+        // 合并 WebView2 渲染进程（内存压降专项，见 webview_args.rs 模块注释）
+        .merged_renderer()
         .build()
         .map_err(|e| format!("预热录制窗口失败: {e}"))?;
         let _ = win.set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
@@ -1330,7 +1339,7 @@ fn run_ffmpeg_recording(rec: Arc<Recording>, spec: CaptureSpec, dir: PathBuf) {
             let mut downgraded: Option<ffmpeg::FfmpegRecording> = None;
             if encoder != ffmpeg::H264Encoder::X264 {
                 eprintln!(
-                    "[zbar-rec] 硬件编码器 {} 启动失败（退出码 {}），降级 libx264 重试",
+                    "[agenthud-rec] 硬件编码器 {} 启动失败（退出码 {}），降级 libx264 重试",
                     encoder.name(),
                     status.code().unwrap_or(-1)
                 );
@@ -1348,7 +1357,7 @@ fn run_ffmpeg_recording(rec: Arc<Recording>, spec: CaptureSpec, dir: PathBuf) {
             match downgraded {
                 Some(retried) => {
                     proc = retried;
-                    eprintln!("[zbar-rec] 已切换为 libx264（软件编码）继续本次录制");
+                    eprintln!("[agenthud-rec] 已切换为 libx264（软件编码）继续本次录制");
                     // 时长基准重置到软编真正开始抓帧的时刻（降级重启拖了约 1.2s）
                     rec.started_ms
                         .store(super::now_ms() as u64, Ordering::Relaxed);
@@ -1479,7 +1488,7 @@ fn run_recording(rec: Arc<Recording>, spec: CaptureSpec, dir: PathBuf) {
                 return;
             }
             Err(error) => {
-                eprintln!("[zbar-rec] ScreenCaptureKit 起流失败，回退逐帧抓屏: {error}");
+                eprintln!("[agenthud-rec] ScreenCaptureKit 起流失败，回退逐帧抓屏: {error}");
             }
         }
     }
