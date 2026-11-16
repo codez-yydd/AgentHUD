@@ -366,6 +366,10 @@ export default function NotifyPopup() {
     const width = Math.ceil(rect.width);
     let height = Math.ceil(rect.height) + pad;
     if (width < 1 || height < 1) return;
+    // 只淡入这次测量时已挂载的卡片。等待 Rust 调整窗口时到达的消息会单独测量。
+    const revealKeys = list
+      .filter((card) => pendingReveal.current.has(card.key) && nodes.current.has(card.key))
+      .map((card) => card.key);
     // 让位 / 退场动画期间只许涨不许缩：卡片此刻的视觉位置可能还在新窗口外，
     // 立刻缩窗会把它们裁掉一条。等动画跑完（guard 过期）再收敛。
     const guarded = window.performance.now() < shrinkGuard.current;
@@ -392,9 +396,8 @@ export default function NotifyPopup() {
       }
       return;
     }
-    for (const key of Array.from(pendingReveal.current)) {
-      pendingReveal.current.delete(key);
-      reveal(key);
+    for (const key of revealKeys) {
+      if (pendingReveal.current.delete(key)) reveal(key);
     }
   };
 
@@ -430,8 +433,6 @@ export default function NotifyPopup() {
     }
     shrinkGuard.current = window.performance.now() + SLIDE_MS;
     commit(next);
-    // 先把窗口撑到新尺寸再淡入：否则新卡在窗口外，会先被裁掉一段
-    syncWindow(0);
   };
 
   const openSource = (item: PopupItem) => {
@@ -494,6 +495,8 @@ export default function NotifyPopup() {
     for (const key of Array.from(tops.current.keys())) {
       if (!alive.has(key)) tops.current.delete(key);
     }
+    // 等新卡写入 DOM 再量尺寸，尤其是第一张卡片，空堆叠的宽度是 0。
+    if (cards.some((card) => pendingReveal.current.has(card.key))) syncWindow(0);
   }, [cards]);
 
   useEffect(() => {

@@ -13,8 +13,9 @@
 //! 中 `unwrap_or_else` 只在未设置时才拼默认串）：一旦设置，wry 自带的
 //! `--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection`
 //! （关闭 mini menu / PDF OOUI / SmartScreen）与 autoplay / proxy 追加
-//! 都不会再拼接，因此这里必须手动保留默认串。本项目未使用 webview 层
-//! autoplay / proxy，故仅保留默认串（与不设置时行为等价）。
+//! 都不会再拼接。Wry 默认启用 autoplay，会在未配置参数的窗口里额外添加
+//! `--autoplay-policy=no-user-gesture-required`。共用数据目录的 Windows 窗口
+//! 应统一使用本辅助函数，避免 WebView2 因浏览器参数不一致而拒绝创建环境。
 //!
 //! 保留本模块与 merged_renderer() 调用点的意义：WebView2 浏览器参数
 //! 的唯一注入点，未来需要增删开关只改这里，不会各建窗点漂移。

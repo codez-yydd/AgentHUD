@@ -572,9 +572,12 @@ export async function endIslandDrag(): Promise<IslandDragEnd> {
   return { edge, x: 0, y: 0, width: CANVAS_W, height: CANVAS_H };
 }
 
-/** 只接收前端尚未确认的桌面纹理。 */
-export async function getIslandBackdrop(knownRevision?: number): Promise<{ revision: number; url: string } | null> {
-  if (IS_TAURI) return invoke("island_backdrop", { knownRevision });
+/** null 表示版本未变；帧的 url 为 null 表示当前没有可用画面。 */
+export async function getIslandBackdrop(
+  knownRevision: number | undefined,
+  sampleNeighbor: boolean,
+): Promise<{ revision: number; url: string | null; aligned: boolean } | null> {
+  if (IS_TAURI) return invoke("island_backdrop", { knownRevision, sampleNeighbor });
   if (knownRevision === 1 || new URLSearchParams(window.location.search).get("backdrop") !== "1") return null;
 
   // 预览中的条纹便于观察边缘对采样坐标的位移。
@@ -586,7 +589,7 @@ export async function getIslandBackdrop(knownRevision?: number): Promise<{ revis
     '<path d="M0 0H42M0 0V42" stroke="#a7d8ff" stroke-opacity=".65" stroke-width="3"/>' +
     '</pattern></defs><rect width="780" height="632" fill="url(#g)"/>' +
     '<rect width="780" height="632" fill="url(#lines)"/></svg>';
-  return delay({ revision: 1, url: "data:image/svg+xml;charset=utf-8," + encodeURIComponent(svg) }, 35);
+  return delay({ revision: 1, aligned: true, url: "data:image/svg+xml;charset=utf-8," + encodeURIComponent(svg) }, 35);
 }
 
 /** 输入框聚焦时临时激活窗口；false = 恢复不可聚焦，不抢编辑器焦点 */

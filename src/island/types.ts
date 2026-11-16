@@ -47,13 +47,15 @@ export interface LauncherItem {
 
 export interface IslandConfig {
   enabled: boolean;
-  /** 0 = 完全不透明，90 = 尽量透出桌面；只影响玻璃色层，不影响文字 */
+  /** 0 = 底色最浓，90 = 尽量透出桌面。 */
   transparency: number;
   /** 界面基准字号（逻辑 px，13 = 标准）；只缩放文字，不改窗口几何 */
   fontSize: number;
   expandMode: ExpandMode;
   /** 置顶窗口（旧响应缺省为 true）。 */
   keepOnTop?: boolean;
+  /** Windows 将窗口从截图和录屏中排除，允许取得对齐的桌面底板。 */
+  excludeFromCapture?: boolean;
   // ===== P0 新增配置（Rust 侧并行提供；旧配置缺字段时前端兜底）=====
   /** 主题：auto 跟随背景亮度，light/dark/rouge/sky 为固定色板；缺省按 dark */
   theme?: IslandThemeMode;

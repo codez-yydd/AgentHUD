@@ -3599,11 +3599,12 @@ pub fn island_set_last_tab(key: String, app: AppHandle) -> Result<IslandConfig, 
     Ok(next)
 }
 
-/// 采集液态玻璃纹理。调用方提交已经显示的底板版本；版本相同时省略图片。
+/// 采集液态玻璃纹理。版本未变化时省略回应；纹理不可用时返回没有图片的版本。
 #[tauri::command]
 pub async fn island_backdrop(
     app: AppHandle,
     known_revision: Option<u32>,
+    sample_neighbor: Option<bool>,
 ) -> Result<Option<backdrop::BackdropFrame>, String> {
     #[cfg(target_os = "windows")]
     {
@@ -3621,14 +3622,22 @@ pub async fn island_backdrop(
             .map_err(|e| format!("读取窗口尺寸失败: {e}"))?;
         let hwnd = win.hwnd().map_err(|e| format!("读取窗口句柄失败: {e}"))?.0 as isize;
         return tauri::async_runtime::spawn_blocking(move || {
-            backdrop::capture(hwnd, pos.x, pos.y, size.width, size.height, known_revision)
+            backdrop::capture(
+                hwnd,
+                pos.x,
+                pos.y,
+                size.width,
+                size.height,
+                known_revision,
+                sample_neighbor.unwrap_or(true),
+            )
         })
         .await
         .map_err(|e| format!("背景抓取任务失败: {e}"))?;
     }
     #[cfg(not(target_os = "windows"))]
     {
-        let _ = (app, known_revision);
+        let _ = (app, known_revision, sample_neighbor);
         Err("桌面毛玻璃采样仅支持 Windows".into())
     }
 }

@@ -247,7 +247,7 @@ export function AppearancePage({ draft }: PageProps) {
         </Row>
         <Row
           title="出现在截图和录屏里"
-          desc="开启时保留截图和录屏里的灵动岛，并采样附近桌面。关闭时，Windows 可采样灵动岛正下方的画面用于折射。"
+          desc="开启时，玻璃直接透出后方画面。关闭时，Windows 可采样窗口正下方的画面用于边缘折射。"
           tag={<UnsupportedTag draft={draft} keyName="island.exclude_from_capture" />}
           rowKey="island.exclude_from_capture"
         >

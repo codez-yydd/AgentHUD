@@ -8,8 +8,7 @@ export interface GlassBackdropGeometry {
   y: number;
   bodyWidth: number;
   bodyHeight: number;
-  radius: number;
-  strength?: number;
+  radii: [topLeft: number, topRight: number, bottomRight: number, bottomLeft: number];
 }
 
 export interface GlassBackdrop {
@@ -45,8 +44,7 @@ in vec2 uv;
 uniform sampler2D image;
 uniform vec2 viewSize;
 uniform vec4 body;
-uniform float cornerRadius;
-uniform float strength;
+uniform vec4 cornerRadii;
 out vec4 color;
 
 vec2 toUV(vec2 point) {
@@ -58,11 +56,15 @@ void main() {
   vec2 halfSize = body.zw * 0.5;
   vec2 p = point - body.xy - halfSize;
   float halfMin = min(halfSize.x, halfSize.y);
+  bool right = p.x >= 0.0;
+  float cornerRadius = p.y < 0.0
+    ? (right ? cornerRadii.y : cornerRadii.x)
+    : (right ? cornerRadii.z : cornerRadii.w);
   float radius = clamp(cornerRadius, 0.0, halfMin);
   vec2 q = abs(p) - halfSize + radius;
   float sd = min(max(q.x, q.y), 0.0) + length(max(q, 0.0)) - radius;
   float depth = -sd;
-  float bezel = min(34.0, 0.75 * halfMin);
+  float bezel = min(14.0, 0.52 * halfMin);
   vec2 normal = vec2(0.0);
   vec2 displacement = vec2(0.0);
   float bump = 0.0;
@@ -71,12 +73,16 @@ void main() {
   if (depth > 0.0 && depth < bezel) {
     float soft = max(radius * 0.8, 1.0);
     vec2 clamped = 0.5 * (q + sqrt(q * q + soft * soft));
-    normal = clamped / max(length(clamped), 0.0001) * sign(p + vec2(0.000001));
+    // Fade each signed component through the centerline to avoid a seam on narrow capsules.
+    vec2 signedNormal = clamped * sign(p) * smoothstep(vec2(0.0), vec2(soft), abs(p));
+    normal = signedNormal / max(length(signedNormal), 0.0001);
     float t = depth / bezel;
     edgeWeight = (1.0 - t) * (1.0 - t);
     float peak = clamp(t < 0.62 ? t / 0.62 : (1.0 - t) / 0.38, 0.0, 1.0);
     bump = peak * peak * (3.0 - 2.0 * peak);
-    displacement = normal * (bump * 0.289 * bezel * strength);
+    // Keep refraction close to the rim, with a smaller displacement on thin capsules.
+    float maxBend = min(2.5, 0.23 * bezel);
+    displacement = normal * (bump * maxBend);
   }
 
   vec3 rgb;
@@ -102,7 +108,7 @@ void main() {
   float luminance = dot(rgb, vec3(0.213, 0.715, 0.072));
   rgb = mix(vec3(luminance), rgb, 1.4);
   float lighting = dot(normal, vec2(-0.40, -0.92));
-  rgb += strength * edgeWeight * (0.09 * max(lighting, 0.0) - 0.04 * max(-lighting, 0.0));
+  rgb += edgeWeight * (0.09 * max(lighting, 0.0) - 0.04 * max(-lighting, 0.0));
   color = vec4(clamp(rgb, 0.0, 1.0), 1.0);
 }`;
 
@@ -189,8 +195,7 @@ function createRenderer(gl: WebGL2RenderingContext) {
       flipSource: gl.getUniformLocation(blur, "flipSource"),
       viewSize: gl.getUniformLocation(lens, "viewSize"),
       body: gl.getUniformLocation(lens, "body"),
-      radius: gl.getUniformLocation(lens, "cornerRadius"),
-      strength: gl.getUniformLocation(lens, "strength"),
+      radii: gl.getUniformLocation(lens, "cornerRadii"),
     };
   } catch (error) {
     dispose();
@@ -249,7 +254,7 @@ export function createGlassBackdrop(canvas: HTMLCanvasElement): GlassBackdrop | 
       needsBlur = true;
     },
 
-    draw({ width, height, x, y, bodyWidth, bodyHeight, radius, strength = 1 }) {
+    draw({ width, height, x, y, bodyWidth, bodyHeight, radii }) {
       if (!renderer || !hasFrame || disposed || gl.isContextLost() || width <= 0 || height <= 0) return;
       const scale = Math.min(window.devicePixelRatio || 1, 2);
       const outputWidth = Math.max(1, Math.round(width * scale));
@@ -262,7 +267,7 @@ export function createGlassBackdrop(canvas: HTMLCanvasElement): GlassBackdrop | 
 
       if (!needsBlur && lastGeometry?.width === width && lastGeometry.height === height &&
         lastGeometry.x === x && lastGeometry.y === y && lastGeometry.bodyWidth === bodyWidth &&
-        lastGeometry.bodyHeight === bodyHeight && lastGeometry.radius === radius && lastGeometry.strength === strength) {
+        lastGeometry.bodyHeight === bodyHeight && radii.every((radius, i) => lastGeometry?.radii[i] === radius)) {
         return;
       }
 
@@ -301,10 +306,9 @@ export function createGlassBackdrop(canvas: HTMLCanvasElement): GlassBackdrop | 
       gl.bindTexture(gl.TEXTURE_2D, renderer.vertical.texture);
       gl.uniform2f(renderer.viewSize, width, height);
       gl.uniform4f(renderer.body, x, y, Math.max(1, bodyWidth), Math.max(1, bodyHeight));
-      gl.uniform1f(renderer.radius, radius);
-      gl.uniform1f(renderer.strength, Math.max(0, Math.min(1, strength)));
+      gl.uniform4f(renderer.radii, ...radii);
       gl.drawArrays(gl.TRIANGLES, 0, 3);
-      lastGeometry = { width, height, x, y, bodyWidth, bodyHeight, radius, strength };
+      lastGeometry = { width, height, x, y, bodyWidth, bodyHeight, radii };
     },
 
     dispose() {

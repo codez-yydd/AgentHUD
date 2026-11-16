@@ -22,16 +22,16 @@ body {
 
 body {
   /* island.font_family 非空时由 IslandApp 写到 <html> 的 --island-font-family，
-     空串回退内置字体栈 */
+     变量值本身带完整回退栈；空串回退同一套内置字体栈。 */
   font-family: var(
     --island-font-family,
-    "Inter",
-    -apple-system,
-    BlinkMacSystemFont,
-    "Segoe UI",
-    "PingFang SC",
-    "Hiragino Sans GB",
+    "HarmonyOS Sans",
+    "MiSans",
+    "Segoe UI Variable Text",
+    "Microsoft YaHei UI",
     "Microsoft YaHei",
+    "Segoe UI",
+    system-ui,
     sans-serif
   );
   font-size: calc(12px * var(--fs-scale, 1));
@@ -145,6 +145,7 @@ html.island-preview body::after {
   --text-tertiary-alpha: 0.45;
   --tint-rgb: 28, 28, 34;
   --tint-alpha: calc(120 / 255);
+  --glass-direct-alpha: 0.81;
   --glass-edge: rgba(0, 0, 0, calc(70 / 255));
   --glass-highlight: rgba(255, 255, 255, calc(60 / 255));
   --glass-rim-bottom: rgba(255, 255, 255, calc(14 / 255));
@@ -206,6 +207,7 @@ html.island-preview body::after {
   --text-tertiary-alpha: 0.50;
   --tint-rgb: 0, 0, 0;
   --tint-alpha: calc(205 / 255);
+  --glass-direct-alpha: 0.81;
   --glass-edge: rgba(0, 0, 0, calc(140 / 255));
   --glass-highlight: rgba(255, 124, 162, calc(170 / 255));
   --glass-rim-bottom: rgba(255, 124, 162, calc(40 / 255));
@@ -237,6 +239,7 @@ html.island-preview body::after {
   --tint-rgb: 50, 171, 253;
   --tint-alpha: calc(215 / 255);
   --glass-tint-bottom: rgba(247, 239, 225, calc(230 / 255));
+  --glass-direct-bottom: rgb(247, 239, 225);
   --glass-edge: rgba(12, 32, 56, calc(60 / 255));
   --glass-highlight: rgba(255, 255, 255, calc(210 / 255));
   --glass-rim-bottom: rgba(255, 255, 255, calc(70 / 255));
@@ -431,7 +434,7 @@ html.island-preview .island::after {
   padding: 13px 6px;
 }
 
-.quota-presentation.is-vertical .pill-weather {
+.quota-presentation.is-vertical .pill-weather-current {
   flex-direction: column;
   gap: 3px;
 }
@@ -675,9 +678,16 @@ html.island-preview .island::after {
 
 .pill-weather {
   display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  flex: none;
+}
+
+.pill-weather-current {
+  display: flex;
   align-items: center;
   gap: 5px;
-  flex: none;
 }
 
 .pill-weather svg {
@@ -695,8 +705,9 @@ html.island-preview .island::after {
 
 .pill-weather-city {
   font-size: calc(9px * var(--fs-scale, 1));
+  line-height: 1.2;
   color: var(--muted);
-  max-width: 48px;
+  max-width: 7em;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -7720,7 +7731,7 @@ body,
   position: absolute;
   inset: 0;
   z-index: 1;
-  background: rgba(var(--tint-rgb), calc(1 - 0.85 * var(--glass-transmission, 0)));
+  background: rgba(var(--tint-rgb), var(--glass-base-alpha, 0));
   pointer-events: none;
   overflow: hidden;
 }
@@ -7737,7 +7748,7 @@ body,
   z-index: 0;
   isolation: isolate;
   pointer-events: none;
-  opacity: calc(0.93 - 0.3 * var(--glass-transmission, 0));
+  opacity: var(--glass-backdrop-opacity, calc(0.93 - 0.3 * var(--glass-transmission, 0)));
 }
 
 .glass-refraction,
@@ -7765,11 +7776,28 @@ body,
   z-index: 1;
   background: linear-gradient(
     var(--glass-tint-angle, 180deg) in srgb,
-    var(--glass-tint-top) var(--glass-tint-start, 0%),
-    var(--glass-tint-bottom) var(--glass-tint-end, 100%)
+    var(--glass-overlay-top, rgb(var(--tint-rgb))) var(--glass-tint-start, 0%),
+    var(--glass-overlay-bottom, var(--glass-direct-bottom, rgb(var(--tint-rgb)))) var(--glass-tint-end, 100%)
   );
-  opacity: calc(1 - 0.85 * var(--glass-transmission, 0));
+  opacity: var(--glass-overlay-alpha, calc(var(--glass-direct-alpha, 0.67) * (1 - 0.75 * var(--glass-transmission, 0))));
   pointer-events: none;
+}
+
+/* 对齐底板缺失时由系统合成正后方的桌面，玻璃上只有一层半透明染色。 */
+.liquid-glass:has(.glass-refraction.is-ready, .island-backdrop[src]) {
+  --glass-base-alpha: calc(1 - 0.85 * var(--glass-transmission, 0));
+  --glass-overlay-top: var(--glass-tint-top);
+  --glass-overlay-bottom: var(--glass-tint-bottom);
+  --glass-overlay-alpha: calc(var(--glass-tint-weight, 1) * var(--glass-base-alpha));
+}
+
+.liquid-glass:has(.glass-refraction.is-ready) {
+  --glass-backdrop-opacity: calc(1 - 0.25 * var(--glass-transmission, 0));
+  --glass-tint-weight: 0.64;
+}
+
+.island-root[data-theme="dark"] .liquid-glass:has(.glass-refraction.is-ready) {
+  --glass-tint-weight: 0.94;
 }
 
 .liquid-gloss {

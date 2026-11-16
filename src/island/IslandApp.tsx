@@ -349,6 +349,7 @@ import {
   type CompactLiveCaption,
   type CompactViewKey,
 } from "./CompactView";
+import { fontFamilyWithFallback, ISLAND_FONT_STACK } from "./fontFamily";
 import { KIND_COLORS, NOTIFY_BRAND_ICONS, NOTIFY_BRAND_LABELS, NotifyBrandIcon } from "./notifyBrand";
 import { createGlassBackdrop, type GlassBackdrop, type GlassBackdropGeometry } from "./glassBackdrop";
 import {
@@ -600,6 +601,7 @@ export default function IslandApp() {
   const backdropFallbackRef = useRef<HTMLImageElement | null>(null);
   const glassBackdropRef = useRef<GlassBackdrop | null>(null);
   const glassBackdropGeometryRef = useRef<GlassBackdropGeometry | null>(null);
+  const refreshBackdropRef = useRef<(() => void) | null>(null);
   // ===== P4 液态外壳（单一外轮廓：glass clip + SVG stroke） =====
   const bodyFrameRef = useRef<HTMLDivElement | null>(null);
   const liquidGlassRef = useRef<HTMLDivElement | null>(null);
@@ -880,8 +882,10 @@ export default function IslandApp() {
     setAutoDark(wantDark);
   };
 
-  // 解码桌面帧并更新背景纹理。液态外壳动画复用同一张模糊纹理。
-  const backdropReady = Boolean(config);
+  // 只有窗口正下方的桌面帧参与折射，相邻帧仅用于自动主题的明暗判断。
+  const wantsRefraction = !IS_TAURI || config?.excludeFromCapture === true;
+  const sampleNeighbor = themeMode === "auto";
+  const backdropReady = Boolean(config) && (wantsRefraction || sampleNeighbor);
   useEffect(() => {
     if (!CAN_CAPTURE_BACKDROP || !enabled || !backdropReady) return;
     const canvas = backdropCanvasRef.current;
@@ -894,7 +898,12 @@ export default function IslandApp() {
     let frame: HTMLImageElement | null = null;
     let knownRevision: number | undefined;
     let luminance: number | null = null;
-    glassBackdropRef.current = createGlassBackdrop(canvas);
+    glassBackdropRef.current = wantsRefraction ? createGlassBackdrop(canvas) : null;
+
+    const clearBackdrop = () => {
+      canvas.classList.remove("is-ready");
+      fallback.removeAttribute("src");
+    };
 
     const uploadFrame = () => {
       if (!frame) return;
@@ -922,6 +931,7 @@ export default function IslandApp() {
       uploadFrame();
     };
     const onRestored = () => {
+      if (!wantsRefraction) return;
       glassBackdropRef.current = createGlassBackdrop(canvas);
       uploadFrame();
     };
@@ -931,9 +941,9 @@ export default function IslandApp() {
     const interval = () => {
       const fps = clampNumber(configRef.current?.blurFps, 2, 30, 8);
       const delay = Math.max(60, Math.round(1000 / fps));
-      return openRef.current ? delay : delay * 3;
+      return openRef.current || dragActiveRef.current ? delay : delay * 3;
     };
-    const canCapture = () => !document.hidden && !dragActiveRef.current;
+    const canCapture = () => !document.hidden;
     const schedule = (ms: number) => {
       if (!alive || timer !== undefined) return;
       timer = window.setTimeout(() => {
@@ -952,22 +962,29 @@ export default function IslandApp() {
       capturing = true;
       const start = performance.now();
       try {
-        const captured = await getIslandBackdrop(knownRevision);
+        const captured = await getIslandBackdrop(knownRevision, sampleNeighbor);
         if (!alive || !canCapture()) return;
         if (captured) {
-          const incoming = new Image();
-          incoming.src = captured.url;
-          await incoming.decode();
-          if (!alive || !canCapture()) return;
-          frame = incoming;
+          const showFrame = wantsRefraction && captured.aligned && Boolean(captured.url);
+          if (!showFrame) {
+            frame = null;
+            clearBackdrop();
+          }
           luminance = null;
-          uploadFrame();
+          if (captured.url && (showFrame || sampleNeighbor)) {
+            const incoming = new Image();
+            incoming.src = captured.url;
+            await incoming.decode();
+            if (!alive || !canCapture()) return;
+            if (showFrame) {
+              frame = incoming;
+              uploadFrame();
+            }
+            if (sampleNeighbor) luminance = sampleBackdropLuminance(incoming);
+          }
           knownRevision = captured.revision;
         }
-        if (frame && themeModeRef.current === "auto") {
-          luminance ??= sampleBackdropLuminance(frame);
-          if (luminance != null) feedLuminance(luminance);
-        }
+        if (themeModeRef.current === "auto" && luminance != null) feedLuminance(luminance);
       } catch {
         // 捕获和解码失败时保留当前底板。
       } finally {
@@ -978,9 +995,8 @@ export default function IslandApp() {
       }
     };
 
-    const onVisible = () => {
-      if (!alive || document.visibilityState !== "visible") return;
-      uploadFrame();
+    const refreshBackdrop = () => {
+      if (!alive || !canCapture()) return;
       if (capturing) {
         refreshOnFinish = true;
         return;
@@ -989,21 +1005,28 @@ export default function IslandApp() {
       timer = undefined;
       schedule(0);
     };
+    refreshBackdropRef.current = refreshBackdrop;
+
+    const onVisible = () => {
+      if (!canCapture()) return;
+      uploadFrame();
+      refreshBackdrop();
+    };
     document.addEventListener("visibilitychange", onVisible);
 
     schedule(0);
     return () => {
       alive = false;
       window.clearTimeout(timer);
+      refreshBackdropRef.current = null;
       document.removeEventListener("visibilitychange", onVisible);
       canvas.removeEventListener("webglcontextlost", onLost);
       canvas.removeEventListener("webglcontextrestored", onRestored);
       glassBackdropRef.current?.dispose();
       glassBackdropRef.current = null;
-      canvas.classList.remove("is-ready");
-      fallback.removeAttribute("src");
+      clearBackdrop();
     };
-  }, [backdropReady, enabled]);
+  }, [backdropReady, enabled, sampleNeighbor, wantsRefraction]);
 
   // ===== 外部事件 =====
   useEffect(() => {
@@ -1297,13 +1320,20 @@ export default function IslandApp() {
 
   // ===== 字体：自定义 family 写到文档根节点的 CSS 变量 =====
   // island.css 的 body 用 `var(--island-font-family, 内置字体栈)`；变量挂在
-  // <html> 上 body 才继承得到（挂 .island-root 只影响岛内部）。空串 / 未设置
-  // 移除变量，回退内置字体栈。
+  // <html> 上 body 才继承得到（挂 .island-root 只影响岛内部）。自定义 family
+  // 用安全引号并保留完整回退栈，避免含空格的字体名被拆成多个 family，或中文
+  // 缺字时失去系统回退。空串 / 未设置移除变量，回退内置字体栈。
   useEffect(() => {
     const family = (config?.fontFamily ?? "").trim();
     const root = document.documentElement;
-    if (family) root.style.setProperty("--island-font-family", family);
-    else root.style.removeProperty("--island-font-family");
+    if (family) {
+      root.style.setProperty("--island-font-family", fontFamilyWithFallback(family, ISLAND_FONT_STACK));
+    } else {
+      root.style.removeProperty("--island-font-family");
+    }
+    return () => {
+      root.style.removeProperty("--island-font-family");
+    };
   }, [config?.fontFamily]);
 
   // ===== 首次展开策略（预览参数 / lastTab / defaultTab）=====
@@ -2209,11 +2239,13 @@ export default function IslandApp() {
   resetPokeRef.current = resetPoke;
 
   const clearDrag = () => {
+    const wasDragging = dragActiveRef.current;
     dragStartingRef.current = false;
     dragActiveRef.current = false;
     dragFrameRef.current = null;
     snapEdgeRef.current = null;
     setDragging(false);
+    if (wasDragging) refreshBackdropRef.current?.();
   };
 
   const runDragLoop = (epoch: number) => {
@@ -2232,7 +2264,8 @@ export default function IslandApp() {
           else dragStartingRef.current = false;
           return;
         }
-        if (!dragActiveRef.current) {
+        const justStarted = !dragActiveRef.current;
+        if (justStarted) {
           dragActiveRef.current = true;
           dragStartingRef.current = false;
           suppressClickRef.current = true;
@@ -2258,6 +2291,7 @@ export default function IslandApp() {
 
         dragFrameRef.current = step;
         if (step.origin) canvasOriginRef.current = step.origin;
+        if (justStarted) refreshBackdropRef.current?.();
         if (step.settled && snapEdgeRef.current) {
           const expandAfter = pendingExpand.current && expandModeOf() !== "never";
           pendingExpand.current = false;
@@ -2633,6 +2667,7 @@ export default function IslandApp() {
         flow.setAttribute("cy", String(cy));
         flow.setAttribute("r", String(Math.max(60, body.width * 0.35)));
       }
+      const radii = liquidRadii(body, neckEdge, gap, neckStrength);
       const d = liquidPath({
         edge: neckEdge,
         line: lines[neckEdge],
@@ -2651,7 +2686,7 @@ export default function IslandApp() {
         const geometry = {
           width: CANVAS_W, height: CANVAS_H,
           x: body.x, y: body.y, bodyWidth: body.width, bodyHeight: body.height,
-          radius: bodyRadius(body),
+          radii,
         };
         glassBackdropGeometryRef.current = geometry;
         glassBackdropRef.current?.draw(geometry);
@@ -2671,7 +2706,6 @@ export default function IslandApp() {
         liquidRimRef.current?.setAttribute("d", d);
         liquidFlowRef.current?.setAttribute("d", d);
       }
-      const radii = liquidRadii(body, neckEdge, gap, neckStrength);
       ["tl", "tr", "br", "bl"].forEach((corner, i) => {
         island.style.setProperty(`--body-r-${corner}`, `${radii[i]}px`);
       });
@@ -3912,6 +3946,7 @@ function QuotaPill({
   const showPlans = entries.some(({ plan }) => Boolean(plan));
   // 温度单位跟随数据源（imperial → °F），其余按摄氏度 °。
   const unit = tempUnitSuffix(weather);
+  const weatherCity = weather?.city ?? config.weatherCity;
   const todayLabel = todayUsage
     ? `${todayUsage.currency === "USD" ? "$" : "¥"}${
         side ? fmtCostSide(todayUsage.cost) : todayUsage.cost.toFixed(2)
@@ -3973,9 +4008,11 @@ function QuotaPill({
       onClick={probe ? undefined : onOpen}
     >
       <span className="pill-weather">
-        <WeatherGlyph icon={weather?.icon ?? "cloudy"} size={side ? 22 : 24} />
-        <span className="pill-weather-temp">{weather ? `${Math.round(weather.temp)}${unit}` : "--°"}</span>
-        <span className="pill-weather-city">{weather?.city ?? config.weatherCity}</span>
+        <span className="pill-weather-current">
+          <WeatherGlyph icon={weather?.icon ?? "cloudy"} size={side ? 22 : 24} />
+          <span className="pill-weather-temp">{weather ? `${Math.round(weather.temp)}${unit}` : "--°"}</span>
+        </span>
+        {weatherCity && <span className="pill-weather-city" title={weatherCity}>{weatherCity}</span>}
       </span>
       <span className="pill-divider" />
       <span className={`pill-agents ${showPlans ? "has-plans" : ""}`} ref={agentsRef}>

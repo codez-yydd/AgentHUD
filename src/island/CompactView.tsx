@@ -4,8 +4,8 @@
  * 以及四视图共用的未读角标、尺寸公式。
  *
  * 尺寸公式（窗口 672 → 内容上限 640）：
- * - clock  = 150 + (天气 ? 64 : 0) + 14 × 角标数
- * - pet    = 150 + 14 × 角标数
+ * - clock  = 150 + (天气 ? 64 : 0) + (播放中 ? 26 : 14) × 角标数
+ * - pet    = 150 + 26 × 角标数
  * - music  = 最宽歌词或标题 + 封面、控制键、音频条、角标与留白
  * - activity = 音量/亮度 280；其它按标题、副标题与图标宽度计算
  * 横向高度：clock/pet 34、music 36、activity 40、rings 54（由 IslandApp 写进玻璃）。
@@ -28,6 +28,7 @@ import { audioMotionLevel } from "./liquid";
 import type { LyricLine } from "./ui";
 import type { MediaState, WeatherState } from "./types";
 import { LIVE_CAPTION_HOLD_MS, tempUnitSuffix } from "./types";
+import { fontFamilyWithFallback, ISLAND_FONT_STACK } from "./fontFamily";
 
 export type CompactViewKey = "rings" | "clock" | "pet" | "music";
 export type CompactActivityKind = "notify" | "volume" | "stock";
@@ -77,7 +78,6 @@ export const LIVE_CAPTION_HEIGHT = 60;
 /** 角标从右往左的绘制顺序（参考 compact.py BADGE_ORDER） */
 export const BADGE_ORDER = ["mail", "wechat", "qq", "feishu", "dingtalk", "dsh"] as const;
 
-const FONT_STACK = `"Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif`;
 const COMPACT_MAX_WIDTH = 640;
 // 对应 .compact-music 的内边距、26px 封面、24.6px 律动条、28px 按钮和三段 8px 间隔。
 const MUSIC_FIXED_WIDTH = 123;
@@ -111,7 +111,7 @@ export function badgeList(counts: BadgeCounts): { kind: string; color: string }[
 }
 
 function compactFont(weight: number, size: number, family?: string): string {
-  return `${weight} ${size}px ${family?.trim() || FONT_STACK}`;
+  return `${weight} ${size}px ${fontFamilyWithFallback(family, ISLAND_FONT_STACK)}`;
 }
 
 /**
@@ -203,7 +203,7 @@ export function compactWidthFor(
   }
 ): number {
   const badgeCount = badgeList(opts.badges).length;
-  const badgeWidth = badgeCount * (mediaPlaying(opts.media) ? BRAND_BADGE_SIZE + 6 : 14);
+  const badgeWidth = badgeCount * (view === "pet" || mediaPlaying(opts.media) ? BRAND_BADGE_SIZE + 6 : 14);
   const limit = opts.maxWidth ?? COMPACT_MAX_WIDTH;
   if (view === "clock") {
     return Math.min(limit, 150 + (opts.hasWeather ? 64 : 0) + badgeWidth);
@@ -290,14 +290,12 @@ function ClockView({ weather, badges, brandedBadges }: {
 
 function PetView({
   badges,
-  brandedBadges,
   pointerRef,
   surpriseToken,
   pressed,
   active,
 }: {
   badges: BadgeCounts;
-  brandedBadges: boolean;
   pointerRef: MutableRefObject<CompactPointerSample>;
   surpriseToken: number;
   pressed: boolean;
@@ -313,7 +311,7 @@ function PetView({
           pressed={pressed}
         />
       </span>
-      <CompactBadges counts={badges} branded={brandedBadges} />
+      <CompactBadges counts={badges} branded />
     </div>
   );
 }
@@ -662,7 +660,6 @@ export function CompactView({
   ) : view === "pet" ? (
     <PetView
       badges={badges}
-      brandedBadges={mediaPlaying(media)}
       pointerRef={pointerRef}
       surpriseToken={surpriseToken}
       pressed={pressed}

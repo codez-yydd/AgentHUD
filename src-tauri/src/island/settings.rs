@@ -1998,20 +1998,29 @@ pub struct HotkeyStatus {
 }
 
 /// 字体名是否大概率带中文字形（注册表没有语言元数据，只能按常见字体名
-/// 关键字近似判断；前端只拿它做排序 / 分组提示）。
+/// 关键字 + CJK 字符近似判断；前端只拿它做排序 / 分组提示）。
 #[cfg(target_os = "windows")]
 fn looks_chinese_font(family: &str) -> bool {
     const KEYWORDS: &[&str] = &[
         "雅黑", "微软", "宋体", "黑体", "楷体", "仿宋", "幼圆", "隶书", "等线", "华文", "方正",
         "思源", "苹方", "新宋", "圆体", "明体", "细明", "中易", "汉仪", "造字", "文泉", "霞鹜",
+        "鸿蒙", "澎湃", "阿里巴巴",
         "SimSun", "SimHei", "KaiTi", "FangSong", "YaHei", "DengXian", "PingFang", "Noto Sans CJK",
         "Noto Sans SC", "Noto Serif SC", "Noto Sans TC", "Source Han", "JhengHei", "MingLiU",
-        "YouYuan", "LiSu",
+        "YouYuan", "LiSu", "HarmonyOS Sans", "MiSans", "Alibaba PuHuiTi", "OPPO Sans",
     ];
     let lower = family.to_ascii_lowercase();
-    KEYWORDS
+    if KEYWORDS
         .iter()
         .any(|keyword| family.contains(*keyword) || lower.contains(&keyword.to_ascii_lowercase()))
+    {
+        return true;
+    }
+    // 字体名本身就是中文的（如「优设鲨鱼菲特健康体」）时关键字表永远盖不
+    // 全，直接按 CJK 统一表意文字范围判断。
+    family
+        .chars()
+        .any(|ch| matches!(ch as u32, 0x4E00..=0x9FFF | 0x3400..=0x4DBF))
 }
 
 /// 注册表值名 → 字体 family：注册表里是「微软雅黑 & Microsoft YaHei UI
@@ -2038,31 +2047,59 @@ fn font_families_from_registry_value(value_name: &str) -> Vec<String> {
         .collect()
 }
 
+/// 注册表原始值名 → 最终 family 列表：解析（拆 `&`、剥格式后缀与竖排 `@`
+/// 前缀）→ 大小写不敏感去重（保留首个出现的写法）→ 按 lowercase 排序。
+/// 不依赖 winreg，便于单测。
 #[cfg(target_os = "windows")]
-fn read_installed_fonts() -> Vec<FontEntry> {
-    use winreg::enums::{HKEY_LOCAL_MACHINE, KEY_READ};
+fn normalize_font_families<I: IntoIterator<Item = String>>(names: I) -> Vec<String> {
+    let mut families: Vec<String> = names
+        .into_iter()
+        .flat_map(|name| font_families_from_registry_value(&name))
+        .collect();
+    families.sort_by_key(|family| family.to_lowercase());
+    let mut seen = std::collections::HashSet::new();
+    families.retain(|family| seen.insert(family.to_lowercase()));
+    families
+}
+
+/// 读一个字体注册表键下的全部值名（值名即字体名，如「微软雅黑 (TrueType)」）；
+/// 键不存在或没权限时返回空，由调用方决定跳过哪个来源。
+#[cfg(target_os = "windows")]
+fn read_font_registry_value_names(root: winreg::HKEY, subkey: &str) -> Vec<String> {
+    use winreg::enums::KEY_READ;
     use winreg::RegKey;
 
-    let mut families: Vec<String> = Vec::new();
-    let key = RegKey::predef(HKEY_LOCAL_MACHINE)
-        .open_subkey_with_flags(
-            r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Fonts",
-            KEY_READ,
-        )
-        .or_else(|_| {
-            RegKey::predef(HKEY_LOCAL_MACHINE).open_subkey_with_flags(
-                r"SOFTWARE\WOW6432Node\Microsoft\Windows NT\CurrentVersion\Fonts",
-                KEY_READ,
-            )
-        });
-    if let Ok(key) = key {
+    let mut names = Vec::new();
+    if let Ok(key) = RegKey::predef(root).open_subkey_with_flags(subkey, KEY_READ) {
         for (name, _value) in key.enum_values().flatten() {
-            families.extend(font_families_from_registry_value(&name));
+            names.push(name);
         }
     }
-    families.sort_by_key(|family| family.to_lowercase());
-    families.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
-    families
+    names
+}
+
+/// 本机已安装字体：合并 HKLM 64 位、HKLM WOW6432Node 32 位与 HKCU 三个
+/// 字体键——用户「为当前用户安装」的字体只登记在 HKCU，以前只读 HKLM 会
+/// 漏掉；任一来源打不开只跳过它，不影响其它来源。
+#[cfg(target_os = "windows")]
+fn read_installed_fonts() -> Vec<FontEntry> {
+    use winreg::enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
+
+    let raw_names = read_font_registry_value_names(
+        HKEY_LOCAL_MACHINE,
+        r"SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Fonts",
+    )
+    .into_iter()
+    .chain(read_font_registry_value_names(
+        HKEY_LOCAL_MACHINE,
+        r"SOFTWARE\\WOW6432Node\\Microsoft\\Windows NT\\CurrentVersion\\Fonts",
+    ))
+    .chain(read_font_registry_value_names(
+        HKEY_CURRENT_USER,
+        r"SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Fonts",
+    ));
+
+    normalize_font_families(raw_names)
         .into_iter()
         .map(|family| {
             let has_chinese = looks_chinese_font(&family);
@@ -3822,5 +3859,76 @@ mod tests {
             fonts.iter().all(|entry| !entry.family.starts_with('@')),
             "竖排 @ 前缀字体应被去掉"
         );
+    }
+
+    /// 注册表值名解析：`&` 组合拆分、竖排 `@` 前缀与格式后缀剥离。
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn font_registry_value_parses_family_names() {
+        assert_eq!(
+            font_families_from_registry_value("微软雅黑 & Microsoft YaHei UI (TrueType)"),
+            vec!["微软雅黑".to_string(), "Microsoft YaHei UI".to_string()]
+        );
+        assert_eq!(
+            font_families_from_registry_value("@宋体 (OpenType)"),
+            vec!["宋体".to_string()]
+        );
+        assert_eq!(
+            font_families_from_registry_value("优设鲨鱼菲特健康体 (TrueType)"),
+            vec!["优设鲨鱼菲特健康体".to_string()]
+        );
+        assert_eq!(
+            font_families_from_registry_value("Arial(All res)"),
+            vec!["Arial".to_string()]
+        );
+    }
+
+    /// 多来源合并：同一 family 大小写不同只保留首次出现的写法。
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn normalize_font_families_dedups_across_sources() {
+        let families = normalize_font_families(vec![
+            "Microsoft YaHei (TrueType)".to_string(),
+            "microsoft yahei".to_string(),
+        ]);
+        assert_eq!(families, vec!["Microsoft YaHei".to_string()]);
+    }
+
+    /// 合并结果按 lowercase 非降序排序。
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn normalize_font_families_sorts_by_lowercase() {
+        let families = normalize_font_families(vec![
+            "Zebra (TrueType)".to_string(),
+            "apple (TrueType)".to_string(),
+            "Banana & Cherry (TrueType)".to_string(),
+        ]);
+        assert_eq!(
+            families,
+            vec![
+                "apple".to_string(),
+                "Banana".to_string(),
+                "Cherry".to_string(),
+                "Zebra".to_string()
+            ]
+        );
+        assert!(families
+            .windows(2)
+            .all(|pair| pair[0].to_lowercase() <= pair[1].to_lowercase()));
+    }
+
+    /// 中文字体启发式：CJK 字符与厂商关键字都算，纯拉丁名不算。
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn looks_chinese_font_recognizes_cjk_names() {
+        assert!(
+            looks_chinese_font("优设鲨鱼菲特健康体"),
+            "中文命名字体应判定为含中文"
+        );
+        assert!(
+            looks_chinese_font("HarmonyOS Sans SC"),
+            "HarmonyOS Sans 关键字应命中"
+        );
+        assert!(!looks_chinese_font("Arial"), "Arial 不应判定为含中文");
     }
 }

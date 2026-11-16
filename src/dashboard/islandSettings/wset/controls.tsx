@@ -12,6 +12,11 @@ import {
   type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
+import {
+  fontFamilyWithFallback,
+  quoteFontFamily,
+  SETTINGS_FONT_STACK,
+} from "../../../island/fontFamily";
 import { rowDomId } from "./schema";
 import { pickFile, type SettingsFont } from "./settingsApi";
 import {
@@ -679,7 +684,7 @@ export function FontPicker({
         className="wset-font"
         aria-haspopup="dialog"
         onClick={() => setOpen(true)}
-        style={value ? { fontFamily: `"${value}", var(--w-font)` } : undefined}
+        style={value ? { fontFamily: fontFamilyWithFallback(value, "var(--w-font)") } : undefined}
       >
         <span className={`wset-font__label${value ? "" : " wset-font__label--hint"}`}>
           {loading ? "读取字体…" : value || "默认字体"}
@@ -740,7 +745,7 @@ function FontDialog({
       if (event.key === "Enter") {
         event.preventDefault();
         event.stopPropagation();
-        if (shownCount > 0) onPick(selected);
+        if (selected === "" || shownCount > 0) onPick(selected);
       }
     };
     window.addEventListener("keydown", onKeyDown, true);
@@ -754,13 +759,13 @@ function FontDialog({
   }, []);
 
   const previewNote = (() => {
-    if (!shownCount) return { text: "没有匹配的字体，换个关键词试试。", tone: "danger" as const };
     if (!selected) {
       return {
         text: "默认字体：内置字体栈（HarmonyOS Sans → MiSans → 微软雅黑 UI）",
         tone: "hint" as const,
       };
     }
+    if (!shownCount) return { text: "没有匹配的字体，换个关键词试试。", tone: "danger" as const };
     if (currentFont?.has_chinese) {
       return { text: `${selected} · 含中文字形，灵动岛和设置窗口都会换用它。`, tone: "ok" as const };
     }
@@ -823,7 +828,7 @@ function FontDialog({
               type="button"
               className={`wset-fontrow${selected === font.family ? " wset-fontrow--on" : ""}`}
               data-selected={selected === font.family ? "1" : undefined}
-              style={{ fontFamily: `"${font.family}"` }}
+              style={{ fontFamily: quoteFontFamily(font.family) }}
               onClick={() => setSelected(font.family)}
             >
               <span className="wset-fontrow__name">{font.family}</span>
@@ -834,7 +839,7 @@ function FontDialog({
         </div>
         <div
           className="wset-fontpreview"
-          style={selected ? { fontFamily: `"${selected}", var(--w-font)` } : undefined}
+          style={{ fontFamily: fontFamilyWithFallback(selected, SETTINGS_FONT_STACK) }}
         >
           中文字体预览&nbsp;&nbsp;AaBbCc&nbsp;&nbsp;0123456789
         </div>
@@ -845,7 +850,7 @@ function FontDialog({
           <Button onClick={onCancel}>取消</Button>
           <Button
             variant="primary"
-            disabled={!shownCount}
+            disabled={selected !== "" && !shownCount}
             onClick={() => onPick(selected)}
           >
             使用这个字体

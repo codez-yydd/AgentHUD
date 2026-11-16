@@ -13,6 +13,7 @@ import {
 } from "react";
 import logoMark from "../../assets/logo-mark.png";
 import { APPEARANCE_CHANGED_EVENT } from "../../appearance";
+import { fontFamilyWithFallback, SETTINGS_FONT_STACK, SETTINGS_NUM_FONT_STACK } from "../../island/fontFamily";
 import { onEvent } from "../../island/api";
 import { Button, Confirm, IconButton, StatusDot } from "./wset/controls";
 import {
@@ -113,6 +114,27 @@ export function SettingsWindow() {
   useEffect(() => {
     document.documentElement.dataset.wtheme = resolvedTheme;
   }, [resolvedTheme]);
+
+  // 字体预览：草稿值实时覆盖整个设置窗口（含 portal 到 body 的字体弹窗）。
+  // 数字控件也以自定义字体为首选，但保留独立的数字回退栈。
+  const fontFamily = String(draft.value("island.font_family") ?? "").trim();
+  useEffect(() => {
+    const root = document.documentElement;
+    if (fontFamily) {
+      root.style.setProperty("--w-font", fontFamilyWithFallback(fontFamily, SETTINGS_FONT_STACK));
+      root.style.setProperty(
+        "--w-num-font",
+        fontFamilyWithFallback(fontFamily, SETTINGS_NUM_FONT_STACK)
+      );
+    } else {
+      root.style.removeProperty("--w-font");
+      root.style.removeProperty("--w-num-font");
+    }
+    return () => {
+      root.style.removeProperty("--w-font");
+      root.style.removeProperty("--w-num-font");
+    };
+  }, [fontFamily]);
 
   // 外观广播：auto 主题需要跟着系统深浅色重新解析（配置同步在 useSettingsDraft）
   useEffect(

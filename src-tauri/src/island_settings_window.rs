@@ -56,6 +56,8 @@ use std::sync::mpsc;
 use std::time::Duration;
 use tauri::{window::Color, AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
 
+use crate::webview_args::MergedRendererBuilder;
+
 /// 灵动岛设置窗口 label（与 capabilities/island-settings.json 的 windows
 /// 白名单、island-settings.html 入口一致）
 pub const ISLAND_SETTINGS_WINDOW_LABEL: &str = "island-settings";
@@ -169,6 +171,7 @@ fn ensure_island_settings_window(app: &AppHandle) -> Result<(), String> {
     .background_color(Color(0, 0, 0, 0))
     .center()
     .visible(true)
+    .merged_renderer()
     .build()
     .map_err(|e| format!("创建灵动岛设置窗口失败: {e}"))?;
 

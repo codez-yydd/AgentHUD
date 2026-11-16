@@ -44,6 +44,8 @@ use tauri::{
     window::Color, AppHandle, Emitter, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
 };
 
+use crate::webview_args::MergedRendererBuilder;
+
 use super::notify::{NotifyItem, NotifyState};
 
 /// 浮窗 label（与 `capabilities/notify-popup.json` 的 windows 白名单、
@@ -377,7 +379,8 @@ fn ensure_window_on_main(app: &AppHandle) -> Result<WebviewWindow, String> {
     .focused(false)
     // 先以隐藏态建窗，几何由 notify_popup_resize 一次 set 好再 show，
     // 规避 tao 对极窄窗口的默认钳宽，也避免建窗瞬间闪一块空窗
-    .visible(false);
+    .visible(false)
+    .merged_renderer();
 
     let win = builder
         .build()
