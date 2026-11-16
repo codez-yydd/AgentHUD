@@ -89,6 +89,7 @@ const MOCK_DEFAULTS: Record<string, unknown> = {
     hide_fullscreen: false,
     compact_view: "rings",
     quota_display: "percent",
+    quota_ring_style: "period",
     auto_cycle_s: 30,
     hidden_tabs: [],
     transparency: 0,

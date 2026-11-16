@@ -17,6 +17,7 @@ import type {
   IslandDragStep,
   IslandEdge,
   IslandQuotaDisplay,
+  IslandQuotaRingStyle,
   IslandState,
   LauncherProject,
   LiveCaption,
@@ -92,9 +93,10 @@ async function bootMock(): Promise<MockModule> {
       typeof sessionStorage === "undefined" ? null : sessionStorage.getItem(MOCK_CONFIG_KEY);
     if (raw) Object.assign(m.mockConfig, JSON.parse(raw) as Partial<MockConfig>);
     if (!IS_TAURI) {
-      const { quotaDisplay, hiddenTabs, notifyModules, transparency } =
+      const { quotaDisplay, quotaRingStyle, hiddenTabs, notifyModules, transparency } =
         readMockIslandPreferences(localStorage.getItem(MOCK_SETTINGS_STORE_KEY));
       if (quotaDisplay) m.mockConfig.quotaDisplay = quotaDisplay;
+      if (quotaRingStyle) m.mockConfig.quotaRingStyle = quotaRingStyle;
       if (hiddenTabs) m.mockConfig.hiddenTabs = hiddenTabs;
       if (notifyModules) m.mockConfig.notifyModules = notifyModules;
       if (transparency !== undefined) m.mockConfig.transparency = transparency;
@@ -182,6 +184,7 @@ function mockStringList(value: unknown): string[] | undefined {
 
 function readMockIslandPreferences(raw: string | null): {
   quotaDisplay?: IslandQuotaDisplay;
+  quotaRingStyle?: IslandQuotaRingStyle;
   hiddenTabs?: string[];
   notifyModules?: string[];
   transparency?: number;
@@ -190,8 +193,10 @@ function readMockIslandPreferences(raw: string | null): {
     const settings = raw ? JSON.parse(raw) : null;
     const data = settings?.data?.island;
     const value = data?.quota_display;
+    const ringStyle = data?.quota_ring_style;
     return {
       quotaDisplay: value === "rings" || value === "percent" ? value : undefined,
+      quotaRingStyle: ringStyle === "period" || ringStyle === "dynamic" ? ringStyle : undefined,
       hiddenTabs: mockStringList(data?.hidden_tabs),
       notifyModules: mockStringList(settings?.data?.notify?.modules),
       transparency: Number.isFinite(data?.transparency)
@@ -1151,6 +1156,7 @@ export function onEvent<T>(name: string, handler: (payload: T) => void): () => v
       void (async () => {
         const next = readMockIslandPreferences(event.newValue);
         const quotaDisplay = next.quotaDisplay ?? "percent";
+        const quotaRingStyle = next.quotaRingStyle ?? "period";
         const hiddenTabs = next.hiddenTabs ?? [];
         const notifyModules = next.notifyModules ?? MOCK_DEFAULT_NOTIFY_MODULES;
         const m = await mocks();
@@ -1158,11 +1164,13 @@ export function onEvent<T>(name: string, handler: (payload: T) => void): () => v
         const transparency = next.transparency ?? mockDefaultTransparency;
         if (
           live.quotaDisplay === quotaDisplay &&
+          live.quotaRingStyle === quotaRingStyle &&
           live.hiddenTabs.join() === hiddenTabs.join() &&
           live.notifyModules?.join() === notifyModules.join() &&
           live.transparency === transparency
         ) return;
         live.quotaDisplay = quotaDisplay;
+        live.quotaRingStyle = quotaRingStyle;
         live.hiddenTabs = hiddenTabs;
         live.notifyModules = notifyModules;
         live.transparency = transparency;

@@ -22,6 +22,9 @@ export type CompactView = "rings" | "clock" | "pet" | "music";
 
 export type IslandQuotaDisplay = "percent" | "rings";
 
+/** 纯额度环的配色方式：period 按周期固定分色，dynamic 按已用额度动态绿黄红 */
+export type IslandQuotaRingStyle = "period" | "dynamic";
+
 /** 吸附边：top/bottom 横条（bottom 时窗口贴工作区下沿、条在窗口底部）；left/right 竖胶囊 */
 export type IslandEdge = "top" | "bottom" | "left" | "right";
 /**
@@ -68,6 +71,8 @@ export interface IslandConfig {
   compactView?: CompactView;
   /** 收起态额度的显示方式，缺省显示百分比。 */
   quotaDisplay?: IslandQuotaDisplay;
+  /** 纯额度环（quotaDisplay = rings）的配色方式，缺省按周期固定分色。 */
+  quotaRingStyle?: IslandQuotaRingStyle;
   /** 收起态视图自动轮换秒数（30；0 = 不轮换。P1 内容落地后生效） */
   autoCycleSec?: number;
   /** 鼠标可穿透（点击落到身后的窗口，只保留右键入口） */

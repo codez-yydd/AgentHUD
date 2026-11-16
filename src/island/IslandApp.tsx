@@ -3872,7 +3872,14 @@ export default function IslandApp() {
                   quota={showCompactQuotas ? (
                     <div className="compact-quotas" role="group" aria-label="额度环">
                       {compactQuotaAgents.length ? compactQuotaAgents.map((agent) => (
-                        <PillAgent key={agent.id} agent={agent} plan="" periods={ringPeriods(agent.quotas)} ringsOnly />
+                        <PillAgent
+                          key={agent.id}
+                          agent={agent}
+                          plan=""
+                          periods={ringPeriods(agent.quotas)}
+                          ringsOnly
+                          dynamicColor={config.quotaRingStyle === "dynamic"}
+                        />
                       )) : (
                         <span className="pill-agent-empty">额度查询中</span>
                       )}
@@ -4043,6 +4050,8 @@ function QuotaPill({
   onResize,
 }: Omit<CollapsedPillProps, "edge"> & { side: boolean; probe: boolean }) {
   const ringsOnly = config.quotaDisplay === "rings";
+  // 纯额度环的配色：dynamic 按该窗口已用阈值动态绿黄红，否则按周期固定分色。
+  const dynamicColor = config.quotaRingStyle === "dynamic";
   const entries = (usage?.agents ?? []).map((agent) => ({
     agent,
     plan: planTag(agent),
@@ -4147,6 +4156,7 @@ function QuotaPill({
               plan={plan}
               periods={periods}
               ringsOnly={ringsOnly}
+              dynamicColor={dynamicColor}
             />
           ))
         )}
@@ -4223,21 +4233,23 @@ function planTag(agent: HudBarAgent): string {
   return "";
 }
 
-function PillAgent({ agent, plan, periods, ringsOnly }: {
+function PillAgent({ agent, plan, periods, ringsOnly, dynamicColor }: {
   agent: HudBarAgent;
   plan: string;
   periods: ReturnType<typeof ringPeriods>;
   ringsOnly: boolean;
+  dynamicColor: boolean;
 }) {
   const quota =
     periods[0]?.quota ?? agent.quotas.find(({ usedPct }) => Number.isFinite(usedPct));
   const used = quota ? Math.max(0, Math.min(100, quota.usedPct)) : 0;
-  // 仅可用周期占用半径，颜色始终表示原本的额度周期。
+  // 仅可用周期占用半径；弧长统一表示「已用」百分比（与旧版语义一致），
+  // 配色按配置在固定周期色与动态额度色之间切换。
   const tracks = ringsOnly
-    ? periods.map(({ key, color, remaining }, index) => ({
+    ? periods.map(({ key, color, quota: periodQuota }, index) => ({
         key,
-        color,
-        progress: remaining,
+        color: dynamicColor ? `var(--${quotaTone(periodQuota)})` : color,
+        progress: Math.max(0, Math.min(100, periodQuota.usedPct)),
         radius: RING_RADII[index],
         strokeWidth: 2.6,
       }))

@@ -454,6 +454,7 @@ export const mockConfig: IslandConfig = {
   collapseDelayMs: 320,
   compactView: "rings",
   quotaDisplay: "percent",
+  quotaRingStyle: "period",
   autoCycleSec: 30,
   passthrough: false,
   lastTab: null,

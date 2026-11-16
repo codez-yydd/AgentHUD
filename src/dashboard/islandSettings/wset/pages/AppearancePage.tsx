@@ -61,6 +61,12 @@ const QUOTA_DISPLAY_OPTIONS = [
   { value: "percent", label: "百分比" },
 ] as const;
 
+// 用现有 Select 组件（其选项不支持逐项 desc），两种配色说明统一放在 Row 的 desc。
+const QUOTA_RING_STYLE_OPTIONS = [
+  { value: "period", label: "周期分色" },
+  { value: "dynamic", label: "用量动态色" },
+];
+
 const PAGE: PageKey = "look";
 
 export function AppearancePage({ draft }: PageProps) {
@@ -116,6 +122,10 @@ export function AppearancePage({ draft }: PageProps) {
     ? compactRaw
     : "rings";
   const quotaDisplay = text("island.quota_display") === "rings" ? "rings" : "percent";
+  const quotaRingStyleRaw = text("island.quota_ring_style", "period");
+  const quotaRingStyle = QUOTA_RING_STYLE_OPTIONS.some((item) => item.value === quotaRingStyleRaw)
+    ? quotaRingStyleRaw
+    : "period";
 
   const screen = num("island.screen", 0);
   const monitorOptions = useMemo(() => {
@@ -438,6 +448,23 @@ export function AppearancePage({ draft }: PageProps) {
             ))}
           </div>
         </Row>
+        {quotaDisplay === "rings" ? (
+          <Row
+            title="额度环配色"
+            desc="周期分色：5h / 周 / 月各自固定颜色；用量动态色：按已用额度绿黄红渐变提示剩余量。"
+            error={draft.errors["island.quota_ring_style"]}
+            tag={<UnsupportedTag draft={draft} keyName="island.quota_ring_style" />}
+            rowKey="island.quota_ring_style"
+          >
+            <Select
+              value={quotaRingStyle}
+              width={160}
+              options={QUOTA_RING_STYLE_OPTIONS}
+              ariaLabel="额度环配色"
+              onChange={(next) => draft.setValue("island.quota_ring_style", next)}
+            />
+          </Row>
+        ) : null}
         <Row
           title="自动轮换间隔"
           desc="时间天气与小形象每隔多久自动切换一次；0 = 不轮换。"

@@ -51,7 +51,7 @@ const AUDIO_SOURCES: [&str; 2] = ["loopback", "mic"];
 
 /// 设置文档点路径里**已经接到岛运行时**的项；`island_settings_save` 用它
 /// 计算 `applied`（本次同步到运行时配置或由服务直接读取的字段）。
-const SYNCED_PATHS: [&str; 79] = [
+const SYNCED_PATHS: [&str; 80] = [
     "island.edge",
     "island.pos",
     "island.screen",
@@ -62,6 +62,7 @@ const SYNCED_PATHS: [&str; 79] = [
     "island.expand_mode",
     "island.compact_view",
     "island.quota_display",
+    "island.quota_ring_style",
     "island.auto_cycle_s",
     "island.hover_expand",
     "island.hover_expand_ms",
@@ -289,6 +290,8 @@ pub struct IslandDoc {
     pub compact_view: String,
     /// percent / rings
     pub quota_display: String,
+    /// period / dynamic
+    pub quota_ring_style: String,
     pub auto_cycle_s: i64,
     pub hidden_tabs: Vec<String>,
     /// AgentHUD 专属：玻璃透明程度 0..90
@@ -597,6 +600,7 @@ impl Default for IslandDoc {
             hide_fullscreen: false,
             compact_view: super::default_compact_view(),
             quota_display: super::default_quota_display(),
+            quota_ring_style: super::default_quota_ring_style(),
             auto_cycle_s: super::default_auto_cycle_sec() as i64,
             hidden_tabs: Vec::new(),
             transparency: super::default_transparency() as i64,
@@ -912,6 +916,7 @@ impl IslandDoc {
         self.expand_mode = one_of(&self.expand_mode, &EXPAND_MODES, "hover");
         self.compact_view = one_of(&self.compact_view, &COMPACT_VIEWS, "rings");
         self.quota_display = super::normalize_quota_display(&self.quota_display);
+        self.quota_ring_style = super::normalize_quota_ring_style(&self.quota_ring_style);
         self.auto_cycle_s = clamp_int(self.auto_cycle_s, 0, 600);
         self.hidden_tabs = normalize_hidden_tabs(&self.hidden_tabs);
         self.transparency = clamp_int(self.transparency, 0, 90);
@@ -1603,6 +1608,7 @@ pub fn overlay_from_island(
     doc.island.hide_fullscreen = cfg.hide_fullscreen;
     doc.island.compact_view = cfg.compact_view.clone();
     doc.island.quota_display = cfg.quota_display.clone();
+    doc.island.quota_ring_style = cfg.quota_ring_style.clone();
     doc.island.auto_cycle_s = cfg.auto_cycle_sec as i64;
     doc.island.hidden_tabs = cfg.hidden_tabs.clone();
     doc.island.transparency = cfg.transparency as i64;
@@ -1746,6 +1752,7 @@ pub(crate) async fn sync_to_island(
     next.expand_mode = doc.island.expand_mode.clone();
     next.compact_view = doc.island.compact_view.clone();
     next.quota_display = doc.island.quota_display.clone();
+    next.quota_ring_style = doc.island.quota_ring_style.clone();
     next.auto_cycle_sec = doc.island.auto_cycle_s as u64;
     next.hover_expand = doc.island.hover_expand;
     next.hover_expand_ms = doc.island.hover_expand_ms as u64;
@@ -2686,6 +2693,7 @@ mod tests {
             "island.hide_fullscreen",
             "island.compact_view",
             "island.quota_display",
+            "island.quota_ring_style",
             "island.auto_cycle_s",
             "island.hidden_tabs",
             "island.transparency",
@@ -2913,6 +2921,36 @@ mod tests {
         let patch = Map::from_iter([(path.into(), json!("invalid"))]);
         let reset = patched_doc(runtime_doc, &patch).unwrap();
         assert_eq!(reset.island.quota_display, "percent");
+    }
+
+    #[test]
+    fn quota_ring_style_patches_and_round_trips_through_settings() {
+        let path = "island.quota_ring_style";
+        let legacy = from_value(json!({"island": {"theme": "sky"}})).unwrap();
+        assert_eq!(legacy.island.quota_ring_style, "period");
+        assert_eq!(applied_paths(&[path.into()]), vec![path]);
+
+        let patch = Map::from_iter([(path.into(), json!(" DyNaMiC "))]);
+        let next = patched_doc(legacy, &patch).unwrap();
+        assert_eq!(next.island.quota_ring_style, "dynamic");
+
+        let fixture = TempFixture::new("quota-ring-style");
+        save_to_path(&fixture.path(), &next).unwrap();
+        let loaded = read_doc_file(&fixture.path()).unwrap();
+        assert_eq!(loaded.island.quota_ring_style, "dynamic");
+        assert_eq!(loaded.island.theme, "sky");
+
+        let cfg = IslandConfig {
+            quota_ring_style: loaded.island.quota_ring_style,
+            ..IslandConfig::default()
+        };
+        let mut runtime_doc = SettingsDoc::default();
+        overlay_from_island(&mut runtime_doc, &cfg, &[]);
+        assert_eq!(runtime_doc.island.quota_ring_style, "dynamic");
+
+        let patch = Map::from_iter([(path.into(), json!("invalid"))]);
+        let reset = patched_doc(runtime_doc, &patch).unwrap();
+        assert_eq!(reset.island.quota_ring_style, "period");
     }
 
     #[test]

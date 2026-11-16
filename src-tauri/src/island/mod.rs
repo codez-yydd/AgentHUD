@@ -1577,6 +1577,16 @@ fn normalize_quota_display(value: &str) -> String {
         default_quota_display()
     }
 }
+fn default_quota_ring_style() -> String {
+    "period".into()
+}
+fn normalize_quota_ring_style(value: &str) -> String {
+    if value.trim().eq_ignore_ascii_case("dynamic") {
+        "dynamic".into()
+    } else {
+        default_quota_ring_style()
+    }
+}
 fn default_auto_cycle_sec() -> u64 {
     30
 }
@@ -1859,6 +1869,8 @@ pub struct IslandConfig {
     pub compact_view: String,
     /// 收起态额度显示：percent / rings。
     pub quota_display: String,
+    /// 纯额度环配色：period / dynamic。
+    pub quota_ring_style: String,
     /// 收起态视图自动轮换间隔（秒，clamp 0..=600，0 = 关闭）
     pub auto_cycle_sec: u64,
     /// 毛玻璃背景采样帧率（clamp 1..=60）
@@ -1959,6 +1971,7 @@ impl Default for IslandConfig {
             collapse_delay_ms: default_collapse_delay_ms(),
             compact_view: default_compact_view(),
             quota_display: default_quota_display(),
+            quota_ring_style: default_quota_ring_style(),
             auto_cycle_sec: default_auto_cycle_sec(),
             blur_fps: default_blur_fps(),
             passthrough: false,
@@ -2029,6 +2042,7 @@ impl IslandConfig {
             c.compact_view = default_compact_view();
         }
         c.quota_display = normalize_quota_display(&c.quota_display);
+        c.quota_ring_style = normalize_quota_ring_style(&c.quota_ring_style);
         // 天气主城市：空 = 跟随公网 IP。旧版本默认写过「上海」，升级时
         // 若没有坐标也没有展示名，则按旧默认值清空，让主城市跟随 IP。
         c.weather_city = c.weather_city.trim().to_string();
