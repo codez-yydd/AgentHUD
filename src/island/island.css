@@ -7667,9 +7667,9 @@ html.island-preview .island::after {
   color: var(--muted);
 }
 
-/* 额度网格：3 列；余额卡独立全宽行；每个订阅卡更紧凑 */
+/* 额度网格：2 列（每页 4 张，2×2）；余额卡独立全宽行；每个订阅卡更紧凑 */
 .agent-grid {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 6px;
 }
 

@@ -186,15 +186,15 @@ export function HomePage({
   const [page, setPage] = useState(0);
   const wheelAt = useRef(0);
   // P0：余额卡不再参与 agent-grid 自动排布（否则 grid-column:1/-1 会留下
-  // 整格空洞）；订阅卡 3 列/页，余额卡单独全宽一行。
+  // 整格空洞）；订阅卡 4 张/页（2×2），余额卡单独全宽一行。
   const quotaAgents = useMemo(() => agents.filter((agent) => !agent.balance), [agents]);
   const balanceAgents = useMemo(() => agents.filter((agent) => Boolean(agent.balance)), [agents]);
-  const pageCount = Math.max(1, Math.ceil(quotaAgents.length / 3));
+  const pageCount = Math.max(1, Math.ceil(quotaAgents.length / 4));
   const safePage = Math.min(page, pageCount - 1);
   const pageAgents = useMemo(
     () =>
       Array.from({ length: pageCount }, (_, index) =>
-        quotaAgents.slice(index * 3, index * 3 + 3)
+        quotaAgents.slice(index * 4, index * 4 + 4)
       ),
     [quotaAgents, pageCount]
   );

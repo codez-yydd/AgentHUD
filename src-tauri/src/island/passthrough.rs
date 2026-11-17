@@ -154,6 +154,9 @@ pub fn restore_after_menu() {
 
 #[cfg(target_os = "windows")]
 pub(super) use imp::set_automatic_mouse_through;
+/// 已解析的岛窗口句柄缓存（供截图选窗等内部模块复用，0 = 没有/无效）。
+#[cfg(target_os = "windows")]
+pub(crate) use imp::cached_island_hwnd;
 
 #[cfg(target_os = "windows")]
 mod imp {
@@ -183,6 +186,13 @@ mod imp {
     /// 原始句柄（isize，跨线程存在原子里）→ `HWND`。
     fn hwnd_of(raw: isize) -> HWND {
         HWND(raw as *mut core::ffi::c_void)
+    }
+
+    /// 读取已解析的岛窗口句柄缓存（0 = 没有/无效）。
+    /// 只读原子缓存，不触发 Tauri 派发；句柄是否已失效由调用方按需再校验。
+    pub(crate) fn cached_island_hwnd() -> Option<isize> {
+        let raw = CACHED_HWND.load(Ordering::SeqCst);
+        (raw != 0).then_some(raw)
     }
 
     static STARTED: AtomicBool = AtomicBool::new(false);
