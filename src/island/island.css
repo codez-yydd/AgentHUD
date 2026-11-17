@@ -7667,22 +7667,10 @@ html.island-preview .island::after {
   color: var(--muted);
 }
 
-/* 额度网格：2 列（每页 4 张，2×2）；余额卡独立全宽行；每个订阅卡更紧凑 */
+/* 额度网格：2 列（每页 4 张，2×2）；余额卡与订阅卡同为网格内卡片 */
 .agent-grid {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 6px;
-}
-
-.agent-balance-row {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  flex: none;
-}
-
-.agent-balance-row .agent-card.balance-card {
-  width: 100%;
-  padding: 8px 12px;
 }
 
 .agent-card {

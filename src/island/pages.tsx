@@ -94,13 +94,17 @@ function AgentCard({ agent, compact = false }: { agent: HudBarAgent; compact?: b
         <div className="balance-row">
           <span className="balance-amount">{fmtMoney(agent.balance.amount, agent.balance.currency)}</span>
           <span className="balance-label">余额</span>
-          {agent.balance.granted != null || agent.balance.toppedUp != null ? (
-            <span className="balance-split">
-              {agent.balance.toppedUp != null ? `充值 ${fmtMoney(agent.balance.toppedUp, agent.balance.currency)}` : ""}
-              {agent.balance.toppedUp != null && agent.balance.granted != null ? " · " : ""}
-              {agent.balance.granted != null ? `赠送 ${fmtMoney(agent.balance.granted, agent.balance.currency)}` : ""}
-            </span>
-          ) : null}
+          {(() => {
+            // 拆分小字：充值 / 赠送 / 累计消费（DSH 本地登录条目有累计消费），
+            // 用 " · " 连接，与充值/赠送保持同一小字风格。文案硬编码中文，
+            // 与本文件其余余额文案一致。
+            const b = agent.balance;
+            const parts: string[] = [];
+            if (b.toppedUp != null) parts.push(`充值 ${fmtMoney(b.toppedUp, b.currency)}`);
+            if (b.granted != null) parts.push(`赠送 ${fmtMoney(b.granted, b.currency)}`);
+            if (b.totalCost != null) parts.push(`累计消费 ${fmtMoney(b.totalCost, b.currency)}`);
+            return parts.length > 0 ? <span className="balance-split">{parts.join(" · ")}</span> : null;
+          })()}
         </div>
       ) : agent.quotas.length === 0 ? (
         <div className="agent-empty">{placeholder ? "登录后显示额度" : "暂无额度窗口"}</div>
@@ -185,18 +189,15 @@ export function HomePage({
   const petPointerRef = useRef<CompactPointerSample>({ x: 9999, y: 9999, inside: false });
   const [page, setPage] = useState(0);
   const wheelAt = useRef(0);
-  // P0：余额卡不再参与 agent-grid 自动排布（否则 grid-column:1/-1 会留下
-  // 整格空洞）；订阅卡 4 张/页（2×2），余额卡单独全宽一行。
-  const quotaAgents = useMemo(() => agents.filter((agent) => !agent.balance), [agents]);
-  const balanceAgents = useMemo(() => agents.filter((agent) => Boolean(agent.balance)), [agents]);
-  const pageCount = Math.max(1, Math.ceil(quotaAgents.length / 4));
+  // 所有额度条目（余额型 / 订阅窗口型）统一按 4 张/页（2×2）分页展示。
+  const pageCount = Math.max(1, Math.ceil(agents.length / 4));
   const safePage = Math.min(page, pageCount - 1);
   const pageAgents = useMemo(
     () =>
       Array.from({ length: pageCount }, (_, index) =>
-        quotaAgents.slice(index * 4, index * 4 + 4)
+        agents.slice(index * 4, index * 4 + 4)
       ),
-    [quotaAgents, pageCount]
+    [agents, pageCount]
   );
 
   useEffect(() => {
@@ -546,64 +547,50 @@ export function HomePage({
           </div>
         </div>
       ) : (
-        <>
-          {/* 余额 / 按量卡：单行全宽，不进入订阅卡网格 */}
-          {balanceAgents.length > 0 ? (
-            <div className="agent-balance-row">
-              {balanceAgents.map((agent) => (
-                <AgentCard key={agent.id} agent={agent} compact />
+        <div
+          className="agent-pager"
+          onWheel={(e) => {
+            if (pageCount <= 1) return;
+            const delta = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
+            if (Math.abs(delta) < 4) return;
+            e.preventDefault();
+            e.stopPropagation();
+            turnPage(delta > 0 ? 1 : -1);
+          }}
+        >
+          <div className="agent-pager-viewport">
+            <div className="agent-pager-track" style={{ transform: `translateX(-${safePage * 100}%)` }}>
+              {pageAgents.map((items, index) => (
+                <div
+                  className={`agent-grid agent-page ${
+                    items.length === 2 ? "is-two" : items.length === 1 ? "is-one" : ""
+                  }`}
+                  key={index}
+                  aria-hidden={index !== safePage}
+                >
+                  {items.map((agent) => (
+                    <AgentCard key={agent.id} agent={agent} compact />
+                  ))}
+                </div>
+              ))}
+            </div>
+          </div>
+          {pageCount > 1 ? (
+            <div className="agent-page-dots" role="tablist" aria-label="额度分页">
+              {Array.from({ length: pageCount }, (_, index) => (
+                <button
+                  key={index}
+                  type="button"
+                  className={`agent-page-bar ${index === safePage ? "active" : ""}`}
+                  onClick={() => setPage(index)}
+                  aria-label={`第 ${index + 1} 页`}
+                  aria-selected={index === safePage}
+                  role="tab"
+                />
               ))}
             </div>
           ) : null}
-          {quotaAgents.length > 0 ? (
-            <div
-              className="agent-pager"
-              onWheel={(e) => {
-                if (pageCount <= 1) return;
-                const delta = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
-                if (Math.abs(delta) < 4) return;
-                e.preventDefault();
-                e.stopPropagation();
-                turnPage(delta > 0 ? 1 : -1);
-              }}
-            >
-              <div className="agent-pager-viewport">
-                <div className="agent-pager-track" style={{ transform: `translateX(-${safePage * 100}%)` }}>
-                  {pageAgents.map((items, index) => (
-                    <div
-                      className={`agent-grid agent-page ${
-                        items.length === 2 ? "is-two" : items.length === 1 ? "is-one" : ""
-                      }`}
-                      key={index}
-                      aria-hidden={index !== safePage}
-                    >
-                      {items.map((agent) => (
-                        <AgentCard key={agent.id} agent={agent} compact />
-                      ))}
-                    </div>
-                  ))}
-                </div>
-              </div>
-              {pageCount > 1 ? (
-                <div className="agent-page-dots" role="tablist" aria-label="额度分页">
-                  {Array.from({ length: pageCount }, (_, index) => (
-                    <button
-                      key={index}
-                      type="button"
-                      className={`agent-page-bar ${index === safePage ? "active" : ""}`}
-                      onClick={() => setPage(index)}
-                      aria-label={`第 ${index + 1} 页`}
-                      aria-selected={index === safePage}
-                      role="tab"
-                    />
-                  ))}
-                </div>
-              ) : null}
-            </div>
-          ) : (
-            <div className="home-agent-empty">暂无订阅额度（余额卡见上方）</div>
-          )}
-        </>
+        </div>
       )}
 
       {/* 启动器：横向条（高 46、图标 44），滚轮横向滚动，点击打开 */}
