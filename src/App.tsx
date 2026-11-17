@@ -14,6 +14,7 @@ import { ADD_SERVICE_EVENT } from "./AddServiceMenu";
 import {
   fetchPricing,
   getCurrencySetting,
+  hasDshPlatformGrant,
   hasProviderCredentials,
   remoteSourcePresence,
   saveCurrency,
@@ -171,7 +172,18 @@ export default function App() {
   useEffect(() => {
     const probe = (providers: readonly string[]) => {
       for (const p of providers) {
-        hasProviderCredentials(p)
+        // deepseek 是混合型 provider：有手动 API Key 走开放平台余额接口，
+        // 没有 Key 时后端回退到 DSH 本地登录条目（grant）。两条路任一存在
+        // 都应置 presence=true，才能触发 120s 额度轮询把本地余额拉出来。
+        // 两路 Promise 并行，任一为真即视为有；全部失败才按「无」处理。
+        const presence$: Promise<boolean> =
+          p === "deepseek"
+            ? Promise.all([
+                hasProviderCredentials(p).catch(() => false),
+                hasDshPlatformGrant().catch(() => false),
+              ]).then(([hasKey, hasGrant]) => hasKey || hasGrant)
+            : hasProviderCredentials(p);
+        presence$
           .then((has) =>
             setCredentialPresence((prev) =>
               prev[p] === has ? prev : { ...prev, [p]: has }

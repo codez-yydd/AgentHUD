@@ -1471,6 +1471,7 @@ fn quota_parts_from_summary(
             currency: "$".into(),
             granted: None,
             topped_up: None,
+            total_cost: None,
         });
     (windows, plan_name, balance)
 }

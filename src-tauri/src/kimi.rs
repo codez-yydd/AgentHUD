@@ -3116,6 +3116,7 @@ fn quota_entry_from_response(
             currency: "¥".to_string(),
             granted: None,
             topped_up: None,
+            total_cost: None,
         });
     let plan_name = resp
         .user
@@ -4191,6 +4192,7 @@ mod tests {
                 currency: "¥".into(),
                 granted: None,
                 topped_up: None,
+                total_cost: None,
             }),
         );
         let limits = limits_from_quota_entry(&full).expect("全窗口条目应映射成功");
@@ -4213,6 +4215,7 @@ mod tests {
                 currency: "¥".into(),
                 granted: None,
                 topped_up: None,
+                total_cost: None,
             }),
         );
         assert!(limits_from_quota_entry(&unknown_only).is_none());

@@ -229,6 +229,7 @@ fn entry_from_bundle(
         // paid/granted 拆分：cashBalance → toppedUp、giftBalance → granted
         granted: num_any(data, &["giftBalance"]),
         topped_up: num_any(data, &["cashBalance"]),
+        total_cost: None,
     };
 
     // Token 套餐（非致命）：detail 给 plan 名与周期结束，usage 给当前积分窗

@@ -298,6 +298,9 @@ export const en: typeof zh = {
     "summary.opencodeEstimated": "Local estimate",
     // DSH has no subscription cap, so its summary quota row shows today's usage
     "summary.dshTodayUsage": "Today {tokens} tokens · {cost}",
+    // Fallback when there is no usage today but a local platform balance exists;
+    // granted is an optional tail (e.g. " · ¥X granted", or an empty string)
+    "summary.dshBalanceSummary": "Balance {balance} · Spent {cost}{granted}",
   } satisfies typeof summary),
 
   ...({
@@ -1135,6 +1138,7 @@ export const en: typeof zh = {
     "credentials.balance": "Balance",
     "credentials.balanceGranted": "{amount} granted",
     "credentials.balanceToppedUp": "{amount} topped up",
+    "credentials.balanceTotalCost": "{amount} spent",
     // Absolute line of a quota window (QuotaEntryCard): the percentage on the
     // right is always "% left" (matching Z.ai / Codex / Cursor), so the absolute
     // values must say "Used" explicitly to avoid being read as remaining.

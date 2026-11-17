@@ -3678,6 +3678,8 @@ pub fn run() {
             get_kimi_debug,
             get_dsh_usage,
             get_dsh_debug,
+            // App 层 deepseek presence 探测：本地 DSH 平台登录态（grant）是否存在
+            dsh::has_dsh_platform_grant,
             get_opencode_usage,
             get_opencode_debug,
             get_minimaxcode_usage,

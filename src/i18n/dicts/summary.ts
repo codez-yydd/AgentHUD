@@ -22,4 +22,7 @@ export const summary = {
   // DSH 无订阅额度上限，汇总页额度区改展示「今日实际用量」摘要
   // （DSH has no subscription cap; the summary quota row shows today's actual usage）
   "summary.dshTodayUsage": "今日 {tokens} Token · {cost}",
+  // DSH 今日无用量但拉到平台余额时，展示余额 + 累计消费摘要；
+  // granted 为可选尾段（有赠送值时传「 · 赠送 ¥X」，否则传空串）
+  "summary.dshBalanceSummary": "余额 {balance} · 累计消费 {cost}{granted}",
 };

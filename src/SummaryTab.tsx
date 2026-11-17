@@ -1094,15 +1094,38 @@ export function SummaryTab({
     ).padStart(2, "0")}`;
     return (dsh?.trend ?? []).find((p) => p.label === label);
   })();
-  const dshUsageSummary = dshToday
-    ? t("summary.dshTodayUsage", {
+  // 三级摘要：① 有今日用量 → 用量文案；② 无用量但 deepseek 额度缓存里有
+  // status=ok 且带余额的条目（DSH 本地登录回退，或手动 Key）→ 余额 + 累计消费；
+  // ③ 都没有 → 暂无额度数据。金额沿用条目自带 currency 符号（与配额卡同口径）。
+  const dshBalanceEntry = providerQuota["deepseek"]?.entries?.find(
+    (e) => e.status === "ok" && e.balance != null
+  );
+  const dshUsageSummary = (() => {
+    if (dshToday) {
+      return t("summary.dshTodayUsage", {
         tokens: formatTokens(dshToday.total_tokens),
         cost: formatCost(
           currency === "cny" ? dshToday.cost_cny : dshToday.cost_usd,
           currency
         ),
-      })
-    : t("summary.noQuotaData");
+      });
+    }
+    const balance = dshBalanceEntry?.balance;
+    if (balance) {
+      const sym = balance.currency;
+      const money = (n: number) => `${sym}${n.toFixed(2)}`;
+      const granted =
+        balance.granted != null
+          ? ` · ${t("credentials.balanceGranted", { amount: money(balance.granted) })}`
+          : "";
+      return t("summary.dshBalanceSummary", {
+        balance: money(balance.amount),
+        cost: balance.totalCost != null ? money(balance.totalCost) : "—",
+        granted,
+      });
+    }
+    return t("summary.noQuotaData");
+  })();
 
   // OpenCode 缓存率：included 口径（本地库归一化把 cache_read 并进 input_tokens，
   // 与 OpencodePanel 的 cacheRateMode="included" 一致）。

@@ -150,6 +150,7 @@ fn sanitize_balance(balance: Option<&ProviderQuotaBalance>) -> Option<ProviderQu
         currency: balance.currency.chars().take(16).collect(),
         granted: balance.granted.filter(|value| value.is_finite()),
         topped_up: balance.topped_up.filter(|value| value.is_finite()),
+        total_cost: None,
     })
 }
 
@@ -426,6 +427,7 @@ mod tests {
                 currency: "CNY".into(),
                 granted: Some(10.0),
                 topped_up: Some(100.0),
+                total_cost: None,
             }),
             plan_name: Some("Pay-as-you-go".into()),
             message: Some("API Key 无效或已过期".into()),
@@ -529,6 +531,7 @@ mod tests {
             currency: "CNY".into(),
             granted: None,
             topped_up: None,
+            total_cost: None,
         });
         let snapshot = entry_to_snapshot("deepseek", &value);
         assert!(snapshot.balance.is_none());
@@ -568,6 +571,7 @@ mod tests {
                 currency: "CNY".into(),
                 granted: None,
                 topped_up: None,
+                total_cost: None,
             }),
             message: None,
         };

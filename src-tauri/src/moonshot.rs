@@ -157,6 +157,7 @@ fn entry_from_raw(
             currency: currency_for_region(region).to_string(),
             granted: data.get("voucher_balance").and_then(parse_flexible_f64),
             topped_up: data.get("cash_balance").and_then(parse_flexible_f64),
+            total_cost: None,
         }),
         plan_name: None,
         // 余额拆分（赠送/充值）已由 balance 字段承载，message 留空

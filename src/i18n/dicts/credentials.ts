@@ -87,6 +87,7 @@ export const credentials = {
   "credentials.balance": "余额",
   "credentials.balanceGranted": "赠送 {amount}",
   "credentials.balanceToppedUp": "充值 {amount}",
+  "credentials.balanceTotalCost": "累计消费 {amount}",
   // 额度窗口的绝对值行（QuotaEntryCard）：右侧百分比统一是「剩 X%」（与
   // Z.ai / Codex / Cursor 同款），故绝对值必须显式标注是「已用」，避免被
   // 读成剩余量。{amount} 已含单位（如「700 次」），无单位时是纯数字
