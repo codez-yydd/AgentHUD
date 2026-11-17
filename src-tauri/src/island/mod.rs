@@ -27,12 +27,16 @@ pub mod backdrop;
 pub mod capture_guard;
 pub mod clash;
 pub mod clipboard;
+#[cfg(windows)]
+mod glass;
 pub mod live;
 pub mod lyrics;
 #[cfg(target_os = "macos")]
 mod mac_constrain;
 pub mod media;
 pub mod meeting;
+#[cfg(windows)]
+mod native_glass;
 pub mod notify;
 pub mod passthrough;
 pub mod popup;
@@ -765,6 +769,8 @@ fn start_mouse_through_watcher(app: AppHandle) {
 
             loop {
                 thread::sleep(Duration::from_millis(TICK_MS));
+
+                glass::tick(&app);
 
                 // 句柄失效（关掉灵动岛 / 窗口重建）就重新解析一次
                 let alive = hwnd
@@ -2993,8 +2999,15 @@ fn apply_window_flags_on_main(app: &AppHandle, cfg: &IslandConfig) -> Result<(),
         } else {
             WDA_NONE
         };
-        unsafe { SetWindowDisplayAffinity(HWND(hwnd.0), affinity) }
-            .map_err(|e| format!("设置灵动岛采集排除失败: {e}"))?;
+        let allow_glass = cfg.enabled && cfg.exclude_from_capture;
+        if !allow_glass {
+            glass::set_allowed(app, false);
+        }
+        let result = unsafe { SetWindowDisplayAffinity(HWND(hwnd.0), affinity) };
+        if allow_glass {
+            glass::set_allowed(app, result.is_ok());
+        }
+        result.map_err(|e| format!("设置灵动岛采集排除失败: {e}"))?;
     }
     #[cfg(not(target_os = "windows"))]
     let _ = cfg.exclude_from_capture;
@@ -3205,6 +3218,8 @@ fn set_enabled_on_main(app: &AppHandle, enabled: bool) -> Result<bool, String> {
         // 窗口可能被全屏守护隐藏过，重新显示时清掉标记
         FULLSCREEN_HIDDEN.store(false, Ordering::Relaxed);
     } else {
+        #[cfg(windows)]
+        glass::set_allowed(app, false);
         clear_motion();
         if let Some(win) = app.get_webview_window(ISLAND_WINDOW_LABEL) {
             // 关闭时把窗口摆回常驻几何再隐藏：页面 WebView 保留，重新开启时
@@ -3907,6 +3922,24 @@ pub fn island_set_last_tab(key: String, app: AppHandle) -> Result<IslandConfig, 
     // 广播完整最新配置：设置窗 / 托盘等其它窗口的「上次页面」状态同步。
     emit_config(&app, &next);
     Ok(next)
+}
+
+/// WebView 本地逻辑像素。原生渲染线程读取当前窗口位置和 DPI。
+#[cfg(windows)]
+#[tauri::command]
+pub(crate) fn island_sync_native_glass(window: WebviewWindow, geometry: Option<glass::Geometry>) -> bool {
+    if window.label() != ISLAND_WINDOW_LABEL {
+        return false;
+    }
+    window.hwnd().ok().is_some_and(|hwnd| {
+        glass::sync(window.app_handle(), hwnd.0 as isize, geometry)
+    })
+}
+
+#[cfg(not(windows))]
+#[tauri::command]
+pub(crate) fn island_sync_native_glass() -> bool {
+    false
 }
 
 /// 采集液态玻璃纹理。版本未变化时省略回应；纹理不可用时返回没有图片的版本。

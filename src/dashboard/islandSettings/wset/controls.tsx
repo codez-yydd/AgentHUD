@@ -298,7 +298,7 @@ export function Slider({
   const pct = max > min ? Math.min(100, Math.max(0, ((safe - min) / (max - min)) * 100)) : 0;
   const shown = decimals > 0 ? safe.toFixed(decimals) : String(Math.round(safe));
   return (
-    <div className={`wset-slider${disabled ? " wset-slider--disabled" : ""}`}>
+    <div className="wset-slider">
       <input
         className="wset-slider__input"
         type="range"
@@ -308,6 +308,7 @@ export function Slider({
         value={safe}
         disabled={disabled}
         aria-label={ariaLabel}
+        aria-valuetext={suffix ? `${shown} ${suffix}` : undefined}
         style={{ "--w-slider-pct": `${pct}%` } as CSSProperties}
         onChange={(event) => onChange(Number(event.target.value))}
       />

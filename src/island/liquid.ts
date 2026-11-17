@@ -188,15 +188,20 @@ function bodyPoints({ x, y, width: w, height: h }: BodyRect, [tl, tr, br, bl]: R
   });
 }
 
-function deform(points: Point[], input: LiquidInput, speed: number): Point[] {
-  const { body, edge, vx = 0, vy = 0, wave, pokePoint } = input;
-  const [farX, farY] = far[edge];
-  const horizontal = isHorizontalEdge(edge);
+function dragDeformation(body: BodyRect, vx: number, vy: number, speed: number) {
   const amt = clamp(speed / 2600, 0, 1);
   const [dx, dy] = speed > 1e-3 ? [vx / speed, vy / speed] : [0, 0];
   const cx = body.x + body.width / 2;
   const cy = body.y + body.height / 2;
   const lag = (Math.min(body.width, body.height) / 2 + 12) * 0.6 * amt;
+  return { amt, dx, dy, cx, cy, lag };
+}
+
+function deform(points: Point[], input: LiquidInput, speed: number): Point[] {
+  const { body, edge, vx = 0, vy = 0, wave, pokePoint } = input;
+  const [farX, farY] = far[edge];
+  const horizontal = isHorizontalEdge(edge);
+  const { amt, dx, dy, cx, cy, lag } = dragDeformation(body, vx, vy, speed);
   const amp = clamp(input.poke ?? 0, -0.6, 1.2) * 8;
   const center = horizontal ? cx : cy;
   const half = Math.max(20, (horizontal ? body.width : body.height) / 2);
@@ -241,6 +246,28 @@ function deform(points: Point[], input: LiquidInput, speed: number): Point[] {
     }
     return [x, y];
   });
+}
+
+/** Native glass follows the body. Reserve space for the SVG-only inward deformations. */
+export function nativeGlassBody(input: LiquidInput, radii: Radii): BodyRect & { radii: Radii } {
+  const { body, edge, vx = 0, vy = 0, poke = 0, wave } = input;
+  const speed = Math.hypot(vx, vy);
+  const { amt, dx, dy, lag } = dragDeformation(body, vx, vy, speed > 30 ? speed : 0);
+  const alongX = Math.abs(dx);
+  const alongY = Math.abs(dy);
+  const crossExtent = (alongY * body.width + alongX * body.height) / 2;
+  const squeeze = crossExtent * 0.38 * amt;
+  const normalShift = Math.max(0, poke, -0.35 * poke) * 8 + (wave?.amplitude ?? 0) * 3.2;
+  const horizontal = isHorizontalEdge(edge);
+  const insetX = Math.min(body.width / 4, alongY * squeeze + alongX * lag + (horizontal ? 0 : normalShift));
+  const insetY = Math.min(body.height / 4, alongX * squeeze + alongY * lag + (horizontal ? normalShift : 0));
+  return {
+    x: body.x + insetX,
+    y: body.y + insetY,
+    width: body.width - 2 * insetX,
+    height: body.height - 2 * insetY,
+    radii,
+  };
 }
 
 function polyPath(points: Point[]): Contour {

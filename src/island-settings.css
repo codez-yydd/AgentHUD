@@ -1008,18 +1008,26 @@ html.island-settings * {
 /* ============================================================ 滑动条 */
 
 .wset-slider {
+  --w-slider-track-height: 6px;
+  --w-slider-thumb-size: 15px;
+  --w-slider-fill: var(--w-on);
+  box-sizing: border-box;
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
   width: 236px;
   height: 34px;
-  box-sizing: border-box;
+  padding: 0 4px 0 10px;
+  border: 1px solid var(--w-stroke);
+  border-radius: 10px;
+  background: var(--w-field);
 }
 
 .wset-slider__input {
+  --w-slider-thumb-cursor: grab;
   flex: 1;
   min-width: 0;
-  height: 20px;
+  height: 100%;
   margin: 0;
   padding: 0;
   border: 0;
@@ -1033,25 +1041,25 @@ html.island-settings * {
   outline: none;
 }
 
-/* 4px 胶囊细轨道：已填充段用开关开启态同款主题蓝 --w-on，未填充段用半透明白的
-   --w-slider-track + 1px 内描边勾出轮廓，与卡片材质融合 */
+/* 胶囊细轨道：已填充段用开关开启态同款主题蓝（经 --w-slider-fill，深浅主题 /
+   forced-colors 可覆写），未填充段用 --w-slider-track + 1px 内描边勾出轮廓 */
 .wset-slider__input::-webkit-slider-runnable-track {
   /* 部分 WebKit 版本伪元素也要显式脱离原生绘制，否则 track 仍带原生 groove 底色 */
   -webkit-appearance: none;
-  height: 4px;
+  height: var(--w-slider-track-height);
   border-radius: 999px;
   box-shadow: inset 0 0 0 1px var(--w-stroke);
   background: linear-gradient(
     to right,
-    var(--w-on) 0%,
-    var(--w-on) var(--w-slider-pct, 0%),
+    var(--w-slider-fill) 0%,
+    var(--w-slider-fill) var(--w-slider-pct, 0%),
     var(--w-slider-track, var(--w-track)) var(--w-slider-pct, 0%),
     var(--w-slider-track, var(--w-track)) 100%
   );
 }
 
 .wset-slider__input::-moz-range-track {
-  height: 4px;
+  height: var(--w-slider-track-height);
   border: 0;
   border-radius: 999px;
   box-shadow: inset 0 0 0 1px var(--w-stroke);
@@ -1059,26 +1067,23 @@ html.island-settings * {
 }
 
 .wset-slider__input::-moz-range-progress {
-  height: 4px;
+  height: var(--w-slider-track-height);
   border-radius: 999px;
-  background: var(--w-on);
+  background: var(--w-slider-fill);
 }
 
-/* 浅色实心圆滑块：13px + 1px 半透明细边 + 轻阴影，hover/拖动平滑放大到 ~16px */
 .wset-slider__input::-webkit-slider-thumb {
-  /* 伪元素不受全局 border-box 继承，显式声明：13px 含 1px 边框，渲染即 13px */
   box-sizing: border-box;
-  width: 13px;
-  height: 13px;
-  /* (轨道 4 - 滑块 13) / 2，让滑块对齐细轨道中心 */
-  margin-top: -4.5px;
+  width: var(--w-slider-thumb-size);
+  height: var(--w-slider-thumb-size);
+  margin-top: calc((var(--w-slider-track-height) - var(--w-slider-thumb-size)) / 2);
   border: 1px solid rgba(0, 0, 0, 0.16);
   border-radius: 50%;
   background: var(--w-knob);
   appearance: none;
   -webkit-appearance: none;
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.26);
-  cursor: grab;
+  cursor: var(--w-slider-thumb-cursor);
   transition:
     transform 0.14s ease,
     box-shadow 0.14s ease;
@@ -1086,40 +1091,38 @@ html.island-settings * {
 
 .wset-slider__input::-moz-range-thumb {
   box-sizing: border-box;
-  width: 13px;
-  height: 13px;
+  width: var(--w-slider-thumb-size);
+  height: var(--w-slider-thumb-size);
   border: 1px solid rgba(0, 0, 0, 0.16);
   border-radius: 50%;
   background: var(--w-knob);
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.26);
-  cursor: grab;
+  cursor: var(--w-slider-thumb-cursor);
   transition:
     transform 0.14s ease,
     box-shadow 0.14s ease;
 }
 
-.wset-slider__input:hover::-webkit-slider-thumb,
-.wset-slider__input:active::-webkit-slider-thumb {
+.wset-slider__input:enabled:hover::-webkit-slider-thumb,
+.wset-slider__input:enabled:active::-webkit-slider-thumb {
   transform: scale(1.23);
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.32);
 }
 
-.wset-slider__input:hover::-moz-range-thumb,
-.wset-slider__input:active::-moz-range-thumb {
+.wset-slider__input:enabled:hover::-moz-range-thumb,
+.wset-slider__input:enabled:active::-moz-range-thumb {
   transform: scale(1.23);
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.32);
 }
 
-.wset-slider__input:active::-webkit-slider-thumb,
-.wset-slider__input:active::-moz-range-thumb {
-  cursor: grabbing;
+.wset-slider__input:active {
+  --w-slider-thumb-cursor: grabbing;
 }
 
-/* 禁用态：thumb 的 grab 与 hover 放大都要压掉，与 input 的 not-allowed 一致 */
-.wset-slider__input:disabled::-webkit-slider-thumb,
-.wset-slider__input:disabled::-moz-range-thumb {
+.wset-slider__input:disabled {
+  --w-slider-thumb-cursor: not-allowed;
+  opacity: 0.45;
   cursor: not-allowed;
-  transform: none;
 }
 
 /* 焦点态：与按钮/开关一致的 2px accent 细 ring */
@@ -1128,34 +1131,73 @@ html.island-settings * {
   outline-offset: 2px;
 }
 
-.wset-slider--disabled .wset-slider__input {
-  opacity: 0.45;
-  cursor: not-allowed;
+@supports selector(:has(*)) {
+  .wset-slider__input:focus-visible {
+    outline: none;
+  }
+
+  .wset-slider:has(.wset-slider__input:focus-visible) {
+    outline: 2px solid var(--w-accent);
+    outline-offset: 2px;
+  }
 }
 
 .wset-slider__value {
+  box-sizing: border-box;
+  display: flex;
   flex: none;
-  min-width: 56px;
+  align-items: center;
+  justify-content: center;
+  /* 为「2000 毫秒」预留宽度，跨位数时滑轨位置保持稳定。 */
+  width: max(64px, calc(4ch + 2em + 15px));
+  height: 24px;
+  padding: 0 6px;
+  border-radius: 7px;
+  background: var(--w-hover);
   color: var(--w-text);
   font-family: var(--w-num-font);
   font-size: 12.5px;
-  font-weight: 500;
+  font-weight: 600;
   font-variant-numeric: tabular-nums;
-  text-align: right;
   white-space: nowrap;
 }
 
 .wset-slider__suffix {
-  margin-left: 2px;
-  color: var(--w-text3);
+  margin-left: 3px;
+  color: var(--w-text2);
   font-size: 11px;
   font-weight: 400;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .wset-slider__input::-webkit-slider-thumb,
+  .wset-slider__input::-webkit-slider-thumb {
+    transition: none;
+  }
+
   .wset-slider__input::-moz-range-thumb {
     transition: none;
+  }
+}
+
+@media (forced-colors: active) {
+  .wset-slider {
+    --w-accent: Highlight;
+    --w-slider-fill: Highlight;
+    --w-track: GrayText;
+    --w-knob: ButtonFace;
+    border-color: ButtonText;
+  }
+
+  .wset-slider__input {
+    forced-color-adjust: none;
+  }
+
+  .wset-slider__input::-webkit-slider-thumb {
+    border-color: ButtonText;
+  }
+
+  .wset-slider__input::-moz-range-thumb {
+    border-color: ButtonText;
   }
 }
 
