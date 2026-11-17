@@ -24,16 +24,23 @@ html.island-settings {
   --w-stroke: rgba(255, 255, 255, 0.11);
   --w-card: rgba(255, 255, 255, 0.102);
   --w-track: rgba(255, 255, 255, 0.133);
+  /* 滑条未填充轨道：半透明白轨，macOS 深色模式原生滑条风格，与卡片材质融合，
+     配合滑条规则的 1px 内描边勾出轮廓；浅色 / 晴空 / 胭脂在各自主题块显式回退到
+     自身的 --w-track（主题块与根是同一元素，不覆写会直接继承这里的半透明白轨） */
+  --w-slider-track: rgba(255, 255, 255, 0.15);
   --w-knob: #ffffff;
-  --w-on: #3b82f6;
+  /* 低饱和雾蓝：与原亮蓝同亮度同色相、饱和度约减半，开关 / 主按钮不再刺眼 */
+  --w-on: #5288c8;
   --w-on-fg: #ffffff;
-  --w-on-soft: rgba(59, 130, 246, 0.165);
+  --w-on-soft: rgba(82, 136, 200, 0.18);
   --w-danger: #ff5a52;
   --w-danger-soft: rgba(255, 90, 82, 0.063);
-  --w-ok: #35c98e;
-  --w-ok-soft: rgba(53, 201, 142, 0.125);
-  --w-accent: #86b2f9;
-  --w-tag-soft: rgba(134, 178, 249, 0.125);
+  /* 状态绿去青提灰：色相从偏青的 160° 收到 ~140°，饱和度约减半 */
+  --w-ok: #86c99b;
+  --w-ok-soft: rgba(134, 201, 155, 0.125);
+  /* 滑条填充 / 强调：柔和雾蓝，与 --w-on 同色系 */
+  --w-accent: #8fb3d9;
+  --w-tag-soft: rgba(143, 179, 217, 0.13);
   --w-panel: rgb(36, 36, 40);
   --w-menu: rgb(36, 36, 40);
   /* 窗口描边：内圈 1px 亮边（255,255,255,60）+ 外圈 1px 暗线
@@ -43,8 +50,8 @@ html.island-settings {
   --w-rim-inset: inset 0 0 0 1px rgba(0, 0, 0, 0);
   --w-scroll: rgba(255, 255, 255, 0.25);
   --w-pop-shadow: 0 18px 48px rgba(0, 0, 0, 0.45);
-  --w-glow1: rgba(59, 130, 246, 0.17);
-  --w-glow2: rgba(59, 130, 246, 0.086);
+  --w-glow1: rgba(82, 136, 200, 0.17);
+  --w-glow2: rgba(82, 136, 200, 0.086);
 
   color-scheme: dark;
   height: 100%;
@@ -70,6 +77,8 @@ html.island-settings[data-wtheme="light"] {
   --w-stroke: rgba(16, 18, 24, 0.11);
   --w-card: rgba(15, 20, 30, 0.059);
   --w-track: rgba(0, 0, 0, 0.118);
+  /* 覆写根上的深色滑条轨道：浅底深轨对比已足够 */
+  --w-slider-track: var(--w-track);
   --w-knob: #ffffff;
   --w-on: #2f6fe0;
   --w-on-fg: #ffffff;
@@ -108,6 +117,8 @@ html.island-settings[data-wtheme="rouge"] {
   --w-stroke: rgba(255, 255, 255, 0.11);
   --w-card: rgba(255, 255, 255, 0.094);
   --w-track: rgba(255, 255, 255, 0.141);
+  /* 覆写根上的深色滑条轨道：14.1% 白轨在近黑面板上清晰可见 */
+  --w-slider-track: var(--w-track);
   --w-knob: #ffffff;
   --w-on: #ff7ca2;
   --w-on-fg: #000000;
@@ -144,6 +155,8 @@ html.island-settings[data-wtheme="sky"] {
   --w-stroke: rgba(12, 32, 56, 0.11);
   --w-card: rgba(255, 255, 255, 0.412);
   --w-track: rgba(12, 32, 56, 0.133);
+  /* 覆写根上的深色滑条轨道：浅底深轨对比已足够 */
+  --w-slider-track: var(--w-track);
   --w-knob: #ffffff;
   --w-on: #1667c9;
   --w-on-fg: #ffffff;
@@ -1013,20 +1026,27 @@ html.island-settings * {
   border-radius: 999px;
   appearance: none;
   -webkit-appearance: none;
+  /* WebKit 上 appearance:none 不清除 input 原生底槽色，须显式透明，
+     否则 Safari/WKWebView 会在细轨道下方画出更高的黑色胶囊底槽；Chromium 无此底槽 */
+  background: transparent;
   cursor: pointer;
   outline: none;
 }
 
-/* 4px 胶囊细轨道：已填充段用主题 accent（低饱和），未填充段用低调灰 */
+/* 4px 胶囊细轨道：已填充段用开关开启态同款主题蓝 --w-on，未填充段用半透明白的
+   --w-slider-track + 1px 内描边勾出轮廓，与卡片材质融合 */
 .wset-slider__input::-webkit-slider-runnable-track {
+  /* 部分 WebKit 版本伪元素也要显式脱离原生绘制，否则 track 仍带原生 groove 底色 */
+  -webkit-appearance: none;
   height: 4px;
   border-radius: 999px;
+  box-shadow: inset 0 0 0 1px var(--w-stroke);
   background: linear-gradient(
     to right,
-    var(--w-accent) 0%,
-    var(--w-accent) var(--w-slider-pct, 0%),
-    var(--w-track) var(--w-slider-pct, 0%),
-    var(--w-track) 100%
+    var(--w-on) 0%,
+    var(--w-on) var(--w-slider-pct, 0%),
+    var(--w-slider-track, var(--w-track)) var(--w-slider-pct, 0%),
+    var(--w-slider-track, var(--w-track)) 100%
   );
 }
 
@@ -1034,13 +1054,14 @@ html.island-settings * {
   height: 4px;
   border: 0;
   border-radius: 999px;
-  background: var(--w-track);
+  box-shadow: inset 0 0 0 1px var(--w-stroke);
+  background: var(--w-slider-track, var(--w-track));
 }
 
 .wset-slider__input::-moz-range-progress {
   height: 4px;
   border-radius: 999px;
-  background: var(--w-accent);
+  background: var(--w-on);
 }
 
 /* 浅色实心圆滑块：13px + 1px 半透明细边 + 轻阴影，hover/拖动平滑放大到 ~16px */

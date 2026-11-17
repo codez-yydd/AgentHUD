@@ -1160,18 +1160,22 @@ export default function IslandApp() {
     return () => unsubs.forEach((fn) => fn());
   }, []);
 
-  // 收起态把胶囊的实际矩形报给 Rust：macOS 上由 Rust 轮询光标判断悬停展开，
-  // Windows 可穿透钩子也用它做命中判定；用整扇窗（含透明边距）当热区会太灵敏，
-  // 所以以真实胶囊为准。
+  // 把 `.island`（本体）的实际矩形报给 Rust：收起态是胶囊外轮廓（macOS 悬停
+  // 展开热区 + Windows 可穿透钩子命中判定），展开态是面板主体（macOS 悬停
+  // 守护据此判「离开面板即收起」——若展开态不报，Rust 只能拿整扇 780×632
+  // 画布判定，鼠标必须移出整个画布才收缩，表现为面板外画布留白区迟迟不收）。
+  // Windows 穿透钩子的展开态命中走 Rust 侧 intercept_rect 的整窗分支，不受
+  // 这份上报影响。
   //
-  // 关键：`width/height` 有 440–500ms 过渡，收起刚开始时量到的是展开面板尺寸；
+  // 关键：`width/height` 有 440–500ms 过渡，收起/展开动画期间量到的是中间值；
   // 另外 clock/pet/music/activity 切换或未读角标变化都会改胶囊宽高。这里用
   // ResizeObserver 监听 `.island`，每次尺寸变化后等矩形连续 2 帧不动再上报，
   // 既避免动画中间值，也保证 P1-2：视图/角标尺寸变化后热区同步更新。
+  // （open 切换会重建 observer 并重新等稳定帧，动画收敛后自然换报新矩形；
+  // 期间 Rust 沿用上一次的矩形，clamp 后最坏整窗，与既有收起行为一致。）
   useEffect(() => {
     // 预览也跑：mock 命令是 no-op，但能用日志/尺寸验证 ResizeObserver 重报逻辑；
     // 真机上这条上报决定 macOS 悬停热区与 Windows 穿透钩子命中区域。
-    if (open) return;
     const element = islandRef.current;
     if (!element) return;
     let alive = true;

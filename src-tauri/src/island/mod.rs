@@ -29,6 +29,8 @@ pub mod clash;
 pub mod clipboard;
 pub mod live;
 pub mod lyrics;
+#[cfg(target_os = "macos")]
+mod mac_constrain;
 pub mod media;
 pub mod meeting;
 pub mod notify;
@@ -48,8 +50,8 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 use tauri::{
-    AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, WebviewUrl, WebviewWindow,
-    WebviewWindowBuilder,
+    AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, PhysicalPosition, WebviewUrl,
+    WebviewWindow, WebviewWindowBuilder,
 };
 
 use crate::webview_args::MergedRendererBuilder;
@@ -176,8 +178,9 @@ fn window_size_logical(_edge: &str) -> (f64, f64) {
 ///
 /// 收起动画刚开始时 `.island` 仍然带着展开时的尺寸（约 500×450），如果原样
 /// 采信，鼠标离胶囊还有几百 px 就会触发展开。裁进窗口后最坏情况也只是整扇
-/// 窗口大小，不会再“提前亮”。裁完太小（数据明显不对）返回 None，调用方回退
-/// 到整窗判定。
+/// 窗口大小，不会再“提前亮”。展开态同样适用：面板主体 640×≤492 本来就在
+/// 780×632 画布内，不会被截断；展开/收起动画期间的旧矩形也只是被裁回窗口
+/// 范围。裁完太小（数据明显不对）返回 None，调用方回退到整窗判定。
 fn clamp_hover_rect(rect: (f64, f64, f64, f64), edge: &str) -> Option<(f64, f64, f64, f64)> {
     let (cw, ch) = window_size_logical(edge);
     if !rect.0.is_finite() || !rect.1.is_finite() || !rect.2.is_finite() || !rect.3.is_finite() {
@@ -521,17 +524,16 @@ fn start_hover_watcher(app: AppHandle) {
                         pos.x, pos.y, size.width, size.height
                     );
                 }
-                // 展开态用整扇窗判定；收起态优先用前端上报的胶囊矩形，
-                // 没上报过就退回整扇窗（透明边距会略大一点）。
+                // 两种状态都优先用前端上报的本体矩形：收起态是胶囊外轮廓，
+                // 展开态是面板主体（前端展开/收起动画收敛后各报一次，见
+                // IslandApp 的 ResizeObserver 上报）。此前展开态写死整扇窗，
+                // macOS 上鼠标必须移出 780×632 画布才判「离开」，面板外、
+                // 画布内的留白区停留不收缩；Windows 靠前端 pointerleave
+                // 精确到面板边界，不走这里。没上报过（或数据裁完后无效）
+                // 才退回整扇窗。
                 let reported = hover_rect_slot().lock().ok().and_then(|g| *g);
-                let (rx, ry, rw, rh) = match (expanded, reported) {
-                    (true, _) | (false, None) => (
-                        pos.x as f64,
-                        pos.y as f64,
-                        size.width as f64,
-                        size.height as f64,
-                    ),
-                    (false, Some(rect)) => match clamp_hover_rect(rect, &cfg.edge) {
+                let (rx, ry, rw, rh) = match reported {
+                    Some(rect) => match clamp_hover_rect(rect, &cfg.edge) {
                         Some((x, y, w, h)) => (
                             pos.x as f64 + x * scale,
                             pos.y as f64 + y * scale,
@@ -543,6 +545,12 @@ fn start_hover_watcher(app: AppHandle) {
                             (pos.x as f64, pos.y as f64, cw * scale, ch * scale)
                         }
                     },
+                    None => (
+                        pos.x as f64,
+                        pos.y as f64,
+                        size.width as f64,
+                        size.height as f64,
+                    ),
                 };
                 let margin = if expanded { 6.0 } else { 2.0 };
                 let is_inside = cx >= rx - margin
@@ -671,7 +679,7 @@ fn left_button_down() -> bool {
 }
 
 // ============================================================
-// 透明留白穿透（Windows）
+// 透明留白穿透（Windows / macOS）
 // ============================================================
 
 /// 「这一刻是否要让灵动岛窗口对鼠标透明」——纯函数，单测覆盖。
@@ -684,7 +692,7 @@ fn left_button_down() -> bool {
 /// `menu_open`：收起态右键菜单打开期间返回 false（保持可交互）。菜单是绝对
 /// 定位浮层、位置在胶囊热区之外，照常判定会让它一画出来就点不动；菜单关闭后
 /// 调用方传 false，立即回到上面这套几何口径。
-#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+#[cfg_attr(not(any(target_os = "windows", target_os = "macos")), allow(dead_code))]
 fn should_mouse_through(
     window: (i32, i32, u32, u32),
     scale: f64,
@@ -866,6 +874,197 @@ fn start_mouse_through_watcher(app: AppHandle) {
                     Err(error) if debug => eprintln!("[zbar-island] mouse-through: {error}"),
                     _ => {}
                 }
+            }
+        })
+        .ok();
+}
+
+/// macOS 版透明留白穿透：光标落在「主体矩形 + 液脚」之外时给岛窗口开
+/// `setIgnoresMouseEvents:`，点击直接落到下层窗口；回到主体上立刻恢复可交互。
+///
+/// 为什么 mac 必须有（2025-11 命中测试诊断实证）：岛窗口 keep_on_top=true
+/// 出生即 `set_always_on_top`，落在置顶层（实测 level=5），而「灵动岛设置窗」
+/// 是普通层（level=0）。macOS 窗口服务器虽然会对「完全透明的像素」放行点击
+/// （windowNumberAtPoint 在岛画布右侧透明留白返回空），但展开面板玻璃卡、
+/// 折射底板乃至画布左缘的装饰像素都有非透明像素，展开态 780×632 画布与
+/// 设置窗重叠区（实测 780×610）里 5/5 采样点全部先命中岛窗口、岛
+/// contentView.hitTest 命中 WryWebView——设置窗的滑条/开关整块点不动。
+/// Windows 上同样的遮挡由上面 `start_mouse_through_watcher` 轮询切
+/// `WS_EX_TRANSPARENT` 解决；mac 此前没有对应实现，用户报告的
+/// 「设置窗控件无法操控」就是这个缺口（收起态 + 命令式开窗的测试路径
+/// 重叠面积小，之前没暴露）。
+///
+/// 与 Windows 版语义逐条对齐：
+/// - 16ms 一拍；移出主体连续两拍才穿透（快速掠过留白不闪），移入立刻恢复；
+/// - 判定复用 [`should_mouse_through`]（窗口物理 rect + scale + 主体矩形 +
+///   光标物理 + menu_open），拖拽会话 / 左键按住 / 右键菜单期间一律不切换；
+/// - `cfg.passthrough`（显式可穿透）期间跳过自动判定。差异：Windows 把窗口
+///   样式交还给 passthrough 模块的钩子接管，mac 没有显式穿透实现
+///   （`passthrough::imp` 非 Windows 是空实现），所以这里把窗口恢复成可交互，
+///   保持 mac 上「显式穿透什么都不做」的既有行为；
+/// - 句柄每拍经 `get_webview_window` 重取，对齐 Windows 版 IsWindow 失效
+///   重解析语义：岛开关 / 窗口重建后无需特殊处理。
+///
+/// 线程模型（与 Windows 版的根本差异）：NSWindow 只允许主线程碰，且 tao 的
+/// outer_position / is_visible / scale_factor 都是主线程同步往返——16ms 一拍
+/// 地调会把事件循环吵死（见 top_popup_visible 的注释）。所以 worker 每拍只
+/// 采集无 UI 的判定输入（光标 / 主体矩形 / 配置 / 拖拽会话），随后投递**一次**
+/// `run_on_main_thread`，读 frame / isVisible / 判定 / 切换全在闭包里完成。
+///
+/// 混合 DPI 说明：光标按所在屏 scale、窗口按所在屏 backingScale 各自换算成
+/// 物理像素后再比较——跨屏时两个「物理空间」密度不同，与悬停守护
+/// （start_hover_watcher）的既有口径一致，macOS 的窗口几何 API 本来就按屏
+/// 各自缩放，多屏同缩放比的主流场景下无差异。
+#[cfg(target_os = "macos")]
+fn start_mouse_through_watcher(app: AppHandle) {
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicU8;
+
+    static STARTED: AtomicBool = AtomicBool::new(false);
+    if STARTED.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    // 与 Windows 版同一节奏：移开就能点到下面的应用，移回胶囊也能立刻恢复。
+    const TICK_MS: u64 = 16;
+    // 「连续两拍在外」才真正穿透（Windows 版 outside_ticks >= 2 的两拍语义）。
+    const OUTSIDE_TICKS_TO_THROUGH: u8 = 2;
+
+    let outside_ticks = Arc::new(AtomicU8::new(0));
+    // 当前已应用到 NSWindow 的状态：只在变化时才发 setIgnoresMouseEvents，
+    // 避免每拍打扰 AppKit（Windows 版由 set_automatic_mouse_through 内部做
+    // 同样的无变化短路）。
+    let applied = Arc::new(AtomicBool::new(false));
+
+    thread::Builder::new()
+        .name("zbar-island-passthrough-mac".into())
+        .spawn(move || {
+            let debug = std::env::var_os("ZBAR_ISLAND_DEBUG").is_some();
+            loop {
+                thread::sleep(Duration::from_millis(TICK_MS));
+
+                let cfg = load_config();
+                if !cfg.enabled {
+                    outside_ticks.store(0, Ordering::Relaxed);
+                    continue;
+                }
+                let passthrough_on = cfg.passthrough;
+                let dragging = drag_slot()
+                    .lock()
+                    .map(|slot| slot.is_some())
+                    .unwrap_or(false);
+                let mouse_down = left_button_down();
+                // 只按不拖的点击也会建立会话，但前端在 begin 回执前松手时
+                // 可能来不及调用 drag_step/end。兜底清掉「已松手且从未越过
+                // 阈值」的会话；已经 started 的真拖拽必须留给 island_drag_end
+                // 做吸附落盘（与 Windows 版同一段逻辑）。
+                if dragging && !mouse_down {
+                    if let Ok(mut slot) = drag_slot().lock() {
+                        if slot.as_ref().map(|s| !s.started).unwrap_or(false) {
+                            *slot = None;
+                        }
+                    }
+                }
+                let Some(cursor) = cursor_physical(&app) else {
+                    continue;
+                };
+                // 主体矩形（画布本地逻辑 px）：收起/展开同一套规则，外面穿透。
+                let body = current_body_rect();
+                // 收起态右键菜单打开期间不穿透：菜单浮层在胶囊热区之外，
+                // 照常判定会把岛切成穿透、菜单点不动（should_mouse_through
+                // 的 menu_open 参数处理；菜单一关，下一拍回到矩形判定）。
+                let menu_open = CONTEXT_MENU_OPEN.load(Ordering::Relaxed);
+
+                let app_main = app.clone();
+                let outside_ticks = Arc::clone(&outside_ticks);
+                let applied = Arc::clone(&applied);
+                // NSWindow 操作必须主线程；判定 + 切换在闭包内一气呵成。
+                let _ = app.run_on_main_thread(move || {
+                    use objc2_app_kit::{NSScreen, NSWindow};
+                    use objc2_foundation::MainThreadMarker;
+
+                    // 每拍重取窗口：岛开关 / 重建间隙在这里收敛（对齐 Windows
+                    // 版 IsWindow 失效重取语义），不存在过期句柄。
+                    let Some(win) = app_main.get_webview_window(ISLAND_WINDOW_LABEL) else {
+                        applied.store(false, Ordering::Relaxed);
+                        outside_ticks.store(0, Ordering::Relaxed);
+                        return;
+                    };
+                    let Ok(ns_window) = win.ns_window() else {
+                        return;
+                    };
+                    let mtm = unsafe { MainThreadMarker::new_unchecked() };
+                    let ns: &NSWindow = unsafe { &*ns_window.cast::<NSWindow>() };
+                    if !ns.isVisible() {
+                        // 隐藏期间不动样式，但要把「已应用」标记清零：重新显示
+                        //（或窗口重建后换新 NSWindow，默认可交互）的下一拍必然
+                        // 重新下发一次 setIgnoresMouseEvents，不会因 applied 残留
+                        // true 而跳过、留下状态失步的窗口。
+                        applied.store(false, Ordering::Relaxed);
+                        return;
+                    }
+                    // 显式可穿透期间跳过自动判定：mac 没有显式穿透实现，等价
+                    // 于把窗口恢复成可交互（Windows 版此分支由 passthrough
+                    // 模块接管窗口样式，故无需恢复）。
+                    if passthrough_on {
+                        if applied.swap(false, Ordering::Relaxed) {
+                            ns.setIgnoresMouseEvents(false);
+                        }
+                        outside_ticks.store(0, Ordering::Relaxed);
+                        return;
+                    }
+
+                    // NSWindow frame 是 Cocoa 点（全局坐标系原点在主屏左下、
+                    // y 向上）；should_mouse_through 收「点×scale」的物理像素
+                    //（顶左原点、y 向下，与 tao outer_position 同口径）。换算：
+                    // 横向同值，纵向翻转需扣掉主屏高度——全局 NS 坐标系以主屏
+                    // 左下为原点，(main_h - y - h) 即窗口顶边到主屏顶部的距离。
+                    let frame = ns.frame();
+                    let scale = ns
+                        .screen()
+                        .map(|screen| screen.backingScaleFactor())
+                        .or_else(|| {
+                            NSScreen::mainScreen(mtm).map(|screen| screen.backingScaleFactor())
+                        })
+                        .unwrap_or(1.0);
+                    if !scale.is_finite() || scale <= 0.0 {
+                        return;
+                    }
+                    let main_h = NSScreen::mainScreen(mtm)
+                        .map(|screen| screen.frame().size.height)
+                        .unwrap_or(0.0);
+                    let rect = (
+                        (frame.origin.x * scale).round() as i32,
+                        ((main_h - frame.origin.y - frame.size.height) * scale).round() as i32,
+                        (frame.size.width * scale).round() as u32,
+                        (frame.size.height * scale).round() as u32,
+                    );
+                    // 拖拽期间保持可交互：拖拽由 Rust 轮询光标推进，但松手和
+                    // 点击语义还留在窗口上，中间切成穿透会丢 pointerup（与
+                    // Windows 版一致）。
+                    let outside = !dragging
+                        && !mouse_down
+                        && should_mouse_through(rect, scale, Some(body), cursor, menu_open);
+
+                    // 移进主体：立刻恢复可交互（宁可慢一拍穿透，也不能让用户
+                    // 点胶囊时把点击漏给下面的应用）；移出连续两拍才穿透。
+                    let ticks = if outside {
+                        let next = outside_ticks.load(Ordering::Relaxed).saturating_add(1);
+                        outside_ticks.store(next, Ordering::Relaxed);
+                        next
+                    } else {
+                        outside_ticks.store(0, Ordering::Relaxed);
+                        0
+                    };
+                    let want = outside && ticks >= OUTSIDE_TICKS_TO_THROUGH;
+                    let current = applied.load(Ordering::Relaxed);
+                    if want != current {
+                        ns.setIgnoresMouseEvents(want);
+                        applied.store(want, Ordering::Relaxed);
+                        if debug {
+                            eprintln!("[zbar-island] mouse-through {want}");
+                        }
+                    }
+                });
             }
         })
         .ok();
@@ -2597,6 +2796,19 @@ pub fn ensure_window(app: &AppHandle) -> Result<WebviewWindow, String> {
         let _ = win.show();
         win
     };
+    // macOS：让岛窗口的 constrainFrameRect:toScreen: 不再钳制 frame，否则贴顶
+    // 吸附时 NSWindow 默认会把越出屏幕顶的窗口钳回 visibleFrame 内，主体整体
+    // 下移约 70 点（见 mac_constrain 模块注释，含为何不用 isa-swizzle 的原因）。
+    // 建窗时 builder.position 走默认钳制，安装后必须重新 set_position 才能让
+    // 越界位置生效。必须在主线程执行（ensure_window 走建窗铁律，调用点均在主线程）。
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(ns_window) = win.ns_window() {
+            mac_constrain::install_no_clamp(ns_window);
+            // 安装后原位置已被默认钳制，按 anchored 几何重新落位。
+            let _ = win.set_position(LogicalPosition::new(x, y));
+        }
+    }
     // 窗口创建时已按配置选定置顶层级，此处同步截图排除等窗口属性。
     let _ = apply_window_flags_on_main(app, &cfg);
     Ok(win)
@@ -2813,6 +3025,11 @@ fn start_services(app: &AppHandle) {
     passthrough::start(app.clone());
     // 透明留白穿透：不启动的话胶囊四周那圈透明像素会吃掉下面的点击
     #[cfg(target_os = "windows")]
+    start_mouse_through_watcher(app.clone());
+    // macOS 同样需要：岛窗口出生即置顶层，展开态画布与设置窗等普通层窗口
+    // 重叠时，画布上的非透明像素会整块吃掉重叠区点击（Windows 有上面的
+    // watcher 兜着，mac 此前没有对应实现——设置窗控件点不动就是它）。
+    #[cfg(target_os = "macos")]
     start_mouse_through_watcher(app.clone());
     // 额度复用 hud_bar 数据线程；start_feed 幂等，首次会立即推送一拍。
     crate::hud_bar::start_feed(app.clone());
@@ -4811,5 +5028,12 @@ mod tests {
         );
         assert_eq!(clamp_hover_rect((900.0, 70.0, 100.0, 54.0), "top"), None);
         assert_eq!(clamp_hover_rect((f64::NAN, 70.0, 300.0, 54.0), "top"), None);
+        // 展开态面板主体 640×492、横向含 13px×2 液脚外扩 = 666×492，贴顶居中
+        // （(780-666)/2=57）时完全在画布内，不得被截断——展开态判定现在也
+        // 采信上报矩形，截断会造成面板边缘误判「离开」
+        assert_eq!(
+            clamp_hover_rect((57.0, 0.0, 666.0, 492.0), "top"),
+            Some((57.0, 0.0, 666.0, 492.0))
+        );
     }
 }
