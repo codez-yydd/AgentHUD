@@ -67,6 +67,11 @@ pub struct ProviderQuotaBalance {
     /// 累计充值
     #[serde(skip_serializing_if = "Option::is_none")]
     pub topped_up: Option<f64>,
+    /// 累计消费（DSH 本地登录通路有值）
+    /// Option 缺省字段配合 skip_serializing_if：旧额度快照历史反序列化时该字段
+    /// 缺失会自然取 None，序列化时 None 不出键，对历史快照向后兼容，无需数据迁移。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total_cost: Option<f64>,
 }
 
 /// 单条凭证的额度展示条目。
@@ -200,15 +205,32 @@ pub(crate) fn query_provider_quota(
     // minimax 自合并 MiniMax Code 后也是混合型：不仅凭证可查，MiniMax Code 的
     // 本地 OAuth 登录态同样能问同一个开放平台端点（实测），故无凭证时也要进
     // 分发走本地登录回退；
+    // deepseek 自此也是混合型：API Key 凭证优先，无凭证时回退 DSH 本地登录态
+    //（平台 grant token 走 platform get_user_summary，实测可用，见 deepseek.rs），
+    // 故无凭证时同样要进分发；
     // 其余凭证型 provider 无凭证时早返回（行为不变）
-    if provider != "grok" && provider != "opencodego" && provider != "minimax" && snapshots.is_empty()
+    if provider != "grok"
+        && provider != "opencodego"
+        && provider != "minimax"
+        && provider != "deepseek"
+        && snapshots.is_empty()
     {
         return Ok(vec![]);
     }
     // 2. 按 provider 分发（其余 provider 尚未接入：空数组，前端显示接入提示）
     let entries = match provider {
         "moonshot" => crate::moonshot::fetch_quota_entries(&snapshots),
-        "deepseek" => crate::deepseek::fetch_quota_entries(&snapshots),
+        // DeepSeek 混合型：配了 API Key 凭证时按凭证查（官方口径，与原来完全
+        // 一致）；一条凭证都没有时才回退 DSH 本地登录态——实测平台 grant token
+        // 走 platform get_user_summary 能查到充值/赠送余额。凭证优先，绝不与
+        // 本地条目叠加同一账号（对齐 minimax 先例）。
+        "deepseek" => {
+            let mut entries = crate::deepseek::fetch_quota_entries(&snapshots);
+            if entries.is_empty() {
+                entries.extend(crate::deepseek::fetch_local_login_entry());
+            }
+            entries
+        }
         // MiniMax 混合型：配了 Coding Plan 凭证时按凭证查（官方口径，与原来完全
         // 一致）；一条凭证都没有时才回退 MiniMax Code 的本地 OAuth 登录态——
         // 实测该 token 被同一个开放平台端点接受，账号没有生效订阅时产出一条
@@ -343,6 +365,7 @@ mod tests {
                 currency: "CNY".into(),
                 granted: Some(10.0),
                 topped_up: Some(100.0),
+                total_cost: None,
             }),
             plan_name: None,
             message: None,

@@ -1306,8 +1306,197 @@ fn screen_windows(monitor: &ShotMonitor, image_w: u32, image_h: u32) -> Vec<Shot
     out
 }
 
-/// 非 macOS 暂不枚举窗口（Windows 的"窗口"入口还是抓当前活动窗口）。
-#[cfg(not(target_os = "macos"))]
+/// Windows：取窗口所属进程的 exe 文件名（去掉 .exe 后缀）作为应用名。
+/// 取 pid / 打开进程 / 查询镜像路径任一步失败，统一回退字符串 "窗口"。
+#[cfg(target_os = "windows")]
+fn window_app_name(hwnd: windows::Win32::Foundation::HWND) -> String {
+    use windows::core::PWSTR;
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Threading::{
+        OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
+        PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId;
+
+    let mut pid = 0u32;
+    unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid)) };
+    if pid == 0 {
+        return "窗口".into();
+    }
+    let Ok(process) = (unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) }) else {
+        return "窗口".into();
+    };
+    let mut buffer = vec![0u16; 1024];
+    let mut len = buffer.len() as u32;
+    let result = unsafe {
+        let result = QueryFullProcessImageNameW(
+            process,
+            PROCESS_NAME_WIN32,
+            PWSTR(buffer.as_mut_ptr()),
+            &mut len,
+        );
+        let _ = CloseHandle(process);
+        result
+    };
+    if result.is_err() || len == 0 || len as usize > buffer.len() {
+        return "窗口".into();
+    }
+    let path = String::from_utf16_lossy(&buffer[..len as usize]);
+    // 只取路径最后一段（两种分隔符都兼容）。
+    let file = path.rsplit(|c| c == '\\' || c == '/').next().unwrap_or("");
+    // 去掉 .exe 后缀（大小写不敏感）。
+    let stem = if file.len() >= 4 && file[file.len() - 4..].eq_ignore_ascii_case(".exe") {
+        &file[..file.len() - 4]
+    } else {
+        file
+    };
+    if stem.is_empty() {
+        "窗口".into()
+    } else {
+        stem.to_string()
+    }
+}
+
+/// 把系统窗口换算到抓屏图上，并裁掉屏幕外的部分。
+///
+/// Windows 抓屏是显示器物理像素 1:1（没有 macOS 那种 Retina 缩放），
+/// `monitor.scale_factor` 不参与换算，窗口坐标直接减显示器原点即可。
+/// `EnumWindows` 的枚举顺序是 Z 序（从最前到最后面），前端命中测试取第一个
+/// 包含鼠标点的窗口即可，与 macOS 版"最前到最后面"的约定一致。
+///
+/// 与 macOS 不同，这里不过滤自家进程：用户要能悬停高亮并点选自己的软件，
+/// 可见的 dashboard 主窗口、设置窗、贴图会自然进列表（隐藏的覆盖层/通知浮窗
+/// 已被可见性过滤）。灵动岛是 topmost、Z 序靠前，单独处理：它窗口是 780×632
+/// 固定画布、四周透明留白，直接用窗口 bounds 会有一大块看不见的命中矩形，
+/// 所以改用 `island_body_pick_rect()` 给出的主体视觉矩形。
+#[cfg(target_os = "windows")]
+fn screen_windows(monitor: &ShotMonitor, image_w: u32, image_h: u32) -> Vec<ShotWindow> {
+    use std::ffi::c_void;
+    use windows::core::BOOL;
+    use windows::Win32::Foundation::{LPARAM, TRUE, HWND};
+    use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_CLOAKED};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        EnumWindows, GetWindowLongPtrW, GetWindowTextLengthW, IsIconic, IsWindowVisible,
+        GWL_EXSTYLE, WS_EX_TOOLWINDOW,
+    };
+
+    struct State {
+        mon_x: i32,
+        mon_y: i32,
+        image_w: u32,
+        image_h: u32,
+        out: Vec<ShotWindow>,
+    }
+
+    unsafe extern "system" fn enum_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
+        let state = &mut *(lparam.0 as *mut State);
+        unsafe {
+            // 不可见、最小化的窗口不要。
+            if !IsWindowVisible(hwnd).as_bool() || IsIconic(hwnd).as_bool() {
+                return TRUE;
+            }
+
+            // 灵动岛单独处理：它是自己的窗口，但画布四周是透明留白，不能用
+            // 窗口 bounds 命中。改用主体视觉矩形（物理像素），走与下面相同的
+            // 「减显示器原点 + 裁剪到图内 + 可见部分过小跳过」换算。
+            if crate::island::passthrough::cached_island_hwnd() == Some(hwnd.0 as isize) {
+                if let Some((ix, iy, iw, ih)) = crate::island::island_body_pick_rect() {
+                    let x = ix - state.mon_x as f64;
+                    let y = iy - state.mon_y as f64;
+                    let left = x.max(0.0);
+                    let top = y.max(0.0);
+                    let right = (x + iw).min(state.image_w as f64);
+                    let bottom = (y + ih).min(state.image_h as f64);
+                    if right - left >= 16.0 && bottom - top >= 16.0 {
+                        state.out.push(ShotWindow {
+                            x: left.round(),
+                            y: top.round(),
+                            width: (right - left).round(),
+                            height: (bottom - top).round(),
+                            app: "AgentHUD".into(),
+                            title: "灵动岛".into(),
+                        });
+                    }
+                }
+                // 岛已按主体矩形处理（无有效矩形则跳过），不再走常规过滤。
+                return TRUE;
+            }
+
+            // 自家其它窗口（dashboard / 设置 / 贴图等）不排除：用户要能截自己的
+            // 软件，可见的会自然进列表；被隐藏的已被上面的可见性过滤掉。
+            // 无标题的窗口（任务栏、浮条等）不要。
+            if GetWindowTextLengthW(hwnd) <= 0 {
+                return TRUE;
+            }
+            // 工具窗口样式通常是任务栏通知区 / 浮条，排除。
+            let ex_style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as u32;
+            if ex_style & WS_EX_TOOLWINDOW.0 != 0 {
+                return TRUE;
+            }
+            // 被 cloak 的窗口（UWP / 虚拟桌面等）虽然 IsWindowVisible 为真但不可见，
+            // 排除；查询失败则当作未 cloak，正常参与枚举。
+            let mut cloaked = 0u32;
+            let is_cloaked = DwmGetWindowAttribute(
+                hwnd,
+                DWMWA_CLOAKED,
+                &mut cloaked as *mut _ as *mut c_void,
+                std::mem::size_of::<u32>() as u32,
+            )
+            .is_ok()
+                && cloaked != 0;
+            if is_cloaked {
+                return TRUE;
+            }
+            // 物理像素尺寸，过小的窗口不要。
+            let Some((wx, wy, w, h)) = window_bounds(hwnd) else {
+                return TRUE;
+            };
+            if w < 24 || h < 24 {
+                return TRUE;
+            }
+
+            // 1:1 物理像素：直接减去显示器原点，再裁剪到抓屏图范围。
+            let x = wx - state.mon_x;
+            let y = wy - state.mon_y;
+            let left = x.max(0);
+            let top = y.max(0);
+            let right = (x + w as i32).min(state.image_w as i32);
+            let bottom = (y + h as i32).min(state.image_h as i32);
+            // 屏幕上可见部分过小则跳过（与 macOS 版 16px 阈值一致）。
+            if right - left < 16 || bottom - top < 16 {
+                return TRUE;
+            }
+
+            state.out.push(ShotWindow {
+                x: left as f64,
+                y: top as f64,
+                width: (right - left) as f64,
+                height: (bottom - top) as f64,
+                app: window_app_name(hwnd),
+                title: window_title(hwnd),
+            });
+        }
+        TRUE
+    }
+
+    let mut state = State {
+        mon_x: monitor.x,
+        mon_y: monitor.y,
+        image_w,
+        image_h,
+        out: Vec::new(),
+    };
+    unsafe {
+        let _ = EnumWindows(
+            Some(enum_proc),
+            LPARAM(&mut state as *mut State as *mut c_void as isize),
+        );
+    }
+    state.out
+}
+
+/// 其它平台暂不枚举窗口（Windows 与 macOS 各自有实现）。
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
 fn screen_windows(_monitor: &ShotMonitor, _image_w: u32, _image_h: u32) -> Vec<ShotWindow> {
     Vec::new()
 }

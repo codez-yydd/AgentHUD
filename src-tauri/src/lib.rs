@@ -3678,6 +3678,8 @@ pub fn run() {
             get_kimi_debug,
             get_dsh_usage,
             get_dsh_debug,
+            // App 层 deepseek presence 探测：本地 DSH 平台登录态（grant）是否存在
+            dsh::has_dsh_platform_grant,
             get_opencode_usage,
             get_opencode_debug,
             get_minimaxcode_usage,
@@ -3988,8 +3990,14 @@ pub fn run() {
             island::meeting::meeting_settings,
             island::meeting::meeting_set_auto_gain
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while running tauri application")
+        .run(|_app, event| {
+            if let tauri::RunEvent::Exit = event {
+                // 退出时恢复恒等渐变，避免屏幕停留在暗的软件调光状态
+                crate::island::system::restore_gamma();
+            }
+        });
 }
 
 #[cfg(test)]

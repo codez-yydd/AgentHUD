@@ -172,8 +172,8 @@ export function ProviderAccountsSection({
               上方——旧数据照常展示，但用户必须知道它已不再新鲜。kimi / dsh
               的额度卡只在本区渲染（renderQuotaCards），错误卡同样只在这里出
               现（opencodego / minimax 的额度块在面板顶部已渲染，本区不重复）。
-              凭证文件损坏时本卡内嵌「重置凭证文件」自愈入口（见组件注释） */
-          renderQuotaCards && (
+              凭证文件损坏时本卡内嵌「重置凭证文件」自愈入口（见组件注释） */}
+          {renderQuotaCards && (
             <ProviderQuotaErrorBanner
               provider={provider}
               className="mt-1.5"

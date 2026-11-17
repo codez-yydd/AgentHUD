@@ -5,7 +5,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { onEvent } from "../../../island/api";
 import {
   getSettingsDoc,
-  reloadSettings,
   saveSettings,
   type SettingsDoc,
   type SettingsSaveResult,
@@ -55,11 +54,8 @@ export interface SettingsDraft {
   save: () => Promise<boolean>;
   /** 冲刷尚未到期的防抖保存（关窗 / 卸载前尽力调用一次） */
   flushPendingSave: () => void;
-  reload: () => Promise<void>;
   /** 初次读取失败后的重试（重新读 island_settings_doc） */
   retry: () => Promise<void>;
-  /** 放弃未保存的修改：草稿回到 snapshot（高级页重载确认框用） */
-  discard: () => void;
 }
 
 /** 深拷贝（文档里全是 JSON 值） */
@@ -220,7 +216,7 @@ export function useSettingsDraft(): SettingsDraft {
 
   /** 用一份 doc payload 重建 baseline；external=外部事件静默刷新，不动状态栏 */
   const applyPayload = useCallback(
-    (payload: SettingsDoc, reason: "load" | "reload" | "external") => {
+    (payload: SettingsDoc, reason: "load" | "external") => {
       const nextSnapshot = flatten(payload.data ?? {});
       const nextDefaults = flatten(payload.defaults ?? {});
       commitSnapshot(nextSnapshot);
@@ -237,12 +233,8 @@ export function useSettingsDraft(): SettingsDraft {
       }
       stickyRef.current = null;
       setStatusState({ text: DEFAULT_STATUS_TEXT, role: "hint" });
-      if (reason === "reload") {
-        // 手动重载：明确告诉用户草稿已被磁盘内容替换
-        setStatus("已重新读取设置", "ok", true);
-      }
     },
-    [commitDraft, commitSnapshot, setStatus]
+    [commitDraft, commitSnapshot]
   );
 
   /** 首帧 / 重试：读 island_settings_doc */
@@ -407,26 +399,6 @@ export function useSettingsDraft(): SettingsDraft {
   // 防抖回调到点时才读最新 save（save 定义依赖 validate / commit，引用稳定但避免闭包隐患）
   saveRef.current = save;
 
-  /** 手动重读文件（有脏值时仍然覆盖草稿，调用方负责确认） */
-  const reload = useCallback(async () => {
-    try {
-      const payload = await reloadSettings();
-      if (!aliveRef.current) return;
-      applyPayload(payload, "reload");
-    } catch (error) {
-      setStatus(`重新读取失败：${errorText(error)}`, "danger", true);
-    }
-  }, [applyPayload, setStatus]);
-
-  /** 放弃未保存的修改：草稿回到最后一次保存 / 读取的基准 */
-  const discard = useCallback(() => {
-    clearAutoSaveTimer();
-    commitDraft({ ...snapshotRef.current });
-    setErrors({});
-    stickyRef.current = null;
-    setStatusState({ text: DEFAULT_STATUS_TEXT, role: "hint" });
-  }, [clearAutoSaveTimer, commitDraft]);
-
   return {
     loading,
     loadError,
@@ -451,8 +423,6 @@ export function useSettingsDraft(): SettingsDraft {
     validate,
     save,
     flushPendingSave,
-    reload,
     retry: load,
-    discard,
   };
 }

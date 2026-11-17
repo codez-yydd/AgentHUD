@@ -103,6 +103,8 @@ interface HudBarBalance {
   currency: string;
   granted?: number;
   toppedUp?: number;
+  /** 累计消费（DSH 本地登录通路有值，随 Rust 事件整体透传） */
+  totalCost?: number;
 }
 
 /** 单个 Agent 条目（source 与图标键一致；plan 为后端可选下发的套餐名） */
@@ -385,6 +387,8 @@ interface Msg {
   balance: string;
   granted: string;
   toppedUp: string;
+  /** 累计消费（DSH 本地登录条目有值） */
+  totalCost: string;
   /** 余额型条目的副标题（替代"订阅额度与用量"） */
   balanceSubtitle: string;
   /** 已开启但没有配置 DeepSeek Key 时的提示 */
@@ -430,6 +434,7 @@ const MESSAGES: Record<"zh" | "en", Msg> = {
     balance: "官方余额",
     granted: "赠送",
     toppedUp: "充值",
+    totalCost: "累计消费",
     balanceSubtitle: "DeepSeek 官方余额与用量",
     balanceHint: "未配置 DeepSeek API Key，在主窗口 DSH 面板里添加后自动显示余额",
     rowTitle: (label, used, remain, reset) =>
@@ -466,6 +471,7 @@ const MESSAGES: Record<"zh" | "en", Msg> = {
     balance: "Balance",
     granted: "Granted",
     toppedUp: "Top-up",
+    totalCost: "Spent",
     balanceSubtitle: "DeepSeek balance & usage",
     balanceHint: "No DeepSeek API key yet. Add one in the DSH panel to show the balance.",
     rowTitle: (label, used, remain, reset) =>
@@ -592,11 +598,14 @@ function appendBalanceRow(
   head.append(label, value);
   wrap.appendChild(head);
   const parts: string[] = [];
+  if (balance.toppedUp != null) {
+    parts.push(`${t.toppedUp} ${fmtMoneyFull(balance.toppedUp, balance.currency)}`);
+  }
   if (balance.granted != null) {
     parts.push(`${t.granted} ${fmtMoneyFull(balance.granted, balance.currency)}`);
   }
-  if (balance.toppedUp != null) {
-    parts.push(`${t.toppedUp} ${fmtMoneyFull(balance.toppedUp, balance.currency)}`);
+  if (balance.totalCost != null) {
+    parts.push(`${t.totalCost} ${fmtMoneyFull(balance.totalCost, balance.currency)}`);
   }
   if (parts.length > 0) {
     const sub = document.createElement("div");

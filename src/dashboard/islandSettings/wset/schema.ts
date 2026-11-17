@@ -6,7 +6,7 @@ import { NOTIFY_MODULE_KEYS } from "../../../island/notifyBrand";
 
 export { NOTIFY_MODULE_KEYS };
 
-/** 14 个导航页（顺序即侧栏顺序，文案固定） */
+/** 13 个导航页（顺序即侧栏顺序，文案固定） */
 export type PageKey =
   | "look"
   | "order"
@@ -20,7 +20,6 @@ export type PageKey =
   | "live"
   | "launcher"
   | "system"
-  | "advanced"
   | "about";
 
 export interface PageMeta {
@@ -90,11 +89,6 @@ export const PAGES: PageMeta[] = [
     key: "system",
     title: "系统与控制",
     desc: "Clash Verge 与亮度控制（Twinkle）的本地路径。",
-  },
-  {
-    key: "advanced",
-    title: "高级",
-    desc: "配置文件的位置、导入导出，以及恢复默认设置。",
   },
   {
     key: "about",
@@ -224,7 +218,6 @@ export const PAGE_FIELDS: Record<PageKey, string[]> = {
   ],
   launcher: ["clipboard.max", "launcher"],
   system: ["clash.config_dir", "clash.proxy_port", "clash.app", "brightness.twinkle"],
-  advanced: [],
   about: [],
 };
 

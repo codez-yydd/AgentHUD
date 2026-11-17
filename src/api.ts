@@ -1134,6 +1134,12 @@ export async function hasProviderCredentials(
   return invoke<boolean>("has_provider_credentials", { provider });
 }
 
+/** 本机是否存有 DSH「DeepSeek 平台账号」登录态（本地 grant，纯文件读）。
+ *  App 层 deepseek presence 特判用：无 API Key 但有本地登录态时也要拉取余额。 */
+export async function hasDshPlatformGrant(): Promise<boolean> {
+  return invoke<boolean>("has_dsh_platform_grant");
+}
+
 // ===== 通用 provider 额度查询（Rust provider_quota 模块，余额型 provider）=====
 
 /** 查询某 provider 全部凭证的额度（每条凭证一个条目；单凭证失败以

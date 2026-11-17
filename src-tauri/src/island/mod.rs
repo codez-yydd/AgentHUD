@@ -2492,6 +2492,44 @@ fn current_body_rect() -> (f64, f64, f64, f64) {
     body_local_rect(&cfg.edge, w, h)
 }
 
+/// 截图选窗用：岛「主体视觉矩形」的屏幕物理坐标 (x, y, w, h)。
+///
+/// 岛窗口是 780×632 的固定画布，胶囊四周是透明留白；直接拿窗口 bounds 会让
+/// 一大块看不见的区域也能命中。这里按与 `should_mouse_through` 相同的口径，
+/// 只取主体矩形（外扩液脚 13px）换算成物理像素：scale 用窗口物理宽 / 780 推出，
+/// 不触碰 tauri 的同步 IPC。句柄缓存无效、窗口尺寸异常或 scale 不合理时返回 None。
+#[cfg(target_os = "windows")]
+pub(crate) fn island_body_pick_rect() -> Option<(f64, f64, f64, f64)> {
+    use windows::Win32::Foundation::RECT;
+    use windows::Win32::UI::WindowsAndMessaging::GetWindowRect;
+
+    let raw_hwnd = passthrough::cached_island_hwnd()?;
+    let hwnd = windows::Win32::Foundation::HWND(raw_hwnd as *mut core::ffi::c_void);
+    let mut rect = RECT::default();
+    unsafe { GetWindowRect(hwnd, &mut rect) }.ok()?;
+    let wx = rect.left as f64;
+    let wy = rect.top as f64;
+    let ww = (rect.right - rect.left).max(0) as u32;
+    // 窗口尺寸异常（窗口重建/拖拽中）就不给命中矩形，避免误选。
+    if ww < 100 {
+        return None;
+    }
+    let scale = ww as f64 / ISLAND_WINDOW_W;
+    if !scale.is_finite() || !(0.5..=4.0).contains(&scale) {
+        return None;
+    }
+    let (rx, ry, rw, rh) = current_body_rect();
+    if !rx.is_finite() || !ry.is_finite() || !rw.is_finite() || !rh.is_finite() || rw < 1.0 || rh < 1.0 {
+        return None;
+    }
+    // 液脚（13px）也算岛的一部分，与穿透判定的几何口径一致。
+    let x = wx + (rx - BODY_FILLET) * scale;
+    let y = wy + (ry - BODY_FILLET) * scale;
+    let width = (rw + BODY_FILLET * 2.0) * scale;
+    let height = (rh + BODY_FILLET * 2.0) * scale;
+    Some((x, y, width, height))
+}
+
 /// 灵动岛窗口几何（逻辑 px）：**固定 780×632**，位置由边/pos_frac 决定。
 /// 开合/切页/主体尺寸变化都不改窗口（`expanded` 只为兼容旧调用点，忽略）。
 fn island_geometry(

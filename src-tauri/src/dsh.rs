@@ -36,14 +36,19 @@
 //! **真生成速度**（`SpeedQuality::Generation`，前端不带 ≈ 前缀），且**有真实
 //! TTFT**——这两点是 claude/kimi 导入库给不出的（它们的 jsonl 只有请求总耗时）。
 //!
-//! **无订阅额度（刻意不提供，别再来加）**：DSH 把 DeepSeek 平台账号登录态存在
-//! `~/.dsh/.credentials.yaml`（记录名 `deepseek-account-platform/default`），
-//! 但那条记录的 `kind` 是 `grant`，其 `token` **不是开放平台 API Key**——实测
-//! 用它打 `GET https://api.deepseek.com/user/balance` 返回 401
-//! （`Authentication Fails, Your api key: ****… is invalid`），而 platform 网端
-//! 接口被 WAF 拦（HTTP 429 `Request Blocked`）。DeepSeek 本身按量计费、没有
-//! Coding Plan 式的订阅窗口，故本来源**不产任何额度条目**：余额查询继续走既有
-//! 凭证通道（`deepseek` provider 的 API Key），不在这里重复实现，也不臆造窗口。
+//! **余额查询（已真机实测可用）**：DSH 把 DeepSeek 平台账号登录态存在
+//! `~/.dsh/.credentials.yaml`（记录名 `deepseek-account-platform/default`，
+//! `kind=grant`）。该记录的 `payload.token` 是**平台 grant token，不是开放平台
+//! API Key**——拿它打 `GET https://api.deepseek.com/user/balance` 会 401。但它
+//! 能作为 `x-dsh-auth-token` 请求头打
+//! `GET https://platform.deepseek.com/api/v0/users/get_user_summary` 查到
+//! 充值钱包余额（`normal_wallets`）与赠送余额（`bonus_wallets`）。
+//! 注意：实测该 platform 端点**必须带浏览器特征请求头**（User-Agent / Referer /
+//! Origin / Accept-Language 等），否则被 WAF 拦成 HTTP 429「Request Blocked」HTML
+//! ——早前判「不可用」就是用了错误鉴权方式（Bearer）且缺这些头所致。
+//! 余额查询在 `deepseek` provider 的零凭证回退链路里实现（见 deepseek.rs 的
+//! `fetch_local_login_entry`），本模块只负责读凭证文件里的 grant token（且仅认
+//! issuer 匹配 platform origin 的记录，绝不取 browser-session 的 secret）。
 
 use crate::db;
 use crate::pricing::config_dir;
@@ -94,6 +99,93 @@ pub(crate) fn dsh_db_path() -> Result<PathBuf, String> {
 /// 本机是否装过 DSH 并产生过会话（presence 探测用：目录存在即可）。
 pub fn has_local_data() -> bool {
     sessions_root_path().is_dir()
+}
+
+// ============================================================
+// 平台 grant token（余额查询回退链路用）
+// ============================================================
+
+/// 目标凭证记录键：只认这一条，绝不取 `client-connection/browser-session`
+/// 的 secret（那是另一套登录态，不能用来查平台余额）。
+const PLATFORM_GRANT_RECORD: &str = "deepseek-account-platform/default";
+
+/// 目标 issuer：必须与请求 origin（platform.deepseek.com）匹配，对齐 DSH 客户端
+/// 「issuer must match that origin」的约束。允许尾斜杠差异。
+const PLATFORM_GRANT_ISSUER: &str = "https://platform.deepseek.com";
+
+/// 从 `.credentials.yaml` 文本里提取 `deepseek-account-platform/default` 记录
+/// payload 的 token（纯函数，便于单测，不联网）。
+///
+/// 手写缩进解析（YAML 形态简单，避免依赖 yaml_serde 0.10 的 API 细节）：只在
+/// 命中 `PLATFORM_GRANT_RECORD` 记录键、且后续仍未退出该记录时，才读它的
+/// `payload.token` 与 `payload.issuer`；其他记录（尤其 browser-session 的
+/// secret）一律跳过。token 为空 / issuer 不匹配 origin → None。
+/// token 只在内存里流转，绝不写日志或错误消息。
+fn parse_platform_grant(text: &str) -> Option<String> {
+    // 记录层级：顶格 `records:` 下的 2 空格 `  <key>:` 即一条记录；`payload:`
+    // 及其子字段再缩进 2 空格。用「当前是否处于目标记录内」做状态机。
+    let mut in_target = false;
+    let mut token: Option<String> = None;
+    let mut issuer: Option<String> = None;
+
+    for raw in text.lines() {
+        let line = raw.trim_end();
+        let indent = line.len() - line.trim_start().len();
+        let trimmed = line.trim();
+
+        // 记录键固定在 2 空格缩进；遇到同层或更浅缩进的新键即退出当前记录。
+        // 顶层 `records:` / `version:` 为 0 缩进，也会重置。
+        if indent <= 2 && trimmed.ends_with(':') {
+            in_target = trimmed.trim_end_matches(':').trim() == PLATFORM_GRANT_RECORD;
+            if !in_target {
+                token = None;
+                issuer = None;
+            }
+            continue;
+        }
+        if !in_target {
+            continue;
+        }
+        // 目标记录内部：payload 子字段（4+ 空格缩进）。
+        let Some((key, value)) = trimmed.split_once(':') else {
+            continue;
+        };
+        let value = value.trim().trim_matches('"').trim_matches('\'').trim();
+        match key {
+            "token" if !value.is_empty() => token = Some(value.to_string()),
+            "issuer" => issuer = Some(value.trim_end_matches('/').to_string()),
+            _ => {}
+        }
+    }
+
+    let issuer_ok = issuer
+        .as_deref()
+        .is_some_and(|i| i.trim_end_matches('/') == PLATFORM_GRANT_ISSUER);
+    if issuer_ok {
+        token
+    } else {
+        None
+    }
+}
+
+/// 读 `<dsh_home>/.credentials.yaml` 里的平台 grant token（无网络）。
+/// 文件缺失 / 读失败 / 记录缺失 / token 为空 / issuer 与 platform origin 不匹配
+/// 一律返回 None（静默）。token 只在内存里流转，不写日志或错误消息。
+pub(crate) fn read_platform_grant() -> Option<String> {
+    let text = std::fs::read_to_string(dsh_home_path().join(".credentials.yaml")).ok()?;
+    parse_platform_grant(&text)
+}
+
+/// 本机是否存有 DSH「DeepSeek 平台账号」登录态（grant token）。
+///
+/// 用途：App 层 deepseek 的 presence 探测。deepseek 是混合型 provider —— 有手动
+/// API Key 时走开放平台余额接口，没有 Key 时后端回退到 DSH 本地登录条目。因此
+/// 只要存在本地登录态，也应把 deepseek 的 presence 置为真，从而触发 120s 额度
+/// 轮询，把本地余额条目拉取并展示出来。
+/// 纯本地文件读，不联网、不返回 token 本身（无 grant 时返回 false）。
+#[tauri::command]
+pub fn has_dsh_platform_grant() -> bool {
+    read_platform_grant().is_some()
 }
 
 // ============================================================
@@ -1502,6 +1594,55 @@ pub fn debug_info() -> Result<DshDebugInfo, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 平台 grant 解析：只认 deepseek-account-platform/default 记录，绝不取
+    /// browser-session 的 secret；issuer 必须与 platform origin 匹配（允许尾斜杠）。
+    #[test]
+    fn parses_platform_grant_only_from_target_record() {
+        const YAML: &str = r#"version: 1
+records:
+  client-connection/browser-session:
+    kind: grant
+    payload:
+      version: 1
+      secret: browser-session-secret-must-not-be-used
+  deepseek-account-platform/device:
+    kind: grant
+    payload:
+      id: device-id-only
+  deepseek-account-platform/default:
+    kind: grant
+    payload:
+      version: 1
+      token: platform-grant-token-value
+      issuer: https://platform.deepseek.com
+"#;
+        assert_eq!(
+            parse_platform_grant(YAML).as_deref(),
+            Some("platform-grant-token-value")
+        );
+        // 尾斜杠差异仍匹配
+        let trailing = YAML.replace("https://platform.deepseek.com\n", "https://platform.deepseek.com/\n");
+        assert_eq!(
+            parse_platform_grant(&trailing).as_deref(),
+            Some("platform-grant-token-value")
+        );
+        // issuer 不匹配 → None（即便 token 存在）
+        let wrong = YAML.replace("issuer: https://platform.deepseek.com", "issuer: https://evil.example.com");
+        assert!(parse_platform_grant(&wrong).is_none());
+        // 目标记录里 token 为空 → None
+        let empty = YAML.replace("token: platform-grant-token-value", "token: ''");
+        assert!(parse_platform_grant(&empty).is_none());
+        // 只有 browser-session、没有目标记录 → None（绝不回退到 secret）
+        let no_target = r#"version: 1
+records:
+  client-connection/browser-session:
+    kind: grant
+    payload:
+      secret: only-secret-here
+"#;
+        assert!(parse_platform_grant(no_target).is_none());
+    }
 
     /// 真实事件的 JSON 行（从本机 DSH 日志采样，形状与字段名均为实测）。
     const ASSISTANT_LINE: &str = r#"{"type":"assistant/message","seq":26,"time":1791820208130,"data":{"turn":1,"step":1,"message":{"role":"assistant","source":{"kind":"model","provider":"deepseek-account","model":"deepseek-flash"}},"usage":{"inputTokens":7578,"outputTokens":139,"cacheReadTokens":0,"cacheWriteTokens":0,"totalTokens":7717},"stream":[{"type":"chunk","time":1791820206402,"chunk":{"type":"block-start"}},{"type":"reasoning-chunks","time0":1791820207629,"dt":[54,13]},{"type":"chunk","time":1791820208129,"chunk":{"type":"block-stop"}}]}}"#;

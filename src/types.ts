@@ -786,6 +786,8 @@ export interface ProviderQuotaBalance {
   granted?: number;
   /** 累计充值 */
   toppedUp?: number;
+  /** 累计消费（DSH 本地登录通路有值） */
+  totalCost?: number;
 }
 
 /** 单条凭证的额度展示条目 */

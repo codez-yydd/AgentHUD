@@ -3941,6 +3941,7 @@ mod tests {
             currency: "CNY".into(),
             granted: Some(4.64),
             topped_up: Some(50.0),
+            total_cost: None,
         });
         let agent = dsh_agent(std::slice::from_ref(&entry)).expect("有余额应出现");
         assert_eq!(agent.source, "dsh");

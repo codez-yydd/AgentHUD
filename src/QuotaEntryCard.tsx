@@ -177,7 +177,9 @@ export function QuotaEntryCard({
             {entry.balance.currency}
             {entry.balance.amount.toFixed(2)}
           </span>
-          {(entry.balance.granted != null || entry.balance.toppedUp != null) && (
+          {(entry.balance.granted != null ||
+            entry.balance.toppedUp != null ||
+            entry.balance.totalCost != null) && (
             <span className="num text-[9px] text-slate-500/80">
               {entry.balance.granted != null &&
                 t("credentials.balanceGranted", {
@@ -187,6 +189,13 @@ export function QuotaEntryCard({
               {entry.balance.toppedUp != null &&
                 t("credentials.balanceToppedUp", {
                   amount: `${entry.balance.currency}${entry.balance.toppedUp.toFixed(2)}`,
+                })}
+              {(entry.balance.granted != null || entry.balance.toppedUp != null) &&
+                entry.balance.totalCost != null &&
+                " · "}
+              {entry.balance.totalCost != null &&
+                t("credentials.balanceTotalCost", {
+                  amount: `${entry.balance.currency}${entry.balance.totalCost.toFixed(2)}`,
                 })}
             </span>
           )}
