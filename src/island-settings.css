@@ -1879,3 +1879,292 @@ html.island-settings * {
   align-self: flex-start;
 }
 
+
+
+/* ============================================================
+   天气页：绑定城市操作 / 共享城市选择弹层
+   共享组件（src/island/cityPickerModal.tsx）沿用 island.css 的类名；
+   本页入口未加载 island.css，这里用设置窗自己的 --w-* 变量补齐同名类，
+   并改成窗口内居中的弹层（固定定位，不随表单滚动）。
+   ============================================================ */
+
+.wset-city-bind {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.wset-city-bind__input {
+  display: flex;
+}
+
+.wset-city-hint {
+  margin-top: 2px;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--w-ok);
+}
+
+.wset-city-hint--error {
+  color: var(--w-danger);
+}
+
+/* 设置窗里的城市选择器：遮罩 + 居中卡片（覆盖 island.css 的 absolute 定位口径） */
+html.island-settings .msg-menu-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 95;
+  background: rgba(8, 10, 16, 0.32);
+}
+
+html.island-settings .city-picker {
+  position: fixed;
+  z-index: 96;
+  top: 50%;
+  right: auto;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 460px;
+  max-width: calc(100vw - 48px);
+  max-height: calc(100vh - 64px);
+  overflow-y: auto;
+  padding: 16px;
+  border-radius: 16px;
+  background: var(--w-menu);
+  border: 1px solid var(--w-rim);
+  box-shadow: var(--w-pop-shadow);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  animation: wset-city-picker-in 0.16s ease;
+}
+
+@keyframes wset-city-picker-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -48%);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, -50%);
+  }
+}
+
+html.island-settings .city-picker-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+html.island-settings .city-picker-head b {
+  font-size: 14px;
+  color: var(--w-text);
+}
+
+html.island-settings .city-picker-close {
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  display: grid;
+  place-items: center;
+  color: var(--w-text2);
+}
+
+html.island-settings .city-picker-close:hover {
+  background: var(--w-hover);
+  color: var(--w-text);
+}
+
+html.island-settings .city-picker-locate {
+  height: 34px;
+  border-radius: 9px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--w-text);
+  background: var(--w-field);
+  transition: background 0.18s ease;
+}
+
+html.island-settings .city-picker-locate:hover:not(:disabled) {
+  background: var(--w-hover);
+}
+
+html.island-settings .city-picker-locate:disabled {
+  opacity: 0.55;
+}
+
+html.island-settings .city-picker-locate-error {
+  padding: 5px 8px;
+  border-radius: 6px;
+  font-size: 11.5px;
+  color: var(--w-danger);
+  background: var(--w-danger-soft);
+}
+
+html.island-settings .city-picker-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 10px;
+  border-radius: 8px;
+  background: var(--w-field);
+  color: var(--w-text3);
+}
+
+html.island-settings .city-picker-search input {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  outline: none;
+  border: none;
+  color: var(--w-text);
+  font-size: 12px;
+  font-family: var(--w-font);
+}
+
+html.island-settings .city-picker-search input::placeholder {
+  color: var(--w-text3);
+}
+
+html.island-settings .city-picker-columns {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+html.island-settings .city-picker-col {
+  min-width: 0;
+}
+
+html.island-settings .city-picker-col-title {
+  padding: 2px 4px 6px;
+  font-size: 11.5px;
+  color: var(--w-text3);
+}
+
+html.island-settings .city-picker-list {
+  height: 240px;
+  overflow-y: auto;
+  border-radius: 8px;
+  background: var(--w-card);
+  padding: 4px;
+  scrollbar-width: thin;
+}
+
+html.island-settings .city-picker-item {
+  width: 100%;
+  height: 28px;
+  padding: 0 8px;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--w-text2);
+  white-space: nowrap;
+}
+
+html.island-settings .city-picker-item span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+html.island-settings .city-picker-item:hover:not(:disabled) {
+  background: var(--w-hover);
+  color: var(--w-text);
+}
+
+html.island-settings .city-picker-item.is-active {
+  background: var(--w-on-soft);
+  color: var(--w-text);
+}
+
+html.island-settings .city-picker-item:disabled {
+  opacity: 0.45;
+}
+
+html.island-settings .city-picker-empty {
+  padding: 14px 6px;
+  font-size: 11.5px;
+  color: var(--w-text3);
+  text-align: center;
+}
+
+html.island-settings .city-picker-manual {
+  border-top: 1px solid var(--w-stroke);
+  padding-top: 8px;
+}
+
+html.island-settings .city-picker-manual-toggle {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 2px;
+  font-size: 11.5px;
+  color: var(--w-text2);
+}
+
+html.island-settings .city-picker-manual-toggle svg:last-child {
+  margin-left: auto;
+  transition: transform 0.18s ease;
+}
+
+html.island-settings .city-picker-manual-toggle svg:last-child.is-open {
+  transform: rotate(180deg);
+}
+
+html.island-settings .city-picker-manual-box {
+  margin-top: 6px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+html.island-settings .city-picker-manual-box input {
+  height: 32px;
+  padding: 0 12px;
+  border-radius: 999px;
+  border: 1px solid var(--w-stroke);
+  background: var(--w-field);
+  color: var(--w-text);
+  font-size: 12px;
+  font-family: var(--w-font);
+  outline: none;
+  flex: 1;
+  min-width: 0;
+}
+
+html.island-settings .city-picker-manual-box input::placeholder {
+  color: var(--w-text3);
+}
+
+html.island-settings .city-picker-manual-box input:focus {
+  border-color: var(--w-on);
+}
+
+html.island-settings .city-picker-manual-box button {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  flex: none;
+  color: var(--w-text2);
+  background: var(--w-field);
+}
+
+html.island-settings .city-picker-manual-box button:hover:not(:disabled) {
+  color: var(--w-text);
+  background: var(--w-hover);
+}
+
+html.island-settings .city-picker-manual-box button:disabled {
+  opacity: 0.4;
+}

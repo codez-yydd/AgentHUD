@@ -1121,6 +1121,7 @@ export function RecordEditor({
   addLabel = "添加一项",
   emptyLabel = "还没有内容",
   newItem,
+  onAdd,
 }: {
   items: Record<string, unknown>[];
   fields: RecordFieldDef[];
@@ -1129,6 +1130,8 @@ export function RecordEditor({
   emptyLabel?: string;
   /** 新增一行的初始值（覆盖 fields[].default） */
   newItem?: Record<string, unknown>;
+  /** 提供后「添加」按钮改为触发它，不再插入空行（天气城市走选择器直加时用） */
+  onAdd?: () => void;
 }) {
   const update = (index: number, key: string, value: unknown) => {
     const next = items.map((item, i) => (i === index ? { ...item, [key]: value } : item));
@@ -1243,6 +1246,10 @@ export function RecordEditor({
       <div className="wset-list__add">
         <Button
           onClick={() => {
+            if (onAdd) {
+              onAdd();
+              return;
+            }
             const row: Record<string, unknown> = {};
             for (const field of fields) {
               if (field.kind === "switch") row[field.key] = field.default ?? true;

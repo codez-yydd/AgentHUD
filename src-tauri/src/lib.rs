@@ -3818,8 +3818,10 @@ pub fn run() {
             island::weather::island_weather_bind,
             island::weather::island_weather_unbind,
             island::weather::island_weather_add_city,
+            island::weather::island_weather_add_city_exact,
             island::weather::island_weather_remove_city,
             island::weather::island_locate,
+            island::weather::weather_locate_now,
             // 股票（腾讯财经）
             island::stocks::island_stocks,
             island::stocks::island_stocks_refresh,

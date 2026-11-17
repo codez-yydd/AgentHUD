@@ -1114,12 +1114,22 @@ impl WeatherDoc {
     }
 
     /// 旧默认迁移（只在读盘 / 导入路径执行）：老版本默认主城市「上海」且
-    /// 没有坐标时视为未绑定，升级后跟随 IP。
+    /// 没有坐标（或坐标仍是旧版默认地理编码值）时视为未绑定，升级后跟随 IP。
     ///
     /// 不能放进 `clamped()`：`patched_doc` 对每次 patch 都会 clamp，用户显式
-    /// 绑定「上海」（经纬度留空）时会被这条规则误清空。
+    /// 绑定「上海」（经纬度留空 / 新选的真实坐标）时会被这条规则误清空。
+    ///
+    /// 旧版默认值「上海」曾被写入经纬度（lat 31.22222 / lon 121.45806），
+    /// 导致只按「无坐标」分支的迁移漏网，用户被莫名绑定上海；这里把该坐标
+    /// （1e-4 容差）也纳入清理条件。用户用选择器重新绑定上海时坐标来自
+    /// chinaCities（31.23 / 121.47 等）或定位结果，不会命中这里的旧默认值。
     fn migrate_legacy_default(mut self) -> Self {
-        if self.city == "上海" && self.lat.is_none() && self.lon.is_none() {
+        let legacy_geo = match (self.lat, self.lon) {
+            (Some(lat), Some(lon)) =>
+                (lat - 31.22222).abs() < 1e-4 && (lon - 121.45806).abs() < 1e-4,
+            _ => false,
+        };
+        if self.city == "上海" && ((self.lat.is_none() && self.lon.is_none()) || legacy_geo) {
             self.city.clear();
             self.lat = None;
             self.lon = None;
@@ -3463,6 +3473,22 @@ mod tests {
         let doc = from_value(json!({ "weather": { "city": "上海" } })).expect("旧文档可解析");
         assert_eq!(doc.weather.city, "", "旧默认「上海」且无坐标 → 跟随 IP");
 
+        // 旧默认「上海」带旧地理编码坐标（31.22222 / 121.45806）：曾被无坐标
+        // 分支漏网、用户被莫名绑定上海；读盘 / 导入时也要清空（含 1e-4 容差）。
+        let doc = from_value(json!({
+            "weather": { "city": "上海", "lat": 31.22222, "lon": 121.45806 }
+        }))
+        .expect("旧文档可解析");
+        assert_eq!(doc.weather.city, "", "旧默认「上海」+旧坐标 → 跟随 IP");
+        assert_eq!(doc.weather.lat, None, "旧坐标一并清空");
+        assert_eq!(doc.weather.lon, None);
+
+        let doc = from_value(json!({
+            "weather": { "city": "上海", "lat": 31.2223, "lon": 121.4581 }
+        }))
+        .expect("旧文档可解析");
+        assert_eq!(doc.weather.city, "", "容差内的旧坐标同样迁移");
+
         // patch 路径：显式绑定「上海」（坐标留空）不能被清掉
         let patch: Map<String, Value> = serde_json::from_value(json!({
             "weather.city": "上海",
@@ -3474,7 +3500,8 @@ mod tests {
         assert_eq!(doc.weather.city, "上海", "显式绑定不能被旧默认迁移清掉");
         assert_eq!(doc.weather.lat, None);
 
-        // 带坐标的显式绑定（读盘路径）同样保留
+        // 带坐标的显式绑定（读盘路径）同样保留：这是选择器 / 定位写入的新坐标，
+        // 不等于旧默认地理编码，不应被迁移清空。
         let doc = from_value(json!({
             "weather": { "city": "上海", "lat": 31.23, "lon": 121.47 }
         }))

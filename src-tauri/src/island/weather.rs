@@ -21,6 +21,11 @@
 
 use serde::Serialize;
 use std::collections::HashMap;
+
+// 复用 codex 的系统代理探测（Windows 注册表 / macOS scutil）。天气数据请求经
+// shared_agent() 挂系统代理，确保 Clash 等只设系统代理的环境也能命中；IP 定位
+// 必须直连（否则按代理出口 IP 定位，拿到的是代理出口位置），走 direct_agent()。
+use crate::codex::system_proxy;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::thread;
@@ -50,6 +55,9 @@ static FORCE: AtomicBool = AtomicBool::new(false);
 static INTERVAL_SECS: AtomicU64 = AtomicU64::new(REFRESH_SECS);
 static APP: OnceLock<Mutex<Option<AppHandle>>> = OnceLock::new();
 static CACHE: OnceLock<Mutex<Option<WeatherState>>> = OnceLock::new();
+/// 每座城市最近一次取数成功的快照（进程内，city_key → 快照 + 时间戳）。
+/// 请求失败时回填它并标 `stale`，让页面展示最近一次成功数据而不是整页红错。
+static SNAPSHOTS: OnceLock<Mutex<HashMap<String, WeatherCityState>>> = OnceLock::new();
 static GEO_CACHE: OnceLock<Mutex<HashMap<String, GeoHit>>> = OnceLock::new();
 /// 最近一次广播用的 IP 定位结果（`None` = 定位失败或还没跑过），
 /// 5 分钟 IP 巡检用它判断城市是否变化。
@@ -61,6 +69,10 @@ fn app_slot() -> &'static Mutex<Option<AppHandle>> {
 
 fn cache_slot() -> &'static Mutex<Option<WeatherState>> {
     CACHE.get_or_init(|| Mutex::new(None))
+}
+
+fn snapshots() -> &'static Mutex<HashMap<String, WeatherCityState>> {
+    SNAPSHOTS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 fn geo_cache() -> &'static Mutex<HashMap<String, GeoHit>> {
@@ -110,6 +122,10 @@ pub struct WeatherCityState {
     pub is_user: bool,
     pub ok: bool,
     pub error: String,
+    /// 本次取数失败但已回填最近成功快照：true 表示展示的是旧数据。
+    pub stale: bool,
+    /// 简短错误摘要（失败时用于顶部小提示；成功时为空）。完整错误仍在 `error`。
+    pub error_brief: String,
     pub updated_at: i64,
     pub temp: f64,
     pub feels_like: f64,
@@ -130,6 +146,10 @@ pub struct WeatherCityState {
 pub struct WeatherState {
     pub ok: bool,
     pub error: String,
+    /// 主城市本次取数失败但已回填最近成功快照：true 表示展示的是旧数据。
+    pub stale: bool,
+    /// 简短错误摘要（失败时用于顶部小提示；成功时为空）。
+    pub error_brief: String,
     pub city: String,
     pub updated_at: i64,
     pub temp: f64,
@@ -285,10 +305,41 @@ pub struct LocatedPlace {
     pub label: String,
 }
 
+/// 天气数据（Open-Meteo forecast/geocoding、OpenWeather）出站请求共用的 ureq
+/// agent 构建：统一挂系统代理，失败静默回落直连。
+///
+/// ureq 2.x 默认只读环境变量代理（`proxy-from-env`），不读 Windows 系统代理；
+/// 用户开着 Clash Verge 但只设了系统代理时，`api.open-meteo.com` 会直连超时。
+/// 这里在 `AgentBuilder::new()` 基础上补一次系统代理探测：`system_proxy()` 返回
+/// 了 URL 就 `Proxy::new` 挂上，解析失败（配置异常）则不带 proxy 走 ureq 默认
+/// 行为（环境变量代理或直连），绝不因代理配置异常让天气模块崩掉。
+fn shared_agent(timeout: Duration) -> ureq::Agent {
+    let mut builder = ureq::AgentBuilder::new().timeout(timeout);
+    if let Some(url) = system_proxy() {
+        match ureq::Proxy::new(&url) {
+            Ok(proxy) => builder = builder.proxy(proxy),
+            Err(error) => eprintln!("[zbar-island-weather] 系统代理「{url}」解析失败，回落直连: {error}"),
+        }
+    }
+    builder.build()
+}
+
+/// IP 定位（ip-api / ipwho.is）专用的直连 agent：刻意不挂系统代理。
+///
+/// 定位服务按「公网出口 IP」返回地理位置，国内可直连；只有直连才能拿到用户
+/// 真实位置（如西安）。一旦走代理，接口看到的是代理出口 IP，会定位到代理
+/// 出口所在地（实测东京），属于功能语义错误。`try_proxy_from_env(false)`
+/// 显式关闭环境变量代理，避免将来启用 ureq 的 `proxy-from-env` feature 后
+/// 又悄悄把定位请求挂上代理。天气数据请求仍走 `shared_agent`（带代理）。
+fn direct_agent(timeout: Duration) -> ureq::Agent {
+    ureq::AgentBuilder::new()
+        .timeout(timeout)
+        .try_proxy_from_env(false)
+        .build()
+}
+
 fn location_json(url: &str) -> Result<serde_json::Value, String> {
-    let agent = ureq::AgentBuilder::new()
-        .timeout(Duration::from_secs(10))
-        .build();
+    let agent = direct_agent(Duration::from_secs(10));
     let resp = agent
         .get(url)
         .set("User-Agent", "AgentHUD-Island/1.0")
@@ -391,6 +442,15 @@ pub async fn island_locate() -> Result<LocatedPlace, String> {
         .map_err(|e| format!("定位任务失败: {e}"))?
 }
 
+/// 城市选择器「使用当前位置」：手动触发一次 IP 定位（复用后台巡检同一
+/// `locate_place`），返回含 province / city / lat / lon 的定位结果供前端直加。
+#[tauri::command]
+pub async fn weather_locate_now() -> Result<LocatedPlace, String> {
+    tauri::async_runtime::spawn_blocking(locate_place)
+        .await
+        .map_err(|e| format!("定位任务失败: {e}"))?
+}
+
 fn encode(s: &str) -> String {
     let mut out = String::new();
     for b in s.as_bytes() {
@@ -425,9 +485,7 @@ impl HttpError {
 }
 
 fn http_json_detailed(url: &str) -> Result<serde_json::Value, HttpError> {
-    let agent = ureq::AgentBuilder::new()
-        .timeout(Duration::from_secs(12))
-        .build();
+    let agent = shared_agent(Duration::from_secs(12));
     let resp = agent
         .get(url)
         .set("User-Agent", "AgentHUD-Island/1.0")
@@ -1321,48 +1379,84 @@ fn empty_state() -> WeatherState {
     }
 }
 
-/// 抓取失败时沿用上一次同城市的成功数据（只换 ok/error），避免一次网络
-/// 抖动就把收起态温度清空；同城不同坐标（例如重新绑定）不复用。
-fn merge_stale(state: &mut WeatherCityState, previous: Option<&WeatherState>) {
+/// 请求失败的错误摘要：收敛 ureq 的冗长技术文本，供前端顶部小提示使用。
+fn brief_error(error: &str) -> String {
+    let trimmed = error.trim();
+    if trimmed.is_empty() {
+        return "网络错误".into();
+    }
+    let lower = trimmed.to_lowercase();
+    if lower.contains("connection failed")
+        || lower.contains("timed out")
+        || lower.contains("timeout")
+        || lower.contains("os error")
+    {
+        return "网络不可达".into();
+    }
+    if lower.contains("http 429") {
+        return "请求过于频繁".into();
+    }
+    if lower.contains("http 401") {
+        return "接口鉴权失败".into();
+    }
+    let first_line = trimmed.lines().next().unwrap_or(trimmed);
+    first_line.chars().take(30).collect()
+}
+
+/// 取数成功：把当前城市状态存进快照，供后续失败时回填。
+/// `key` 用计划里的市名（city_key 归一化），与失败回填时使用同一 key；不依赖
+/// 取数后被本地化改写的 state.name，避免展示名变化导致快照错配。
+fn remember_snapshot(key: &str, state: &WeatherCityState) {
+    if !state.ok {
+        return;
+    }
+    if let Ok(mut guard) = snapshots().lock() {
+        guard.insert(key.to_string(), state.clone());
+    }
+}
+
+/// 取数失败：回填最近一次成功快照并标记 `stale`；从未成功过（无快照 /
+/// 坐标变化太大）则保持失败态，由前端展示完整错误。同城不同坐标（重新绑定 /
+/// IP 变化）不复用，避免展示错误城市的旧数据。
+fn merge_stale(key: &str, state: &mut WeatherCityState) {
     if state.ok {
         return;
     }
-    let Some(previous) = previous else {
-        return;
-    };
-    let Some(old) = previous
-        .cities
-        .iter()
-        .find(|city| city.name.eq_ignore_ascii_case(&state.name))
-    else {
-        return;
+    let snapshot = {
+        let guard = match snapshots().lock() {
+            Ok(guard) => guard,
+            Err(_) => return,
+        };
+        match guard.get(key) {
+            Some(snapshot) => snapshot.clone(),
+            None => return,
+        }
     };
     if let (Some((lat, lon)), Some((old_lat, old_lon))) =
-        (state.lat.zip(state.lon), old.lat.zip(old.lon))
+        (state.lat.zip(state.lon), snapshot.lat.zip(snapshot.lon))
     {
         if (lat - old_lat).abs() > 0.5 || (lon - old_lon).abs() > 0.5 {
             return;
         }
     }
-    if state.lat.is_none() {
-        state.lat = old.lat;
-    }
-    if state.lon.is_none() {
-        state.lon = old.lon;
-    }
-    state.updated_at = old.updated_at;
-    state.temp = old.temp;
-    state.feels_like = old.feels_like;
-    state.humidity = old.humidity;
-    state.wind = old.wind;
-    state.code = old.code;
-    state.desc = old.desc.clone();
-    state.icon = old.icon.clone();
-    state.is_day = old.is_day;
-    state.sunrise = old.sunrise.clone();
-    state.sunset = old.sunset.clone();
-    state.hourly = old.hourly.clone();
-    state.daily = old.daily.clone();
+    // 数据字段用快照回填，身份字段（name / label / is_main 等）保持本次结果。
+    state.lat = state.lat.or(snapshot.lat);
+    state.lon = state.lon.or(snapshot.lon);
+    state.updated_at = snapshot.updated_at;
+    state.temp = snapshot.temp;
+    state.feels_like = snapshot.feels_like;
+    state.humidity = snapshot.humidity;
+    state.wind = snapshot.wind;
+    state.code = snapshot.code;
+    state.desc = snapshot.desc.clone();
+    state.icon = snapshot.icon.clone();
+    state.is_day = snapshot.is_day;
+    state.sunrise = snapshot.sunrise.clone();
+    state.sunset = snapshot.sunset.clone();
+    state.hourly = snapshot.hourly.clone();
+    state.daily = snapshot.daily.clone();
+    state.stale = true;
+    state.error_brief = brief_error(&state.error);
 }
 
 fn build_state(
@@ -1376,12 +1470,13 @@ fn build_state(
         state.units = provider.units.clone();
         return state;
     }
-    let previous = cache_slot().lock().ok().and_then(|guard| guard.clone());
     let mut cities: Vec<WeatherCityState> = Vec::with_capacity(plan.cities.len());
     for (index, city) in plan.cities.iter().enumerate() {
         let mut state = fetch_city_state(city, provider);
         state.is_main = index as i64 == plan.main_index;
-        merge_stale(&mut state, previous.as_ref());
+        let key = city_key(&city.name);
+        remember_snapshot(&key, &state);
+        merge_stale(&key, &mut state);
         cities.push(state);
     }
     // 中文名覆盖后可能和 IP 城市变成同一个名字：按最终 name 再去重一次。
@@ -1394,6 +1489,8 @@ fn build_state(
     WeatherState {
         ok: main.ok,
         error: main.error.clone(),
+        stale: main.stale,
+        error_brief: main.error_brief.clone(),
         city: main.label.clone(),
         updated_at: main.updated_at,
         temp: main.temp,
@@ -1704,18 +1801,13 @@ pub async fn island_weather_unbind(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-/// 添加自定义城市：城市名 geocode 或「纬度,经度」；重名 / 重复坐标拒绝。
-/// 成功返回可展示提示文案。
-#[tauri::command]
-pub async fn island_weather_add_city(query: String, app: AppHandle) -> Result<String, String> {
+/// 添加城市的共用落库逻辑：数量上限 / 重名与坐标去重 / 持久化 / 广播刷新。
+/// 两条入口（在线 geocode 与带坐标直加）都走这里，保证行为一致。
+async fn commit_add_city(city: WeatherCityCfg, app: &AppHandle) -> Result<String, String> {
     let cfg = super::load_config();
     if cfg.weather_cities.len() >= 20 {
         return Err("最多添加 20 个城市".into());
     }
-    // geocode 是阻塞网络请求，放到 blocking 线程，避免占住 async 运行时。
-    let city = tauri::async_runtime::spawn_blocking(move || resolve_add_city(&query))
-        .await
-        .map_err(|e| format!("添加城市任务失败: {e}"))??;
     if let Some(error) = duplicate_city_error(&cfg, &city) {
         return Err(error);
     }
@@ -1723,9 +1815,57 @@ pub async fn island_weather_add_city(query: String, app: AppHandle) -> Result<St
     let label = city.name.clone();
     cities.push(city);
     let patch = weather_patch(&[("weather.cities", cities_value(&cities)?)]);
-    super::settings::apply_patch(&app, &patch).await?;
+    super::settings::apply_patch(app, &patch).await?;
     refresh();
     Ok(format!("已添加城市「{label}」"))
+}
+
+/// 添加自定义城市：城市名 geocode 或「纬度,经度」；重名 / 重复坐标拒绝。
+/// 成功返回可展示提示文案。
+#[tauri::command]
+pub async fn island_weather_add_city(query: String, app: AppHandle) -> Result<String, String> {
+    // geocode 是阻塞网络请求，放到 blocking 线程，避免占住 async 运行时。
+    let city = tauri::async_runtime::spawn_blocking(move || resolve_add_city(&query))
+        .await
+        .map_err(|e| format!("添加城市任务失败: {e}"))??;
+    commit_add_city(city, &app).await
+}
+
+/// 带坐标直加城市（省市联动 / 当前位置入口）：跳过在线 geocode，直接用
+/// 前端给定的市名、省名与经纬度构造配置入列；复用与 `island_weather_add_city`
+/// 相同的数量上限 / 去重 / 持久化 / 广播逻辑。
+#[tauri::command]
+pub async fn island_weather_add_city_exact(
+    name: String,
+    province: String,
+    lat: f64,
+    lon: f64,
+    app: AppHandle,
+) -> Result<String, String> {
+    let name = name.trim().to_string();
+    if name.is_empty() {
+        return Err("城市名为空".into());
+    }
+    let (lat, lon) = super::normalize_weather_coord_pair(Some(lat), Some(lon));
+    let (Some(lat), Some(lon)) = (lat, lon) else {
+        return Err("城市坐标不合法".into());
+    };
+    // 省名仅用于拼接去重更稳的展示名（同名市在不同省时区分）；为空则只用市名。
+    let province = province.trim();
+    let display = if province.is_empty() || name.contains(province) {
+        name.clone()
+    } else {
+        format!("{province}·{name}")
+    };
+    commit_add_city(
+        WeatherCityCfg {
+            name: display,
+            lat: Some(lat),
+            lon: Some(lon),
+        },
+        &app,
+    )
+    .await
 }
 
 /// 删除自定义城市：只从 `weather.cities` 删除；绑定的主城市不可删。
@@ -1967,6 +2107,8 @@ mod tests {
         for key in [
             "ok",
             "error",
+            "stale",
+            "errorBrief",
             "city",
             "updatedAt",
             "temp",
@@ -2002,6 +2144,8 @@ mod tests {
             "isUser",
             "ok",
             "error",
+            "stale",
+            "errorBrief",
             "updatedAt",
             "temp",
             "feelsLike",
@@ -2459,5 +2603,68 @@ mod tests {
             reason: "天气请求失败: io error".into(),
         };
         assert_eq!(network.weather_error(), "天气请求失败: io error");
+    }
+
+    #[test]
+    fn brief_error_summarizes_network_failures() {
+        assert_eq!(
+            brief_error("天气请求失败: Connection Failed: tls connection init failed os error 10060"),
+            "网络不可达"
+        );
+        assert_eq!(brief_error("天气请求失败: HTTP 429"), "请求过于频繁");
+        assert_eq!(brief_error("失败: 找不到城市"), "失败: 找不到城市");
+        assert_eq!(brief_error("   "), "网络错误");
+    }
+
+    #[test]
+    fn stale_snapshot_backfills_failed_fetch() {
+        let key = "测试快照城市";
+        // 成功快照入栈。
+        let good = WeatherCityState {
+            name: key.into(),
+            ok: true,
+            updated_at: 111,
+            temp: 26.0,
+            desc: "晴".into(),
+            icon: "sun".into(),
+            lat: Some(30.0),
+            lon: Some(120.0),
+            hourly: vec![WeatherHour {
+                label: "12时".into(),
+                temp: 26.0,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        remember_snapshot(key, &good);
+
+        // 失败时同名同坐标回填：数据来自快照，标记 stale + 简短错误。
+        let mut failed = WeatherCityState {
+            name: key.into(),
+            ok: false,
+            error: "天气请求失败: Connection Failed os error 10060".into(),
+            lat: Some(30.0),
+            lon: Some(120.0),
+            ..Default::default()
+        };
+        merge_stale(key, &mut failed);
+        assert!(failed.stale, "失败但命中快照 → stale");
+        assert_eq!(failed.temp, 26.0, "温度回填");
+        assert_eq!(failed.updated_at, 111, "时间戳回填");
+        assert_eq!(failed.error_brief, "网络不可达");
+        assert_eq!(failed.hourly.len(), 1);
+        assert_eq!(failed.name, key, "身份字段不被快照覆盖");
+
+        // 坐标变化太大（重新绑定）不复用。
+        let mut moved = WeatherCityState {
+            name: key.into(),
+            ok: false,
+            error: "失败".into(),
+            lat: Some(40.0),
+            lon: Some(130.0),
+            ..Default::default()
+        };
+        merge_stale(key, &mut moved);
+        assert!(!moved.stale, "坐标变化大 → 不回填");
     }
 }

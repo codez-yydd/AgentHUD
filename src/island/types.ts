@@ -278,6 +278,10 @@ export interface WeatherCityState {
   isUser: boolean;
   ok: boolean;
   error: string;
+  /** 本次取数失败但已回填最近成功快照：展示的是旧数据 */
+  stale?: boolean;
+  /** 失败时的简短错误摘要（用于顶部小提示） */
+  errorBrief?: string;
   updatedAt: number;
   temp: number;
   feelsLike: number;
@@ -296,6 +300,10 @@ export interface WeatherCityState {
 export interface WeatherState {
   ok: boolean;
   error: string;
+  /** 主城市取数失败但已回填最近成功快照：展示的是旧数据 */
+  stale?: boolean;
+  /** 失败时的简短错误摘要（用于顶部小提示） */
+  errorBrief?: string;
   city: string;
   updatedAt: number;
   temp: number;

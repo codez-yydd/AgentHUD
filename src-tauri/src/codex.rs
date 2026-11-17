@@ -1882,7 +1882,10 @@ pub(crate) fn resolve_proxy() -> Option<String> {
 /// - macOS：scutil --proxy 输出（HTTPSEnable/HTTPSProxy 等，Clash/Surge 等
 ///   设置系统代理后即可被读到）
 /// - 其他平台：无（仅环境变量）
-fn system_proxy() -> Option<String> {
+///
+/// `pub(crate)`：灵动岛天气模块的出站请求也复用它，让 Clash 等只设系统代理、
+/// 不设环境变量的场景下 open-meteo / geocoding 同样能走代理。
+pub(crate) fn system_proxy() -> Option<String> {
     #[cfg(windows)]
     {
         use winreg::enums::HKEY_CURRENT_USER;

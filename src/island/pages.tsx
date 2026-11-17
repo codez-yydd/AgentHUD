@@ -11,6 +11,7 @@ import {
   type WheelEvent as ReactWheelEvent,
 } from "react";
 import { getStockMinute, searchStock } from "./api";
+import { CityPickerModal, type CityPick } from "./cityPickerModal";
 import { ClashPanel } from "./ClashPanel";
 import { PetFace, type CompactPointerSample } from "./PetFace";
 import {
@@ -1269,6 +1270,7 @@ export function WeatherPage({
   onUnbind,
   onRemoveCity,
   onAddCity,
+  onAddCityExact,
 }: {
   weather: WeatherState | null;
   onRefresh: () => void;
@@ -1276,14 +1278,18 @@ export function WeatherPage({
   onUnbind: () => void;
   onRemoveCity: (city: WeatherCityState) => void;
   onAddCity: (query: string) => Promise<string>;
+  onAddCityExact: (city: {
+    name: string;
+    province: string;
+    lat: number;
+    lon: number;
+  }) => Promise<string>;
 }) {
   const pageRef = useRef<HTMLDivElement | null>(null);
-  const addInputRef = useRef<HTMLInputElement | null>(null);
   const noteTimer = useRef<number | null>(null);
   const [selected, setSelected] = useState(0);
-  const [adding, setAdding] = useState(false);
-  const [query, setQuery] = useState("");
-  const [busy, setBusy] = useState(false);
+  // 城市选择弹层开关（省市联动 / 搜索 / 当前位置 / 手动输入统一由共享组件承载）。
+  const [pickerOpen, setPickerOpen] = useState(false);
   const [note, setNote] = useState<{ text: string; tone: "ok" | "error" } | null>(null);
   const [menu, setMenu] = useState<{ index: number; x: number; y: number } | null>(null);
   const cities = weather?.cities ?? [];
@@ -1294,14 +1300,7 @@ export function WeatherPage({
     setSelected((current) => (cityCount === 0 ? 0 : Math.min(current, cityCount - 1)));
   }, [cityCount]);
 
-  // 添加输入框打开后自动聚焦（面板展开动画期间也能立即输入）。
-  useEffect(() => {
-    if (!adding) return;
-    const timer = window.setTimeout(() => addInputRef.current?.focus(), 0);
-    return () => window.clearTimeout(timer);
-  }, [adding]);
-
-  // Esc 关闭右键菜单（点击外部由 backdrop 负责）。
+  // Esc 关闭右键菜单（城市选择弹层自己的 Esc 由共享组件处理）。
   useEffect(() => {
     if (!menu) return;
     const onKey = (event: KeyboardEvent) => {
@@ -1335,19 +1334,29 @@ export function WeatherPage({
     setMenu({ index, x, y });
   };
 
-  const submitAdd = async () => {
-    const value = query.trim();
-    if (!value || busy) return;
-    setBusy(true);
+  const closePicker = () => setPickerOpen(false);
+  const openPicker = () => setPickerOpen(true);
+
+  /** 省市联动 / 当前位置选中城市：带坐标直加，成功提示并关闭弹层，失败行内提示。 */
+  const pickExact = async (city: CityPick) => {
+    try {
+      const message = await onAddCityExact(city);
+      flashNote(message, "ok");
+      closePicker();
+    } catch (error) {
+      flashNote(String(error), "error");
+    }
+  };
+
+  /** 手动输入（海外城市 / 兜底）：走原有在线 geocode 流程；失败抛出由弹层行内提示。 */
+  const submitManual = async (value: string) => {
     try {
       const message = await onAddCity(value);
       flashNote(message, "ok");
-      setQuery("");
-      setAdding(false);
+      closePicker();
     } catch (error) {
       flashNote(String(error), "error");
-    } finally {
-      setBusy(false);
+      throw error;
     }
   };
 
@@ -1384,11 +1393,15 @@ export function WeatherPage({
         ["最低", today ? `${Math.round(today.min)}${unit}` : "—"],
       ]
     : [];
+  // stale：取数失败但已回填最近成功数据，按有数据处理并给出顶部小提示。
   const hasData = Boolean(selectedCity && (selectedCity.daily.length > 0 || selectedCity.hourly.length > 0));
+  const staleHint = selectedCity?.stale
+    ? `更新失败，显示 ${fmtClock(selectedCity.updatedAt)} 数据${selectedCity.errorBrief ? `（${selectedCity.errorBrief}）` : ""}`
+    : "";
   const updated = selectedCity
     ? selectedCity.ok
       ? `更新于 ${fmtClock(selectedCity.updatedAt)}`
-      : selectedCity.error || "更新失败"
+      : staleHint || selectedCity.error || "更新失败"
     : "";
 
   const menuStatus = (city: WeatherCityState): string => {
@@ -1420,86 +1433,32 @@ export function WeatherPage({
   return (
     <div className="page weather-page" ref={pageRef}>
       <div className="weather-top">
-        {adding ? (
-          <div className="weather-add-box">
-            <input
-              ref={addInputRef}
-              value={query}
-              disabled={busy}
-              placeholder="城市名或 纬度,经度"
-              aria-label="添加天气城市"
-              onChange={(event) => setQuery(event.target.value)}
-              onKeyDown={(event) => {
-                // 中文输入法组合中的 Enter/Esc 交给 IME，避免确认候选词时误提交
-                if (event.nativeEvent.isComposing) return;
-                if (event.key === "Enter") {
-                  event.preventDefault();
-                  void submitAdd();
-                } else if (event.key === "Escape") {
-                  event.preventDefault();
-                  if (busy) return;
-                  setAdding(false);
-                  setQuery("");
-                }
-              }}
-            />
+        <div className="weather-cities">
+          {cities.map((city, index) => (
             <button
+              key={city.name}
               type="button"
-              className="weather-add-submit"
-              disabled={busy || !query.trim()}
-              onClick={() => void submitAdd()}
-              title="添加城市"
-              aria-label="添加城市"
+              className={`weather-chip ${index === selected ? "is-active" : ""}`}
+              onClick={() => setSelected(index)}
+              onContextMenu={(event) => openMenu(event, index)}
+              title={`${city.label} · 右键管理城市`}
             >
-              <Icon name="check" size={13} />
+              {city.isMain ? <span className="weather-chip-dot" /> : null}
+              <b>{city.label}</b>
+              <span className="weather-chip-temp">{city.ok || city.stale ? `${Math.round(city.temp)}${unit}` : "--°"}</span>
+              {city.isIp ? <span className="weather-chip-ip">IP</span> : null}
             </button>
-            <button
-              type="button"
-              className="weather-add-cancel"
-              disabled={busy}
-              onClick={() => {
-                setAdding(false);
-                setQuery("");
-              }}
-              title="取消"
-              aria-label="取消添加"
-            >
-              <Icon name="close" size={13} />
-            </button>
-          </div>
-        ) : (
-          <>
-            <div className="weather-cities">
-              {cities.map((city, index) => (
-                <button
-                  key={city.name}
-                  type="button"
-                  className={`weather-chip ${index === selected ? "is-active" : ""}`}
-                  onClick={() => setSelected(index)}
-                  onContextMenu={(event) => openMenu(event, index)}
-                  title={`${city.label} · 右键管理城市`}
-                >
-                  {city.isMain ? <span className="weather-chip-dot" /> : null}
-                  <b>{city.label}</b>
-                  <span className="weather-chip-temp">{city.ok ? `${Math.round(city.temp)}${unit}` : "--°"}</span>
-                  {city.isIp ? <span className="weather-chip-ip">IP</span> : null}
-                </button>
-              ))}
-            </div>
-            <button
-              type="button"
-              className="weather-add"
-              onClick={() => {
-                setAdding(true);
-                setQuery("");
-              }}
-              title="添加城市"
-              aria-label="添加城市"
-            >
-              <Icon name="plus" size={13} />
-            </button>
-          </>
-        )}
+          ))}
+        </div>
+        <button
+          type="button"
+          className="weather-add"
+          onClick={openPicker}
+          title="添加城市"
+          aria-label="添加城市"
+        >
+          <Icon name="plus" size={13} />
+        </button>
         {note ? (
           <span className={`weather-note ${note.tone === "error" ? "error" : ""}`} title={note.text}>
             {note.text}
@@ -1518,16 +1477,28 @@ export function WeatherPage({
         <div className="weather-empty">
           <Icon name="weather" size={26} />
           <b>还没有城市</b>
-          <span>点右上角 + 搜索添加，或在设置 → 天气 → 城市列表里添加</span>
+          <span>点右上角 + 选省市或定位添加，或在设置 → 天气 → 城市列表里添加</span>
         </div>
       ) : !selectedCity || !hasData ? (
         <div className={`weather-empty ${selectedCity && !selectedCity.ok ? "is-error" : ""}`}>
           <Icon name="weather" size={26} />
           <b>{selectedCity && !selectedCity.ok ? `${selectedCity.label} 天气获取失败` : "暂无天气数据"}</b>
           <span>{selectedCity?.error || "点右上角刷新重试"}</span>
+          {selectedCity?.error ? (
+            <details className="weather-error-detail">
+              <summary>错误详情</summary>
+              <code>{selectedCity.error}</code>
+            </details>
+          ) : null}
         </div>
       ) : (
         <>
+          {selectedCity.stale ? (
+            <div className="weather-stale-banner" title={selectedCity.error}>
+              <Icon name="refresh" size={11} />
+              <span>{staleHint}</span>
+            </div>
+          ) : null}
           <div className="weather-body">
             <div className="weather-now">
               <div className="weather-now-main">
@@ -1628,6 +1599,14 @@ export function WeatherPage({
             ) : null}
           </div>
         </>
+      ) : null}
+
+      {pickerOpen ? (
+        <CityPickerModal
+          onPick={(city) => void pickExact(city)}
+          onManual={(value) => submitManual(value)}
+          onClose={closePicker}
+        />
       ) : null}
     </div>
   );

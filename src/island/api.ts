@@ -732,6 +732,17 @@ export async function addWeatherCity(query: string): Promise<string> {
   return invoke<string>("island_weather_add_city", { query });
 }
 
+/** 带坐标直加城市（省市联动 / 当前位置）：跳过在线 geocode，成功返回提示文案 */
+export async function addWeatherCityExact(city: {
+  name: string;
+  province: string;
+  lat: number;
+  lon: number;
+}): Promise<string> {
+  if (!IS_TAURI) return delay(`已添加城市「${city.name.trim()}」`, 20);
+  return invoke<string>("island_weather_add_city_exact", city);
+}
+
 /** 删除自定义城市：只从 weather.cities 删除，主城市 / IP 城市不可删 */
 export async function removeWeatherCity(city: {
   name: string;
@@ -761,6 +772,24 @@ export async function locateCurrentPlace(): Promise<LocatedPlace> {
     });
   }
   return invoke<LocatedPlace>("island_locate");
+}
+
+/** 城市选择器「使用当前位置」：手动触发一次 IP 定位 */
+export async function weatherLocateNow(): Promise<LocatedPlace> {
+  if (!IS_TAURI) {
+    return delay({
+      ok: true,
+      error: "",
+      country: "中国",
+      province: "陕西",
+      city: "西安",
+      district: "",
+      lat: 34.2635,
+      lon: 108.9246,
+      label: "陕西 · 西安",
+    });
+  }
+  return invoke<LocatedPlace>("weather_locate_now");
 }
 
 // ===== 股票 =====

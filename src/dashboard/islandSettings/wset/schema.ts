@@ -194,7 +194,7 @@ export const PAGE_FIELDS: Record<PageKey, string[]> = {
     "mail.imap",
   ],
   stocks: ["stocks.watchlist", "stocks.interval", "stocks.pct_alert"],
-  weather: ["weather.api_key", "weather.units", "weather.interval_min", "weather.city", "weather.cities"],
+  weather: ["weather.api_key", "weather.units", "weather.interval_min", "weather.city", "weather.lat", "weather.lon", "weather.cities"],
   translate: [
     "translate.custom_enabled",
     "translate.platform",

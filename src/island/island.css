@@ -2796,6 +2796,56 @@ html.island-preview .island::after {
   color: var(--faint);
 }
 
+/* 取数失败但显示旧数据时的顶部小提示 */
+.weather-stale-banner {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex: none;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: rgba(255, 190, 90, 0.12);
+  color: #ffcf8a;
+  font-size: calc(9.5px * var(--fs-scale, 1));
+}
+
+/* 从未成功过时保留可展开的完整错误详情 */
+.weather-error-detail {
+  max-width: 380px;
+  font-size: calc(9px * var(--fs-scale, 1));
+  color: var(--faint);
+  text-align: left;
+}
+
+.weather-error-detail summary {
+  cursor: pointer;
+}
+
+.weather-error-detail code {
+  display: block;
+  margin-top: 4px;
+  max-height: 72px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+  font-size: calc(8.5px * var(--fs-scale, 1));
+}
+
+/* 收起态胶囊：天气数据为旧快照时的角标 */
+.pill-weather-stale {
+  display: inline-grid;
+  place-items: center;
+  width: 12px;
+  height: 12px;
+  margin-left: 3px;
+  border-radius: 50%;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1;
+  color: #1a1408;
+  background: #ffcf8a;
+}
+
 .weather-refresh {
   width: 30px;
   height: 30px;
@@ -2867,6 +2917,197 @@ html.island-preview .island::after {
 .weather-menu button.danger:hover:not(:disabled) {
   background: rgba(255, 90, 90, 0.14);
   color: #ffc4c4;
+}
+
+/* 添加城市弹层：复用玻璃菜单视觉，顶部定位 + 省市两列联动 + 底部折叠手动输入 */
+.city-picker {
+  position: absolute;
+  z-index: 21;
+  top: 38px;
+  right: 0;
+  width: 400px;
+  max-width: calc(100% - 12px);
+  padding: 12px;
+  border-radius: 14px;
+  background: var(--menu-bg);
+  border: 1px solid var(--glass-edge);
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(24px) saturate(160%);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  animation: menu-in 0.16s ease;
+}
+
+.city-picker-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.city-picker-head b {
+  font-size: calc(11.5px * var(--fs-scale, 1));
+  color: var(--text);
+}
+
+.city-picker-close {
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+}
+
+.city-picker-close:hover {
+  background: var(--panel-strong);
+  color: var(--text);
+}
+
+.city-picker-locate {
+  height: 30px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  font-size: calc(10.5px * var(--fs-scale, 1));
+  color: var(--text);
+  background: rgba(var(--ink-rgb, 255, 255, 255), 0.12);
+  transition: background 0.18s ease;
+}
+
+.city-picker-locate:hover:not(:disabled) {
+  background: rgba(var(--ink-rgb, 255, 255, 255), 0.2);
+}
+
+.city-picker-locate:disabled {
+  opacity: 0.55;
+}
+
+.city-picker-locate-error {
+  padding: 4px 8px;
+  border-radius: 6px;
+  font-size: calc(9.5px * var(--fs-scale, 1));
+  color: #ffb0b0;
+  background: rgba(255, 90, 90, 0.1);
+}
+
+.city-picker-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 9px;
+  border-radius: 8px;
+  background: rgba(var(--ink-rgb, 255, 255, 255), 0.08);
+  color: var(--faint);
+}
+
+.city-picker-search input {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  outline: none;
+  color: var(--text);
+  font-size: calc(10px * var(--fs-scale, 1));
+}
+
+.city-picker-search input::placeholder {
+  color: var(--faint);
+}
+
+.city-picker-columns {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.city-picker-col {
+  min-width: 0;
+}
+
+.city-picker-col-title {
+  padding: 2px 4px 5px;
+  font-size: calc(9px * var(--fs-scale, 1));
+  color: var(--faint);
+}
+
+.city-picker-list {
+  height: 196px;
+  overflow-y: auto;
+  border-radius: 8px;
+  background: rgba(var(--ink-rgb, 255, 255, 255), 0.05);
+  padding: 3px;
+  scrollbar-width: thin;
+}
+
+.city-picker-item {
+  width: 100%;
+  height: 26px;
+  padding: 0 7px;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
+  font-size: calc(10px * var(--fs-scale, 1));
+  color: var(--text-soft);
+  white-space: nowrap;
+}
+
+.city-picker-item span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.city-picker-item:hover:not(:disabled) {
+  background: var(--panel-strong);
+  color: var(--text);
+}
+
+.city-picker-item.is-active {
+  background: rgba(var(--ink-rgb, 255, 255, 255), 0.16);
+  color: var(--text);
+}
+
+.city-picker-item:disabled {
+  opacity: 0.45;
+}
+
+.city-picker-empty {
+  padding: 12px 6px;
+  font-size: calc(9.5px * var(--fs-scale, 1));
+  color: var(--faint);
+  text-align: center;
+}
+
+.city-picker-manual {
+  border-top: 1px solid var(--hairline);
+  padding-top: 6px;
+}
+
+.city-picker-manual-toggle {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 2px;
+  font-size: calc(9.5px * var(--fs-scale, 1));
+  color: var(--faint);
+}
+
+.city-picker-manual-toggle svg:last-child {
+  margin-left: auto;
+  transition: transform 0.18s ease;
+}
+
+.city-picker-manual-toggle svg:last-child.is-open {
+  transform: rotate(180deg);
+}
+
+.city-picker-manual-box {
+  margin-top: 5px;
 }
 
 .weather-body {

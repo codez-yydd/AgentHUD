@@ -15,6 +15,7 @@ import {
 } from "react";
 import {
   addWeatherCity,
+  addWeatherCityExact,
   bindWeatherCity,
   clearClipboard,
   clearNotify,
@@ -333,6 +334,7 @@ import {
   agentLabel,
   BrandMark,
   currentLyricLine,
+  fmtClock,
   fmtMoney,
   Icon,
   type IconName,
@@ -3248,6 +3250,17 @@ export default function IslandApp() {
                 throw e;
               }
             }}
+            onAddCityExact={async (city) => {
+              try {
+                const message = await addWeatherCityExact(city);
+                showToast(message);
+                await reloadWeather();
+                return message;
+              } catch (e) {
+                showToast(String(e));
+                throw e;
+              }
+            }}
           />
         );
       case "ctl":
@@ -4175,6 +4188,14 @@ function QuotaPill({
           <WeatherGlyph icon={weather?.icon ?? "cloudy"} size={side ? 22 : 24} />
           <span className="pill-weather-temp">{weather ? `${Math.round(weather.temp)}${unit}` : "--°"}</span>
         </span>
+        {weather?.stale ? (
+          <span
+            className="pill-weather-stale"
+            title={`更新失败，显示 ${fmtClock(weather.updatedAt)} 数据${weather.errorBrief ? `（${weather.errorBrief}）` : ""}`}
+          >
+            !
+          </span>
+        ) : null}
         {weatherCity && <span className="pill-weather-city" title={weatherCity}>{weatherCity}</span>}
       </span>
       <span className="pill-divider" />
