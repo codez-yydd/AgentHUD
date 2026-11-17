@@ -26,6 +26,18 @@ import { listen } from "@tauri-apps/api/event";
 import { DEFAULT_PET_STYLE, petSizePx } from "./types";
 import type { CustomPetAsset } from "./types";
 
+// 禁用 WebView2 默认右键菜单（返回/刷新/打印等原生菜单）；
+// 输入框类元素放行，保留复制/粘贴的原生菜单，与其他窗口入口对齐。
+document.addEventListener(
+  "contextmenu",
+  (event) => {
+    const target = event.target as HTMLElement | null;
+    if (target?.closest("input, textarea, [contenteditable='true']")) return;
+    event.preventDefault();
+  },
+  true
+);
+
 /** ZBarPet 工厂创建的宠物实例接口（pet-core.js 契约的 TS 描述） */
 interface ZBarPetInstance {
   feed(data: unknown): void;

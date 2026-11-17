@@ -13,6 +13,18 @@ import { I18nProvider } from "./i18n";
 import { restoreWindowSize } from "./windowSize";
 import "./index.css";
 
+// 禁用 WebView2 默认右键菜单（返回/刷新/打印等原生菜单）；
+// 输入框类元素放行，保留复制/粘贴的原生菜单，与其他窗口入口对齐。
+document.addEventListener(
+  "contextmenu",
+  (event) => {
+    const target = event.target as HTMLElement | null;
+    if (target?.closest("input, textarea, [contenteditable='true']")) return;
+    event.preventDefault();
+  },
+  true
+);
+
 // 首帧前应用外观偏好（主题/透明度/字号）与语言偏好，避免暗色/英文用户看到闪烁
 // 主题走 bootstrapTheme：显式来源仅暗色时切 .dark（与升级前同语义）；
 // 「跟随系统」来源重解析当前系统主题（应用未运行期间系统可能已切换）

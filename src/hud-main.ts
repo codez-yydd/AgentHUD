@@ -67,6 +67,18 @@ import { dateStr } from "./format";
 import { loadAgentVisibility } from "./agentVisibility";
 import { LOCALE_KEY } from "./i18n/locale";
 
+// 禁用 WebView2 默认右键菜单（返回/刷新/打印等原生菜单）；
+// 输入框类元素放行，保留复制/粘贴的原生菜单，与其他窗口入口对齐。
+document.addEventListener(
+  "contextmenu",
+  (event) => {
+    const target = event.target as HTMLElement | null;
+    if (target?.closest("input, textarea, [contenteditable='true']")) return;
+    event.preventDefault();
+  },
+  true
+);
+
 /** 详情卡窗口 label（与 Rust hud_bar::HUD_CARD_WINDOW_LABEL 同步）：同一份
  *  bundle 按窗口 label 决定跑"条"还是"卡"——卡片是独立窗口，见 Rust 侧
  *  的建窗注释（条窗口一旦为卡片改几何，WebView2 会在那一帧把整条画到

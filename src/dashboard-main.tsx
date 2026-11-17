@@ -25,6 +25,19 @@ import "./dashboard.css";
  * 立即切换并广播，其他窗口经 appearance-changed 跟随）与本窗口字号变更
  * 监听都挂在本入口；币种偏好上下文（CurrencyPrefProvider）包住全部页面。
  */
+
+// 禁用 WebView2 默认右键菜单（返回/刷新/打印等原生菜单）；
+// 输入框类元素放行，保留复制/粘贴的原生菜单，与其他窗口入口对齐。
+document.addEventListener(
+  "contextmenu",
+  (event) => {
+    const target = event.target as HTMLElement | null;
+    if (target?.closest("input, textarea, [contenteditable='true']")) return;
+    event.preventDefault();
+  },
+  true
+);
+
 bootstrapTheme();
 applyFontSettings();
 watchFontChanges();

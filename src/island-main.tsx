@@ -3,6 +3,20 @@ import IslandApp from "./island/IslandApp";
 import { IS_TAURI } from "./island/api";
 import "./island/island.css";
 
+// 禁用 WebView2 默认右键菜单（返回/刷新/打印等原生菜单）；
+// 输入框类元素放行，保留复制/粘贴的原生菜单，与其他窗口入口对齐。
+// capture 阶段 preventDefault 不影响 React 合成事件，IslandApp 岛体上的
+// 自定义右键菜单照常工作，这里只补拦岛体外区域的原生菜单。
+document.addEventListener(
+  "contextmenu",
+  (event) => {
+    const target = event.target as HTMLElement | null;
+    if (target?.closest("input, textarea, [contenteditable='true']")) return;
+    event.preventDefault();
+  },
+  true
+);
+
 // 浏览器预览：加一个渐变桌面，让 CSS 玻璃有可模糊的底；Tauri 窗口保持透明。
 if (!IS_TAURI) {
   document.documentElement.classList.add("island-preview");
