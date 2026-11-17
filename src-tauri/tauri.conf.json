@@ -25,7 +25,7 @@
     "active": true,
     "targets": "all",
     "createUpdaterArtifacts": true,
-    "resources": ["wallpapers/*"],
+    "resources": ["wallpapers/*", "native/island_glass/LICENSE.electron-liquid-glass"],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

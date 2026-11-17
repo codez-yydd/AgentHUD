@@ -3776,6 +3776,7 @@ pub fn run() {
             island::island_drag_begin,
             island::island_drag_step,
             island::island_drag_end,
+            island::island_sync_native_glass,
             island::island_backdrop,
             island::island_quota_snapshot,
             island::island_refresh_quota,

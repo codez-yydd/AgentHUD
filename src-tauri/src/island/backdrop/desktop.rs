@@ -2,6 +2,7 @@
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use image::{codecs::jpeg::JpegEncoder, ExtendedColorType, ImageEncoder, RgbImage};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Condvar, Mutex};
 use std::time::{Duration, Instant};
 use windows::core::Interface;
@@ -64,21 +65,44 @@ static CAPTURE: Mutex<State> = Mutex::new(State {
     reaper_running: false,
 });
 static CAPTURE_IDLE: Condvar = Condvar::new();
+static RESERVED_FOR_NATIVE: AtomicBool = AtomicBool::new(false);
+
+/// Reserve the single desktop duplication slot after any in-flight fallback
+/// capture finishes. Leave the renderer free to retry instead of waiting here.
+pub(super) fn reserve_for_native() -> bool {
+    let Ok(mut state) = CAPTURE.try_lock() else {
+        return false;
+    };
+    RESERVED_FOR_NATIVE.store(true, Ordering::Release);
+    clear_capture(&mut state);
+    true
+}
+
+pub(super) fn release_from_native() {
+    RESERVED_FOR_NATIVE.store(false, Ordering::Release);
+}
+
+fn clear_capture(state: &mut State) {
+    state.monitor = None;
+    state.desktop = None;
+    state.retry_after = None;
+    state.last_request = None;
+    CAPTURE_IDLE.notify_one();
+}
 
 pub(super) fn reset() {
     if let Ok(mut state) = CAPTURE.lock() {
         if state.monitor.is_some() {
-            state.monitor = None;
-            state.desktop = None;
-            state.retry_after = None;
-            state.last_request = None;
-            CAPTURE_IDLE.notify_one();
+            clear_capture(&mut state);
         }
     }
 }
 
 pub(super) fn capture(monitor: Monitor, canvas: RECT) -> Option<String> {
     let mut state = CAPTURE.lock().ok()?;
+    if RESERVED_FOR_NATIVE.load(Ordering::Acquire) {
+        return None;
+    }
     state.last_request = Some(Instant::now());
     if !state.reaper_running {
         state.reaper_running = std::thread::Builder::new()

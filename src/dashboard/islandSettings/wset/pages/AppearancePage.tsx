@@ -257,7 +257,7 @@ export function AppearancePage({ draft }: PageProps) {
         </Row>
         <Row
           title="出现在截图和录屏里"
-          desc="开启时，玻璃直接透出后方画面。关闭时，Windows 可采样窗口正下方的画面用于边缘折射。"
+          desc="关闭后会把灵动岛排除出截图和录屏。在 Windows 上，也可以从灵动岛右键菜单直接开启「实时桌面折射」。"
           tag={<UnsupportedTag draft={draft} keyName="island.exclude_from_capture" />}
           rowKey="island.exclude_from_capture"
         >
@@ -270,7 +270,7 @@ export function AppearancePage({ draft }: PageProps) {
         </Row>
         <Row
           title="空闲呼吸动画"
-          desc="收起且静止时，外壳做轻微的缩放呼吸。关闭后灵动岛保持静止，不影响圆角裁剪与内容显示。"
+          desc="收起且静止时，外壳会轻微呼吸。关闭后灵动岛保持静止。"
           rowKey="island.breath_enabled"
         >
           <Switch
@@ -281,7 +281,7 @@ export function AppearancePage({ draft }: PageProps) {
         </Row>
         <Row
           title="背景刷新率"
-          desc="液态玻璃采样桌面画面的频率。频率越高，背景变化跟得越快。"
+          desc="调节回退模式的桌面采样频率。Windows 原生折射随桌面变化实时刷新。"
           error={draft.errors["island.blur_fps"]}
           tag={<UnsupportedTag draft={draft} keyName="island.blur_fps" />}
           rowKey="island.blur_fps"

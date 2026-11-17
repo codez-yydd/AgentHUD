@@ -4475,6 +4475,24 @@ html.island-preview .island::after {
   margin: 3px 4px;
 }
 
+.island-context-menu .context-refraction {
+  height: auto;
+  min-height: 42px;
+  padding-block: 5px;
+}
+
+.context-refraction-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+#desktop-refraction-help {
+  font-size: calc(8.5px * var(--fs-scale, 1));
+  color: var(--muted);
+  line-height: 1.35;
+}
+
 .context-glass {
   display: flex;
   flex-direction: column;
@@ -7947,6 +7965,8 @@ body,
   position: absolute;
   inset: 0;
   z-index: 1;
+  /* 折射底板在中档透明度也需要有足够权重。0% 和 90% 保持原来的两端。 */
+  --glass-refraction-transmission: calc(var(--glass-transmission, 0) * (2 - var(--glass-transmission, 0)));
   background: rgba(var(--tint-rgb), var(--glass-base-alpha, 0));
   pointer-events: none;
   overflow: hidden;
@@ -7990,6 +8010,17 @@ body,
   50% {
     transform: scale(1.07);
   }
+}
+
+/* 原生底板跟随主体几何。把空闲呼吸留在表面高光和染色的透明度上。 */
+.island-root[data-native-glass].is-collapsed.is-idle:not(.is-dragging):not(.no-breath) :is(.liquid-glass, .liquid-outline) {
+  animation-name: liquid-native-breath;
+  will-change: opacity;
+}
+
+@keyframes liquid-native-breath {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.92; }
 }
 
 /* 呼吸锚点 = 液桥锚线（吸附边内缩 70px 的边线与画布中线交点）：贴边胶囊
@@ -8080,7 +8111,7 @@ body,
   --glass-overlay-top: var(--glass-tint-top);
   --glass-overlay-bottom: var(--glass-tint-bottom);
   /* t=0 → 1（实心）；t=1 → tint-weight×0.15（与旧版一致） */
-  --glass-overlay-alpha: calc(1 - var(--glass-transmission, 0) * (1 - var(--glass-tint-weight, 1) * 0.15));
+  --glass-overlay-alpha: calc(1 - var(--glass-refraction-transmission) * (1 - var(--glass-tint-weight, 1) * 0.15));
 }
 
 .liquid-glass:has(.glass-refraction.is-ready) {
@@ -8090,6 +8121,17 @@ body,
 
 .island-root[data-theme="dark"] .liquid-glass:has(.glass-refraction.is-ready) {
   --glass-tint-weight: 0.94;
+}
+
+.island-root[data-native-glass] .liquid-glass {
+  --glass-base-alpha: 0;
+  --glass-overlay-top: rgb(var(--tint-rgb));
+  --glass-overlay-bottom: var(--glass-direct-bottom, rgb(var(--tint-rgb)));
+  --glass-overlay-alpha: calc(1 - var(--glass-refraction-transmission) * (1 - var(--glass-direct-alpha, 0.67) * 0.25));
+}
+
+.island-root[data-native-glass] .liquid-backdrops {
+  display: none;
 }
 
 .liquid-gloss {

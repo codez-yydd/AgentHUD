@@ -364,6 +364,7 @@ import {
 import { fontFamilyWithFallback, ISLAND_FONT_STACK } from "./fontFamily";
 import { KIND_COLORS, NOTIFY_BRAND_ICONS, NOTIFY_BRAND_LABELS, NotifyBrandIcon } from "./notifyBrand";
 import { createGlassBackdrop, type GlassBackdrop, type GlassBackdropGeometry } from "./glassBackdrop";
+import { useNativeGlass } from "./nativeGlass";
 import {
   NOTIFY_ACTIVITY_MS,
   NOTIFY_LEAD_MS,
@@ -383,6 +384,7 @@ import {
   bodyRadius,
   cssPath,
   liquidPath,
+  nativeGlassBody,
   liquidRadii,
   type LiquidDrip,
   type LiquidEdge,
@@ -417,9 +419,9 @@ const ToolboxPage = lazy(() =>
   import("./ToolboxPage").then((m) => ({ default: m.ToolboxPage }))
 );
 
+const WINDOWS_TAURI = IS_TAURI && typeof navigator !== "undefined" && /Windows/i.test(navigator.userAgent);
 /** Windows 采集桌面，浏览器预览可用 ?backdrop=1 查看折射。 */
-const CAN_CAPTURE_BACKDROP =
-  (IS_TAURI && typeof navigator !== "undefined" && /Windows/i.test(navigator.userAgent)) ||
+const CAN_CAPTURE_BACKDROP = WINDOWS_TAURI ||
   (!IS_TAURI &&
     typeof window !== "undefined" &&
     new URLSearchParams(window.location.search).get("backdrop") === "1");
@@ -497,6 +499,7 @@ function fmtMeetClock(ms: number): string {
 export default function IslandApp() {
   const [config, setConfig] = useState<IslandConfig | null>(null);
   const [enabled, setEnabled] = useState(true);
+  const [captureExcluded, setCaptureExcluded] = useState(false);
   const [open, setOpen] = useState(
     () => !IS_TAURI && new URLSearchParams(window.location.search).get("open") === "1"
   );
@@ -814,6 +817,7 @@ export default function IslandApp() {
         }
         setConfig(state.config);
         configRef.current = state.config;
+        setCaptureExcluded(state.config.excludeFromCapture === true);
         backendExpandedRef.current = Boolean(state.expanded);
         const wantedEdge = previewParams.get("edge");
         setEdge(isIslandEdge(wantedEdge) ? wantedEdge : state.config.edge ?? "top");
@@ -872,7 +876,7 @@ export default function IslandApp() {
   // ===== auto 主题亮度反馈 =====
   // 指数平滑（0.8 旧 + 0.2 新），越过 0.64 / 0.42 阈值后还要持续 3s 才切换，
   // 避免滚动的网页 / 视频让玻璃来回闪。只维护 autoDark，固定主题不受影响。
-  const feedLuminance = (lum: number) => {
+  const feedLuminance = useCallback((lum: number) => {
     const next = luminanceRef.current * 0.8 + Math.max(0, Math.min(1, lum)) * 0.2;
     luminanceRef.current = next;
     if (themeModeRef.current !== "auto") {
@@ -895,14 +899,33 @@ export default function IslandApp() {
     autoFlipSince.current = null;
     autoDarkRef.current = wantDark;
     setAutoDark(wantDark);
-  };
+  }, []);
+
+  // 开启时等后端应用窗口采集标志。用户关闭时立即回退。
+  const nativeGlassEnabled = enabled && captureExcluded && config?.excludeFromCapture === true &&
+    (config?.transparency ?? 0) > 0;
+  const {
+    active: nativeGlassActive,
+    luminance: nativeGlassLuminance,
+    updateGeometry: updateNativeGlassGeometry,
+  } = useNativeGlass(WINDOWS_TAURI, nativeGlassEnabled);
+  useEffect(() => {
+    if (!nativeGlassActive || themeMode !== "auto") return;
+    // 静止桌面也要让明暗切换的平滑和 3 秒去抖继续收敛。
+    const sample = () => {
+      if (nativeGlassLuminance.current != null) feedLuminance(nativeGlassLuminance.current);
+    };
+    sample();
+    const timer = window.setInterval(sample, 250);
+    return () => window.clearInterval(timer);
+  }, [feedLuminance, nativeGlassActive, nativeGlassLuminance, themeMode]);
 
   // 只有窗口正下方的桌面帧参与折射，相邻帧仅用于自动主题的明暗判断。
   const wantsRefraction = !IS_TAURI || config?.excludeFromCapture === true;
   const sampleNeighbor = themeMode === "auto";
   const backdropReady = Boolean(config) && (wantsRefraction || sampleNeighbor);
   useEffect(() => {
-    if (!CAN_CAPTURE_BACKDROP || !enabled || !backdropReady) return;
+    if (!CAN_CAPTURE_BACKDROP || !enabled || !backdropReady || nativeGlassActive) return;
     const canvas = backdropCanvasRef.current;
     const fallback = backdropFallbackRef.current;
     if (!canvas || !fallback) return;
@@ -1052,7 +1075,7 @@ export default function IslandApp() {
       glassBackdropRef.current = null;
       clearBackdrop();
     };
-  }, [backdropReady, enabled, sampleNeighbor, wantsRefraction]);
+  }, [backdropReady, enabled, feedLuminance, nativeGlassActive, sampleNeighbor, wantsRefraction]);
 
   // ===== 外部事件 =====
   useEffect(() => {
@@ -1079,6 +1102,7 @@ export default function IslandApp() {
         // 否则「后发先至」的旧广播会把刚滚出来的 compactView 打回旧值、触发
         // viewOverride 清空造成视图回跳闪烁；写前重读见 updateConfig.commit。
         if (!next || next.enabled === undefined) return;
+        setCaptureExcluded(next.excludeFromCapture === true);
         const merged = { ...next, ...configPendingRef.current };
         const current = configRef.current;
         if (current && sameIslandConfig(current, merged)) return;
@@ -2777,7 +2801,7 @@ export default function IslandApp() {
         flow.setAttribute("r", String(Math.max(60, body.width * 0.35)));
       }
       const radii = liquidRadii(body, neckEdge, gap, neckStrength);
-      const d = liquidPath({
+      const shape = {
         edge: neckEdge,
         line: lines[neckEdge],
         body,
@@ -2790,7 +2814,8 @@ export default function IslandApp() {
         vx: motion?.vx ?? 0,
         vy: motion?.vy ?? 0,
         wave: audioLevel > 0 ? { amplitude: audioLevel, time: now / 1000 } : undefined,
-      });
+      };
+      const d = liquidPath(shape);
       if (d && d !== lastPath) {
         const geometry = {
           width: CANVAS_W, height: CANVAS_H,
@@ -2799,6 +2824,7 @@ export default function IslandApp() {
         };
         glassBackdropGeometryRef.current = geometry;
         glassBackdropRef.current?.draw(geometry);
+        if (WINDOWS_TAURI) updateNativeGlassGeometry(nativeGlassBody(shape, radii));
         glass.style.setProperty("--liquid-body-top", `${body.y}px`);
         glass.style.setProperty("--liquid-body-bottom", `${body.y + body.height}px`);
         liquidRimGradientRef.current?.setAttribute("y1", String(body.y));
@@ -2861,7 +2887,7 @@ export default function IslandApp() {
       window.cancelAnimationFrame(raf);
       window.clearTimeout(pollTimer);
     };
-  }, [Boolean(config)]);
+  }, [Boolean(config), updateNativeGlassGeometry]);
 
   // 渲染期写入的 liquid 输入（bodyTargetRef 在 render 里赋值、edgeRef 跟随
   // edge state）不经过事件回调，任何重渲染后都唤醒一次引擎：已活跃时是空
@@ -3375,7 +3401,7 @@ export default function IslandApp() {
     clientX: number,
     clientY: number,
     expanded: boolean,
-    menuHeight = 372,
+    menuHeight = WINDOWS_TAURI ? 416 : 372,
   ): { x: number; y: number } => {
     const MW = 196;
     const MH = menuHeight;
@@ -3429,6 +3455,7 @@ export default function IslandApp() {
   const enumModeLabel =
     EXPAND_MODES.find((item) => item.key === normalizeExpandMode(config.expandMode))?.label ?? "";
   const passthroughOn = Boolean(config.passthrough);
+  const desktopRefractionOn = config.excludeFromCapture === true && transparency > 0;
   const visibleSections = SECTION_TABS.filter((item) => !hidden.has(item.key)).length;
 
   /**
@@ -3689,6 +3716,26 @@ export default function IslandApp() {
       </button>
 
       <div className="context-divider" />
+      {WINDOWS_TAURI && (
+        <button
+          type="button"
+          aria-label="实时桌面折射"
+          aria-describedby="desktop-refraction-help"
+          aria-pressed={desktopRefractionOn}
+          className={`context-refraction context-check-row ${desktopRefractionOn ? "selected" : ""}`}
+          onClick={() => updateConfig(desktopRefractionOn
+            ? { excludeFromCapture: false }
+            : { excludeFromCapture: true, ...(transparency === 0 ? { transparency: 60 } : {}) }, true)}
+        >
+          <span className="context-check">
+            {desktopRefractionOn ? <Icon name="check" size={11} /> : null}
+          </span>
+          <span className="context-refraction-copy">
+            <span>实时桌面折射</span>
+            <span id="desktop-refraction-help">启用时，灵动岛会从截图和录屏中隐藏</span>
+          </span>
+        </button>
+      )}
       <div className="context-glass">
         <div className="context-glass-head">
           <span>玻璃透明度</span>
@@ -3778,6 +3825,7 @@ export default function IslandApp() {
         style={rootFontStyle}
         data-theme={themePalette}
         data-theme-mode={themeMode}
+        data-native-glass={nativeGlassActive ? "" : undefined}
         data-edge={edge}
         onPointerDownCapture={handlePointerDownCapture}
         onPointerEnter={() => {

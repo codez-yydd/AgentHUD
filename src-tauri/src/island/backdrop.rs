@@ -14,6 +14,16 @@ use windows::Win32::Foundation::{HWND, RECT};
 #[path = "backdrop/desktop.rs"]
 mod desktop;
 
+#[cfg(windows)]
+pub(super) fn reserve_native_capture() -> bool {
+    desktop::reserve_for_native()
+}
+
+#[cfg(windows)]
+pub(super) fn release_native_capture() {
+    desktop::release_from_native();
+}
+
 /// 相邻区域按比例下采样，保留自动主题亮度判断所需的代表性；缩略图短边
 /// 上限 256（曾为 320：每帧解码位图越大，前端光栅内存压力越大，256 在
 /// 亮度统计上已远超充分采样密度）。

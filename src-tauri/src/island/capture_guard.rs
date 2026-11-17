@@ -1,8 +1,4 @@
-//! 屏幕采集守卫：本应用自己的截图 / 录屏正在抓屏时，暂停毛玻璃底板采样。
-//!
-//! `backdrop::capture` 每 650ms 会做一次 GDI 桌面采样（见 backdrop.rs 模块
-//! 注释）。本应用自己截图/录屏期间再并发一次底板采样没有意义，还会和抓屏
-//! 抢桌面 DC，所以用计数守卫让 `backdrop` 直接复用上一张图。
+//! 本应用截图 / 录屏时暂停背景采样，供 WebView 底板和原生玻璃共用。
 //!
 //! 计数而不是布尔：录屏线程和截图命令可能同时持有。
 
@@ -16,6 +12,8 @@ pub struct CaptureGuard(());
 impl CaptureGuard {
     pub fn enter() -> Self {
         DEPTH.fetch_add(1, Ordering::SeqCst);
+        #[cfg(windows)]
+        super::glass::sync_capture_guard();
         CaptureGuard(())
     }
 }
@@ -23,6 +21,8 @@ impl CaptureGuard {
 impl Drop for CaptureGuard {
     fn drop(&mut self) {
         DEPTH.fetch_sub(1, Ordering::SeqCst);
+        #[cfg(windows)]
+        super::glass::sync_capture_guard();
     }
 }
 
