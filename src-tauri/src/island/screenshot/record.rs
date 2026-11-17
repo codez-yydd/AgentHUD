@@ -38,9 +38,10 @@ mod sck;
 mod ffmpeg;
 
 use super::{
-    close_shot, hide_island_for_capture, join_error_message, monitor_list, on_main_thread,
-    park_overlay_for_record, restore_overlay_for_record, shot_dir, shot_session,
-    show_island_for_capture, RecordResult, ShotMonitor, ShotRect,
+    close_shot, hide_island_for_capture, join_error_message, lift_capture_exclude, monitor_list,
+    on_main_thread, park_overlay_for_record, restore_capture_exclude, restore_capture_exclude_sync,
+    restore_overlay_for_record, shot_dir, shot_session, show_island_for_capture, RecordResult,
+    ShotMonitor, ShotRect,
 };
 use crate::webview_args::MergedRendererBuilder;
 
@@ -464,11 +465,20 @@ async fn start_recording(
     let rec_worker = rec.clone();
     let dir = shot_dir()?;
 
+    // 录制真正开始抓帧前临时解除灵动岛/通知浮窗的采集排除：用户开了「不出
+    // 现在截图和录屏里」时，自家录屏也应该能录到灵动岛。解除点放在所有可能
+    // 失败的步骤之后，到抓帧线程收尾恢复之间没有可失败的路径；ffmpeg /
+    // run_capture 各自的 420ms 预滚等待足够 DWM 把解除后的窗口合入画面。
+    // 抓帧线程收尾时由 restore_capture_exclude_sync 恢复（WDA_EXCLUDEFROMCAPTURE
+    // 连 GDI BitBlt 也抓不到，录屏期间岛持续出现在画面里正是需求）。
+    lift_capture_exclude(&app).await;
+    let app_thread = app.clone();
+
     // Windows MP4：单独的 ffmpeg 录制线程（子进程收尾在线程内完成）
     #[cfg(windows)]
     if format == "mp4" {
         std::thread::spawn(move || {
-            run_ffmpeg_recording(rec_worker, spec, dir);
+            run_ffmpeg_recording(app_thread, rec_worker, spec, dir);
         });
         return Ok(RecordStarted {
             record_id,
@@ -481,7 +491,7 @@ async fn start_recording(
     }
 
     std::thread::spawn(move || {
-        run_recording(rec_worker, spec, dir);
+        run_recording(app_thread, rec_worker, spec, dir);
     });
 
     Ok(RecordStarted {
@@ -590,10 +600,18 @@ pub async fn shot_record_gif_fps(record_id: u64, fps: u32) -> Result<RecordState
 }
 
 /// 结束录制：只置停止位，抓帧线程自己收尾（MP4 flush / GIF 编码）。
+/// 采集排除的恢复不能立刻做（最后几帧会把提前恢复的岛漏出去/收回去），
+/// 后台等抓帧线程退出后再恢复一次：正常路径线程收尾处已恢复，这里是
+/// 幂等兜底，也兜住线程异常退出（running 卡死时最多等 8s）的情况。
 #[tauri::command]
-pub fn shot_record_stop(record_id: u64) -> Result<(), String> {
+pub async fn shot_record_stop(app: AppHandle, record_id: u64) -> Result<(), String> {
     let rec = get_record(record_id)?;
     rec.stop.store(true, Ordering::Relaxed);
+    let app_wait = app;
+    tauri::async_runtime::spawn(async move {
+        stop_and_wait_detached(record_id).await;
+        restore_capture_exclude(&app_wait).await;
+    });
     Ok(())
 }
 
@@ -793,6 +811,8 @@ pub async fn shot_record_export(
 #[tauri::command]
 pub async fn shot_record_close(app: AppHandle, record_id: u64) -> Result<(), String> {
     stop_and_wait_detached(record_id).await;
+    // 抓帧线程已退出，恢复采集排除（线程收尾处已恢复过，这里兜底幂等）
+    restore_capture_exclude(&app).await;
     remove_record(record_id);
     // 关闭走 hide_recorder_window：板块可见时隐藏复用（下次录制 navigate
     // 整页重载，不吃 WebView 冷启动），板块隐藏时销毁
@@ -814,6 +834,8 @@ pub async fn shot_record_cancel(
             .map(|_| (rec.monitor_x, rec.monitor_y))
     });
     stop_and_wait_detached(record_id).await;
+    // 抓帧线程已退出，恢复采集排除（线程收尾处已恢复过，这里兜底幂等）
+    restore_capture_exclude(&app).await;
     remove_record(record_id);
     // 取消同样走 hide_recorder_window：板块可见时隐藏复用（隐藏前可能带着
     // 失败/取消态的内容，下次录制会整页 navigate 重载掉），板块隐藏时销毁
@@ -1291,7 +1313,7 @@ async fn probe_windows_audio(
 /// 优先、kill 兜底，fMP4 保证落盘文件可用，详见 ffmpeg.rs 模块注释）→
 /// 校验产物 → 通知前端。
 #[cfg(windows)]
-fn run_ffmpeg_recording(rec: Arc<Recording>, spec: CaptureSpec, dir: PathBuf) {
+fn run_ffmpeg_recording(app: AppHandle, rec: Arc<Recording>, spec: CaptureSpec, dir: PathBuf) {
     /// gdigrab 帧率：30fps 是 Windows 屏幕抓取与体积的平衡点（mac SCK 是 60）
     const GRAB_FPS: u32 = 30;
     // 录制期间暂停底板采样，避免和录屏抓屏抢 GDI 桌面（见 island::capture_guard）。
@@ -1411,6 +1433,8 @@ fn run_ffmpeg_recording(rec: Arc<Recording>, spec: CaptureSpec, dir: PathBuf) {
         })
     })();
     rec.finish(outcome);
+    // 抓帧已彻底结束（成败都算），恢复采集排除；restore 同步版等主线程落地
+    restore_capture_exclude_sync(&app);
 }
 
 /// 把 ffmpeg 退出状态 + stderr 尾部转成可读中文错误。
@@ -1428,7 +1452,7 @@ fn describe_ffmpeg_exit(status: std::process::ExitStatus, tail: &str, phase: &st
 
 /// 录制入口：macOS 15+ 的 MP4 优先走 ScreenCaptureKit（60fps + 系统声音），
 /// 起流失败再退回逐帧抓屏 + VideoToolbox 编码（无声音、帧率受抓屏速度限制）。
-fn run_recording(rec: Arc<Recording>, spec: CaptureSpec, dir: PathBuf) {
+fn run_recording(app: AppHandle, rec: Arc<Recording>, spec: CaptureSpec, dir: PathBuf) {
     // 逐帧抓屏（GIF 兜底 / 非 ffmpeg 分支）期间同样暂停底板采样。
     let _capture_guard = crate::island::capture_guard::CaptureGuard::enter();
     #[cfg(target_os = "macos")]
@@ -1494,6 +1518,10 @@ fn run_recording(rec: Arc<Recording>, spec: CaptureSpec, dir: PathBuf) {
     }
     let outcome = run_capture(&rec, spec);
     rec.finish(outcome);
+    // 抓帧已彻底结束（成败都算），恢复采集排除；restore 同步版等主线程落地。
+    // 上面的 macOS ScreenCaptureKit 分支提前 return——macOS 上 lift/restore
+    // 本就是空实现，无需恢复。
+    restore_capture_exclude_sync(&app);
 }
 
 fn run_capture(rec: &Arc<Recording>, spec: CaptureSpec) -> Result<RecordResult, String> {

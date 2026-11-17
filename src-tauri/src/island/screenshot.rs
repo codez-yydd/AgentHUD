@@ -1746,6 +1746,93 @@ async fn hide_island_for_capture(app: &AppHandle) {
     .await;
 }
 
+// ============================================================
+// 自家抓屏期间的采集排除临时解除（WDA_EXCLUDEFROMCAPTURE）
+// ============================================================
+
+/// 自家抓屏（截图冻结帧 / 滚动抓帧序列 / 录屏抓帧）前临时解除灵动岛与通知
+/// 浮窗的「截图和录屏排除」：`WDA_EXCLUDEFROMCAPTURE` 的窗口在 GDI
+/// `BitBlt` 屏幕抓取里同样不可见，不解除的话本应用自己的截图 / 录屏画面里
+/// 就没有灵动岛。只在 `island.exclude_from_capture` 已开启时才有实际动作
+/// （否则本来就无排除，不动窗口标志）；窗口不存在时静默跳过。抓屏结束后
+/// 必须由 [`restore_capture_exclude`] / [`restore_capture_exclude_sync`]
+/// 恢复——自家抓屏期间临时解除 WDA 排除，结束恢复，第三方抓屏不受此影响。
+///
+/// 返回是否有窗口被实际摘除：与 `hide_own_windows` 之后的等待同一道理，
+/// 刚解除的窗口要等 DWM 合成一拍才会进抓取画面。
+#[cfg(target_os = "windows")]
+async fn lift_capture_exclude(app: &AppHandle) -> bool {
+    if !super::load_config().exclude_from_capture {
+        return false;
+    }
+    let app_main = app.clone();
+    on_main_thread(app, move || {
+        use windows::Win32::Foundation::HWND;
+        use windows::Win32::UI::WindowsAndMessaging::{SetWindowDisplayAffinity, WDA_NONE};
+        let mut lifted = false;
+        for label in [super::ISLAND_WINDOW_LABEL, super::popup::POPUP_WINDOW_LABEL] {
+            let Some(win) = app_main.get_webview_window(label) else {
+                continue;
+            };
+            let Ok(hwnd) = win.hwnd() else {
+                continue;
+            };
+            if unsafe { SetWindowDisplayAffinity(HWND(hwnd.0), WDA_NONE) }.is_ok() {
+                lifted = true;
+            }
+        }
+        Ok(lifted)
+    })
+    .await
+    .unwrap_or(false)
+}
+
+#[cfg(not(target_os = "windows"))]
+async fn lift_capture_exclude(_app: &AppHandle) -> bool {
+    false
+}
+
+/// 按**当前配置**恢复灵动岛 / 通知浮窗的采集排除（[`lift_capture_exclude`]
+/// 的配对操作，成功与失败路径都必须调用——漏了会让岛对第三方抓屏永久
+/// 泄漏）。直接复用既有恢复能力：岛窗口走 `mod.rs` 的
+/// `apply_window_flags_on_main`（置顶 + 采集排除 + 底板取样许可一次性回到
+/// 稳态），通知浮窗走 `popup::sync_capture_flag`（内部自行投递主线程）。
+#[cfg(target_os = "windows")]
+async fn restore_capture_exclude(app: &AppHandle) {
+    let cfg = super::load_config();
+    let app_main = app.clone();
+    let restored = on_main_thread(app, move || {
+        super::apply_window_flags_on_main(&app_main, &cfg)
+    })
+    .await;
+    if let Err(e) = restored {
+        eprintln!("[agenthud-shot] 恢复灵动岛采集排除失败: {e}");
+    }
+    super::popup::sync_capture_flag(app);
+}
+
+#[cfg(not(target_os = "windows"))]
+async fn restore_capture_exclude(_app: &AppHandle) {}
+
+/// [`restore_capture_exclude`] 的同步版：给没有 async 上下文的抓帧线程
+/// （录屏 MP4 / GIF 收尾）用。岛窗口用阻塞式主线程投递等它落地，通知浮窗
+/// 沿用 `popup::sync_capture_flag` 的 fire-and-forget。
+#[cfg(target_os = "windows")]
+fn restore_capture_exclude_sync(app: &AppHandle) {
+    let cfg = super::load_config();
+    let app_main = app.clone();
+    let restored = on_main_thread_blocking(app, move || {
+        super::apply_window_flags_on_main(&app_main, &cfg)
+    });
+    if let Err(e) = restored {
+        eprintln!("[agenthud-shot] 恢复灵动岛采集排除失败: {e}");
+    }
+    super::popup::sync_capture_flag(app);
+}
+
+#[cfg(not(target_os = "windows"))]
+fn restore_capture_exclude_sync(_app: &AppHandle) {}
+
 /// 预先建好隐藏的覆盖窗口：截图页一打开就调用，首次点击截图时 WebView 已经是热的。
 #[tauri::command]
 pub async fn shot_prewarm(app: AppHandle) -> Result<(), String> {
@@ -2025,6 +2112,10 @@ async fn start_capture_inner(
     // 截图功能截到 AgentHUD；滚动截图 / 录屏的窗口拾取与无缝过渡依赖「自家
     // 窗口已隐藏」，仍只保留岛 + 主窗口（详见 screen_windows 处的注释）。
     let keep_all_own = mode != "scroll" && mode != "record";
+    // 抓屏前临时解除灵动岛/通知浮窗的采集排除（WDA_EXCLUDEFROMCAPTURE 连
+    // GDI BitBlt 也抓不到），冻结帧里才有灵动岛；抓完（成功或失败）立即
+    // 恢复，见 lift/restore_capture_exclude 的模块注释。
+    let wda_lifted = lift_capture_exclude(&app).await;
     let hidden = on_main_thread(&app, move || {
         hide_overlay(&app_main);
         let island_and_main: Vec<&str> = vec![
@@ -2057,14 +2148,24 @@ async fn start_capture_inner(
         }
         Ok(hidden)
     })
-    .await?;
+    .await;
+    // lift 之后任何一步失败都必须先恢复采集排除再返回，否则岛会对第三方
+    // 抓屏永久泄漏（直到下一次恢复点）。
+    let hidden = match hidden {
+        Ok(hidden) => hidden,
+        Err(e) => {
+            restore_capture_exclude(&app).await;
+            return Err(e);
+        }
+    };
     let any_hidden = !hidden.is_empty();
     let _ = hidden;
     let wait_ms = if delay_sec > 0 {
         delay_sec.min(30) * 1000
-    } else if any_hidden {
-        // 有窗口刚被藏掉，给 DWM 一拍把它们移出合成画面；没有窗口变化时
-        // 不用白等这 140ms，冻结帧能早一点出来。
+    } else if any_hidden || wda_lifted {
+        // 有窗口刚被藏掉，或刚解除采集排除（WDA 变更同样要等 DWM 合成一拍
+        // 才会进抓取画面），都给合成器留一拍；没有窗口变化时不用白等这
+        // 140ms，冻结帧能早一点出来。
         if cfg!(target_os = "windows") {
             140
         } else {
@@ -2074,14 +2175,18 @@ async fn start_capture_inner(
     } else {
         0
     };
-    tauri::async_runtime::spawn_blocking(move || {
+    let waited = tauri::async_runtime::spawn_blocking(move || {
         std::thread::sleep(Duration::from_millis(wait_ms))
     })
     .await
-    .map_err(|e| format!("等待截图延时失败: {e}"))?;
+    .map_err(|e| format!("等待截图延时失败: {e}"));
+    if let Err(e) = waited {
+        restore_capture_exclude(&app).await;
+        return Err(e);
+    }
 
     let app_cap = app.clone();
-    let (captured, monitor, origin, final_mode, title, windows) =
+    let frozen =
         tauri::async_runtime::spawn_blocking(move || -> Result<_, String> {
             let monitors = monitor_list(&app_cap);
             if monitors.is_empty() {
@@ -2150,7 +2255,11 @@ async fn start_capture_inner(
             ))
         })
         .await
-        .map_err(|e| join_error_message("截图", e))??;
+        .map_err(|e| join_error_message("截图", e));
+    // 冻结帧到手（无论成败）立即恢复采集排除，别让岛在本次抓屏之外继续
+    // 对第三方抓屏可见。
+    restore_capture_exclude(&app).await;
+    let (captured, monitor, origin, final_mode, title, windows) = frozen??;
 
     eprintln!(
         "[agenthud-shot] 抓屏+编码完成 {}×{} @({}, {})，耗时 {}ms",
@@ -3368,6 +3477,10 @@ pub async fn shot_scroll(app: AppHandle, id: u64, rect: ShotRect) -> Result<Scro
     }
     park_overlay(&app).await?;
     show_island_for_capture(&app).await;
+    // 抓帧序列前临时解除灵动岛/通知浮窗的采集排除：滚动抓帧同样走 GDI
+    // BitBlt，不解除的话帧序列里没有灵动岛。整个抓帧序列结束（成败都算）
+    // 后立即恢复；接下来的 650ms 等待足够 DWM 把解除后的窗口合入画面。
+    lift_capture_exclude(&app).await;
     tauri::async_runtime::spawn_blocking(move || std::thread::sleep(Duration::from_millis(650)))
         .await
         .map_err(|e| format!("准备滚动截图失败: {e}"))?;
@@ -3403,6 +3516,8 @@ pub async fn shot_scroll(app: AppHandle, id: u64, rect: ShotRect) -> Result<Scro
             Ok(frames)
         })
         .await;
+    // 抓帧序列结束（成功或失败）立即恢复采集排除，第三方抓屏不再可见岛。
+    restore_capture_exclude(&app).await;
 
     if let Some((cx, cy)) = original_cursor {
         #[cfg(target_os = "windows")]
