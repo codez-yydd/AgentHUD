@@ -3987,8 +3987,14 @@ pub fn run() {
             island::meeting::meeting_settings,
             island::meeting::meeting_set_auto_gain
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while running tauri application")
+        .run(|_app, event| {
+            if let tauri::RunEvent::Exit = event {
+                // 退出时恢复恒等渐变，避免屏幕停留在暗的软件调光状态
+                crate::island::system::restore_gamma();
+            }
+        });
 }
 
 #[cfg(test)]

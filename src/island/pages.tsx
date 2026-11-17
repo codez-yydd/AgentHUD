@@ -1676,7 +1676,7 @@ export function ControlsPage({
   const brightnessKnown = system.brightnessSupported || system.brightness != null;
   const brightnessPending = !brightnessKnown && system.updatedAt === 0;
   const brightnessText = brightnessKnown
-    ? `${brightness}%`
+    ? `${brightness}%${system.brightnessSoft ? "·软" : ""}`
     : brightnessPending
       ? "检测中"
       : "不可用";

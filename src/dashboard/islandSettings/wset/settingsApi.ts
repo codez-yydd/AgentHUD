@@ -1,6 +1,6 @@
 /**
  * 灵动岛设置窗（wset）的数据接口层：只封装「settings.json 文档 + 保存 / 重载 /
- * 导入导出 / 显示器 / 字体 / 热键状态 / 窗口收起」这一个窗口用到的命令。
+ * 显示器 / 字体 / 热键状态 / 窗口收起」这一个窗口用到的命令。
  */
 
 import { invoke } from "@tauri-apps/api/core";
@@ -352,51 +352,6 @@ export async function saveSettings(
 export async function reloadSettings(): Promise<SettingsDoc> {
   if (!IS_TAURI) return delay(mockDoc());
   return invoke<SettingsDoc>("island_settings_reload");
-}
-
-/** 全部恢复默认 */
-export async function resetSettings(): Promise<SettingsSaveResult> {
-  if (!IS_TAURI) {
-    mockPersistData(clone(MOCK_DEFAULTS));
-    return delay({ data: clone(MOCK_DEFAULTS), unsupported: mockUnsupported(), applied: [] });
-  }
-  return invoke<SettingsSaveResult>("island_settings_reset");
-}
-
-/** 从文件导入 */
-export async function importSettings(path: string): Promise<SettingsSaveResult> {
-  if (!IS_TAURI) {
-    console.info("[island mock] import settings", path);
-    return delay({ data: mockLoadData(), unsupported: mockUnsupported(), applied: [] });
-  }
-  return invoke<SettingsSaveResult>("island_settings_import", { path });
-}
-
-/** 导出到文件 */
-export async function exportSettings(path: string): Promise<void> {
-  if (!IS_TAURI) {
-    console.info("[island mock] export settings", path);
-    return delay(undefined, 20);
-  }
-  return invoke("island_settings_export", { path });
-}
-
-/** 用系统默认程序打开 settings.json（标题栏「打开配置文件」） */
-export async function openSettingsFile(): Promise<void> {
-  if (!IS_TAURI) {
-    console.info("[island mock] open settings file", MOCK_CONFIG_PATH);
-    return delay(undefined, 20);
-  }
-  return invoke("island_settings_open_file");
-}
-
-/** 在资源管理器里定位 settings.json */
-export async function revealSettingsFile(): Promise<void> {
-  if (!IS_TAURI) {
-    console.info("[island mock] reveal settings file", MOCK_CONFIG_PATH);
-    return delay(undefined, 20);
-  }
-  return invoke("island_settings_reveal_file");
 }
 
 /** 配置文件与数据目录（快捷操作页脚注） */

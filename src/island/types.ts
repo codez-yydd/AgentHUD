@@ -395,6 +395,8 @@ export interface SystemState {
   muted: boolean;
   brightness: number | null;
   brightnessSupported: boolean;
+  /** 亮度是否由 gamma 软件调光接管（硬件通路全失败时的兜底，色彩会偏） */
+  brightnessSoft?: boolean;
   wifi: boolean | null;
   wifiAvailable: boolean;
   bluetooth: boolean | null;

@@ -21,6 +21,10 @@ static STOP: AtomicBool = AtomicBool::new(false);
 static GEN: AtomicU64 = AtomicU64::new(0);
 static APP: OnceLock<Mutex<Option<AppHandle>>> = OnceLock::new();
 static STATE: OnceLock<Mutex<SystemState>> = OnceLock::new();
+/// gamma 软件调光状态：None=未接管，Some(level)=软件调光当前亮度（0~100）。
+/// 仅在 Windows 下真正使用；其它平台保留空壳以免调用点到处挂 cfg。
+#[cfg(target_os = "windows")]
+static GAMMA_LEVEL: OnceLock<Mutex<Option<f64>>> = OnceLock::new();
 
 fn app_slot() -> &'static Mutex<Option<AppHandle>> {
     APP.get_or_init(|| Mutex::new(None))
@@ -36,6 +40,8 @@ pub struct SystemState {
     pub muted: bool,
     pub brightness: Option<f64>,
     pub brightness_supported: bool,
+    /// 亮度是否由 gamma 软件调光接管（Windows 硬件通路全失败时的兜底）
+    pub brightness_soft: bool,
     pub wifi: Option<bool>,
     pub wifi_available: bool,
     pub bluetooth: Option<bool>,
@@ -424,6 +430,136 @@ fn run_powershell(script: &str) -> Option<String> {
     Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
+// ============================================================ gamma 软件调光（Windows）
+//
+// 台式外接显示器往往没有可用的 DDC/CI 物理通道，也没有 WmiMonitorBrightness，
+// 硬件通路全失败时退回 GDI gamma 渐变做软件调光，让亮度滑块始终可用。
+// 代价是色彩会偏暗（不是真正改背光），所以前端会在百分比后标「·软」。
+
+/// gamma 状态槽的访问器（懒初始化）
+#[cfg(target_os = "windows")]
+fn gamma_slot() -> &'static Mutex<Option<f64>> {
+    GAMMA_LEVEL.get_or_init(|| Mutex::new(None))
+}
+
+/// 当前是否处于 gamma 软件调光（非 Windows 恒为 false）
+#[cfg(target_os = "windows")]
+fn gamma_active() -> bool {
+    gamma_slot().lock().ok().and_then(|g| *g).is_some()
+}
+#[cfg(not(target_os = "windows"))]
+fn gamma_active() -> bool {
+    false
+}
+
+/// 计算 768 项渐变（R/G/B 各 256 个 WORD）。
+/// f = 0.5 + 0.5 * (level/100)^1.5：下限 0.5 用于避开 Win10 1709+ 对 GDI 伽马
+/// 的 ~0.5 钳制，同时保证滑条全程单调、无死区。level=100 时 f=1.0，即恒等渐变。
+#[cfg(target_os = "windows")]
+fn gamma_ramp(level: f64) -> [u16; 768] {
+    let f = 0.5 + 0.5 * (level.clamp(0.0, 100.0) / 100.0).powf(1.5);
+    let mut ramp = [0u16; 768];
+    for i in 0..256usize {
+        let entry = ((i as f64) * 257.0 * f).round().clamp(0.0, 65535.0) as u16;
+        ramp[i] = entry;
+        ramp[256 + i] = entry;
+        ramp[512 + i] = entry;
+    }
+    ramp
+}
+
+/// 对全部活动显示设备的 DC 设置一份渐变；至少一台成功返回 true。
+#[cfg(target_os = "windows")]
+fn apply_ramp(ramp: &[u16; 768]) -> bool {
+    use std::ffi::c_void;
+    use windows::core::PCWSTR;
+    use windows::Win32::Graphics::Gdi::{
+        CreateDCW, DeleteDC, EnumDisplayDevicesW, DISPLAY_DEVICEW, DISPLAY_DEVICE_ACTIVE,
+    };
+    use windows::Win32::UI::ColorSystem::SetDeviceGammaRamp;
+
+    let mut any = false;
+    let mut index = 0u32;
+    loop {
+        let mut dd = DISPLAY_DEVICEW {
+            cb: std::mem::size_of::<DISPLAY_DEVICEW>() as u32,
+            ..Default::default()
+        };
+        // 枚举顶级显示设备（lpdevice=None），到失败为止
+        if !unsafe { EnumDisplayDevicesW(None::<&PCWSTR>, index, &mut dd, 0) }.as_bool() {
+            break;
+        }
+        index += 1;
+        if (dd.StateFlags & DISPLAY_DEVICE_ACTIVE).0 == 0 {
+            continue;
+        }
+        // DeviceName 是设备名（\\.\DISPLAY1），用它建 DC 后设 gamma
+        let dc = unsafe {
+            CreateDCW(
+                None::<&PCWSTR>,
+                PCWSTR::from_raw(dd.DeviceName.as_ptr()),
+                None::<&PCWSTR>,
+                None,
+            )
+        };
+        if dc.is_invalid() {
+            continue;
+        }
+        let ok = unsafe { SetDeviceGammaRamp(dc, ramp.as_ptr() as *const c_void) }.as_bool();
+        let _ = unsafe { DeleteDC(dc) };
+        any |= ok;
+    }
+    any
+}
+
+/// 按亮度应用 gamma 渐变
+#[cfg(target_os = "windows")]
+fn apply_gamma(level: f64) -> bool {
+    apply_ramp(&gamma_ramp(level))
+}
+
+/// gamma 接管成功日志「只记一次」标志：拖动滑块每 120ms 一拍，不能每拍刷日志
+#[cfg(target_os = "windows")]
+static GAMMA_SET_LOGGED: OnceLock<()> = OnceLock::new();
+
+/// 应用 gamma 并记录状态（供 set 路径复用）。
+#[cfg(target_os = "windows")]
+fn apply_gamma_and_store(level: f64) -> Result<f64, String> {
+    if let Ok(mut guard) = gamma_slot().lock() {
+        *guard = Some(level);
+    }
+    if apply_gamma(level) {
+        if GAMMA_SET_LOGGED.set(()).is_ok() {
+            brightness_debug_log(&format!("gamma 软件调光应用(level={level})"));
+        }
+        Ok(level)
+    } else {
+        Err("设置亮度失败（显示器未启用 DDC/CI，且系统没有 WMI 亮度接口）".to_string())
+    }
+}
+
+/// 若已由 gamma 接管，则恢复恒等渐变并退出软件模式（硬件通路恢复时调用）。
+#[cfg(target_os = "windows")]
+fn exit_gamma_if_taken(source: &str) {
+    let was_taken = gamma_slot().lock().ok().and_then(|mut g| g.take()).is_some();
+    if was_taken {
+        apply_ramp(&gamma_ramp(100.0));
+        brightness_debug_log(&format!("{source} 恢复，退出 gamma 软件调光"));
+    }
+}
+
+/// 应用退出时恢复恒等渐变，避免屏幕停留在暗的软件调光状态。幂等、无副作用。
+#[cfg(target_os = "windows")]
+pub fn restore_gamma() {
+    let was_taken = gamma_slot().lock().ok().and_then(|mut g| g.take()).is_some();
+    if was_taken {
+        apply_ramp(&gamma_ramp(100.0));
+        brightness_debug_log("应用退出，恢复 gamma 恒等渐变");
+    }
+}
+#[cfg(not(target_os = "windows"))]
+pub fn restore_gamma() {}
+
 #[cfg(target_os = "macos")]
 pub fn read_brightness() -> Option<f64> {
     mac_brightness::get()
@@ -433,16 +569,71 @@ pub fn read_brightness() -> Option<f64> {
 pub fn read_brightness() -> Option<f64> {
     #[cfg(target_os = "windows")]
     match ddc::read() {
-        Some(value) => return Some(value),
+        Some(value) => {
+            // 硬件通路恢复：若此前由 gamma 接管，先恢复恒等渐变、退出软件模式
+            exit_gamma_if_taken("DDC");
+            return Some(value);
+        }
         // 【临时诊断】DDC 整体拿不到值时记一笔（ddc::read 内部已带各屏成败汇总）
         None => brightness_debug_log("read_brightness: ddc::read 返回 None，回退 PowerShell/WMI"),
     }
-    let text = run_powershell(
-        "(Get-CimInstance -Namespace root/WMI -ClassName WmiMonitorBrightness -ErrorAction Stop | Select-Object -First 1).CurrentBrightness",
-    )?;
-    text.lines()
-        .find_map(|line| line.trim().parse::<f64>().ok())
-        .filter(|v| (0.0..=100.0).contains(v))
+    // gamma 接管期间不再起 PowerShell 探测 WMI（本机每次要 1.3s 才失败，
+    // 10s 一拍算下来每天会拉起八千多个进程）：硬件恢复检测完全交给每拍的
+    // ddc::read（进程内毫秒级，显示器热插拔 / 驱动恢复后 DDC 读成功会走
+    // exit_gamma_if_taken 自动退出软件模式）。gamma 未接管时保持现状：
+    // 首次发现仍允许跑一次 PowerShell 探测 WMI，之后 None 返回走退避。
+    #[cfg(target_os = "windows")]
+    let skip_wmi = gamma_active();
+    #[cfg(not(target_os = "windows"))]
+    let skip_wmi = false;
+    let hardware = if skip_wmi {
+        None
+    } else {
+        run_powershell(
+            "(Get-CimInstance -Namespace root/WMI -ClassName WmiMonitorBrightness -ErrorAction Stop | Select-Object -First 1).CurrentBrightness",
+        )
+        .and_then(|text| {
+            text.lines()
+                .find_map(|line| line.trim().parse::<f64>().ok())
+                .filter(|v| (0.0..=100.0).contains(v))
+        })
+    };
+    #[cfg(target_os = "windows")]
+    if let Some(value) = hardware {
+        // WMI 也恢复：同样退出 gamma 软件调光
+        exit_gamma_if_taken("WMI");
+        return Some(value);
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        hardware
+    }
+    #[cfg(target_os = "windows")]
+    {
+        // DDC / WMI 硬件通路全失败：gamma 接管。
+        // 首次接管初始化为 100 并记一条迁移日志（之后每拍不再刷屏）。
+        let (level, first_take) = {
+            let Ok(mut guard) = gamma_slot().lock() else {
+                return None;
+            };
+            match *guard {
+                Some(level) => (level, false),
+                None => {
+                    *guard = Some(100.0);
+                    (100.0, true)
+                }
+            }
+        };
+        if first_take {
+            brightness_debug_log("gamma 软件调光接管(level=100)");
+        }
+        // 显示模式切换 / 睡眠唤醒后系统会重置 LUT，靠每拍重涂自愈
+        if apply_gamma(level) {
+            Some(level)
+        } else {
+            None
+        }
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -475,6 +666,14 @@ fn set_brightness_inner(value: f64) -> Result<f64, String> {
             return Err(e);
         }
     }
+    #[cfg(target_os = "windows")]
+    {
+        // ddc::set 已失败：若此前 gamma 已接管，跳过慢速的 PowerShell（本机每次
+        // 要 1.3s 才失败），直接走 gamma，保证拖动滑块即时响应。
+        if gamma_active() {
+            return apply_gamma_and_store(value);
+        }
+    }
     let script = format!(
         "(Get-CimInstance -Namespace root/WMI -ClassName WmiMonitorBrightnessMethods -ErrorAction Stop | Select-Object -First 1).WmiSetBrightness(1, {value})"
     );
@@ -484,7 +683,15 @@ fn set_brightness_inner(value: f64) -> Result<f64, String> {
             brightness_debug_log(&format!(
                 "set_brightness: PowerShell/WMI 回退也失败(value={value})"
             ));
-            Err("设置亮度失败（显示器未启用 DDC/CI，且系统没有 WMI 亮度接口）".to_string())
+            // PowerShell 也失败：硬件通路彻底不可用，转入 gamma 软件调光兜底
+            #[cfg(target_os = "windows")]
+            {
+                apply_gamma_and_store(value)
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                Err("设置亮度失败（显示器未启用 DDC/CI，且系统没有 WMI 亮度接口）".to_string())
+            }
         }
     }
 }
@@ -1044,6 +1251,7 @@ pub fn start(app: AppHandle) {
             if let Ok(mut guard) = state_slot().lock() {
                 guard.brightness = brightness;
                 guard.brightness_supported = brightness.is_some();
+                guard.brightness_soft = brightness.is_some() && gamma_active();
             }
             let mut last_radio = std::time::Instant::now() - Duration::from_secs(10);
             let mut last_brightness = std::time::Instant::now();
@@ -1088,6 +1296,8 @@ pub fn start(app: AppHandle) {
                     if let Some(value) = read_brightness() {
                         state.brightness = Some(value);
                         state.brightness_supported = true;
+                        // gamma 接管时标记软件调光；硬件通路读成功会自动退出软件模式
+                        state.brightness_soft = gamma_active();
                         // 读成功：清零退避计数，恢复 10s 正常回读节奏
                         brightness_fails = 0;
                     } else {
@@ -1102,6 +1312,7 @@ pub fn start(app: AppHandle) {
                     || state.bluetooth != before.bluetooth
                     || state.brightness != before.brightness
                     || state.brightness_supported != before.brightness_supported
+                    || state.brightness_soft != before.brightness_soft
                     || state.wifi_available != before.wifi_available
                     || state.bluetooth_available != before.bluetooth_available;
                 first_tick = false;
@@ -1207,6 +1418,9 @@ pub async fn island_set_brightness(value: f64) -> Result<SystemState, String> {
         if let Ok(mut guard) = state_slot().lock() {
             guard.brightness = Some(v);
             guard.brightness_supported = true;
+            // Twinkle / DDC 写成功时 read_brightness 尚未跑， gamma 可能仍是上一轮接管态；
+            // 以实际是否接管为准，避免硬件已恢复却仍标「软」。
+            guard.brightness_soft = gamma_active();
             guard.updated_at = chrono::Utc::now().timestamp_millis();
         }
         refresh_state();

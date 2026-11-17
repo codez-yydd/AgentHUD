@@ -19,7 +19,6 @@ import { Button, IconButton, StatusDot } from "./wset/controls";
 import {
   ActionsIcon,
   CloseIcon,
-  GearIcon,
   HotkeyIcon,
   InfoIcon,
   LauncherIcon,
@@ -55,11 +54,10 @@ import { TranslatePage } from "./wset/pages/TranslatePage";
 import { LivePage } from "./wset/pages/LivePage";
 import { LauncherPage } from "./wset/pages/LauncherPage";
 import { SystemPage } from "./wset/pages/SystemPage";
-import { AdvancedPage } from "./wset/pages/AdvancedPage";
 import { AboutPage } from "./wset/pages/AboutPage";
 import { PlaceholderPage } from "./wset/pages/PlaceholderPage";
 
-/** 侧栏 14 个分类的图标（顺序 / 文案在 schema 的 PAGES 里，改这里只换图标） */
+/** 侧栏 13 个分类的图标（顺序 / 文案在 schema 的 PAGES 里，改这里只换图标） */
 const NAV_ICONS: Record<PageKey, ComponentType<WsetIconProps>> = {
   look: LookIcon,
   order: OrderIcon,
@@ -73,7 +71,6 @@ const NAV_ICONS: Record<PageKey, ComponentType<WsetIconProps>> = {
   live: LiveIcon,
   launcher: LauncherIcon,
   system: SystemIcon,
-  advanced: GearIcon,
   about: InfoIcon,
 };
 
@@ -247,8 +244,6 @@ export function SettingsWindow() {
         return <LauncherPage draft={draft} saveTick={draft.saveTick} />;
       case "system":
         return <SystemPage draft={draft} saveTick={draft.saveTick} />;
-      case "advanced":
-        return <AdvancedPage draft={draft} saveTick={draft.saveTick} />;
       case "about":
         return <AboutPage draft={draft} saveTick={draft.saveTick} />;
       default:
