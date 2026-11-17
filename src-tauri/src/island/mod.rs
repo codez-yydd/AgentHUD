@@ -1917,6 +1917,8 @@ pub struct IslandConfig {
     pub hug_fullscreen: bool,
     /// 启用时通过 WDA_EXCLUDEFROMCAPTURE 将灵动岛排除出截图和录屏。
     pub exclude_from_capture: bool,
+    /// 收起态空闲时外壳是否做呼吸缩放动画（默认开启）。关闭时圆角裁剪照常，仅无动画。
+    pub breath_enabled: bool,
     pub hide_fullscreen: bool,
     pub hidden_tabs: Vec<String>,
     /// 媒体开始播放时自动把收起态切到 music 视图（false = 只保留手动滚轮切换）
@@ -1996,6 +1998,7 @@ impl Default for IslandConfig {
             keep_on_top: true,
             hug_fullscreen: true,
             exclude_from_capture: false,
+            breath_enabled: true,
             hide_fullscreen: false,
             hidden_tabs: Vec::new(),
             media_auto_show: true,

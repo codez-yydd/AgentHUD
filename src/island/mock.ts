@@ -447,6 +447,8 @@ export const mockConfig: IslandConfig = {
   fontSize: 13,
   expandMode: "hover",
   keepOnTop: true,
+  // 收起态空闲呼吸动画默认开启（与 Rust 侧 IslandConfig 默认一致）
+  breathEnabled: true,
   // P0 新增字段的浏览器预览默认值（与 Rust 侧默认一致）
   theme: "dark",
   hoverExpand: true,

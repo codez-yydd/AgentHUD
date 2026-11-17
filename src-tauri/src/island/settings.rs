@@ -51,7 +51,7 @@ const AUDIO_SOURCES: [&str; 2] = ["loopback", "mic"];
 
 /// 设置文档点路径里**已经接到岛运行时**的项；`island_settings_save` 用它
 /// 计算 `applied`（本次同步到运行时配置或由服务直接读取的字段）。
-const SYNCED_PATHS: [&str; 80] = [
+const SYNCED_PATHS: [&str; 81] = [
     "island.edge",
     "island.pos",
     "island.screen",
@@ -74,6 +74,7 @@ const SYNCED_PATHS: [&str; 80] = [
     "island.keep_on_top",
     "island.hug_fullscreen",
     "island.exclude_from_capture",
+    "island.breath_enabled",
     "hotkeys.toggle",
     "hotkeys.translate",
     "hotkeys.clipboard",
@@ -281,6 +282,8 @@ pub struct IslandDoc {
     pub hover_expand_ms: i64,
     pub collapse_delay_ms: i64,
     pub exclude_from_capture: bool,
+    /// 收起态空闲呼吸动画开关（默认开启）；关闭后仅停止缩放，圆角裁剪照常。
+    pub breath_enabled: bool,
     pub blur_fps: i64,
     /// hover / always / never
     pub expand_mode: String,
@@ -593,6 +596,7 @@ impl Default for IslandDoc {
             hover_expand_ms: super::default_hover_expand_ms() as i64,
             collapse_delay_ms: super::default_collapse_delay_ms() as i64,
             exclude_from_capture: false,
+            breath_enabled: true,
             blur_fps: super::default_blur_fps() as i64,
             expand_mode: super::default_expand_mode(),
             passthrough: false,
@@ -1602,6 +1606,7 @@ pub fn overlay_from_island(
     doc.island.hover_expand_ms = cfg.hover_expand_ms as i64;
     doc.island.collapse_delay_ms = cfg.collapse_delay_ms as i64;
     doc.island.exclude_from_capture = cfg.exclude_from_capture;
+    doc.island.breath_enabled = cfg.breath_enabled;
     doc.island.blur_fps = cfg.blur_fps as i64;
     doc.island.expand_mode = cfg.expand_mode.clone();
     doc.island.passthrough = cfg.passthrough;
@@ -1764,6 +1769,7 @@ pub(crate) async fn sync_to_island(
     next.keep_on_top = doc.island.keep_on_top;
     next.hug_fullscreen = doc.island.hug_fullscreen;
     next.exclude_from_capture = doc.island.exclude_from_capture;
+    next.breath_enabled = doc.island.breath_enabled;
     next.hotkey_toggle = doc.hotkeys.toggle.clone();
     next.hotkey_translate = doc.hotkeys.translate.clone();
     next.hotkey_clipboard = doc.hotkeys.clipboard.clone();
@@ -2687,6 +2693,7 @@ mod tests {
             "island.hover_expand_ms",
             "island.collapse_delay_ms",
             "island.exclude_from_capture",
+            "island.breath_enabled",
             "island.blur_fps",
             "island.expand_mode",
             "island.passthrough",

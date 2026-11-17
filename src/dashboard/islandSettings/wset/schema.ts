@@ -145,6 +145,7 @@ export const PAGE_FIELDS: Record<PageKey, string[]> = {
     "island.theme",
     "island.font_family",
     "island.exclude_from_capture",
+    "island.breath_enabled",
     "island.blur_fps",
     "island.transparency",
     "island.font_size",

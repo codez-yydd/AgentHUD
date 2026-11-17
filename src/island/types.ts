@@ -59,6 +59,8 @@ export interface IslandConfig {
   keepOnTop?: boolean;
   /** Windows 将窗口从截图和录屏中排除，允许取得对齐的桌面底板。 */
   excludeFromCapture?: boolean;
+  /** 收起态空闲呼吸动画开关（默认开启）；关闭时圆角裁剪照常，仅无动画。 */
+  breathEnabled?: boolean;
   // ===== P0 新增配置（Rust 侧并行提供；旧配置缺字段时前端兜底）=====
   /** 主题：auto 跟随背景亮度，light/dark/rouge/sky 为固定色板；缺省按 dark */
   theme?: IslandThemeMode;

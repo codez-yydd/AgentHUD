@@ -7717,6 +7717,78 @@ body,
   clip-path: var(--liquid-clip, inset(50%));
 }
 
+/* ---- 第三轮修复（2026-11-17）：空闲态圆角矩形裁剪 + 合成器呼吸 ----
+   休眠时 JS 由最终 body rect 与四角 radii 换算写入 --idle-clip（inset
+   round 圆角矩形，root 上与 --liquid-clip 同元素）并挂 is-idle：三层裁剪
+   由矢量 path() 临时切换为 Chromium 合成器原生支持的圆角矩形，呼吸动画
+   才能真正跑 GPU 合成器、零重绘（见下方事故记录第三轮结论）。唤醒即
+   摘除 is-idle，矢量 path() 只在形变期（展开/收起、拖拽、drip、neck、
+   poke）使用。内容层只换裁剪、不参与动画：与旧版「外壳呼吸、内容不动」
+   语义一致，内容与命中区域不随呼吸晃动。仅收起态（is-collapsed）、
+   非拖拽时生效；无 is-idle 时本段全部不命中，形变期 CSS 与现状一致。 */
+.island-root.is-collapsed.is-idle:not(.is-dragging) .liquid-glass,
+.island-root.is-collapsed.is-idle:not(.is-dragging) .liquid-content-clip,
+.island-root.is-collapsed.is-idle:not(.is-dragging) .liquid-outline {
+  clip-path: var(--idle-clip, inset(50%));
+}
+
+/* 外壳两层呼吸：glass（底色/染色/底板容器）与 outline（SVG 描边）。
+   内容层（liquid-content-clip）见上：只换裁剪不缩放。
+   no-breath（配置 breath_enabled = false）时门掉动画，圆角裁剪照常。 */
+.island-root.is-collapsed.is-idle:not(.is-dragging):not(.no-breath) .liquid-glass,
+.island-root.is-collapsed.is-idle:not(.is-dragging):not(.no-breath) .liquid-outline {
+  animation: liquid-breath 3.7s ease-in-out infinite;
+  will-change: transform;
+}
+
+@keyframes liquid-breath {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.07);
+  }
+}
+
+/* 呼吸锚点 = 液桥锚线（吸附边内缩 70px 的边线与画布中线交点）：贴边胶囊
+   从屏幕边「长出来」，缩放锚定在融合点，衔接处不滑动 */
+.island-root[data-edge="top"].is-collapsed.is-idle:not(.is-dragging) .liquid-glass,
+.island-root[data-edge="top"].is-collapsed.is-idle:not(.is-dragging) .liquid-outline {
+  transform-origin: 390px 70px;
+}
+
+.island-root[data-edge="bottom"].is-collapsed.is-idle:not(.is-dragging) .liquid-glass,
+.island-root[data-edge="bottom"].is-collapsed.is-idle:not(.is-dragging) .liquid-outline {
+  transform-origin: 390px 562px;
+}
+
+.island-root[data-edge="left"].is-collapsed.is-idle:not(.is-dragging) .liquid-glass,
+.island-root[data-edge="left"].is-collapsed.is-idle:not(.is-dragging) .liquid-outline {
+  transform-origin: 70px 316px;
+}
+
+.island-root[data-edge="right"].is-collapsed.is-idle:not(.is-dragging) .liquid-glass,
+.island-root[data-edge="right"].is-collapsed.is-idle:not(.is-dragging) .liquid-outline {
+  transform-origin: 710px 316px;
+}
+
+/* 保险丝（独立回退，勿与上面的 transform 版耦合）：若 CDP 实测 transform
+   呼吸在圆角矩形裁剪下仍触发重绘/内存增长，取消本段注释，并把上面
+   animation 一行中的动画名 liquid-breath 改为 liquid-breath-opacity——
+   切换只动动画名一处，其余样式零改动。opacity 动画只调合成器层 alpha，
+   与裁剪形态无关，任何情况下都不触发重绘。
+@keyframes liquid-breath-opacity {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.92;
+  }
+}
+*/
+
 .liquid-backdrops {
   position: absolute;
   inset: 0;
@@ -7837,7 +7909,8 @@ body,
 }
 
 /* ============================================================
-   ⚠️ 原生内存泄漏事故记录（2026-11-17，两轮 CDP 复测实锤）
+   ⚠️ 原生内存泄漏事故记录（2026-11-17，两轮 CDP 复测实锤 + 第三轮
+   结构性修复——呼吸回归）
    liquid 外壳用 clip-path: path(...)（--liquid-clip）做矢量裁剪，
    矢量 clip 无法合成器化：其子树内任何逐帧动画——包括 transform
    动画与 CSS 自定义属性动画——都会强制 780×632 全画布重绘重光栅。
@@ -7852,11 +7925,31 @@ body,
      3. island-flow-x / island-flow-y——沿边流光渐变逐帧位移。
    决定性 A/B：页面内 document.getAnimations().forEach(a => a.pause())
    后内存瞬间冻结，30 秒内 5.7GB→42MB 全部释放。
-   结论：岛的空闲态必须零逐帧动画——收起态静止即静止。三个动画
-   已全部删除；此后在 .liquid-glass / .liquid-outline /
-   .liquid-content-clip 及其后代上新增任何 animation 前，先想清楚
-   矢量 clip 的代价。条件性动画（加载 skeleton / 会议红点 / 播放
-   波形等随状态出现消失、不常驻的）不在此列。
+   第一、二轮结论：矢量 path() 裁剪子树内必须零逐帧动画——收起态
+   静止即静止，三个常驻动画全部删除。此后在 .liquid-glass /
+   .liquid-outline / .liquid-content-clip 及其后代上新增任何
+   animation 前，先想清楚矢量 clip 的代价。条件性动画（加载
+   skeleton / 会议红点 / 播放波形等随状态出现消失、不常驻的）不在
+   此列。
+   第三轮（呼吸回归·结构性修复）：根修不是永久删动画，而是「空闲态
+   裁剪合成器化 + 动画仅在 is-idle 挂载」——休眠时 JS 用最终 body
+   rect + 四角 radii 写 --idle-clip（inset(... round ...) 圆角矩形
+   裁剪，Chromium 合成器原生支持），三层临时切换过去（见上方 idle
+   裁剪段）；liquid-breath 仅在 .is-idle 下挂到 .liquid-glass /
+   .liquid-outline（transform 动画在圆角矩形裁剪下真正跑 GPU 合成
+   器，零重绘；保险丝：若实测仍重绘，改用 liquid-breath-opacity，
+   见上方注释）。矢量 path() 只在形变期（展开/收起、拖拽、drip、
+   neck、poke）使用；island-fillet-breathe（自定义属性动画，任何
+   裁剪下都是逐帧主线程 style recalc，无法合成器化）与
+   island-flow-x/y（P4 起的死样式）维持删除。
+   第三轮已知取舍（验收与回归时盯这里）：
+     a) 贴边静止轮廓带液桥肩角——gap=0、neck=1 时 neckPath 并入主
+        轮廓，贴边侧比 body 宽约 fillet=13px 的外扩肩部（外加 1.5px
+        唇边，位于离屏带不可见），圆角矩形裁剪表达不了；休眠/唤醒
+        瞬间肩角会各跳变一次（±13px、仅贴边侧顶部 13px 高的带）。
+     b) 悬停挤压静止（poke≠0 且已 settle）不进入 is-idle：此时路径
+        是 polyPath 形变 blob，更非圆角矩形，保持矢量裁剪原样休眠、
+        不呼吸；指针离开后回到纯圆角矩形静止态才会开始呼吸。
    ============================================================ */
 
 /* ---- 内容壳：只负责内容裁切与指针事件；背景/描边/阴影全部在 liquid 层 ---- */

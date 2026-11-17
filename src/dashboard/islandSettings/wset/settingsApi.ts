@@ -80,6 +80,7 @@ const MOCK_DEFAULTS: Record<string, unknown> = {
     theme: "dark",
     font_family: "",
     exclude_from_capture: false,
+    breath_enabled: true,
     blur_fps: 8,
     expand_mode: "hover",
     hover_expand: true,

@@ -93,13 +93,14 @@ async function bootMock(): Promise<MockModule> {
       typeof sessionStorage === "undefined" ? null : sessionStorage.getItem(MOCK_CONFIG_KEY);
     if (raw) Object.assign(m.mockConfig, JSON.parse(raw) as Partial<MockConfig>);
     if (!IS_TAURI) {
-      const { quotaDisplay, quotaRingStyle, hiddenTabs, notifyModules, transparency } =
+      const { quotaDisplay, quotaRingStyle, hiddenTabs, notifyModules, transparency, breathEnabled } =
         readMockIslandPreferences(localStorage.getItem(MOCK_SETTINGS_STORE_KEY));
       if (quotaDisplay) m.mockConfig.quotaDisplay = quotaDisplay;
       if (quotaRingStyle) m.mockConfig.quotaRingStyle = quotaRingStyle;
       if (hiddenTabs) m.mockConfig.hiddenTabs = hiddenTabs;
       if (notifyModules) m.mockConfig.notifyModules = notifyModules;
       if (transparency !== undefined) m.mockConfig.transparency = transparency;
+      if (breathEnabled !== undefined) m.mockConfig.breathEnabled = breathEnabled;
     }
   } catch {
     /* 隐私模式 / 存储不可用时退回内存 mock */
@@ -188,6 +189,7 @@ function readMockIslandPreferences(raw: string | null): {
   hiddenTabs?: string[];
   notifyModules?: string[];
   transparency?: number;
+  breathEnabled?: boolean;
 } {
   try {
     const settings = raw ? JSON.parse(raw) : null;
@@ -202,6 +204,8 @@ function readMockIslandPreferences(raw: string | null): {
       transparency: Number.isFinite(data?.transparency)
         ? Math.round(Math.max(0, Math.min(90, data.transparency)))
         : undefined,
+      breathEnabled:
+        typeof data?.breath_enabled === "boolean" ? data.breath_enabled : undefined,
     };
   } catch {
     return {};
@@ -1159,6 +1163,7 @@ export function onEvent<T>(name: string, handler: (payload: T) => void): () => v
         const quotaRingStyle = next.quotaRingStyle ?? "period";
         const hiddenTabs = next.hiddenTabs ?? [];
         const notifyModules = next.notifyModules ?? MOCK_DEFAULT_NOTIFY_MODULES;
+        const breathEnabled = next.breathEnabled ?? true;
         const m = await mocks();
         const live = m.mockConfig;
         const transparency = next.transparency ?? mockDefaultTransparency;
@@ -1167,13 +1172,15 @@ export function onEvent<T>(name: string, handler: (payload: T) => void): () => v
           live.quotaRingStyle === quotaRingStyle &&
           live.hiddenTabs.join() === hiddenTabs.join() &&
           live.notifyModules?.join() === notifyModules.join() &&
-          live.transparency === transparency
+          live.transparency === transparency &&
+          live.breathEnabled === breathEnabled
         ) return;
         live.quotaDisplay = quotaDisplay;
         live.quotaRingStyle = quotaRingStyle;
         live.hiddenTabs = hiddenTabs;
         live.notifyModules = notifyModules;
         live.transparency = transparency;
+        live.breathEnabled = breathEnabled;
         await persistMockConfig();
         handler(clone(live) as T);
       })();

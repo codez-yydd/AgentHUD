@@ -2494,13 +2494,20 @@ export default function IslandApp() {
   // 重写，780×632 全画布（clip-path 变化使 blur 层全部重光栅）随之逐帧重绘。
   // 用户实测渲染进程 8 分钟 2.5GB→6.0GB（≈440MB/min，20 分钟 6.7GB），页面
   // JS 堆全程仅 1-12MB——纯原生内存泄漏；CDP A/B 验证：页面内置空
-  // requestAnimationFrame 后增长立即停止并回落。修复三件套：
-  //   1) 稳定判定不再带 isOpen：全部输入静止即休眠（收起态同样适用）；
-  //   2) 呼吸最终删除（第二轮 CDP 复测：矢量 clip-path 子树内连 transform
-  //      动画也无法合成器化，三个常驻 CSS 动画叠加泄漏更凶，收起态静止
-  //      即静止，见 island.css P4 段落的事故记录）；
-  //   3) 休眠期以 500ms 低频轮询只读比较输入指纹兜底，事件侧即时唤醒，
-  //      漏挂唤醒钩子时最坏 500ms 自愈。
+// requestAnimationFrame 后增长立即停止并回落。修复三件套（1~3 为前两轮）：
+//   1) 稳定判定不再带 isOpen：全部输入静止即休眠（收起态同样适用）；
+//   2) 呼吸最终删除（第二轮 CDP 复测：矢量 clip-path 子树内连 transform
+//      动画也无法合成器化，三个常驻 CSS 动画叠加泄漏更凶，收起态静止
+//      即静止，见 island.css P4 段落的事故记录）；
+//   3) 休眠期以 500ms 低频轮询只读比较输入指纹兜底，事件侧即时唤醒，
+//      漏挂唤醒钩子时最坏 500ms 自愈。
+//   4) 第三轮（同日，呼吸回归·结构性修复）：静止不是永久答案——休眠帧
+//      用最终 body rect + 四角 radii 换算 --idle-clip（inset round 圆角
+//      矩形裁剪，合成器原生支持）并挂 is-idle，三层裁剪临时切换过去，
+//      liquid-breath 仅在 is-idle 下做 CSS transform 呼吸（圆角矩形裁剪
+//      下 transform 真正跑 GPU 合成器，零重绘）；唤醒即摘类回到矢量
+//      path()。形变期与前两轮的行为完全不变，取舍详见 island.css P4
+//      事故记录第三轮结论。
   useLayoutEffect(() => {
     if (!config) return;
     const root = rootRef.current;
@@ -2561,6 +2568,10 @@ export default function IslandApp() {
     const wake = () => {
       if (!sleeping) return;
       sleeping = false;
+      // 摘除 is-idle：--liquid-clip（休眠时未被清除，仍持有最终路径）立即
+      // 重新生效，几何相同无缝；rAF 回调先于本帧 paint 执行，中间不会闪出
+      // 矢量/圆角裁剪交替的一帧。随后的 tick 按新输入接管重写路径。
+      root.classList.remove("is-idle");
       window.clearTimeout(pollTimer);
       raf = window.requestAnimationFrame(tick);
     };
@@ -2742,10 +2753,10 @@ export default function IslandApp() {
       const neckEdge = neck.edge ?? edge;
       const neckStrength = neck.edge === null ? 0 : neck.spring.value;
       const gap = Math.max(0, screenGap(neckEdge, body, lines[neckEdge]));
-      // 呼吸动画已整体删除（事故修复点：JS 正弦扰动 fillet 与后来试过的
-      // CSS transform 版都会在矢量 clip 子树内逐帧重绘、引发原生内存泄漏，
-      // 最终结论是收起态静止即静止，见 island.css 的事故记录），路径在
-      // 输入静止时保持确定不变，主循环才有可能休眠。
+      // 呼吸：JS 正弦扰动 fillet 已删（事故修复点：矢量 clip 子树内逐帧
+      // 重绘引发原生内存泄漏）；静止后的呼吸改由 CSS 在 is-idle 圆角矩形
+      // 裁剪下承担（liquid-breath，见 island.css 的事故记录）。路径在本帧
+      // 与后续静止帧保持确定不变，主循环才有可能休眠。
       const shapeSpeed = (Math.abs(width - lastWidth) + Math.abs(height - lastHeight)) / dt;
       const fillet = FILLET + Math.min(12, shapeSpeed * 0.012);
       lastWidth = width;
@@ -2809,18 +2820,42 @@ export default function IslandApp() {
         raf = window.requestAnimationFrame(tick);
         return;
       }
-      // 进入稳定休眠：本帧已写入「无呼吸扰动、无音频波」的最终几何（呼吸在
-      // CSS 合成器层继续，liquidPath 不再变化）；之后不排 rAF，改由 500ms
-      // 轮询只读比较输入指纹，变化即唤醒回 rAF 模式。音频律动期间
-      // audioLevel > 0 属真实业务渲染，保持活跃；归零后即回到这里休眠。
+      // 进入稳定休眠：本帧已写入「无呼吸扰动、无音频波」的最终几何；之后
+      // 不排 rAF，改由 500ms 轮询只读比较输入指纹，变化即唤醒回 rAF 模式。
+      // 音频律动期间 audioLevel > 0 属真实业务渲染，保持活跃；归零后即回到
+      // 这里休眠。
       sleeping = true;
       sleepSnapshot = inputFingerprint();
       pollTimer = window.setTimeout(poll, LIQUID_IDLE_POLL_MS);
+      // 第三轮修复（呼吸回归）：静止且无按压形变时，把三层裁剪从矢量
+      // path() 切到合成器友好的圆角矩形（inset round），CSS transform
+      // 呼吸才能真正跑 GPU 合成器。两个前置条件缺一不可：
+      //   a) !isOpen——展开态不呼吸（island.css 选择器同样限定 is-collapsed）；
+      //   b) poke.value === 0——悬停挤压静止时路径是 polyPath 形变 blob，
+      //      不是圆角矩形，硬套 inset 会跳变；此时保持矢量裁剪原样休眠。
+      // 已知取舍：贴边静止轮廓带液桥肩角（gap=0 时比 body 宽约 fillet=13px，
+      // 见 liquid.ts 的 neckPath），圆角矩形表达不了，休眠/唤醒瞬间肩角会
+      // 各跳变一次；详见 island.css P4 事故记录第三轮。
+      if (!isOpen && poke.value === 0) {
+        // inset(top right bottom left round tl tr br bl)：四边 = body 距画布
+        // 四边的距离；圆角 = 本帧最终 radii（liquidRadii 顺序恰为 tl,tr,br,bl，
+        // 与 inset round 一致），与最后一帧 bodyPath 逐点相同（肩角除外）。
+        const idleTop = Math.max(0, body.y);
+        const idleRight = Math.max(0, CANVAS_W - body.x - body.width);
+        const idleBottom = Math.max(0, CANVAS_H - body.y - body.height);
+        const idleLeft = Math.max(0, body.x);
+        root.style.setProperty(
+          "--idle-clip",
+          `inset(${idleTop.toFixed(2)}px ${idleRight.toFixed(2)}px ${idleBottom.toFixed(2)}px ${idleLeft.toFixed(2)}px round ${radii[0].toFixed(2)}px ${radii[1].toFixed(2)}px ${radii[2].toFixed(2)}px ${radii[3].toFixed(2)}px)`
+        );
+        root.classList.add("is-idle");
+      }
     };
     liquidWakeRef.current = wake;
     tick(lastNow + 30);
     return () => {
       liquidWakeRef.current = () => {};
+      root.classList.remove("is-idle");
       window.cancelAnimationFrame(raf);
       window.clearTimeout(pollTimer);
     };
@@ -3726,7 +3761,7 @@ export default function IslandApp() {
         ref={rootRef}
         className={`island-root edge-${edge} ${open ? "is-open" : "is-collapsed"} ${
           dragging ? "is-dragging" : ""
-        }`}
+        } ${config.breathEnabled === false ? "no-breath" : ""}`}
         style={rootFontStyle}
         data-theme={themePalette}
         data-theme-mode={themeMode}

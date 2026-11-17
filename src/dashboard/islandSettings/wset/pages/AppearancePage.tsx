@@ -269,6 +269,17 @@ export function AppearancePage({ draft }: PageProps) {
           />
         </Row>
         <Row
+          title="空闲呼吸动画"
+          desc="收起且静止时，外壳做轻微的缩放呼吸。关闭后灵动岛保持静止，不影响圆角裁剪与内容显示。"
+          rowKey="island.breath_enabled"
+        >
+          <Switch
+            checked={flag("island.breath_enabled")}
+            ariaLabel="空闲呼吸动画"
+            onChange={(next) => draft.setValue("island.breath_enabled", next)}
+          />
+        </Row>
+        <Row
           title="背景刷新率"
           desc="液态玻璃采样桌面画面的频率。频率越高，背景变化跟得越快。"
           error={draft.errors["island.blur_fps"]}
