@@ -6948,7 +6948,7 @@ dependencies = [
 
 [[package]]
 name = "zai-floating-monitor"
-version = "2.0.5"
+version = "2.0.6"
 dependencies = [
  "aes-gcm",
  "arboard",
