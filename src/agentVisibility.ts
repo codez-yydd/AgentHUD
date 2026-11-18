@@ -1,4 +1,5 @@
 /** 统计页的 Agent 展示偏好，仅影响界面展示，不影响本地采集和同步。 */
+import { emit } from "@tauri-apps/api/event";
 import type { MessageKey } from "./i18n";
 
 export type AgentId =
@@ -623,9 +624,30 @@ export function saveAgentVisibility(visibility: AgentVisibility): void {
 /** visibility 变化广播（enableAgentByCredential 触发，App 监听后重读 localStorage） */
 export const AGENT_VISIBILITY_EVENT = "zbar-agent-visibility-changed";
 
+/** visibility 变化跨窗广播（Tauri 事件，无 payload，接收方重读 localStorage）：
+ *  设置入口迁到主窗口后，visibility 写入可能发生在任一窗口（主窗口设置页
+ *  开关 / 悬浮窗凭证添加联动 / 主窗口联动），写入方统一广播本事件，另一窗
+ *  监听后重读 + 刷新 Rust 镜像，两窗 tab 显隐保持一致（命名对齐既有
+ *  zbar://appearance-changed 前端广播模式，无需 Rust 侧改动） */
+export const AGENT_VISIBILITY_BROADCAST_EVENT = "zbar://agent-visibility-changed";
+
+/** 广播 visibility 跨窗变化（幂等；非 Tauri 宿主 / emit 失败静默——
+ *  本窗已生效，另一窗最多等下次挂载重读） */
+export function broadcastAgentVisibilityChanged(): void {
+  emit(AGENT_VISIBILITY_BROADCAST_EVENT).catch(() => {
+    /* 静默：跨窗实时性降级，不影响本窗 */
+  });
+}
+
 /** 凭证增删改广播（detail = { provider }）：DataCache 刷新凭证缓存、
  *  App 重查 presence 决定是否自动开启对应 agent 的展示。 */
 export const CREDENTIALS_CHANGED_EVENT = "zbar-credentials-changed";
+
+/** 凭证增删改跨窗广播（Tauri 事件，payload = { provider }）：凭证操作 UI
+ *  全在悬浮窗（CredentialsCard / 添加服务表单），而「有凭证自动显示」联动
+ *  已随设置迁移由主窗口持有——悬浮窗操作后经本事件让主窗口重查 presence
+ *  并触发联动，行为与升级前（单窗内 window 事件）等价 */
+export const CREDENTIALS_BROADCAST_EVENT = "zbar://credentials-changed";
 
 /**
  * 「有凭证自动显示」：把该 provider 的 visibility 置 true 并持久化。
@@ -639,6 +661,7 @@ export function enableAgentByCredential(id: AgentId): void {
   if (current[id]) return;
   saveAgentVisibility({ ...current, [id]: true });
   window.dispatchEvent(new Event(AGENT_VISIBILITY_EVENT));
+  broadcastAgentVisibilityChanged();
 }
 
 /**
@@ -651,13 +674,19 @@ export function disableAgentByCredential(id: AgentId): void {
   if (!current[id]) return;
   saveAgentVisibility({ ...current, [id]: false });
   window.dispatchEvent(new Event(AGENT_VISIBILITY_EVENT));
+  broadcastAgentVisibilityChanged();
 }
 
-/** 凭证增删改后广播（CredentialsCard 在操作成功后调用）。 */
+/** 凭证增删改后广播（CredentialsCard 在操作成功后调用）。
+ *  同窗 window 事件供 DataCache / App 即时刷新；跨窗 Tauri 事件供主窗口
+ *  的联动（presence 重查 → 有凭证自动显示）感知悬浮窗里的凭证操作。 */
 export function notifyCredentialsChanged(provider: string): void {
   window.dispatchEvent(
     new CustomEvent(CREDENTIALS_CHANGED_EVENT, { detail: { provider } })
   );
+  emit(CREDENTIALS_BROADCAST_EVENT, { provider }).catch(() => {
+    /* 静默：另一窗最多延迟到下次挂载探测 */
+  });
 }
 
 // ============================================================

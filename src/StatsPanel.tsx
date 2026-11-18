@@ -79,22 +79,6 @@ const ICON_MORE = (
   </svg>
 );
 
-const ICON_REPORTS = (
-  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-    <path d="M4 20V10" />
-    <path d="M10 20V4" />
-    <path d="M16 20v-7" />
-    <path d="M21 20H3" />
-  </svg>
-);
-
-const ICON_SYNC = (
-  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-    <path d="M4 8h13l-3-3" />
-    <path d="M20 16H7l3 3" />
-  </svg>
-);
-
 const ICON_MONITOR = (
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
     <rect x="2" y="3" width="20" height="14" rx="2.5" />
@@ -109,16 +93,6 @@ const ICON_SLIDERS = (
     <circle cx="5" cy="12" r="1.6" />
     <circle cx="12" cy="9" r="1.6" />
     <circle cx="19" cy="15" r="1.6" />
-  </svg>
-);
-
-const ICON_PALETTE = (
-  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-    <path d="M12 3a9 9 0 0 0 0 18c.9 0 1.6-.7 1.6-1.6 0-.4-.2-.8-.4-1.1-.3-.3-.4-.7-.4-1.1a1.6 1.6 0 0 1 1.7-1.7h1.9A5.6 5.6 0 0 0 22 11.6C22 6.7 17.5 3 12 3Z" />
-    <circle cx="8" cy="9" r=".9" fill="currentColor" stroke="none" />
-    <circle cx="12" cy="7" r=".9" fill="currentColor" stroke="none" />
-    <circle cx="16" cy="9" r=".9" fill="currentColor" stroke="none" />
-    <circle cx="7.5" cy="13" r=".9" fill="currentColor" stroke="none" />
   </svg>
 );
 
@@ -196,15 +170,7 @@ interface Props {
   agentVisibility: AgentVisibility;
   /** 凭证驱动 provider 的「已有凭证」状态（provider → bool；App 启动/事件时批量刷新） */
   credentialPresence: Record<string, boolean>;
-  onGoSync: () => void;
-  onGoReports: () => void;
-  onGoTheme: () => void;
   onGoSettings: () => void;
-  /** 设置页「添加凭证」快捷入口跳转：初始定位到该 provider 并直接打开
-   *  添加表单（App 暂存 pending provider 传入，挂载即消费）。 */
-  initialAdd?: string | null;
-  /** initialAdd 已消费的回调（App 清空 pending，避免下次挂载重复打开） */
-  onInitialAddConsumed?: () => void;
 }
 
 function loadStatsTab(agentVisibility: AgentVisibility): StatsTab {
@@ -242,12 +208,7 @@ export function StatsPanel({
   pricing,
   agentVisibility,
   credentialPresence,
-  onGoSync,
-  onGoReports,
-  onGoTheme,
   onGoSettings,
-  initialAdd,
-  onInitialAddConsumed,
 }: Props) {
   const cache = useDataCache();
   const { locale, setLocale, t } = useI18n();
@@ -288,39 +249,20 @@ export function StatsPanel({
   } = cache;
 
   // 标签：汇总 | Z.ai | Codex | Claude | Cursor（关闭的 Agent 不显示）
-  // 设置页快捷入口跳转时初始 tab 直接定位到目标 provider（避免先落汇总再跳）
   const [tab, setTab] = useState<StatsTab>(() =>
-    initialAdd && isCredentialAgent(initialAdd)
-      ? initialAdd
-      : loadStatsTab(agentVisibility)
+    loadStatsTab(agentVisibility)
   );
 
   // ===== 「＋添加服务」入口 =====
   // addMenuOpen：服务选择浮层；addProvider：添加目标（非空时弹出该服务的
-  // 添加表单）。设置页快捷入口跳转时直接进入添加态（同一套提交链路）。
+  // 添加表单）。
   const [addMenuOpen, setAddMenuOpen] = useState(false);
-  const [addProvider, setAddProvider] = useState<CredentialAgentId | null>(() =>
-    initialAdd && isCredentialAgent(initialAdd) ? initialAdd : null
-  );
+  const [addProvider, setAddProvider] = useState<CredentialAgentId | null>(null);
   const [addBusy, setAddBusy] = useState(false);
   const [addError, setAddError] = useState<string | null>(null);
   // 「＋」按钮 + 浮层的锚容器（点击外部关闭时把按钮一并豁免，
   // 保证再次点击「＋」可正常切换浮层开关）
   const addAnchorRef = useRef<HTMLDivElement | null>(null);
-  // 设置页快捷入口跳转的锚定目标（仅挂载时取值）：与 addProvider 的临时
-  // 保留分开——用户主动进入该服务面板，取消自动弹出的表单后仍应停留在
-  // 面板内浏览凭证卡，而不是被门槛 effect 弹回汇总页
-  const pinnedProviderRef = useRef<CredentialAgentId | null>(
-    initialAdd && isCredentialAgent(initialAdd) ? initialAdd : null
-  );
-
-  // initialAdd 只在挂载时消费一次：App 收到回调即清空 pending
-  useEffect(() => {
-    if (initialAdd && isCredentialAgent(initialAdd)) {
-      onInitialAddConsumed?.();
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
 
   // 浮层交互：点击外部 / Esc 关闭（浮层挂载时才注册）
   useEffect(() => {
@@ -414,9 +356,8 @@ export function StatsPanel({
       // kimi 属首批 5 个（纯偏好控制，见 PURE_PREFERENCE_AGENTS），不参与该保留
       !(isCredentialAgent(tab) && !isPurePreferenceAgent(tab) && credentialPresence[tab]) &&
       // 「＋添加服务」流程中临时保留目标 tab（添加成功前 visibility/presence
-      // 均未就绪；取消添加后无此保留，tab 回落汇总——本来就没有该 tab）；
-      // 设置页跳转的锚定目标同样保留（用户主动进入该面板）
-      tab !== addProvider && tab !== pinnedProviderRef.current
+      // 均未就绪；取消添加后无此保留，tab 回落汇总——本来就没有该 tab）
+      tab !== addProvider
     ) {
       setTab("summary");
     }
@@ -734,8 +675,9 @@ export function StatsPanel({
     // relative：承载「＋添加服务」的添加凭证全卡弹层（CredentialFormDialog
     // 的 absolute inset-0 以最近定位祖先为界）
     <div className="relative flex flex-col h-full">
-      {/* 顶部：品牌 + 刷新时间 + 三个入口。窄窗（300px）容不下 10 个图标，
-          其余视图/设置入口收进「更多」菜单（与托盘菜单同一套语言） */}
+      {/* 顶部：品牌 + 刷新时间 + 三个入口。「更多」菜单只留开窗直达与
+          设置类动作（报表 / 设备同步 / 皮肤入口已完全迁往主窗口，
+          与托盘菜单同一套语言） */}
       <div
         className="panel-head"
         onMouseDown={
@@ -788,29 +730,8 @@ export function StatsPanel({
             {moreOpen && (
               <div className="p-menu" role="menu" aria-label={t("stats.more")}>
                 <div className="p-menu__label">{t("stats.menuViews")}</div>
-                <button
-                  type="button"
-                  role="menuitem"
-                  className="p-menu__item"
-                  onClick={menuAction(onGoReports)}
-                >
-                  <span className="p-menu__icon">{ICON_REPORTS}</span>
-                  {t("stats.reports")}
-                </button>
-                <button
-                  type="button"
-                  role="menuitem"
-                  className="p-menu__item"
-                  onClick={menuAction(onGoSync)}
-                >
-                  <span className="p-menu__icon">{ICON_SYNC}</span>
-                  {syncEnabled ? t("stats.syncOn") : t("stats.syncOff")}
-                  {syncEnabled && (
-                    <span className="p-menu__hint" style={{ color: "var(--p-ok)" }}>
-                      ●
-                    </span>
-                  )}
-                </button>
+                {/* 报表 / 设备同步 / 皮肤入口已完全迁往主窗口（用量报告 /
+                    同步与设备 / 皮肤中心页），窄窗只保留开窗直达 */}
                 <button
                   type="button"
                   role="menuitem"
@@ -832,15 +753,6 @@ export function StatsPanel({
                     {t("customize.entry")}
                   </button>
                 )}
-                <button
-                  type="button"
-                  role="menuitem"
-                  className="p-menu__item"
-                  onClick={menuAction(onGoTheme)}
-                >
-                  <span className="p-menu__icon">{ICON_PALETTE}</span>
-                  {t("theme.toolbarEntry")}
-                </button>
                 <div className="p-menu__sep" />
                 <div className="p-menu__label">{t("stats.menuGeneral")}</div>
                 <button

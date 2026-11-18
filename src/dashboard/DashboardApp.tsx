@@ -4,9 +4,9 @@
  * 语言/主题快捷切换）+ 右侧主区。
  *
  * 视图切换用组件内 state（对齐面板 App.tsx 的 view 模式，不引路由库）：
- * 用量总览 / 请求日志 / 模型速度 / 周额度对比 / 额度驾驶舱 / 同步与设备 /
- * 凭证与账号 / 价格设置 / Agent 与 Skill / 设置 / 关于 十一个页面各自
- * 独立取数渲染。
+ * 用量总览 / 请求日志 / 模型速度 / 周额度对比 / 额度驾驶舱 / 用量报告 /
+ * 同步与设备 / 凭证与账号 / 价格设置 / Agent 与 Skill / 皮肤中心 / 设置 /
+ * 关于 十三个页面各自独立取数渲染。
  */
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ComponentType } from "react";
@@ -25,8 +25,10 @@ import {
   OverviewIcon,
   PricingIcon,
   QuotaIcon,
+  ReportIcon,
   SessionsIcon,
   SettingsIcon,
+  SkinIcon,
   SpeedIcon,
   SyncIcon,
 } from "./icons";
@@ -37,6 +39,8 @@ import { LogsPage } from "./logs/LogsPage";
 import { SpeedPage } from "./SpeedPage";
 import { ComparePage } from "./ComparePage";
 import { QuotaPage } from "./QuotaPage";
+import { ReportPage } from "./ReportPage";
+import { SkinPage } from "./SkinPage";
 import { PricingPage } from "./PricingPage";
 import { SessionsPage } from "./sessions/SessionsPage";
 import { SyncPage } from "./SyncPage";
@@ -44,6 +48,7 @@ import { AccountsPage } from "./AccountsPage";
 import { AgentAssetsPage } from "./AgentAssetsPage";
 import { SettingsPage } from "./SettingsPage";
 import { AboutPage } from "./AboutPage";
+import { useAgentVisibilitySync } from "./agentVisibilitySync";
 
 /** 主区视图（新增页面时在此扩展） */
 type View =
@@ -53,10 +58,12 @@ type View =
   | "speed"
   | "compare"
   | "quota"
+  | "report"
   | "sync"
   | "accounts"
   | "pricing"
   | "agents"
+  | "skin"
   | "settings"
   | "about";
 
@@ -74,15 +81,19 @@ const NAVIGATABLE_VIEWS: readonly string[] = [
   "speed",
   "compare",
   "quota",
+  "report",
   "sync",
   "accounts",
   "pricing",
   "agents",
+  "skin",
   "settings",
   "about",
 ];
 
-/** 侧栏导航项：顺序即展示顺序；labelKey 同时用作页面标题词典键 */
+/** 侧栏导航项：顺序即展示顺序；labelKey 同时用作页面标题词典键。
+ *  用量报告跟在额度分析组（compare/quota）之后；皮肤中心属个性化功能，
+ *  排在 Agent 与 Skill 之后、设置之前 */
 const NAV_ITEMS: {
   view: View;
   labelKey: MessageKey;
@@ -94,10 +105,12 @@ const NAV_ITEMS: {
   { view: "speed", labelKey: "dashboard.speed", Icon: SpeedIcon },
   { view: "compare", labelKey: "dashboard.compare", Icon: CompareIcon },
   { view: "quota", labelKey: "dashboard.quota", Icon: QuotaIcon },
+  { view: "report", labelKey: "dashboard.report", Icon: ReportIcon },
   { view: "sync", labelKey: "dashboard.sync", Icon: SyncIcon },
   { view: "accounts", labelKey: "dashboard.accounts", Icon: AccountsIcon },
   { view: "pricing", labelKey: "dashboard.pricing", Icon: PricingIcon },
   { view: "agents", labelKey: "dashboard.agentAssets", Icon: AccountsIcon },
+  { view: "skin", labelKey: "dashboard.skin", Icon: SkinIcon },
   { view: "settings", labelKey: "dashboard.settings", Icon: SettingsIcon },
   { view: "about", labelKey: "dashboard.about", Icon: AboutIcon },
 ];
@@ -115,6 +128,10 @@ function applyDomTheme(theme: Theme): void {
 export function DashboardApp() {
   const { locale, setLocale, t } = useI18n();
   const [view, setView] = useState<View>("overview");
+  // Agent 展示可见性联动（自悬浮窗 App.tsx 迁移）：主窗口在场的全程持有
+  // （presence 探测 / 有凭证自动显示 / 远端来源轮询 / Rust 镜像 + 设置页
+  // 写路径），不随设置页切换销毁；写入经跨窗事件同步悬浮窗 tab 显隐
+  const { agentVisibility, setAgentVisible } = useAgentVisibilitySync();
   // 主题只用于给 ThemeToggle 换 key（见下方）：组件自身状态由 layout.tsx
   // 管理，这里记录"当前应显示的主题"以便外部切换后强制重读
   const [theme, setTheme] = useState<Theme>(() => loadTheme());
@@ -289,6 +306,8 @@ export function DashboardApp() {
             <ComparePage />
           ) : view === "quota" ? (
             <QuotaPage />
+          ) : view === "report" ? (
+            <ReportPage agentVisibility={agentVisibility} />
           ) : view === "sync" ? (
             <SyncPage />
           ) : view === "accounts" ? (
@@ -297,10 +316,16 @@ export function DashboardApp() {
             <PricingPage />
           ) : view === "agents" ? (
             <AgentAssetsPage />
+          ) : view === "skin" ? (
+            <SkinPage />
           ) : view === "about" ? (
             <AboutPage />
           ) : (
-            <SettingsPage />
+            <SettingsPage
+              agentVisibility={agentVisibility}
+              onAgentVisibilityChange={setAgentVisible}
+              onOpenAccounts={() => setView("accounts")}
+            />
           )}
         </main>
       </div>

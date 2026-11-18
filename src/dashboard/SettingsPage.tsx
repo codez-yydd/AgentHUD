@@ -1,5 +1,6 @@
 /**
- * 设置页（主窗口第九页）：应用级设置的统一入口，六个设置项——
+ * 设置页（主窗口）：应用级设置的统一入口与唯一配置宿主。
+ * 既有六项——
  * ① 语言（中文 / English）：复用面板同一套 i18n 存储（zbar-locale）与
  *    zbar://appearance-changed 广播，主窗口改了面板跟着变；
  * ② 外观主题（浅色 / 深色 / 跟随系统）：复用既有主题体系——来源偏好存
@@ -15,6 +16,15 @@
  *    三处入口状态互通；
  * ⑥ 灵动岛设置入口：灵动岛开启鼠标穿透后右键菜单不可达，设置窗关闭后
  *    可从这里重新打开（位置/透明度/穿透/板块均在独立设置窗里调整）。
+ *
+ * 应用级配置自悬浮窗设置面板完全迁入后新增分区（悬浮窗侧入口已删除，
+ * 本页是这些配置的唯一入口）：
+ * - 通用：开机自启 / 网络代理 / 全局快捷键 / 重置时间展示 / 汇率；
+ * - 悬浮窗：悬浮窗开关 / 面板透明度（透明度控制悬浮窗自身，改后经
+ *   zbar://panel-alpha-changed 广播实时应用）；
+ * - 数据来源：Agent 展示开关组（写入由 DashboardApp 持有的
+ *   useAgentVisibilitySync 承接，经 zbar://agent-visibility-changed 跨窗
+ *   同步悬浮窗 tab 显隐）。
  *
  * 刻意不做的：各页数据口径、时间范围等页面级偏好仍在各页自身；
  * 本页只收「应用级」开关，避免设置堆积。
@@ -46,6 +56,11 @@ import {
   resolveFontPx,
 } from "../fontSettings";
 import { useCurrencyPref } from "./settings/currencyPref";
+import { ToggleSwitch } from "./settings/controls";
+import { GeneralSettings } from "./settings/GeneralSettings";
+import { PanelSettings } from "./settings/PanelSettings";
+import { SourcesSettings } from "./settings/SourcesSettings";
+import type { AgentId, AgentVisibility } from "../agentVisibility";
 import type { CurrencyMode } from "../types";
 import type { Locale } from "../i18n/locale";
 
@@ -106,35 +121,18 @@ function Segmented<T extends string>({
   );
 }
 
-/** 开关行控件：胶囊滑动开关（状态即语义，title 给可访问名） */
-function ToggleSwitch({
-  checked,
-  disabled,
-  title,
-  onChange,
+export function SettingsPage({
+  agentVisibility,
+  onAgentVisibilityChange,
+  onOpenAccounts,
 }: {
-  checked: boolean;
-  disabled?: boolean;
-  title: string;
-  onChange: (next: boolean) => void;
+  /** Agent 展示开关状态（DashboardApp 持有的 useAgentVisibilitySync） */
+  agentVisibility: AgentVisibility;
+  /** 设置页开关写入（唯一手动写入入口：标记 + 保存 + Rust 镜像 + 跨窗广播） */
+  onAgentVisibilityChange: (id: AgentId, visible: boolean) => void;
+  /** 跳转「凭证与账号」页（数据来源区的凭证管理引导） */
+  onOpenAccounts: () => void;
 }) {
-  return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={checked}
-      aria-label={title}
-      title={title}
-      disabled={disabled}
-      className={`db-set-switch ${checked ? "db-set-switch--on" : ""}`}
-      onClick={() => onChange(!checked)}
-    >
-      <span className="db-set-switch__knob" aria-hidden />
-    </button>
-  );
-}
-
-export function SettingsPage() {
   const { locale, setLocale, t } = useI18n();
   const { mode: currencyMode, setMode: setCurrencyMode } = useCurrencyPref();
   // 操作失败提示（如打开灵动岛设置窗失败），复用 PricingPage 的 AlertBanner
@@ -388,6 +386,24 @@ export function SettingsPage() {
             {t("dashboard.settings.islandSettingsOpen")}
           </button>
         </section>
+
+        {/* ===== 以下为自悬浮窗设置面板迁入的三分区（本页是唯一入口）===== */}
+
+        {/* 通用：开机自启 / 网络代理 / 全局快捷键 / 重置时间展示 / 汇率 */}
+        <h3 className="db-set-group">{t("dashboard.settings.groupGeneral")}</h3>
+        <GeneralSettings />
+
+        {/* 悬浮窗：悬浮窗开关 / 面板透明度 */}
+        <h3 className="db-set-group">{t("dashboard.settings.groupPanel")}</h3>
+        <PanelSettings />
+
+        {/* 数据来源：Agent 展示开关组 */}
+        <h3 className="db-set-group">{t("dashboard.settings.groupSources")}</h3>
+        <SourcesSettings
+          agentVisibility={agentVisibility}
+          onAgentVisibilityChange={onAgentVisibilityChange}
+          onOpenAccounts={onOpenAccounts}
+        />
       </div>
     </div>
   );

@@ -131,6 +131,7 @@ export const settings = {
   "settings.shortcut": "全局快捷键",
   "settings.shortcutHint":
     "唤起/隐藏面板。格式如 alt+shift+z（修饰键用 ctrl/alt/shift/cmd，主键用字母/数字）。",
+  "settings.shortcutEnable": "启用",
   "settings.apply": "应用",
   "settings.applied": "已应用 ✓",
 
@@ -151,6 +152,11 @@ export const settings = {
   "settings.openDownloadPage": "打开下载页",
   "settings.updateHint":
     "每小时自动检查并在后台下载更新；下载完成后设置入口会显示红点。更新包带签名校验。中文界面优先使用 Gitee 源，英文界面优先 GitHub，失败自动切换另一源。",
+  // 更新就绪引导（悬浮窗设置页底部）：更新卡已迁至主窗口关于页，本页仅在
+  // zbar.updateReady 标记存在时给出去处；打开失败为轻提示（2.4s 自清）
+  "settings.updateReadyMainHint": "新版本已就绪，可在主窗口关于页安装",
+  "settings.openMainWindow": "打开主窗口",
+  "settings.openMainWindowFail": "打开失败",
 
   // ===== 多智谱账号切换 =====
   "settings.accountsCard": "ZCode 账号切换",

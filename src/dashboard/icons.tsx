@@ -347,6 +347,49 @@ export function AboutIcon({ className }: IconProps) {
   );
 }
 
+/** 用量报告：纸张轮廓（带折角）+ 内部趋势折线（「导出的报告文件」语义；
+    与总览图标的坐标轴三柱区分开：本图强调"汇总成文的报告"） */
+export function ReportIcon({ className }: IconProps) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden
+    >
+      <path d="M6.5 3h7.5l4.5 4.5V21h-12z" />
+      <path d="M14 3v4.5h4.5" />
+      <path d="M9.5 16l2.5-3 2 2 3-3.5" />
+    </svg>
+  );
+}
+
+/** 皮肤中心：调色板（窄浮窗菜单「皮肤」项同一图形，两处入口可对应认知） */
+export function SkinIcon({ className }: IconProps) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden
+    >
+      <path d="M12 3a9 9 0 0 0 0 18c.9 0 1.6-.7 1.6-1.6 0-.4-.2-.8-.4-1.1-.3-.3-.4-.7-.4-1.1a1.6 1.6 0 0 1 1.7-1.7h1.9A5.6 5.6 0 0 0 22 11.6C22 6.7 17.5 3 12 3Z" />
+      <circle cx="8" cy="9" r=".9" fill="currentColor" stroke="none" />
+      <circle cx="12" cy="7" r=".9" fill="currentColor" stroke="none" />
+      <circle cx="16" cy="9" r=".9" fill="currentColor" stroke="none" />
+      <circle cx="7.5" cy="13" r=".9" fill="currentColor" stroke="none" />
+    </svg>
+  );
+}
+
 /** 外链：方框 + 斜出箭头（点击在本机浏览器打开外部链接的通用语义） */
 export function ExternalLinkIcon({ className }: IconProps) {
   return (

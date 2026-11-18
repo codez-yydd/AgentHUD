@@ -66,17 +66,19 @@ const DASHBOARD_NAVIGATE_EVENT: &str = "zbar://dashboard-navigate";
 
 /// 主窗口可跳转页白名单（与 src/dashboard/DashboardApp.tsx 的 View 枚举
 /// 一致，改动任一侧需同步）。不在名单内的 page 只开窗不导航
-const DASHBOARD_PAGES: [&str; 12] = [
+const DASHBOARD_PAGES: [&str; 14] = [
     "overview",
     "logs",
     "sessions",
     "speed",
     "compare",
     "quota",
+    "report",
     "sync",
     "accounts",
     "pricing",
     "agents",
+    "skin",
     "settings",
     "about",
 ];
@@ -278,10 +280,12 @@ mod tests {
             "speed",
             "compare",
             "quota",
+            "report",
             "sync",
             "accounts",
             "pricing",
             "agents",
+            "skin",
             "settings",
             "about",
         ] {

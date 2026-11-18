@@ -9,6 +9,10 @@
  *    切换登录与删除快照——后两者是危险操作，全部走确认弹层（db-confirm，
  *    切换后果文案与设置页 AccountsCard 逐字一致：退出并重启 ZCode / 自动
  *    备份 / 失败回滚；删除只清本应用快照）。切换 / 删除期间按钮 busy 防重。
+ *    表格下方为自动切换区（自悬浮窗 AccountsCard 迁入）：额度用满无人值守
+ *    开关 + 卡头「智能切换」（pickAutoSwitchTarget 挑选 + 确认弹层）+ 最近
+ *    一次自动切换记录；各账号额度经 account_quotas 命令自拉（主窗口无
+ *    DataCache），挂载拉一次、切换/捕获成功后刷新。
  * ② 其他源凭证一览——新命令 fetch_credential_overview 聚合各源 CLI 落在
  *    本机的登录/凭证文件静态信息（源 / 账号标识 / 凭证类型 / 文件路径 /
  *    修改时间 / 是否存在），纯只读：后端保证不返回任何凭证明文，本页也不
@@ -26,12 +30,15 @@ import { useI18n, type TFn } from "../i18n";
 import { AlertBanner } from "../layout";
 import { Card, Skeleton } from "./primitives";
 import { RefreshIcon } from "./icons";
+import { ToggleSwitch } from "./settings/controls";
 import type {
   AccountMeta,
+  AccountQuotaEntry,
   AccountsState,
   CredentialSourceOverview,
 } from "../types";
 import {
+  accountQuotas,
   captureAccount,
   fetchCredentialOverview,
   listAccounts,
@@ -39,11 +46,25 @@ import {
   renameAccount,
   switchAccount,
 } from "../api";
+import {
+  pickAutoSwitchTarget,
+  readAutoSwitchEnabled,
+  readAutoSwitchLog,
+  writeAutoSwitchEnabled,
+  type AutoSwitchLogEntry,
+  type AutoSwitchPick,
+} from "../autoSwitch";
 
 /** 后端「ZCode 换账号自动捕获」事件（accounts.rs 的 spawn_auto_capture 每
  * 60s 轮询，捕获到新登录时广播）：打开着的本页立即刷新账号列表，与设置页
  * AccountsCard 同款监听（payload 不用，只当刷新信号）。 */
 const ACCOUNTS_AUTO_CAPTURED_EVENT = "zbar://accounts-auto-captured";
+
+/** 自动切换完成事件（autoSwitch.ts 的 AUTO_SWITCH_DONE_EVENT）是悬浮窗内
+ *  的同窗 window 事件：无人值守触发时 DataCache 在悬浮窗写完日志后
+ *  window.dispatchEvent，主窗口监听不到——本页刻意不挂监听（挂了也收不
+ *  到）；最近一次切换日志（zbar-auto-switch-log）靠重进本页（组件重挂载
+ *  重读 localStorage）与本页刷新/操作后的重读保持更新。 */
 
 /** 源 id → 品牌名（品牌名不翻译，沿 en.ts 头注释的口径；顺序即展示顺序，
  *  与后端 credential_overview 的返回顺序一致；kimi = Kimi Code CLI，与
@@ -81,10 +102,12 @@ function formatDateTime(ms: number): string {
   )}:${p(d.getMinutes())}`;
 }
 
-/** 确认弹层状态（切换登录 / 删除快照两种危险操作共用一个弹层形态） */
+/** 确认弹层状态（切换登录 / 删除快照两种危险操作 + 智能切换确认共用一个
+ *  弹层形态；auto 携带 pick 供理由展示，account 为切换命令要的快照元信息） */
 type ConfirmState =
   | { kind: "switch"; account: AccountMeta }
-  | { kind: "delete"; account: AccountMeta };
+  | { kind: "delete"; account: AccountMeta }
+  | { kind: "auto"; pick: AutoSwitchPick; account: AccountMeta };
 
 /** 凭证类型 kind → 词条键（oauth / apiKey / unknown 之外的值按 unknown 兜底） */
 function kindLabelKey(kind: string) {
@@ -126,6 +149,25 @@ export function AccountsPage() {
   // ---- 弹层 ----
   const [confirm, setConfirm] = useState<ConfirmState | null>(null);
 
+  // ---- 自动切换（无人值守开关 + 智能挑选，自悬浮窗 AccountsCard 迁入）----
+  // 开关：localStorage 持久化（zbar-auto-switch），悬浮窗 DataCache 的触发
+  // 检查每轮现读，本页改完即时生效
+  const [autoEnabled, setAutoEnabled] = useState(() => readAutoSwitchEnabled());
+  // 最近一次自动切换记录（悬浮窗 DataCache 写入；挂载与每次 refreshAll 重读，
+  // 事件监听收不到，见文件顶部 AUTO_SWITCH_DONE_EVENT 注释）
+  const [autoLog, setAutoLog] = useState<AutoSwitchLogEntry | null>(() =>
+    readAutoSwitchLog()
+  );
+  // 各账号额度（智能挑选的数据源；主窗口无 DataCache，经 account_quotas
+  // 命令自拉）：挂载拉一次，切换/捕获成功后刷新；查询失败置 null（按
+  // 「额度数据未就绪」引导，不阻塞账号表本体）
+  const [quotas, setQuotas] = useState<AccountQuotaEntry[] | null>(null);
+
+  /** Linux 的切换事务（进程退出/重启）后端未实现：开关禁用并提示（照
+   *  AccountsCard 的同名判定） */
+  const isLinux =
+    typeof navigator !== "undefined" && /linux/i.test(navigator.userAgent);
+
   /** 任一写操作进行中：禁用全部行内操作与捕获键（防并发写快照目录） */
   const busy =
     capturing || switchingId !== null || deletingId !== null || renamingBusy;
@@ -138,11 +180,13 @@ export function AccountsPage() {
   }
 
   /** 全量刷新：账号列表与凭证概览并行拉取、各自独立容错；仅最新请求收尾
-   *  loading / refreshing（开头清一次操作错误，刷新即重试入口） */
+   *  loading / refreshing（开头清一次操作错误，刷新即重试入口）。开头顺带
+   *  重读自动切换日志——事件收不到，刷新/操作是除重进页面外的同步时机 */
   async function refreshAll() {
     const reqId = ++loadReqId.current;
     setRefreshing(true);
     setActionError(null);
+    setAutoLog(readAutoSwitchLog());
     const acc = listAccounts()
       .then((s) => {
         if (reqId !== loadReqId.current) return;
@@ -218,6 +262,8 @@ export function AccountsPage() {
           : t("dashboard.accounts.capturedNew")
       );
       await refreshAll();
+      // 快照变化影响各账号额度（新快照纳入查询），智能挑选数据源一并刷新
+      refreshQuotasAfterWrite();
     } catch (e) {
       setActionError(String(e));
     } finally {
@@ -240,6 +286,8 @@ export function AccountsPage() {
       );
       setConfirm(null);
       await refreshAll();
+      // 切换改变 is_current 与各账号剩余：智能挑选数据源一并刷新
+      refreshQuotasAfterWrite();
     } catch (e) {
       setActionError(String(e));
     } finally {
@@ -278,6 +326,65 @@ export function AccountsPage() {
     } finally {
       setRenamingBusy(false);
     }
+  }
+
+  // ---- 区块①自动切换（自悬浮窗 AccountsCard 迁入）----
+  // 各账号额度：挂载拉一次（失败静默置 null，走「额度数据未就绪」引导）
+  useEffect(() => {
+    let cancelled = false;
+    accountQuotas()
+      .then((entries) => {
+        if (!cancelled) setQuotas(entries);
+      })
+      .catch(() => {
+        if (!cancelled) setQuotas(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  /** 写操作（捕获/切换）成功后的额度刷新：不塞进 refreshAll（概览/账号
+   *  列表与额度的容错域不同），单独轻量重拉智能挑选的数据源 */
+  function refreshQuotasAfterWrite() {
+    accountQuotas()
+      .then((entries) => setQuotas(entries))
+      .catch(() => setQuotas(null));
+  }
+
+  /** 无人值守开关写入：localStorage 持久化（异常静默），悬浮窗 DataCache
+   *  的触发检查每轮现读，改完即时生效 */
+  function changeAutoEnabled(next: boolean) {
+    setAutoEnabled(next);
+    writeAutoSwitchEnabled(next);
+  }
+
+  /** 卡头「智能切换」：按 5h/周剩余挑最合适的其他账号，确认后走现有切换
+   *  弹层链路（与 AccountsCard 的 handleAutoSwitch 同口径：数据未就绪 /
+   *  单账号 / 无目标分别给引导提示，落 actionError） */
+  function handleAutoPick() {
+    setActionError(null);
+    if (!quotas || quotas.length === 0 || !accounts) {
+      setActionError(t("dashboard.accounts.autoNoData"));
+      return;
+    }
+    if (accounts.accounts.length <= 1) {
+      setActionError(t("dashboard.accounts.autoSingle"));
+      return;
+    }
+    const pick = pickAutoSwitchTarget(quotas);
+    if (!pick) {
+      setActionError(t("dashboard.accounts.autoNoTarget"));
+      return;
+    }
+    // 额度条目按 id 找回快照元信息（切换命令以快照 id 为准；找不到说明
+    // 额度数据与快照列表不一致，按无目标处理）
+    const meta = accounts.accounts.find((a) => a.id === pick.entry.id);
+    if (!meta) {
+      setActionError(t("dashboard.accounts.autoNoTarget"));
+      return;
+    }
+    setConfirm({ kind: "auto", pick, account: meta });
   }
 
   // ---- 派生状态 ----
@@ -381,16 +488,28 @@ export function AccountsPage() {
                 : undefined
             }
             action={
-              <button
-                type="button"
-                className="db-btn db-btn--primary"
-                onClick={() => void handleCapture()}
-                disabled={busy}
-              >
-                {capturing
-                  ? t("dashboard.accounts.capturing")
-                  : t("dashboard.accounts.capture")}
-              </button>
+              <>
+                {/* 智能切换：按 5h/周剩余挑最合适的其他账号，确认后走切换
+                    弹层链路（与悬浮窗 AccountsCard 的卡头入口同位同语义） */}
+                <button
+                  type="button"
+                  className="db-btn"
+                  onClick={handleAutoPick}
+                  disabled={busy}
+                >
+                  {t("dashboard.accounts.autoPick")}
+                </button>
+                <button
+                  type="button"
+                  className="db-btn db-btn--primary"
+                  onClick={() => void handleCapture()}
+                  disabled={busy}
+                >
+                  {capturing
+                    ? t("dashboard.accounts.capturing")
+                    : t("dashboard.accounts.capture")}
+                </button>
+              </>
             }
           >
             {/* 顶部说明：后台每分钟自动捕获 + 手动捕获入口（快照仅存本机） */}
@@ -522,6 +641,53 @@ export function AccountsPage() {
                     </table>
                   </div>
                 )}
+
+                {/* ---- 自动切换（无人值守，自悬浮窗 AccountsCard 迁入）：
+                    开关 + 最近一次记录（智能挑选入口在卡头 action 槽）。
+                    无账号时开关同样展示（可先开再捕获），仅额度挑选不可用 ---- */}
+                <div className="db-acc-autosw">
+                  <div className="db-acc-autosw__row">
+                    <span className="db-acc-autosw__text">
+                      <span className="db-acc-autosw__title">
+                        {t("dashboard.accounts.autoToggle")}
+                      </span>
+                      {/* Linux 切换事务后端未实现只给不可用说明；
+                          开启时展示无人值守行为提示（照 AccountsCard 口径） */}
+                      {isLinux ? (
+                        <span className="db-acc-autosw__desc">
+                          {t("dashboard.accounts.autoLinuxUnsupported")}
+                        </span>
+                      ) : autoEnabled ? (
+                        <span className="db-acc-autosw__desc">
+                          {t("dashboard.accounts.autoToggleHint")}
+                        </span>
+                      ) : null}
+                    </span>
+                    <ToggleSwitch
+                      checked={autoEnabled}
+                      disabled={isLinux}
+                      title={t("dashboard.accounts.autoToggle")}
+                      onChange={changeAutoEnabled}
+                    />
+                  </div>
+
+                  {/* 最近一次自动切换记录：无人值守触发发生在悬浮窗
+                      （DataCache 写日志 + 同窗事件广播，主窗口收不到），
+                      本页靠重进页面与 refreshAll（刷新键/自动捕获事件/
+                      操作后）重读 localStorage 保持更新 */}
+                  {autoLog && (
+                    <p className="db-acc-autosw__log">
+                      {autoLog.ok
+                        ? t("dashboard.accounts.autoLogOk", {
+                            time: formatDateTime(autoLog.ts),
+                            name: autoLog.to ?? "",
+                          })
+                        : t("dashboard.accounts.autoLogFail", {
+                            time: formatDateTime(autoLog.ts),
+                          })}
+                    </p>
+                  )}
+                </div>
               </>
             )}
           </Card>
@@ -650,8 +816,10 @@ export function AccountsPage() {
 /** 确认弹层：按 kind 切换标题 / 描述 / 确认键文案。切换后果文案与设置页
  *  AccountsCard 逐字一致（退出并重启 ZCode / 自动备份 / 失败回滚）；删除
  *  确认基础后果与 settings.accountsRemoveConfirm 一致（只清本应用快照），
- *  主窗口版额外说明当前登录账号快照会被自动捕获重建。Escape 关闭、确认
- *  键 busy 禁用。文件级组件：弹层打开期间父级重渲染不重挂载。 */
+ *  主窗口版额外说明当前登录账号快照会被自动捕获重建。auto（智能切换）为
+ *  摘要 + 理由两段（剩余量与挑选理由，照悬浮窗 AccountsCard 确认弹窗口径）。
+ *  Escape 关闭、确认键 busy 禁用。文件级组件：弹层打开期间父级重渲染不重
+ *  挂载。 */
 function ConfirmDialog({
   state,
   busy,
@@ -674,23 +842,50 @@ function ConfirmDialog({
   }, [onCancel]);
 
   const isSwitch = state.kind === "switch";
+  const isAuto = state.kind === "auto";
   const title = isSwitch
     ? t("dashboard.accounts.confirmSwitchTitle")
-    : t("dashboard.accounts.confirmDeleteTitle");
+    : isAuto
+      ? t("dashboard.accounts.autoConfirmTitle", {
+          name: state.account.display_name,
+        })
+      : t("dashboard.accounts.confirmDeleteTitle");
   const desc = isSwitch
     ? t("dashboard.accounts.confirmSwitchDesc", {
         name: state.account.display_name,
       })
-    : t("dashboard.accounts.confirmDeleteDesc");
+    : isAuto
+      ? t("dashboard.accounts.autoSummary", {
+          h5: Math.round(state.pick.hour5Remain),
+          wk: Math.round(state.pick.weeklyRemain),
+        })
+      : t("dashboard.accounts.confirmDeleteDesc");
+  // 智能切换第二段：挑选理由（layer 1 立即可用 / layer 2 等 5h 重置，
+  // 重置时间未知时用无时间版文案）
+  const autoReason = isAuto
+    ? state.pick.layer === 1
+      ? t("dashboard.accounts.autoReasonReady")
+      : state.pick.resetAt == null
+        ? t("dashboard.accounts.autoReasonWaitNoTime")
+        : t("dashboard.accounts.autoReasonWait", {
+            min: Math.max(
+              1,
+              Math.round((state.pick.resetAt - Date.now()) / 60_000)
+            ),
+          })
+    : null;
   const confirmLabel = isSwitch
     ? t("dashboard.accounts.confirmSwitch")
-    : t("dashboard.accounts.confirmDelete");
+    : isAuto
+      ? t("dashboard.accounts.switch")
+      : t("dashboard.accounts.confirmDelete");
 
   return (
     <div className="db-confirm-mask">
       <div className="db-confirm" role="alertdialog" aria-modal="true">
         <div className="db-confirm__title">{title}</div>
         <p className="db-confirm__desc">{desc}</p>
+        {autoReason && <p className="db-confirm__desc">{autoReason}</p>}
         <div className="db-confirm__actions">
           <button type="button" className="db-btn" onClick={onCancel} disabled={busy}>
             {t("common.cancel")}

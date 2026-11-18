@@ -29,10 +29,6 @@ import { KIND_BADGE } from "./CredentialsCard";
 import { NOT_YET_PROVIDERS } from "./GenericQuotaPanel";
 import { BrandIcon } from "./BrandIcon";
 
-/** 设置页「添加凭证」快捷入口 → StatsPanel 的事件名（detail = provider id）。
- *  App 监听后切回统计页并把目标 provider 交给 StatsPanel 打开添加表单。 */
-export const ADD_SERVICE_EVENT = "zbar-open-credential-add";
-
 /** 可添加凭证的服务清单：凭证型 provider 去掉两类——「无凭证可录」的纯本地型
  *  （gemini）与「产品上不提供录入入口」的 provider（现仅 moonshot，见
  *  NO_CREDENTIAL_ENTRY_AGENTS），统一由静态判定 canAddCredential 收口。

@@ -21,17 +21,22 @@ export const dashboard = {
   "dashboard.titlebar.restore": "还原",
   "dashboard.titlebar.close": "关闭",
 
-  // 侧栏导航项（同时用作页面标题）：用量总览 / 请求日志 / 模型速度 / 周额度对比 / 额度驾驶舱 / 同步与设备 / 凭证与账号 / 价格设置 / 设置 / 关于
+  // 侧栏导航项（同时用作页面标题）：用量总览 / 请求日志 / 模型速度 / 周额度对比 / 额度驾驶舱 / 用量报告 / 同步与设备 / 凭证与账号 / 价格设置 / Agent 与 Skill / 皮肤中心 / 设置 / 关于
   "dashboard.overview": "用量总览",
   "dashboard.logs": "请求日志",
   "dashboard.speed": "模型速度",
   "dashboard.compare": "周额度对比",
   "dashboard.quota": "额度驾驶舱",
+  "dashboard.report": "用量报告",
   "dashboard.sync": "同步与设备",
   "dashboard.accounts": "凭证与账号",
   "dashboard.pricing": "价格设置",
+  "dashboard.skin": "皮肤中心",
   "dashboard.settings": "设置",
   "dashboard.about": "关于",
+  // 「dashboard.agentAssets」「dashboard.sessions」两条导航键分别由
+  // dicts/agentAssets.ts 与 dicts/sessions.ts 提供（各自域词典自持），
+  // 本文件不重复声明
 
   // 页面说明
   "dashboard.overview.desc": "跨服务用量、花费与趋势的汇总视图。",
@@ -44,9 +49,15 @@ export const dashboard = {
   // 口径说明写进页头：本页百分比与进度条统一为剩余额度（= 100 − 已用）
   "dashboard.quota.desc":
     "账号 / 凭证级的额度全景：当前剩余、90 天历史趋势与重置窗口。百分比与仪表均为剩余额度（= 100 − 已用）。",
+  // 用量报告页说明：口径与窄窗报表页一致（近 89 天全量，KPI/热力图/趋势/模型表）
+  "dashboard.report.desc":
+    "近 89 天全量用量汇总：Token 与花费 KPI、活跃度、活动热力图、用量趋势与模型排行；可按设备与 Agent 筛选，支持导出与分享卡片。",
   "dashboard.sync.desc": "本机同步状态、服务端设备管理与数据清理。",
   "dashboard.accounts.desc": "ZCode 账号快照管理，以及各 Agent 源本地登录凭证的一览。",
   "dashboard.pricing.desc": "模型单价维护与价格表更新。",
+  // 皮肤中心页说明：两张入口卡（免注入 / 需注入）沿用 theme 域既有文案
+  "dashboard.skin.desc":
+    "会话悬浮窗、桌面宠物与 ZCode 动态壁纸的外观设置入口。",
   "dashboard.about.desc": "应用信息、版本与更新，以及项目仓库与反馈入口。",
 
   // 悬浮窗统计页的主窗口入口（头部工具条图标按钮 + 完整提示/aria）
@@ -542,6 +553,29 @@ export const dashboard = {
     "仅删除本应用保存的快照，不影响 ZCode 当前登录。若删除的是当前登录账号的快照，自动捕获开启时会在约 1 分钟内按当前登录自动重建。",
   "dashboard.accounts.confirmDelete": "删除",
 
+  // ---- 自动切换（无人值守开关 + 智能挑选，自悬浮窗 AccountsCard 迁入）：
+  //      词条语义与 settings.accountsAuto* 一致（挑选算法共用 autoSwitch.ts），
+  //      措辞逐字沿用面板版，大窗版按页面口径另立 dashboard.accounts.auto* ----
+  "dashboard.accounts.autoPick": "智能切换",
+  "dashboard.accounts.autoConfirmTitle": "智能切换到「{name}」",
+  "dashboard.accounts.autoSummary": "5h 剩 {h5}% · 周剩 {wk}%",
+  "dashboard.accounts.autoReasonReady":
+    "该账号 5h 与周额度均有剩余，综合剩余量最高",
+  "dashboard.accounts.autoReasonWait":
+    "所有账号 5h 额度均已用满，该账号 5h 将最早恢复（约 {min} 分钟后）",
+  "dashboard.accounts.autoReasonWaitNoTime":
+    "所有账号 5h 额度均已用满，已选择 5h 较早恢复的账号",
+  "dashboard.accounts.autoNoTarget":
+    "没有合适的账号可切换：其他账号查询失败或周额度已用尽",
+  "dashboard.accounts.autoSingle": "当前只有一个账号，没有其他账号可切换",
+  "dashboard.accounts.autoNoData": "额度数据尚未就绪，请稍后再试",
+  "dashboard.accounts.autoToggle": "额度用满时自动切换",
+  "dashboard.accounts.autoToggleHint":
+    "当前账号 5h 额度用满时自动切换到可用账号并重启 ZCode，中断的任务请在 ZCode 任务列表中手动继续",
+  "dashboard.accounts.autoLinuxUnsupported": "当前平台不支持切换账号",
+  "dashboard.accounts.autoLogOk": "{time} 已自动切换到「{name}」",
+  "dashboard.accounts.autoLogFail": "{time} 尝试自动切换失败：无可用账号",
+
   // ---- 区块②：其他源凭证一览（只读静态信息，不发 HTTP）----
   "dashboard.accounts.overviewTitle": "其他源凭证一览",
   "dashboard.accounts.overviewSub": "{count}/{total} 个源检测到本地凭证",
@@ -644,10 +678,11 @@ export const dashboard = {
   "dashboard.pricing.applySelected": "应用选中",
   "dashboard.pricing.applySelectedCount": "应用选中 ({count})",
 
-  // ===== 设置页（大窗）：语言 / 主题 / 币种 / 自动捕获 / HUD 停靠条 =====
+  // ===== 设置页（大窗）：语言 / 主题 / 币种 / 自动捕获 / HUD 停靠条 + 迁入的
+  // 通用（自启/代理/快捷键/重置展示/汇率）、悬浮窗（开关/透明度）、数据来源 =====
   // 每行 = 标题 + 简短说明（说清「这是干啥的」）+ 控件（分段或开关）
   "dashboard.settings.desc":
-    "语言、外观、币种与常驻功能开关；改动即时生效并同步到全部窗口。",
+    "语言、外观、币种与常驻功能开关；应用级配置（自启、代理、快捷键、汇率、数据来源与悬浮窗）已统一收口到本页，改动即时生效并同步到全部窗口。",
   // ① 语言
   "dashboard.settings.language": "语言",
   "dashboard.settings.languageHint":
@@ -681,6 +716,15 @@ export const dashboard = {
   "dashboard.settings.islandSettingsHint":
     "灵动岛的位置、透明度、鼠标穿透、板块等在独立设置窗口里调整；开启鼠标穿透后可从这里重新打开。",
   "dashboard.settings.islandSettingsOpen": "打开灵动岛设置",
+
+  // ===== 自悬浮窗设置面板迁入的三分区：标题与数据来源引导 =====
+  // 行内容词条复用 settings.*（面板侧删除入口但词条保留共用）
+  "dashboard.settings.groupGeneral": "通用",
+  "dashboard.settings.groupPanel": "悬浮窗",
+  "dashboard.settings.groupSources": "数据来源",
+  "dashboard.settings.sourcesAddHint":
+    "添加或管理服务凭证请前往「凭证与账号」页。",
+  "dashboard.settings.sourcesGoAccounts": "前往凭证与账号",
 
   // ===== 关于页（大窗）：品牌区 / 检查更新 / 项目链接与许可 =====
   // 更新的执行在面板（Update 资源 rid 只对面板 webview 有效），本页经

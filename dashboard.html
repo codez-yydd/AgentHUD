@@ -17,8 +17,9 @@
       - /src/dashboard/DashboardApp.tsx：应用壳（标题栏 + 侧栏 + 主区按 state 切换）；
       - /src/dashboard.css：Tailwind 4 + 公共设计令牌子集（不复用 index.css
         —— 那份含面板专属的透明底/圆角/#root 缩放规则，普通窗引入会穿帮）。
-      本窗可被用户点标题栏"×"关闭：Rust 侧做 prevent_close + hide（隐藏不
-      销毁），再次打开秒开，因此页面不需要处理关闭/退出逻辑。
+      本窗可被用户点标题栏"×"关闭：Rust 侧对主窗口不做 prevent_close
+      拦截，关闭即销毁窗口（再次打开走重建，非隐藏秒开），因此页面不需要
+      处理关闭/退出逻辑。
     -->
     <script>
       // 首帧前兜底：先按面板写入的主题键切 .dark，避免暗色用户看到白闪。

@@ -675,6 +675,7 @@ export const en: typeof zh = {
     "settings.shortcut": "Global shortcut",
     "settings.shortcutHint":
       "Show/hide the panel. Format like alt+shift+z (modifiers: ctrl/alt/shift/cmd; main key: a letter or number).",
+    "settings.shortcutEnable": "Enable",
     "settings.apply": "Apply",
     "settings.applied": "Applied ✓",
 
@@ -744,6 +745,15 @@ export const en: typeof zh = {
     "settings.accountsAutoLogFail": "{time} auto-switch failed: no available account",
     "settings.accountsAutoLinuxUnsupported":
       "Account switching is not supported on this platform",
+
+    // Update-ready guidance at the bottom of the panel settings page: the
+    // updater card moved to the main window's About page, so this row only
+    // appears while the zbar.updateReady marker exists; open failure is a
+    // transient hint (auto-clears after 2.4s)
+    "settings.updateReadyMainHint":
+      "A new version is ready — install it from the About page",
+    "settings.openMainWindow": "Open main window",
+    "settings.openMainWindowFail": "Failed to open",
   } satisfies typeof settings),
 
   ...({
@@ -1294,9 +1304,11 @@ export const en: typeof zh = {
     "dashboard.speed": "Model speed",
     "dashboard.compare": "Weekly compare",
     "dashboard.quota": "Quota cockpit",
+    "dashboard.report": "Usage report",
     "dashboard.sync": "Sync & devices",
     "dashboard.accounts": "Credentials",
     "dashboard.pricing": "Pricing",
+    "dashboard.skin": "Skin center",
     "dashboard.settings": "Settings",
     "dashboard.about": "About",
 
@@ -1312,12 +1324,20 @@ export const en: typeof zh = {
     // quota (= 100 − used)
     "dashboard.quota.desc":
       "Per-account/credential quota panorama: current remaining, 90-day history and reset windows. Percentages and gauges show remaining quota (= 100 − used).",
+    // Usage report page: same scope as the panel report page (last 89 days,
+    // KPIs / heatmap / trend / model table)
+    "dashboard.report.desc":
+      "Full last-89-days usage summary: token & cost KPIs, activity, activity heatmap, usage trend and model ranking; filter by device and agent, export or share a card.",
     "dashboard.sync.desc":
       "This machine's sync status, server-side device management and data cleanup.",
     "dashboard.accounts.desc":
       "ZCode account snapshot management and an overview of local agent credentials.",
     "dashboard.pricing.desc":
       "Model unit-price maintenance and pricing table updates.",
+    // Skin center page: two entry cards (injection-free / injection required)
+    // reuse the existing theme.* copy
+    "dashboard.skin.desc":
+      "Appearance settings for the session HUD, desktop pet and ZCode dynamic wallpaper.",
     "dashboard.about.desc":
       "App info, version and updates, plus project links and feedback.",
 
@@ -1836,6 +1856,33 @@ export const en: typeof zh = {
       "Only the snapshot stored by this app is deleted; the ZCode login is not affected. If it belongs to the current login account, auto-capture (when enabled) will recreate it from the current login within about a minute.",
     "dashboard.accounts.confirmDelete": "Delete",
 
+    // ---- Auto switch (unattended toggle + smart pick, migrated from the
+    //      panel's AccountsCard): semantics match settings.accountsAuto*
+    //      (both share the autoSwitch.ts picker), wording mirrors the panel
+    //      verbatim under the page's own dashboard.accounts.auto* keys ----
+    "dashboard.accounts.autoPick": "Smart switch",
+    "dashboard.accounts.autoConfirmTitle": "Smart-switch to \"{name}\"",
+    "dashboard.accounts.autoSummary": "5h {h5}% left · Wk {wk}% left",
+    "dashboard.accounts.autoReasonReady":
+      "Both 5h and weekly quotas available, with the best combined headroom",
+    "dashboard.accounts.autoReasonWait":
+      "All accounts' 5h quotas are exhausted; this account's 5h quota resets first (in ~{min} min)",
+    "dashboard.accounts.autoReasonWaitNoTime":
+      "All accounts' 5h quotas are exhausted; picked the account whose 5h quota resets sooner",
+    "dashboard.accounts.autoNoTarget":
+      "No suitable account to switch to: other accounts failed to query or their weekly quotas are exhausted",
+    "dashboard.accounts.autoSingle":
+      "Only one account — no other account to switch to",
+    "dashboard.accounts.autoNoData": "Quota data not ready yet, please retry later",
+    "dashboard.accounts.autoToggle": "Auto-switch when 5h quota is exhausted",
+    "dashboard.accounts.autoToggleHint":
+      "When the current account's 5h quota runs out, automatically switch to an available account and relaunch ZCode. Interrupted tasks must be resumed manually from the ZCode task list.",
+    "dashboard.accounts.autoLinuxUnsupported":
+      "Account switching is not supported on this platform",
+    "dashboard.accounts.autoLogOk": "{time} auto-switched to \"{name}\"",
+    "dashboard.accounts.autoLogFail":
+      "{time} auto-switch failed: no available account",
+
     // ---- Section 2: other-source credential overview (read-only, no HTTP) ----
     "dashboard.accounts.overviewTitle": "Other sources",
     "dashboard.accounts.overviewSub":
@@ -1945,7 +1992,7 @@ export const en: typeof zh = {
     // ===== Settings page: language / theme / currency / auto capture / HUD bar =====
     // Each row = title + short hint (what it does) + control (segmented or switch)
     "dashboard.settings.desc":
-      "Language, appearance, currency and always-on feature toggles; changes apply instantly and sync across windows.",
+      "Language, appearance, currency and always-on feature toggles; app-level settings (autostart, proxy, shortcut, exchange rate, data sources and the floating panel) now live here only — changes apply instantly and sync across windows.",
     // ① Language
     "dashboard.settings.language": "Language",
     "dashboard.settings.languageHint":
@@ -1979,6 +2026,16 @@ export const en: typeof zh = {
     "dashboard.settings.islandSettingsHint":
       "Adjust the island's position, opacity, mouse passthrough, and panels in its dedicated settings window; once passthrough is on, reopen it from here.",
     "dashboard.settings.islandSettingsOpen": "Open Island Settings",
+
+    // ===== Three sections migrated from the panel settings page: group
+    //      titles + data-source guidance. Row wording reuses settings.*
+    //      (entries kept shared although the panel entry points are gone) =====
+    "dashboard.settings.groupGeneral": "General",
+    "dashboard.settings.groupPanel": "Floating Panel",
+    "dashboard.settings.groupSources": "Data Sources",
+    "dashboard.settings.sourcesAddHint":
+      "Add or manage service credentials on the Credentials & Accounts page.",
+    "dashboard.settings.sourcesGoAccounts": "Open Credentials & Accounts",
 
     // ===== About page: brand / check for updates / project links & license =====
     // Updates run in the panel (the Update resource's rid is only valid in the

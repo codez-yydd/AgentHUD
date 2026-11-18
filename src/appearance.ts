@@ -22,6 +22,11 @@ export const THEME_KEY = "zbar-theme";
 export const THEME_PREF_KEY = "zbar-theme-pref";
 /** 面板透明度持久化键 */
 export const PANEL_ALPHA_KEY = "zbar-panel-alpha";
+/** 面板透明度变更跨窗广播（无 payload，接收方重读 localStorage 后应用）：
+ *  透明度设置入口迁到主窗口后，滑杆写盘时广播本事件，悬浮窗监听并
+ *  applyPanelAlpha 实时跟随（--panel-alpha 只作用于面板窗样式，主窗口
+ *  自身无需应用） */
+export const PANEL_ALPHA_CHANGED_EVENT = "zbar://panel-alpha-changed";
 /** 面板透明度默认值（与 index.css 中 --panel-alpha 初始值一致） */
 export const DEFAULT_PANEL_ALPHA = 0.55;
 /** 旧版整体缩放（字体大小）持久化键：仅 fontSettings 迁移时读取 */

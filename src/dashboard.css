@@ -27,6 +27,12 @@
      等比缩放全部字号 / 行高 / 控件，保持标题、核心数字、辅助文字的层级。 */
   --ui-scale: 1;
 
+  /* 面板玻璃底三元组（RGB）：主窗口本体不用 --panel-*（那是面板专用），
+     但窄窗 ReportContent 复用进「用量报告」页后，其工具行
+     bg-[rgb(var(--panel-bg)/0.92)] 需要该变量才有底色；取值与 index.css
+     的面板玻璃底一致（亮=白、暗=slate-900，见文件尾部 .dark 映射） */
+  --panel-bg: 255 255 255;
+
   /* 主窗口页面变量（面板的 --panel-* 是玻璃面板专用，不复用）。
      视觉语言对齐灵动岛 HUD / 托盘菜单：品牌蓝紫（periwinkle → violet）
      环境光 + 半透明玻璃壳（标题栏 / 侧栏）+ 浮起的圆角卡片；亮色是带
@@ -3617,8 +3623,12 @@ select option:disabled {
    AlertBanner / EmptyState 来自 layout.tsx，悬浮面板仍在用同一份组件，
    不能在组件或 Tailwind 工具类上直接改字号。这里用 .db-page 的直接子元素
    选择器做作用域覆盖：dashboard.css 不在 @layer 内，未分层样式优先级高于
-   Tailwind 的 utilities 层，面板（.panel-shell 作用域）完全不受影响。 */
-.db-page > .text-\[11px\] {
+   Tailwind 的 utilities 层，面板（.panel-shell 作用域）完全不受影响。
+   用量报告页的 AlertBanner 挂在 .db-report-embed > .flex-1（ReportContent
+   根）> .space-y-1（告警条包装行）下，不在 .db-page 直接子级，补一条
+   同款作用域链，保证同一 AlertBanner 跨页字号一致。 */
+.db-page > .text-\[11px\],
+.db-report-embed > .flex-1 > .space-y-1 > .text-\[11px\] {
   /* AlertBanner 提示条：11px → 12.5px，留白同步放宽（大窗不缺这一行高度） */
   margin-bottom: 0;
   padding: 9px 12px;
@@ -4376,6 +4386,54 @@ select option:disabled {
   color: var(--db-text-dim);
 }
 
+/* ---- 自动切换（无人值守）：快照表下方的开关行 + 最近记录行（智能挑选
+   入口在卡头 action 槽，与「捕获当前登录」并排）。分隔线沿 db-acc-current
+   的弱底色口径改用边框（表格行无边框，不会双线） ---- */
+.db-acc-autosw {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--db-row-border);
+}
+
+.db-acc-autosw__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+}
+
+.db-acc-autosw__text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.db-acc-autosw__title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--db-text);
+}
+
+.db-acc-autosw__desc {
+  margin-top: 2px;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--db-text-dim);
+}
+
+/* 最近一次自动切换记录（无人值守触发发生在悬浮窗，本页重进/刷新时重读） */
+.db-acc-autosw__log {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--db-text-dim);
+  word-break: break-all;
+}
+
 /* ---- 凭证页窄窗回退（≤980px）：凭证文件路径列收窄（表格本体仍有
    .db-table-wrap 横滚兜底）。必须放在上面的基础规则之后（同特异度靠
    源码顺序取胜，与上方各页媒体查询同纪律）---- */
@@ -4419,6 +4477,9 @@ select option:disabled {
  * ============================================================ */
 .dark {
   color-scheme: dark;
+  /* 面板玻璃底暗色值（与 index.css 的 --panel-bg 暗色一致）：供复用组件
+     （用量报告页的 ReportContent 工具行）取色，见 :root 段说明 */
+  --panel-bg: 15 23 42;
   /* slate 反转：深档文字变浅；浅档文字/图形变中灰 */
   --color-slate-300: #475569;
   --color-slate-400: #64748b;
@@ -5950,6 +6011,228 @@ select option:disabled {
   .db-set-font {
     width: 100%;
   }
+  .db-set-checks {
+    /* 行改纵向堆叠后，重置展示的双开关组随行左对齐（不再右侧贴边） */
+    align-items: flex-start;
+  }
+}
+
+/* ============================================================
+ * 设置页扩展（应用级配置自悬浮窗迁入）：分区标题 / 块级行 / 输入框 /
+ * 行内操作 / 开关标签 / 反馈小字 / 数据来源列表。全部走 --db-* 变量，
+ * 暗色经 .dark 变量翻转自动适配（与灵动岛设置窗同一套令牌）。
+ * ============================================================ */
+
+/* ---- 分区标题：小号大写字距标签，与上方既有行拉开一段距离。
+   不画 border-top：上一行 .db-set-row 自带 border-bottom，再叠一条会
+   形成双线，分组分隔靠 margin 留白 + 小标题本身即可 ---- */
+.db-set-group {
+  margin: 26px 0 -6px;
+  padding-top: 10px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--db-text-dim);
+}
+
+/* ---- 块级设置行：标题在上、控件独占整行（输入框 / 汇率 / 数据来源；
+   形态与灵动岛设置窗的 db-iset-row--block 一致，此处为设置页独立声明） ---- */
+.db-set-row--block {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
+}
+
+/* 块级行内容容器：纵向小间距堆叠（输入行 + 反馈行） */
+.db-set-blockbody {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: 560px;
+}
+
+/* ---- 设置页输入框：与 SyncPage 表单同材质（描边圆角 + 聚焦光环） ---- */
+.db-set-input {
+  width: 100%;
+  padding: 6px 10px;
+  border: 1px solid var(--db-control-border);
+  border-radius: 9px;
+  background: var(--db-control-bg);
+  color: var(--db-text);
+  font-family: inherit;
+  font-size: 12px;
+  outline: none;
+  transition: border-color 0.15s ease, background 0.15s ease,
+    box-shadow 0.15s ease, opacity 0.15s ease;
+}
+
+.db-set-input::placeholder {
+  color: var(--db-text-dim);
+}
+
+.db-set-input:hover:not(:disabled) {
+  background: var(--db-control-bg-hover);
+}
+
+.db-set-input:focus {
+  border-color: var(--db-cal-accent-border);
+  background: var(--db-card-bg);
+  box-shadow: var(--db-focus-ring);
+}
+
+.db-set-input:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+/* 快捷键键位（等宽） / 汇率数值（右对齐 + 等宽数字防抖动） */
+.db-set-input--mono {
+  font-family: "SF Mono", "JetBrains Mono", ui-monospace, monospace;
+}
+
+.db-set-input--num {
+  width: 96px;
+  flex: none;
+  text-align: right;
+  font-family: "SF Mono", "JetBrains Mono", ui-monospace, monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+.db-set-input--num[readonly] {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* ---- 行内操作排布：输入框 + 开关 + 按钮同一行，自然换行 ---- */
+.db-set-inline {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.db-set-inline .db-set-input {
+  width: auto;
+  min-width: 200px;
+  flex: 1;
+}
+
+.db-set-inline .db-set-input--num {
+  min-width: 0;
+  flex: none;
+}
+
+.db-set-inline__label {
+  flex: none;
+  font-size: 12px;
+  color: var(--db-text-dim);
+}
+
+/* ---- 带开关的行内标签（每日自动更新 / 重置展示子项）：文字 + 胶囊开关 ---- */
+.db-set-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--db-text);
+  cursor: pointer;
+}
+
+/* 重置展示的双子项纵向并列（行右侧，与单开关行对齐） */
+.db-set-checks {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 10px;
+  flex: none;
+}
+
+/* ---- 反馈小字：状态/来源/说明（--ok 成功 / --error 失败带换行保护，
+   错误色沿用本文件行内删除按钮的 rose #e11d48 先例） ---- */
+.db-set-note {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--db-text-dim);
+}
+
+.db-set-note--ok {
+  color: var(--db-accent-emerald);
+}
+
+.db-set-note--error {
+  color: #e11d48;
+  overflow-wrap: anywhere;
+}
+
+/* ---- 数据来源列表：组标题 + 品牌行（图标 + 名称/描述 + 开关） ---- */
+.db-set-agent__group + .db-set-agent__group {
+  margin-top: 10px;
+}
+
+.db-set-agent__group-title {
+  margin-bottom: 2px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--db-text-dim);
+}
+
+.db-set-agent {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 7px 8px;
+  border-radius: 10px;
+  transition: background 0.15s ease;
+}
+
+.db-set-agent:hover {
+  background: var(--db-hover);
+}
+
+.db-set-agent__text {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.db-set-agent__icon {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  color: var(--db-text-dim);
+}
+
+.db-set-agent__names {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.db-set-agent__name {
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--db-text);
+}
+
+.db-set-agent__desc {
+  font-size: 11px;
+  color: var(--db-text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 凭证接入组的引导：文案 + 跳转按钮 */
+.db-set-agent__cta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px 0;
 }
 
 /* ============================================================
@@ -8043,3 +8326,739 @@ body.card-resizing * {
   line-height: 1.65;
   color: var(--db-text-dim);
 }
+
+/* ============================================================
+ * 用量报告页（ReportPage）：不整页滚动版面（对齐 .db-logs-page 先例）
+ * + 窄窗 ReportContent 的大窗嵌入。
+ * 页面撑满主区高度、溢出交给 ReportContent 自带的 PageBody 内滚；
+ * 内容列沿用 db-page 的 1280 上限（KPI 四列 / 热力图 / 趋势图都受益于
+ * 宽版面，不再额外收窄）。
+ * ============================================================ */
+.db-report-page {
+  /* 源码顺序覆盖 .db-page 的 min-height:100%（同特异性，见 .db-logs-page
+     同款注释）：页高 = 主区高，内部滚动不撑出整页滚动条 */
+  height: 100%;
+  min-height: 0;
+  gap: 14px;
+}
+
+.db-report-page > .db-page__header {
+  flex: none;
+}
+
+/* ReportContent（report-scope flex-1 min-h-0 flex-col）的宿主：
+   占 db-page 余高，组件自带的工具行 / 告警条 / PageBody 内滚照常工作。
+   内容列 1160 上限居中：组件本体是 300px 窄窗版式，横向上完全放开会
+   让卡片 / 表格在 1280 内容列里拉伸失衡，收窄一档减少拉伸 */
+.db-report-embed {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  max-width: 1160px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+}
+
+/* 窄窗版式的大窗适配（仅本嵌入容器作用域）：ReportContent 文案按
+   9/10/11/12px 小字排版，大窗下整体提一档（与下方 .db-skin-embed 的
+   提档表同思路：dashboard.css 未分层，优先级高于 Tailwind utilities，
+   面板 .panel-shell 作用域不受影响）。只调字号不动布局 */
+.db-report-embed .text-\[9px\] {
+  font-size: 11px;
+}
+
+.db-report-embed .text-\[10px\] {
+  font-size: 12px;
+}
+
+.db-report-embed .text-\[11px\] {
+  font-size: 12.5px;
+}
+
+.db-report-embed .text-xs {
+  font-size: 13.5px;
+}
+
+.db-report-embed .text-\[13px\] {
+  font-size: 15px;
+}
+
+/* KPI 四列卡：窄窗的 gap-1.5（6px）在提档字号下卡间过密，放宽到 12px */
+.db-report-embed .grid-cols-4 {
+  gap: 12px;
+}
+
+/* 设备筛选下拉限宽：DropdownMenu 根（relative + flex-1 + min-w-0）随
+   工具行 flex-1 拉伸，大窗下触发器会被拉到上千像素；限到常规控件宽。
+   报告内容里其他 flex-1 min-w-0 元素（活动统计格）无 relative，不误伤 */
+.db-report-embed .relative.flex-1.min-w-0 {
+  max-width: 420px;
+}
+
+/* ============================================================
+ * 皮肤中心页（SkinPage）：hub 入口卡 + 子页嵌入容器。
+ * 子页复用面板皮肤组件本体（SkinStandalonePanel / ThemePanel，
+ * 300px 窄窗版式），此处只做容器级适配，不改组件。
+ * ============================================================ */
+
+/* hub 视图内容上限：hub 沿用 .db-page（1280 上限）而子页 .db-skin-embed
+   是 860，点进子页内容宽骤收 + 页头字号同步降档，双重跳变观感差；hub
+   收到 1000 居中后跳变收敛（子页仍保留「进入专注视图」的收窄语义） */
+.db-page.db-skin-hub-page {
+  max-width: 1000px;
+}
+
+/* hub 双列入口卡：大窗下两卡并排（窄窗 SkinHubPanel 的单列卡在此会
+   呈"300px 内容孤悬大窗"的观感，故按主窗口骨架重排） */
+.db-skin-hub {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  align-items: stretch;
+}
+
+/* 入口卡：db-card 面 + hover 提亮（语义沿窄窗 EntryCard：图标 + 标题 +
+   一行说明 + 右侧箭头）；配色走 --db-* 变量，亮暗自动跟随 */
+.db-skin-entry {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 18px 20px;
+  text-align: left;
+  cursor: pointer;
+  background: var(--db-card-bg);
+  border: 1px solid var(--db-card-border);
+  border-radius: 20px;
+  box-shadow: var(--db-card-shadow);
+  transition: border-color 0.15s ease, transform 0.15s ease;
+}
+
+.db-skin-entry:hover {
+  border-color: var(--db-accent-sky);
+}
+
+.db-skin-entry:active {
+  transform: scale(0.99);
+}
+
+.db-skin-entry__icon {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
+  background: color-mix(in oklab, var(--db-accent-sky) 12%, transparent);
+  color: var(--db-accent-sky);
+}
+
+.db-skin-entry__text {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.db-skin-entry__title {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--db-text);
+}
+
+.db-skin-entry__desc {
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: var(--db-text-dim);
+}
+
+.db-skin-entry__arrow {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  color: var(--db-text-dim);
+  transition: color 0.15s ease, transform 0.15s ease;
+}
+
+.db-skin-entry:hover .db-skin-entry__arrow {
+  color: var(--db-accent-sky);
+  transform: translateX(2px);
+}
+
+/* 子页嵌入容器：面板皮肤组件是 PageShell 全高 + PageBody 内滚版式，
+   直接作为 db-main 子元素渲染（不套 .db-page，避免百分比高度在
+   min-height 容器里解析不确定）；高度撑满、内容列限宽居中 */
+.db-skin-embed {
+  height: 100%;
+  width: 100%;
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 22px 32px 30px;
+  display: flex;
+  flex-direction: column;
+}
+
+/* 窄窗版式的大窗适配（仅本嵌入容器作用域）：皮肤组件文案按 9/10/11px
+   小字排版，大窗下整体提一档（对齐上方「共享组件的大窗适配」同思路：
+   dashboard.css 未分层，优先级高于 Tailwind utilities，面板
+   .panel-shell 作用域不受影响）。只调字号不动布局，卡片流结构不变 */
+.db-skin-embed .text-\[9px\] {
+  font-size: 11px;
+}
+
+.db-skin-embed .text-\[10px\] {
+  font-size: 12px;
+}
+
+.db-skin-embed .text-\[11px\] {
+  font-size: 12.5px;
+}
+
+.db-skin-embed .text-\[12px\] {
+  font-size: 13.5px;
+}
+
+.db-skin-embed .text-\[13px\] {
+  font-size: 15px;
+}
+
+/* 面板公共类在皮肤子页的同步提档：SettingsCard 标题（section-title 10px）、
+   按钮（btn-primary / btn-secondary 10px）、输入框（input-box 11px）同按
+   300px 窄窗排版——只提上面的 Tailwind 字号类会出现「卡片标题小于提档后
+   正文」的层级倒挂，故按同一档位补齐公共类；工具按钮（toolbar-btn，含
+   字符图标）同步提一档。全局定义未动，面板作用域不受影响 */
+.db-skin-embed .section-title {
+  font-size: 12px;
+}
+
+.db-skin-embed .btn-primary,
+.db-skin-embed .btn-secondary {
+  font-size: 11.5px;
+}
+
+.db-skin-embed .input-box {
+  font-size: 12.5px;
+}
+
+.db-skin-embed .toolbar-btn {
+  font-size: 13px;
+}
+
+/* 图像网格自适应列数：宠物形象卡 / 壁纸卡的 grid-cols-2 是 300px 窄窗的
+   两列死档，860px 内容列下每格被拉到约 400px 太空旷；改按 150px 最小格宽
+   自动补列（窄内容仍 2 列，大窗随宽度增加到 4~5 列）。只影响本嵌入作用域，
+   悬浮窗不加载 dashboard.css，无回归 */
+.db-skin-embed .grid-cols-2 {
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+}
+
+/* ============================================================
+ * 面板公共类子集（供窄窗复用组件在主窗口使用）：皮肤中心子页
+ * （SkinStandalonePanel / ThemePanel）与用量报告页（ReportContent）
+ * 直接复用面板组件，其观感依赖 index.css 的公共类——主窗口刻意不引入
+ * index.css（含面板专属的透明底 / #root 缩放规则，整份引入会穿帮），
+ * 故在此按需复制这些类与所需 --p-* 变量（亮暗两套，取值与 index.css
+ * 逐字节一致）。主窗口页面本体全部用 db-* 类，这些类名在主窗口 DOM
+ * 中只出现在复用组件里，全局定义无冲突；面板窗口不加载本文件，不受
+ * 影响。后续复用组件新增公共类依赖时在此处同步补齐。
+ * ============================================================ */
+
+/* ---- --p-* 变量（仅复用组件消费到的条目；亮 :root / 暗 .dark） ---- */
+:root {
+  --p-text: #1d1d1f;
+  --p-text-2: #5f6368;
+  --p-text-3: rgba(94, 99, 108, 0.78);
+  --p-card: rgba(255, 255, 255, 0.5);
+  --p-card-border: rgba(15, 23, 42, 0.07);
+  --p-card-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+  --p-seg: rgba(15, 23, 42, 0.05);
+  --p-thumb: #ffffff;
+  --p-thumb-shadow: 0 1px 3px rgba(15, 23, 42, 0.13),
+    0 0 0 0.5px rgba(15, 23, 42, 0.05);
+}
+
+.dark {
+  --p-text: #f1f4fb;
+  --p-text-2: #c3ccdd;
+  --p-text-3: rgba(154, 166, 189, 0.86);
+  --p-card: rgba(255, 255, 255, 0.055);
+  --p-card-border: rgba(255, 255, 255, 0.095);
+  --p-card-shadow: 0 1px 2px rgba(0, 0, 0, 0.26),
+    inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  --p-seg: rgba(255, 255, 255, 0.07);
+  --p-thumb: rgba(255, 255, 255, 0.17);
+  --p-thumb-shadow: 0 1px 3px rgba(0, 0, 0, 0.34),
+    inset 0 0 0 0.5px rgba(255, 255, 255, 0.08);
+}
+
+/* ---- 卡片 / 标题 / 工具按钮 ---- */
+.card-base {
+  background: var(--p-card);
+  border: 1px solid var(--p-card-border);
+  border-radius: 12px;
+  box-shadow: var(--p-card-shadow);
+}
+
+.section-title {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  min-width: 0;
+  font-size: 10px;
+  font-weight: 650;
+  color: var(--p-text-2, rgba(51, 65, 85, 0.85));
+  letter-spacing: 0.04em;
+}
+
+.dark .section-title {
+  color: rgba(226, 232, 240, 0.72);
+}
+
+.toolbar-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  font-size: 12px;
+  line-height: 1;
+  color: rgba(51, 65, 85, 0.45);
+  transition: all 0.15s ease;
+}
+
+.toolbar-btn:hover {
+  color: rgba(15, 23, 42, 0.75);
+  background: rgba(15, 23, 42, 0.06);
+}
+
+.toolbar-btn:active {
+  transform: scale(0.94);
+}
+
+.dark .toolbar-btn {
+  color: rgba(226, 232, 240, 0.45);
+}
+
+.dark .toolbar-btn:hover {
+  color: rgba(226, 232, 240, 0.85);
+  background: rgba(226, 232, 240, 0.08);
+}
+
+/* 报告页 scope 内工具按钮的暗色提亮（与 index.css 同源） */
+.dark .report-scope .toolbar-btn {
+  color: rgba(255, 255, 255, 0.72);
+}
+
+.dark .report-scope .toolbar-btn:hover {
+  color: rgba(255, 255, 255, 0.92);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+/* ---- 按钮系统（主 / 次 / 幽灵） ---- */
+.btn-primary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.25rem 0.625rem;
+  border-radius: 0.5rem;
+  font-size: 10px;
+  font-weight: 500;
+  background: #0ea5e9;
+  color: #fff;
+  transition: all 0.15s ease;
+  border: none;
+  cursor: pointer;
+}
+
+.btn-primary:hover {
+  background: #0284c7;
+}
+
+.btn-primary:disabled {
+  background: rgba(14, 165, 233, 0.4);
+  color: rgba(255, 255, 255, 0.45);
+  cursor: not-allowed;
+}
+
+.dark .btn-primary {
+  background: #7ea6ff;
+  color: #0b1220;
+}
+
+.dark .btn-primary:hover {
+  background: #9bbaff;
+}
+
+.btn-secondary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.25rem 0.625rem;
+  border-radius: 0.5rem;
+  font-size: 10px;
+  font-weight: 500;
+  background: rgba(15, 23, 42, 0.05);
+  color: rgba(51, 65, 85, 0.75);
+  transition: all 0.15s ease;
+  border: none;
+  cursor: pointer;
+}
+
+.btn-secondary:hover {
+  background: rgba(15, 23, 42, 0.09);
+  color: rgba(15, 23, 42, 0.85);
+}
+
+.btn-secondary:disabled {
+  background: rgba(15, 23, 42, 0.03);
+  color: rgba(15, 23, 42, 0.25);
+  cursor: not-allowed;
+}
+
+.dark .btn-secondary {
+  background: rgba(226, 232, 240, 0.08);
+  color: rgba(226, 232, 240, 0.75);
+}
+
+.dark .btn-secondary:hover {
+  background: rgba(226, 232, 240, 0.12);
+  color: rgba(226, 232, 240, 0.9);
+}
+
+.dark .btn-secondary:disabled {
+  background: rgba(226, 232, 240, 0.03);
+  color: rgba(226, 232, 240, 0.3);
+}
+
+.btn-ghost {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.25rem 0.5rem;
+  border-radius: 0.375rem;
+  font-size: 11px;
+  color: rgba(51, 65, 85, 0.55);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.btn-ghost:hover {
+  color: #0ea5e9;
+  background: rgba(14, 165, 233, 0.06);
+}
+
+.dark .btn-ghost {
+  color: rgba(226, 232, 240, 0.55);
+}
+
+.dark .btn-ghost:hover {
+  color: #9bbaff;
+  background: rgba(126, 166, 255, 0.1);
+}
+
+/* ---- 表单输入 ---- */
+.input-box {
+  width: 100%;
+  padding: 0.375rem 0.5rem;
+  border-radius: 0.5rem;
+  font-size: 11px;
+  background: rgba(255, 255, 255, 0.5);
+  border: 1px solid rgba(15, 23, 42, 0.1);
+  color: rgba(15, 23, 42, 0.9);
+  outline: none;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.input-box:focus {
+  border-color: rgba(14, 165, 233, 0.5);
+  box-shadow: 0 0 0 2px rgba(14, 165, 233, 0.12);
+}
+
+.input-box::placeholder {
+  color: rgba(51, 65, 85, 0.35);
+}
+
+.dark .input-box {
+  background: rgba(15, 23, 42, 0.4);
+  border-color: rgba(226, 232, 240, 0.12);
+  color: rgba(226, 232, 240, 0.9);
+}
+
+.dark .input-box:focus {
+  border-color: rgba(56, 189, 248, 0.5);
+  box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.12);
+}
+
+/* ---- 内容区间距（PageBody 的 page-stack）+ 轻滚动条 ---- */
+.page-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 0.625rem;
+}
+
+.page-stack::-webkit-scrollbar {
+  width: 6px;
+}
+
+.page-stack::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--p-text-3) 34%, transparent);
+}
+
+.page-stack::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--p-text-3) 55%, transparent);
+}
+
+/* ---- 胶囊（PillGroup / PillButton）与选中态 ---- */
+.p-pillgroup {
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 9px;
+  background: var(--p-seg);
+}
+
+.p-pill {
+  flex: 1;
+  min-width: 0;
+  height: 26px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--p-text-2);
+  font-family: inherit;
+  font-size: 10px;
+  font-weight: 500;
+  white-space: nowrap;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.p-pill:hover:not(:disabled) {
+  color: var(--p-text);
+}
+
+.p-pill.is-active {
+  background: var(--p-thumb);
+  color: var(--p-text);
+  font-weight: 650;
+  box-shadow: var(--p-thumb-shadow);
+}
+
+.p-pill:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.pill-active {
+  background: #0ea5e9;
+  color: #fff;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.15);
+}
+
+.dark .pill-active {
+  background: rgba(255, 255, 255, 0.85);
+  color: #16233d;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+}
+
+/* ---- 报告页专用（ReportContent 的卡片 / 文字 / 热力图 / 系列色） ---- */
+.report-card {
+  position: relative;
+  overflow: hidden;
+  border-radius: 12px;
+  background: rgba(15, 23, 42, 0.03);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+
+.report-card::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 1px;
+  background: rgba(15, 23, 42, 0.06);
+}
+
+.dark .report-card {
+  background: rgba(255, 255, 255, 0.055);
+}
+
+.dark .report-card::before {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.report-sub {
+  color: rgba(51, 65, 85, 0.5);
+}
+
+.dark .report-sub {
+  color: rgba(255, 255, 255, 0.72);
+}
+
+.report-dim {
+  color: rgba(51, 65, 85, 0.42);
+}
+
+.dark .report-dim {
+  color: rgba(255, 255, 255, 0.66);
+}
+
+.report-pill {
+  color: rgba(51, 65, 85, 0.7);
+}
+
+.dark .report-pill {
+  color: rgba(255, 255, 255, 0.72);
+}
+
+.report-status {
+  color: #0369a1;
+}
+
+.dark .report-status {
+  color: #7dd3fc;
+}
+
+.report-footer-text {
+  color: #64748b;
+}
+
+.dark .report-footer-text {
+  color: rgba(255, 255, 255, 0.66);
+}
+
+.report-tab-idle {
+  color: rgba(51, 65, 85, 0.8);
+}
+
+.dark .report-tab-idle {
+  color: rgba(255, 255, 255, 0.72);
+}
+
+.heat-fade-left {
+  background: linear-gradient(to right, rgba(15, 23, 42, 0.05) 0%, transparent 70%);
+}
+
+.dark .heat-fade-left {
+  background: linear-gradient(to right, rgba(255, 255, 255, 0.055) 0%, transparent 70%);
+}
+
+.heat-fade-right {
+  background: linear-gradient(to left, rgba(15, 23, 42, 0.05) 0%, transparent 70%);
+}
+
+.dark .heat-fade-right {
+  background: linear-gradient(to left, rgba(255, 255, 255, 0.055) 0%, transparent 70%);
+}
+
+.heat-level-0 {
+  background: rgba(15, 23, 42, 0.05);
+}
+
+.heat-level-1 {
+  background: color-mix(in oklab, #0ea5e9 18%, #f1f5f9);
+}
+
+.heat-level-2 {
+  background: color-mix(in oklab, #0ea5e9 36%, #f1f5f9);
+}
+
+.heat-level-3 {
+  background: color-mix(in oklab, #0284c7 58%, #f1f5f9);
+}
+
+.heat-level-4 {
+  background: color-mix(in oklab, #0369a1 82%, #f1f5f9);
+}
+
+.dark .heat-level-0 {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.dark .heat-level-1 {
+  background: color-mix(in oklab, #38bdf8 24%, #1e283c);
+}
+
+.dark .heat-level-2 {
+  background: color-mix(in oklab, #38bdf8 42%, #1e283c);
+}
+
+.dark .heat-level-3 {
+  background: color-mix(in oklab, #38bdf8 62%, #1e283c);
+}
+
+.dark .heat-level-4 {
+  background: color-mix(in oklab, #7dd3fc 78%, #1e283c);
+}
+
+.dark .heat-legend-empty {
+  background: rgba(255, 255, 255, 0.16);
+}
+
+.series-color-0 {
+  background: #0284c7;
+}
+
+.series-color-1 {
+  background: #0d9488;
+}
+
+.series-color-2 {
+  background: #7c3aed;
+}
+
+.series-color-3 {
+  background: #f43f5e;
+}
+
+.series-color-4 {
+  background: #6366f1;
+}
+
+.series-color-5 {
+  background: #0891b2;
+}
+
+.series-color-other {
+  background: #94a3b8;
+}
+
+.dark .series-color-0 {
+  background: #0ea5e9;
+}
+
+.dark .series-color-1 {
+  background: #2dd4bf;
+}
+
+.dark .series-color-2 {
+  background: #a78bfa;
+}
+
+.dark .series-color-3 {
+  background: #fb7185;
+}
+
+.dark .series-color-4 {
+  background: #818cf8;
+}
+
+.dark .series-color-5 {
+  background: #22d3ee;
+}
+
+/* 热力图横向滚动容器：隐藏滚动条 */
+.hide-scrollbar {
+  scrollbar-width: none;
+}
+
+.hide-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+

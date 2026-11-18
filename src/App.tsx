@@ -3,20 +3,13 @@ import { listen } from "@tauri-apps/api/event";
 import { NowProvider } from "./nowClock";
 import { StatsPanel } from "./StatsPanel";
 import { SettingsPanel } from "./SettingsPanel";
-import { SyncPanel } from "./SyncPanel";
 import { DataProvider } from "./DataCache";
 import { ResizeHandles } from "./ResizeHandles";
-import { ReportsPanel } from "./ReportsPanel";
-import { ThemePanel } from "./ThemePanel";
-import { SkinHubPanel } from "./SkinHubPanel";
-import { SkinStandalonePanel } from "./SkinStandalonePanel";
-import { ADD_SERVICE_EVENT } from "./AddServiceMenu";
 import {
   fetchPricing,
   getCurrencySetting,
   hasDshPlatformGrant,
   hasProviderCredentials,
-  remoteSourcePresence,
   saveCurrency,
   syncAgentVisibility,
 } from "./api";
@@ -26,39 +19,35 @@ import { useI18n } from "./i18n";
 import { loadLocale } from "./i18n/locale";
 import {
   APPEARANCE_CHANGED_EVENT,
+  PANEL_ALPHA_CHANGED_EVENT,
+  applyPanelAlpha,
   applyTheme,
+  loadPanelAlpha,
   loadTheme,
   type Theme,
 } from "./appearance";
 import type { Currency, CurrencyMode, PricingConfig } from "./types";
 import {
+  AGENT_VISIBILITY_BROADCAST_EVENT,
   AGENT_VISIBILITY_EVENT,
   CREDENTIALS_CHANGED_EVENT,
   CREDENTIAL_AGENTS,
   CREDENTIAL_AGENT_ALIAS,
   PRESENCE_PROVIDERS,
-  REMOTE_SOURCE_AGENTS,
-  clearAgentManuallyDisabled,
   enableAgentByCredential,
   loadAgentVisibility,
-  markAgentManuallyDisabled,
-  saveAgentVisibility,
   type AgentId,
   type AgentVisibility,
 } from "./agentVisibility";
 
-// 皮肤域三层视图：skinHub（分类页）→ skinStandalone（免注入子页）/
-// theme（需注入子页）；分类页本身不发起任何注入状态检测。
-// 窄窗二期减负：价格设置页已收编到主窗口（Dashboard 定价页），面板不再有
-// pricing 视图——统计页「价格设置」按钮改为 openMainWindow("pricing") 直达
-type View =
-  | "stats"
-  | "sync"
-  | "reports"
-  | "skinHub"
-  | "skinStandalone"
-  | "theme"
-  | "settings";
+// 窄窗三期减负：报表 / 设备同步 / 皮肤（skinHub → skinStandalone / theme
+// 三层）视图已完全迁往主窗口（用量报告 / 同步与设备 / 皮肤中心页），
+// SyncPanel / ReportsPanel / 皮肤域组件的挂载点随之移除；失去挂载方的壳
+//（SyncPanel / SkinHubPanel）已删除，仍被主窗口页面复用的组件保留
+// （ReportContent / SkinStandalonePanel / ThemePanel 等）。
+// 价格设置页此前已收编（统计页「价格设置」按钮 openMainWindow("pricing") 直达）。
+// 面板只剩：stats（统计）与 settings（面板自身设置，入口在「…」菜单）
+type View = "stats" | "settings";
 
 export default function App() {
   const { locale, setLocale } = useI18n();
@@ -82,24 +71,6 @@ export default function App() {
   const [credentialPresence, setCredentialPresence] = useState<
     Record<string, boolean>
   >({});
-  // 设置页「添加凭证」快捷入口的跳转目标：暂存 provider，切回统计页时
-  // 交给 StatsPanel 打开该服务的添加表单（挂载即消费，消费后清空）
-  const [pendingAddProvider, setPendingAddProvider] = useState<string | null>(
-    null
-  );
-
-  // 快捷入口事件（SettingsPanel 派发）：切回统计页并携带目标 provider
-  useEffect(() => {
-    const open = (e: Event) => {
-      const provider = (e as CustomEvent<unknown>).detail;
-      if (typeof provider === "string" && provider) {
-        setPendingAddProvider(provider);
-        setView("stats");
-      }
-    };
-    window.addEventListener(ADD_SERVICE_EVENT, open);
-    return () => window.removeEventListener(ADD_SERVICE_EVENT, open);
-  }, []);
 
   // 外观双向同步（补面板侧跟随）：主题/语言切换后 applyTheme / setLocale 都会
   // 广播 zbar://appearance-changed——面板此前只发不收，在主窗口里切主题/语言后
@@ -142,25 +113,15 @@ export default function App() {
     };
   }, [setLocale]);
 
-  const handleAgentVisibilityChange = (id: AgentId, visible: boolean) => {
-    // 显式关闭标记：设置页手动关闭的凭证型 agent，此后 presence 无→有
-    // 不再被「有凭证自动显示」打开；重新手动开启即清除标记恢复联动
-    if (visible) {
-      clearAgentManuallyDisabled(id);
-    } else {
-      markAgentManuallyDisabled(id);
-    }
-    setAgentVisibility((current) => {
-      const next = { ...current, [id]: visible };
-      saveAgentVisibility(next);
-      // 同步 Rust 侧镜像：ZCode 注入额度线程据此只查/只显示开启的 agent
-      void syncAgentVisibility(next).catch(() => {});
-      return next;
-    });
-  };
+  // 注：数据来源开关的设置入口已迁到主窗口设置页（写入方为主窗口的
+  // useAgentVisibilitySync，经 zbar://agent-visibility-changed 广播），本窗
+  // 只保留读取 + 监听刷新 tab 显隐；凭证驱动的自动显示联动因凭证添加 UI
+  // 在本窗而保留（见下方 effect），与主窗口侧联动幂等共存。
 
   // 启动时把 localStorage 里的展示开关镜像到 Rust（注入额度线程/后续冷启
-  // 动读取），避免首次运行还按默认名单显示
+  // 动读取），避免首次运行还按默认名单显示。主窗口（联动宿主）也会在挂载
+  // 时做同样镜像——幂等写，双窗共存无竞态；本窗默认常驻，主窗口关闭即
+  // 销毁的场景下由这里兜底保证镜像新鲜
   useEffect(() => {
     void syncAgentVisibility(loadAgentVisibility()).catch(() => {});
   }, []);
@@ -215,12 +176,16 @@ export default function App() {
   }, []);
 
   // 2) 「有凭证自动显示」：presence 由无到有的瞬间自动开启对应 agent
-  //    （写 localStorage + 广播）。只在状态迁移时触发；用户在设置页显式
-  //    关闭过的 agent 不再自动开启（见 enableAgentByCredential 的标记检查），
-  //    删除全部凭证时由 disableAgentByCredential 回退偏好。
+  //    （写 localStorage + 同窗/跨窗广播）。只在状态迁移时触发；用户在主窗口
+  //    设置页显式关闭过的 agent 不再自动开启（见 enableAgentByCredential
+  //    的标记检查），删除全部凭证时由 disableAgentByCredential 回退偏好。
   //    探测键 = 凭证 provider id，目标 = 要显示的 agent：两者多数同字面
   //    （CREDENTIAL_AGENTS），另有少数异名关联（CREDENTIAL_AGENT_ALIAS，
   //    如 deepseek 凭证 → dsh 面板里的 DeepSeek 平台余额区）。
+  //    联动宿主已迁主窗口（useAgentVisibilitySync 同款逻辑），本窗保留一份
+  //    的原因：凭证添加 UI（CredentialsCard / 添加服务表单）在本窗，主窗口
+  //    关闭即销毁是常态——没有这份联动时，本窗添加凭证要等主窗口打开才出
+  //    tab。enableAgentByCredential 幂等，双窗并存无重复写入伤害。
   const prevPresenceRef = useRef<Record<string, boolean>>({});
   useEffect(() => {
     const prev = prevPresenceRef.current;
@@ -246,8 +211,10 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [credentialPresence]);
 
-  // 3) visibility 层广播：设置页之外的写入（enableAgentByCredential）
-  //    经事件通知本组件重读 localStorage，保持单一真相源。
+  // 3) visibility 层监听：本组件之外的写入（两窗的 enableAgentByCredential
+  //    与主窗口设置页开关）经同窗 window 事件 + 跨窗 zbar://agent-visibility-
+  //    changed 广播通知本窗重读 localStorage，保持单一真相源，并幂等刷新
+  //    Rust 镜像（主窗口关闭即销毁时本窗是镜像维护兜底方）。
   useEffect(() => {
     const sync = () => {
       const next = loadAgentVisibility();
@@ -255,37 +222,46 @@ export default function App() {
       void syncAgentVisibility(next).catch(() => {});
     };
     window.addEventListener(AGENT_VISIBILITY_EVENT, sync);
-    return () => window.removeEventListener(AGENT_VISIBILITY_EVENT, sync);
+    let dispose: (() => void) | undefined;
+    let cancelled = false;
+    listen(AGENT_VISIBILITY_BROADCAST_EVENT, sync)
+      .then((unlisten) => {
+        if (cancelled) unlisten();
+        else dispose = unlisten;
+      })
+      .catch(() => {
+        /* 静默：主窗口改动后延迟到下次挂载重读 */
+      });
+    return () => {
+      cancelled = true;
+      dispose?.();
+      window.removeEventListener(AGENT_VISIBILITY_EVENT, sync);
+    };
   }, []);
 
-  // 4) 「远端有数据也显示」：Kimi / DSH / OpenCode / MiniMax Code 四个本地
-  //    采集型来源的可见性默认关闭，presence 又只看本机——于是「别的设备在用、
-  //    这台没装这个 CLI」时，本机连 tab 都没有，远端数据完全看不到。这里把
-  //    远端来源存在性并入联动（后端读同步服务的模型清单并去重出 source，
-  //    未启用同步 / 服务器不可达时返回空列表，行为与升级前一致），有数据即
-  //    自动开启对应 tab。用户在设置页显式关闭过的 agent 不会被重新打开
-  //    （enableAgentByCredential 内部检查手动关闭标记）。
-  //    每 5 分钟复查一次：其他设备后来才开始用某个 agent 时本机 tab 也会出现。
+  // 4) 「远端有数据也显示」的 5 分钟轮询已随设置迁移由主窗口持有
+  //    （useAgentVisibilitySync），本窗不再轮询；主窗口写入同样经上面的
+  //    跨窗广播回流本窗刷新 tab。
+
+  // 面板透明度跨窗跟随：设置入口在主窗口设置页，滑杆落盘后广播
+  // zbar://panel-alpha-changed，本窗重读并应用 --panel-alpha（启动时
+  // main.tsx 已应用一次持久化值）。监听失败静默：保持当前透明度
   useEffect(() => {
-    let alive = true;
-    const probe = () => {
-      remoteSourcePresence()
-        .then((sources) => {
-          if (!alive) return;
-          const remote = new Set(sources);
-          for (const { source, agent } of REMOTE_SOURCE_AGENTS) {
-            if (remote.has(source)) enableAgentByCredential(agent);
-          }
-        })
-        .catch(() => {
-          // 探测失败视为无远端数据（不显示新 tab），不阻断启动
-        });
-    };
-    probe();
-    const timer = window.setInterval(probe, 5 * 60_000);
+    let dispose: (() => void) | undefined;
+    let cancelled = false;
+    listen(PANEL_ALPHA_CHANGED_EVENT, () => {
+      applyPanelAlpha(loadPanelAlpha());
+    })
+      .then((unlisten) => {
+        if (cancelled) unlisten();
+        else dispose = unlisten;
+      })
+      .catch(() => {
+        /* 静默：保持启动时读取的透明度 */
+      });
     return () => {
-      alive = false;
-      window.clearInterval(timer);
+      cancelled = true;
+      dispose?.();
     };
   }, []);
 
@@ -427,38 +403,10 @@ export default function App() {
             pricing={pricing}
             agentVisibility={agentVisibility}
             credentialPresence={credentialPresence}
-            onGoSync={() => setView("sync")}
-            onGoReports={() => setView("reports")}
-            onGoTheme={() => setView("skinHub")}
             onGoSettings={() => setView("settings")}
-            initialAdd={pendingAddProvider}
-            onInitialAddConsumed={() => setPendingAddProvider(null)}
-          />
-        ) : view === "reports" ? (
-          <ReportsPanel
-            onBack={() => setView("stats")}
-            pricing={pricing}
-            currency={currency}
-            agentVisibility={agentVisibility}
-          />
-        ) : view === "skinHub" ? (
-          <SkinHubPanel
-            onBack={backToStats}
-            onOpenStandalone={() => setView("skinStandalone")}
-            onOpenInjected={() => setView("theme")}
-          />
-        ) : view === "skinStandalone" ? (
-          <SkinStandalonePanel onBack={() => setView("skinHub")} />
-        ) : view === "theme" ? (
-          <ThemePanel onBack={() => setView("skinHub")} />
-        ) : view === "settings" ? (
-          <SettingsPanel
-            onBack={backToStats}
-            agentVisibility={agentVisibility}
-            onAgentVisibilityChange={handleAgentVisibilityChange}
           />
         ) : (
-          <SyncPanel onBack={backToStats} />
+          <SettingsPanel onBack={backToStats} />
         )}
         {/* 边缘拖拽热区：所有 view 共用，放在 panel-shell 最后一个子节点 */}
         <ResizeHandles />
