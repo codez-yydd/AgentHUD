@@ -2274,12 +2274,13 @@ html[data-font-tier="xl"] .page-stack {
 
 /* 两行版额度行（汇总页「额度监控」/ Z.ai 页三个窗口）：上行「标签 + 条 + 剩余%」，
  * 下行「重置时间 + 今日增量」。原来重置文案、今日增量与进度条挤在同一行，
- * 字号只能压到 8px；分行后重置/增量 10px、剩余百分比 12px，进度条也不再被挤窄。 */
+ * 字号只能压到 8px；分行后重置/增量 9px、剩余百分比 10.5px，进度条也不再被挤窄。
+ * 2026-11-18 应用户反馈调小：此前百分比/倒计时比卡内账号名（9px）还大，显得突兀。行高随字号等比收紧（main 18→15px、meta 15→12px、行间 gap 2→1.5px），避免字小行高不变导致留白过大。 */
 .p-quota--stacked {
   flex-direction: column;
   align-items: stretch;
   height: auto;
-  gap: 2px;
+  gap: 1.5px;
 }
 
 .p-quota__main {
@@ -2287,7 +2288,7 @@ html[data-font-tier="xl"] .page-stack {
   align-items: center;
   gap: 6px;
   min-width: 0;
-  height: 18px;
+  height: 15px;
 }
 
 .p-quota__meta {
@@ -2295,7 +2296,7 @@ html[data-font-tier="xl"] .page-stack {
   align-items: center;
   gap: 10px;
   min-width: 0;
-  height: 15px;
+  height: 12px;
   /* 与上行进度条左缘对齐（label 40px + gap 6px） */
   padding-left: 46px;
 }
@@ -2306,12 +2307,12 @@ html[data-font-tier="xl"] .page-stack {
 }
 
 .p-quota--stacked .p-quota__pct {
-  font-size: 12px;
+  font-size: 10.5px;
 }
 
 .p-quota--stacked .p-quota__reset,
 .p-quota--stacked .p-quota__delta {
-  font-size: 10px;
+  font-size: 9px;
 }
 
 /* 第二行两项都可收缩：极窄窗口下先省略倒计时/增量尾部，绝不把整行撑宽 */
