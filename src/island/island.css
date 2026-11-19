@@ -626,6 +626,55 @@ html.island-preview .island::after {
     transform 320ms cubic-bezier(0.2, 0.9, 0.28, 1);
 }
 
+.pill-content {
+  display: contents;
+}
+.pill-content.with-update {
+  display: block;
+  position: absolute;
+  inset: 0 var(--compact-update-slot) 0 0;
+}
+.island-root:is([data-edge="left"], [data-edge="right"]) .pill-content.with-update {
+  inset: 0 0 var(--compact-update-slot);
+}
+
+.compact-update-btn {
+  position: absolute;
+  z-index: 4;
+  top: 50%;
+  right: 11px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  height: 24px;
+  padding: 0 7px 0 9px;
+  border: 1px solid rgba(129, 140, 248, 0.48);
+  border-radius: 7px;
+  background: rgba(99, 102, 241, 0.2);
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 650;
+  white-space: nowrap;
+  transform: translateY(-50%);
+  cursor: pointer;
+}
+.compact-update-btn:hover,
+.compact-update-btn:focus-visible {
+  background: rgba(99, 102, 241, 0.38);
+}
+.compact-update-btn svg {
+  transform: rotate(-90deg);
+}
+.island-root:is([data-edge="left"], [data-edge="right"]) .compact-update-btn {
+  top: auto;
+  right: auto;
+  bottom: 6px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 0 3px;
+}
+
 .island.open .pill-wrap {
   opacity: 0;
   pointer-events: none;
@@ -1268,6 +1317,26 @@ html.island-preview .island::after {
 .nav-tab.gear:hover {
   opacity: 1;
   background: var(--panel);
+}
+
+.nav-tab.island-update-btn {
+  position: absolute;
+  top: 8px;
+  left: 16px;
+  gap: 5px;
+  background: var(--panel);
+  opacity: 1;
+}
+.nav-tab.island-update-btn::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #f43f5e;
+}
+.island-root[data-edge="bottom"] .nav-tab.island-update-btn {
+  top: auto;
+  bottom: 8px;
 }
 
 /* ============================================================

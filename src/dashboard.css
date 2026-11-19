@@ -543,6 +543,15 @@ select option:disabled {
   opacity: 1;
 }
 
+.db-nav__update-dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  margin-inline-start: auto;
+  border-radius: 50%;
+  background: #f43f5e;
+}
+
 /* ---- 侧栏底部：语言 / 主题快捷切换 ---- */
 .db-sidebar__footer {
   display: flex;

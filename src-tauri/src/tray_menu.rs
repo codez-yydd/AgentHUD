@@ -367,6 +367,7 @@ pub(crate) fn show_tray_menu(app: &AppHandle, click_pos: (f64, f64)) {
 pub struct TrayMenuState {
     /// 应用版本（「快捷」页底部版本行）
     pub version: String,
+    pub ready_update_version: Option<String>,
     /// HUD 停靠条当前开启态（底栏开关）
     pub hud_bar_enabled: bool,
     /// 当前展示币种是否美元（true = $ / false = ¥），与面板 / 今日用量同源
@@ -380,6 +381,7 @@ pub struct TrayMenuState {
 pub fn tray_menu_state(app: AppHandle) -> TrayMenuState {
     TrayMenuState {
         version: app.package_info().version.to_string(),
+        ready_update_version: crate::tray_update_version(),
         hud_bar_enabled: crate::island::load_config().enabled,
         is_usd: crate::pricing::load_currency() == "usd",
     }
@@ -553,6 +555,9 @@ pub fn tray_menu_action(app: AppHandle, action: String) -> Result<(), String> {
             {
                 eprintln!("[agenthud-tray-menu] 打开设置页失败: {e}");
             }
+        }
+        "open-main-about" => {
+            crate::main_window::open_main_window_on_main_thread(&app, Some("about"))?;
         }
         // 悬浮面板：show_tray_menu 弹出前已把可见 panel 收起，这里的
         // toggle 等价于「打开」（无点击位置路径，落到屏幕右上角，同全局

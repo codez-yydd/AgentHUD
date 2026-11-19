@@ -10,6 +10,7 @@
  * 导入本模块（它值依赖 updater.ts，见上）。
  */
 import { emitTo, listen } from "@tauri-apps/api/event";
+import { invoke } from "@tauri-apps/api/core";
 import {
   checkAndDownloadInBackground,
   getUpdateState,
@@ -34,9 +35,17 @@ export function startUpdaterBridgeHost(): () => void {
   // 上次广播的序列化快照：下载进度每个 chunk 都会触发 UPDATE_STATE_EVENT，
   // 不去重会对主窗口高频 emitTo；状态实际变化才发
   let lastSerialized = "";
+  let trayVersion: string | null = null;
 
   const broadcast = () => {
     const state = getUpdateState();
+    const version = state.phase === "ready" ? state.readyVersion : null;
+    if (version !== trayVersion) {
+      trayVersion = version;
+      invoke("set_tray_update_ready", { version }).catch((error) => {
+        console.warn("[updaterBridge] 更新托盘提示失败:", error);
+      });
+    }
     const serialized = JSON.stringify(state);
     if (serialized === lastSerialized) return;
     lastSerialized = serialized;

@@ -537,18 +537,18 @@ export function StatsPanel({
       .catch(() => {});
   }, [isWindows]);
 
-  // ===== 更新红点：后台下载完成后，设置入口按钮提示 =====
-  const [updateReady, setUpdateReady] = useState(() => {
+  // ===== 后台下载完成后，在面板头部显示版本入口 =====
+  const [readyVersion, setReadyVersion] = useState(() => {
     try {
-      return Boolean(localStorage.getItem(UPDATE_READY_KEY));
+      return localStorage.getItem(UPDATE_READY_KEY);
     } catch {
-      return false;
+      return null;
     }
   });
   useEffect(() => {
     const sync = () => {
       try {
-        setUpdateReady(Boolean(localStorage.getItem(UPDATE_READY_KEY)));
+        setReadyVersion(localStorage.getItem(UPDATE_READY_KEY));
       } catch {
         /* 忽略存储异常 */
       }
@@ -702,6 +702,16 @@ export function StatsPanel({
           </span>
         </div>
         <div className="panel-head__actions">
+          {readyVersion && (
+            <button
+              type="button"
+              className="panel-update-btn"
+              onClick={() => openMainWindowWithToast("about")}
+              title={t("settings.updateReady", { v: readyVersion })}
+            >
+              {t("settings.newVersion", { v: readyVersion })}
+            </button>
+          )}
           <button
             onClick={() => {
               refresh();
@@ -725,7 +735,7 @@ export function StatsPanel({
               aria-expanded={moreOpen}
             >
               {ICON_MORE}
-              {updateReady && <span className="p-icon__dot" />}
+              {readyVersion && <span className="p-icon__dot" />}
             </button>
             {moreOpen && (
               <div className="p-menu" role="menu" aria-label={t("stats.more")}>
@@ -812,7 +822,7 @@ export function StatsPanel({
                 >
                   <span className="p-menu__icon">
                     {ICON_GEAR}
-                    {updateReady && (
+                    {readyVersion && (
                       <span className="p-icon__dot" style={{ top: -2, right: -2 }} />
                     )}
                   </span>

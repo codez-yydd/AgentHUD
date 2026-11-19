@@ -2944,6 +2944,70 @@ pub(crate) fn refresh_tray_menu(app: &AppHandle) {
     }
 }
 
+static TRAY_UPDATE_VERSION: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+fn tray_update_version() -> Option<String> {
+    TRAY_UPDATE_VERSION.lock().ok()?.clone()
+}
+
+fn tray_icon_with_update_dot(icon: &tauri::image::Image<'_>) -> tauri::image::Image<'static> {
+    let (width, height) = (icon.width(), icon.height());
+    let mut rgba = icon.rgba().to_vec();
+    let size = width.min(height) as f32;
+    let radius = size * 0.21;
+    let center_x = width as f32 - radius;
+    let center_y = radius;
+
+    for (index, pixel) in rgba.chunks_exact_mut(4).enumerate() {
+        let x = (index % width as usize) as f32 + 0.5;
+        let y = (index / width as usize) as f32 + 0.5;
+        let distance_squared = (x - center_x).powi(2) + (y - center_y).powi(2);
+        if distance_squared <= (radius * 0.76).powi(2) {
+            pixel.copy_from_slice(&[244, 63, 94, 255]);
+        } else if distance_squared <= radius.powi(2) {
+            pixel.copy_from_slice(&[255, 255, 255, 255]);
+        }
+    }
+    tauri::image::Image::new_owned(rgba, width, height)
+}
+
+fn update_tray_badge(app: &AppHandle, version: Option<String>) {
+    {
+        let Ok(mut current) = TRAY_UPDATE_VERSION.lock() else {
+            return;
+        };
+        if *current == version {
+            return;
+        }
+        *current = version.clone();
+    }
+
+    if let (Some(tray), Some(icon)) = (app.tray_by_id("main"), app.default_window_icon()) {
+        let icon = if version.is_some() {
+            tray_icon_with_update_dot(icon)
+        } else {
+            icon.clone().to_owned()
+        };
+        if let Err(error) = tray.set_icon(Some(icon)) {
+            eprintln!("[agenthud-tray] 更新提示图标设置失败: {error}");
+        }
+    }
+    let _ = app.emit_to(tray_menu::TRAY_MENU_WINDOW_LABEL, "zbar://tray-update-ready", ());
+    let _ = app.emit_to(island::ISLAND_WINDOW_LABEL, "zbar://island-update-ready", version);
+}
+
+#[tauri::command]
+fn get_ready_update_version() -> Option<String> {
+    tray_update_version()
+}
+
+#[tauri::command]
+fn set_tray_update_ready(window: tauri::WebviewWindow, version: Option<String>) {
+    if window.label() == panel::PANEL_WINDOW_LABEL {
+        update_tray_badge(window.app_handle(), version);
+    }
+}
+
 /// 初始化托盘图标
 fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
     // 菜单栏只显示图标，不再挂文字标题（花费 / token 都去掉了）：macOS 上
@@ -3311,6 +3375,14 @@ pub fn run() {
                         session_hud::handle_session_hud_window_destroyed(window.app_handle());
                     } else if window.label() == hud_bar::HUD_BAR_WINDOW_LABEL {
                         hud_bar::handle_hud_bar_window_destroyed(window.app_handle());
+                    } else if window.label() == panel::PANEL_WINDOW_LABEL {
+                        // 下载的更新资源随面板销毁，清除主窗口的就绪提示。
+                        update_tray_badge(window.app_handle(), None);
+                        let _ = window.emit_to(
+                            main_window::MAIN_WINDOW_LABEL,
+                            "zbar://remote-update-state",
+                            serde_json::Value::Null,
+                        );
                     }
                 }
                 // 主窗口（Dashboard）：**关闭即销毁**——本挂点不拦截 main-window，
@@ -3701,6 +3773,8 @@ pub fn run() {
             get_currency_setting,
             set_currency_mode,
             check_update,
+            set_tray_update_ready,
+            get_ready_update_version,
             show_notification,
             projects::get_projects,
             projects::get_project_sessions,

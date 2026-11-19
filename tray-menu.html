@@ -163,6 +163,31 @@
         letter-spacing: 0.01em;
         line-height: 1.1;
       }
+      .update-btn:not([hidden]) {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        margin-inline-start: auto;
+        padding: 5px 8px;
+        border-radius: 7px;
+        color: var(--m-text);
+        background: var(--m-card);
+        font-size: 11px;
+        white-space: nowrap;
+      }
+      .update-btn:hover {
+        background: var(--m-card-hover);
+      }
+      .update-btn::before {
+        content: "";
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: #f43f5e;
+      }
+      .update-btn:not([hidden]) + .icon-btn {
+        margin-left: 0;
+      }
       .icon-btn {
         margin-left: auto;
         flex: none;
@@ -865,6 +890,7 @@
           draggable="false"
         />
         <span class="brand-name">AgentHUD</span>
+        <button type="button" class="update-btn" id="btn-update" data-action="open-main-about" data-nav hidden></button>
         <button
           type="button"
           class="icon-btn"

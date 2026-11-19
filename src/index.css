@@ -1523,6 +1523,29 @@ html[data-font-tier="xl"] .page-stack {
   gap: 1px;
   flex: none;
 }
+.panel-update-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-inline-end: 3px;
+  padding: 4px 6px;
+  border-radius: 6px;
+  background: rgba(244, 63, 94, 0.12);
+  color: var(--p-text);
+  font-size: 10px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.panel-update-btn::before {
+  content: "";
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #f43f5e;
+}
+.panel-update-btn:hover {
+  background: rgba(244, 63, 94, 0.2);
+}
 .p-icon {
   position: relative;
   width: 26px;

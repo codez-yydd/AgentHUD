@@ -75,6 +75,7 @@ document.addEventListener(
 /** tray_menu_state 返回：轻量状态 */
 interface TrayMenuState {
   version: string;
+  readyUpdateVersion: string | null;
   hudBarEnabled: boolean;
   isUsd: boolean;
 }
@@ -138,6 +139,7 @@ interface Msg {
   logs: string;
   pricing: string;
   settings: string;
+  updateReady: (version: string) => string;
   launchAtLogin: string;
   opacity: string;
   about: string;
@@ -177,6 +179,7 @@ const MESSAGES: Record<Locale, Msg> = {
     logs: "请求日志",
     pricing: "价格设置",
     settings: "设置",
+    updateReady: (version) => `新版本 ${version}`,
     launchAtLogin: "开机自启",
     opacity: "透明度",
     about: "本地优先 · 多 Agent 用量监控",
@@ -213,6 +216,7 @@ const MESSAGES: Record<Locale, Msg> = {
     logs: "Request logs",
     pricing: "Pricing",
     settings: "Settings",
+    updateReady: (version) => `Update ${version}`,
     launchAtLogin: "Launch at login",
     opacity: "Opacity",
     about: "Local-first · multi-agent usage",
@@ -331,6 +335,7 @@ const panelUsageEl = byId<HTMLElement>("panel-usage");
 const contentEl = byId<HTMLElement>("content");
 
 const btnSettingsEl = byId<HTMLButtonElement>("btn-settings");
+const btnUpdateEl = byId<HTMLButtonElement>("btn-update");
 const btnOpenMainEl = byId<HTMLButtonElement>("btn-open-main");
 const btnQuitEl = byId<HTMLButtonElement>("btn-quit");
 const rowAutostartEl = byId<HTMLButtonElement>("row-autostart");
@@ -579,13 +584,21 @@ function renderState(): void {
   if (trayState) {
     aboutVersionEl.textContent = `v${trayState.version}`;
   }
+  const readyVersion = trayState?.readyUpdateVersion;
+  btnUpdateEl.hidden = !readyVersion;
+  btnUpdateEl.textContent = readyVersion ? msg.updateReady(readyVersion) : "";
   setSwitch(rowHudEl, hudEnabled);
   setSwitch(rowAutostartEl, autostartEnabled);
 }
 
+let stateRequestId = 0;
+
 async function refreshState(): Promise<void> {
+  const requestId = ++stateRequestId;
   try {
-    trayState = await invoke<TrayMenuState>("tray_menu_state");
+    const next = await invoke<TrayMenuState>("tray_menu_state");
+    if (requestId !== stateRequestId) return;
+    trayState = next;
     hudEnabled = trayState.hudBarEnabled;
     renderState();
   } catch {
@@ -1216,6 +1229,7 @@ function main(): void {
       locale = next;
       msg = MESSAGES[locale];
       applyStaticText();
+      renderState();
     }
   }).catch(() => {
     /* 静默：保持启动时读取的语言与主题 */
@@ -1231,6 +1245,10 @@ function main(): void {
   }).catch(() => {
     /* 静默：开关仍可通过菜单操作，事件只是被动同步 */
   });
+
+  void listen("zbar://tray-update-ready", () => void refreshState())
+    .then(() => refreshState())
+    .catch(() => {});
 
   // 首次渲染（窗口可能是预热隐藏的，也可能是首次右键才建出来的）
   void refreshState();

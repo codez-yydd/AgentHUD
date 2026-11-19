@@ -48,6 +48,7 @@ import { AccountsPage } from "./AccountsPage";
 import { AgentAssetsPage } from "./AgentAssetsPage";
 import { SettingsPage } from "./SettingsPage";
 import { AboutPage } from "./AboutPage";
+import { useRemoteUpdateState } from "./settings/UpdateSection";
 import { useAgentVisibilitySync } from "./agentVisibilitySync";
 
 /** 主区视图（新增页面时在此扩展） */
@@ -123,6 +124,43 @@ const NAV_ITEMS: {
  */
 function applyDomTheme(theme: Theme): void {
   document.documentElement.classList.toggle("dark", theme === "dark");
+}
+
+function DashboardNavigation({ view, onNavigate }: {
+  view: View;
+  onNavigate: (view: View) => void;
+}) {
+  const { t } = useI18n();
+  const [update] = useRemoteUpdateState();
+  const readyVersion = update?.phase === "ready" ? update.readyVersion : null;
+
+  return (
+    <nav className="db-nav">
+      {NAV_ITEMS.map(({ view: itemView, labelKey, Icon }) => {
+        const label = t(labelKey);
+        const hint = itemView === "about" && readyVersion
+          ? t("dashboard.about.updateReady", { v: readyVersion })
+          : undefined;
+        return (
+          <button
+            key={itemView}
+            type="button"
+            onClick={() => onNavigate(itemView)}
+            className={`db-nav__item ${view === itemView ? "db-nav__item--active" : ""}`}
+            aria-current={view === itemView ? "page" : undefined}
+            aria-label={hint ? `${label} · ${hint}` : undefined}
+            title={hint}
+          >
+            <span className="db-nav__icon">
+              <Icon className="h-4 w-4" />
+            </span>
+            {label}
+            {hint && <span className="db-nav__update-dot" aria-hidden="true" />}
+          </button>
+        );
+      })}
+    </nav>
+  );
 }
 
 export function DashboardApp() {
@@ -265,24 +303,7 @@ export function DashboardApp() {
       {/* 标题栏之下的主体行：左侧固定侧栏 + 右侧主区 */}
       <div className="db-body">
         <aside className="db-sidebar">
-          <nav className="db-nav">
-            {NAV_ITEMS.map(({ view: itemView, labelKey, Icon }) => (
-              <button
-                key={itemView}
-                type="button"
-                onClick={() => setView(itemView)}
-                className={`db-nav__item ${
-                  view === itemView ? "db-nav__item--active" : ""
-                }`}
-                aria-current={view === itemView ? "page" : undefined}
-              >
-                <span className="db-nav__icon">
-                  <Icon className="h-4 w-4" />
-                </span>
-                {t(labelKey)}
-              </button>
-            ))}
-          </nav>
+          <DashboardNavigation view={view} onNavigate={setView} />
 
           {/* 底部：复用面板的语言/主题快捷切换（只换按钮样式类，读写同一套
               localStorage 偏好与同一广播，行为与面板一致）；ThemeToggle 换

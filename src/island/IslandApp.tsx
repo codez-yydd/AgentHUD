@@ -13,6 +13,8 @@ import {
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
 } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import {
   addWeatherCity,
   addWeatherCityExact,
@@ -497,6 +499,35 @@ function fmtMeetClock(ms: number): string {
 }
 
 export default function IslandApp() {
+  const [readyUpdateVersion, setReadyUpdateVersion] = useState<string | null>(null);
+  useEffect(() => {
+    const eventName = "zbar://island-update-ready";
+    if (!IS_TAURI) return onEvent<string | null>(eventName, setReadyUpdateVersion);
+
+    let active = true;
+    let receivedEvent = false;
+    let unsubscribe: (() => void) | undefined;
+    void listen<string | null>(eventName, ({ payload }) => {
+      receivedEvent = true;
+      if (active) setReadyUpdateVersion(payload);
+    }).then(async (unlisten) => {
+      if (!active) {
+        unlisten();
+        return;
+      }
+      unsubscribe = unlisten;
+      const version = await invoke<string | null>("get_ready_update_version");
+      if (active && !receivedEvent) setReadyUpdateVersion(version);
+    }).catch(() => {});
+    return () => {
+      active = false;
+      unsubscribe?.();
+    };
+  }, []);
+
+  const updateHint = readyUpdateVersion
+    ? `新版本 ${readyUpdateVersion} 已下载`
+    : undefined;
   const [config, setConfig] = useState<IslandConfig | null>(null);
   const [enabled, setEnabled] = useState(true);
   const [captureExcluded, setCaptureExcluded] = useState(false);
@@ -1560,6 +1591,7 @@ export default function IslandApp() {
   const canHoverExpand = () =>
     !openRef.current && !pointerRef.current && !dragActiveRef.current &&
     !blockHoverUntilLeave.current && !openMenuRef.current &&
+    !islandRef.current?.querySelector(".compact-update-btn:hover") &&
     !configRef.current?.passthrough && configRef.current?.hoverExpand !== false &&
     expandModeOf() === "hover";
 
@@ -3034,6 +3066,10 @@ export default function IslandApp() {
       ? quotaSizes.horizontal.height
       : COMPACT_HEIGHT[compactViewKey];
   const sideCompactWidth = compactViewKey === "rings" ? quotaSizes.vertical.width : 48;
+  const horizontalUpdateSlot = updateHint ? 100 : 0;
+  const verticalUpdateSlot = updateHint ? 34 : 0;
+  const compactMaxWidth = PANEL_W - horizontalUpdateSlot;
+  const sideContentMaxHeight = MAX_PANEL_H - verticalUpdateSlot;
   // 按整首最长歌词留出空间，换行时胶囊大小保持稳定。
   const musicWidthText = longestLyricText(lyricLines, config.fontFamily) || compactText(media, lyricNow);
   const compactOptions = {
@@ -3044,21 +3080,22 @@ export default function IslandApp() {
     musicText: musicWidthText,
     fontScale,
     fontFamily: config.fontFamily,
-    maxWidth: PANEL_W - compactQuotaExtent,
+    maxWidth: compactMaxWidth - compactQuotaExtent,
   };
-  const sideCompactHeight = compactViewKey === "rings"
-    ? quotaSizes.vertical.height
+  const sideContentHeight = compactViewKey === "rings"
+    ? Math.min(quotaSizes.vertical.height, sideContentMaxHeight)
     : compactViewKey === "music"
-      ? compactMusicHeightFor(compactOptions, MAX_PANEL_H - compactQuotaExtent) + compactQuotaExtent
+      ? compactMusicHeightFor(compactOptions, sideContentMaxHeight - compactQuotaExtent) + compactQuotaExtent
       : 440;
   const compactContentWidth = showLiveCaption
-    ? liveCaptionWidthFor(PANEL_W - compactQuotaExtent)
+    ? liveCaptionWidthFor(compactMaxWidth - compactQuotaExtent)
     : activity !== null
       ? activityWidthFor(activity, compactOptions)
       : compactViewBase === "rings"
-        ? quotaSizes.horizontal.width
+        ? Math.min(quotaSizes.horizontal.width, compactMaxWidth)
         : compactWidthFor(compactViewBase, compactOptions);
-  const compactWidth = compactContentWidth + compactQuotaExtent;
+  const compactWidth = compactContentWidth + compactQuotaExtent + horizontalUpdateSlot;
+  const sideCompactHeight = sideContentHeight + verticalUpdateSlot;
   // ===== P4：主体尺寸（画布里的 body rect） =====
   const bodyW = open ? PANEL_W : isSideEdge(edge) ? sideCompactWidth : compactWidth;
   const bodyH = open ? panelHeight : isSideEdge(edge) ? sideCompactHeight : compactHeight;
@@ -3084,11 +3121,12 @@ export default function IslandApp() {
     "--compact-h": `${compactHeight}px`,
     "--side-compact-w": `${sideCompactWidth}px`,
     "--side-compact-h": `${sideCompactHeight}px`,
-    "--quota-max-w": `${PANEL_W}px`,
+    "--quota-max-w": `${compactMaxWidth}px`,
     "--quota-max-h": `${MAX_PANEL_H}px`,
     "--compact-quota-cell": `${COMPACT_QUOTA_CELL}px`,
     "--compact-quota-extent": `${compactQuotaExtent}px`,
-    "--compact-content-extent": `${side ? sideCompactHeight - compactQuotaExtent : compactContentWidth}px`,
+    "--compact-content-extent": `${side ? sideContentHeight - compactQuotaExtent : compactContentWidth}px`,
+    "--compact-update-slot": `${side ? verticalUpdateSlot : horizontalUpdateSlot}px`,
     // 收起态圆角随视图高度变化（rings 48→24 / clock 34→17）；贴边侧的内凹角
     // 由 island.css 的 data-edge 规则覆盖成 2px + mask 凹陷。
     "--compact-r": `${Math.min(30, compactHeight / 2)}px`,
@@ -3958,6 +3996,7 @@ export default function IslandApp() {
               亮灭与颜色由 handleNotify 的 rAF 写 opacity / --notify-pulse-color。 */}
           <span className="notify-pulse" ref={notifyPulseRef} aria-hidden="true" />
           <div className="pill-wrap" aria-hidden={open} inert={open}>
+            <div className={updateHint ? "pill-content with-update" : "pill-content"}>
             {showLiveCaption || activity || compactViewBase !== "rings" ? (
                 <CompactViewSurface
                   view={compactViewBase}
@@ -4013,10 +4052,26 @@ export default function IslandApp() {
                   meeting={meetingBrief}
                   unread={badgeCounts}
                   edge={edge}
+                  sideContentMaxHeight={sideContentMaxHeight}
                   onOpen={handlePillClick}
                   onResize={resizeQuota}
                 />
               )}
+            </div>
+            {updateHint && (
+              <button
+                type="button"
+                className="compact-update-btn"
+                data-no-dblclick
+                title={updateHint}
+                aria-label={`${updateHint}，打开软件更新`}
+                onPointerEnter={cancelHover}
+                onClick={() => void openMainWindow("about").catch((error) => showToast(String(error)))}
+              >
+                {side ? "新版本" : "有新版本"}
+                {!side && <Icon name="chevron" size={12} />}
+              </button>
+            )}
           </div>
           {/* 面板子树：收起 10 分钟后卸载、展开入口预挂（内存压降专项 3a，
               见 PANEL_UNMOUNT_DELAY_MS 注释；胶囊 pill-wrap 常驻不卸载） */}
@@ -4039,6 +4094,17 @@ export default function IslandApp() {
                 </button>
               ))}
               <span className="nav-spacer" />
+              {updateHint && (
+                <button
+                  type="button"
+                  className="nav-tab island-update-btn"
+                  title={updateHint}
+                  aria-label={updateHint}
+                  onClick={() => void openMainWindow("about").catch((error) => showToast(String(error)))}
+                >
+                  新版本
+                </button>
+              )}
               {/* 齿轮 = 打开独立设置窗口（island-settings，1100×720 自绘标题栏
                   大窗）。设置项已经从岛内迁出，齿轮不再是岛内标签，故没有
                   active 态，也不改变当前标签；失败只 toast 不打断岛内交互。 */}
@@ -4122,6 +4188,7 @@ interface CollapsedPillProps {
   /** 各消息模块未读数：activity 结束后常驻在胶囊右侧的品牌图标来源 */
   unread: BadgeCounts;
   edge: IslandEdge;
+  sideContentMaxHeight: number;
   onOpen: (event: ReactMouseEvent<HTMLButtonElement>) => void;
   onResize: (orientation: keyof IslandDragSizes, size: IslandDragSizes[keyof IslandDragSizes]) => void;
 }
@@ -4146,6 +4213,7 @@ function QuotaPill({
   unread,
   side,
   probe,
+  sideContentMaxHeight,
   onOpen,
   onResize,
 }: Omit<CollapsedPillProps, "edge"> & { side: boolean; probe: boolean }) {
@@ -4202,7 +4270,7 @@ function QuotaPill({
         const rowGap = px(getComputedStyle(agentList).rowGap);
         const rows = Math.max(1, Math.min(
           rings.length,
-          Math.floor((MAX_PANEL_H - Math.ceil(fixedHeight) + rowGap) / (ringHeight + rowGap)),
+          Math.floor((sideContentMaxHeight - Math.ceil(fixedHeight) + rowGap) / (ringHeight + rowGap)),
         ));
         const next = String(rows);
         if (agentList.style.getPropertyValue("--quota-side-rows") !== next) {
@@ -4224,7 +4292,7 @@ function QuotaPill({
       rings.forEach((ring) => observer.observe(ring));
     }
     return () => observer.disconnect();
-  }, [side, usage, ringsOnly, onResize]);
+  }, [side, usage, ringsOnly, onResize, sideContentMaxHeight]);
 
   return (
     <button
