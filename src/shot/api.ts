@@ -33,6 +33,7 @@ import type {
   ShotHistoryItem,
   ShotMonitor,
   ShotRect,
+  ShotScreen,
   ShotSession,
   ShotSettings,
   ShotWindow,
@@ -91,12 +92,20 @@ export async function getShotWindows(id: number): Promise<ShotWindow[]> {
 }
 
 /** 原始 PNG 字节；Tauri raw IPC 返回 ArrayBuffer。 */
-export async function getSessionImage(id: number): Promise<ArrayBuffer> {
+export async function getSessionImage(id: number, monitorIndex?: number): Promise<ArrayBuffer> {
   if (!IS_TAURI) {
     const session = mockSession("edit");
     return fetch(session.image ?? "").then((response) => response.arrayBuffer());
   }
-  return invoke<ArrayBuffer>("shot_session_image", { id });
+  return invoke<ArrayBuffer>("shot_session_image", { id, monitorIndex });
+}
+
+export function getCursorScreen(id: number): Promise<ShotScreen | null> {
+  return invoke("shot_cursor_screen", { id });
+}
+
+export function activateShotScreen(id: number, monitorIndex: number): Promise<boolean> {
+  return invoke("shot_activate_screen", { id, monitorIndex });
 }
 
 export async function shotReady(id: number): Promise<void> {
@@ -281,6 +290,19 @@ export async function saveShotAs(
 export async function copyShot(pngBytes: Uint8Array): Promise<void> {
   if (!IS_TAURI) return delay(undefined, 100);
   return invoke("shot_copy", pngBytes);
+}
+
+/** Windows 剪贴板同时需要 PNG 和位图。复用画布已有的 RGBA，免去后端 PNG 转码。 */
+export function copyShotBitmap(pixels: ImageData, png: Uint8Array): Promise<void> {
+  const { width, height, data } = pixels;
+  const packet = new Uint8Array(12 + png.length + data.length);
+  const header = new DataView(packet.buffer);
+  header.setUint32(0, width, true);
+  header.setUint32(4, height, true);
+  header.setUint32(8, png.length, true);
+  packet.set(png, 12);
+  packet.set(data, 12 + png.length);
+  return invoke("shot_copy_bitmap", packet);
 }
 
 /** data URL 转 PNG 字节（fetch 异步解码，不阻塞主线程）：给手里只有

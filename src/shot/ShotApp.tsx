@@ -2,20 +2,26 @@ import {
   Fragment,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
+  type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
   type ReactElement,
 } from "react";
+import { flushSync } from "react-dom";
 import { IS_TAURI } from "../island/api";
 import { IS_MAC, IS_WINDOWS, shortcutParts, shortcutText } from "../shortcuts";
 import {
+  activateShotScreen,
   closeShot,
   copyShot,
+  copyShotBitmap,
   copyText,
   ensureFfmpeg,
   ffmpegStatus,
+  getCursorScreen,
   getSessionImage,
   getShotSession,
   getShotSettings,
@@ -62,6 +68,11 @@ interface Point {
   y: number;
 }
 
+function containsPoint(rect: ShotRect, point: Point) {
+  return point.x >= rect.x && point.x < rect.x + rect.width &&
+    point.y >= rect.y && point.y < rect.y + rect.height;
+}
+
 interface BaseOp {
   color: string;
   width: number;
@@ -99,10 +110,11 @@ interface DisplayRect {
 
 interface SelectDrag {
   mode: "new" | "move" | "resize";
+  pointerId: number;
   handle: string;
   start: Point;
   origin: ShotRect;
-  selection: ShotRect;
+  previous: ShotRect | null;
 }
 
 interface DrawDrag {
@@ -169,6 +181,21 @@ function loadImage(src: string): Promise<HTMLImageElement> {
   });
 }
 
+function waitForFrame(): Promise<void> {
+  return new Promise((resolve) => {
+    let frame = 0;
+    const done = () => {
+      window.cancelAnimationFrame(frame);
+      window.clearTimeout(timeout);
+      resolve();
+    };
+    const timeout = window.setTimeout(done, 120);
+    frame = window.requestAnimationFrame(() => {
+      frame = window.requestAnimationFrame(done);
+    });
+  });
+}
+
 /** 画布 PNG 异步编码：toBlob 走浏览器的异步编码线程，大图不再像
  *  toDataURL 那样同步阻塞主线程数百毫秒（4K 截图复制卡顿的主因之一）。 */
 async function canvasToPngBytes(canvas: HTMLCanvasElement): Promise<Uint8Array> {
@@ -223,7 +250,7 @@ export default function ShotApp() {
   const [origin, setOrigin] = useState<ShotRect | null>(null);
   const [baseImage, setBaseImage] = useState("");
   const [baseSize, setBaseSize] = useState<Size>({ w: 0, h: 0 });
-  const [tool, setTool] = useState<Tool>("rect");
+  const [tool, setTool] = useState<Tool>("cursor");
   const [color, setColor] = useState(COLORS[1]);
   const [stroke, setStroke] = useState(WIDTHS[1]);
   const [ops, setOps] = useState<Op[]>([]);
@@ -275,7 +302,12 @@ export default function ShotApp() {
   const stageRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const baseImgRef = useRef<HTMLImageElement | null>(null);
+  const screenImgRef = useRef<HTMLImageElement | null>(null);
   const selectDragRef = useRef<SelectDrag | null>(null);
+  const selectionLockedRef = useRef(false);
+  const switchingScreenRef = useRef(false);
+  const screenUrlsRef = useRef(new Map<number, string>());
+  const selectionMovedRef = useRef(false);
   const drawDragRef = useRef<DrawDrag | null>(null);
   const draftRef = useRef<Op | null>(null);
   const toastTimerRef = useRef<number | null>(null);
@@ -442,6 +474,7 @@ export default function ShotApp() {
         const bytes = await getSessionImage(idFromUrl);
         if (dead) return;
         const imageUrl = makeImageUrl(bytes);
+        if (next.followCursor) screenUrlsRef.current.set(next.monitor.index, imageUrl);
         const hydrated = { ...next, image: imageUrl, backdrop: imageUrl };
         setSession(hydrated);
         setContext({
@@ -468,22 +501,10 @@ export default function ShotApp() {
             setSelection({ x: 420, y: 250, width: 1000, height: 560 });
           }
         }
-        await new Promise((resolve) => window.setTimeout(resolve, 40));
-        await shotReady(idFromUrl);
-        // 第一次请求动画帧后再统计一次，保留“真的画上屏”的量化埋点
-        if (IS_TAURI) {
-          window.requestAnimationFrame(() => {
-            window.requestAnimationFrame(() => {
-              void markPainted(idFromUrl).catch(() => {});
-            });
-          });
-        }
-        if (settings?.playSound) playTone();
       } catch (error) {
         if (!dead) {
-          showToast(String(error), 4200);
-          // 会话/图片读写失败时不要留下一个隐藏窗口和隐藏的 HUD。
-          window.setTimeout(() => void closeShot(), 2600);
+          console.error("加载截图失败", error);
+          void closeShot();
         }
       }
     })();
@@ -494,7 +515,105 @@ export default function ShotApp() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [idFromUrl]);
 
+  const initialFrameRef = useRef(false);
+  useEffect(() => {
+    if (!idFromUrl || phase === "loading" || initialFrameRef.current) return;
+    let dead = false;
+    void (async () => {
+      try {
+        const backdrop = stageRef.current?.querySelector<HTMLImageElement>(
+          ".shot-freeze, .shot-backdrop"
+        );
+        if (!backdrop) throw new Error("截图画面未挂载");
+        await backdrop.decode();
+        // 隐藏的 WebView 可能挂起动画帧。此时至少等 DOM 提交和图片解码完成。
+        await waitForFrame();
+        if (dead) return;
+        await shotReady(idFromUrl);
+        initialFrameRef.current = true;
+        if (IS_TAURI) {
+          window.requestAnimationFrame(() => void markPainted(idFromUrl).catch(() => {}));
+        }
+        if (settings?.playSound) playTone();
+      } catch (error) {
+        if (!dead) {
+          console.error("显示截图失败", error);
+          void closeShot();
+        }
+      }
+    })();
+    return () => {
+      dead = true;
+    };
+    // 只在截图界面首次显示时读取音效设置。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [idFromUrl, phase]);
+
   const sessionId = session?.id ?? 0;
+  const monitorIndex = session?.monitor.index;
+
+  useLayoutEffect(() => {
+    selectionLockedRef.current = selection !== null;
+  }, [selection]);
+
+  useEffect(() => {
+    if (!IS_TAURI || phase !== "select" || !session?.followCursor || selection || busy) return;
+    let dead = false;
+    let timer = 0;
+    const canSwitch = () =>
+      !dead && initialFrameRef.current && !selectDragRef.current &&
+      !selectionLockedRef.current && !switchingScreenRef.current;
+
+    const followCursor = async () => {
+      try {
+        if (!canSwitch()) return;
+        const screen = await getCursorScreen(session.id);
+        if (!screen || !canSwitch()) return;
+        const index = screen.monitor.index;
+        let image = screenUrlsRef.current.get(index);
+        if (!image) {
+          const bytes = await getSessionImage(session.id, index);
+          if (dead) return;
+          image = makeImageUrl(bytes);
+          const backdrop = new Image();
+          backdrop.src = image;
+          await backdrop.decode();
+          screenUrlsRef.current.set(index, image);
+        }
+        const stage = stageRef.current;
+        if (!stage || !canSwitch()) return;
+        switchingScreenRef.current = true;
+        // 移动透明覆盖层时先让两块屏幕显示各自的桌面，避免把旧屏画面带到新屏。
+        stage.style.visibility = "hidden";
+        try {
+          await waitForFrame();
+          if (dead || !(await activateShotScreen(session.id, index))) return;
+          const imageUrl = image;
+          flushSync(() => {
+            setSession({ ...session, ...screen, image: imageUrl, backdrop: imageUrl });
+            setContext({ backdrop: imageUrl, width: screen.width, height: screen.height });
+            setHoverWindow(null);
+            setWindows([]);
+          });
+          await screenImgRef.current?.decode();
+        } finally {
+          stage.style.visibility = "";
+          switchingScreenRef.current = false;
+        }
+      } catch (error) {
+        // 复用的 WebView 在退出后会继续存活，后端会话失效时停止轮询。
+        dead = true;
+        if (!String(error).includes("截图会话已失效")) console.error("切换截图屏幕失败", error);
+      } finally {
+        if (!dead) timer = window.setTimeout(() => void followCursor(), 75);
+      }
+    };
+    void followCursor();
+    return () => {
+      dead = true;
+      window.clearTimeout(timer);
+    };
+  }, [busy, makeImageUrl, phase, selection, session]);
 
   // 窗口列表用于悬停高亮 / 单击选窗；切模式时刷新一次。
   useEffect(() => {
@@ -514,7 +633,7 @@ export default function ShotApp() {
     return () => {
       dead = true;
     };
-  }, [phase, sessionId]);
+  }, [phase, sessionId, monitorIndex]);
 
   useEffect(() => {
     if (selection) setHoverWindow(null);
@@ -530,6 +649,7 @@ export default function ShotApp() {
     setRedo([]);
     setDraft(null);
     setTextInput(null);
+    setTool("rect");
     if (backdrop) {
       setContext((current) =>
         current ? { ...current, backdrop } : { backdrop, width: img.naturalWidth, height: img.naturalHeight }
@@ -538,7 +658,19 @@ export default function ShotApp() {
     setPhase("edit");
   }
 
+  const inlineSelection = phase === "select" && tab === "shot" ? selection : null;
+  const selectScale = session ? viewport.width / Math.max(1, session.width) : 1;
+  const imageSize = inlineSelection ? displaySize(inlineSelection) : baseSize;
   const display = useMemo<DisplayRect | null>(() => {
+    if (inlineSelection) {
+      return {
+        left: inlineSelection.x * selectScale,
+        top: inlineSelection.y * selectScale,
+        width: inlineSelection.width * selectScale,
+        height: inlineSelection.height * selectScale,
+        scale: selectScale,
+      };
+    }
     if (!context || baseSize.w <= 0 || baseSize.h <= 0) return null;
     if (origin) {
       const scale = viewport.width / Math.max(1, context.width);
@@ -560,9 +692,7 @@ export default function ShotApp() {
       height: baseSize.h * scale,
       scale,
     };
-  }, [baseSize, context, origin, viewport.height, viewport.width]);
-
-  const selectScale = session ? viewport.width / Math.max(1, session.width) : 1;
+  }, [baseSize, context, inlineSelection, origin, selectScale, viewport.height, viewport.width]);
 
   const selectionCss = useMemo(() => {
     if (!selection) return null;
@@ -588,31 +718,30 @@ export default function ShotApp() {
 
   const redraw = useCallback(() => {
     const canvas = canvasRef.current;
-    const image = baseImgRef.current;
+    const image = inlineSelection ? screenImgRef.current : baseImgRef.current;
     if (!canvas || !image || !display) return;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
+    if (inlineSelection) {
+      ctx.drawImage(
+        image,
+        Math.round(inlineSelection.x), Math.round(inlineSelection.y),
+        canvas.width, canvas.height,
+        0, 0, canvas.width, canvas.height
+      );
+    } else {
+      ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
+    }
     const unit = 1 / Math.max(0.05, display.scale);
     for (const op of ops) drawOp(ctx, op, unit);
     // 拖动中的草稿用快模式（大选区逐帧做真模糊太慢），松手后再出精细结果。
     if (draft) drawOp(ctx, draft, unit, true);
-  }, [display, draft, ops]);
+  }, [display, draft, inlineSelection, ops]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     redraw();
-  }, [redraw, baseImage, baseSize.w, baseSize.h]);
-
-  useEffect(() => {
-    if (phase !== "edit") return;
-    const canvas = canvasRef.current;
-    if (canvas) {
-      canvas.width = baseSize.w;
-      canvas.height = baseSize.h;
-    }
-    redraw();
-  }, [baseSize.h, baseSize.w, phase, redraw]);
+  }, [redraw, baseImage, imageSize.w, imageSize.h, selectDragging]);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -650,9 +779,14 @@ export default function ShotApp() {
         }
         return;
       }
-      if (phase === "select" && event.key === "Enter" && selection) {
+      if (
+        inlineSelection &&
+        event.key === "Enter" &&
+        !selectDragRef.current &&
+        !(focused instanceof HTMLButtonElement)
+      ) {
         event.preventDefault();
-        void cropSelection();
+        void finishCopy();
         return;
       }
       if (
@@ -678,28 +812,34 @@ export default function ShotApp() {
         return;
       }
       if (
-        phase === "select" &&
+        phase === "select" && !inlineSelection &&
         (event.ctrlKey || event.metaKey) &&
         !event.shiftKey &&
         event.key.toLowerCase() === "c" &&
         selection
       ) {
         event.preventDefault();
-        void copySelection();
+        void finishCopy();
         return;
       }
       if (
-        phase === "select" &&
+        phase === "select" && !inlineSelection &&
         (event.ctrlKey || event.metaKey) &&
         !event.shiftKey &&
         event.key.toLowerCase() === "s" &&
         selection
       ) {
         event.preventDefault();
-        void saveSelectionAs();
+        void finishSaveAs();
         return;
       }
-      if (phase !== "edit") return;
+      if (phase !== "edit" && !inlineSelection) return;
+      if (selectDragRef.current) return;
+      if (event.key === "Backspace") {
+        event.preventDefault();
+        reselect();
+        return;
+      }
       if (
         (event.ctrlKey || event.metaKey) &&
         event.shiftKey &&
@@ -751,16 +891,16 @@ export default function ShotApp() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [modal, phase, selection, settings, ops]);
+  }, [modal, phase, selection, inlineSelection, settings, ops, busy, redraw]);
 
-  const stagePoint = (event: ReactPointerEvent): Point => {
+  const stagePoint = (event: ReactMouseEvent): Point => {
     const stage = stageRef.current;
     if (!stage) return { x: 0, y: 0 };
     const rect = stage.getBoundingClientRect();
     return { x: event.clientX - rect.left, y: event.clientY - rect.top };
   };
 
-  const selectPoint = (event: ReactPointerEvent): Point => {
+  const selectPoint = (event: ReactMouseEvent): Point => {
     const point = stagePoint(event);
     return {
       x: clamp(point.x / Math.max(0.01, selectScale), 0, session?.width ?? 0),
@@ -798,6 +938,9 @@ export default function ShotApp() {
     };
   };
 
+  const isFullScreenSelection = (rect: ShotRect) =>
+    Boolean(session && rect.width >= session.width - 2 && rect.height >= session.height - 2);
+
   /** 根据当前拖拽状态算出选区（移动/缩放/新建三种）。 */
   const rectForDrag = (drag: SelectDrag, point: Point): ShotRect => {
     if (!session) return { x: 0, y: 0, width: 0, height: 0 };
@@ -822,81 +965,78 @@ export default function ShotApp() {
       };
     }
     const rect = { ...drag.origin };
-    const minSize = 8;
+    const minWidth = Math.min(8, rect.width);
+    const minHeight = Math.min(8, rect.height);
+    const dx = point.x - drag.start.x;
+    const dy = point.y - drag.start.y;
     if (drag.handle.includes("w")) {
-      const nx = clamp(point.x, 0, rect.x + rect.width - minSize);
+      const nx = clamp(rect.x + dx, 0, rect.x + rect.width - minWidth);
       rect.width += rect.x - nx;
       rect.x = nx;
     }
     if (drag.handle.includes("e")) {
-      rect.width = clamp(point.x - rect.x, minSize, session.width - rect.x);
+      rect.width = clamp(rect.width + dx, minWidth, session.width - rect.x);
     }
     if (drag.handle.includes("n")) {
-      const ny = clamp(point.y, 0, rect.y + rect.height - minSize);
+      const ny = clamp(rect.y + dy, 0, rect.y + rect.height - minHeight);
       rect.height += rect.y - ny;
       rect.y = ny;
     }
     if (drag.handle.includes("s")) {
-      rect.height = clamp(point.y - rect.y, minSize, session.height - rect.y);
+      rect.height = clamp(rect.height + dy, minHeight, session.height - rect.y);
     }
     return rect;
   };
 
   const startSelection = (event: ReactPointerEvent) => {
-    if (phase !== "select" || !session) return;
-    const target = event.target as HTMLElement;
-    if (target.closest(".shot-floating")) return;
+    if (!session || busy || event.button !== 0 || selectDragRef.current || switchingScreenRef.current) return;
+    const target = event.target as Element;
+    if (target.closest(".shot-floating, .shot-mode-switch, .shot-rec-setup-card")) return;
     const point = selectPoint(event);
-    const stage = stageRef.current;
-    stage?.setPointerCapture(event.pointerId);
+    selectionMovedRef.current = false;
     if (selection) {
       const rect = normRect(selection);
-      const inside =
-        point.x >= rect.x &&
-        point.x <= rect.x + rect.width &&
-        point.y >= rect.y &&
-        point.y <= rect.y + rect.height;
       // 整屏选区不做"拖着移动"：否则整屏都被选中后没法再拖一个新区域。
-      const fullScreen =
-        rect.width >= session.width - 2 && rect.height >= session.height - 2;
-      if (inside && !fullScreen) {
+      if (containsPoint(rect, point) && !isFullScreenSelection(rect)) {
+        stageRef.current?.setPointerCapture(event.pointerId);
         selectDragRef.current = {
           mode: "move",
+          pointerId: event.pointerId,
           handle: "",
           start: point,
           origin: rect,
-          selection: rect,
+          previous: rect,
         };
-        setSelectDragging(true);
         return;
       }
     }
+    stageRef.current?.setPointerCapture(event.pointerId);
     const next = { x: point.x, y: point.y, width: 0, height: 0 };
-    setSelection(next);
     selectDragRef.current = {
       mode: "new",
+      pointerId: event.pointerId,
       handle: "",
       start: point,
       origin: next,
-      selection: next,
+      previous: selection,
     };
-    setSelectDragging(true);
   };
 
   const startResize = (event: ReactPointerEvent, handle: string) => {
-    if (!selection) return;
     event.stopPropagation();
+    if (!selection || busy || event.button !== 0 || selectDragRef.current) return;
     const point = selectPoint(event);
     const rect = normRect(selection);
-    stageRef.current?.setPointerCapture(event.pointerId);
+    event.currentTarget.setPointerCapture(event.pointerId);
+    selectionMovedRef.current = true;
     selectDragRef.current = {
       mode: "resize",
+      pointerId: event.pointerId,
       handle,
       start: point,
       origin: rect,
-      selection: rect,
+      previous: rect,
     };
-    setSelectDragging(true);
   };
 
   const moveSelection = (event: ReactPointerEvent) => {
@@ -911,47 +1051,77 @@ export default function ShotApp() {
       setHoverWindow(hoverAt(selectPoint(event)));
       return;
     }
-    setSelection(rectForDrag(selectDragRef.current, selectPoint(event)));
+    const drag = selectDragRef.current;
+    if (drag.pointerId !== event.pointerId) return;
+    const point = selectPoint(event);
+    const distance = Math.hypot(point.x - drag.start.x, point.y - drag.start.y) * selectScale;
+    if (distance >= 4) selectionMovedRef.current = true;
+    if (selectionMovedRef.current) {
+      setSelectDragging(true);
+      setSelection(rectForDrag(drag, point));
+    }
   };
 
   const endSelection = (event: ReactPointerEvent) => {
     const drag = selectDragRef.current;
     // 没有从画布上按下过（比如点在悬浮工具条的按钮上）就不要动选区，
     // 否则切换格式/开始录制这类点击会把用户刚框好的区域清掉。
-    if (!drag) return;
+    if (!drag || drag.pointerId !== event.pointerId) return;
     selectDragRef.current = null;
     setSelectDragging(false);
-    if (stageRef.current?.hasPointerCapture(event.pointerId)) {
-      stageRef.current.releasePointerCapture(event.pointerId);
+    if (event.type !== "pointerup") {
+      setSelection(drag.previous);
+      return;
     }
     const point = selectPoint(event);
-    let next: ShotRect | null = null;
-    if (drag) {
-      // 单击（几乎没移动）落在窗口/桌面上 = 直接选中窗口或整屏。
-      const moved = Math.abs(point.x - drag.start.x) + Math.abs(point.y - drag.start.y);
-      const hit = drag.mode === "new" && moved < 6 ? hoverAt(point) : null;
-      if (hit) {
-        next = { x: hit.x, y: hit.y, width: hit.width, height: hit.height };
-      } else {
-        const rect = rectForDrag(drag, point);
-        if (rect.width >= 6 && rect.height >= 6) next = rect;
-      }
+    const distance = Math.hypot(point.x - drag.start.x, point.y - drag.start.y) * selectScale;
+    if (distance >= 4) selectionMovedRef.current = true;
+    if (
+      tab === "shot" && drag.mode !== "resize" && !selectionMovedRef.current &&
+      drag.previous && containsPoint(drag.previous, drag.start) && containsPoint(drag.previous, point)
+    ) {
+      void finishCopy();
+      return;
     }
+    // 单击可选窗或整屏。已选整屏时，单击保留它，拖动仍可重新框选。
+    const hit = drag.mode === "new" && !selectionMovedRef.current
+      ? drag.previous && isFullScreenSelection(drag.previous)
+        ? drag.previous
+        : hoverAt(point)
+      : null;
+    const rect = hit
+      ? { x: hit.x, y: hit.y, width: hit.width, height: hit.height }
+      : rectForDrag(drag, point);
+    const valid = rect.width >= 6 && rect.height >= 6;
+    if (valid && drag.mode === "new" && hit !== drag.previous) {
+      setOps([]);
+      setRedo([]);
+      setTextInput(null);
+      setTool("cursor");
+    }
+    const next = valid ? rect : drag.previous;
+    selectionLockedRef.current = next !== null;
     setSelection(next);
     setHoverWindow(null);
-    // 截图分类：选完直接进标注器，不用再点"标注"。
-    if (next && tab === "shot") void cropSelection(next);
   };
 
-  /** 把选区按原图像素裁出来（不进入标注器）。不传 rect 时用当前选区。
-   *  返回 PNG 原始字节：复制直接走 raw IPC，其余用途转 data URL。 */
-  async function renderSelection(
-    rectArg?: ShotRect
-  ): Promise<{ bytes: Uint8Array; rect: ShotRect } | null> {
-    const target = rectArg ?? selection;
-    if (!session?.image || !target) return null;
-    const rect = normRect(target);
-    if (rect.width < 2 || rect.height < 2) return null;
+  const recoverSelectionCapture = (event: ReactPointerEvent) => {
+    if (selectDragRef.current?.pointerId !== event.pointerId) return;
+    if ((event.buttons & 1) && stageRef.current) {
+      try {
+        stageRef.current.setPointerCapture(event.pointerId);
+        return;
+      } catch {
+        // 指针已结束时回退到取消拖动。
+      }
+    }
+    endSelection(event);
+  };
+
+  /** 按原图像素裁剪选区。 */
+  async function renderSelection(): Promise<HTMLCanvasElement> {
+    if (!session?.image || !selection) throw new Error("截图选区尚未准备好");
+    const rect = normRect(selection);
     const img = await loadImage(session.image);
     const canvas = document.createElement("canvas");
     const size = displaySize(rect);
@@ -970,62 +1140,7 @@ export default function ShotApp() {
       size.w,
       size.h
     );
-    return { bytes: await canvasToPngBytes(canvas), rect };
-  }
-
-  async function cropSelection(rectArg?: ShotRect) {
-    try {
-      const rendered = await renderSelection(rectArg);
-      if (!rendered) return;
-      await beginEdit(await pngBytesToDataUrl(rendered.bytes), rendered.rect);
-    } catch (error) {
-      showToast(String(error));
-    }
-  }
-
-  /** 框选后直接复制，不用先进标注器。 */
-  async function copySelection() {
-    if (busy || !selection) return;
-    setBusy("正在复制到剪贴板…");
-    try {
-      const rendered = await renderSelection();
-      if (!rendered) {
-        setBusy("");
-        return;
-      }
-      await copyShot(rendered.bytes);
-      showToast("已复制到剪贴板", 900);
-      window.setTimeout(() => void closeShot(), 320);
-    } catch (error) {
-      showToast(String(error), 3600);
-      setBusy("");
-    }
-  }
-
-  /** 框选后直接「另存为」，走系统保存对话框。 */
-  async function saveSelectionAs() {
-    if (busy || !selection) return;
-    setBusy("正在保存…");
-    try {
-      const rendered = await renderSelection();
-      if (!rendered) {
-        setBusy("");
-        return;
-      }
-      const item = await saveShotAs(
-        await pngBytesToDataUrl(rendered.bytes),
-        settings?.format ?? "png"
-      );
-      if (!item) {
-        setBusy("");
-        return;
-      }
-      showToast(`已另存为 ${item.name}`, 1100);
-      window.setTimeout(() => void closeShot(), 420);
-    } catch (error) {
-      showToast(String(error), 3600);
-      setBusy("");
-    }
+    return canvas;
   }
 
   /** 标注器里的「另存为」。 */
@@ -1219,9 +1334,9 @@ export default function ShotApp() {
   };
 
   const drawPointerDown = (event: ReactPointerEvent<HTMLCanvasElement>) => {
-    if (phase !== "edit" || busy) return;
+    if (tool === "cursor" || busy || event.button !== 0 || selectDragRef.current) return;
+    event.stopPropagation();
     const point = imagePoint(event);
-    if (tool === "cursor") return;
     if (tool === "text") {
       setTextInput({ x: point.x, y: point.y, value: "" });
       return;
@@ -1375,6 +1490,7 @@ export default function ShotApp() {
     setBaseImage("");
     setOrigin(null);
     setTextInput(null);
+    setTool("cursor");
     setContext({
       backdrop: session.image ?? session.backdrop ?? "",
       width: session.width,
@@ -1382,13 +1498,16 @@ export default function ShotApp() {
     });
   }
 
-  /** 编辑器当前画面的 PNG 原始字节：复制直接走 raw IPC，编码异步不阻塞
-   *  主线程。 */
-  async function exportImageBytes(): Promise<Uint8Array> {
-    redraw();
+  async function getExportCanvas(): Promise<HTMLCanvasElement> {
+    if (phase === "select" && !inlineSelection) return renderSelection();
     const canvas = canvasRef.current;
     if (!canvas) throw new Error("画布尚未准备好");
-    return canvasToPngBytes(canvas);
+    return canvas;
+  }
+
+  async function exportImageBytes(): Promise<Uint8Array> {
+    redraw();
+    return canvasToPngBytes(await getExportCanvas());
   }
 
   /** 保存 / 贴图 / OCR / 二维码仍是 data URL 入参，从这里转一道。 */
@@ -1397,12 +1516,20 @@ export default function ShotApp() {
   }
 
   async function finishCopy() {
-    if (busy) return;
+    if (busy || selectDragRef.current) return;
     setBusy("正在复制到剪贴板…");
     try {
-      await copyShot(await exportImageBytes());
-      showToast("已复制到剪贴板", 900);
-      window.setTimeout(() => void closeShot(), 320);
+      const canvas = await getExportCanvas();
+      const png = canvasToPngBytes(canvas);
+      if (IS_TAURI && IS_WINDOWS) {
+        const ctx = canvas.getContext("2d");
+        if (!ctx) throw new Error("画布尚未准备好");
+        const pixels = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        await copyShotBitmap(pixels, await png);
+      } else {
+        await copyShot(await png);
+      }
+      await closeShot();
     } catch (error) {
       showToast(String(error), 3600);
       setBusy("");
@@ -1530,16 +1657,14 @@ export default function ShotApp() {
   return (
     <div
       ref={stageRef}
-      className={`shot-root phase-${phase} ${phase === "edit" ? "tool-" + tool : ""} ${
+      className={`shot-root phase-${phase} ${phase === "edit" || inlineSelection ? "tool-" + tool : ""} ${
         recCountdownLock ? "rec-countdown" : ""
       }`}
       onPointerDown={phase === "select" ? startSelection : undefined}
       onPointerMove={phase === "select" ? moveSelection : undefined}
       onPointerUp={phase === "select" ? endSelection : undefined}
       onPointerCancel={phase === "select" ? endSelection : undefined}
-      onDoubleClick={() => {
-        if (phase === "select" && selection) void cropSelection();
-      }}
+      onLostPointerCapture={phase === "select" ? recoverSelectionCapture : undefined}
     >
       {phase === "loading" ? (
         <div className="shot-loading">
@@ -1550,7 +1675,14 @@ export default function ShotApp() {
 
       {phase === "select" && session?.image ? (
         <>
-          <img className="shot-freeze" src={session.image} alt="" draggable={false} />
+          <img
+            ref={screenImgRef}
+            className="shot-freeze"
+            src={session.image}
+            alt=""
+            draggable={false}
+            onLoad={redraw}
+          />
           {!selectionCss ? <div className="shot-dim shot-dim-full" /> : null}
           {selectionCss ? (
             <>
@@ -1586,7 +1718,7 @@ export default function ShotApp() {
                 }}
               />
               <div
-                className="shot-selection"
+                className={`shot-selection${inlineSelection ? " is-annotatable" : ""}`}
                 style={{
                   left: selectionCss.left,
                   top: selectionCss.top,
@@ -1660,11 +1792,6 @@ export default function ShotApp() {
             {/* Esc 仍是唯一退出方式，键位提示收敛在栏右侧 */}
             <span className="shot-top-esc"><kbd>Esc</kbd> 取消</span>
           </div>
-          {/* 底部保持干净：无选区（框选进行中）时所有分类都不渲染任何底部
-              UI，屏幕上只有冻结帧 / 遮罩 / 顶部一体栏 / 悬停窗口高亮。框好
-              选区后：截图分类松手直接进标注编辑器、录屏分类设置收在选区
-              中心的录制设置卡，两者都无需底部条；仅滚动分类保留一个"开始
-              滚动"按钮。退出统一走 Esc（顶部一体栏有键位提示） */}
           {tab === "scroll" && selection ? (
             <div className="shot-floating shot-select-actions" onPointerDown={(e) => e.stopPropagation()}>
               <button
@@ -1897,21 +2024,28 @@ export default function ShotApp() {
         </>
       ) : null}
 
-      {phase === "edit" && context ? (
+      {phase === "edit" || (inlineSelection && !selectDragging) ? (
         <>
-          <img
-            className={`shot-backdrop ${origin ? "is-exact" : ""}`}
-            src={context.backdrop}
-            alt=""
-            draggable={false}
-          />
-          <div className="shot-editor-vignette" />
-          <div className="shot-canvas-wrap" style={canvasStyle}>
+          {phase === "edit" && context ? (
+            <>
+              <img
+                className={`shot-backdrop ${origin ? "is-exact" : ""}`}
+                src={context.backdrop}
+                alt=""
+                draggable={false}
+              />
+              <div className="shot-editor-vignette" />
+            </>
+          ) : null}
+          <div
+            className={`shot-canvas-wrap${inlineSelection ? ` is-inline tool-${tool}` : ""}`}
+            style={canvasStyle}
+          >
             <canvas
               ref={canvasRef}
               className="shot-canvas"
-              width={baseSize.w || 1}
-              height={baseSize.h || 1}
+              width={imageSize.w || 1}
+              height={imageSize.h || 1}
               onPointerDown={drawPointerDown}
               onPointerMove={drawPointerMove}
               onPointerUp={drawPointerUp}
@@ -1946,29 +2080,28 @@ export default function ShotApp() {
                 }}
               />
             ) : null}
-            <span className="shot-canvas-badge">
-              {baseSize.w} × {baseSize.h}
-            </span>
-          </div>
-
-          <div className="shot-edit-top">
-            <span className="shot-live-dot" />
-            <span>{session?.title ?? "截图"}</span>
-            <span className="shot-top-sep" />
-            <span>{baseSize.w} × {baseSize.h}</span>
-            {historyNote ? (
-              <>
-                <span className="shot-top-sep" />
-                <span className="shot-saved-note">{historyNote}</span>
-              </>
+            {!inlineSelection ? (
+              <span className="shot-canvas-badge">{baseSize.w} × {baseSize.h}</span>
             ) : null}
           </div>
 
-          <div className="shot-toolbar-wrap">
-            <div
-              className="shot-toolbar"
-              onPointerDown={(event) => event.stopPropagation()}
-            >
+          {phase === "edit" ? (
+            <div className="shot-edit-top">
+              <span className="shot-live-dot" />
+              <span>{session?.title ?? "截图"}</span>
+              <span className="shot-top-sep" />
+              <span>{baseSize.w} × {baseSize.h}</span>
+              {historyNote ? (
+                <>
+                  <span className="shot-top-sep" />
+                  <span className="shot-saved-note">{historyNote}</span>
+                </>
+              ) : null}
+            </div>
+          ) : null}
+
+          <div className="shot-toolbar-wrap shot-floating" onPointerDown={(event) => event.stopPropagation()}>
+            <div className="shot-toolbar">
               <div className="shot-tool-group">
                 {TOOL_META.map((item) => (
                   <button

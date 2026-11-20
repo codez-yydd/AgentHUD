@@ -16,7 +16,7 @@ body,
   width: 100%;
   height: 100%;
   overflow: hidden;
-  background: #06080d;
+  background: transparent;
 }
 
 body {
@@ -48,7 +48,7 @@ button {
   width: 100vw;
   height: 100vh;
   overflow: hidden;
-  background: #06080d;
+  background: transparent;
   cursor: crosshair;
   /* 全屏根层禁止任何 opacity/合成补间：透明 Tauri 窗口里全屏层做 opacity
      过渡时，WebView2 透明合成路径会把淡出中间帧渲染成全黑（录屏倒计时结束
@@ -57,6 +57,10 @@ button {
 
 .shot-root.phase-edit {
   cursor: default;
+}
+
+.shot-root.phase-select {
+  touch-action: none;
 }
 
 .shot-root.phase-edit.tool-rect,
@@ -127,6 +131,12 @@ button {
   border: 1.5px solid #6f92ff;
   box-shadow: 0 1px 5px rgba(0, 0, 0, 0.45);
   z-index: 3;
+}
+
+.shot-handle::before {
+  content: "";
+  position: absolute;
+  inset: -4px;
 }
 
 .shot-handle.handle-nw,
@@ -677,6 +687,30 @@ kbd {
   background: #111;
 }
 
+.shot-selection.is-annotatable {
+  z-index: 6;
+  pointer-events: none;
+}
+
+.shot-selection.is-annotatable .shot-handle {
+  pointer-events: auto;
+}
+
+.shot-root.tool-cursor .shot-selection.is-annotatable {
+  pointer-events: auto;
+}
+
+.shot-canvas-wrap.is-inline {
+  border-radius: 0;
+  box-shadow: none;
+  background: transparent;
+  cursor: crosshair;
+}
+
+.shot-canvas-wrap.is-inline.tool-cursor {
+  pointer-events: none;
+}
+
 .shot-canvas {
   display: block;
   width: 100%;
@@ -1113,7 +1147,7 @@ kbd {
   align-items: center;
   justify-content: center;
   gap: 12px;
-  background: radial-gradient(ellipse at center, #101728, #06080d);
+  visibility: hidden;
   color: rgba(229, 236, 250, 0.66);
   font-size: 11px;
   z-index: 30;

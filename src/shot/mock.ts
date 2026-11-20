@@ -282,6 +282,7 @@ export function mockSession(mode: "region" | "window" | "edit" = "region"): Shot
   return {
     id: 1,
     mode,
+    followCursor: false,
     image: desktop,
     backdrop: desktop,
     width: 1600,
