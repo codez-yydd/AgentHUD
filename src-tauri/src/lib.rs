@@ -3041,14 +3041,8 @@ fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
             .on_menu_event(|app, event| {
                 match event.id().as_ref() {
                     "quit" => app.exit(0),
-                    // 打开主窗口：on_menu_event 本身在主线程回调，可直接走
-                    // 建窗/聚焦主体（内部自判"已存在则显示聚焦"）；失败只记
-                    // 日志，不 panic、不影响托盘后续交互
                     "open-main" => {
-                        // page 传 None：托盘入口只开窗不导航，停留在上次页面
-                        if let Err(e) = main_window::open_main_window_on_main_thread(app, None) {
-                            eprintln!("[agenthud-main-window] 打开主窗口失败: {e}");
-                        }
+                        main_window::open_main_window_from_tray(app, None);
                     }
                     // 灵动岛开关：on_menu_event 本身在主线程回调，可直接
                     // 走建窗/隐藏主体。切换后重建菜单刷新勾选态
@@ -3388,7 +3382,7 @@ pub fn run() {
                 // 主窗口（Dashboard）：**关闭即销毁**——本挂点不拦截 main-window，
                 // 放行默认关闭即销毁窗口（省内存改造后不再"关闭=隐藏"：原先隐藏
                 // 保留 WebView 常驻秒开，代价是 dashboard 的渲染进程常驻内存）。
-                // 下次打开走 open_main_window_on_main_thread 的现场建窗路径，
+                // 下次打开由后台开窗流程重建，
                 // 带页跳转经 pending page 补发（见 main_window.rs 的 PENDING_PAGE，
                 // 导航事件不会丢）。应用退出仍由托盘"退出 AgentHUD"完成。
                 //
@@ -3519,10 +3513,9 @@ pub fn run() {
             // 点击时冷建，dev 模式 vite 按需编译 dashboard.html 首次加载
             // 8-10 秒，点击「打开主窗口」时主线程同步冷建重页面 WebView
             // 撞上初始化死锁窗口 → 白屏 + 窗口消息泵挂死（PrintWindow 对
-            // 挂死窗口阻塞 2 分钟以上是硬证据）。预建把重页面加载藏进
-            // 启动期即可根治；关闭即销毁不变，第二次及以后的打开走冷建
-            // 兜底（vite 已热 / 生产版资源本地加载，秒建低风险）。失败只
-            // 记日志，首次打开仍能正常建窗（见 main_window.rs 的
+            // 挂死窗口阻塞 2 分钟以上是硬证据）。预建把首次加载移到启动期，
+            // 主窗口关闭后由后台开窗流程重建。预建失败只记日志，首次打开
+            // 也会走后台开窗流程（见 main_window.rs 的
             // prebuild_main_window 注释）。
             if let Err(e) = main_window::prebuild_main_window(app.handle()) {
                 eprintln!("[zbar-main-window] 预建主窗口失败: {e}");

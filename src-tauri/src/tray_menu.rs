@@ -47,11 +47,8 @@
 //! - tray_menu_usage：用量页一次取数（本机 7 个请求来源 + 同步服务上的
 //!   其他设备的汇总/趋势 + 失败来源），内部 spawn_blocking 跑 SQLite 与
 //!   远端 HTTP，不在主线程阻塞。
-//! - tray_menu_action：菜单项动作分发。同步命令（项目惯例：同步命令在
-//!   主线程执行），open-main / open-panel / hud-toggle 要求主线程上下文
-//!   （建窗铁律，见 main_window.rs 模块注释与 hud_bar.rs
-//!   toggle_from_tray 注释），直接调用即可——与 lib.rs on_menu_event
-//!   原生菜单回调同款上下文。
+//! - tray_menu_action：菜单项动作分发。主窗口入口先收起菜单，再提交后台
+//!   开窗请求。悬浮面板和灵动岛的切换仍在主线程执行。
 //!
 //! 尺寸栅格：窗口 340×600（逻辑 px），与 tray-menu.html 的内容栅格
 //! 一一对应：头部 54、标签页 42、内容区自适应滚动（设计值 414）、底栏 90。窗口内边距
@@ -122,7 +119,7 @@ fn touch_menu_activity() {
 /// 醒来后确认「期间无新活动 && 窗口仍存在 && 窗口仍隐藏」才销毁。多次收起
 /// 会 spawn 多个线程，但除最后一个外都会因活动时间戳刷新而提前返回，
 /// 每个线程生命周期 = 一次 sleep + 一次判断，无轮询开销。销毁动作投递
-/// 主线程执行（窗口 API 的建窗/销毁铁律，见 main_window.rs 模块注释）。
+/// 主线程执行。
 fn schedule_idle_destroy(app: &AppHandle) {
     touch_menu_activity();
     let app_spawn = app.clone();
@@ -510,11 +507,7 @@ pub async fn tray_menu_usage(range: String) -> Result<TrayMenuUsage, String> {
     .map_err(|e| format!("托盘菜单用量查询任务失败: {e}"))?
 }
 
-/// 菜单项动作分发。同步命令（项目惯例：同步命令在主线程执行）：
-/// open-main / open-panel / hud-toggle 要求主线程上下文（建窗铁律，见
-/// main_window.rs / hud_bar.rs 的注释），直接调用即可——与 lib.rs
-/// on_menu_event 原生菜单回调同款上下文。除 HUD 开关（原地切换、菜单
-/// 保持打开）外，动作执行后都把菜单收起。
+/// 菜单项动作分发。除 HUD 开关外，先收起菜单再执行动作。
 #[tauri::command]
 pub fn tray_menu_action(app: AppHandle, action: String) -> Result<(), String> {
     // HUD 开关是"原地切换"：菜单保持打开，前端按事件把开关态翻到新值
@@ -528,37 +521,13 @@ pub fn tray_menu_action(app: AppHandle, action: String) -> Result<(), String> {
         }
     }
     match action.as_str() {
-        // 打开主窗口（默认停留在上次页面）
-        "open-main" => {
-            if let Err(e) = crate::main_window::open_main_window_on_main_thread(&app, None) {
-                eprintln!("[agenthud-tray-menu] 打开主窗口失败: {e}");
-            }
-        }
-        // 主窗口定向页：白名单见 main_window.rs DASHBOARD_PAGES
-        "open-main-logs" => {
-            if let Err(e) =
-                crate::main_window::open_main_window_on_main_thread(&app, Some("logs"))
-            {
-                eprintln!("[agenthud-tray-menu] 打开请求日志页失败: {e}");
-            }
-        }
-        "open-main-pricing" => {
-            if let Err(e) =
-                crate::main_window::open_main_window_on_main_thread(&app, Some("pricing"))
-            {
-                eprintln!("[agenthud-tray-menu] 打开定价页失败: {e}");
-            }
-        }
+        "open-main" => crate::main_window::open_main_window_from_tray(&app, None),
+        "open-main-logs" => crate::main_window::open_main_window_from_tray(&app, Some("logs")),
+        "open-main-pricing" => crate::main_window::open_main_window_from_tray(&app, Some("pricing")),
         "open-main-settings" => {
-            if let Err(e) =
-                crate::main_window::open_main_window_on_main_thread(&app, Some("settings"))
-            {
-                eprintln!("[agenthud-tray-menu] 打开设置页失败: {e}");
-            }
+            crate::main_window::open_main_window_from_tray(&app, Some("settings"));
         }
-        "open-main-about" => {
-            crate::main_window::open_main_window_on_main_thread(&app, Some("about"))?;
-        }
+        "open-main-about" => crate::main_window::open_main_window_from_tray(&app, Some("about")),
         // 悬浮面板：show_tray_menu 弹出前已把可见 panel 收起，这里的
         // toggle 等价于「打开」（无点击位置路径，落到屏幕右上角，同全局
         // 快捷键行为）

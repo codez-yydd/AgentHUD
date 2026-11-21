@@ -106,7 +106,7 @@ pub fn open_island_settings_window_on_main_thread(app: &AppHandle) -> Result<(),
     if let Some(win) = app.get_webview_window(ISLAND_SETTINGS_WINDOW_LABEL) {
         // 关闭=隐藏后的秒开路径：显示 → 取消最小化 → 聚焦（顺序固定，
         // 最小化状态下直接 set_focus 在 Windows 上不会还原窗口；
-        // 同 main_window::open_main_window_on_main_thread）
+        // 同主窗口的显示顺序）
         let _ = win.show();
         let _ = win.unminimize();
         let _ = win.set_focus();

@@ -12,7 +12,7 @@
 //!   WM_NCHITTEST 系统热区（前端不挂 resize 热区）；用户点标题栏"×"时
 //!   **关闭即销毁**（lib.rs 的 CloseRequested 挂点不拦截本窗口）——
 //!   dashboard 的 WebView 渲染进程随之释放，第二次及以后的打开走现场
-//!   建窗（此时 vite 已热 / 生产版资源本地加载，秒建低风险）；应用退出
+//!   建窗；应用退出
 //!   仍由托盘"退出 AgentHUD"完成。
 //! - 启动预热（v2.0.4 恢复）：应用 setup 阶段即预建隐藏的主窗口
 //!   （prebuild_main_window，visible(false)），dashboard.html 重页面的
@@ -28,21 +28,14 @@
 //!   冷建路径事件可能赶在前端监听注册前被丢弃，配套 pending page 补发
 //!   机制（见 PENDING_PAGE 与 take_pending_dashboard_page）。
 //!
-//! 建窗铁律（照搬 pet.rs / session_hud.rs）：
-//! - WebviewWindowBuilder 必须在主线程事件循环上下文调用。合法调用点：
-//!   run_on_main_thread 投递的闭包、托盘菜单回调（on_menu_event 本身在
-//!   主线程执行，可直接调 open_main_window_on_main_thread）；不能在同步
-//!   invoke 命令主体里直接建窗——同步命令占用主线程，建窗等不到事件循环
-//!   处理消息，自等待死锁（pet.rs 有事故记载）。
-//! - 命令侧统一 async + run_on_main_thread + channel + 超时等待（同
-//!   session_hud::apply_session_hud_config）：把"已存在则显示聚焦"与
-//!   "首次建窗"都放进主线程闭包执行，窗口 API 调用串行落在事件循环线程，
-//!   同时把建窗错误（中文）经 channel 回传给前端。
+//! 启动后的打开请求统一在后台线程调用 WebviewWindowBuilder，由 Tauri 将
+//! 建窗投递给窗口事件循环。Windows 上从同步命令或窗口事件回调直接建窗
+//! 可能触发 WebView2 死锁（见 Tauri 的 WebviewWindowBuilder::new 文档）。
 
-use std::sync::mpsc;
+use crate::webview_args::MergedRendererBuilder;
+use std::sync::Mutex;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
-use crate::webview_args::MergedRendererBuilder;
 
 /// 主窗口 label（与 capabilities/dashboard.json 的 windows 白名单、
 /// dashboard.html 入口一致）
@@ -55,9 +48,10 @@ pub const MAIN_WINDOW_HEIGHT: f64 = 720.0;
 pub const MAIN_WINDOW_MIN_WIDTH: f64 = 900.0;
 pub const MAIN_WINDOW_MIN_HEIGHT: f64 = 640.0;
 
-/// 主窗口操作（建窗/显示聚焦）的等待超时：仅事件循环异常退出时兜底，
-/// 正常路径毫秒级返回
 const MAIN_WINDOW_OP_TIMEOUT: Duration = Duration::from_secs(8);
+
+// 串行处理后台打开请求，避免多个入口同时发现窗口缺失而重复建窗。
+static MAIN_WINDOW_OPEN: Mutex<()> = Mutex::new(());
 
 /// 面板 → 主窗口的跳页事件（风格沿 zbar://appearance-changed）：
 /// open_main_window 带 page 参数时，开窗/聚焦后 emit_to 主窗口 WebView，
@@ -103,15 +97,14 @@ fn emit_dashboard_navigate(app: &AppHandle, page: Option<&str>) {
 /// 重新加载，emit 出去的跳页事件可能赶在 DashboardApp 注册监听前被丢弃。
 /// 建窗时把 page 存到这里；前端 DashboardApp 挂载完成后主动 invoke
 /// [`take_pending_dashboard_page`] 原子取走并清空——无论 emit 是否被前端
-/// 收到，导航意图都不会丢；emit 先生效的场景 take 返回 None，不会重复
-/// 切页。静态 Mutex 即可：page 是单值低频写入，主线程建窗路径写入、
+/// 收到，导航意图都不会丢。静态 Mutex 即可：page 是单值低频写入，后台开窗路径写入、
 /// 前端命令线程读取，锁内无任何阻塞操作。
-static PENDING_PAGE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+static PENDING_PAGE: Mutex<Option<String>> = Mutex::new(None);
 
-/// 存入待补发跳页（覆盖旧值：后一次打开意图优先）
-fn set_pending_page(page: &str) {
+/// 记录最近一次打开的页面，未指定页面时清空旧值。
+fn set_pending_page(page: Option<&str>) {
     if let Ok(mut guard) = PENDING_PAGE.lock() {
-        *guard = Some(page.to_string());
+        *guard = page.map(str::to_owned);
     }
 }
 
@@ -132,71 +125,47 @@ pub fn take_pending_dashboard_page() -> Option<String> {
 
 /// 打开主窗口命令（悬浮窗统计页按钮与托盘菜单共用同一主体）：
 /// - 窗口已存在（用户没关）→ show + unminimize + set_focus；
-/// - 不存在 → 主线程建窗（dashboard.html）。
+/// - 不存在 → 由 Tauri 投递建窗（dashboard.html）。
 /// - page（可选）：合法页 id 时开窗/聚焦后向主窗口发 zbar://dashboard-navigate
 ///   跳页（如面板价格入口传 "pricing"）；缺省/非法只开窗不导航。
-///
-/// async + channel + 超时等待：见模块 doc 的死锁防护说明。返回 Err 时
-/// 前端只需静默（窗口创建失败由后端日志与错误串表达），不阻断交互。
 #[tauri::command]
-pub async fn open_main_window(
-    app: AppHandle,
-    page: Option<String>,
-) -> Result<(), String> {
-    let (tx, rx) = mpsc::channel::<Result<(), String>>();
-    let app_main = app.clone();
-    // page 整体 move 进闭包（'static 要求），闭包体内再 as_deref 借用
-    app.run_on_main_thread(move || {
-        let _ = tx.send(open_main_window_on_main_thread(&app_main, page.as_deref()));
-    })
-    .map_err(|e| format!("投递主窗口操作到主线程失败: {e}"))?;
-
-    match rx.recv_timeout(MAIN_WINDOW_OP_TIMEOUT) {
-        Ok(outcome) => outcome,
-        Err(e) => Err(format!("主窗口操作超时: {e}")),
-    }
+pub async fn open_main_window(app: AppHandle, page: Option<String>) -> Result<(), String> {
+    let task = tauri::async_runtime::spawn_blocking(move || {
+        open_main_window_from_worker(&app, page.as_deref())
+    });
+    tokio::time::timeout(MAIN_WINDOW_OP_TIMEOUT, task)
+        .await
+        .map_err(|_| "主窗口操作超时".to_string())?
+        .map_err(|e| format!("主窗口任务失败: {e}"))?
 }
 
-/// 打开主窗口主体，**必须在主线程事件循环上下文调用**（模块 doc 的建窗
-/// 铁律）：托盘菜单回调可直接调用（on_menu_event 在主线程执行），命令与
-/// 其他上下文须经 run_on_main_thread 投递。窗口已存在时只显示/聚焦，
-/// 不重复建窗（WebviewWindowBuilder 对同名 label 会直接报错）。
-/// page 语义同 open_main_window 命令（None = 只开窗不导航，托盘入口用）。
-pub fn open_main_window_on_main_thread(
-    app: &AppHandle,
-    page: Option<&str>,
-) -> Result<(), String> {
+/// 托盘回调提交打开请求后立即返回，避免在回调中等待 WebView2 初始化。
+pub fn open_main_window_from_tray(app: &AppHandle, page: Option<&str>) {
+    let app = app.clone();
+    let page = page.map(str::to_owned);
+    tauri::async_runtime::spawn(async move {
+        if let Err(e) = open_main_window(app, page).await {
+            eprintln!("[agenthud-main-window] 托盘打开主窗口失败: {e}");
+        }
+    });
+}
+
+fn open_main_window_from_worker(app: &AppHandle, page: Option<&str>) -> Result<(), String> {
+    let _open = MAIN_WINDOW_OPEN
+        .lock()
+        .map_err(|e| format!("无法锁定主窗口打开流程: {e}"))?;
+    set_pending_page(normalize_dashboard_page(page));
     if let Some(win) = app.get_webview_window(MAIN_WINDOW_LABEL) {
         // 秒开路径：显示 → 取消最小化 → 聚焦（顺序固定，最小化状态下
-        // 直接 set_focus 在 Windows 上不会还原窗口）。启动期预建的隐藏
-        // 窗口（prebuild_main_window）与用户没关的窗口都走这条分支：
-        // WebView 已预热/常驻，只剩 show + focus。WebView 与页面监听
-        // 均已就绪，跳页事件必达，不需要 pending 补发；但 PENDING_PAGE
-        // 要同步为「最近一次打开意图」：带 page 写入新值、不带 page
-        // 清空——否则更早一次冷开残留的待补发页，会被后续某次窗口
-        // 重建后的前端挂载误消费，落到旧意图的页
+        // 直接 set_focus 在 Windows 上不会还原窗口）。预建的隐藏窗口与
+        // 已打开的窗口都走这条分支。
         let _ = win.show();
         let _ = win.unminimize();
         let _ = win.set_focus();
-        match normalize_dashboard_page(page) {
-            Some(p) => set_pending_page(p),
-            None => {
-                let _ = take_pending_page();
-            }
-        }
         emit_dashboard_navigate(app, page);
         return Ok(());
     }
-    // 冷建兜底路径（v2.0.4 恢复预建后不再是最早打开的主路径）：prebuild
-    // 失败 / 关闭即销毁后的再次打开走这里——此时 vite 已热 / 生产版资源
-    // 本地加载，秒建低风险。带 page 时先把跳页意图存入 PENDING_PAGE 再
-    // 建窗——dashboard 前端挂载完成后会主动 invoke
-    // take_pending_dashboard_page 取走，emit 只是尽力而为的双保险（此时
-    // 监听多半未注册，事件可能被丢弃）。丢失时主窗口落在默认总览页的
-    // 老问题由 pending 补发兜住
-    if let Some(p) = normalize_dashboard_page(page) {
-        set_pending_page(p);
-    }
+    // 冷建时前端可能还未注册事件监听，挂载完成后会主动领取待跳转页。
     let outcome = ensure_main_window(app, true);
     if outcome.is_ok() {
         emit_dashboard_navigate(app, page);
@@ -214,19 +183,17 @@ pub fn open_main_window_on_main_thread(
 /// 按需编译（dashboard.html 首次加载 8-10s），主线程同步冷建重页面
 /// WebView 撞上初始化死锁窗口 → 白屏 + 窗口消息泵挂死（详见模块 doc）。
 ///
-/// 调用时机与线程：与建窗铁律同源，必须在 setup 阶段的主线程事件循环
-/// 上下文调用（setup 闭包本身在主线程执行，可直接调用）。
+/// 由 setup 阶段调用，此时托盘打开请求尚未开始处理。
 /// 隐藏窗口不出现在任务栏：Windows 下任务栏按钮由窗口的 WS_VISIBLE 决定，
 /// `visible(false)` 建出的窗口没有任务栏按钮，`show()` 之后才出现（本机
 /// 实测类推）；因此不需要额外调 skip_taskbar，形态与正常打开时完全一致。
-/// 失败只记日志、不阻断启动：首次打开会走 open_main_window_on_main_thread
-/// 的「窗口不存在」冷建兜底分支按可见窗口重新创建。
+/// 失败只记日志，首次打开时由后台流程重新创建可见窗口。
 pub fn prebuild_main_window(app: &AppHandle) -> Result<(), String> {
     ensure_main_window(app, false)
 }
 
-/// 创建 "main-window" 主窗口（必须在主线程事件循环上下文调用，见模块
-/// doc）。形态刻意与悬浮窗相反：无边框 + 前端自绘标题栏（用户可拖拽 /
+/// 创建 "main-window" 主窗口（由 setup 或后台打开流程调用）。
+/// 无边框 + 前端自绘标题栏（用户可拖拽 /
 /// 最大化 / 关闭，见 src/dashboard/TitleBar.tsx）、可自由缩放（边缘缩放
 /// 走 tao 的 WM_NCHITTEST 系统热区，前端不挂 resize 热区）、居中出生、
 /// 任务栏可见（默认，不调 skip_taskbar）、不置顶（默认）、阴影默认（不调
