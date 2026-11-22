@@ -368,9 +368,9 @@ import { KIND_COLORS, NOTIFY_BRAND_ICONS, NOTIFY_BRAND_LABELS, NotifyBrandIcon }
 import { createGlassBackdrop, type GlassBackdrop, type GlassBackdropGeometry } from "./glassBackdrop";
 import { useNativeGlass } from "./nativeGlass";
 import {
-  NOTIFY_ACTIVITY_MS,
   NOTIFY_LEAD_MS,
   decideNotifyReaction,
+  notifyActivityMs,
   notifyPulseColor,
   notifyPulseIntensity,
   notifyPulseWindow,
@@ -718,6 +718,8 @@ export default function IslandApp() {
   // ===== 新消息「岛端先动」：波次 / 临时 pet 覆盖 / 贴边呼吸灯 =====
   /** 当前新消息波次（同一波次只排一次惊讶与活动卡，呼吸灯按它续期） */
   const notifyWaveRef = useRef<NotifyWave | null>(null);
+  /** 本波次里最近一条带验证码的通知：活动卡优先展示它，无码新邮件不得顶掉码卡 */
+  const notifyCodeRef = useRef<NotifyItem | null>(null);
   /** 呼吸灯 DOM（绝对定位在胶囊内侧，pointer-events:none） */
   const notifyPulseRef = useRef<HTMLSpanElement | null>(null);
   /** 已亮起的呼吸灯：startAt 固定住呼吸相位，续期只改 endAt（参考 island.breath） */
@@ -1591,7 +1593,10 @@ export default function IslandApp() {
   const canHoverExpand = () =>
     !openRef.current && !pointerRef.current && !dragActiveRef.current &&
     !blockHoverUntilLeave.current && !openMenuRef.current &&
+    // 验证码卡带复制按钮：悬停 120ms 就展开会让按钮点不到，此时仍可单击展开。
+    !activityRef.current?.code &&
     !islandRef.current?.querySelector(".compact-update-btn:hover") &&
+    !islandRef.current?.querySelector(".compact-activity-copybtn:hover") &&
     !configRef.current?.passthrough && configRef.current?.hoverExpand !== false &&
     expandModeOf() === "hover";
 
@@ -1600,6 +1605,7 @@ export default function IslandApp() {
     hoverTimer.current = window.setTimeout(() => {
       hoverTimer.current = null;
       if (canHoverExpand() && !islandRef.current?.querySelector(".compact-play:hover") &&
+          !islandRef.current?.querySelector(".compact-activity-copybtn:hover") &&
           rootRef.current?.matches(":hover")) {
         expand();
       }
@@ -1774,18 +1780,29 @@ export default function IslandApp() {
   /** 通知类活动卡的字段（来源 kind → 图标 / 品牌色，与既有 showActivity 一致） */
   const notifyActivityFor = (item: NotifyItem): Omit<CompactActivity, "id" | "until"> => {
     const kind = item.kind || "other";
+    // 邮件抽到验证码时，收起态直接显示「验证码 123456」，副标题退回发件人 / 主题。
+    const code = (item.code ?? "").trim();
     return {
       kind: "notify",
-      title: (item.sender || item.name || "").trim() || "新消息",
-      sub: (item.body || "").trim() || "新消息",
+      title: code
+        ? `验证码 ${code}`
+        : (item.sender || item.name || "").trim() || "新消息",
+      sub: code
+        ? (item.sender || item.body || "").trim() || "点击查看"
+        : (item.body || "").trim() || "新消息",
       icon: KIND_ICONS[kind] ?? "message",
       sourceKind: kind,
       color: KIND_COLORS[kind] ?? KIND_COLORS.other,
+      code: code || undefined,
     };
   };
 
+  /** 收起态验证码卡复制：失败要 reject（卡片自己显示失败态），不弹 toast。 */
+  const copyActivityCode = (code: string) => copyText(code);
+
   // ===== 新消息「岛端先动」：t=0 惊讶 → t=1200 贴边呼吸灯 + 活动卡 =====
-  // 时序常量见 notifyPulse.ts（NOTIFY_LEAD_MS / NOTIFY_PULSE_MS / NOTIFY_ACTIVITY_MS）。
+  // 时序常量见 notifyPulse.ts（NOTIFY_LEAD_MS / NOTIFY_PULSE_MS；
+  // 活动卡时长按是否有验证码取 NOTIFY_ACTIVITY_MS / NOTIFY_CODE_ACTIVITY_MS）。
   // 事件订阅 effect 依赖是 []，这里所有可变状态一律走 ref 读最新值。
 
   /** 关掉呼吸灯：停 rAF、透明度归零（展开 / 放弃编排 / 新波次重置时用） */
@@ -1899,7 +1916,9 @@ export default function IslandApp() {
         stopNotifyPulse();
         return;
       }
-      showActivity(notifyActivityFor(wave.latest), NOTIFY_ACTIVITY_MS);
+      // 这 1.2s 内又来了同波次消息时，带验证码的那条优先上卡。
+      const card = notifyCodeRef.current ?? wave.latest;
+      showActivity(notifyActivityFor(card), notifyActivityMs(card));
       startNotifyPulse(wave);
     }, NOTIFY_LEAD_MS);
   };
@@ -1911,6 +1930,7 @@ export default function IslandApp() {
       notifyStageTimer.current = null;
     }
     notifyWaveRef.current = null;
+    notifyCodeRef.current = null;
     releaseNotifyPet();
     stopNotifyPulse();
   };
@@ -1936,16 +1956,27 @@ export default function IslandApp() {
     // 展开态：角标已由 notify.items 派生，不做收起编排。
     if (decision.mode === "ignore") return;
 
+    // 本批里带验证码的那条：活动卡优先展示它，避免被同波次的无码邮件顶掉。
+    const coded = fresh.find((item) => (item.code ?? "").trim()) ?? null;
+
     if (decision.mode === "replace") {
       // 音量 / 股票等更高优先级 activity（或没有本波次记录的通知卡）正占用胶囊：
       // 沿用既有覆盖语义，不插惊讶与呼吸灯（惊讶会被 activity 视图盖住）。
       cancelNotifyChain();
-      showActivity(notifyActivityFor(newest), NOTIFY_ACTIVITY_MS);
+      notifyCodeRef.current = coded;
+      const card = coded ?? newest;
+      showActivity(notifyActivityFor(card), notifyActivityMs(card));
       return;
     }
 
     const wave = decision.wave;
     if (!wave) return;
+    if (decision.mode === "start") {
+      // 新波次从空记录开始：本批带码就记下来，稍后上卡时优先用它。
+      notifyCodeRef.current = coded;
+    } else if (coded) {
+      notifyCodeRef.current = coded;
+    }
     notifyWaveRef.current = wave;
     notifyPulseColorRef.current = notifyPulseColor(newest.kind, KIND_COLORS, "var(--accent)");
 
@@ -1955,7 +1986,11 @@ export default function IslandApp() {
       extendNotifyPulse(wave);
       // 通知卡还在屏上就地换内容（沿用同一个 id，不重播入场动画）。
       if (activityRef.current?.kind === "notify") {
-        showActivity(notifyActivityFor(newest), NOTIFY_ACTIVITY_MS, true);
+        const currentCode = (activityRef.current.code ?? "").trim();
+        // 无码的新邮件不得顶掉屏上的验证码卡：本批有码就换成最新的码卡，
+        // 本批没码且屏上是码卡时保持原样（只续呼吸灯）。
+        const card = coded ?? (currentCode ? null : newest);
+        if (card) showActivity(notifyActivityFor(card), notifyActivityMs(card), true);
       }
       return;
     }
@@ -2431,7 +2466,7 @@ export default function IslandApp() {
     const target = event.target instanceof Element ? event.target : null;
     if (!target || target.closest(
       "input, textarea, select, a, [contenteditable='true'], .ctl-range, .compact-play, " +
-      "[role='button'], .agent-card, .island-context-menu, [data-no-dblclick]"
+      ".compact-activity-copybtn, [role='button'], .agent-card, .island-context-menu, [data-no-dblclick]"
     )) return;
     const expanded = openRef.current;
     const onGlass = Boolean(target.closest(".liquid-glass"));
@@ -2499,7 +2534,8 @@ export default function IslandApp() {
     }
 
     if (event && inside && !pointer.expanded && !openRef.current &&
-        target?.closest(".pill-wrap, .liquid-glass") && !target.closest(".compact-play")) {
+        target?.closest(".pill-wrap, .liquid-glass") &&
+        !target.closest(".compact-play, .compact-activity-copybtn")) {
       queuePillClick({ x: event.screenX, y: event.screenY });
     }
   };
@@ -3241,6 +3277,7 @@ export default function IslandApp() {
             onOpenSettings={() => {
               void openNotifySettings().catch(() => showToast("无法打开通知设置"));
             }}
+            onToast={showToast}
           />
         );
       case "stock":
@@ -3965,7 +4002,7 @@ export default function IslandApp() {
           onPointerMove={(event) => {
             trackCompactPointer(event.clientX, event.clientY);
             updateHoverPoke(event.clientX, event.clientY);
-            if ((event.target as Element).closest(".compact-play")) cancelHover();
+            if ((event.target as Element).closest(".compact-play, .compact-activity-copybtn")) cancelHover();
             else if (event.buttons === 0) scheduleExpand();
           }}
           onClickCapture={(e) => {
@@ -3978,7 +4015,8 @@ export default function IslandApp() {
             updateHoverPoke(event.clientX, event.clientY);
             if (dragActiveRef.current || dragStartingRef.current) return;
             if (openRef.current) cancelCollapse();
-            else if (event.buttons === 0 && !(event.target as Element).closest(".compact-play")) {
+            else if (event.buttons === 0 &&
+              !(event.target as Element).closest(".compact-play, .compact-activity-copybtn")) {
               scheduleExpand();
             }
           }}
@@ -4041,6 +4079,7 @@ export default function IslandApp() {
                       .catch((error) => showToast(`媒体控制失败: ${String(error)}`));
                   }}
                   onActivate={handlePillClick}
+                  onCopyCode={copyActivityCode}
                 />
               ) : (
                 <CollapsedPill

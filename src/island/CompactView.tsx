@@ -54,6 +54,8 @@ export interface CompactActivity {
   icon?: IconName;
   /** 通知类：来源模块 kind（qq/wechat/mail/feishu/dingtalk），有品牌图时左侧渲染品牌图标 */
   sourceKind?: string;
+  /** 通知类：邮件验证码；非空时卡片右侧带复制按钮，标题可临时换成复制结果 */
+  code?: string;
   /** 通知类：左侧图标圆的 kind 颜色（KIND_COLORS） */
   color?: string;
   /** 股票异动：红涨绿跌，用主题 token，不写死颜色 */
@@ -238,7 +240,10 @@ export function activityWidthFor(
   const subWidth = measureText(activity.sub ?? "", compactFont(400, 12 * fontScale, fontFamily));
   // 内边距 23px + 图标 26px + 图文间隔 10px；副标题另占 10px 间隔。
   const fixed = activity.sub ? 69 : 59;
-  return Math.min(maxWidth, Math.max(220, Math.ceil(fixed + titleWidth + subWidth + 2)));
+  // 验证码卡右侧多一个 24px 复制按钮 + 10px 间隔（.compact-activity 的 gap）；
+  // 普通卡片宽度保持不变。
+  const copySlot = (activity.code ?? "").trim() ? 24 + 10 : 0;
+  return Math.min(maxWidth, Math.max(220, Math.ceil(fixed + copySlot + titleWidth + subWidth + 2)));
 }
 
 /** 未读角标按消息来源去重。 */
@@ -501,7 +506,41 @@ function MusicView({
   );
 }
 
-function ActivityView({ activity }: { activity: CompactActivity }) {
+function ActivityView({
+  activity,
+  onCopyCode,
+}: {
+  activity: CompactActivity;
+  onCopyCode?: (code: string) => Promise<void>;
+}) {
+  const code = (activity.code ?? "").trim();
+  // 复制反馈就地显示（不再弹岛底部 toast：toast 的包含块是整个 780×632 窗口，
+  // 收起态胶囊在窗口顶部，弹出来会离卡片很远）。1.2s 后回到原样。
+  const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
+  const copyTimer = useRef<number | null>(null);
+  useEffect(
+    () => () => {
+      if (copyTimer.current != null) window.clearTimeout(copyTimer.current);
+    },
+    []
+  );
+  // 活动卡换内容（同一组件实例被 updateInPlace / 新通知复用）时回到 idle。
+  useEffect(() => {
+    if (copyTimer.current != null) window.clearTimeout(copyTimer.current);
+    copyTimer.current = null;
+    setCopyState("idle");
+  }, [activity.id, code]);
+  const copyCode = () => {
+    if (!code || !onCopyCode) return;
+    if (copyTimer.current != null) window.clearTimeout(copyTimer.current);
+    const settle = (next: "copied" | "failed") => {
+      setCopyState(next);
+      copyTimer.current = window.setTimeout(() => setCopyState("idle"), 1200);
+    };
+    void onCopyCode(code).then(() => settle("copied"), () => settle("failed"));
+  };
+  const title =
+    copyState === "copied" ? "已复制验证码" : copyState === "failed" ? "复制失败" : activity.title;
   if (activity.kind === "volume") {
     const value = Math.max(0, Math.min(1, activity.value ?? 0));
     return (
@@ -540,11 +579,27 @@ function ActivityView({ activity }: { activity: CompactActivity }) {
         )}
       </span>
       <span className="compact-activity-copy">
-        <b className={activity.tone ? `tone-${activity.tone}` : ""}>{activity.title}</b>
+        <b className={activity.tone ? `tone-${activity.tone}` : ""}>{title}</b>
         {activity.sub ? (
           <em className={activity.tone ? `tone-${activity.tone}` : ""}>{activity.sub}</em>
         ) : null}
       </span>
+      {code ? (
+        <button
+          type="button"
+          className={`compact-activity-copybtn${
+            copyState === "copied" ? " is-copied" : copyState === "failed" ? " is-failed" : ""
+          }`}
+          title={copyState === "idle" ? "点击复制验证码" : undefined}
+          aria-label={copyState === "copied" ? "已复制验证码" : `复制验证码 ${code}`}
+          onClick={(event) => {
+            event.stopPropagation();
+            copyCode();
+          }}
+        >
+          <Icon name={copyState === "copied" ? "check" : "copy"} size={12} />
+        </button>
+      ) : null}
     </div>
   );
 }
@@ -612,6 +667,8 @@ export interface CompactViewProps {
   pointerRef: MutableRefObject<CompactPointerSample>;
   audioLevelRef: MutableRefObject<number>;
   onTogglePlay: () => void;
+  /** 验证码卡右侧复制按钮：成功 / 失败由卡片自己就地反馈（reject = 失败） */
+  onCopyCode?: (code: string) => Promise<void>;
   /** 点击收起内容（除播放键外）→ 走和胶囊单击相同的延迟展开逻辑 */
   onActivate: (event: ReactMouseEvent<HTMLDivElement>) => void;
   /** 实时字幕层：on 且最后一句未超过 7 秒时覆盖原视图 */
@@ -637,6 +694,7 @@ export function CompactView({
   audioLevelRef,
   onTogglePlay,
   onActivate,
+  onCopyCode,
   live = null,
   fontScale = 1,
 }: CompactViewProps) {
@@ -652,7 +710,7 @@ export function CompactView({
         Date.now() - live.at < LIVE_CAPTION_HOLD_MS
     );
   const content = activity ? (
-    <ActivityView activity={activity} />
+    <ActivityView activity={activity} onCopyCode={onCopyCode} />
   ) : showLive && live ? (
     <LiveCaptionView live={live} fontScale={fontScale} />
   ) : view === "clock" ? (

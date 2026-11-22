@@ -4997,6 +4997,10 @@ html.island-preview .island::after {
 }
 
 .compact-activity-copy b {
+  /* 标题（验证码）优先不压缩：先让右侧发件人 ellipsize，避免超长发件人把
+     「验证码 AB12CD」截成「验证码 AB1…」。真放不下时最多占满整行。 */
+  flex: 0 0 auto;
+  max-width: 100%;
   font-size: calc(13px * var(--fs-scale, 1));
   font-weight: 650;
   white-space: nowrap;
@@ -5022,6 +5026,48 @@ html.island-preview .island::after {
 .compact-activity-copy b.tone-down,
 .compact-activity-copy em.tone-down {
   color: var(--stock-down);
+}
+
+/* 验证码卡右侧复制按钮：固定 24px（不随 --fs-scale 放大，40px 高卡片会撑破）。
+   成功 / 失败都就地反馈（按钮态 + 标题临时换文案），不弹岛底部 toast。 */
+.compact-activity-copybtn {
+  width: 24px;
+  height: 24px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  border: 1px solid var(--hairline);
+  background: var(--panel);
+  color: var(--text);
+  cursor: pointer;
+  transition:
+    border-color 0.15s var(--spring-panel, ease),
+    background 0.15s var(--spring-panel, ease),
+    transform 0.12s var(--spring-panel, ease);
+}
+
+.compact-activity-copybtn:hover {
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  background: var(--panel-strong);
+}
+
+.compact-activity-copybtn:active {
+  transform: scale(0.94);
+}
+
+.compact-activity-copybtn:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 60%, transparent);
+  outline-offset: 1px;
+}
+
+.compact-activity-copybtn.is-copied {
+  background: var(--accent-soft);
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+.compact-activity-copybtn.is-failed {
+  border-color: color-mix(in srgb, var(--low) 55%, transparent);
 }
 
 .compact-activity.is-volume {
@@ -5174,6 +5220,12 @@ html.island-preview .island::after {
 .compact-surface.is-vertical .compact-volume-track {
   width: 100%;
   flex: 0 0 6px;
+}
+
+/* 竖排 48px 宽放不下复制按钮：按钮不渲染宽度，复制入口保留在消息页与
+   桌面悬浮通知卡；CSS 兜底隐藏，避免极窄胶囊被按钮撑开。 */
+.compact-surface.is-vertical .compact-activity-copybtn {
+  display: none;
 }
 
 /* ============================================================
@@ -5793,6 +5845,16 @@ html.island-preview .island::after {
   font: inherit;
   text-align: left;
   cursor: pointer;
+  /* 历史行由 button 改成 div[role=button]（行内要再放复制按钮），
+     保留按钮的「不可选中」手感 */
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* 键盘焦点圈（div + role=button 不会自带 :focus-visible 样式） */
+.msg-history-row:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 60%, transparent);
+  outline-offset: -2px;
 }
 
 .msg-history-row:hover {
@@ -5858,6 +5920,56 @@ html.island-preview .island::after {
   font-size: calc(10.5px * var(--fs-scale, 1));
   color: var(--faint);
   font-variant-numeric: tabular-nums;
+}
+
+/* 邮件验证码 chip：等宽数字 + 微字距，默认显示验证码，点一下复制。
+   复制成功 1.4s 显示「勾 + 已复制」，失败 1.6s 显示「复制失败」。 */
+.msg-code-chip {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 20px;
+  padding: 0 7px;
+  border-radius: 6px;
+  border: 1px solid var(--hairline);
+  background: var(--panel);
+  color: var(--text);
+  font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  /* 字号跟随全局缩放但设 15px 上限：行高固定 30px，放大过多会溢出 */
+  font-size: calc(min(15px, 13px * var(--fs-scale, 1)));
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  transition:
+    border-color 0.15s var(--spring-panel, ease),
+    background 0.15s var(--spring-panel, ease),
+    transform 0.12s var(--spring-panel, ease);
+}
+
+.msg-code-chip:hover {
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  background: var(--panel-strong);
+}
+
+.msg-code-chip:active {
+  transform: scale(0.96);
+}
+
+.msg-code-chip:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 60%, transparent);
+  outline-offset: 1px;
+}
+
+.msg-code-chip.is-copied {
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  background: var(--accent-soft);
+}
+
+.msg-code-chip.is-failed {
+  border-color: color-mix(in srgb, var(--low, #fb7185) 55%, transparent);
+  background: rgba(251, 113, 133, 0.12);
 }
 
 .msg-history-empty {

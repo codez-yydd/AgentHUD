@@ -51,7 +51,7 @@ const AUDIO_SOURCES: [&str; 2] = ["loopback", "mic"];
 
 /// 设置文档点路径里**已经接到岛运行时**的项；`island_settings_save` 用它
 /// 计算 `applied`（本次同步到运行时配置或由服务直接读取的字段）。
-const SYNCED_PATHS: [&str; 81] = [
+const SYNCED_PATHS: [&str; 82] = [
     "island.edge",
     "island.pos",
     "island.screen",
@@ -103,6 +103,7 @@ const SYNCED_PATHS: [&str; 81] = [
     "dsh.body_chars",
     "mail.interval_s",
     "mail.imap",
+    "mail.code_preview",
     "stocks.watchlist",
     "stocks.interval",
     "stocks.pct_alert",
@@ -385,6 +386,8 @@ pub struct DshDoc {
 pub struct MailDoc {
     pub interval_s: i64,
     pub imap: Vec<ImapAccount>,
+    /// 提取新邮件正文里的验证码（只读、不落盘；关掉后只提醒新邮件数量）。
+    pub code_preview: bool,
     #[serde(flatten, default)]
     pub extra: Extra,
 }
@@ -712,6 +715,7 @@ impl Default for MailDoc {
         Self {
             interval_s: 120,
             imap: Vec::new(),
+            code_preview: true,
             extra: extra(),
         }
     }
@@ -2555,6 +2559,7 @@ mod tests {
         assert_eq!(doc.notify.popup.size, 100);
         assert_eq!(doc.dsh.body_chars, 120);
         assert_eq!(doc.mail.interval_s, 120);
+        assert!(doc.mail.code_preview, "默认提取邮件验证码");
         assert_eq!(doc.weather.city, "", "默认不绑定城市，主城市跟随 IP");
         assert!(doc.weather.cities.is_empty());
         assert_eq!(doc.weather.units, "metric");
@@ -2570,6 +2575,16 @@ mod tests {
         assert!(!doc.clash.app_manual);
         assert!(doc.brightness.twinkle.is_empty());
         assert!(doc.agenthud.agent_order.is_empty());
+    }
+
+    /// 旧 settings.json 没有 `mail.code_preview`：容器级 serde(default) 必须补 true。
+    #[test]
+    fn old_mail_doc_without_code_preview_defaults_to_true() {
+        let doc: MailDoc = serde_json::from_value(json!({ "interval_s": 90 })).expect("旧文档可解析");
+        assert_eq!(doc.interval_s, 90);
+        assert!(doc.code_preview, "缺失字段按默认值 true 处理");
+        let doc: MailDoc = serde_json::from_value(json!({ "code_preview": false })).expect("可解析");
+        assert!(!doc.code_preview, "显式关闭要保留");
     }
 
     #[test]
@@ -2743,6 +2758,7 @@ mod tests {
             "dsh.body_chars",
             "mail.interval_s",
             "mail.imap",
+            "mail.code_preview",
             "stocks.watchlist",
             "stocks.interval",
             "stocks.pct_alert",
@@ -3749,6 +3765,7 @@ mod tests {
             "dsh.body_chars",
             "mail.interval_s",
             "mail.imap",
+            "mail.code_preview",
         ] {
             assert!(applied.contains(&path.to_string()), "缺 {path}");
         }
@@ -3881,6 +3898,7 @@ mod tests {
             "dsh.body_chars",
             "mail.interval_s",
             "mail.imap",
+            "mail.code_preview",
             "stocks.watchlist",
             "stocks.interval",
             "weather.api_key",

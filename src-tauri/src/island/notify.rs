@@ -74,6 +74,9 @@ pub struct NotifyItem {
     pub name: String,
     pub sender: String,
     pub body: String,
+    /// 邮件验证码（由运行时填充；空串表示没有验证码）。只在前端 chip /
+    /// 收起态展示与「点击复制」，不参与去重、未读或打开应用。
+    pub code: String,
     pub time: i64,
     pub read: bool,
     /// 来源进程名（小写，可能为空）。消息页点按时优先用它定位应用。
@@ -309,6 +312,7 @@ fn flash_item(exe: &str, prefs: &NotifyPrefs, id: i64, now_ms: i64) -> Option<No
         name: name.to_string(),
         sender: String::new(),
         body: String::new(),
+        code: String::new(),
         time: now_ms,
         read: false,
         exe: exe.trim().to_ascii_lowercase(),
@@ -495,12 +499,20 @@ fn rows_to_items(
             continue;
         }
         let (sender, body) = toast_item_texts(kind, &texts, &prefs.body_preview);
+        // 系统通知来源的邮件（没有 IMAP）：验证码就在 toast 文本里，就地用同一套
+        // 规则抽，不额外读取通知正文；其它来源不抽，避免误报。
+        let code = if kind == "mail" {
+            mail::extract_code(&texts.join(" ")).unwrap_or_default()
+        } else {
+            String::new()
+        };
         out.push(NotifyItem {
             id,
             kind: kind.to_string(),
             name: name.to_string(),
             sender,
             body,
+            code,
             time: filetime_to_ms(arrival),
             read: false,
             exe: exe_for_primary(&primary).to_string(),
@@ -639,6 +651,7 @@ fn start_deepseek_watch(app: AppHandle, gen: u64) {
                                 name: "DeepSeek".into(),
                                 sender: completion.title,
                                 body: completion.body,
+                                code: String::new(),
                                 time: completion.time,
                                 read: false,
                                 exe: deepseek::EXE.into(),
@@ -1129,6 +1142,7 @@ mod win {
                 name: name.to_string(),
                 sender: String::new(),
                 body: String::new(),
+                code: String::new(),
                 time: chrono::Utc::now().timestamp_millis(),
                 read: false,
                 exe: exe.to_string(),
@@ -1157,6 +1171,7 @@ mod win {
                     name: name.to_string(),
                     sender,
                     body,
+                    code: String::new(),
                     time: chrono::Utc::now().timestamp_millis(),
                     read: false,
                     exe: exe.to_string(),
@@ -1942,6 +1957,7 @@ mod tests {
             name: kind.to_string(),
             sender: String::new(),
             body: String::new(),
+            code: String::new(),
             time: 0,
             read,
             exe: String::new(),
@@ -2146,5 +2162,59 @@ mod tests {
         assert_eq!(sender.chars().count(), 40);
         assert_eq!(body.chars().count(), 120);
         assert_eq!(body, "正".repeat(120));
+    }
+
+    fn toast_payload(texts: &[&str]) -> Vec<u8> {
+        let nodes: String = texts.iter().map(|text| format!("<text>{text}</text>")).collect();
+        format!(
+            "<toast><visual><binding template=\"ToastGeneric\">{nodes}</binding></visual></toast>"
+        )
+        .into_bytes()
+    }
+
+    /// 系统通知来源的邮件：toast 文本里带验证码时就地抽出；其它 kind 不抽。
+    #[test]
+    fn toast_mail_items_extract_code_but_other_kinds_do_not() {
+        let prefs = prefs(&["mail", "qq"], &["mail"]);
+        let rows = vec![
+            (
+                11,
+                "Microsoft.OutlookForWindows".into(),
+                0,
+                "toast".into(),
+                toast_payload(&["登录验证码", "您的验证码是 123456"]),
+            ),
+            (
+                12,
+                "QQ".into(),
+                0,
+                "toast".into(),
+                toast_payload(&["登录验证码", "您的验证码是 123456"]),
+            ),
+        ];
+        let items = rows_to_items(rows, &prefs);
+        assert_eq!(items.len(), 2);
+        let mail = items.iter().find(|item| item.kind == "mail").expect("邮件条目");
+        assert_eq!(mail.code, "123456");
+        // 邮件正文预览规则不变：prefs 开了 mail 预览 → body 取第二条
+        assert_eq!(mail.body, "您的验证码是 123456");
+        let qq = items.iter().find(|item| item.kind == "qq").expect("QQ 条目");
+        assert_eq!(qq.code, "");
+    }
+
+    /// 系统通知里没有验证码时保持空串，不影响既有 sender/body 规则。
+    #[test]
+    fn toast_mail_without_code_keeps_empty_code() {
+        let prefs = prefs(&["mail"], &["mail"]);
+        let rows = vec![(
+            13,
+            "Microsoft.OutlookForWindows".into(),
+            0,
+            "toast".into(),
+            toast_payload(&["邮件", "2 封新邮件"]),
+        )];
+        let items = rows_to_items(rows, &prefs);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].code, "");
     }
 }
