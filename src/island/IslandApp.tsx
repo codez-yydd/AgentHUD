@@ -1681,6 +1681,12 @@ export default function IslandApp() {
     updateConfig({ expandMode: mode }, true);
     cancelClick();
     pinUntil.current = 0;
+    // 常驻展开没有提示时，用户会误以为岛「卡住不收起」，切换成功后给出明确反馈
+    showToast(
+      mode === "always" ? "已开启常驻展开：鼠标移开不收起，再点「保持展开」可恢复" :
+        mode === "never" ? "长关：双击退出长关" :
+          configRef.current?.hoverExpand === false ? "已恢复单击展开" : "已恢复悬停展开"
+    );
     if (mode === "always") {
       expand();
       return;
