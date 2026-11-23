@@ -733,6 +733,63 @@ fn should_mouse_through(
     !(cx >= x0 && cx <= x1 && cy >= y0 && cy <= y1)
 }
 
+// 自适应穿透轮询的三档间隔（ms）：交互中 16ms，空闲 120ms，窗口不可见 200ms。
+// 非 Windows 平台没有这套轮询（macOS 保持原 16ms 实现），仅为单测保留常量。
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+const TICK_ACTIVE_MS: u64 = 16;
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+const TICK_IDLE_MS: u64 = 120;
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+const TICK_HIDDEN_MS: u64 = 200;
+/// 光标落在「岛窗口物理矩形外扩 160px」内时仍算接近：保持 16ms 才能及时把
+/// 穿透切回可交互；更远时窗口本来就在穿透态，120ms 的探测足够。
+///
+/// 为什么是 160：空闲档 120ms 一拍，常见光标速度约 1000–1300 px/s，两拍之间
+/// 会走过 120–160px；取 160 让「还在接近、尚未进入窗口」的上一拍能把下一拍
+/// 拉回 16ms，避免窗口保持 `WS_EX_TRANSPARENT` 时点击漏给下面的应用。更快的
+/// 甩动无法用固定余量完全覆盖（约 1333px/s 以上两拍位移就 >160），这是把空闲
+/// 档从 16ms 放宽到 120ms 的已知取舍；进入窗口附近后仍有一拍 16ms 兜底。
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+const CURSOR_NEAR_MARGIN: i32 = 160;
+
+/// 下一拍的睡眠时长——纯函数，单测覆盖。
+///
+/// 任意一条交互条件成立就维持 16ms：玻璃渲染在跑（液桥/拖拽动画）、拖拽会话
+/// 存在、左键按下、右键菜单打开、光标贴近窗口。都不成立时窗口处于静止的
+/// 穿透态，120ms 足够；窗口不可见时没有可应用的样式，统一降到 200ms
+/// （隐藏优先于其它条件：看不见的窗口不值得 16ms 空转，重新显示后最多
+/// 200ms 恢复）。首拍由调用方固定成 16ms，不经过这里。
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn next_tick_ms(
+    glass_allowed: bool,
+    visible: bool,
+    dragging: bool,
+    mouse_down: bool,
+    menu_open: bool,
+    cursor_near: bool,
+) -> u64 {
+    if !visible {
+        return TICK_HIDDEN_MS;
+    }
+    if glass_allowed || dragging || mouse_down || menu_open || cursor_near {
+        return TICK_ACTIVE_MS;
+    }
+    TICK_IDLE_MS
+}
+
+/// 光标是否落在窗口物理矩形外扩 [`CURSOR_NEAR_MARGIN`] 的范围内。
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn cursor_near_window(window: (i32, i32, u32, u32), cursor: (i32, i32)) -> bool {
+    let x = window.0 as i64;
+    let y = window.1 as i64;
+    let w = window.2 as i64;
+    let h = window.3 as i64;
+    let margin = CURSOR_NEAR_MARGIN as i64;
+    let cx = cursor.0 as i64;
+    let cy = cursor.1 as i64;
+    cx >= x - margin && cx <= x + w + margin && cy >= y - margin && cy <= y + h + margin
+}
+
 /// 按光标位置动态开关 `WS_EX_TRANSPARENT`：光标在胶囊上可交互，落在透明留白
 /// 或窗口外时点击穿到下面的应用。
 ///
@@ -741,7 +798,10 @@ fn should_mouse_through(
 ///
 /// 轮询里除「解析句柄 / 取缩放因子」外全部直接调 Win32：tauri 的
 /// outer_position / is_visible / scale_factor 都是同步派发到事件循环再等回复
-/// 的，16ms 一拍地调会把主线程吵死。
+/// 的，密集轮询会把主线程吵死。节奏由 [`next_tick_ms`] 自适应：交互/贴近
+/// 仍是 16ms，静止时 120ms，隐藏时 200ms。液态玻璃的渲染拍已拆到
+/// `zbar-island-glass` 线程（见 `glass::set_allowed`），这里不再调
+/// `glass::tick`，玻璃关闭时本线程可以真正慢下来。
 #[cfg(target_os = "windows")]
 fn start_mouse_through_watcher(app: AppHandle) {
     use windows::Win32::Foundation::{HWND, RECT};
@@ -751,9 +811,6 @@ fn start_mouse_through_watcher(app: AppHandle) {
     if STARTED.swap(true, Ordering::SeqCst) {
         return;
     }
-    // 16ms ≈ 一次光标刷新的节奏：移开就能点到下面的应用，移回胶囊也能立刻
-    // 恢复可交互；几十 px 的判定不值得更密。
-    const TICK_MS: u64 = 16;
     // 缩放因子只在窗口尺寸变化或约 1s 后重取（DPI 只随窗口换屏而变）。
     const SCALE_TICKS: u32 = 60;
 
@@ -766,11 +823,11 @@ fn start_mouse_through_watcher(app: AppHandle) {
             let mut rect = (0i32, 0i32, 0u32, 0u32);
             let mut scale_age = SCALE_TICKS;
             let mut outside_ticks = 0u8;
+            // 首拍固定 16ms：启动/重建后第一轮判定不等慢档，避免「开局迟钝」。
+            let mut tick_ms = TICK_ACTIVE_MS;
 
             loop {
-                thread::sleep(Duration::from_millis(TICK_MS));
-
-                glass::tick(&app);
+                thread::sleep(Duration::from_millis(tick_ms));
 
                 // 句柄失效（关掉灵动岛 / 窗口重建）就重新解析一次
                 let alive = hwnd
@@ -784,16 +841,25 @@ fn start_mouse_through_watcher(app: AppHandle) {
                     scale = 0.0;
                     scale_age = SCALE_TICKS;
                     if hwnd.is_none() {
+                        // 没有窗口：按「不可见」慢档重试解析句柄。
+                        tick_ms = TICK_HIDDEN_MS;
                         continue;
                     }
                 }
-                let Some(h) = hwnd else { continue };
+                let Some(h) = hwnd else {
+                    // 不可达：上面的 `hwnd.is_none()` 已 continue；保持慢档
+                    // 语义，避免误读成「没有窗口还要 16ms 空转」。
+                    tick_ms = TICK_HIDDEN_MS;
+                    continue;
+                };
 
                 if !unsafe { IsWindowVisible(h) }.as_bool() {
+                    tick_ms = TICK_HIDDEN_MS;
                     continue;
                 }
                 let mut raw = RECT::default();
                 if unsafe { GetWindowRect(h, &mut raw) }.is_err() {
+                    tick_ms = TICK_IDLE_MS;
                     continue;
                 }
                 let now_rect = (
@@ -817,16 +883,21 @@ fn start_mouse_through_watcher(app: AppHandle) {
                     scale_age = scale_age.saturating_add(1);
                 }
                 if scale <= 0.0 {
+                    tick_ms = TICK_IDLE_MS;
                     continue;
                 }
 
                 let cfg = load_config();
                 if !cfg.enabled {
+                    // 总开关关闭：窗口通常已隐藏；即便还有一帧残留，也没有
+                    // 需要 16ms 响应的交互。
+                    tick_ms = TICK_HIDDEN_MS;
                     continue;
                 }
                 // 显式可穿透期间由 passthrough 模块的钩子接管。
                 if cfg.passthrough {
                     outside_ticks = 0;
+                    tick_ms = TICK_IDLE_MS;
                     continue;
                 }
                 let dragging = drag_slot()
@@ -851,6 +922,7 @@ fn start_mouse_through_watcher(app: AppHandle) {
                 // （拖拽会话建立前同样要拦住——从按下到 begin 回执之间
                 // 还有一次 IPC 往返。）
                 let Some(cursor) = cursor_physical(&app) else {
+                    tick_ms = TICK_IDLE_MS;
                     continue;
                 };
                 // 主体矩形（画布本地逻辑 px）：收起/展开同一套规则，外面穿透。
@@ -880,6 +952,16 @@ fn start_mouse_through_watcher(app: AppHandle) {
                     Err(error) if debug => eprintln!("[zbar-island] mouse-through: {error}"),
                     _ => {}
                 }
+                // 下一拍按此刻的交互状态选档：只有「玻璃没在跑、无拖拽/按键/
+                // 菜单、光标远离窗口」时才放慢；否则保持 16ms 的既有手感。
+                tick_ms = next_tick_ms(
+                    glass::allowed(),
+                    true,
+                    dragging,
+                    mouse_down,
+                    menu_open,
+                    cursor_near_window(now_rect, cursor),
+                );
             }
         })
         .ok();
@@ -3232,11 +3314,12 @@ fn set_enabled_on_main(app: &AppHandle, enabled: bool) -> Result<bool, String> {
         LAST_EXPANDED.store(false, Ordering::Relaxed);
         let _ = app.emit(ISLAND_COLLAPSE_EVENT, ());
         // 灵动岛设置窗口是岛的附属窗口（岛屿展开面板齿轮打开的独立大窗）：
-        // 岛关了它既没有入口也不再有用，必须一并收起，否则留下"岛已消失、
-        // 设置窗还开着"的孤儿窗口。首开懒创建，窗口可能从未建过，隐藏函数
-        // 内部静默跳过；set_enabled_on_main 的全部调用点都在主线程，满足
-        // 窗口 API 的线程要求（见 island_settings_window.rs 模块 doc）
-        crate::island_settings_window::hide_island_settings_window_on_main(app);
+        // 岛关了它既没有入口也不再有用，必须一并销毁（不是隐藏，避免把
+        // WebView2 渲染进程继续钉在内存里），否则留下"岛已消失、设置窗还
+        // 开着"的孤儿窗口。首开懒创建，窗口可能从未建过，销毁函数内部静默
+        // 跳过；set_enabled_on_main 的全部调用点都在主线程，满足窗口 API 的
+        // 线程要求（见 island_settings_window.rs 模块 doc）
+        crate::island_settings_window::destroy_island_settings_window_on_main(app);
         // 桌面消息浮窗同理：岛总开关关掉后不再有新消息来源（stop_services
         // 会停掉通知线程），窗口若还留在屏幕上就是一块剥不掉的孤儿玻璃。
         // 用 on_config_changed 而不是只 hide：它同时把「岛已关闭」推给浮窗
@@ -5040,6 +5123,37 @@ mod tests {
         assert!(!should_mouse_through((1000, 0, 690, 650), s, body, (1100, 120), true));
         // 菜单关闭（menu_open=false）后同一坐标恢复原判定：没有永久关掉穿透
         assert!(should_mouse_through(win, s, body, (1100, 120), false));
+    }
+
+    /// 自适应穿透轮询：任意交互条件 → 16ms；全静止可见 → 120ms；不可见 → 200ms。
+    #[test]
+    fn next_tick_ms_keeps_interactions_fast_and_slows_idle_windows() {
+        // 玻璃在跑 / 拖拽 / 左键按下 / 菜单打开 / 光标贴近：任一成立都是 16ms
+        assert_eq!(next_tick_ms(true, true, false, false, false, false), 16);
+        assert_eq!(next_tick_ms(false, true, true, false, false, false), 16);
+        assert_eq!(next_tick_ms(false, true, false, true, false, false), 16);
+        assert_eq!(next_tick_ms(false, true, false, false, true, false), 16);
+        assert_eq!(next_tick_ms(false, true, false, false, false, true), 16);
+        // 没有交互且光标远离：120ms
+        assert_eq!(next_tick_ms(false, true, false, false, false, false), 120);
+        // 窗口不可见：200ms，且隐藏优先于其余条件（看不见就不空转）
+        assert_eq!(next_tick_ms(false, false, false, false, false, false), 200);
+        assert_eq!(next_tick_ms(true, false, false, false, false, true), 200);
+        // 首拍常量：启动/重建后不先等慢档
+        assert_eq!(TICK_ACTIVE_MS, 16);
+    }
+
+    /// 「窗口物理矩形外扩 160px」的边界是闭区间，负坐标窗口同样成立。
+    #[test]
+    fn cursor_near_window_expands_physical_rect_by_160px() {
+        let win = (-300, 40, 780, 632);
+        assert!(cursor_near_window(win, (-300, 40)));
+        assert!(cursor_near_window(win, (-300 + 780, 40 + 632)));
+        assert!(cursor_near_window(win, (-300 - 160, 40 - 160)));
+        assert!(cursor_near_window(win, (-300 + 780 + 160, 40 + 632 + 160)));
+        assert!(!cursor_near_window(win, (-300 - 161, 40)));
+        assert!(!cursor_near_window(win, (-300 + 780 + 161, 40)));
+        assert!(!cursor_near_window(win, (-300, 40 + 632 + 161)));
     }
 
     #[test]

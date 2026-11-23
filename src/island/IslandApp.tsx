@@ -385,9 +385,8 @@ import {
   JOIN,
   bodyRadius,
   cssPath,
-  liquidPath,
+  liquidPaths,
   nativeGlassBody,
-  liquidRadii,
   type LiquidDrip,
   type LiquidEdge,
 } from "./liquid";
@@ -2334,7 +2333,7 @@ export default function IslandApp() {
     if (next) setWeather(next);
   };
 
-  // 悬停挤压与拖拽共用同一个液态轮廓。
+  // 悬停时挤压；进入拖拽后恢复圆角主体。
   const updateHoverPoke = (clientX: number, clientY: number) => {
     const island = islandRef.current;
     const root = rootRef.current;
@@ -2587,25 +2586,18 @@ export default function IslandApp() {
   // ⚠️ 原生内存泄漏事故记录（2026-11-17，参照 webview_args.rs 的事故回滚记录风格）：
   // liquid 主循环曾是 60fps 永动 rAF——稳定快路径带 isOpen && 前置条件，收起态
   // （岛约 95% 的存在时间）永远为 false，每帧都走全量路径；收起态「呼吸」又用
-  // 正弦逐帧扰动 fillet，令 liquidPath 每帧产出不同路径，于是 --liquid-clip
+  // 正弦逐帧扰动 fillet，令外壳每帧产出不同路径，于是 --liquid-clip
   // （巨型 path 字符串）、两条 SVG path 的 d、--body-r-* 圆角与 flow 渐变每帧
   // 重写，780×632 全画布（clip-path 变化使 blur 层全部重光栅）随之逐帧重绘。
   // 用户实测渲染进程 8 分钟 2.5GB→6.0GB（≈440MB/min，20 分钟 6.7GB），页面
   // JS 堆全程仅 1-12MB——纯原生内存泄漏；CDP A/B 验证：页面内置空
-// requestAnimationFrame 后增长立即停止并回落。修复三件套（1~3 为前两轮）：
-//   1) 稳定判定不再带 isOpen：全部输入静止即休眠（收起态同样适用）；
-//   2) 呼吸最终删除（第二轮 CDP 复测：矢量 clip-path 子树内连 transform
-//      动画也无法合成器化，三个常驻 CSS 动画叠加泄漏更凶，收起态静止
-//      即静止，见 island.css P4 段落的事故记录）；
-//   3) 休眠期以 500ms 低频轮询只读比较输入指纹兜底，事件侧即时唤醒，
-//      漏挂唤醒钩子时最坏 500ms 自愈。
-//   4) 第三轮（同日，呼吸回归·结构性修复）：静止不是永久答案——休眠帧
-//      用最终 body rect + 四角 radii 换算 --idle-clip（inset round 圆角
-//      矩形裁剪，合成器原生支持）并挂 is-idle，三层裁剪临时切换过去，
-//      liquid-breath 仅在 is-idle 下做 CSS transform 呼吸（圆角矩形裁剪
-//      下 transform 真正跑 GPU 合成器，零重绘）；唤醒即摘类回到矢量
-//      path()。形变期与前两轮的行为完全不变，取舍详见 island.css P4
-//      事故记录第三轮结论。
+  // requestAnimationFrame 后增长立即停止并回落。保留以下约束：
+  //   1) 稳定判定不带 isOpen：全部输入静止即休眠（收起态同样适用）；
+  //   2) 休眠期以 500ms 低频轮询只读比较输入指纹兜底，事件侧即时唤醒；
+  //   3) 呼吸只改外壳 opacity，不缩放、不逐帧重写路径或自定义属性。
+  // 曾用 inset round 简化空闲裁剪以支持缩放呼吸，但它会裁掉贴边两端
+  // 外扩的刘海肩角。休眠与交互现在共用最终 --liquid-clip，is-idle 仅
+  // 控制透明度呼吸，避免闲置/唤醒时轮廓跳变。
   useLayoutEffect(() => {
     if (!config) return;
     const root = rootRef.current;
@@ -2615,12 +2607,14 @@ export default function IslandApp() {
     if (!root || !island || !glass || !frame) return;
     let raf = 0;
     let lastNow = performance.now();
-    let lastPath = "";
+    let lastGlassClip = "";
+    let lastBodyClip = "";
     let previousTarget = bodyTargetRef.current;
     const widthSpring = springAt(previousTarget.width);
     const heightSpring = springAt(previousTarget.height);
     const panelAlpha = springAt(previousTarget.open ? 1 : 0);
     const compactAlpha = springAt(previousTarget.open ? 0 : 1);
+    const dock = springAt(liquidPreviewRef.current?.gap ? 0 : 1);
     let widthFloor = previousTarget.open;
     let heightFloor = previousTarget.open;
     let panelReady = previousTarget.open;
@@ -2666,9 +2660,7 @@ export default function IslandApp() {
     const wake = () => {
       if (!sleeping) return;
       sleeping = false;
-      // 摘除 is-idle：--liquid-clip（休眠时未被清除，仍持有最终路径）立即
-      // 重新生效，几何相同无缝；rAF 回调先于本帧 paint 执行，中间不会闪出
-      // 矢量/圆角裁剪交替的一帧。随后的 tick 按新输入接管重写路径。
+      // 仅停止空闲透明度呼吸；裁剪始终保留最终路径，由 tick 按新输入更新。
       root.classList.remove("is-idle");
       window.clearTimeout(pollTimer);
       raf = window.requestAnimationFrame(tick);
@@ -2694,6 +2686,14 @@ export default function IslandApp() {
       const origin = canvasOriginRef.current;
       const neck = neckRef.current;
       const audioLevel = !motion && !preview && !isOpen ? liquidAudioLevelRef.current : 0;
+      const dockTarget = motion || preview?.gap ? 0 : 1;
+      if (motion) {
+        dock.value = 0;
+        dock.velocity = 0;
+      } else {
+        // 位置吸附结束后再长出贴边肩角，圆角连续过渡，不在松手瞬间切轮廓。
+        advanceSpring(dock, dockTarget, 1000, 1, dt, 0.002);
+      }
       const changingSize = widthSpring.value !== target.width || heightSpring.value !== target.height ||
         widthSpring.velocity !== 0 || heightSpring.velocity !== 0;
       const fading = panelAlpha.value !== Number(isOpen) || compactAlpha.value !== Number(!isOpen);
@@ -2707,6 +2707,7 @@ export default function IslandApp() {
         Math.abs(smoothedPoke.y - liquidPokeRef.current.y) <= 0.5
       );
       const busy = Boolean(motion) || Boolean(preview) || audioLevel > 0 ||
+        dock.value !== dockTarget || dock.velocity !== 0 ||
         !pokeSettled || changingSize || fading || dripsRef.current.length > 0;
       advanceSpring(poke, isOpen || motion ? 0 : poke.target, poke.stiffness, poke.ratio, dt, 0.004);
 
@@ -2815,16 +2816,19 @@ export default function IslandApp() {
           neck.spring = springAt(0);
           dripsRef.current = [];
         }
-        if (neck.edge !== null && (
-          (snapEdgeRef.current !== null && neck.edge !== snapEdgeRef.current) ||
-          screenGap(neck.edge, body, lines[neck.edge]) > BREAK
-        )) breakNeck();
-        if (neck.edge === null) {
-          const nearest = snapEdgeRef.current ?? nearestScreenEdge(body, lines);
-          if (screenGap(nearest, body, lines[nearest]) < JOIN) {
-            neck.edge = nearest;
-            neck.spring = springAt(0);
-          }
+        const targetEdge = snapEdgeRef.current ?? nearestScreenEdge(body, lines, 1.35);
+        const targetGap = screenGap(targetEdge, body, lines[targetEdge]);
+        if (neck.edge !== null) {
+          const currentGap = screenGap(neck.edge, body, lines[neck.edge]);
+          // At a screen corner, move the bridge to the closer edge only after
+          // a small margin so it doesn't flicker back and forth.
+          const switchEdge = targetEdge !== neck.edge &&
+            (snapEdgeRef.current !== null || (targetGap < JOIN && targetGap + 4 < currentGap));
+          if (switchEdge || currentGap > BREAK) breakNeck();
+        }
+        if (neck.edge === null && targetGap < JOIN) {
+          neck.edge = targetEdge;
+          neck.spring = springAt(0);
         }
         advanceSpring(neck.spring, 1, 520, 1, dt, 0.01);
       } else {
@@ -2850,11 +2854,9 @@ export default function IslandApp() {
 
       const neckEdge = neck.edge ?? edge;
       const neckStrength = neck.edge === null ? 0 : neck.spring.value;
-      const gap = Math.max(0, screenGap(neckEdge, body, lines[neckEdge]));
-      // 呼吸：JS 正弦扰动 fillet 已删（事故修复点：矢量 clip 子树内逐帧
-      // 重绘引发原生内存泄漏）；静止后的呼吸改由 CSS 在 is-idle 圆角矩形
-      // 裁剪下承担（liquid-breath，见 island.css 的事故记录）。路径在本帧
-      // 与后续静止帧保持确定不变，主循环才有可能休眠。
+      const gap = screenGap(neckEdge, body, lines[neckEdge]);
+      // 呼吸仅由 CSS opacity 承担；不扰动 fillet 或缩放矢量裁剪，避免
+      // 逐帧重绘。静止时路径保持不变，保留刘海肩角并允许主循环休眠。
       const shapeSpeed = (Math.abs(width - lastWidth) + Math.abs(height - lastHeight)) / dt;
       const fillet = FILLET + Math.min(12, shapeSpeed * 0.012);
       lastWidth = width;
@@ -2872,31 +2874,33 @@ export default function IslandApp() {
         flow.setAttribute("cy", String(cy));
         flow.setAttribute("r", String(Math.max(60, body.width * 0.35)));
       }
-      const radii = liquidRadii(body, neckEdge, gap, neckStrength);
       const shape = {
         edge: neckEdge,
         line: lines[neckEdge],
         body,
         gap,
         neck: neckStrength,
+        dock: dock.value,
         fillet,
         drips,
         poke: motion || isOpen ? 0 : poke.value,
         pokePoint: smoothedPoke,
-        vx: motion?.vx ?? 0,
-        vy: motion?.vy ?? 0,
         wave: audioLevel > 0 ? { amplitude: audioLevel, time: now / 1000 } : undefined,
       };
-      const d = liquidPath(shape);
-      if (d && d !== lastPath) {
+      const { radius, bodyClip, glassClip, rim, glassRadii } = liquidPaths(shape);
+      if (bodyClip !== lastBodyClip) {
+        lastBodyClip = bodyClip;
+        root.style.setProperty("--liquid-body-clip", cssPath(bodyClip));
+      }
+      if (glassClip !== lastGlassClip) {
         const geometry = {
           width: CANVAS_W, height: CANVAS_H,
           x: body.x, y: body.y, bodyWidth: body.width, bodyHeight: body.height,
-          radii,
+          radii: glassRadii,
         };
         glassBackdropGeometryRef.current = geometry;
         glassBackdropRef.current?.draw(geometry);
-        if (WINDOWS_TAURI) updateNativeGlassGeometry(nativeGlassBody(shape, radii));
+        if (WINDOWS_TAURI) updateNativeGlassGeometry(nativeGlassBody(shape, glassRadii));
         glass.style.setProperty("--liquid-body-top", `${body.y}px`);
         glass.style.setProperty("--liquid-body-bottom", `${body.y + body.height}px`);
         liquidRimGradientRef.current?.setAttribute("y1", String(body.y));
@@ -2908,14 +2912,12 @@ export default function IslandApp() {
         glass.style.setProperty("--glass-tint-angle", `${Math.atan2(tintX, -tintY)}rad`);
         glass.style.setProperty("--glass-tint-start", `${tintStart}px`);
         glass.style.setProperty("--glass-tint-end", `${tintStart + tintLength}px`);
-        lastPath = d;
-        root.style.setProperty("--liquid-clip", cssPath(d));
-        liquidRimRef.current?.setAttribute("d", d);
-        liquidFlowRef.current?.setAttribute("d", d);
+        lastGlassClip = glassClip;
+        root.style.setProperty("--liquid-clip", cssPath(glassClip));
+        liquidRimRef.current?.setAttribute("d", rim);
+        liquidFlowRef.current?.setAttribute("d", rim);
       }
-      ["tl", "tr", "br", "bl"].forEach((corner, i) => {
-        island.style.setProperty(`--body-r-${corner}`, `${radii[i]}px`);
-      });
+      island.style.setProperty("--body-radius", `${radius}px`);
       if (busy) {
         raf = window.requestAnimationFrame(tick);
         return;
@@ -2927,27 +2929,9 @@ export default function IslandApp() {
       sleeping = true;
       sleepSnapshot = inputFingerprint();
       pollTimer = window.setTimeout(poll, LIQUID_IDLE_POLL_MS);
-      // 第三轮修复（呼吸回归）：静止且无按压形变时，把三层裁剪从矢量
-      // path() 切到合成器友好的圆角矩形（inset round），CSS transform
-      // 呼吸才能真正跑 GPU 合成器。两个前置条件缺一不可：
-      //   a) !isOpen——展开态不呼吸（island.css 选择器同样限定 is-collapsed）；
-      //   b) poke.value === 0——悬停挤压静止时路径是 polyPath 形变 blob，
-      //      不是圆角矩形，硬套 inset 会跳变；此时保持矢量裁剪原样休眠。
-      // 已知取舍：贴边静止轮廓带液桥肩角（gap=0 时比 body 宽约 fillet=13px，
-      // 见 liquid.ts 的 neckPath），圆角矩形表达不了，休眠/唤醒瞬间肩角会
-      // 各跳变一次；详见 island.css P4 事故记录第三轮。
+      // 只在收起且没有按压形变时启用透明度呼吸。保留完整液态裁剪，
+      // 贴边肩角在休眠和唤醒时都不被圆角矩形裁掉。
       if (!isOpen && poke.value === 0) {
-        // inset(top right bottom left round tl tr br bl)：四边 = body 距画布
-        // 四边的距离；圆角 = 本帧最终 radii（liquidRadii 顺序恰为 tl,tr,br,bl，
-        // 与 inset round 一致），与最后一帧 bodyPath 逐点相同（肩角除外）。
-        const idleTop = Math.max(0, body.y);
-        const idleRight = Math.max(0, CANVAS_W - body.x - body.width);
-        const idleBottom = Math.max(0, CANVAS_H - body.y - body.height);
-        const idleLeft = Math.max(0, body.x);
-        root.style.setProperty(
-          "--idle-clip",
-          `inset(${idleTop.toFixed(2)}px ${idleRight.toFixed(2)}px ${idleBottom.toFixed(2)}px ${idleLeft.toFixed(2)}px round ${radii[0].toFixed(2)}px ${radii[1].toFixed(2)}px ${radii[2].toFixed(2)}px ${radii[3].toFixed(2)}px)`
-        );
         root.classList.add("is-idle");
       }
     };
@@ -3137,19 +3121,8 @@ export default function IslandApp() {
   const bodyH = open ? panelHeight : isSideEdge(edge) ? sideCompactHeight : compactHeight;
   bodyTargetRef.current = { width: bodyW, height: bodyH, open };
   const baseBodyR = bodyRadius({ x: 0, y: 0, width: bodyW, height: bodyH });
-  const cornerVars =
-    edge === "top"
-      ? { tl: 0, tr: 0, br: baseBodyR, bl: baseBodyR }
-      : edge === "bottom"
-        ? { tl: baseBodyR, tr: baseBodyR, br: 0, bl: 0 }
-        : edge === "left"
-          ? { tl: 0, tr: baseBodyR, br: baseBodyR, bl: 0 }
-          : { tl: baseBodyR, tr: 0, br: 0, bl: baseBodyR };
   const islandStyle = {
-    "--body-r-tl": `${cornerVars.tl}px`,
-    "--body-r-tr": `${cornerVars.tr}px`,
-    "--body-r-br": `${cornerVars.br}px`,
-    "--body-r-bl": `${cornerVars.bl}px`,
+    "--body-radius": `${baseBodyR}px`,
     // 面板宽高由每个 tab 的常量表驱动（见 PANEL_HEIGHT）；收起态宽高由当前
     // 收起视图决定（rings 宽高按内容实测）。
     "--panel-w": `${PANEL_W}px`,
@@ -3938,8 +3911,7 @@ export default function IslandApp() {
         }}
       >
         <div className="liquid-stage">
-        {/* P4 单一外轮廓：玻璃层按同一 path 裁剪，SVG 描边用同一 path；
-            内层不再有 border/阴影，避免出现内部接缝线。 */}
+        {/* 玻璃合成主体和液桥，SVG 只描外壳。内容独立裁在圆角主体内。 */}
         <div
           className="liquid-glass"
           ref={liquidGlassRef}

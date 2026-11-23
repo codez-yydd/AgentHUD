@@ -2392,13 +2392,16 @@ pub fn island_settings_reveal_file() -> Result<(), String> {
     }
 }
 
-/// 隐藏设置窗（前端「有未保存修改时确认关闭」走这里，窗口 API 必须在
-/// 主线程，所以投递 + 等待）。
+/// 关闭设置窗（**名字是历史遗留，行为是销毁**：销毁窗口会一并释放该
+/// WebView2 渲染进程，下次打开重走 island_settings_window.rs 的懒建窗路径；
+/// 未保存的草稿随之丢失）。设置页自绘标题栏的"×"与 Esc 走这里，窗口 API
+/// 必须在主线程，所以投递 + 等待。保留 hide 名字是为了不牵动前端调用字符串、
+/// capabilities 描述与 doc/island-hud.md 的命令表，语义以本注释为准。
 #[tauri::command]
 pub async fn island_settings_window_hide(app: tauri::AppHandle) -> Result<(), String> {
     let app_main = app.clone();
     super::on_main_thread(&app, move || {
-        crate::island_settings_window::hide_island_settings_window_on_main(&app_main);
+        crate::island_settings_window::destroy_island_settings_window_on_main(&app_main);
         Ok(())
     })
     .await

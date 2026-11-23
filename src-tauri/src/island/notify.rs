@@ -156,6 +156,14 @@ impl NotifyInbox {
     }
 }
 
+/// `map_primary` 实际能产出的 kind 并集，也就是「Windows 通知库 toast」的
+/// 全部来源。只有这些模块至少启用一个时，`poll_new` 才值得去读 SQLite。
+///
+/// 注意飞书 / 钉钉虽然主要走浮窗识别，但通知库里的 toast 同样会被
+/// `map_primary` 映射成这两种 kind（见 `map_primary` 与
+/// `通知应用标识映射到消息类型` 单测），所以不能只算 qq / wechat / mail。
+const TOAST_SOURCE_KINDS: [&str; 5] = ["qq", "wechat", "feishu", "dingtalk", "mail"];
+
 /// 消息模块开关快照（`notifyModules` / `notifyBodyPreview`）。
 ///
 /// 轮询每拍、浮窗事件各读一次 `load_config()`（进程内缓存，不会重建整库）；
@@ -178,6 +186,12 @@ impl NotifyPrefs {
     }
     fn body_preview(&self, kind: &str) -> bool {
         self.body_preview.iter().any(|enabled| enabled == kind)
+    }
+    /// 是否有任何「通知库 toast 来源」模块启用；没有就跳过 `load_rows`。
+    fn toast_sources_enabled(&self) -> bool {
+        TOAST_SOURCE_KINDS
+            .iter()
+            .any(|kind| self.module_enabled(kind))
     }
 }
 
@@ -544,13 +558,19 @@ fn init_history(app: &AppHandle, gen: u64) {
 }
 
 fn poll_new(app: &AppHandle, gen: u64) {
+    // 每拍读一次最新模块开关（配置热更新，无需重启监听线程）。
+    let prefs = NotifyPrefs::from_config();
+    // 通知库门控：所有 toast 来源模块都关掉时不碰 SQLite（连历史初始化也
+    // 推迟——否则那一次 load_rows 仍会每拍发生）。重新启用后下一拍自然恢复，
+    // 首次恢复时 init_history 照旧把最近 50 条当历史标已读，不会补发。
+    if !prefs.toast_sources_enabled() {
+        return;
+    }
     let last = MAX_ID.load(Ordering::SeqCst);
     if last < 0 {
         init_history(app, gen);
         return;
     }
-    // 每拍读一次最新模块开关（配置热更新，无需重启监听线程）。
-    let prefs = NotifyPrefs::from_config();
     let rows = load_rows(120);
     if rows.is_empty() || !running(gen) {
         return;
@@ -632,14 +652,25 @@ fn start_deepseek_watch(app: AppHandle, gen: u64) {
         .name("zbar-island-deepseek".into())
         .spawn(move || {
             let mut watcher = deepseek::Watcher::default();
+            // 上一拍是否启用：关闭后只复位一次 Watcher，之后不再读配置/扫日志。
+            let mut was_enabled = false;
             while running(gen) {
                 let enabled = NotifyPrefs::from_config().module_enabled("dsh");
-                let config = if enabled {
-                    super::settings::load().dsh
-                } else {
-                    super::settings::DshDoc::default()
-                };
-                let completions = watcher.poll(&config, enabled);
+                if !enabled {
+                    // 与旧实现（每拍 poll(&DshDoc::default(), false)）等价的
+                    // 状态复位：把 root 置回 None、清空游标与已投递表，避免重新
+                    // 启用时把关闭期间的会话完成当新消息补发。只在翻转那一拍做，
+                    // 之后纯睡 POLL_MS，不读 settings.dsh、不扫会话目录。
+                    if was_enabled {
+                        watcher.poll(&super::settings::DshDoc::default(), false);
+                        was_enabled = false;
+                    }
+                    thread::sleep(Duration::from_millis(POLL_MS));
+                    continue;
+                }
+                was_enabled = true;
+                let config = super::settings::load().dsh;
+                let completions = watcher.poll(&config, true);
                 if !completions.is_empty() && running(gen) {
                     let prefs = NotifyPrefs::from_config();
                     let mut changed = false;
@@ -962,14 +993,28 @@ mod win {
         thread::Builder::new()
             .name("zbar-island-popup".into())
             .spawn(move || {
-                // 启动时先记下已经存在的浮窗，避免把启动前的旧消息当成新消息。
-                let now = Instant::now();
-                if let Ok(mut seen) = seen_slot().lock() {
-                    for (hwnd, _) in scan() {
-                        seen.insert(hwnd_key(hwnd), now);
-                    }
-                }
+                // 启动基线推迟到第一次「确实要扫描」时：飞书/钉钉都关着时
+                // 不跑 EnumWindows；等第一次启用时再记下当时已在屏上的旧浮窗，
+                // 语义与旧实现「启动先扫一遍避免把旧消息当新消息」一致。
+                let mut baselined = false;
                 while running(gen) {
+                    let prefs = NotifyPrefs::from_config();
+                    // 飞书（含 lark）与钉钉都没启用：没有要识别的浮窗来源，
+                    // 跳过每秒一次的全窗口枚举（配置热更新下一拍生效）。
+                    if !prefs.module_enabled("feishu") && !prefs.module_enabled("dingtalk") {
+                        thread::sleep(Duration::from_millis(POPUP_POLL_MS));
+                        continue;
+                    }
+                    if !baselined {
+                        // 启动时先记下已经存在的浮窗，避免把启动前的旧消息当成新消息。
+                        let now = Instant::now();
+                        if let Ok(mut seen) = seen_slot().lock() {
+                            for (hwnd, _) in scan() {
+                                seen.insert(hwnd_key(hwnd), now);
+                            }
+                        }
+                        baselined = true;
+                    }
                     for (hwnd, exe) in scan() {
                         handle_popup(&app, hwnd, exe, gen);
                     }
@@ -1926,6 +1971,29 @@ mod tests {
         // 音乐类通知不能算成 QQ 消息
         assert_eq!(map_primary("CloudMusic"), None);
         assert_eq!(map_primary("QQMusic"), None);
+    }
+
+    /// 通知库门控：只有 `map_primary` 能产出的 toast 来源启用时才读 SQLite；
+    /// 全关 / 只开 dsh 等非通知库模块时 `poll_new` 直接空转。纯函数，不连库。
+    #[test]
+    fn 通知库轮询仅在toast来源启用时进行() {
+        let prefs = |modules: &[&str]| NotifyPrefs {
+            modules: modules.iter().map(|kind| kind.to_string()).collect(),
+            body_preview: Vec::new(),
+        };
+        assert!(!prefs(&[]).toast_sources_enabled());
+        // 只开 DeepSeek（走会话日志，不走通知库）→ 不读 SQLite
+        assert!(!prefs(&["dsh"]).toast_sources_enabled());
+        // 每一种 map_primary 可产出的 kind 都算 toast 来源
+        for kind in TOAST_SOURCE_KINDS {
+            assert!(prefs(&[kind]).toast_sources_enabled(), "{kind}");
+        }
+        // 飞书 / 钉钉的 toast 同样在通知库里，只开浮窗模块也必须继续读库
+        assert!(prefs(&["feishu"]).toast_sources_enabled());
+        assert!(prefs(&["dingtalk"]).toast_sources_enabled());
+        assert!(prefs(&["dsh", "mail"]).toast_sources_enabled());
+        // 未知 kind 不算来源（前端白名单之外的脏数据不能撬开轮询）
+        assert!(!prefs(&["stock", "unknown"]).toast_sources_enabled());
     }
 
     #[test]

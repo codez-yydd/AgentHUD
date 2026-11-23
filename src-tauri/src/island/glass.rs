@@ -1,7 +1,9 @@
 //! Hands the island's desktop capture from the WebView fallback to the native
 //! renderer. Only one DXGI duplication session per output can run in a process.
 
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, OnceLock};
+use std::thread;
 use std::time::{Duration, Instant};
 
 use serde::Deserialize;
@@ -14,6 +16,8 @@ use super::{backdrop, capture_guard, ISLAND_WINDOW_LABEL};
 
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(2);
 const RETRY_DELAY: Duration = Duration::from_secs(8);
+/// 玻璃渲染拍的节奏：与旧穿透轮询的 16ms 一致（一次光标刷新）。
+const TICKER_INTERVAL: Duration = Duration::from_millis(16);
 
 #[derive(Deserialize)]
 pub(crate) struct Geometry {
@@ -68,6 +72,13 @@ static GLASS: Mutex<Glass> = Mutex::new(Glass {
     last_luma: None,
 });
 
+/// `Glass.allowed` 的原子镜像：穿透轮询每拍都要问「玻璃在不在跑」，锁
+/// `GLASS` 会和渲染拍争锁；这里只在 [`set_allowed`] 里同步写。
+static ALLOWED: AtomicBool = AtomicBool::new(false);
+/// 专用 ticker 线程句柄（只在允许时工作，不允许时 park 等待唤醒）。
+static TICKER: OnceLock<thread::Thread> = OnceLock::new();
+static TICKER_STARTED: AtomicBool = AtomicBool::new(false);
+
 impl Glass {
     fn stop(&mut self, app: &AppHandle) {
         if let Some(renderer) = self.renderer.take() {
@@ -99,6 +110,10 @@ impl Glass {
     }
 }
 
+/// 允许/禁止玻璃渲染的**唯一**入口。重复调用幂等：`true` 只拉起一条
+/// `zbar-island-glass` 线程，`false` 不会反复停/起。
+///
+/// 允许状态同时写入 [`ALLOWED`]，供穿透轮询无锁读取（见 [`allowed`]）。
 pub(super) fn set_allowed(app: &AppHandle, allowed: bool) {
     if let Ok(mut glass) = GLASS.lock() {
         glass.allowed = allowed;
@@ -107,6 +122,46 @@ pub(super) fn set_allowed(app: &AppHandle, allowed: bool) {
             glass.retry_at = None;
             glass.stop(app);
         }
+        ALLOWED.store(allowed, Ordering::SeqCst);
+    }
+    if allowed {
+        start_ticker(app);
+        // ticker 可能已经停在 park 上（先 true → false → true）：ensure 之后
+        // 必须再唤醒一次；线程起床后以 ALLOWED 为准，重复 set 不会起第二条。
+        if let Some(ticker) = TICKER.get() {
+            ticker.unpark();
+        }
+    }
+}
+
+/// 玻璃渲染是否处于允许状态。廉价原子读，**不要**为这个判定去锁 `GLASS`
+/// （穿透轮询每拍都会问；旧的 `tick` 自己会再确认一次 `glass.allowed`）。
+pub(super) fn allowed() -> bool {
+    ALLOWED.load(Ordering::Relaxed)
+}
+
+/// 懒启动唯一的玻璃 ticker 线程。线程只在允许时按 16ms 调 [`tick`]；不允许
+/// 时阻塞在 `thread::park` 上（空闲零周期唤醒），由 `set_allowed(true)` 唤醒。
+fn start_ticker(app: &AppHandle) {
+    if TICKER_STARTED.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let app = app.clone();
+    let spawned = thread::Builder::new()
+        .name("zbar-island-glass".into())
+        .spawn(move || {
+            let _ = TICKER.set(thread::current());
+            loop {
+                while !allowed() {
+                    thread::park();
+                }
+                tick(&app);
+                thread::sleep(TICKER_INTERVAL);
+            }
+        });
+    if spawned.is_err() {
+        // 起线程失败就允许下一次 set_allowed(true) 重试，避免永久失去刷新。
+        TICKER_STARTED.store(false, Ordering::SeqCst);
     }
 }
 
@@ -144,8 +199,9 @@ pub(super) fn sync_capture_guard() {
     }
 }
 
-/// Called from the existing mouse-through worker. The JavaScript paint loop
-/// only updates the requested shape, including the animated drag/snap frames.
+/// Called from the dedicated `zbar-island-glass` ticker (only while [`allowed`]).
+/// The JavaScript paint loop only updates the requested shape, including the
+/// animated drag/snap frames.
 pub(super) fn tick(app: &AppHandle) {
     let Ok(mut glass) = GLASS.lock() else {
         return;
