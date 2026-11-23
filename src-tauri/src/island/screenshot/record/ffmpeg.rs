@@ -1360,6 +1360,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn which_in_path_collects_all_dirs() {
         let candidates = which_in_path("C:\\a;D:\\b;;");
         let name = platform_exe_name();
@@ -1396,6 +1397,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn file_sha256_matches_accepts_and_rejects() {
         // 纯逻辑覆盖「匹配 / 不匹配」两条路径：用临时文件注入已知内容
         let dir = std::env::temp_dir().join(format!("agenthud-ff-sha-{}", std::process::id()));
@@ -1415,6 +1417,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn verify_zip_sha256_rejects_foreign_content() {
         // 内容与白名单不符 → 中文报错并指引手动放置，绝不能放行解压
         let dir = std::env::temp_dir().join(format!("agenthud-ff-sha2-{}", std::process::id()));
@@ -1427,6 +1430,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn verify_installed_exe_deletes_broken_file() {
         // 校验失败 → 删除 + 报错路径真跑通：篡改的「ffmpeg.exe」（非 PE 内容）
         // 启动必然失败，必须删掉而不是留在磁盘上让 UI 显示「MP4 就绪」
@@ -1514,6 +1518,7 @@ mod tests {
 
     #[test]
     #[ignore = "手动实测：真实访问网络下载 gyan 固定版本 zip（约 110MB）并验证白名单哈希"]
+    #[cfg(windows)]
     fn manual_downloaded_zip_passes_pinned_hash() {
         // 「校验通过」路径的端到端实测：从 FFMPEG_DOWNLOAD_URLS[0] 真下载，
         // verify_zip_sha256 必须放行（HTTPS + sha256 白名单双保险均成立）

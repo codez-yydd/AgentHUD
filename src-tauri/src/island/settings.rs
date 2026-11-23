@@ -3797,20 +3797,53 @@ mod tests {
         assert_eq!(live.len(), 16, "live 只应有 16 个已接线点路径");
     }
 
+    /// 已同步进运行时配置、但运行时只在 Windows 上消费的点路径例外清单。
+    /// 这些路径在非 Windows 上会被 `unsupported()` 标「未接入」（前端按平台
+    /// 提示），但它们同时也在 `SYNCED_PATHS` 里——同步与消费是两回事，
+    /// 不能因为平台限制就把它们从同步清单里删掉。
+    const PLATFORM_LIMITED_SYNCED_PATHS: [&str; 6] = [
+        "island.exclude_from_capture",
+        "island.hug_fullscreen",
+        "media.netease_log",
+        "media.playback_logs",
+        "dsh.skip_when_active",
+        "brightness.twinkle",
+    ];
+
+    /// 不变式：`unsupported()` 与 `SYNCED_PATHS` 的交集必须**全部**落在
+    /// 平台例外清单里（前端「已接线 / 未接线」两种标记按平台区分是允许的，
+    /// 但不能出现清单之外的冲突）；例外清单本身也不能腐烂。
     #[test]
-    fn synced_and_unsupported_paths_are_disjoint() {
-        // 不变式：一个点路径不能既算「已接线」又标「未接线」（前端两种标记互斥）。
+    fn unsupported_overlaps_synced_only_via_platform_limited_paths() {
         let unsupported = unsupported();
+        // 交集里的每个路径都必须在例外清单里，否则按真冲突报错。
         for path in SYNCED_PATHS {
+            if !unsupported.iter().any(|item| item == path) {
+                continue;
+            }
             assert!(
-                !unsupported.iter().any(|item| item == path),
-                "{path} 同时出现在 SYNCED_PATHS 与 unsupported"
+                PLATFORM_LIMITED_SYNCED_PATHS.contains(&path),
+                "{path} 同时出现在 SYNCED_PATHS 与 unsupported，且不在平台例外清单里"
             );
         }
+        // 例外清单不能腐烂：每个条目都要确实已同步，且平台标注方向正确
+        //（非 Windows 标「未接入」，Windows 不标）。
+        for path in PLATFORM_LIMITED_SYNCED_PATHS {
+            assert!(
+                SYNCED_PATHS.contains(&path),
+                "{path} 在例外清单里但不在 SYNCED_PATHS 里"
+            );
+            assert_eq!(
+                unsupported.iter().any(|item| item == path),
+                !cfg!(target_os = "windows"),
+                "{path} 的平台标注方向不对"
+            );
+        }
+        // 已接线清单里不应出现任何「不在例外清单里」的未接线路径。
         let applied = all_applied_paths();
         for path in &unsupported {
             assert!(
-                !applied.contains(path),
+                PLATFORM_LIMITED_SYNCED_PATHS.contains(&path.as_str()) || !applied.contains(path),
                 "{path} 已接线，不应再标未接线"
             );
         }
