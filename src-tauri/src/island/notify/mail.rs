@@ -41,7 +41,7 @@ const CODE_PUSH_MAX: usize = 3;
 const CODE_TEXT_LIMIT: usize = 64 * 1024;
 /// 只取需要的头字段 + 正文前 64KB；两个 PEEK 保证不改 `\Seen`。
 const CODE_FETCH_QUERY: &str =
-    "(BODY.PEEK[HEADER.FIELDS (SUBJECT FROM DATE)] BODY.PEEK[TEXT]<0.65536>)";
+    "(BODY.PEEK[HEADER.FIELDS (SUBJECT FROM)] BODY.PEEK[TEXT]<0.65536>)";
 const MAIL: &str = "mail";
 static WORKER: Mutex<Option<(u64, Thread)>> = Mutex::new(None);
 static SETTINGS_VERSION: AtomicU64 = AtomicU64::new(0);
@@ -89,6 +89,12 @@ fn configuration() -> (Duration, Vec<Account>, bool) {
     )
 }
 
+/// 「提取邮件验证码」开关。每次调用都读设置文件，只能在真正处理到
+/// 新通知行时调用，不要放进每秒轮询都会构建的 `NotifyPrefs`。
+pub(super) fn code_preview_enabled() -> bool {
+    settings::load().mail.code_preview
+}
+
 pub(super) fn settings_changed() {
     SETTINGS_VERSION.fetch_add(1, Ordering::Release);
     if let Ok(worker) = WORKER.lock() {
@@ -124,6 +130,26 @@ pub(super) fn start(app: AppHandle, gen: u64) {
                 }
             }
         });
+}
+
+/// 验证码条目的 `time` 是**到达时间**（`now_ms`）：悬浮卡按它判新鲜度，
+/// 用邮件 `Date` 头会让轮询间隔内才检测到的邮件超时、几乎弹不出卡。
+fn code_item(id: i64, mail: MailCode, now_ms: i64) -> NotifyItem {
+    NotifyItem {
+        id,
+        kind: MAIL.into(),
+        name: "邮件".into(),
+        sender: mail.sender,
+        body: if mail.subject.is_empty() {
+            "新邮件".into()
+        } else {
+            mail.subject
+        },
+        code: mail.code,
+        time: now_ms,
+        read: false,
+        exe: String::new(),
+    }
 }
 
 fn poll(app: &AppHandle, gen: u64, runtime: &Runtime) {
@@ -183,22 +209,8 @@ fn poll(app: &AppHandle, gen: u64, runtime: &Runtime) {
             // 有验证码时每封一条独立提醒；一封都没抽到才退回「N 封新邮件」聚合。
             let mut changed = false;
             for mail in update.codes.into_iter().take(CODE_PUSH_MAX) {
-                let item = NotifyItem {
-                    id: SYNTH_ID.fetch_sub(1, Ordering::SeqCst),
-                    kind: MAIL.into(),
-                    name: "邮件".into(),
-                    sender: mail.sender,
-                    body: if mail.subject.is_empty() {
-                        "新邮件".into()
-                    } else {
-                        mail.subject
-                    },
-                    code: mail.code,
-                    time: mail.time.unwrap_or(now_ms),
-                    read: false,
-                    exe: String::new(),
-                };
-                changed |= push_item(item, &prefs);
+                let id = SYNTH_ID.fetch_sub(1, Ordering::SeqCst);
+                changed |= push_item(code_item(id, mail, now_ms), &prefs);
             }
             if !changed {
                 let item = NotifyItem {
@@ -239,8 +251,6 @@ struct MailCode {
     sender: String,
     subject: String,
     code: String,
-    /// `Date` 头可解析时的毫秒时间戳；解析失败为 None（投递时用当前时间）。
-    time: Option<i64>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -482,12 +492,11 @@ async fn fetch_mail_code<S: AsyncRead + AsyncWrite + Unpin + std::fmt::Debug + S
 struct MailHead {
     subject: String,
     sender: String,
-    time: Option<i64>,
     transfer_encoding: String,
     charset: String,
 }
 
-/// 头部只取 Subject / From / Date / CTE / Content-Type，续行先折叠成一行。
+/// 头部只取 Subject / From / CTE / Content-Type，续行先折叠成一行。
 fn parse_head(header: &[u8]) -> MailHead {
     let raw = String::from_utf8_lossy(header);
     let mut fields: Vec<(String, String)> = Vec::new();
@@ -514,19 +523,12 @@ fn parse_head(header: &[u8]) -> MailHead {
         match name.as_str() {
             "subject" => head.subject = decode_rfc2047(&value),
             "from" => head.sender = decode_rfc2047(&value),
-            "date" => head.time = parse_mail_date(&value),
             "content-transfer-encoding" => head.transfer_encoding = value.to_ascii_lowercase(),
             "content-type" => head.charset = content_type_charset(&value),
             _ => {}
         }
     }
     head
-}
-
-fn parse_mail_date(value: &str) -> Option<i64> {
-    chrono::DateTime::parse_from_rfc2822(value)
-        .ok()
-        .map(|date| date.timestamp_millis())
 }
 
 /// `Content-Type` 里的 `charset=`（去掉引号；大小写不敏感）。
@@ -1204,7 +1206,6 @@ fn extract_code_from_mail(header: &[u8], body: &[u8]) -> Option<MailCode> {
         sender: truncate_chars(&head.sender, 40),
         subject: truncate_chars(&head.subject, 60),
         code,
-        time: head.time,
     })
 }
 
@@ -1478,7 +1479,7 @@ mod tests {
     /// 构造一段带字面量的 `UID FETCH` 回复（格式与真实服务器一致）。
     fn fetch_reply(tag: u32, uid: u32, header: &str, body: &str) -> String {
         format!(
-            "* 1 FETCH (UID {uid} BODY[HEADER.FIELDS (SUBJECT FROM DATE)] {{{}}}\r\n{} BODY[TEXT]<0> {{{}}}\r\n{})\r\nA{tag:04} OK Fetch completed\r\n",
+            "* 1 FETCH (UID {uid} BODY[HEADER.FIELDS (SUBJECT FROM)] {{{}}}\r\n{} BODY[TEXT]<0> {{{}}}\r\n{})\r\nA{tag:04} OK Fetch completed\r\n",
             header.len(),
             header,
             body.len(),
@@ -1503,12 +1504,12 @@ mod tests {
         assert_eq!(update.new_unread, 1);
         assert!(update.codes.is_empty(), "FETCH 失败只影响内容，不影响数量");
         assert!(commands.contains(
-            "UID FETCH 57 (BODY.PEEK[HEADER.FIELDS (SUBJECT FROM DATE)] BODY.PEEK[TEXT]<0.65536>)"
+            "UID FETCH 57 (BODY.PEEK[HEADER.FIELDS (SUBJECT FROM)] BODY.PEEK[TEXT]<0.65536>)"
         ));
         assert!(!commands.contains("STORE"));
     }
 
-    /// 开关打开：只读（PEEK）取最新 UID 的正文，抽到验证码就带上发件人 / 主题 / 时间。
+    /// 开关打开：只读（PEEK）取最新 UID 的正文，抽到验证码就带上发件人 / 主题。
     #[test]
     fn code_preview_reads_newest_mail_with_peek_only() {
         let newest_header = "Subject: 登录验证码\r\nFrom: AgentHUD <no-reply@example.invalid>\r\nDate: Tue, 12 Nov 2024 10:00:00 +0800\r\n\r\n";
@@ -1537,13 +1538,12 @@ mod tests {
         assert_eq!(mail.code, "123456");
         assert_eq!(mail.subject, "登录验证码");
         assert_eq!(mail.sender, "AgentHUD <no-reply@example.invalid>");
-        assert!(mail.time.is_some(), "Date 头可解析时用邮件时间");
         // 大 UID（最新）先读；两封都用 PEEK，且没有任何改状态的命令。
         let fetch58 = commands.find("UID FETCH 58 ").expect("先读最新的 58");
         let fetch57 = commands.find("UID FETCH 57 ").expect("再读 57");
         assert!(fetch58 < fetch57);
         assert!(commands
-            .contains("BODY.PEEK[HEADER.FIELDS (SUBJECT FROM DATE)] BODY.PEEK[TEXT]<0.65536>"));
+            .contains("BODY.PEEK[HEADER.FIELDS (SUBJECT FROM)] BODY.PEEK[TEXT]<0.65536>"));
         assert!(!commands.contains("STORE"));
         assert!(!commands.contains(" FLAGS"));
     }
@@ -1651,7 +1651,6 @@ mod tests {
         assert_eq!(mail.code, "123456");
         assert_eq!(mail.subject, "验证码");
         assert_eq!(mail.sender, "你好 <no-reply@example.invalid>");
-        assert!(mail.time.is_none());
     }
 
     #[test]
@@ -1804,13 +1803,28 @@ mod tests {
         assert_eq!(extract_code(&html).as_deref(), Some("246810"));
     }
 
+    /// 验证码条目的 time 必须是到达时间（now_ms）而不是邮件 Date 头：
+    /// 轮询间隔内才检测到的验证码邮件也必须能被 take_fresh 判为新消息、
+    /// 弹出带「复制验证码」按钮的悬浮卡。
     #[test]
-    fn parses_date_header() {
-        let head = parse_head(b"Subject: x\r\nDate: Tue, 12 Nov 2024 10:00:00 +0800\r\n\r\n");
-        assert!(
-            head.time.is_some_and(|time| time > 1_700_000_000_000),
-            "RFC 2822 日期要能解析成毫秒时间戳"
+    fn code_item_uses_arrival_time_so_synth_card_pops_fresh() {
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let item = code_item(
+            -1,
+            MailCode {
+                sender: "AgentHUD <no-reply@example.invalid>".into(),
+                subject: "登录验证码".into(),
+                code: "123456".into(),
+            },
+            now_ms,
         );
+        assert_eq!(item.time, now_ms, "验证码条目的 time 要用到达时间");
+        let fresh = crate::island::popup::take_fresh(
+            &mut crate::island::popup::SeenState::default(),
+            &[item],
+            now_ms,
+        );
+        assert_eq!(fresh.len(), 1, "到达时间在新鲜窗口内必须弹悬浮卡");
     }
 
     #[test]

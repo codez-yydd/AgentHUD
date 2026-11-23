@@ -495,6 +495,7 @@ fn load_rows(limit: i64) -> Vec<(i64, String, i64, String, Vec<u8>)> {
 fn rows_to_items(
     rows: Vec<(i64, String, i64, String, Vec<u8>)>,
     prefs: &NotifyPrefs,
+    mail_code_preview: bool,
 ) -> Vec<NotifyItem> {
     let mut out = Vec::new();
     for (id, primary, arrival, ntype, payload) in rows {
@@ -514,8 +515,9 @@ fn rows_to_items(
         }
         let (sender, body) = toast_item_texts(kind, &texts, &prefs.body_preview);
         // 系统通知来源的邮件（没有 IMAP）：验证码就在 toast 文本里，就地用同一套
-        // 规则抽，不额外读取通知正文；其它来源不抽，避免误报。
-        let code = if kind == "mail" {
+        // 规则抽，不额外读取通知正文；抽码受「提取邮件验证码」开关控制，关闭后
+        // 只提示数量（code 为空）；其它来源不抽，避免误报。
+        let code = if kind == "mail" && mail_code_preview {
             mail::extract_code(&texts.join(" ")).unwrap_or_default()
         } else {
             String::new()
@@ -547,7 +549,7 @@ fn init_history(app: &AppHandle, gen: u64) {
     let max_id = rows.iter().map(|r| r.0).max().unwrap_or(0);
     MAX_ID.store(max_id, Ordering::SeqCst);
     let mut inbox = NotifyInbox {
-        items: rows_to_items(rows, &prefs),
+        items: rows_to_items(rows, &prefs, mail::code_preview_enabled()),
         ..NotifyInbox::default()
     };
     inbox.mark_read(None);
@@ -582,7 +584,7 @@ fn poll_new(app: &AppHandle, gen: u64) {
     // 同样按全部通知推进游标，未启用模块的通知不会反复重扫。
     let max_id = new_rows.iter().map(|r| r.0).max().unwrap_or(last);
     MAX_ID.store(max_id, Ordering::SeqCst);
-    let mut fresh = rows_to_items(new_rows, &prefs);
+    let mut fresh = rows_to_items(new_rows, &prefs, mail::code_preview_enabled());
     fresh.sort_by_key(|i| i.id);
     if fresh.is_empty() {
         return;
@@ -2260,7 +2262,7 @@ mod tests {
                 toast_payload(&["登录验证码", "您的验证码是 123456"]),
             ),
         ];
-        let items = rows_to_items(rows, &prefs);
+        let items = rows_to_items(rows, &prefs, true);
         assert_eq!(items.len(), 2);
         let mail = items.iter().find(|item| item.kind == "mail").expect("邮件条目");
         assert_eq!(mail.code, "123456");
@@ -2268,6 +2270,31 @@ mod tests {
         assert_eq!(mail.body, "您的验证码是 123456");
         let qq = items.iter().find(|item| item.kind == "qq").expect("QQ 条目");
         assert_eq!(qq.code, "");
+    }
+
+    /// 「提取邮件验证码」开关关闭时，邮件条目 code 保持空串，sender / body 规则不变；
+    /// 其它 kind 无论开关状态始终不抽码。
+    #[test]
+    fn toast_mail_code_extraction_respects_code_preview_switch() {
+        let prefs = prefs(&["mail", "qq"], &["mail"]);
+        let payload = toast_payload(&["登录验证码", "您的验证码是 123456"]);
+        let rows = vec![
+            (
+                21,
+                "Microsoft.OutlookForWindows".into(),
+                0,
+                "toast".into(),
+                payload.clone(),
+            ),
+            (22, "QQ".into(), 0, "toast".into(), payload),
+        ];
+        let items = rows_to_items(rows, &prefs, false);
+        assert_eq!(items.len(), 2);
+        let mail = items.iter().find(|item| item.kind == "mail").expect("邮件条目");
+        assert_eq!(mail.code, "", "开关关闭时邮件条目不抽码");
+        assert_eq!(mail.body, "您的验证码是 123456", "sender / body 规则不受开关影响");
+        let qq = items.iter().find(|item| item.kind == "qq").expect("QQ 条目");
+        assert_eq!(qq.code, "", "其它 kind 始终不抽码");
     }
 
     /// 系统通知里没有验证码时保持空串，不影响既有 sender/body 规则。
@@ -2281,7 +2308,7 @@ mod tests {
             "toast".into(),
             toast_payload(&["邮件", "2 封新邮件"]),
         )];
-        let items = rows_to_items(rows, &prefs);
+        let items = rows_to_items(rows, &prefs, true);
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].code, "");
     }
