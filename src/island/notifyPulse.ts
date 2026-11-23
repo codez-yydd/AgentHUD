@@ -17,6 +17,16 @@ export const NOTIFY_LEAD_MS = 1200;
 export const NOTIFY_PULSE_MS = 5000;
 /** 活动卡时长（沿用 showActivity 既有的 4000ms）。 */
 export const NOTIFY_ACTIVITY_MS = 4000;
+/**
+ * 验证码活动卡时长：要留出看清 6 位数并点击右侧复制按钮的时间，
+ * 普通通知仍按 NOTIFY_ACTIVITY_MS（4s）停留。
+ */
+export const NOTIFY_CODE_ACTIVITY_MS = 10_000;
+
+/** 活动卡停留时长：带验证码（code 非空）10s，其余仍是普通通知的 4s。 */
+export function notifyActivityMs(item: { code?: string } | null | undefined): number {
+  return item?.code?.trim() ? NOTIFY_CODE_ACTIVITY_MS : NOTIFY_ACTIVITY_MS;
+}
 /** 呼吸频率 0.5Hz：一个呼吸周期 2s（参考 elapsed * tau * 0.5）。 */
 export const NOTIFY_PULSE_PERIOD_MS = 2000;
 /** 整体透明度包络：起始 450ms / 结束前 1100ms 走 smoothstep（参考 0.45 / 1.1s）。 */

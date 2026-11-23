@@ -3386,20 +3386,23 @@ pub fn run() {
                 // 带页跳转经 pending page 补发（见 main_window.rs 的 PENDING_PAGE，
                 // 导航事件不会丢）。应用退出仍由托盘"退出 AgentHUD"完成。
                 //
-                // 本分支只拦"关闭=隐藏"的常驻窗口：设置窗（保住 WebView 与表单/
-                // 滚动状态）与灵动岛（默认开启的常驻 HUD）；panel/pet/session-hud
+                // 本分支只拦"关闭=隐藏"的常驻窗口：灵动岛（默认开启的常驻 HUD）；
+                // 设置窗已改为"关闭即销毁"（见下一分支），panel/pet/session-hud
                 // 的关闭路径（各自 Destroyed 挂点）不受影响
                 WindowEvent::CloseRequested { api, .. } => {
                     if window.label()
                         == island_settings_window::ISLAND_SETTINGS_WINDOW_LABEL
                     {
-                        // 灵动岛设置独立窗口："关闭=隐藏"（常驻秒开，见
-                        // island_settings_window.rs 模块 doc）。标题栏由设置页
-                        // 前端自绘，关闭按钮同样走 close() 触发本挂点；
-                        // prevent_close + hide 保住 WebView 与表单/滚动状态。
-                        // 岛被总开关关闭时另有收窗分支（island::set_enabled_on_main）
+                        // 灵动岛设置独立窗口：**关闭即销毁**——销毁窗口会同时释放
+                        // 该 WebView2 渲染进程（专用工作集约 46 MB），下次打开重走
+                        // island_settings_window.rs 的懒建窗路径（冷启动约 300 ms）。
+                        // prevent_close + destroy 取代了原先的 prevent_close + hide：
+                        // 标题栏由设置页前端自绘，×/Esc 命令路径同样落到销毁；
+                        // 未保存的草稿随窗口销毁丢失，保存并应用后关闭才是安全路径。
+                        // 岛被总开关关闭时另有收窗分支（island::set_enabled_on_main，
+                        // 同样调 destroy_island_settings_window_on_main）。
                         api.prevent_close();
-                        let _ = window.hide();
+                        let _ = window.destroy();
                     } else if window.label() == island::ISLAND_WINDOW_LABEL {
                         // 灵动岛「关闭」= 隐藏，不销毁 WebView；再次开启秒开
                         api.prevent_close();

@@ -20,6 +20,7 @@
   --np-text: #fff;
   --np-text2: rgba(255, 255, 255, 0.66);
   --np-accent: #3b82f6;
+  --np-low: #fb7185;
 }
 
 html[data-theme="light"] {
@@ -243,6 +244,50 @@ html[data-theme="sky"] .np-card__inner {
   font-size: 11.5px;
   font-weight: 400;
   color: var(--np-text2);
+}
+
+/* 邮件验证码：副标题让出右侧位置，胶囊按钮就地显示复制结果（1.2s） */
+.np-card__inner[data-code="1"] .np-card__sub {
+  width: 196px;
+}
+
+.np-card__copy {
+  position: absolute;
+  right: 12px;
+  top: 36px;
+  height: 26px;
+  padding: 0 11px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--np-accent) 45%, transparent);
+  background: color-mix(in srgb, var(--np-accent) 16%, transparent);
+  color: var(--np-text);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+  cursor: pointer;
+  transition:
+    background 0.15s ease,
+    border-color 0.15s ease,
+    transform 0.12s ease;
+}
+
+.np-card__copy:hover {
+  background: color-mix(in srgb, var(--np-accent) 26%, transparent);
+  border-color: var(--np-accent);
+}
+
+.np-card__copy:active {
+  transform: scale(0.96);
+}
+
+.np-card__copy[data-copied="1"] {
+  background: color-mix(in srgb, var(--np-accent) 30%, transparent);
+  border-color: var(--np-accent);
+}
+
+.np-card__copy[data-copied="0"] {
+  border-color: color-mix(in srgb, var(--np-low) 55%, transparent);
 }
 
 /* hover：用强调色描一圈，提示这一条可以点击打开来源应用 */

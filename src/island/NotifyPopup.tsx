@@ -21,6 +21,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { copyText } from "./api";
 import { KIND_COLORS, NOTIFY_BRAND_ICONS } from "./notifyBrand";
 
 const POPUP_SHOW_EVENT = "zbar://notify-popup-show";
@@ -51,6 +52,8 @@ interface PopupItem {
   name: string;
   sender: string;
   body: string;
+  /** 邮件验证码（仅 IMAP 抽取成功时有值） */
+  code?: string;
   time: number;
   read: boolean;
   exe: string;
@@ -119,12 +122,15 @@ function normalizeConfig(raw: PopupConfig | null): PopupConfig {
   };
 }
 
-/** 卡片标题 / 副标题：沿用消息页口径（有正文预览 → sender + body，否则用 name）。 */
+/** 卡片标题 / 副标题：沿用消息页口径（有正文预览 → sender + body，否则用 name）。
+ *  邮件抽到验证码时副标题优先显示验证码，卡片右侧同时给一个复制按钮。 */
 function cardText(item: PopupItem): { title: string; sub: string } {
   const kind = item.kind || "other";
   const sender = (item.sender ?? "").trim();
   const body = (item.body ?? "").trim();
   const name = (item.name ?? "").trim();
+  const code = (item.code ?? "").trim();
+  if (code) return { title: sender || name || "新消息", sub: `验证码 ${code}` };
   if (body) return { title: sender || name || "新消息", sub: body };
   const title = name || sender || "新消息";
   return { title, sub: kind === "mail" ? "新邮件" : "新消息" };
@@ -153,6 +159,9 @@ function clearTimer(map: Map<number, number>, key: number): void {
 export default function NotifyPopup() {
   const [cards, setCards] = useState<CardState[]>([]);
   const [config, setConfig] = useState<PopupConfig>(() => normalizeConfig(null));
+  /** 验证码复制反馈：卡片 key + 是否成功，就地显示约 1.2s */
+  const [copyState, setCopyState] = useState<{ key: number; ok: boolean } | null>(null);
+  const copyTimer = useRef<number | null>(null);
 
   const cardsRef = useRef<CardState[]>([]);
   const configRef = useRef<PopupConfig>(config);
@@ -442,6 +451,20 @@ export default function NotifyPopup() {
     void invoke("island_notify_open", { kind, exe: item.exe || null }).catch(() => {});
   };
 
+  /** 复制验证码：复用岛内 `copyText`（shot_copy_text），不引入剪贴板插件。
+   *  就地反馈 1.2s，点击不再冒泡去打开来源应用。 */
+  const copyCode = (card: CardState) => {
+    const code = (card.item.code ?? "").trim();
+    if (!code) return;
+    if (copyTimer.current != null) window.clearTimeout(copyTimer.current);
+    const settle = (ok: boolean) => {
+      setCopyState({ key: card.key, ok });
+      if (copyTimer.current != null) window.clearTimeout(copyTimer.current);
+      copyTimer.current = window.setTimeout(() => setCopyState(null), 1200);
+    };
+    copyText(code).then(() => settle(true), () => settle(false));
+  };
+
   const onCardClick = (card: CardState) => {
     if (exits.current.has(card.key)) return;
     suspendHold(card.key);
@@ -539,6 +562,7 @@ export default function NotifyPopup() {
       for (const hold of holds.current.values()) window.clearTimeout(hold.timer);
       for (const timer of exits.current.values()) window.clearTimeout(timer);
       if (syncTimer.current != null) window.clearTimeout(syncTimer.current);
+      if (copyTimer.current != null) window.clearTimeout(copyTimer.current);
       holds.current.clear();
       exits.current.clear();
       nodes.current.clear();
@@ -564,6 +588,7 @@ export default function NotifyPopup() {
     >
       {cards.map((card) => {
         const text = cardText(card.item);
+        const code = (card.item.code ?? "").trim();
         const accent = KIND_COLORS[card.item.kind] ?? KIND_COLORS.other;
         const icon = NOTIFY_BRAND_ICONS[card.item.kind];
         return (
@@ -584,7 +609,11 @@ export default function NotifyPopup() {
             onClick={() => onCardClick(card)}
             onContextMenu={(event) => event.preventDefault()}
           >
-            <div className="np-card__inner" style={{ transform: `scale(${scale})` }}>
+            <div
+              className="np-card__inner"
+              data-code={code ? "1" : undefined}
+              style={{ transform: `scale(${scale})` }}
+            >
               <span className="np-card__plate" />
               <span className="np-card__rim" />
               <span className="np-card__accent" style={{ background: accent }} />
@@ -599,6 +628,23 @@ export default function NotifyPopup() {
               </span>
               <span className="np-card__title">{text.title}</span>
               <span className="np-card__sub">{text.sub}</span>
+              {code ? (
+                <button
+                  type="button"
+                  className="np-card__copy"
+                  data-copied={
+                    copyState?.key === card.key ? (copyState.ok ? "1" : "0") : undefined
+                  }
+                  title="点击复制验证码"
+                  aria-label={`复制验证码 ${code}`}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    copyCode(card);
+                  }}
+                >
+                  {copyState?.key === card.key ? (copyState.ok ? "已复制" : "复制失败") : "复制"}
+                </button>
+              ) : null}
             </div>
           </article>
         );

@@ -284,6 +284,18 @@ export function NotifyPage({ draft }: PageProps) {
           />
         </Row>
         <Row
+          title="提取邮件验证码"
+          desc="仅读取新邮件正文用于提取验证码，不保存邮件内容；关闭后只提示新邮件数量。"
+          tag={<UnsupportedTag draft={draft} keyName="mail.code_preview" />}
+          rowKey="mail.code_preview"
+        >
+          <Switch
+            checked={readFlag(draft, "mail.code_preview", true)}
+            ariaLabel="提取邮件验证码"
+            onChange={(next) => draft.setValue("mail.code_preview", next)}
+          />
+        </Row>
+        <Row
           wide
           title="IMAP 账户"
           desc="填写 IMAP 服务器、端口（默认 993）、用户名和授权码或应用专用密码，开启账户后保存并应用。空账户列表可从 Thunderbird 自动填入服务器和用户名。"

@@ -4997,6 +4997,10 @@ html.island-preview .island::after {
 }
 
 .compact-activity-copy b {
+  /* 标题（验证码）优先不压缩：先让右侧发件人 ellipsize，避免超长发件人把
+     「验证码 AB12CD」截成「验证码 AB1…」。真放不下时最多占满整行。 */
+  flex: 0 0 auto;
+  max-width: 100%;
   font-size: calc(13px * var(--fs-scale, 1));
   font-weight: 650;
   white-space: nowrap;
@@ -5022,6 +5026,48 @@ html.island-preview .island::after {
 .compact-activity-copy b.tone-down,
 .compact-activity-copy em.tone-down {
   color: var(--stock-down);
+}
+
+/* 验证码卡右侧复制按钮：固定 24px（不随 --fs-scale 放大，40px 高卡片会撑破）。
+   成功 / 失败都就地反馈（按钮态 + 标题临时换文案），不弹岛底部 toast。 */
+.compact-activity-copybtn {
+  width: 24px;
+  height: 24px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  border: 1px solid var(--hairline);
+  background: var(--panel);
+  color: var(--text);
+  cursor: pointer;
+  transition:
+    border-color 0.15s var(--spring-panel, ease),
+    background 0.15s var(--spring-panel, ease),
+    transform 0.12s var(--spring-panel, ease);
+}
+
+.compact-activity-copybtn:hover {
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  background: var(--panel-strong);
+}
+
+.compact-activity-copybtn:active {
+  transform: scale(0.94);
+}
+
+.compact-activity-copybtn:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 60%, transparent);
+  outline-offset: 1px;
+}
+
+.compact-activity-copybtn.is-copied {
+  background: var(--accent-soft);
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+.compact-activity-copybtn.is-failed {
+  border-color: color-mix(in srgb, var(--low) 55%, transparent);
 }
 
 .compact-activity.is-volume {
@@ -5174,6 +5220,12 @@ html.island-preview .island::after {
 .compact-surface.is-vertical .compact-volume-track {
   width: 100%;
   flex: 0 0 6px;
+}
+
+/* 竖排 48px 宽放不下复制按钮：按钮不渲染宽度，复制入口保留在消息页与
+   桌面悬浮通知卡；CSS 兜底隐藏，避免极窄胶囊被按钮撑开。 */
+.compact-surface.is-vertical .compact-activity-copybtn {
+  display: none;
 }
 
 /* ============================================================
@@ -5793,6 +5845,16 @@ html.island-preview .island::after {
   font: inherit;
   text-align: left;
   cursor: pointer;
+  /* 历史行由 button 改成 div[role=button]（行内要再放复制按钮），
+     保留按钮的「不可选中」手感 */
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* 键盘焦点圈（div + role=button 不会自带 :focus-visible 样式） */
+.msg-history-row:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 60%, transparent);
+  outline-offset: -2px;
 }
 
 .msg-history-row:hover {
@@ -5858,6 +5920,56 @@ html.island-preview .island::after {
   font-size: calc(10.5px * var(--fs-scale, 1));
   color: var(--faint);
   font-variant-numeric: tabular-nums;
+}
+
+/* 邮件验证码 chip：等宽数字 + 微字距，默认显示验证码，点一下复制。
+   复制成功 1.4s 显示「勾 + 已复制」，失败 1.6s 显示「复制失败」。 */
+.msg-code-chip {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 20px;
+  padding: 0 7px;
+  border-radius: 6px;
+  border: 1px solid var(--hairline);
+  background: var(--panel);
+  color: var(--text);
+  font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  /* 字号跟随全局缩放但设 15px 上限：行高固定 30px，放大过多会溢出 */
+  font-size: calc(min(15px, 13px * var(--fs-scale, 1)));
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  transition:
+    border-color 0.15s var(--spring-panel, ease),
+    background 0.15s var(--spring-panel, ease),
+    transform 0.12s var(--spring-panel, ease);
+}
+
+.msg-code-chip:hover {
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  background: var(--panel-strong);
+}
+
+.msg-code-chip:active {
+  transform: scale(0.96);
+}
+
+.msg-code-chip:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 60%, transparent);
+  outline-offset: 1px;
+}
+
+.msg-code-chip.is-copied {
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  background: var(--accent-soft);
+}
+
+.msg-code-chip.is-failed {
+  border-color: color-mix(in srgb, var(--low, #fb7185) 55%, transparent);
+  background: rgba(251, 113, 133, 0.12);
 }
 
 .msg-history-empty {
@@ -8030,93 +8142,23 @@ body,
 }
 
 .liquid-glass,
-.liquid-content-clip,
 .liquid-outline {
   clip-path: var(--liquid-clip, inset(50%));
 }
 
-/* ---- 第三轮修复（2026-11-17）：空闲态圆角矩形裁剪 + 合成器呼吸 ----
-   休眠时 JS 由最终 body rect 与四角 radii 换算写入 --idle-clip（inset
-   round 圆角矩形，root 上与 --liquid-clip 同元素）并挂 is-idle：三层裁剪
-   由矢量 path() 临时切换为 Chromium 合成器原生支持的圆角矩形，呼吸动画
-   才能真正跑 GPU 合成器、零重绘（见下方事故记录第三轮结论）。唤醒即
-   摘除 is-idle，矢量 path() 只在形变期（展开/收起、拖拽、drip、neck、
-   poke）使用。内容层只换裁剪、不参与动画：与旧版「外壳呼吸、内容不动」
-   语义一致，内容与命中区域不随呼吸晃动。仅收起态（is-collapsed）、
-   非拖拽时生效；无 is-idle 时本段全部不命中，形变期 CSS 与现状一致。 */
-.island-root.is-collapsed.is-idle:not(.is-dragging) .liquid-glass,
-.island-root.is-collapsed.is-idle:not(.is-dragging) .liquid-content-clip,
-.island-root.is-collapsed.is-idle:not(.is-dragging) .liquid-outline {
-  clip-path: var(--idle-clip, inset(50%));
-}
-
-/* 外壳两层呼吸：glass（底色/染色/底板容器）与 outline（SVG 描边）。
-   内容层（liquid-content-clip）见上：只换裁剪不缩放。
-   no-breath（配置 breath_enabled = false）时门掉动画，圆角裁剪照常。 */
+/* 空闲与交互共用完整液态裁剪，保留贴边两端外扩的刘海肩角。
+   外壳两层（glass / outline）只做透明度呼吸，不缩放矢量裁剪，避免
+   逐帧重光栅；内容和命中区域不动。no-breath 关闭呼吸但不改变轮廓。 */
 .island-root.is-collapsed.is-idle:not(.is-dragging):not(.no-breath) .liquid-glass,
 .island-root.is-collapsed.is-idle:not(.is-dragging):not(.no-breath) .liquid-outline {
   animation: liquid-breath 3.7s ease-in-out infinite;
-  will-change: transform;
-}
-
-@keyframes liquid-breath {
-  0%,
-  100% {
-    transform: scale(1);
-  }
-  50% {
-    transform: scale(1.07);
-  }
-}
-
-/* 原生底板跟随主体几何。把空闲呼吸留在表面高光和染色的透明度上。 */
-.island-root[data-native-glass].is-collapsed.is-idle:not(.is-dragging):not(.no-breath) :is(.liquid-glass, .liquid-outline) {
-  animation-name: liquid-native-breath;
   will-change: opacity;
 }
 
-@keyframes liquid-native-breath {
+@keyframes liquid-breath {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.92; }
 }
-
-/* 呼吸锚点 = 液桥锚线（吸附边内缩 70px 的边线与画布中线交点）：贴边胶囊
-   从屏幕边「长出来」，缩放锚定在融合点，衔接处不滑动 */
-.island-root[data-edge="top"].is-collapsed.is-idle:not(.is-dragging) .liquid-glass,
-.island-root[data-edge="top"].is-collapsed.is-idle:not(.is-dragging) .liquid-outline {
-  transform-origin: 390px 70px;
-}
-
-.island-root[data-edge="bottom"].is-collapsed.is-idle:not(.is-dragging) .liquid-glass,
-.island-root[data-edge="bottom"].is-collapsed.is-idle:not(.is-dragging) .liquid-outline {
-  transform-origin: 390px 562px;
-}
-
-.island-root[data-edge="left"].is-collapsed.is-idle:not(.is-dragging) .liquid-glass,
-.island-root[data-edge="left"].is-collapsed.is-idle:not(.is-dragging) .liquid-outline {
-  transform-origin: 70px 316px;
-}
-
-.island-root[data-edge="right"].is-collapsed.is-idle:not(.is-dragging) .liquid-glass,
-.island-root[data-edge="right"].is-collapsed.is-idle:not(.is-dragging) .liquid-outline {
-  transform-origin: 710px 316px;
-}
-
-/* 保险丝（独立回退，勿与上面的 transform 版耦合）：若 CDP 实测 transform
-   呼吸在圆角矩形裁剪下仍触发重绘/内存增长，取消本段注释，并把上面
-   animation 一行中的动画名 liquid-breath 改为 liquid-breath-opacity——
-   切换只动动画名一处，其余样式零改动。opacity 动画只调合成器层 alpha，
-   与裁剪形态无关，任何情况下都不触发重绘。
-@keyframes liquid-breath-opacity {
-  0%,
-  100% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0.92;
-  }
-}
-*/
 
 .liquid-backdrops {
   position: absolute;
@@ -8249,11 +8291,10 @@ body,
 }
 
 /* ============================================================
-   ⚠️ 原生内存泄漏事故记录（2026-11-17，两轮 CDP 复测实锤 + 第三轮
-   结构性修复——呼吸回归）
+   ⚠️ 原生内存泄漏事故记录（2026-11-17；2026-11-23 保留刘海轮廓）
    liquid 外壳用 clip-path: path(...)（--liquid-clip）做矢量裁剪，
-   矢量 clip 无法合成器化：其子树内任何逐帧动画——包括 transform
-   动画与 CSS 自定义属性动画——都会强制 780×632 全画布重绘重光栅。
+   矢量 clip 下的路径、transform 与 CSS 自定义属性逐帧变化曾导致
+   780×632 全画布重绘重光栅。外壳 opacity 呼吸单独交给合成器。
    第一轮：liquid 主循环 JS 呼吸 + 永动 rAF 每帧重写路径（≈440MB/min，
    详见 IslandApp.tsx 事故注释，已改为空闲休眠 + 500ms 轮询唤醒）。
    第二轮：JS 休眠后泄漏仍以 ≈1.9GB/min 增长（岛渲染进程 2.5 分钟
@@ -8265,35 +8306,22 @@ body,
      3. island-flow-x / island-flow-y——沿边流光渐变逐帧位移。
    决定性 A/B：页面内 document.getAnimations().forEach(a => a.pause())
    后内存瞬间冻结，30 秒内 5.7GB→42MB 全部释放。
-   第一、二轮结论：矢量 path() 裁剪子树内必须零逐帧动画——收起态
-   静止即静止，三个常驻动画全部删除。此后在 .liquid-glass /
-   .liquid-outline / .liquid-content-clip 及其后代上新增任何
-   animation 前，先想清楚矢量 clip 的代价。条件性动画（加载
+   第一、二轮结论：收起态静止后停止几何动画，三个常驻动画全部删除。
+   此后在 .liquid-glass / .liquid-outline / .liquid-content-clip
+   及其后代上新增动画前，必须考虑矢量 clip 的代价。条件性动画（加载
    skeleton / 会议红点 / 播放波形等随状态出现消失、不常驻的）不在
    此列。
-   第三轮（呼吸回归·结构性修复）：根修不是永久删动画，而是「空闲态
-   裁剪合成器化 + 动画仅在 is-idle 挂载」——休眠时 JS 用最终 body
-   rect + 四角 radii 写 --idle-clip（inset(... round ...) 圆角矩形
-   裁剪，Chromium 合成器原生支持），三层临时切换过去（见上方 idle
-   裁剪段）；liquid-breath 仅在 .is-idle 下挂到 .liquid-glass /
-   .liquid-outline（transform 动画在圆角矩形裁剪下真正跑 GPU 合成
-   器，零重绘；保险丝：若实测仍重绘，改用 liquid-breath-opacity，
-   见上方注释）。矢量 path() 只在形变期（展开/收起、拖拽、drip、
-   neck、poke）使用；island-fillet-breathe（自定义属性动画，任何
-   裁剪下都是逐帧主线程 style recalc，无法合成器化）与
-   island-flow-x/y（P4 起的死样式）维持删除。
-   第三轮已知取舍（验收与回归时盯这里）：
-     a) 贴边静止轮廓带液桥肩角——gap=0、neck=1 时 neckPath 并入主
-        轮廓，贴边侧比 body 宽约 fillet=13px 的外扩肩部（外加 1.5px
-        唇边，位于离屏带不可见），圆角矩形裁剪表达不了；休眠/唤醒
-        瞬间肩角会各跳变一次（±13px、仅贴边侧顶部 13px 高的带）。
-     b) 悬停挤压静止（poke≠0 且已 settle）不进入 is-idle：此时路径
-        是 polyPath 形变 blob，更非圆角矩形，保持矢量裁剪原样休眠、
-        不呼吸；指针离开后回到纯圆角矩形静止态才会开始呼吸。
+   第三轮曾在空闲时切换 inset round 裁剪并恢复 transform 呼吸，但
+   圆角矩形无法表达 neckPath 的外扩肩角，导致休眠/唤醒时刘海跳变。
+   2026-11-23：is-idle 只挂载外壳 opacity 呼吸，不再切换裁剪或缩放。
+   JS 休眠与 500ms 输入轮询保留，
+   路径和 SVG d 在静止时不变；悬停挤压静止仍只休眠、不呼吸。
+   island-fillet-breathe 与 island-flow-x/y 维持删除。
    ============================================================ */
 
 /* ---- 内容壳：只负责内容裁切与指针事件；背景/描边/阴影全部在 liquid 层 ---- */
 .liquid-content-clip {
+  clip-path: var(--liquid-body-clip, inset(50%));
   position: absolute;
   inset: 0;
   z-index: 3;
@@ -8324,8 +8352,7 @@ body,
   background: none !important;
   border: 0 !important;
   box-shadow: none !important;
-  border-radius: var(--body-r-tl, 0) var(--body-r-tr, 0) var(--body-r-br, 0)
-    var(--body-r-bl, 0);
+  border-radius: var(--body-radius, 0);
   overflow: hidden;
   isolation: isolate;
   transform: none !important;
@@ -8348,8 +8375,6 @@ body,
   min-width: 0;
   min-height: 0;
   margin: 0 !important;
-  border-radius: var(--body-r-tl, 0) var(--body-r-tr, 0) var(--body-r-br, 0)
-    var(--body-r-bl, 0);
 }
 
 .island-root.is-open .island {
@@ -8453,8 +8478,7 @@ body,
   pointer-events: auto;
 }
 
-/* 新外壳下内容裁切必须跟 body 四角一致（旧 .island.open / edge-* 的
-   26/24px 圆角会盖掉贴边侧直角）。 */
+/* 不同摆放位置始终按主体的四个圆角裁切内容。 */
 .island-root .island,
 .island-root .island.open,
 .island-root .island.collapsed,
@@ -8462,8 +8486,7 @@ body,
 .island-root.edge-right .island,
 .island-root.edge-left .island.open,
 .island-root.edge-right .island.open {
-  border-radius: var(--body-r-tl, 0) var(--body-r-tr, 0) var(--body-r-br, 0)
-    var(--body-r-bl, 0) !important;
+  border-radius: var(--body-radius, 0) !important;
 }
 
 

@@ -754,6 +754,7 @@ mod tests {
             name: "QQ".into(),
             sender: String::new(),
             body: String::new(),
+            code: String::new(),
             time: 0,
             read: false,
             exe: String::new(),

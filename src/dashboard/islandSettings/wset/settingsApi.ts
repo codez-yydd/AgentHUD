@@ -438,11 +438,13 @@ export async function translateText(text: string, target = "zh"): Promise<string
 
 // ============================================================ 窗口 / 文件对话框
 
-/** 收起设置窗（关闭 = 隐藏，见 src-tauri 侧 prevent_close 逻辑）。
+/** 关闭设置窗（关闭 = 销毁并释放 WebView2 渲染进程，见 src-tauri 侧 prevent_close + destroy）。
  *
- * 优先走专属命令 island_settings_window_hide（后端接线后由它负责隐藏）；
- * 命令还没接线 / 调用失败时退回窗口自身的 hide()（capabilities 里的
- * core:window:allow-hide 就是为这条兜底路径加的），保证「关闭 / Esc」在
+ * 优先走专属命令 island_settings_window_hide（名字是历史遗留，行为已是销毁窗口；
+ * 未保存的草稿随之丢失，保存并应用后再关闭才是安全路径）；
+ * 命令还没接线 / 调用失败时退回窗口自身的 close()（触发 lib.rs 的
+ * CloseRequested → prevent_close + destroy，capabilities 里的
+ * core:window:allow-close 就是为这条兜底路径加的），保证「关闭 / Esc」在
  * 前后端接线期间也不会变成一个点了没反应的按钮。 */
 export async function hideSettingsWindow(): Promise<void> {
   if (!IS_TAURI) {
@@ -454,7 +456,7 @@ export async function hideSettingsWindow(): Promise<void> {
   } catch {
     try {
       const { getCurrentWindow } = await import("@tauri-apps/api/window");
-      await getCurrentWindow().hide();
+      await getCurrentWindow().close();
     } catch {
       /* 两个路径都失败：窗口保持打开，用户在界面上仍可继续操作 */
     }

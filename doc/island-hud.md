@@ -18,7 +18,7 @@ Rust 和 React。许可证见 [第三方声明](../THIRD_PARTY_NOTICES.md)。
   彩色未读角标，30s 自动轮换（clock↔pet），音乐自动切视图 / 暂停 8s 回原视图。
 - **主题**：auto / light / dark / rouge / sky；auto 按桌面底板亮度 0.64 / 0.42 阈值
   + 3s 滞回切换。
-- **液态动效**：贴边内凹圆角、圆角呼吸、沿边流光、按压凹陷、拖拽泪滴形变、
+- **液态动效**：贴边内凹圆角、明暗呼吸、沿边流光、按压凹陷、圆角拖拽、
   液桥拉丝、断桥残滴和吸附冲过挤压回弹。玻璃底板采用实时桌面纹理与边缘折射。
 - **消息**：toast 通知库（A 路）、任务栏闪烁 `HSHELL_FLASH`（B 路）、
   飞书 / 钉钉右下角浮窗 UI Automation（D 路）、模块开关、磁贴 / 历史 / 全部已读 /
@@ -308,7 +308,7 @@ Rust 和 React。许可证见 [第三方声明](../THIRD_PARTY_NOTICES.md)。
 | 玻璃 / 主题 | 五套主题（auto/light/dark/rouge/sky）+ 透明度 0–90；auto 亮度采样 0.64/0.42 + 3s 滞回；双趟高斯模糊、边缘折射和 RGB 色散；无外投影 |
 | 字体 | 设置窗「外观与交互」可用步进器设 10–18px（0.5 步进、恢复默认）；只缩放文字，图标和窗口几何不变 |
 | 窗口 | 780×632 透明置顶不抢焦；上/下/左/右四边吸附，bottom 时导航在面板底部；收起/展开按边定位；全屏自动隐藏；Windows 不使用系统 Acrylic 背板 |
-| 液体动效 | 贴边内凹圆角、圆角呼吸、沿边流光、按压凹陷、拖拽泪滴、液桥拉丝、断桥残滴、吸附冲过挤压 |
+| 液体动效 | 贴边内凹圆角、明暗呼吸、沿边流光、按压凹陷、圆角拖拽、液桥拉丝、断桥残滴、吸附冲过挤压 |
 | 可穿透 | Windows `WS_EX_TRANSPARENT` + `WH_MOUSE_LL`；右键菜单 / 滚轮事件转发；2s grace + 前端 1.9s 收口 + `island_passthrough_restore` |
 | 设置 | 齿轮打开的独立小窗（`island-settings.html`，920×660、透明圆角 24、自绘标题栏 + 14 页分类侧栏 + 状态页脚）；草稿态 + 保存并应用 / 取消 / Ctrl+S / Esc 确认 / 校验定位 / 恢复本页默认值 / 导入导出 / 恢复出厂；配置走独立 `settings.json` 文档通道并与岛运行时双向同步；板块可显隐（消息 / 股票 / 天气 / 控制 / 剪贴板 / 截图 / 工具 / 翻译，仅主页固定，隐藏即停对应后台资源，见「交互 → 板块显隐」）；窗口关闭 = 隐藏，随灵动岛总开关一并收起 |
 | 配置 | `~/.agenthud/settings.json` 是设置窗的权威文档（原子写、只写 patch 键、未知额外字段原样保留）；与 `~/.agenthud/island.db` 的 `IslandConfig` 双向同步；首启 seed；旧 `island.json` 自动迁移进 SQLite |
@@ -323,14 +323,14 @@ Rust 和 React。许可证见 [第三方声明](../THIRD_PARTY_NOTICES.md)。
 | C. Thunderbird mbox | **未实现**（参考实现的兜底路，不在本轮范围） |
 | D. 飞书 / 钉钉浮窗 | 每 1s `EnumWindows` 找工作区右下角的无边框置顶工具窗口（160–900 × 40–600），用 UI Automation 读发送人 / 正文（读不到只提醒「新消息」） |
 | E. DeepSeek 桌面版 | 增量读取本地 DSH 会话日志，回答完成、失败或被截断时生成消息。可控制子助手、预览字数和 Windows 前台时的提示框 |
-| F. IMAP | 用 SSL/TLS 定期只读检查 `INBOX` 的新增未读邮件，每个账号每次检查最多生成一条数量提醒 |
+| F. IMAP | 用 SSL/TLS 定期只读检查 `INBOX` 的新增未读邮件，每个账号每次检查最多生成一条数量提醒；开启「提取邮件验证码」后（默认开），额外用 `BODY.PEEK` 读取最新 ≤5 封新邮件的头部与 64KB 正文，在内存里抽验证码，抽到就每封一条提醒（≤3 条），一封都没抽到仍退回数量提醒。全程 `EXAMINE` + `PEEK`，不改服务器已读状态，正文不落盘、不进日志。没有 IMAP 账户时，Windows 通知库里的邮件 toast 也会用同一套抽码规则就地识别（只读 toast 文本，不额外读取通知正文） |
 
 - **模块开关**：`notifyModules`（默认 `["qq","wechat","mail"]`，
   Rust 归一化顺序 qq/wechat/mail/feishu/dingtalk/dsh，允许空数组 = 一个都不显示）；
   `notifyBodyPreview`（默认 `["feishu","dingtalk"]`，控制哪些模块额外读正文）。
   消息页磁贴 / 历史 / 角标 / 未读都按当前开关过滤。
 - 在设置的「消息与邮件」中启用 DeepSeek 模块和「读取 DeepSeek 桌面版完成通知」。日志目录默认 `~/.dsh/sessions`。开启「前台不弹窗」时，Windows 前台的 DeepSeek 回答仍会进入消息列表。
-- 邮件模块需要启用，并填好 IMAP 服务器、端口、账号与授权码或应用专用密码。默认端口为 993，默认间隔为 120 秒。首次成功检查建立基线，后续新增未读才提醒。首次导入 Thunderbird 账号时只预填服务器、端口和用户名。
+- 邮件模块需要启用，并填好 IMAP 服务器、端口、账号与授权码或应用专用密码。默认端口为 993，默认间隔为 120 秒。首次成功检查建立基线，后续新增未读才提醒。首次导入 Thunderbird 账号时只预填服务器、端口和用户名。邮件模块打开「提取邮件验证码」时（`mail.code_preview`，默认开），每轮只读拉取最新 ≤5 封新邮件的头部与正文前 64KB（`BODY.PEEK`，单条 64KB 上限、内容读取整轮 6 秒预算），在内存里按关键词抽 4–8 位验证码：抽到时每封一条独立提醒（sender / 主题 / 验证码 / 邮件时间，最多 3 条），消息页显示等宽验证码 chip、点一下复制并就地提示「已复制」，收起态活动卡显示「验证码 123456」；一封都没抽到仍按「N 封新邮件」聚合。关闭开关后行为与旧版完全一致（不发任何 FETCH）。Thunderbird 运行时同账号仍由 Thunderbird 提醒，不再投递验证码条目。
 - **磁贴页**：84px 模块磁贴；`+` 菜单列出未添加模块，点击写 `notifyModules`；
   右键磁贴可「清空该模块消息」（`island_notify_clear(kind)`）或「移除模块」（写
   `notifyModules`）；「全部已读」对每个显示模块调
@@ -340,12 +340,21 @@ Rust 和 React。许可证见 [第三方声明](../THIRD_PARTY_NOTICES.md)。
 - **历史行**：最多 30 行 × 30px，kind 圆点 + 模块名 + 描述 + HH:MM；点击打开来源
   应用（优先 `notifyOpen.<kind>` 配置路径，其次按 `exe` 聚焦已运行窗口，最后按
   常见安装路径启动）；磁贴点击同样打开来源应用并清该
-  模块未读。
+  模块未读。带验证码的邮件在描述与时间之间多一个等宽 chip（点击复制，成功
+  1.4s 显示「已复制」并弹底部提示胶囊，失败 1.6s 显示「复制失败」）；行本身
+  是 `div[role=button]`（Enter / Space 仍可打开来源应用），chip 的点击与键盘
+  事件不冒泡。
 - **微信未读汇总**：消息页将微信未读合为一行，显示灵动岛记录的未读总数。通过灵动岛打开微信或将消息标为已读时，汇总行随未读记录清除。
 - **文本规则**（Rust）：`sender` 仅 qq/wechat/feishu/dingtalk，且（有第二条文本或
   该 kind 未开正文预览）时取第一条前 **40 字**；`body` 仅给开了正文预览的 kind，
   取第二条（没有则第一条）前 **120 字**。前端描述再按「有 body → `发送人：正文`；
   mail → `新邮件`；有 sender → `发送人 发来消息`；否则 `新消息`」补全。
+  邮件验证码条目例外：`sender` 是发件人（≤40 字）、`body` 是主题（≤60 字，
+  空则「新邮件」）、新增 `code` 字段（camelCase），前端优先展示验证码 chip。
+  `code` 有两个来源：IMAP 读正文抽取（`mail.code_preview`），以及 Windows 通知库
+  的邮件 toast——后者只把 toast 文本节点用空格拼起来，用同一套关键词规则就地抽码
+  （不额外读取通知正文、不改 `toast_item_texts` 的 sender/body 规则）；都抽不到
+  时 `code` 为空串。
 - **事件 / 命令**：`zbar://island-notify` 推送 `{items, unread, wechatUnread}`；
   `island_notify` / `island_notify_mark_read()` / `island_notify_mark_read_kind(kind)` /
   `island_notify_clear(kind?)` / `island_notify_open(kind, exe?)` /
@@ -434,12 +443,12 @@ Rust 和 React。许可证见 [第三方声明](../THIRD_PARTY_NOTICES.md)。
 
 | 效果 | 实现要点 |
 | --- | --- |
-| 贴边内凹圆角 | 贴边时本体与液桥合成一个轮廓，边缘处过渡为 13px 的贝塞尔内凹弧 |
-| 圆角呼吸 | 贴边收起时，圆角以 1.7 rad/s 的角频率在基准值上下浮动 7% |
+| 贴边内凹圆角 | 贴边时本体与液桥合成一个轮廓，边缘处过渡为 13px 的贝塞尔内凹弧；交互和闲置始终保留两端外扩的刘海肩角 |
+| 明暗呼吸 | 收起且静止时，外壳透明度以 3.7s 周期在 1 与 0.92 间变化；轮廓和内容位置保持稳定，液态几何计算进入休眠 |
 | 沿边流光 | 沿轮廓缓慢游走的高光 |
 | 按压凹陷 | 悬停及按住时沿远离屏幕边的轮廓产生局部凹陷，松手后由欠阻尼弹簧回弹 |
-| 拖拽泪滴 | 速度驱动后缘拖尾及收窄，前缘略微鼓起 |
-| 液桥拉丝 / 断桥残滴 | 液桥沿工作区边线拉出沙漏形颈部，离边超过 64px 断开；残滴留在屏幕边缘缩回，靠近到 30px 后重新接通 |
+| 圆角拖拽 | 拖拽和位置吸附期间，岛体保留四个圆角，位置稳定后外壳平滑长出贴边刘海肩角 |
+| 液桥拉丝 / 断桥残滴 | 液桥独立伸缩，连接端藏在圆角主体背后；触边时收细，离边 64px 时断开并留下缩回的残滴，重新靠近至 30px 时接通 |
 | 吸附冲过挤压 | 松手时速度投影到沿边与法向弹簧，越过边线时主体压扁，随后回弹 |
 | 玻璃折射 | 每张新桌面纹理做两趟高斯模糊，液态动画在模糊纹理上更新折射坐标 |
 
@@ -730,7 +739,7 @@ patch 写入。文件用 tmp + rename 原子落盘（pretty JSON），读入时�
 | `media` | `auto_show` `lyrics` `netease_log` `playback_logs[]` `lyrics_sources` `lyrics_custom_url` `priority[]` | 写回岛配置；播放日志由 Windows 媒体轮询读取 |
 | `notify` | `modules[]` `body_preview[]` `popup{enabled,position,size}` `open{qq,wechat,mail,feishu,dingtalk,dsh,open_manual[]}` | `modules` / `body_preview` / `open.*` 写回（`open` → `notifyOpen`；`open_manual` 只存文档、不进 `IslandConfig`）；`popup.enabled` / `position` / `size` → `notifyPopupEnabled` / `notifyPopupPosition` / `notifyPopupSize`，由 `island::popup` 的浮窗消费（改完 `apply_config` 立即广播 `zbar://notify-popup-config`，无需重启）；启动时 `seed_detected_paths` 只填空的 `open.<kind>`，`open_manual` 里的 kind 不再覆盖 |
 | `dsh` | `enabled` `sessions_dir` `include_subagents` `skip_when_active` `body_chars` | 会话日志监听和 Windows 前台弹窗规则直接读取设置文档 |
-| `mail` | `interval_s` `imap[{host,port,user,password,enabled}]` | IMAP 检查服务直接读取设置文档，保存后在后台更新 |
+| `mail` | `interval_s` `imap[{host,port,user,password,enabled}]` `code_preview` | IMAP 检查服务直接读取设置文档，保存后在后台更新；`code_preview`（默认 `true`）控制是否只读拉取新邮件正文抽验证码，关闭时只发 LOGIN / EXAMINE / SEARCH / LOGOUT |
 | `stocks` | `watchlist[]` `interval` `pct_alert` | 写回岛配置 |
 | `weather` | `api_key` `city` `lat` `lon` `units` `interval_min` `cities[{name,lat,lon}]` | `city` / `lat` / `lon` / `cities[]` 写回（绑定城市与自定义城市列表）；`api_key` / `units` / `interval_min` 由 `island::weather` 后台线程消费（Key 非空走 OpenWeather、失败回退 Open-Meteo；单位对两个数据源都生效；间隔 5–180 分钟），保存后立即 `refresh()` 补取 |
 | `translate` | `custom_enabled` `platform` `platform_model` `api_key` `base_url` `model` `import_from`（旧配置） | `island_translate` 与剪贴板翻译热键直接读取。设置页可点「测试翻译」 |

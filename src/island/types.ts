@@ -537,6 +537,8 @@ export interface NotifyItem {
   name: string;
   sender: string;
   body: string;
+  /** 邮件验证码：只有 IMAP 邮件抽取成功时才有；点击 chip 复制 */
+  code?: string;
   time: number;
   read: boolean;
   /** 来源进程名（小写，可能为空），点消息时优先用它定位应用 */

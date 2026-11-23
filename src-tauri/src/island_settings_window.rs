@@ -14,11 +14,13 @@
 //!   主线程事件循环上下文调用；
 //! - 窗口形态：decorations(false)（前端自绘标题栏）、resizable(true)、center()、
 //!   不置顶、任务栏可见；
-//! - **关闭 ≠ 退出**：用户点自绘标题栏"×"（前端请求收起）只隐藏窗口，挂点
-//!   在 lib.rs 的 WindowEvent::CloseRequested 分支（prevent_close + hide，
-//!   与 main-window 同款写法）——WebView 与页面状态原样保留，再次打开走
-//!   show + unminimize + set_focus 秒开，应用退出仍由托盘"退出 AgentHUD"
-//!   完成。
+//! - **关闭即销毁**：用户点自绘标题栏"×" / Esc 时前端走命令
+//!   island_settings_window_hide（名字是历史遗留，行为已是销毁），Alt+F4 /
+//!   系统关闭则由 lib.rs 的 WindowEvent::CloseRequested 分支
+//!   prevent_close + destroy 接手——两条路径都销毁窗口并释放该 WebView2
+//!   渲染进程（专用工作集约 46 MB），下次打开重新走懒建窗（冷启动约
+//!   300 ms）。代价是**未保存的草稿随窗口销毁丢失**，安全路径是「保存并
+//!   应用后再关闭」。应用退出仍由托盘"退出 AgentHUD"完成。
 //!
 //! 与 main_window.rs 的差异（刻意为之，改任何一条都要先看这里的理由）：
 //! - **透明窗**：`.transparent(true)` + `.shadow(false)` + 背景色全透明，圆角与
@@ -28,7 +30,8 @@
 //!   prebuild 隐藏窗把 WebView 冷启动挪出首次点击路径；本窗口是低频的
 //!   附属设置页，多数用户可能从不打开，预热等于白吃一份 WebView2 进程与
 //!   内存（项目对常驻窗口内存有实际压力）。因此这里**没有** `visible(false)`
-//!   的预建路径，首次点齿轮才建窗，第二次起只剩 show + focus；
+//!   的预建路径，首次点齿轮才建窗；窗口关闭即销毁，之后再打开仍走这条懒建
+//!   路径（冷启动约 300 ms），不保留常驻 WebView；
 //! - label / 入口页面不同：label "island-settings"（与 capabilities/
 //!   island-settings.json 的 windows 白名单同步），页面
 //!   island-settings.html（仓库根目录的多入口页面，vite.config.ts 的
@@ -39,8 +42,9 @@
 //! - **生命周期跟随灵动岛**：岛被总开关关闭时（island::set_enabled_on_main
 //!   的 enabled=false 路径，含 island_set_enabled / island_toggle /
 //!   island_set_config 三条命令触发）调
-//!   hide_island_settings_window_on_main 一并收起本窗口，避免岛消失后留下
-//!   一个没有入口的孤儿设置窗。
+//!   destroy_island_settings_window_on_main 一并**销毁**本窗口（不是隐藏），
+//!   避免岛消失后留下一个没有入口的孤儿设置窗，也不让它的 WebView2 渲染
+//!   进程继续常驻。
 //!
 //! 建窗铁律（照搬 pet.rs / session_hud.rs / main_window.rs，事故记载见
 //! pet.rs）：
@@ -75,9 +79,10 @@ pub const ISLAND_SETTINGS_WINDOW_MIN_HEIGHT: f64 = 520.0;
 const ISLAND_SETTINGS_OP_TIMEOUT: Duration = Duration::from_secs(8);
 
 /// 打开灵动岛设置窗口命令（岛展开面板齿轮入口）。
-/// - 窗口已存在（含"关闭=隐藏"后仍存活、或被岛关闭流程收起）→
+/// - 窗口已存在（正常关闭会销毁窗口，这里只在重复打开等竞态下命中）→
 ///   show + unminimize + set_focus；
-/// - 不存在 → 主线程懒建窗（island-settings.html）并显示聚焦。
+/// - 不存在（首次打开，以及每次关闭 / 岛关闭销毁后的重开）→ 主线程懒建窗
+///   （island-settings.html）并显示聚焦，冷启动约 300 ms。
 ///
 /// async + channel + 超时等待：见模块 doc 的建窗铁律。返回 Err 时前端只需
 /// 静默（建窗失败由后端日志与错误串表达），不阻断岛内其它交互。
@@ -104,9 +109,9 @@ pub async fn open_island_settings_window(app: AppHandle) -> Result<(), String> {
 /// （WebviewWindowBuilder 对同名 label 会直接报错）。
 pub fn open_island_settings_window_on_main_thread(app: &AppHandle) -> Result<(), String> {
     if let Some(win) = app.get_webview_window(ISLAND_SETTINGS_WINDOW_LABEL) {
-        // 关闭=隐藏后的秒开路径：显示 → 取消最小化 → 聚焦（顺序固定，
-        // 最小化状态下直接 set_focus 在 Windows 上不会还原窗口；
-        // 同主窗口的显示顺序）
+        // 窗口仍在（正常关闭已销毁，这里只在重复打开等竞态下命中）：显示 →
+        // 取消最小化 → 聚焦（顺序固定，最小化状态下直接 set_focus 在 Windows
+        // 上不会还原窗口；同主窗口的显示顺序）
         let _ = win.show();
         let _ = win.unminimize();
         let _ = win.set_focus();
@@ -159,7 +164,8 @@ fn ensure_island_settings_window(app: &AppHandle) -> Result<(), String> {
         ISLAND_SETTINGS_WINDOW_MIN_HEIGHT,
     )
     // 无系统标题栏：拖拽 / 关闭由设置页前端自绘标题栏承担（GetCurrentWindow
-    // .startDragging + island_settings_window_hide）。decorations(false) 的窗在
+    // .startDragging + island_settings_window_hide，后者行为已是销毁窗口）。
+    // decorations(false) 的窗在
     // Windows 上仍保留 tao 的系统边缘缩放热区，前端无需挂 resize 热区。
     // 已知取舍：无边框后 Win11 悬停最大化按钮的"贴靠布局"浮出与 Alt+Space
     // 系统菜单不再可用；本窗刻意不提供最小化 / 最大化按钮。
@@ -178,18 +184,25 @@ fn ensure_island_settings_window(app: &AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-/// 灵动岛总开关被关闭时收起本窗口（island::set_enabled_on_main 的
-/// enabled=false 分支调用）。设置窗口是岛的附属窗口：岛隐藏后它既没有入口
-/// 也不再有用，必须一并收起，否则用户会看到"岛没了、设置窗还开着"的孤儿
-/// 窗口（且关掉它之后还得再从托盘重新开岛才能再见）。
+/// 销毁本窗口（岛总开关关闭时由 island::set_enabled_on_main 的 enabled=false
+/// 分支调用；前端自绘标题栏的 ×/Esc 命令走同一个函数）。设置窗口是岛的附属
+/// 窗口：岛关闭后它既没有入口也不再有用，必须一并**销毁**——隐藏只会把
+/// WebView2 渲染进程继续钉在内存里（专用工作集约 46 MB），而重开本来就要走
+/// 懒建窗。销毁后 get_webview_window 查不到窗口，下次打开由
+/// open_island_settings_window_on_main_thread 重新建窗。
+///
+/// 函数名里的 hide 与上游命令 island_settings_window_hide 保持"隐藏"是历史
+/// 遗留，行为已经是销毁：重命名会牵连前端调用字符串与 doc/island-hud.md 的
+/// 命令表（不在本次改动范围），故只改语义并在 doc 里写明。
 ///
 /// **必须在主线程事件循环上下文调用**（与建窗铁律同源：窗口 API 串行落在
 /// 事件循环线程；set_enabled_on_main 的全部调用点——命令侧 on_main_thread、
 /// 托盘 on_menu_event、热键 run_on_main_thread、setup start_if_enabled——
-/// 都满足）。首次打开前窗口可能从未创建，此时静默返回；hide 失败也静默：
-/// 收起附属窗是收尾动作，不能反过来阻断岛的关闭流程。
-pub(crate) fn hide_island_settings_window_on_main(app: &AppHandle) {
+/// 都满足）。首次打开前窗口可能从未创建，此时静默返回；destroy 失败也静默
+/// （窗口已不可用就交给后续打开路径兜底）：销毁附属窗是收尾动作，不能反过来
+/// 阻断岛的关闭流程。
+pub(crate) fn destroy_island_settings_window_on_main(app: &AppHandle) {
     if let Some(win) = app.get_webview_window(ISLAND_SETTINGS_WINDOW_LABEL) {
-        let _ = win.hide();
+        let _ = win.destroy();
     }
 }

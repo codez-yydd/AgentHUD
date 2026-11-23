@@ -186,6 +186,7 @@ export const PAGE_FIELDS: Record<PageKey, string[]> = {
     "notify.open.dsh",
     "mail.interval_s",
     "mail.imap",
+    "mail.code_preview",
   ],
   stocks: ["stocks.watchlist", "stocks.interval", "stocks.pct_alert"],
   weather: ["weather.api_key", "weather.units", "weather.interval_min", "weather.city", "weather.lat", "weather.lon", "weather.cities"],

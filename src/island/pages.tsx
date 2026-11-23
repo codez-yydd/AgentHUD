@@ -10,7 +10,7 @@ import {
   type MouseEvent as ReactMouseEvent,
   type WheelEvent as ReactWheelEvent,
 } from "react";
-import { getStockMinute, searchStock } from "./api";
+import { copyText, getStockMinute, searchStock } from "./api";
 import { CityPickerModal, type CityPick } from "./cityPickerModal";
 import { ClashPanel } from "./ClashPanel";
 import { PetFace, type CompactPointerSample } from "./PetFace";
@@ -671,6 +671,60 @@ function messageSortTime(item: NotifyItem): number {
   return item.time > 1e12 ? item.time : item.time * 1000;
 }
 
+/**
+ * 验证码 chip：默认显示验证码，点一下复制。
+ * 成功 1.4s 显示「勾 + 已复制」，失败 1.6s 显示「复制失败」；键盘 Enter/Space
+ * 由原生 button 处理，但事件不再冒泡到历史行（否则会同时打开来源应用）。
+ */
+function CodeChip({ code, onToast }: { code: string; onToast: (message: string) => void }) {
+  const [state, setState] = useState<"idle" | "copied" | "failed">("idle");
+  const timer = useRef<number | null>(null);
+  useEffect(
+    () => () => {
+      if (timer.current != null) window.clearTimeout(timer.current);
+    },
+    []
+  );
+  const copy = () => {
+    if (timer.current != null) window.clearTimeout(timer.current);
+    const settle = (next: "copied" | "failed", holdMs: number) => {
+      setState(next);
+      timer.current = window.setTimeout(() => setState("idle"), holdMs);
+    };
+    void copyText(code).then(
+      () => {
+        onToast(`已复制验证码 ${code}`);
+        settle("copied", 1400);
+      },
+      () => settle("failed", 1600)
+    );
+  };
+  return (
+    <button
+      type="button"
+      className={`msg-code-chip is-${state}`}
+      aria-label={state === "copied" ? "已复制验证码" : "复制验证码"}
+      title={state === "idle" ? "点击复制" : undefined}
+      onClick={(event) => {
+        event.stopPropagation();
+        copy();
+      }}
+      onKeyDown={(event) => event.stopPropagation()}
+    >
+      {state === "copied" ? (
+        <>
+          <Icon name="check" size={11} />
+          <span>已复制</span>
+        </>
+      ) : state === "failed" ? (
+        <span>复制失败</span>
+      ) : (
+        code
+      )}
+    </button>
+  );
+}
+
 type MsgMenu =
   | { mode: "plus"; x: number; y: number; kind?: undefined }
   | { mode: "tile"; x: number; y: number; kind: string }
@@ -686,6 +740,7 @@ export function MessagesPage({
   onOpenItem,
   onOpenModule,
   onOpenSettings,
+  onToast,
 }: {
   notify: NotifyState;
   config: IslandConfig;
@@ -698,6 +753,8 @@ export function MessagesPage({
   onOpenItem: (item: NotifyItem) => void;
   onOpenModule: (kind: string, exe?: string) => void;
   onOpenSettings: () => void;
+  /** 岛底部提示胶囊（复制验证码等即时反馈） */
+  onToast: (message: string) => void;
 }) {
   const pageRef = useRef<HTMLDivElement | null>(null);
   const addBtnRef = useRef<HTMLButtonElement | null>(null);
@@ -883,12 +940,19 @@ export function MessagesPage({
             const meta = moduleMeta(item.kind);
             const isWechat = item.kind === "wechat";
             const description = isWechat ? `${wechatUnread} 条未读消息` : messageDescription(item);
+            const code = (item.code ?? "").trim();
             return (
-              <button
+              <div
                 key={isWechat ? "wechat-summary" : item.id}
-                type="button"
                 className={`msg-history-row ${item.read ? "is-read" : ""}`}
+                role="button"
+                tabIndex={0}
                 onClick={() => onOpenItem(item)}
+                onKeyDown={(event) => {
+                  if (event.key !== "Enter" && event.key !== " ") return;
+                  event.preventDefault();
+                  onOpenItem(item);
+                }}
                 title={`${meta.label} · ${description}`}
               >
                 {NOTIFY_BRAND_ICONS[item.kind] ? (
@@ -898,8 +962,9 @@ export function MessagesPage({
                 )}
                 <span className="msg-history-name">{meta.label}</span>
                 <span className="msg-history-desc">{description}</span>
+                {code ? <CodeChip code={code} onToast={onToast} /> : null}
                 <span className="msg-history-time">{moduleClock(item.time)}</span>
-              </button>
+              </div>
             );
           })
         )}
