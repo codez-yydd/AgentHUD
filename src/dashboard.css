@@ -59,6 +59,8 @@
   --db-hover: rgba(43, 63, 180, 0.06);
   --db-active-bg: rgba(76, 99, 245, 0.13);
   --db-active-text: #2b3fc4;
+  /* 请求日志刷新行动画的高亮底色：新进入表格的行先铺满后渐隐（暗色档见 .dark） */
+  --db-row-highlight: rgba(76, 99, 245, 0.16);
   /* 品牌渐变 + 强调色：灵动岛同源的 periwinkle → violet（--db-accent-2 是
      渐变另一端）；--db-brand-grad-text 是文字安全的加深档 */
   --db-accent: #4c63f5;
@@ -2998,6 +3000,30 @@ select option:disabled {
   vertical-align: 1px;
 }
 
+/* 请求日志时间列旁的请求状态徽标：error 红 / cancelled 中性 / 重试成功琥珀。
+   配色风格与上面各变体一致（半透明底 + 单色文字）；amber / 中性档走 --db-*
+   变量在 .dark 段自动提亮，无需覆盖；红档沿用本文件「错误反馈色 = rose
+   #e11d48」先例，暗色下需显式提亮（见下方 .dark 覆盖，同 db-sync__error） */
+.db-tag--error {
+  background: rgba(225, 29, 72, 0.14);
+  color: #e11d48;
+}
+
+/* 暗色下失败徽标文字提亮（固定红在 slate-900 底上偏暗，沿 db-sync__error） */
+.dark .db-tag--error {
+  color: #fb7185;
+}
+
+.db-tag--cancelled {
+  background: var(--db-track);
+  color: var(--db-text-dim);
+}
+
+.db-tag--retry {
+  background: rgba(245, 158, 11, 0.16);
+  color: var(--db-accent-amber);
+}
+
 /* ---- 差异面板 ---- */
 .db-diff__actions {
   display: flex;
@@ -3228,15 +3254,20 @@ select option:disabled {
 }
 
 /* ---- 明细表：10 列按 1100 默认窗口的内容区（约 840px）排布——固定列宽合计
-   = 表 min-width：96 + 72 + 150 + 64 + 64 + 100 + 68 + 58 + 56 + 72 = 800px
-   （模型列取 min，富余归它，上限仍 320）；更窄的窗口 / 超长数值（跨年时间、
+   = 表 min-width：171 + 72 + 75 + 64 + 64 + 100 + 68 + 66 + 64 + 72 = 816px
+   （时间列按「跨月时间 + 最宽有界徽标」取值；模型列取 min，富余归它，上限
+   仍 320；耗时 / 首字列给 ≈ 前缀留位）；更窄的窗口 / 超长数值（跨年时间、
    十亿级 token）由 .db-table-wrap 横向滚动兜底，绝不把数值挤成两行 ---- */
 .db-logs-table {
-  min-width: 800px;
+  min-width: 816px;
 }
 
+/* 时间列：宽度覆盖「非今天时间（MM-DD HH:mm，79.2px）+ 最宽的有界标签
+   （英文 Retried 12，67px）+ 间距 + 内边距 = 170.2px」，固定列宽优先于按
+   内容自适应，刷新时不随行内容跳动（唯一例外：跨年时间 115.2px 的行按
+   既有模式把列自然撑宽）；更窄的窗口由 .db-table-wrap 横向滚动兜底 */
 .db-logs__col-time {
-  width: 96px;
+  width: 171px;
   white-space: nowrap;
 }
 
@@ -3245,9 +3276,10 @@ select option:disabled {
   white-space: nowrap;
 }
 
-/* 模型列：可变宽（吃掉富余），内容单行截断，完整名走 title */
+/* 模型列：可变宽（吃掉富余），内容单行截断，完整名走 title；时间列放宽的
+   49px 由这里收窄抵消，表整体 min-width 不变 */
 .db-logs__col-model {
-  min-width: 150px;
+  min-width: 75px;
   max-width: 320px;
 }
 
@@ -3268,11 +3300,11 @@ select option:disabled {
 }
 
 .db-logs__col-duration {
-  width: 58px;
+  width: 66px;
 }
 
 .db-logs__col-ttft {
-  width: 56px;
+  width: 64px;
 }
 
 .db-logs__col-speed {
@@ -3298,6 +3330,51 @@ select option:disabled {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* 时间列内容容器：约束在列内容区内（max-width: 100%），flex 布局按角色
+   分配宽度——时间文字不收缩（.db-logs__time-text）、有界徽标（中断 / 重试）
+   完整显示（--fit）、错误码徽标收缩截断；gap 提供时间与徽标的 4px 间距。
+   无徽标的行只有时间文字，观感与纯文本一致（左对齐、垂直居中） */
+.db-logs__time {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  vertical-align: middle;
+}
+
+/* 时间文字：弹性容器里的固定项（不参与收缩），不换行由 .db-logs__col-time
+   的 nowrap 继承保证 */
+.db-logs__time-text {
+  flex: none;
+}
+
+/* 时间列旁的状态徽标（db-tag + 状态变体共用）。时间列是 .num 等宽字体，
+   徽标沿 UI 无衬线栈（与其它 .db-tag 使用处一致——标签不是数字读数），
+   英文标签明显更窄，给列宽预算留余量。错误码徽标是弹性容器里唯一可收缩
+   的项：min-width: 0 让表格自动布局的列最小内容宽不含它（长错误码不撑宽
+   列），省略号收尾、完整码在悬停提示里不丢信息 */
+.db-logs__status {
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text",
+    "Segoe UI Variable Text", "Segoe UI", "PingFang SC", "Microsoft YaHei",
+    sans-serif;
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  /* 上限 = 时间列内容宽 151 − 跨月时间 79.2 − gap 4 ≈ 67.8，取 64 留余量：
+     任何时间格式下错误码徽标都分得到 64，观感统一；常见短码（429 / 529）
+     远小于它，完整显示 */
+  max-width: 64px;
+}
+
+/* 有界徽标（中断 / 重试 N）：完整显示不收缩（重试次数就是要传达的信息），
+   不受错误码上限钳制，其最宽组合已计入时间列固定宽度 */
+.db-logs__status--fit {
+  flex: none;
+  max-width: none;
 }
 
 /* 远端行的设备徽标：来源列内第二行小字，观感对齐速度单位的弱化层级
@@ -3373,6 +3450,9 @@ select option:disabled {
   /* 纵向内滚（长列表）+ 既有横向兜底（窄窗 / 超长数值） */
   overflow: auto;
   overscroll-behavior: contain;
+  /* 关闭浏览器滚动锚定：刷新把新行插到上方时，锚定会自动调滚动位置，
+     行的实际位移就与平移动画记录的位置对不上了 */
+  overflow-anchor: none;
 }
 
 .db-logs-card .db-pager {
@@ -4540,6 +4620,8 @@ select option:disabled {
   --db-hover: rgba(255, 255, 255, 0.075);
   --db-active-bg: rgba(143, 176, 255, 0.18);
   --db-active-text: #c7d6ff;
+  /* 请求日志刷新行动画的高亮底色（暗色档）：新进入表格的行先铺满后渐隐 */
+  --db-row-highlight: rgba(143, 176, 255, 0.22);
   /* 品牌渐变（暗色）：periwinkle → violet，文字档提亮一档 */
   --db-accent: #8fb0ff;
   --db-accent-2: #c6a8ff;

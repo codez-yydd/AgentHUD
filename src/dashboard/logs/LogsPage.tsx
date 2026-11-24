@@ -145,6 +145,11 @@ function buildCsv(rows: RequestLogRow[]): string {
     "duration_ms",
     "ttft_ms",
     "speed_tps",
+    "speed_quality",
+    "timing_estimated",
+    "status",
+    "error_code",
+    "retry_count",
   ];
   const lines = [header.join(",")];
   for (const row of rows) {
@@ -168,6 +173,11 @@ function buildCsv(rows: RequestLogRow[]): string {
         row.duration_ms ?? "",
         row.ttft_ms ?? "",
         row.speed_tps ?? "",
+        row.speed_quality ?? "",
+        row.timing_estimated ? "1" : "0",
+        row.status ?? "",
+        row.error_code ?? "",
+        row.retry_count ?? 0,
       ]
         .map(csvCell)
         .join(",")
@@ -473,6 +483,7 @@ export function LogsPage() {
 
   const {
     rows,
+    rowsViewKey,
     rowsPage,
     total,
     summary,
@@ -1040,6 +1051,11 @@ export function LogsPage() {
             nowMs={nowMs}
             currency={currency}
             busy={busy}
+            /* 表内这批行所属的页码 + 视图键（rowsViewKey = 这批行生效时的
+               筛选 + 页码，useLogsData 只在成功时更新）：刷新行动画只认
+               「同一查询、第 1 页、取数已结束」——切筛选 / 翻页 / 首载不播 */
+            page={rowsPage}
+            viewKey={rowsViewKey}
             deviceLabel={deviceLabel}
             /* 筛选到具体设备时整表同一设备，逐行设备徽标无信息量——传入选中
                id 供表格抑制该设备行的徽标（见 LogTable selectedDevice） */

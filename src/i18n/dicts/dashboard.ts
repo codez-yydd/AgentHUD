@@ -850,16 +850,40 @@ export const dashboard = {
   "dashboard.speed.avgPerRequest": "均值 {v}/请求",
   "dashboard.logs.rowHint": "点击行查看详情",
   "dashboard.logs.cellNoData": "无数据",
-  // 耗时 / 首字 / 速度缺失说明：讲清是数据源不落盘（而不是加载失败），
+  // 耗时 / 首字 / 速度缺失说明：讲清是没有可用的计时证据（而不是加载失败），
   // 避免被当成页面故障；Remote 后缀词条给远端行（同步明细不含这些列），
-  // 措辞不指向「会话记录」避免误导
-  "dashboard.logs.noDurationTitle":
-    "该来源的会话记录不含耗时数据（如 Codex 会话文件无耗时、旧版 Claude Code 不落盘耗时）",
+  // 措辞不指向「会话记录」避免误导；Claude / Codex 后缀词条给导入库行，
+  // 按缺的是请求起点还是首个输出时刻分别说明原因
+  "dashboard.logs.noDurationTitle": "该来源的会话记录不含耗时数据",
   "dashboard.logs.noDurationRemoteTitle": "远端设备的同步明细不含耗时数据",
+  "dashboard.logs.noDurationClaudeTitle":
+    "日志里找不到这次请求的起点（记录早于回填范围，或该版本没有留下可用线索）",
+  "dashboard.logs.noDurationCodexTitle": "Codex 会话日志里找不到这次请求的起点",
   "dashboard.logs.noTtftTitle": "该来源的会话记录不含首字数据",
   "dashboard.logs.noTtftRemoteTitle": "远端设备的同步明细不含首字数据",
+  "dashboard.logs.noTtftClaudeTitle":
+    "日志没有记录首个输出的时刻（回复以文字或工具调用开头且没有流式计时）",
+  "dashboard.logs.noTtftCodexTitle":
+    "Codex 会话日志没有记录首个输出的时刻（版本较早，或这次响应只有工具调用）",
   "dashboard.logs.noSpeedTitle":
-    "无耗时数据，或该行样本无效（时长越界 / 时序异常被拒收），无法计算速度",
+    "没有可用的计时数据，或该行计时异常，无法计算速度",
+  // 请求状态徽标（时间列旁）：error 行显错误码（无码显「失败」）、cancelled 显
+  // 「中断」、重试成功的行显次数；悬停 title 说明完整口径；statusOk 只在详情
+  // 抽屉的状态行用（未知 / 进行中表格不显徽标）
+  "dashboard.logs.statusFailed": "失败",
+  "dashboard.logs.statusCancelled": "中断",
+  "dashboard.logs.statusOk": "成功",
+  "dashboard.logs.statusRetry": "重试 {n}",
+  "dashboard.logs.statusErrorTitle": "请求失败，错误码 {code}",
+  "dashboard.logs.statusErrorNoCodeTitle": "请求失败",
+  "dashboard.logs.statusErrorRetryTitle": "请求失败，错误码 {code}；此前已重试 {n} 次",
+  "dashboard.logs.statusErrorRetryNoCodeTitle": "请求失败；此前已重试 {n} 次",
+  "dashboard.logs.statusCancelledTitle": "请求被中断",
+  "dashboard.logs.statusRetryTitle": "重试 {n} 次后成功，最近一次错误码 {code}",
+  "dashboard.logs.statusRetryNoCodeTitle": "重试 {n} 次后成功",
+  // ≈ 估算标记（timing_estimated）：请求起点是从会话日志推断的
+  "dashboard.logs.timingEstimatedHint":
+    "≈ 表示请求起点是从会话日志推断的，不是精确记录；耗时和首字为近似值",
   "dashboard.logs.unpriced": "未定价",
   "dashboard.logs.unpricedHint": "该模型未配置价格，花费按 0 计",
   // 明细导出（CSV / JSON）：写盘走既有的 save_report（~/.agenthud/reports/）
@@ -914,6 +938,12 @@ export const dashboard = {
   "dashboard.logs.detailProvider": "Provider",
   "dashboard.logs.detailSession": "会话 ID",
   "dashboard.logs.detailProject": "项目",
+  // 详情节的状态与重试（重试行只在 retry_count > 0 时出现；未知状态显「—」）
+  "dashboard.logs.detailStatus": "状态",
+  "dashboard.logs.detailStatusFailed": "失败（错误码 {code}）",
+  "dashboard.logs.detailRetry": "重试",
+  "dashboard.logs.detailRetryValue": "{n} 次，最近一次错误码 {code}",
+  "dashboard.logs.detailRetryValueNoCode": "{n} 次",
   "dashboard.logs.detailTokens": "Token 明细",
   "dashboard.logs.detailInput": "输入",
   "dashboard.logs.detailOutput": "输出",
@@ -949,6 +979,12 @@ export const dashboard = {
     "按客户端观测的首输出到请求完成计时，输出包含正文、思考和工具参数，速率受分块和缓冲影响。",
   "dashboard.logs.speedDshStreamHint":
     "按 DSH 日志中首末流式事件之间的耗时计算，分母已扣除首个流式事件前的等待。",
+  // claude / codex 的流式速度说明：计时证据来自导入器从会话日志取证的
+  // 「首个输出 → 结束」区间，与 dsh 的流事件口径、通用客户端观测口径区分
+  "dashboard.logs.speedClaudeStreamHint":
+    "按会话日志里的首个输出时刻到回复结束计时，输出包含正文、思考和工具参数。",
+  "dashboard.logs.speedCodexStreamHint":
+    "按会话日志里首个输出项的开始时刻到回复结束计时，输出包含正文、思考和工具调用参数。",
 
   // ===== 自定义时间范围（总览 / 日志 / 对比三页共用的页头时间范围控件）=====
   // 触发按钮显示当前范围标签：生效的预设名，或自定义区间的「MM-DD ~ MM-DD」

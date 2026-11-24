@@ -12,7 +12,8 @@
  *
  * 数值口径：token 紧凑值沿用表格的 locale 格式（万/亿、K/M/B），精确整数放
  * title（Kv 的 title 参数）；首字延迟 2 位小数秒（百毫秒量级），耗时 1 位；
- * 耗时显示来源库的真实值。速度与表格共用后端校验过的数值及其计时口径。
+ * 耗时 / 首字显示来源库的真实值，请求起点是推断的行（timing_estimated）带
+ * 前缀 ≈ 并给估算口径 title。速度与表格共用后端校验过的数值及其计时口径。
  */
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useI18n } from "../../i18n";
@@ -29,6 +30,7 @@ import type {
 } from "../../types";
 import {
   durationText,
+  estimatedText,
   exactCount,
   formatLogSpeed,
   logTimeFull,
@@ -137,8 +139,11 @@ export function RequestDetailDrawer({
   }, []);
 
   const speed = speedOf(row);
-  const duration = durationText(row.duration_ms);
-  const ttft = ttftText(row.ttft_ms);
+  const duration = estimatedText(
+    durationText(row.duration_ms),
+    row.timing_estimated
+  );
+  const ttft = estimatedText(ttftText(row.ttft_ms), row.timing_estimated);
   const mainCost = costOf(row.cost_usd, row.cost_cny, currency);
   const otherCurrency: Currency = currency === "cny" ? "usd" : "cny";
   const otherCost = costOf(row.cost_usd, row.cost_cny, otherCurrency);
@@ -261,6 +266,38 @@ export function RequestDetailDrawer({
               {t("dashboard.logs.detailBasic")}
             </h3>
             <Kv label={t("dashboard.logs.detailSource")} value={sourceLabel(row.source)} />
+            {/* 请求状态：后端归一的 completed / cancelled / error，未知或进行中
+                显「—」；失败行有错误码时带上；重试行只在有过失败尝试（retry_count
+                > 0）时出现，有码说明最近一次错误码 */}
+            <Kv
+              label={t("dashboard.logs.detailStatus")}
+              value={
+                row.status === "error"
+                  ? row.error_code
+                    ? t("dashboard.logs.detailStatusFailed", { code: row.error_code })
+                    : t("dashboard.logs.statusFailed")
+                  : row.status === "cancelled"
+                    ? t("dashboard.logs.statusCancelled")
+                    : row.status === "completed"
+                      ? t("dashboard.logs.statusOk")
+                      : "—"
+              }
+            />
+            {(row.retry_count ?? 0) > 0 && (
+              <Kv
+                label={t("dashboard.logs.detailRetry")}
+                value={
+                  row.error_code
+                    ? t("dashboard.logs.detailRetryValue", {
+                        n: row.retry_count ?? 0,
+                        code: row.error_code,
+                      })
+                    : t("dashboard.logs.detailRetryValueNoCode", {
+                        n: row.retry_count ?? 0,
+                      })
+                }
+              />
+            )}
             {/* 设备归属：仅远端行有（远端口径从服务端明细带回 device_id，
                 名称由页面的设备映射补上——「设备名（完整 id）」同行展示，
                 超长截断、title 给全文）；本机行不显示该行 */}
@@ -409,12 +446,28 @@ export function RequestDetailDrawer({
               <h3 className="db-drawer__section-title">
                 {t("dashboard.logs.detailPerf")}
               </h3>
+              {/* 耗时 / 首字与表格同口径：带 ≈ 的行给估算说明 title，
+                  缺省回落数值本身（Kv 的 title ?? value） */}
               <Kv
                 label={t("dashboard.logs.detailDuration")}
                 value={duration ?? "—"}
+                title={
+                  duration != null && row.timing_estimated
+                    ? t("dashboard.logs.timingEstimatedHint")
+                    : undefined
+                }
                 mono
               />
-              <Kv label={t("dashboard.logs.detailTtft")} value={ttft ?? "—"} mono />
+              <Kv
+                label={t("dashboard.logs.detailTtft")}
+                value={ttft ?? "—"}
+                title={
+                  ttft != null && row.timing_estimated
+                    ? t("dashboard.logs.timingEstimatedHint")
+                    : undefined
+                }
+                mono
+              />
               <Kv
                 label={t(speed ? speedLabelKey(speed.basis) : "dashboard.logs.colSpeed")}
                 value={

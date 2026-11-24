@@ -209,6 +209,8 @@ export type SyncMode = "manual" | "auto";
 /** 同步配置（~/.agenthud/sync.json） */
 export interface SyncConfig {
   speed_evidence_version?: number;
+  /** proto 10 计时/状态字段一次性重传标记：0 未触发，1 已触发（Claude 修订游标已清零、Codex 定向重传待做），2 Codex 定向通道已传完（Claude 的重扫进度由其修订游标独立决定，与本标记无关）；断开连接归 0 */
+  timing_fields_version?: number;
   enabled: boolean;
   mode: SyncMode;
   interval_seconds: number;
@@ -1418,10 +1420,12 @@ export interface RequestLogRow {
   session_id: string | null;
   /** 项目（能低成本拿到的来源才给） */
   project: string | null;
-  /** 请求耗时 ms（来源库真实 duration_ms > 0 才给；无该列 / NULL / 0 为 null，
-   *  界面显示灰化「—」——不做估算回退） */
+  /** 请求耗时 ms（来源库真实值；导入器会从会话日志取证回填，`timing_estimated`
+   *  为 true 表示请求起点是推断的、整段耗时带近似成分）。无该列 / NULL / 0 为
+   *  null，界面显示灰化「—」。 */
   duration_ms: number | null;
-  /** 首字延迟 ms（仅 zcode / dsh 有真实数据） */
+  /** 首字延迟 ms（zcode / dsh 有真实数据；Claude 等导入库由导入器从会话日志
+   *  取证回填，见 `timing_estimated`）。无数据为 null，界面显示灰化「—」。 */
   ttft_ms: number | null;
   /** 后端校验的单笔输出速度 tok/s，缺少有效计时时为 null。 */
   speed_tps?: number | null;
@@ -1431,8 +1435,20 @@ export interface RequestLogRow {
   /** 本机 ZCode 工具轮在缺少完整流式证据时的数据库首字估算。 */
   first_token_estimated_tps?: number;
   /** 远端行的设备 id（「全部设备」口径下从服务端明细带回；本机行无该字段）。
-   *  远端行耗时 / 首字 / 速度恒 null（服务端明细不含这些列）。 */
+   *  远端行的耗时 / 首字 / 速度 / 状态取自服务端明细，服务端版本较低、不返回这些字段时为 null。 */
   device?: string;
+  /** 稳定行键（后端下发，React key 直接使用）：同一行刷新前后键不变。
+   *  本机行 = "{source}|{来源库行 id}"；远端行 = "{source}|{device_id}|{local_rowid}"。 */
+  row_key: string;
+  /** 请求状态（后端归一后仅 completed / cancelled / error；未知或进行中为
+   *  null）。日志页在时间旁以徽标展示失败 / 中断 / 重试。 */
+  status?: "completed" | "cancelled" | "error" | null;
+  /** 最终失败的错误码，或最近一次重试的错误码。 */
+  error_code?: string | null;
+  /** 这条请求之前失败的尝试次数。 */
+  retry_count?: number;
+  /** 请求起点是从会话日志推断的（true 时耗时 / 首字为近似值，界面带 ≈）。 */
+  timing_estimated?: boolean;
 }
 
 /** 请求日志的全范围汇总（当前筛选条件下的指标卡数据；不是当前页聚合）。

@@ -76,6 +76,11 @@ export interface LogsDataState {
   /** 上面这批 rows 生效的页码（1 基）：页码文案与分页按钮以此为准，
    *  避免「第 N 页」领先于尚未返回的数据（翻页等待期仍显示旧页） */
   rowsPage: number;
+  /** 当前 rows 这批数据生效时的「筛选条件 + 页码」序列化键：只在请求成功
+   *  时随 rows 同步更新——筛选变化后、新数据到达前仍是旧键（表里那批行的
+   *  已生效口径，与 rowsPage 同一思路）。消费方据此判定「同一查询的刷新」
+   *  （刷新行动画的播放条件之一），不能拿当前筛选状态拼键替代 */
+  rowsViewKey: string;
   /** 当前筛选条件下的总条数（后端各源 COUNT 之和） */
   total: number;
   /** 当前筛选条件下的全范围汇总（指标卡）；尚未取到 / 出错时为 null */
@@ -111,6 +116,8 @@ export function useLogsData({
 }: LogsQuery): LogsDataState {
   const [rows, setRows] = useState<RequestLogRow[]>([]);
   const [rowsPage, setRowsPage] = useState(1);
+  /** 当前 rows 生效时的筛选条件 + 页码键：只在成功时随 rows 更新（见接口注释） */
+  const [rowsViewKey, setRowsViewKey] = useState("");
   const [total, setTotal] = useState(0);
   const [summary, setSummary] = useState<RequestLogSummary | null>(null);
   const [failedSources, setFailedSources] = useState<string[]>([]);
@@ -142,6 +149,19 @@ export function useLogsData({
     const reqId = ++rowsReqRef.current;
     const isCurrent = () => reqId === rowsReqRef.current;
     const { fromMs, toMs } = custom ?? rangeWindow(range, Date.now());
+    // 本次请求对应的视图键（表里这批行生效时的筛选 + 页码）：只在请求成功、
+    // 结果未被更新的请求取代时随 rows 一起发布；失败 / 被取代不改写，保持
+    // 上一次成功那批行的键
+    const key = JSON.stringify([
+      range,
+      custom?.fromMs ?? null,
+      custom?.toMs ?? null,
+      source,
+      model,
+      scope,
+      device,
+      page,
+    ]);
     // 静默刷新保持现有画面：不置 loading（按钮不转圈、表格不压暗）
     if (!silent) setLoading(true);
     getRequestLogs(fromMs, toMs, page - 1, LOG_PAGE_SIZE, {
@@ -153,6 +173,7 @@ export function useLogsData({
       .then((result) => {
         if (!isCurrent()) return;
         setRows(result.rows);
+        setRowsViewKey(key);
         setRowsPage(page);
         setTotal(result.total);
         setSummary(result.summary ?? null);
@@ -209,6 +230,7 @@ export function useLogsData({
 
   return {
     rows,
+    rowsViewKey,
     rowsPage,
     total,
     summary,

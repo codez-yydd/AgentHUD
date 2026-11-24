@@ -10,7 +10,7 @@
  *  - 花费口径与总览页一致：后端按本机价格表逐行折算好美元与人民币，前端只按
  *    展示币种取一列（costOf）。
  */
-import type { RequestLogSource } from "../../types";
+import type { RequestLogRow, RequestLogSource } from "../../types";
 import type { RequestLogSpeedBasis } from "../../requestSpeed";
 import type { MessageKey } from "../../i18n";
 import { formatSeconds, formatTps } from "../../format";
@@ -138,6 +138,33 @@ export function durationText(ms: number | null): string | null {
   return ms != null && ms > 0 ? formatSeconds(ms) : null;
 }
 
+/** 估算标记文本：有值且请求起点是推断的（timing_estimated）时前面加 ≈；
+ *  无值原样返回 null，由调用方显示占位 */
+export function estimatedText(
+  text: string | null,
+  estimated: boolean | undefined
+): string | null {
+  if (text == null) return null;
+  return estimated ? `≈${text}` : text;
+}
+
+/** 耗时缺失的 title 键：远端行（同步明细不含耗时）给 Remote 词条，claude /
+ *  codex 按来源给专属原因，其余来源用通用说明 */
+export function noDurationHintKey(row: RequestLogRow): MessageKey {
+  if (row.device != null) return "dashboard.logs.noDurationRemoteTitle";
+  if (row.source === "claude") return "dashboard.logs.noDurationClaudeTitle";
+  if (row.source === "codex") return "dashboard.logs.noDurationCodexTitle";
+  return "dashboard.logs.noDurationTitle";
+}
+
+/** 首字缺失的 title 键：分源口径同 noDurationHintKey */
+export function noTtftHintKey(row: RequestLogRow): MessageKey {
+  if (row.device != null) return "dashboard.logs.noTtftRemoteTitle";
+  if (row.source === "claude") return "dashboard.logs.noTtftClaudeTitle";
+  if (row.source === "codex") return "dashboard.logs.noTtftCodexTitle";
+  return "dashboard.logs.noTtftTitle";
+}
+
 /** 首字延迟文本：固定 2 位小数秒（百毫秒量级指标，1 位小数会把 0.35s 与
  *  0.42s 抹平成同值）；耗时列仍用一位小数的 durationText。
  *  缺失（null 或 <= 0）返回 null，由调用方显示占位。 */
@@ -165,5 +192,10 @@ export function speedLabelKey(basis: RequestLogSpeedBasis): MessageKey {
 export function speedHintKey(basis: RequestLogSpeedBasis, source: RequestLogSource): MessageKey {
   if (basis === "first_token_estimate") return "dashboard.logs.speedFirstTokenEstimateHint";
   if (basis === "request_average") return "dashboard.logs.speedApproxHint";
-  return source === "dsh" ? "dashboard.logs.speedDshStreamHint" : "dashboard.logs.speedStreamHint";
+  // 流式速度按来源区分计时说明：dsh 沿用流事件口径，claude / codex 用导入库
+  // 的会话日志取证口径，其余来源走通用文案
+  if (source === "dsh") return "dashboard.logs.speedDshStreamHint";
+  if (source === "claude") return "dashboard.logs.speedClaudeStreamHint";
+  if (source === "codex") return "dashboard.logs.speedCodexStreamHint";
+  return "dashboard.logs.speedStreamHint";
 }

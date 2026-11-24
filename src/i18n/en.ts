@@ -2167,17 +2167,48 @@ export const en: typeof zh = {
     "dashboard.logs.cellNoData": "No data",
     // Remote-suffixed entries are for remote rows (all-devices scope): their
     // synced records simply carry no such columns, so the wording must not
-    // point at "session records"
+    // point at "session records". Claude/Codex-suffixed entries are for
+    // import-library rows and explain which timing event is missing.
     "dashboard.logs.noDurationTitle":
-      "This source's session records contain no duration data (e.g. Codex session files have no duration; older Claude Code versions do not persist it)",
+      "This source's session records contain no duration data",
     "dashboard.logs.noDurationRemoteTitle":
       "Remote devices' synced records contain no duration data",
+    "dashboard.logs.noDurationClaudeTitle":
+      "No request start found in the logs (the record predates the backfill range, or that version left no usable clue)",
+    "dashboard.logs.noDurationCodexTitle":
+      "No request start found in the Codex session logs",
     "dashboard.logs.noTtftTitle":
       "This source's session records contain no TTFT data",
     "dashboard.logs.noTtftRemoteTitle":
       "Remote devices' synced records contain no TTFT data",
+    "dashboard.logs.noTtftClaudeTitle":
+      "The logs do not record a first-output time (the reply starts with text or a tool call and has no stream timing)",
+    "dashboard.logs.noTtftCodexTitle":
+      "The Codex session logs do not record a first-output time (older version, or the response contained only tool calls)",
     "dashboard.logs.noSpeedTitle":
-      "No duration data, or the row was rejected as an invalid speed sample (out-of-range window / inconsistent timestamps)",
+      "No usable timing data, or this row's timing is inconsistent, so no speed can be computed",
+    // Request-status badge next to the time cell: error rows show the error
+    // code (or "Failed" without one), cancelled shows "Cancelled", retried-
+    // and-succeeded rows show the attempt count; hover titles spell out the
+    // full meaning. statusOk is only used by the drawer's status row (unknown
+    // / in-flight rows show no badge in the table)
+    "dashboard.logs.statusFailed": "Failed",
+    "dashboard.logs.statusCancelled": "Cancelled",
+    "dashboard.logs.statusOk": "Succeeded",
+    "dashboard.logs.statusRetry": "Retried {n}",
+    "dashboard.logs.statusErrorTitle": "Request failed with error code {code}",
+    "dashboard.logs.statusErrorNoCodeTitle": "Request failed",
+    "dashboard.logs.statusErrorRetryTitle":
+      "Request failed with error code {code}; retried {n} time(s) before that",
+    "dashboard.logs.statusErrorRetryNoCodeTitle":
+      "Request failed; retried {n} time(s) before that",
+    "dashboard.logs.statusCancelledTitle": "Request was cancelled",
+    "dashboard.logs.statusRetryTitle":
+      "Succeeded after {n} retries, last error code {code}",
+    "dashboard.logs.statusRetryNoCodeTitle": "Succeeded after {n} retries",
+    // ≈ marker (timing_estimated): the request start was inferred from session logs
+    "dashboard.logs.timingEstimatedHint":
+      "≈ means the request start was inferred from session logs rather than precisely recorded; duration and TTFT are approximations",
     "dashboard.logs.unpriced": "Unpriced",
     "dashboard.logs.unpricedHint":
       "This model has no price configured; cost counted as 0",
@@ -2232,6 +2263,13 @@ export const en: typeof zh = {
     "dashboard.logs.detailProvider": "Provider",
     "dashboard.logs.detailSession": "Session ID",
     "dashboard.logs.detailProject": "Project",
+    // Drawer status & retries (retry row only when retry_count > 0; unknown
+    // status shows "—")
+    "dashboard.logs.detailStatus": "Status",
+    "dashboard.logs.detailStatusFailed": "Failed (error code {code})",
+    "dashboard.logs.detailRetry": "Retries",
+    "dashboard.logs.detailRetryValue": "{n} times, last error code {code}",
+    "dashboard.logs.detailRetryValueNoCode": "{n} times",
     "dashboard.logs.detailTokens": "Token breakdown",
     "dashboard.logs.detailInput": "Input",
     "dashboard.logs.detailOutput": "Output",
@@ -2267,6 +2305,13 @@ export const en: typeof zh = {
       "Measured from the first observed output to request completion. Includes text, reasoning and tool arguments. Chunking and buffering affect the observed rate.",
     "dashboard.logs.speedDshStreamHint":
       "Measured between the first and last stream events recorded by DSH. The wait before the first stream event is excluded.",
+    // Claude/Codex stream-rate hints: the timing evidence comes from the
+    // importer's first-output → completion span in the session logs, distinct
+    // from DSH's stream events and the generic client-observed wording
+    "dashboard.logs.speedClaudeStreamHint":
+      "Measured from the first output time to the end of the reply in the session logs. Includes text, reasoning and tool arguments.",
+    "dashboard.logs.speedCodexStreamHint":
+      "Measured from the first output item's start to the end of the reply in the session logs. Includes text, reasoning and tool-call arguments.",
 
     // ===== Custom time range (shared range control of the three pages) =====
     // Trigger shows the active preset name, or the "MM-DD ~ MM-DD" summary when
