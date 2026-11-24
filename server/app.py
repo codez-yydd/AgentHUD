@@ -116,6 +116,21 @@ def _speed_fields_available():
     return callable(getattr(db, "_migrate_usage_records_speed_columns", None))
 
 
+def _timing_fields_available():
+    """判断当前加载的 db.py 是否支持明细的计时/状态字段列（proto 10）。
+
+    与 proto 2~9 的探测方式一致：按明细表幂等补列能力
+    （_migrate_usage_records_timing_columns）标记 proto 10。proto 10 存储并
+    回传请求状态四列（status / error_code / retry_count / timing_estimated）；
+    客户端上传侧不需要门控——旧版 insert_usage_records 只按显式字段名读取
+    records，未知 JSON 键天然忽略，多传无害。只替换了 app.py、未替换 db.py
+    的部署（宝塔热替换窗口）由此探测降级回 proto 9，客户端不触发 proto 10
+    的一次性补传（Claude 的修订游标清零重扫与 Codex 的定向补传通道都
+    依赖该探测）。
+    """
+    return callable(getattr(db, "_migrate_usage_records_timing_columns", None))
+
+
 # ===== 鉴权辅助 =====
 
 def get_master_token():
@@ -208,8 +223,9 @@ def sync():
     - records: 用量明细数组（每条可带 source='zcode'|'codex'，缺省 zcode；
       客户端保证每批 records 属同一来源，zcode 与 codex 各自独立分批上传）。
       proto 5 起每条还可带 session_id / project_key / project_display，
-      proto 8 起还可带 duration_ms / time_to_first_token_ms（均可选）；
-      旧客户端不传即落库 NULL，行为不变
+      proto 8 起还可带 duration_ms / time_to_first_token_ms，proto 10 起还
+      可带 status / error_code / retry_count / timing_estimated（均可选，
+      服务端逐字段清洗后落库）；旧客户端不传即落库 NULL，行为不变
     - last_rowid: 本批记录游标（按本批来源的 rowid 序列计数）
     - snapshots: Z.ai 额度快照数组（可选）
     - last_snapshot_ts: Z.ai 快照游标（可选）
@@ -287,8 +303,12 @@ def sync():
         "max_snapshot_ts": max_snapshot_ts,
         "accepted_agent_quota_snapshots": accepted_agent_quota_snapshots,
         "max_agent_quota_snapshot_ts": max_agent_quota_snapshot_ts,
-        # 服务端协议版本：8 = 明细带耗时/首字（duration_ms /
-        # time_to_first_token_ms，旧客户端不传落 NULL）；7 = 支持全量 provider
+        # 服务端协议版本：10 = 明细带请求状态字段（status / error_code /
+        # retry_count / timing_estimated，服务端逐字段清洗后落库并随
+        # GET /usage_records 回传；旧客户端不传落 NULL / 0）；9 = 明细带
+        # speed_evidence（来源验证的流式速度证据）；8 = 明细带耗时/首字
+        #（duration_ms / time_to_first_token_ms，旧客户端不传落 NULL）；
+        # 7 = 支持全量 provider
         # 额度同步（agent_quota_snapshots 扩展 label/plan_name/balance/message
         # 字段 + AGENT_QUOTA_WINDOWS 收录 deepseek/moonshot/minimax/opencodego/
         # alibaba/qoder/longcat/mimo/stepfun/grok/alibabatoken）；6 = 支持逐条
@@ -296,13 +316,13 @@ def sync():
         # 支持会话/项目维度（session_id / project_key / project_display）；
         # 4 = 额度快照带 account 维度（多账号采样隔离与多端今日增量合并）；
         # 3 = 支持 Agent 额度快照同步；若当前加载的是旧版 db.py，则降级为
-        # 7/6/5/4/3/2，客户端按版本探测能力。
+        # 10/9/8/7/6/5/4/3/2，客户端按版本探测能力。
         # proto 2 的多来源 usage_records.source 行为。
         # 客户端据此探测——旧版服务端（无 source 列）会把 codex 记录按
         # (device_id, local_rowid) 撞键静默丢弃，客户端发现 proto < 2 时
         # 不会推进 codex 游标，升级服务端后自动恢复，数据不丢。
         "proto": (
-            (9 if hasattr(db, "_speed_evidence") else 8)
+            (10 if _timing_fields_available() else (9 if hasattr(db, "_speed_evidence") else 8))
             if _speed_fields_available()
             else (
                 7

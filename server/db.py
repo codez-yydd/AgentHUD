@@ -46,6 +46,11 @@ def _usage_records_schema(table):
     duration_ms / time_to_first_token_ms 为 proto 8 新增的耗时/首字列
     （可空，缺省 NULL）：仅存储与回传，不参与聚合；旧库由
     _migrate_usage_records_speed_columns 同款 ALTER 原地补列。
+    status / error_code / retry_count / timing_estimated 为 proto 10 新增的
+    请求状态列：status 白名单（completed / cancelled / error，NULL = 未知）、
+    error_code 可空、retry_count 非空缺省 0、timing_estimated 0/1 可空
+    （1 = 请求起点是推断的）；旧库由
+    _migrate_usage_records_timing_columns 同款 ALTER 原地补列。
     """
     return f"""
 CREATE TABLE IF NOT EXISTS {table} (
@@ -68,6 +73,10 @@ CREATE TABLE IF NOT EXISTS {table} (
     duration_ms                 REAL,
     time_to_first_token_ms      REAL,
     speed_evidence              TEXT,
+    status                      TEXT,
+    error_code                  TEXT,
+    retry_count                 INTEGER NOT NULL DEFAULT 0,
+    timing_estimated            INTEGER,
     PRIMARY KEY (device_id, source, local_rowid)
 )
 """
@@ -345,6 +354,81 @@ def _speed_evidence(value):
     return json.dumps({"version": 1, "span_ms": span, "quality": quality})
 
 
+# ===== proto 10 计时/状态字段入库前的清洗（仿 _speed_evidence）=====
+
+# status 白名单：NULL = 未知（未知态行不下发徽标，语义与客户端
+# normalize_status 一致；旧 ZCode 的 "success" 等历史值也归 None）
+_RECORD_STATUSES = ("completed", "cancelled", "error")
+
+
+def _record_status(value):
+    """status 只接受白名单三值，其它（含乱码 / 数字 / None）一律 None。"""
+    return value if value in _RECORD_STATUSES else None
+
+
+def _record_error_code(value):
+    """error_code 转去掉首尾空白的字符串，截断 64 字符，空串归 None。"""
+    if not isinstance(value, str):
+        return None
+    code = value.strip()[:64]
+    return code or None
+
+
+def _record_retry_count(value):
+    """retry_count 取非负整数：非法 / 负数 / 浮点按 0，上限 10 万。"""
+    if isinstance(value, bool) or not isinstance(value, int):
+        return 0
+    return max(0, min(value, 100_000))
+
+
+def _record_timing_estimated(value):
+    """timing_estimated 只接受布尔或整数 0/1，存 0/1，其它归 None。"""
+    if isinstance(value, bool):
+        return 1 if value else 0
+    if isinstance(value, int) and value in (0, 1):
+        return value
+    return None
+
+
+def _migrate_usage_records_timing_columns(conn):
+    """usage_records 幂等补列：status / error_code / retry_count /
+    timing_estimated（proto 10）。
+
+    proto 10 客户端上传的明细会带请求状态 / 错误码 / 重试次数 / 估算标记
+    （请求日志页远端行的状态徽标与 ≈ 标记数据源）；老库直接用
+    ALTER TABLE ADD COLUMN 原地补列（不改主键、不搬数据），已有行
+    status / error_code / timing_estimated 为 NULL、retry_count 为 0——
+    与 proto 9 及之前客户端上传时的落库行为完全一致。ALTER 不会删除表上的
+    索引。可重复调用，幂等。
+    """
+    cols = [r["name"] for r in conn.execute("PRAGMA table_info(usage_records)").fetchall()]
+    if not cols:
+        return
+    added_cols = []
+    if "status" not in cols:
+        conn.execute("ALTER TABLE usage_records ADD COLUMN status TEXT")
+        added_cols.append("status")
+    if "error_code" not in cols:
+        conn.execute("ALTER TABLE usage_records ADD COLUMN error_code TEXT")
+        added_cols.append("error_code")
+    if "retry_count" not in cols:
+        conn.execute(
+            "ALTER TABLE usage_records ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0"
+        )
+        added_cols.append("retry_count")
+    if "timing_estimated" not in cols:
+        conn.execute(
+            "ALTER TABLE usage_records ADD COLUMN timing_estimated INTEGER"
+        )
+        added_cols.append("timing_estimated")
+    if added_cols:
+        conn.commit()
+        print(
+            "[zbar-sync] usage_records 已补列：" + " / ".join(added_cols)
+            + "（proto 10 请求状态维度，老记录为空）"
+        )
+
+
 def _migrate_usage_records_speed_columns(conn):
     """usage_records 幂等补列：duration_ms / time_to_first_token_ms（proto 8）。
 
@@ -383,7 +467,8 @@ def init_db():
     老库（无 source 列）在此处自动迁移；迁移中 DROP TABLE 会连带删掉
     usage_records 上的两个索引，故迁移后重放一遍索引语句挂回新表。
     quota_snapshots 的 account 迁移同理（DROP 会删掉 ts 索引）。
-    proto 5 / proto 8 的补列迁移均用 ALTER TABLE 原地完成，不影响索引。
+    proto 5 / proto 8 / proto 10 的补列迁移均用 ALTER TABLE 原地完成，
+    不影响索引。
     """
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     conn = get_conn()
@@ -398,6 +483,7 @@ def init_db():
         _migrate_usage_records_columns(conn)
         _migrate_agent_quota_snapshots(conn)
         _migrate_usage_records_speed_columns(conn)
+        _migrate_usage_records_timing_columns(conn)
         _migrate_agent_assets(conn)
         if not conn.in_transaction:
             # 迁移中的 DROP TABLE 会连带删掉索引（含 agent 快照表上的两个），
@@ -499,11 +585,18 @@ def insert_usage_records(device_id, records, uploaded_at):
     旧客户端不传时落库为 NULL）；主键去重不受影响。修订覆盖分支对
     耗时/首字用 COALESCE 非空优先：新值非空才覆盖，空值不抹掉已存值
     ——修订重传的记录若来自无耗时列的老来源库，不得丢此前已写入的耗时。
+    proto 10 起还可带 status / error_code / retry_count / timing_estimated，
+    入库前逐字段清洗：status 只认白名单三值；error_code 去首尾空白、截断
+    64 字符；retry_count 非负整数（上限 10 万）；timing_estimated 只认布尔
+    或 0/1。冲突分支对前三列同款 COALESCE 非空优先，retry_count 取较大者。
     同主键重传且 computed_total_tokens 更大时覆盖旧值：Claude Code 会话流式
     落盘，客户端可能先上传某条消息的中间值、稍后本地修正为终值并补传
     （见客户端 claude 模块的 updated_at 修订机制）。另外允许同 Token 数的
     空 model_id 被后续非空模型名修正；已识别出的模型不会被空值覆盖。
-    返回实际写入（插入或覆盖）条数。
+    此外，总量相等时若已入库行的耗时 / 首字 / 状态列为空而新值非空、或新
+    retry_count 更大，也执行覆盖——Claude 的修订补传与 Codex 的一次性定向
+    重传（proto 10 计时字段补齐）借此给已上传旧行补字段；其余同总量重传
+    仍是无操作（rowcount 0）。返回实际写入（插入或覆盖）条数。
     """
     if not records:
         return 0
@@ -521,8 +614,10 @@ def insert_usage_records(device_id, records, uploaded_at):
                          cache_creation_input_tokens, reasoning_tokens,
                          computed_total_tokens, uploaded_at,
                          session_id, project_key, project_display,
-                         duration_ms, time_to_first_token_ms, speed_evidence)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                         duration_ms, time_to_first_token_ms, speed_evidence,
+                         status, error_code, retry_count, timing_estimated)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                            ?, ?, ?, ?)
                     ON CONFLICT(device_id, source, local_rowid) DO UPDATE SET
                         started_at = CASE
                             WHEN excluded.computed_total_tokens > usage_records.computed_total_tokens
@@ -587,7 +682,16 @@ def insert_usage_records(device_id, records, uploaded_at):
                             WHEN excluded.computed_total_tokens > usage_records.computed_total_tokens AND excluded.speed_evidence IS NULL THEN NULL
                             WHEN excluded.computed_total_tokens >= usage_records.computed_total_tokens
                                 THEN COALESCE(excluded.speed_evidence, usage_records.speed_evidence)
-                            ELSE usage_records.speed_evidence END
+                            ELSE usage_records.speed_evidence END,
+                        -- proto 10 请求状态：同款非空优先（清洗后的白名单值
+                        -- 才非 NULL，乱码 / 未知值不会覆盖已存状态）。
+                        status = COALESCE(excluded.status, usage_records.status),
+                        error_code = COALESCE(excluded.error_code, usage_records.error_code),
+                        retry_count = MAX(excluded.retry_count, usage_records.retry_count),
+                        timing_estimated = COALESCE(
+                            excluded.timing_estimated,
+                            usage_records.timing_estimated
+                        )
                     WHERE (excluded.speed_evidence IS NOT NULL
                            AND excluded.computed_total_tokens >= usage_records.computed_total_tokens
                            AND excluded.speed_evidence IS NOT usage_records.speed_evidence)
@@ -595,6 +699,27 @@ def insert_usage_records(device_id, records, uploaded_at):
                        OR (
                            COALESCE(usage_records.model_id, '') = ''
                            AND COALESCE(excluded.model_id, '') != ''
+                       )
+                       OR (
+                           -- proto 10 补字段：总量相等时，已入库行的耗时 /
+                           -- 首字 / 状态列为空而新值非空，或新 retry_count
+                           -- 更大——供修订重传与一次性定向重传给已有行补
+                           -- 计时/状态字段（其余同总量重传仍是无操作）。
+                           COALESCE(excluded.computed_total_tokens, 0)
+                               = COALESCE(usage_records.computed_total_tokens, 0)
+                           AND (
+                               (usage_records.duration_ms IS NULL
+                                   AND excluded.duration_ms IS NOT NULL)
+                               OR (usage_records.time_to_first_token_ms IS NULL
+                                   AND excluded.time_to_first_token_ms IS NOT NULL)
+                               OR (usage_records.status IS NULL
+                                   AND excluded.status IS NOT NULL)
+                               OR (usage_records.error_code IS NULL
+                                   AND excluded.error_code IS NOT NULL)
+                               OR (usage_records.timing_estimated IS NULL
+                                   AND excluded.timing_estimated IS NOT NULL)
+                               OR excluded.retry_count > usage_records.retry_count
+                           )
                        )
                     """,
                     (
@@ -617,6 +742,10 @@ def insert_usage_records(device_id, records, uploaded_at):
                         r.get("duration_ms"),
                         r.get("time_to_first_token_ms"),
                         _speed_evidence(r.get("speed_evidence")),
+                        _record_status(r.get("status")),
+                        _record_error_code(r.get("error_code")),
+                        _record_retry_count(r.get("retry_count")),
+                        _record_timing_estimated(r.get("timing_estimated")),
                     ),
                 )
                 accepted += cur.rowcount
@@ -1437,7 +1566,8 @@ def query_usage_records(
                    input_tokens, output_tokens, cache_read_input_tokens,
                    cache_creation_input_tokens, reasoning_tokens,
                    computed_total_tokens, session_id, project_key, project_display,
-                   duration_ms, time_to_first_token_ms, speed_evidence
+                   duration_ms, time_to_first_token_ms, speed_evidence,
+                   status, error_code, retry_count, timing_estimated
             FROM usage_records
             WHERE {where}
             ORDER BY started_at DESC, device_id ASC, source ASC, local_rowid ASC
@@ -1489,6 +1619,16 @@ def query_usage_records(
                 "duration_ms": r["duration_ms"],
                 "time_to_first_token_ms": r["time_to_first_token_ms"],
                 "speed_evidence": json.loads(r["speed_evidence"]) if r["speed_evidence"] else None,
+                # proto 10 请求状态：老记录 / 未知值为 NULL；客户端按缺省
+                # None（未知态）处理。timing_estimated 归一为 True/False/None。
+                "status": r["status"],
+                "error_code": r["error_code"],
+                "retry_count": r["retry_count"],
+                "timing_estimated": (
+                    None
+                    if r["timing_estimated"] is None
+                    else bool(r["timing_estimated"])
+                ),
             }
             for r in rows
         ],

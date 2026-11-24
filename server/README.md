@@ -174,6 +174,12 @@ PORT=8080 python3 app.py
 
 ---
 
+## proto 10：请求状态字段
+
+`POST /sync` 上传的明细 records 每条新增四个可选字段：`status`（completed / cancelled / error，其余清洗为 null = 未知）、`error_code`（失败 / 最近一次重试的错误码，去首尾空白、截断 64 字符）、`retry_count`（该请求之前失败的尝试次数，非负整数、上限 10 万）、`timing_estimated`（1 = 请求起点是推断的）。服务端在 `usage_records` 表幂等补列存储（`retry_count` 非空缺省 0，其余可空），`GET /usage_records` 回传（`timing_estimated` 为 true / false，未知为 null）。同主键同总量重传时，已入库行为空的耗时 / 首字 / 状态列用新值补上、`retry_count` 取较大者（供客户端修订补传与一次性定向重传补字段），其余行为不变。**旧客户端完全不受影响**；客户端探测 `/sync` 响应中的 `proto: 10` 后触发一次性补传（标记三态 0 未触发 / 1 已触发 / 2 完成，断开连接归 0）：Claude 把修订游标清零一轮做全量修订重扫（`updated_at > 0` 的行），做完恢复「有新行才扫」；Codex 不动上传游标，由一次性定向通道按 id 分页只重传带计时或状态字段的行（任一字段非空或 `retry_count > 0`）、不携带 `last_rowid`，全部成功才算完成，失败下一轮重来，增量同步不受影响（服务端按主键幂等去重）。
+
+---
+
 ## 定价同步（POST / GET /pricing）
 
 手机端不再编辑模型价格，桌面端是唯一编辑入口；服务端保存**全局唯一**价格表，桌面端和手机端都以它为准。桌面端把本地改动按模型增量推送（带 `base_revision`），服务端合并后 revision+1；所有桌面端下一轮同步拉取整表，手机端只读。
