@@ -2478,6 +2478,11 @@ fn toggle_panel(app: &AppHandle, click_pos: Option<(f64, f64)>) {
     if crate::island::island_state().expanded {
         if let Err(e) = crate::island::set_expanded_on_main(app, false) {
             eprintln!("[agenthud-island] 收起灵动岛失败: {e}");
+        } else {
+            // 必须同步广播给前端：macOS 上岛窗口画布固定 780×632，是否展开
+            // 完全由前端 open 状态决定；且悬停守护按 Rust 侧标记判定分支。
+            // 若只置标记不通知前端，前端会一直显示展开，鼠标移出也不收起。
+            let _ = app.emit(crate::island::ISLAND_COLLAPSE_EVENT, ());
         }
     }
     // WKWebView 已知问题：长期隐藏的窗口 show 后首帧可能不立即重绘（白屏）。
