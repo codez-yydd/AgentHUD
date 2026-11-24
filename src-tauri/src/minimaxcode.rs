@@ -1629,8 +1629,10 @@ fn query_rows_at(
     tail: &str,
     params: impl rusqlite::Params,
 ) -> Result<Vec<db::UsageRow>, String> {
-    // proto 8：耗时/首字按列存在性带出（真实值 > 0 才给，无列恒 None，
-    // 不做时间戳差估算；口径与 db::query_since 一致）
+    // proto 8：耗时/首字按列存在性带出（真实值 > 0 才给，无列恒 None；
+    // 本库无事件时刻列，查询/同步层不做时间戳差相减，只转发导入时落库
+    // 的源数据值——duration_ms 为真实请求总耗时，TTFT 列恒 NULL → 首字
+    // 恒 None；口径与 db::query_since 一致）
     let (duration, ttft) = db::speed_columns(conn);
     let sql = format!(
         "SELECT id, started_at, model_id, provider_id,
@@ -1662,6 +1664,11 @@ fn query_rows_at(
                 project_display: row.get(12)?,
                 duration_ms: row.get(13)?,
                 time_to_first_token_ms: row.get(14)?,
+                // MiniMax Code 库无状态扩展列：proto 10 字段填空值，不改本来源 SQL
+                status: None,
+                error_code: None,
+                retry_count: 0,
+                timing_estimated: None,
             })
         })
         .map_err(|e| format!("读取 MiniMax Code 明细失败: {e}"))?

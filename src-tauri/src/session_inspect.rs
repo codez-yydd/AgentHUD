@@ -276,17 +276,20 @@ fn aggregate(
         if let Some(project) = row.project.as_deref().filter(|p| !p.is_empty()) {
             agg.project = Some(project.to_string());
         }
-        // 上下文水位：正序遍历，最后一行即"当前"
-        agg.context_last = prompt;
-        agg.context_peak = agg.context_peak.max(prompt);
-        if let Some(previous) = previous_prompt {
-            if previous >= COMPACT_MIN_TOKENS
-                && (prompt as f64) < previous as f64 * (1.0 - COMPACT_DROP_RATIO)
-            {
-                agg.compactions += 1;
+        // 上下文水位：正序遍历，最后一行即"当前"。失败 / 中断行（prompt 侧
+        // 为 0，Claude 的 error 行、ZCode 的 cancelled 行等）不参与水位与压缩
+        // 判定——否则一次失败会被误读成"水位骤降 = 一次压缩"；请求数与
+        // token 累计不受影响
+        if prompt > 0 {
+            agg.context_last = prompt;
+            agg.context_peak = agg.context_peak.max(prompt);
+            if let Some(previous) = previous_prompt {
+                if is_compaction(previous, prompt) {
+                    agg.compactions += 1;
+                }
             }
+            previous_prompt = Some(prompt);
         }
-        previous_prompt = Some(prompt);
         // 速度只统计有输出且有速度样本的行，按输出量加权（长回答权重更高）
         if let Some(speed) = row.speed_tps.filter(|s| s.is_finite() && *s > 0.0) {
             if row.output_tokens > 0 {
@@ -393,6 +396,21 @@ pub fn collect_live_sessions(window_hours: Option<i64>) -> Result<SessionFeed, S
     })
 }
 
+/// 会话行 → 上下文曲线点。prompt 侧为 0 的失败 / 中断行不产出点（水位没有
+/// 意义，还会让峰值被拉平、骤降被误判成压缩），请求数口径不受影响。
+fn context_points_from(rows: &[RequestLogRow]) -> Vec<ContextPoint> {
+    rows.iter()
+        .filter(|row| prompt_tokens(row) > 0)
+        .map(|row| ContextPoint {
+            ts: row.started_at,
+            prompt_tokens: prompt_tokens(row),
+            output_tokens: row.output_tokens.max(0),
+            cache_ratio: cache_ratio_of(row),
+            model_id: row.model_id.clone(),
+        })
+        .collect()
+}
+
 /// 单会话上下文健康：近 hours 小时内该会话每一次请求的水位序列。
 pub fn collect_session_context(
     source: &str,
@@ -425,16 +443,7 @@ pub fn collect_session_context(
         .find(|model| !model.is_empty())
         .unwrap_or_default();
 
-    let mut points: Vec<ContextPoint> = matched
-        .into_iter()
-        .map(|row| ContextPoint {
-            ts: row.started_at,
-            prompt_tokens: prompt_tokens(&row),
-            output_tokens: row.output_tokens.max(0),
-            cache_ratio: cache_ratio_of(&row),
-            model_id: row.model_id,
-        })
-        .collect();
+    let mut points: Vec<ContextPoint> = context_points_from(&matched);
     // 超长会话等距抽样（保首尾），避免一次把上万点丢给前端
     if points.len() > MAX_CONTEXT_POINTS {
         points = downsample(points, MAX_CONTEXT_POINTS);
@@ -573,5 +582,116 @@ mod tests {
         assert_eq!(sampled.len(), 100);
         assert_eq!(sampled.first().unwrap().ts, 0);
         assert_eq!(sampled.last().unwrap().ts, 999);
+    }
+
+    /// 测试用构造一行请求日志（token 各列按 separate / included 口径填）
+    fn make_session_row(
+        source: &str,
+        started_at: i64,
+        input_tokens: i64,
+        cache_read_tokens: i64,
+        cache_write_tokens: i64,
+        output_tokens: i64,
+    ) -> RequestLogRow {
+        RequestLogRow {
+            source: source.to_string(),
+            started_at,
+            model_id: "claude-sonnet".to_string(),
+            provider_id: "p".to_string(),
+            input_tokens,
+            output_tokens,
+            cache_read_tokens,
+            cache_write_tokens,
+            reasoning_tokens: 0,
+            total_tokens: input_tokens + output_tokens,
+            cost_usd: 0.0,
+            cost_cny: 0.0,
+            session_id: Some("s-1".to_string()),
+            project: None,
+            duration_ms: None,
+            ttft_ms: None,
+            speed_tps: None,
+            speed_quality: None,
+            first_token_estimated_tps: None,
+            device: None,
+            row_key: format!("{source}|{started_at}"),
+            status: None,
+            error_code: None,
+            retry_count: 0,
+            timing_estimated: false,
+        }
+    }
+
+    fn aggregate_rows(source: &str, rows: Vec<RequestLogRow>) -> LiveSession {
+        let pricing = BTreeMap::new();
+        aggregate(source, "s-1", &rows, &pricing, 7.0, 10_000)
+    }
+
+    /// 0 token 失败行不进上下文水位：夹在两次正常请求之间的一次失败（prompt
+    /// 为 0）既不算压缩、也不把峰值 / 当前水位拉低；请求数与 token 累计照常。
+    #[test]
+    fn zero_prompt_rows_do_not_distort_context() {
+        let rows = vec![
+            make_session_row("claude", 1000, 120_000, 0, 0, 500),
+            // 失败行（Claude 的 error 行：token 全 0）
+            make_session_row("claude", 2000, 0, 0, 0, 0),
+            make_session_row("claude", 3000, 110_000, 0, 0, 500),
+        ];
+        let session = aggregate_rows("claude", rows);
+        assert_eq!(session.requests, 3, "失败行计入请求数");
+        assert_eq!(session.context_peak, 120_000, "峰值只来自正常行");
+        assert_eq!(session.context_last, 110_000, "当前水位取最后一个正常行");
+        assert_eq!(session.compactions, 0, "失败行不误判成一次压缩");
+        assert_eq!(session.total_tokens, 231_000, "token 累计包含失败行（全 0）");
+
+        // 对照：去掉失败行的正常序列，水位完全一致
+        let clean = vec![
+            make_session_row("claude", 1000, 120_000, 0, 0, 500),
+            make_session_row("claude", 3000, 110_000, 0, 0, 500),
+        ];
+        let session = aggregate_rows("claude", clean);
+        assert_eq!(session.context_peak, 120_000);
+        assert_eq!(session.context_last, 110_000);
+        assert_eq!(session.compactions, 0);
+    }
+
+    /// 全是失败行的会话：水位保持 0，不产生压缩判定，请求数照常。
+    #[test]
+    fn all_zero_prompt_session_keeps_zero_context() {
+        let rows = vec![
+            make_session_row("claude", 1000, 0, 0, 0, 0),
+            make_session_row("claude", 2000, 0, 0, 0, 0),
+        ];
+        let session = aggregate_rows("claude", rows);
+        assert_eq!(session.requests, 2);
+        assert_eq!(session.context_peak, 0);
+        assert_eq!(session.context_last, 0);
+        assert_eq!(session.compactions, 0);
+    }
+
+    /// included 源（ZCode）的失败行（input/cache_write 全 0）同样不进水位：
+    /// ZCode 主库的 cancelled / error 行此前会把曲线拉低并误判压缩。
+    #[test]
+    fn zcode_failed_rows_skip_context_curve() {
+        let rows = vec![
+            // 正常行（included 口径：prompt = input + cache_write）
+            make_session_row("zcode", 1000, 200_000, 0, 10_000, 500),
+            // 失败行
+            make_session_row("zcode", 2000, 0, 0, 0, 0),
+            // 正常行（低于压缩阈值：210k → 100k 是 52% 降幅，超过 45% 判压缩）
+            make_session_row("zcode", 3000, 95_000, 0, 5_000, 500),
+        ];
+        // 曲线点：失败行不产出点
+        let points = context_points_from(&rows);
+        let session = aggregate_rows("zcode", rows);
+        assert_eq!(session.requests, 3);
+        assert_eq!(session.context_peak, 210_000);
+        assert_eq!(session.context_last, 100_000);
+        assert_eq!(session.compactions, 1, "真实的压缩仍然被识别");
+
+        assert_eq!(points.len(), 2);
+        assert!(points.iter().all(|point| point.prompt_tokens > 0));
+        assert_eq!(points[0].ts, 1000);
+        assert_eq!(points[1].ts, 3000);
     }
 }

@@ -3,8 +3,10 @@
 //! Weighted mean = sum(output) * 1000 / sum(request/stream milliseconds).
 //! Percentiles describe individual request rates, not whole-turn throughput.
 //!
-//! ZCode uses first text/reasoning event timestamps. DSH records stream spans; other
-//! imported/remote sources record request spans. Never subtract TTFT from DSH.
+//! ZCode and imported rows with event timestamps (Claude) use first-output /
+//! completion events — imports through token_speed::import_sample. DSH records
+//! stream spans; Kimi/OpenCode/MiniMax/remote rows record request spans. Never
+//! subtract TTFT from DSH.
 //! Exact and approximate pools are kept separate, with exact samples preferred
 //! within a source/provider/model group. Request-average values display ≈.
 //! Tool execution gaps between model requests do not contribute to either pool.
@@ -298,10 +300,11 @@ struct ModelAgg {
     local_requests: i64,
     completed: i64,
     /// 速度样本两池（口径分层，见模块头）：精确生成池 = (output_tokens,
-    /// 生成毫秒)，zcode 事件时刻行专用；组装时非空则速度统计只用本池
+    /// 生成毫秒)，zcode 事件时刻行与导入库事件时刻齐全的行；组装时非空
+    /// 则速度统计只用本池
     generation_pairs: Vec<(f64, f64)>,
-    /// 请求平均近似池 = (output_tokens, duration_ms)，导入库与远端行共用；
-    /// 仅当 generation 池为空时才参与速度统计
+    /// 请求平均近似池 = (output_tokens, duration_ms)，导入库无事件时刻的
+    /// 行与远端行共用；仅当 generation 池为空时才参与速度统计
     average_pairs: Vec<(f64, f64)>,
     /// 首 token 延迟样本（毫秒）
     ttfts: Vec<i64>,
@@ -374,8 +377,11 @@ pub(crate) fn collect_source_speed(
 /// 并入——本地未安装的来源在全部设备模式下仍有数据）；非核心列缺失按
 /// NULL 降级（对应统计为 null）。速度口径按池分层（见模块头）：zcode 走
 /// token_speed::speed_sample 共享行级判定（B1，缺事件时刻的行不产
-/// 速度样本、不降级 duration_ms）；导入库与远端行走 request_speed_at
-/// 请求平均近似（duration_ms > 0 才有样本，codex 本地无该列恒无本地样本）。
+/// 速度样本、不降级 duration_ms）；导入库走 token_speed::import_sample
+/// 同款判定（事件时刻齐全按流式窗口进 generation 池，缺任一时刻退回
+/// duration_ms 的来源口径进 average 池；Claude 与 Codex 的新版导入已按
+/// 事件时刻落库，未回填的旧行和其它导入库缺这些列、仍走 average 池），
+/// 远端明细行仍按 duration_ms 记录口径进 average 池不变。
 pub(crate) fn collect_source_speed_with_remote(
     conn: &Connection,
     source: &str,
@@ -553,12 +559,25 @@ pub(crate) fn collect_source_speed_with_remote(
                         pool.push((sample.output_tokens as f64, sample.generation_ms as f64));
                     }
                 }
-            } else if let Some(d) = duration_ms {
-                let quality = crate::token_speed::duration_quality(source);
-                if crate::token_speed::is_completed_status(status.as_deref())
-                    && crate::token_speed::duration_speed(output, d as f64, quality, started).is_some() {
-                    let pool = if quality == SpeedQuality::Generation { &mut g.generation_pairs } else { &mut g.average_pairs };
-                    pool.push((output as f64, d as f64));
+            } else if crate::token_speed::is_completed_status(status.as_deref()) {
+                // 导入库行：事件时刻齐全按流式窗口进 generation 池，缺任一
+                // 时刻退回 duration_ms 的来源口径进 average 池（import_sample
+                // 与 request_logs / db::fill_duration_metrics 三处同口径；
+                // duration 用原始 f64，正负 / 有限性 / 越界由判定函数拒收）
+                let timing = crate::token_speed::ImportTiming {
+                    output_tokens: output,
+                    row_at: started,
+                    first_token_at: first,
+                    completed_at: completed,
+                    duration_ms: duration,
+                    fallback_quality: crate::token_speed::duration_quality(source),
+                    observed_at_ms: 0,
+                    // 外层 is_completed_status 已过滤完成态
+                    completed: true,
+                };
+                if let Some(sample) = crate::token_speed::import_sample(&timing) {
+                    let pool = if sample.quality == SpeedQuality::Generation { &mut g.generation_pairs } else { &mut g.average_pairs };
+                    pool.push((sample.output_tokens as f64, sample.generation_ms as f64));
                 }
             }
         }
@@ -761,6 +780,11 @@ mod tests {
                         if first < start || first <= 0 || first >= end { continue; }
                         (end-first, true)
                     } else { (end-start, false) }
+                } else if let (Some(first), Some(end)) = (first, end) {
+                    // 导入库已补事件时刻（collect 走 import_sample 流式窗口）：
+                    // 期望口径同为 end − first，时序异常 / 非正时刻丢弃
+                    if first <= 0 || end <= first { continue; }
+                    (end-first, true)
                 } else {
                     let Some(duration) = duration.filter(|d| d.is_finite() && *d > 0.0) else { continue };
                     (duration as i64, source == "dsh")
@@ -865,6 +889,10 @@ mod tests {
             project_display: None,
             duration_ms,
             time_to_first_token_ms: ttft_ms,
+            status: None,
+            error_code: None,
+            retry_count: 0,
+            timing_estimated: None,
         }
     }
 

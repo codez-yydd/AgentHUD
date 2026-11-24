@@ -15,6 +15,11 @@
 //! First-output evidence includes reasoning and verified tool-input milestones.
 //! ZCode queries resolve their coverage before constructing RequestTiming. Request-only
 //! durations remain approximate; the two sample pools are never mixed.
+//!
+//! Import-library rows (model_usage written from session logs, e.g. Claude)
+//! resolve through import_sample / import_speed: a stream window between the
+//! first output and completion when both event timestamps exist, otherwise
+//! the recorded duration keeps the source quality passed by the caller.
 
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
@@ -29,7 +34,7 @@ pub(crate) enum SpeedQuality {
 
 /// Origin-validated timing, transported unchanged through sync. A present
 /// envelope with no span explicitly means unavailable (never revive fallback).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SpeedEvidence {
     pub version: u32,
     pub span_ms: Option<f64>,
@@ -237,6 +242,118 @@ pub(crate) fn duration_speed(
 /// DSH records a stream span; other importers record whole-request durations.
 pub(crate) fn duration_quality(source: &str) -> SpeedQuality {
     if source == "dsh" { SpeedQuality::Generation } else { SpeedQuality::RequestAverage }
+}
+
+/// 导入库一行的计时原料（Claude / Codex 等由导入器从会话日志取证的来源）。
+/// 与 RequestTiming 的差别：行的 started_at 只是时间键、不是可信的事件时刻，
+/// 所以只认「首个输出 + 结束」两个绝对事件；缺任一时刻时退回 duration_ms
+/// 的来源口径。
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ImportTiming {
+    pub output_tokens: i64,
+    /// 行的时间键（started_at 列）：仅在没有事件时刻时作为回退口径的 completed_at
+    pub row_at: i64,
+    pub first_token_at: Option<i64>,
+    pub completed_at: Option<i64>,
+    pub duration_ms: Option<f64>,
+    /// 退回 duration_ms 时使用的来源口径（duration_quality(source)）
+    pub fallback_quality: SpeedQuality,
+    /// 非零时拒绝晚于该时刻的样本；导入库是已落库的历史行，传 0
+    pub observed_at_ms: i64,
+    /// 行的状态是否完成态（is_completed_status 语义：NULL / 空 / completed /
+    /// success 均算完成；error / cancelled 为 false）。仅 import_evidence 用于
+    /// 生成「明确不可用」的同步证据；import_sample / import_speed 的速度判定
+    /// 由调用方在 SQL 或分支里先行过滤，传 true 即可。
+    pub completed: bool,
+}
+
+/// 导入库行的速度样本（窗口边界与拒收规则沿用 finite_rate / duration_speed）。
+/// 事件时刻齐全但窗口被拒收（<200ms / >1h）时直接 None、**不回退**
+/// duration_ms——坏窗口宁可没有速度，也不用总耗时伪造一个流式速率。
+pub(crate) fn import_sample(t: &ImportTiming) -> Option<GenerationSample> {
+    if t.output_tokens <= 0 {
+        return None;
+    }
+    // 事件时刻齐全：流式窗口 = 结束 − 首个输出，质量恒为 generation
+    if let (Some(first), Some(completed)) = (t.first_token_at, t.completed_at) {
+        if first <= 0 || completed <= 0 || completed <= first {
+            return None;
+        }
+        if t.observed_at_ms > 0 && completed > t.observed_at_ms {
+            return None;
+        }
+        let generation_ms = completed - first;
+        let tps = finite_rate(t.output_tokens, generation_ms)?;
+        return Some(GenerationSample {
+            output_tokens: t.output_tokens,
+            generation_ms,
+            tps,
+            quality: SpeedQuality::Generation,
+        });
+    }
+    // 事件时刻缺任一（含只有首字没有结束）：退回 duration_ms 的来源口径，
+    // 越界 / 非有限时长由 duration_speed 拒收，同样不产出样本
+    let duration_ms = t.duration_ms.filter(|value| value.is_finite() && *value > 0.0)?;
+    let snapshot = duration_speed(
+        t.output_tokens,
+        duration_ms,
+        t.fallback_quality,
+        t.completed_at.unwrap_or(t.row_at),
+    )?;
+    Some(GenerationSample {
+        output_tokens: t.output_tokens,
+        generation_ms: duration_ms.trunc() as i64,
+        tps: snapshot.value,
+        quality: snapshot.quality,
+    })
+}
+
+/// 同一判定的 SpeedSnapshot 形态（供 request_logs 用）
+pub(crate) fn import_speed(t: &ImportTiming) -> Option<SpeedSnapshot> {
+    let sample = import_sample(t)?;
+    Some(SpeedSnapshot {
+        value: sample.tps,
+        quality: sample.quality,
+        completed_at: t.completed_at.unwrap_or(t.row_at),
+        request_id: None,
+    })
+}
+
+/// 导入行的流式速度证据（proto 10 起随明细上传，供远端行展示速度）。判定
+/// 与 import_sample 同源（窗口边界沿用 finite_rate），但返回可传输的
+/// SpeedEvidence 三态：
+/// - 状态非完成态（error / cancelled）：`Some(SpeedEvidence { span_ms: None,
+///   quality: None })` ——「明确不可用」。远端行消费证据时 evidence 存在即
+///   不再按 duration_ms 回退算请求均速，失败/中断行因此不会在远端被伪造
+///   出一个速度；
+/// - 事件时刻齐全且窗口合法（completed − first 在 [200ms, 1h] 内、输出
+///   非零）：span_ms = 完成减首个输出、quality = generation；
+/// - 事件时刻齐全但窗口被拒收（时序异常 / 窗口越界 / 零输出）：同样给
+///   「明确不可用」，与 import_sample 的「坏窗口不回退」一致；
+/// - 其余（只有总耗时，无事件时刻）：`None` ——远端沿用「按 duration_ms
+///   算请求均速」的现有回退逻辑，行为与 proto 9 之前完全一致。
+pub(crate) fn import_evidence(t: &ImportTiming) -> Option<SpeedEvidence> {
+    let unavailable = SpeedEvidence { version: 1, span_ms: None, quality: None };
+    if !t.completed {
+        return Some(unavailable);
+    }
+    let (first, completed) = match (t.first_token_at, t.completed_at) {
+        (Some(first), Some(completed)) => (first, completed),
+        // 缺任一事件时刻：让远端按总耗时回退（None = 不携带证据）
+        _ => return None,
+    };
+    let legal = first > 0
+        && completed > 0
+        && completed > first
+        && finite_rate(t.output_tokens, completed - first).is_some();
+    if !legal {
+        return Some(unavailable);
+    }
+    Some(SpeedEvidence {
+        version: 1,
+        span_ms: Some((completed - first) as f64),
+        quality: Some(SpeedQuality::Generation),
+    })
 }
 
 fn finite_rate(output_tokens: i64, span_ms: i64) -> Option<f64> {
@@ -502,6 +619,137 @@ mod tests {
         }
         // No timing: even nonzero output cannot create a Codex/Cursor rate.
         assert!(request_speed(&RequestTiming { output_tokens: 200, ..Default::default() }).is_none());
+    }
+
+    /// 导入库行（import_sample / import_speed）：事件时刻齐全走流式口径，
+    /// 坏窗口拒收且不回退；缺时刻退回 duration_ms 的来源口径。
+    #[test]
+    fn import_sample_prefers_event_timestamps_and_rejects_bad_windows() {
+        let full = ImportTiming {
+            output_tokens: 100,
+            row_at: 1_000,
+            first_token_at: Some(2_000),
+            completed_at: Some(3_000),
+            duration_ms: Some(5_000.0),
+            fallback_quality: SpeedQuality::RequestAverage,
+            observed_at_ms: 0,
+            completed: true,
+        };
+        // 齐全且合法：generation 口径，窗口 = completed − first，duration_ms 不参与
+        let sample = import_sample(&full).unwrap();
+        assert_eq!(sample.quality, SpeedQuality::Generation);
+        assert_eq!(sample.generation_ms, 1_000);
+        assert!((sample.tps - 100.0).abs() < 1e-9);
+        // 窗口 < 200ms：拒收且不回退 duration_ms（5000ms 本可产出样本）
+        let short = ImportTiming { completed_at: Some(2_100), ..full.clone() };
+        assert!(import_sample(&short).is_none());
+        // 窗口 > 1h：同样拒收不回退
+        let long = ImportTiming { completed_at: Some(2_000 + 3_600_001), ..full.clone() };
+        assert!(import_sample(&long).is_none());
+        // completed <= first：时序异常拒收
+        let reversed = ImportTiming { completed_at: Some(2_000), ..full.clone() };
+        assert!(import_sample(&reversed).is_none());
+        // 零 / 负输出
+        let no_output = ImportTiming { output_tokens: 0, ..full.clone() };
+        assert!(import_sample(&no_output).is_none());
+        // 非零 observed_at_ms：晚于观测时刻的结束事件拒收
+        let future = ImportTiming { observed_at_ms: 2_500, ..full.clone() };
+        assert!(import_sample(&future).is_none());
+        // import_speed 形态：completed_at 用事件时刻，request_id 恒 None
+        let speed = import_speed(&full).unwrap();
+        assert_eq!(speed.completed_at, 3_000);
+        assert_eq!(speed.request_id, None);
+    }
+
+    #[test]
+    fn import_sample_falls_back_to_duration_without_event_timestamps() {
+        // 只有 duration：退回来源口径——普通来源 RequestAverage；
+        // dsh（fallback_quality = Generation）保持 Generation
+        let only_duration = ImportTiming {
+            output_tokens: 200,
+            row_at: 9_000,
+            first_token_at: None,
+            completed_at: None,
+            duration_ms: Some(2_000.0),
+            fallback_quality: SpeedQuality::RequestAverage,
+            observed_at_ms: 0,
+            completed: true,
+        };
+        let average = import_sample(&only_duration).unwrap();
+        assert_eq!(average.quality, SpeedQuality::RequestAverage);
+        assert_eq!(average.generation_ms, 2_000);
+        assert!((average.tps - 100.0).abs() < 1e-9);
+        let dsh_like = ImportTiming {
+            fallback_quality: SpeedQuality::Generation,
+            ..only_duration.clone()
+        };
+        assert_eq!(import_sample(&dsh_like).unwrap().quality, SpeedQuality::Generation);
+        // 只有首字没有结束：仍退回 duration（RequestTiming 的「有首无结」
+        // 拒绝规则不适用于导入库行——它没有可信起点可等）
+        let first_only = ImportTiming {
+            first_token_at: Some(9_500),
+            ..only_duration.clone()
+        };
+        let sample = import_sample(&first_only).unwrap();
+        assert_eq!(sample.quality, SpeedQuality::RequestAverage);
+        // snapshot 的完成时刻回落到行时间键
+        let speed = import_speed(&first_only).unwrap();
+        assert_eq!(speed.completed_at, 9_000);
+        assert!((speed.value - 100.0).abs() < 1e-9);
+        // duration_ms 越界 / 非有限 / 缺失：无样本
+        for bad in [Some(150.0), Some(f64::NAN), Some(f64::INFINITY), None] {
+            let no_timing = ImportTiming {
+                duration_ms: bad,
+                first_token_at: None,
+                ..only_duration.clone()
+            };
+            assert!(import_sample(&no_timing).is_none());
+            assert!(import_speed(&no_timing).is_none());
+        }
+    }
+
+    #[test]
+    fn import_evidence_covers_unavailable_streaming_and_fallback_cases() {
+        let base = ImportTiming {
+            output_tokens: 100,
+            row_at: 1_000,
+            first_token_at: Some(2_000),
+            completed_at: Some(3_000),
+            duration_ms: Some(5_000.0),
+            fallback_quality: SpeedQuality::RequestAverage,
+            observed_at_ms: 0,
+            completed: true,
+        };
+        let unavailable = SpeedEvidence { version: 1, span_ms: None, quality: None };
+        // 状态非完成态（error / cancelled）：明确不可用，远端不得按总耗时回退
+        let failed = ImportTiming { completed: false, ..base.clone() };
+        assert_eq!(import_evidence(&failed), Some(unavailable.clone()));
+        // 事件时刻齐全且窗口合法：流式窗口 + generation 口径
+        let evidence = import_evidence(&base).unwrap();
+        assert_eq!(evidence.span_ms, Some(1_000.0));
+        assert_eq!(evidence.quality, Some(SpeedQuality::Generation));
+        // 齐全但窗口越界（< 200ms / > 1h / 时序反转）：明确不可用，不回退
+        for bad in [
+            ImportTiming { completed_at: Some(2_100), ..base.clone() },
+            ImportTiming { completed_at: Some(2_000 + 3_600_001), ..base.clone() },
+            ImportTiming { completed_at: Some(2_000), ..base.clone() },
+        ] {
+            assert_eq!(
+                import_evidence(&bad),
+                Some(unavailable.clone()),
+                "坏窗口必须显式不可用而非回退"
+            );
+        }
+        // 零输出：finite_rate 拒收 → 明确不可用（0 token 行没有速度）
+        let no_output = ImportTiming { output_tokens: 0, ..base.clone() };
+        assert_eq!(import_evidence(&no_output), Some(unavailable));
+        // 只有总耗时（缺任一事件时刻）：None，远端按 duration_ms 算请求均速
+        let only_duration = ImportTiming {
+            first_token_at: None,
+            completed_at: None,
+            ..base
+        };
+        assert_eq!(import_evidence(&only_duration), None);
     }
 
     #[test]

@@ -64,6 +64,19 @@ impl Default for SyncMode {
 pub struct SyncConfig {
     #[serde(default)]
     pub speed_evidence_version: u32,
+    /// 计时/状态字段（status / error_code / retry_count / timing_estimated，
+    /// proto 10）的一次性重传标记（三态，见 TIMING_FIELDS_* 常量）：
+    /// 服务端首次确认支持后（0 → 1）清零 Claude 的修订游标、Claude 走
+    /// 一轮全量修订重扫；Codex 由 1 期间的一次性定向通道重传带字段的行、
+    /// 传完推进到 2（全部完成）。Codex 通道**不动上传游标**——清零上游
+    /// 游标后首批失败会把游标卡在 0，来源从此静默停同步。判定与清零统一
+    /// 在 prepare_timing_backfill（用每轮必做的 zcode 协议探测驱动，不依赖
+    /// 一轮里两阶段的处理先后）。命名刻意不以 last_uploaded_ 开头——它
+    /// 不是游标，disconnect_resets_every_source_cursor 按该前缀扫描游标
+    /// 字段；但断开连接时它随游标一并归零（reset_source_cursors），重连
+    /// 旧服务端再升级后仍能触发一次。
+    #[serde(default)]
+    pub timing_fields_version: u32,
     #[serde(default)]
     pub enabled: bool,
     #[serde(default)]
@@ -146,6 +159,7 @@ impl Default for SyncConfig {
     fn default() -> Self {
         Self {
             speed_evidence_version: 0,
+            timing_fields_version: 0,
             enabled: false,
             mode: SyncMode::Manual,
             interval_seconds: default_interval(),
@@ -563,6 +577,9 @@ pub fn upload_incremental() -> Result<SyncOutcome, String> {
     let zcode_proto = zcode_protocol(&base, &token);
     let zcode_with_projects = zcode_proto >= 5 && crate::zcode_sessions::has_project_mapping();
     if prepare_speed_backfill(&mut cfg,zcode_proto) { since = cfg.last_uploaded_rowid; }
+    // proto 10 一次性重传（0 → 1：清 Claude 修订游标；Codex 走独立定向通道，
+    // 见 prepare_timing_backfill / run_timing_backlog）。副作用只落在 cfg 上。
+    prepare_timing_backfill(&mut cfg, zcode_proto);
     if zcode_proto >= 9 && since > 0 {
         // Logging and SQLite commits are independent. Replay recently completed
         // rows so delayed first-content evidence can enrich an uploaded row.
@@ -810,6 +827,7 @@ fn merge_config_for_save(
     }
     let mut merged = latest.clone();
     merged.speed_evidence_version = ran.speed_evidence_version;
+    merged.timing_fields_version = ran.timing_fields_version;
     merged.last_uploaded_rowid = ran.last_uploaded_rowid;
     merged.last_uploaded_codex_rowid = ran.last_uploaded_codex_rowid;
     merged.last_uploaded_claude_rowid = ran.last_uploaded_claude_rowid;
@@ -873,6 +891,40 @@ fn prepare_speed_backfill(cfg: &mut SyncConfig, proto: u32) -> bool {
     true
 }
 
+/// `timing_fields_version` 的三态（见字段文档）：
+/// 0 = 未触发；1 = 已触发（Claude 修订游标已清零、Codex 定向重传待做）；
+/// 2 = Codex 定向通道已传完。2 **只代表 Codex 一侧完成**：Claude 的全量
+/// 重扫是否做完由它自己的修订游标决定（清零后为 0 就会继续重扫，做完
+/// 推进水位），与标记互相独立。
+const TIMING_FIELDS_NONE: u32 = 0;
+const TIMING_FIELDS_TRIGGERED: u32 = 1;
+const TIMING_FIELDS_DONE: u32 = 2;
+
+/// 计时/状态字段（status / error_code / retry_count / timing_estimated，
+/// proto 10）的一次性重传判定（纯函数，单测锁定，仿 prepare_speed_backfill）。
+/// 服务端首次确认支持 proto 10 时（version 0 → 1），把 **Claude 的修订游标**
+/// 清零一次：Claude 旧行的修订水位可能已越过回填更新的行（客户端先升级、
+/// 服务端后升级时，proto 9 服务端会丢弃字段但游标照常推进），只能靠游标
+/// 归零强制全量重扫，由服务端按主键 upsert、总量相等时补缺失字段（幂等无
+/// 副作用）。**Codex 不动上传游标**——它的补传走独立的定向通道
+/// （run_timing_backlog，version == 1 期间执行）：全量重传若清零上传游标，
+/// 首批失败会把游标卡在 0，Codex 来源（含新行）从此静默停止同步；定向
+/// 通道只传带字段的极少量行且不碰游标，失败也不可能卡住增量同步。
+/// 判定用每轮必做的 zcode 协议探测结果（upload_incremental 阶段一）统一
+/// 调用，不依赖一轮里 codex / claude 两阶段的处理先后——版本号是两来源
+/// 共用的，若按各阶段自己的探测置位，先处理的来源会推进版本，另一来源
+/// 永远错过触发。
+/// - proto < 10（服务端未升级）→ 不推进、不动游标，下一轮再探测；
+/// - version 非 0（已触发 / 已完成）→ 不动；
+/// - 断开连接会把版本号随游标一并归零（reset_source_cursors）：重连到
+///   另一台较旧的服务端后，等它升级到 proto 10 仍能触发一次。
+fn prepare_timing_backfill(cfg: &mut SyncConfig, proto: u32) -> bool {
+    if proto < 10 || cfg.timing_fields_version != TIMING_FIELDS_NONE { return false; }
+    cfg.last_uploaded_claude_rev_ts = 0;
+    cfg.timing_fields_version = TIMING_FIELDS_TRIGGERED;
+    true
+}
+
 fn zcode_speed_replay_since(conn: &rusqlite::Connection, cursor: i64, now: i64) -> Result<i64,String> {
     let completed = if db::has_column(conn,"model_usage","completed_at") {
         "CASE WHEN completed_at > 0 THEN completed_at ELSE started_at END"
@@ -912,7 +964,8 @@ fn zcode_protocol(base: &str, token: &str) -> u32 {
 /// rowid 游标口径，多带 session_id 列与 proto 8 的耗时/首字列），并按
 /// zcode_sessions 派生库的 session_id → (project_key, cwd) 映射填充三字段。
 /// with_projects=false、主库无 session_id 列或映射查不到该会话时，三字段
-/// 保持 None；耗时/首字无列恒 None（禁止时间戳差估算）。
+/// 保持 None；耗时/首字只转发主库已有的列（老库无列恒 None，查询层
+/// 不做时间戳差相减）。
 fn query_zcode_rows_with_sessions(
     since: i64,
     limit: usize,
@@ -939,15 +992,18 @@ fn query_zcode_rows_with_sessions_at(
     limit: usize,
     project_map: &HashMap<String, (String, String)>,
 ) -> Result<Vec<UsageRow>, String> {
-    // proto 8：耗时/首字按列存在性带出（真实值 > 0 才给，无列恒 None，
-    // 不做时间戳差估算；口径与 db::query_since 一致）
+    // proto 8：耗时/首字按列存在性带出（真实值 > 0 才给，无列恒 None；
+    // 查询/同步层不做时间戳差相减，只转发主库已有的列；口径与
+    // db::query_since 一致）
     let (duration, ttft) = db::speed_columns(conn);
+    // proto 10：状态扩展列同款按列存在性带出（追加在 SELECT 末尾，下标 13~16）
+    let (status, error_code, retry_count, timing_estimated) = db::timing_columns(conn);
     let sql = format!(
         "SELECT rowid, started_at, model_id, provider_id,
             COALESCE(input_tokens,0), COALESCE(output_tokens,0),
             COALESCE(cache_read_input_tokens,0), COALESCE(cache_creation_input_tokens,0),
             COALESCE(reasoning_tokens,0), COALESCE(computed_total_tokens,0),
-            session_id, {duration}, {ttft}
+            session_id, {duration}, {ttft}, {status}, {error_code}, {retry_count}, {timing_estimated}
      FROM model_usage
      WHERE rowid > ?1
      ORDER BY rowid ASC
@@ -980,6 +1036,11 @@ fn query_zcode_rows_with_sessions_at(
                     project_display: None,
                     duration_ms: row.get(11)?,
                     time_to_first_token_ms: row.get(12)?,
+                    // proto 10 状态扩展列（下标 13~16，与 SELECT 末尾严格对应）
+                    status: row.get(13)?,
+                    error_code: row.get::<_, Option<String>>(14)?.filter(|c| !c.is_empty()),
+                    retry_count: row.get(15)?,
+                    timing_estimated: row.get::<_, Option<i64>>(16)?.map(|v| v != 0),
                 },
                 row.get::<_, Option<String>>(10)?,
             ))
@@ -1166,6 +1227,58 @@ where
     Ok((total, sweep_watermark))
 }
 
+/// proto 10 计时/状态字段的一次性**定向重传通道**（查询与发送注入版，供
+/// 单测锁定状态流转；真实接缝见 upload_derived_source_incremental 的 codex
+/// 分支）。version == 1（已触发、待做）时分页选出带计时/状态证据的行逐批
+/// 上传，全部批次成功把版本推进到 2（完成）；version 非 1（未触发或已完成）
+/// 原样返回、不执行。任何一批失败返回 Err——调用方以 `?` 上抛、不执行版本
+/// 赋值，标记停在 1，下一轮从头再来（服务端按主键幂等去重）；上传游标
+/// 从未传入本函数，任何路径都不会改动它。返回 (成功上传条数, 新版本号)。
+fn run_timing_backlog<Q, S>(
+    version: u32,
+    mut query: Q,
+    mut send: S,
+) -> Result<(usize, u32), String>
+where
+    Q: FnMut(i64, usize) -> Result<Vec<UsageRow>, String>,
+    S: FnMut(&[UsageRow]) -> Result<usize, String>,
+{
+    if version != TIMING_FIELDS_TRIGGERED {
+        return Ok((0, version));
+    }
+    const BATCH: usize = 500;
+    let mut after_id = 0i64;
+    let mut total = 0usize;
+    loop {
+        let records = query(after_id, BATCH)?;
+        if records.is_empty() {
+            break;
+        }
+        after_id = records.last().map(|r| r.local_rowid).unwrap_or(after_id);
+        total += send(&records)?;
+    }
+    Ok((total, TIMING_FIELDS_DONE))
+}
+
+/// 一次性定向通道的执行接缝（接收 cfg，供单测锁定失败路径的 cfg 契约）：
+/// version 处于「已触发」时执行 run_timing_backlog（查询/发送由调用方
+/// 注入），**全部成功才把 cfg.timing_fields_version 推进到「完成」**；
+/// 失败时 Err 原样上抛、cfg 完全不动（版本停在「已触发」、上传游标本来
+/// 就不参与本通道）。返回成功上传条数。
+fn run_timing_backlog_for_cfg<Q, S>(
+    cfg: &mut SyncConfig,
+    query: Q,
+    send: S,
+) -> Result<usize, String>
+where
+    Q: FnMut(i64, usize) -> Result<Vec<UsageRow>, String>,
+    S: FnMut(&[UsageRow]) -> Result<usize, String>,
+{
+    let (total, version) = run_timing_backlog(cfg.timing_fields_version, query, send)?;
+    cfg.timing_fields_version = version;
+    Ok(total)
+}
+
 /// 上传派生来源（本地采集型导入库）的增量（id > 对应游标，循环分批）。
 /// 查询前由各模块自行增量导入（原始 jsonl / 本地库 → 派生 sqlite）。各条路径
 /// 完全同构，仅数据源与游标字段不同，故按 source 参数泛化：
@@ -1190,6 +1303,9 @@ fn upload_derived_source_incremental(
     let (dir_exists, has_pending, cursor): (bool, bool, i64) = match source {
         "codex" => {
             let dir = crate::codex::sessions_dir().is_ok();
+            // 一次性标记处于「已触发、Codex 定向重传待做」（version == 1）
+            // 时，即使没有新行也要进入本函数：定向通道在模型修订通道之后
+            // 执行，传完推进到「完成」；失败上抛（标记停在 1，下一轮再来）。
             let pending = dir
                 && (!crate::codex::query_since(cfg.last_uploaded_codex_rowid, 1)?.is_empty()
                     || !crate::codex::query_model_revised_since(
@@ -1197,13 +1313,20 @@ fn upload_derived_source_incremental(
                         cfg.last_uploaded_codex_model_rev_id,
                         1,
                     )?
-                    .is_empty());
+                    .is_empty()
+                    || cfg.timing_fields_version == TIMING_FIELDS_TRIGGERED);
             (dir, pending, cfg.last_uploaded_codex_rowid)
         }
         "claude" => {
             let dir = crate::claude::projects_dir().is_ok();
+            // 修订游标为 0（proto 10 一次性重传清零，或断开重连后的初始态）
+            // 时，即使没有新行也要走到修订扫描——修订查询 updated_at > 0 会
+            // 从头选出全部行重传一遍，服务端按总量相等补字段；扫描水位取
+            // 扫描开始时刻恒 > 0，一轮做完即恢复「有新行才扫」的原行为。
+            // 平时（游标 > 0）保持原判定：只有增量新行才进入本函数。
             let pending = dir
-                && !crate::claude::query_since(cfg.last_uploaded_claude_rowid, 1)?.is_empty();
+                && (!crate::claude::query_since(cfg.last_uploaded_claude_rowid, 1)?.is_empty()
+                    || cfg.last_uploaded_claude_rev_ts == 0);
             (dir, pending, cfg.last_uploaded_claude_rowid)
         }
         "dsh" => {
@@ -1302,7 +1425,10 @@ fn upload_derived_source_incremental(
     let mut total = 0usize;
     const BATCH: usize = 500;
     // 明细增量：批循环与游标推进抽在 pump_source_batches（可单测），这里只按
-    // 来源注入查询与游标字段。
+    // 来源注入查询与游标字段。（proto 10 的一次性重传不在本函数判定：触发
+    // 标记见阶段一的 prepare_timing_backfill；Codex 的补传走独立的定向通道
+    // run_timing_backlog_for_cfg，只传带字段的行、不动本函数的上传游标；
+    // Claude 靠修订游标清零后的待传判定走到下方修订扫描。）
     let (batch_uploaded, _since) = pump_source_batches(
         cursor,
         BATCH,
@@ -1358,6 +1484,29 @@ fn upload_derived_source_incremental(
         // 补传期间新产生且修订序号更大的记录留给下一轮，避免漏掉并发写入。
         cfg.last_uploaded_codex_model_rev_ts = revision_ts;
         cfg.last_uploaded_codex_model_rev_id = revision_id;
+
+        // proto 10 计时/状态字段的一次性定向重传（timing_fields_version == 1，
+        // 见 prepare_timing_backfill）：只选出带计时 / 状态证据的行按 id 分页
+        // 重传，**全程不动上传游标 last_uploaded_codex_rowid**——若靠清零上游
+        // 游标做全量重传，首批（约 216 KB）失败会把游标卡在 0，Codex 来源
+        // （含新行）从此静默停止同步；定向通道只传极少量行，失败也只影响本
+        // 通道。全部批次成功才推进到「完成」（2）；任何一批失败按 Err 上抛
+        //（本函数的错误由 upload_incremental 阶段二记日志吞掉，不阻断本轮
+        // 其它来源），标记停在 1、下一轮从头再来（服务端按主键幂等去重）。
+        let backlog_uploaded = run_timing_backlog_for_cfg(
+            cfg,
+            |after_id, limit| {
+                Ok(crate::codex::query_timing_backlog(after_id, limit)?
+                    .into_iter()
+                    .map(|row| row.usage)
+                    .collect::<Vec<_>>())
+            },
+            |records| {
+                let resp = post_batch_with_fallback(&base, &token, records, None, with_projects)?;
+                Ok(resp.accepted)
+            },
+        )?;
+        total += backlog_uploaded;
     }
 
     // Claude / DSH / OpenCode / Kimi / MiniMax Code 修订补传（扫描逻辑与水位口径见
@@ -1517,6 +1666,19 @@ pub struct RemoteUsageRecord {
     /// 首字毫秒（proto 8 起服务端回传；旧服务端不返回该键 → None）
     #[serde(default)]
     pub time_to_first_token_ms: Option<f64>,
+    /// 请求状态：completed / cancelled / error；未知为 None（proto 10 起服务端
+    /// 回传；旧服务端不返回该键 → None，远端行按未知态展示）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    /// 最终失败的错误码，或最近一次重试的错误码（proto 10 起回传）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_code: Option<String>,
+    /// 这条请求之前失败的尝试次数（proto 10 起回传；旧服务端不返回 → 0）
+    #[serde(default)]
+    pub retry_count: i64,
+    /// 请求起点是推断的（proto 10 起回传；旧服务端不返回 → None 按 false）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timing_estimated: Option<bool>,
 }
 
 /// GET /usage_records 的 by_model 分组：按 (source, provider_id, model_id)
@@ -2088,6 +2250,10 @@ pub fn set_auto_cleanup(req: AutoCleanupServerRequest) -> Result<AutoCleanupConf
 /// `disconnect_resets_every_source_cursor` 抓住——它按 serde 字段名扫描所有
 /// `last_uploaded_*`，不依赖人工枚举。
 ///
+/// 同时归零 `timing_fields_version`（proto 10 一次性重传标记，刻意不以
+/// `last_uploaded_` 开头、不在上面的前缀扫描范围）：断开即视为全新连接，
+/// 重连到另一台较旧的服务端后，等它升级到 proto 10 仍能触发一次补传。
+///
 /// 刻意不动 `last_uploaded_snapshot_ts` / `last_uploaded_agent_quota_snapshot_ts` /
 /// `last_uploaded_provider_quota_ts`：那是额度快照通道的游标，重置它会让下次
 /// 注册后重传全部历史快照（行为变更），与本次任务无关，保持既有语义
@@ -2107,6 +2273,12 @@ fn reset_source_cursors(cfg: &mut SyncConfig) {
     cfg.last_uploaded_kimi_rev_ts = 0;
     cfg.last_uploaded_minimaxcode_rowid = 0;
     cfg.last_uploaded_minimaxcode_rev_ts = 0;
+    // proto 10 一次性重传标记一并归零（断开即视为全新连接）：重连到另一台
+    // 较旧的服务端后，等它升级到 proto 10 仍能触发一次补传。重连 proto 10
+    // 服务端时各游标本来就全是 0，Claude 的修订重扫与 Codex 的增量 pump
+    // 与现状重连一致；唯一的额外量是定向通道会把带字段的行再多发一次
+    //（服务端按主键去重，本机实测仅 6 行，量很小）。
+    cfg.timing_fields_version = 0;
     cfg.last_sync_at = 0;
 }
 
@@ -2237,7 +2409,161 @@ mod tests {
         assert_eq!(resumed.last_uploaded_rowid,50);
     }
 
+    /// proto 10 一次性重传判定：proto < 10 不触发；首轮 proto 10 只清 Claude
+    /// 修订游标并推进到「已触发」（Codex 上传游标不得清零——定向通道不碰
+    /// 游标）；已触发（1）或已完成（2）不再触发；断开连接归零版本后再遇到
+    /// proto 10 会重新触发（重连另一台较旧服务端、其升级后仍能补传一次）。
+    #[test]
+    fn prepare_timing_backfill_replays_once_per_connection() {
+        // proto < 10：不触发（游标与版本号原样保留）
+        let mut cfg = super::SyncConfig::default();
+        cfg.last_uploaded_codex_rowid = 42;
+        cfg.last_uploaded_claude_rev_ts = 9_000;
+        assert!(!super::prepare_timing_backfill(&mut cfg, 9));
+        assert_eq!(cfg.last_uploaded_codex_rowid, 42);
+        assert_eq!(cfg.last_uploaded_claude_rev_ts, 9_000);
+        assert_eq!(cfg.timing_fields_version, 0);
 
+        // 首轮 proto 10：只清 Claude 修订游标、推进到「已触发」；
+        // Codex 上传游标保持原值（定向重传通道不碰游标）
+        assert!(super::prepare_timing_backfill(&mut cfg, 10));
+        assert_eq!(cfg.last_uploaded_claude_rev_ts, 0);
+        assert_eq!(cfg.last_uploaded_codex_rowid, 42, "上传游标不得清零");
+        assert_eq!(cfg.timing_fields_version, 1);
+
+        // 已触发（1）：不再触发，游标保持本轮推进后的值
+        cfg.last_uploaded_claude_rev_ts = 88_000;
+        assert!(!super::prepare_timing_backfill(&mut cfg, 10));
+        assert_eq!(cfg.last_uploaded_claude_rev_ts, 88_000);
+        // 已完成（2）：同样不再触发
+        cfg.timing_fields_version = 2;
+        assert!(!super::prepare_timing_backfill(&mut cfg, 10));
+
+        // 断开连接归零版本；重连到另一台 proto 9 服务端同步一段（游标推进、
+        // 版本保持未触发），等它升级到 proto 10 后重新触发一次
+        super::reset_source_cursors(&mut cfg);
+        assert_eq!(cfg.timing_fields_version, 0);
+        cfg.last_uploaded_claude_rev_ts = 66_000;
+        assert!(!super::prepare_timing_backfill(&mut cfg, 9));
+        assert_eq!(cfg.timing_fields_version, 0);
+        assert!(super::prepare_timing_backfill(&mut cfg, 10));
+        assert_eq!(cfg.last_uploaded_claude_rev_ts, 0);
+        assert_eq!(cfg.timing_fields_version, 1);
+    }
+
+    /// proto 10 Codex 定向重传通道的状态流转（经 run_timing_backlog_for_cfg
+    /// 操作真实 cfg）：version 1 且全部批次成功 → cfg 推进到「完成」（2）；
+    /// 任何一批失败 → Err 且 **cfg 完全不动**（版本停在「已触发」、上传游标
+    /// 不变，下一轮从头再来）；version 非 1（未触发 / 已完成）原样返回、
+    /// cfg 不变、不执行任何查询与上传。
+    #[test]
+    fn timing_backlog_runs_to_done_and_stays_on_failure() {
+        let batches: [Vec<i64>; 2] = [vec![11, 12], vec![20]];
+        let mut queries: Vec<i64> = Vec::new();
+        let mut sent: Vec<Vec<i64>> = Vec::new();
+        // version 1、全部批次成功：上传 3 条、cfg 推进到「完成」
+        let mut cfg = super::SyncConfig::default();
+        cfg.timing_fields_version = 1;
+        cfg.last_uploaded_codex_rowid = 100;
+        let total = super::run_timing_backlog_for_cfg(
+            &mut cfg,
+            |after_id, _limit| {
+                queries.push(after_id);
+                let ids = batches
+                    .iter()
+                    .find(|b| b.first().is_some_and(|id| *id > after_id))
+                    .cloned()
+                    .unwrap_or_default();
+                Ok(ids.into_iter().map(db_row).collect::<Vec<_>>())
+            },
+            |records| {
+                sent.push(records.iter().map(|r| r.local_rowid).collect());
+                Ok(records.len())
+            },
+        )
+        .expect("全部批次成功");
+        assert_eq!(total, 3);
+        assert_eq!(cfg.timing_fields_version, 2, "全部成功后推进到「完成」");
+        assert_eq!(cfg.last_uploaded_codex_rowid, 100, "上传游标全程不动");
+        assert_eq!(queries, vec![0, 12, 20], "按 id 逐批分页");
+        assert_eq!(sent, vec![vec![11, 12], vec![20]]);
+
+        // 中途失败：Err 上抛，cfg 完全不动（版本停「已触发」、上传游标不变）
+        let mut cfg = super::SyncConfig::default();
+        cfg.timing_fields_version = 1;
+        cfg.last_uploaded_codex_rowid = 100;
+        let outcome = super::run_timing_backlog_for_cfg(
+            &mut cfg,
+            |_after_id, _limit| Ok(vec![db_row(7)]),
+            |_records| Err("上传失败".to_string()),
+        );
+        assert!(outcome.is_err(), "首批失败应上抛");
+        assert_eq!(cfg.timing_fields_version, 1, "失败路径版本停在「已触发」");
+        assert_eq!(cfg.last_uploaded_codex_rowid, 100, "失败路径上传游标不动");
+
+        // version 2（已完成）/ 0（未触发）：不执行、cfg 原样
+        for v in [0, 2] {
+            let mut cfg = super::SyncConfig::default();
+            cfg.timing_fields_version = v;
+            cfg.last_uploaded_codex_rowid = 42;
+            let mut called = false;
+            let total = super::run_timing_backlog_for_cfg(
+                &mut cfg,
+                |_, _| { called = true; Ok(Vec::new()) },
+                |_| Ok(0),
+            )
+            .unwrap();
+            assert_eq!(total, 0);
+            assert_eq!(cfg.timing_fields_version, v, "version {v} 不推进");
+            assert_eq!(cfg.last_uploaded_codex_rowid, 42);
+            assert!(!called, "version {v} 不应执行任何查询");
+        }
+    }
+
+    /// run_timing_backlog 测试用明细（只参与分页与计数，local_rowid 可控）。
+    fn db_row(local_rowid: i64) -> crate::db::UsageRow {
+        crate::db::UsageRow {
+            speed_evidence: None,
+            local_rowid,
+            started_at: local_rowid * 1_000,
+            model_id: "m".into(),
+            provider_id: "codex".into(),
+            input_tokens: 1,
+            output_tokens: 2,
+            cache_read_input_tokens: 0,
+            cache_creation_input_tokens: 0,
+            reasoning_tokens: 0,
+            computed_total_tokens: 3,
+            source: "codex".into(),
+            session_id: None,
+            project_key: None,
+            project_display: None,
+            duration_ms: None,
+            time_to_first_token_ms: None,
+            status: Some("completed".into()),
+            error_code: None,
+            retry_count: 0,
+            timing_estimated: None,
+        }
+    }
+
+    /// SyncConfig 的新标记必须能随 JSON 落盘并回读（serde default 兜底旧配置）。
+    #[test]
+    fn timing_fields_version_roundtrips_through_config_json() {
+        let cfg = super::SyncConfig {
+            timing_fields_version: 1,
+            ..super::SyncConfig::default()
+        };
+        let json = serde_json::to_string(&cfg).unwrap();
+        assert!(json.contains("\"timing_fields_version\":1"));
+        let parsed: super::SyncConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.timing_fields_version, 1);
+        // 旧配置无该键 → default 0，且字段名不以 last_uploaded_ 开头
+        // （disconnect_resets_every_source_cursor 按该前缀扫描游标字段）
+        let legacy: super::SyncConfig = serde_json::from_str("{}").unwrap();
+        assert_eq!(legacy.timing_fields_version, 0);
+        assert!(!json.contains("\"last_uploaded_timing"));
+    }
 
     /// 造一条明细（字段值不参与断言，只要 local_rowid 可控）。
     fn row(local_rowid: i64) -> UsageRow {
@@ -2259,6 +2585,10 @@ mod tests {
             project_display: None,
             duration_ms: None,
             time_to_first_token_ms: None,
+            status: None,
+            error_code: None,
+            retry_count: 0,
+            timing_estimated: None,
         }
     }
 
@@ -2557,6 +2887,8 @@ mod tests {
         ran.last_uploaded_agent_quota_snapshot_ts = 15;
         ran.last_uploaded_provider_quota_ts = 16;
         ran.last_sync_at = 123_456;
+        ran.speed_evidence_version = 1;
+        ran.timing_fields_version = 1;
 
         let mut latest = SyncConfig::default();
         latest.device_token = "tok-a".into();
@@ -2593,6 +2925,9 @@ mod tests {
         assert_eq!(merged.last_uploaded_agent_quota_snapshot_ts, 15);
         assert_eq!(merged.last_uploaded_provider_quota_ts, 16);
         assert_eq!(merged.last_sync_at, 123_456);
+        // 本轮运行结果携带的能力标记也取本轮值（盘上旧值 0 不覆盖）
+        assert_eq!(merged.speed_evidence_version, 1);
+        assert_eq!(merged.timing_fields_version, 1);
     }
 
     /// disconnect 必须清空**每个来源**的明细游标。这里按 serde 字段名扫描
@@ -2614,10 +2949,18 @@ mod tests {
         let mut cfg: SyncConfig =
             serde_json::from_value(serde_json::Value::Object(obj)).expect("反序列化失败");
         cfg.last_sync_at = 1_234;
+        cfg.timing_fields_version = 1;
         reset_source_cursors(&mut cfg);
 
         let after = serde_json::to_value(&cfg).expect("序列化失败");
         let after = after.as_object().expect("配置应是 JSON 对象");
+        // proto 10 一次性重传标记随断开一并归零（reset_source_cursors 里
+        // 显式清零；刻意不以 last_uploaded_ 开头，不在下方前缀扫描范围）
+        assert_eq!(
+            after.get("timing_fields_version"),
+            Some(&serde_json::json!(0)),
+            "timing_fields_version 应随断开归零（重连旧服务端升级后仍能触发一次）"
+        );
         // 额度快照通道的游标不属于「来源明细」，reset_source_cursors 刻意不动
         const SNAPSHOT_CURSORS: [&str; 3] = [
             "last_uploaded_snapshot_ts",

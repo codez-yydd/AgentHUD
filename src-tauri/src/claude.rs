@@ -7,12 +7,13 @@
 //! cache_read/cache_creation，无 total 字段，四者之和即总量）。
 //!
 //! 与 Codex 模块的关键差异：
-//! - **去重键**：同一 message.id 会写多行（CLI 边流式边落盘，usage 逐行累计，
-//!   末行为终值；本机实测全部满足"末行 = 最大值"）。按行直接累加会重复计数，
-//!   故按 message.id 全局去重（resume/continue 是 fork 语义，新会话文件复制
-//!   原历史且保留原 message.id，跨文件也必须合并为一条）；冲突时保留
-//!   computed_total 更大的一行，并打上 updated_at 修订标记——同步层据此把
-//!   已上传的中间值补传修正为终值（Claude 独有：Codex 记录落盘后不可变）。
+//! - **去重键**：同一 message.id 会写多行（CLI 边流式边落盘：旧版中间块
+//!   usage 全 0、末行为终值；新版每块都带最终用量）。按行直接累加会重复
+//!   计数，故按 message.id 全局去重（resume/continue 是 fork 语义，新会话
+//!   文件复制原历史且保留原 message.id，跨文件也必须合并为一条）；冲突时
+//!   保留 computed_total 更大的一行，并打上 updated_at 修订标记——同步层
+//!   据此把已上传的中间值补传修正为终值（Claude 独有：Codex 记录落盘后
+//!   不可变）。
 //! - **额度来源**：会话文件里没有 rate_limits 快照（Codex 有），订阅额度只能
 //!   实时调 OAuth 端点 GET https://api.anthropic.com/api/oauth/usage
 //!   （Claude Code CLI 内部同款，需 claude.ai 订阅登录；第三方中转/API Key
@@ -130,6 +131,7 @@ fn open_claude_db() -> Result<Connection, String> {
     conn.execute_batch(SCHEMA_SQL)
         .map_err(|e| format!("初始化 Claude 导入库失败: {e}"))?;
     ensure_project_columns(&conn)?;
+    ensure_timing_columns(&conn)?;
     Ok(conn)
 }
 
@@ -156,6 +158,21 @@ const SCHEMA_SQL: &str = "PRAGMA journal_mode=WAL;
         updated_at INTEGER NOT NULL DEFAULT 0,
         cwd TEXT,
         project_key TEXT,
+        -- 计时 / 状态取证列（统一口径，ZCode 主库同名列语义一致）：
+        -- request_started_at 请求起点（api-request 行时间戳或父链推断）；
+        -- first_token_at 首个输出时刻（仅日志有明确记录才写）；
+        -- completed_at 回复结束时刻（各块时间戳最大值）；
+        -- timing_estimated 1 = 起点是父链推断的（界面带 ≈）；
+        -- status 'completed' / 'error'（NULL = 未知或进行中）；
+        -- error_code 最终失败码或最近一次重试码；retry_count 失败尝试次数。
+        request_started_at INTEGER,
+        first_token_at INTEGER,
+        completed_at INTEGER,
+        time_to_first_token_ms REAL,
+        timing_estimated INTEGER,
+        status TEXT,
+        error_code TEXT,
+        retry_count INTEGER NOT NULL DEFAULT 0,
         UNIQUE(dedupe_key)
      );
      CREATE INDEX IF NOT EXISTS idx_claude_model_usage_started ON model_usage(started_at);
@@ -187,7 +204,78 @@ fn ensure_project_columns(conn: &Connection) -> Result<(), String> {
     Ok(())
 }
 
+/// 进程内串行化计时列迁移（ensure_project_columns 同款锁风格）。
+static ENSURE_TIMING_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+/// 计时 / 状态列迁移：升级前创建的旧库 model_usage 无计时状态 8 列时逐列
+/// ALTER TABLE ADD COLUMN 补加（允许 NULL，旧行自然为 NULL，由 90 天回填
+/// 重放补齐；retry_count 有 NOT NULL DEFAULT 0 兜底）。先 has_column 检查
+/// 再 ALTER，幂等；新库已由 CREATE TABLE 直接带列。
+fn ensure_timing_columns(conn: &Connection) -> Result<(), String> {
+    let lock = ENSURE_TIMING_LOCK.get_or_init(|| Mutex::new(()));
+    let _guard = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    const TIMING_COLUMNS: [(&str, &str); 8] = [
+        ("request_started_at", "INTEGER"),
+        ("first_token_at", "INTEGER"),
+        ("completed_at", "INTEGER"),
+        ("time_to_first_token_ms", "REAL"),
+        ("timing_estimated", "INTEGER"),
+        ("status", "TEXT"),
+        ("error_code", "TEXT"),
+        ("retry_count", "INTEGER NOT NULL DEFAULT 0"),
+    ];
+    for (column, decl) in TIMING_COLUMNS {
+        if db::has_column(conn, "model_usage", column) {
+            continue;
+        }
+        // 另一个进程可能在本次检查与 ALTER 之间完成了迁移，此时重复列就是
+        // 成功状态，后续查询可直接继续（codex.rs ensure_timing_columns 同款）
+        if let Err(e) =
+            conn.execute(&format!("ALTER TABLE model_usage ADD COLUMN {column} {decl}"), [])
+        {
+            let message = e.to_string().to_ascii_lowercase();
+            if !message.contains("duplicate column name") {
+                return Err(format!("迁移 Claude 导入库（补 {column} 列）失败: {e}"));
+            }
+        }
+    }
+    Ok(())
+}
+
 // ===== jsonl 行解析结构（未知字段自动忽略，巨大的 content 数组不会物化）=====
+//
+// 计时 / 状态取证用的新字段全部 `#[serde(default)]` + 容错反序列化：
+// 这是 Claude Code 的内部格式、没有公开文档，缺字段 / 字段类型变化一律
+// 降级为 None，绝不让整行解析失败（旧版行没有这些字段，user 行的
+// message.content 是字符串而非块数组）。
+
+/// 容错反序列化：任何 JSON 值都能进 Value，只有非 null 才返回 Some。
+/// 数值字段的类型在版本间可能漂移（整数 / 浮点 / 字符串），逐字段按需提取。
+fn lenient_value<'de, D>(deserializer: D) -> Result<Option<serde_json::Value>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value: Option<serde_json::Value> = serde::Deserialize::deserialize(deserializer)?;
+    Ok(value.filter(|v| !v.is_null()))
+}
+
+/// message.content 容错反序列化：assistant 行是块数组（取首块 type）、
+/// user 行可能是纯字符串、缺失为 null——只有非空数组才保留，其余一律
+/// None，保证整行解析永不因 content 形态失败。
+fn lenient_content_first_block_type<'de, D>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value: Option<serde_json::Value> = serde::Deserialize::deserialize(deserializer)?;
+    let first = match value {
+        Some(serde_json::Value::Array(items)) => items.into_iter().next(),
+        _ => None,
+    };
+    Ok(first
+        .and_then(|block| block.get("type").and_then(|t| t.as_str()).map(str::to_string)))
+}
 
 /// jsonl 单行事件。只取关心的时间戳/类型/message。
 /// cwd 为行内顶层字段（会话的工作目录，user/assistant 行均携带），
@@ -202,9 +290,100 @@ struct TranscriptLine {
     message: Option<AssistantMessage>,
     #[serde(default)]
     cwd: Option<String>,
+    // ---- 计时 / 状态取证字段（全部可选，缺字段降级）----
+    #[serde(default)]
+    uuid: Option<String>,
+    #[serde(rename = "parentUuid", default)]
+    parent_uuid: Option<String>,
+    /// system 行的子类型（api_error 重试行）
+    #[serde(default)]
+    subtype: Option<String>,
+    /// api-request 行的请求 id（与回复块的 requestRef 相等）
+    #[serde(default)]
+    id: Option<String>,
+    /// CLI 版本（审计测试按它分桶统计覆盖率）
+    #[serde(default)]
+    version: Option<String>,
+    /// assistant 块行指向本次请求的引用（= api-request 行的 id）
+    #[serde(rename = "requestRef", default, deserialize_with = "lenient_value")]
+    request_ref_json: Option<serde_json::Value>,
+    #[serde(rename = "requestedModel", default, deserialize_with = "lenient_value")]
+    requested_model_json: Option<serde_json::Value>,
+    /// 思考块产出前的思考耗时（毫秒）
+    #[serde(rename = "thinkingDurationMs", default, deserialize_with = "lenient_value")]
+    thinking_duration_ms_json: Option<serde_json::Value>,
+    /// 工具调用 / 文字块开始流出前的耗时（毫秒）
+    #[serde(rename = "toolInputStreamMs", default, deserialize_with = "lenient_value")]
+    tool_input_stream_ms_json: Option<serde_json::Value>,
+    /// 块序号（首块为 0），旧版行没有 → 取最先出现的块当首块
+    #[serde(rename = "apiBlockIndex", default, deserialize_with = "lenient_value")]
+    api_block_index_json: Option<serde_json::Value>,
+    /// 最终失败的回复标记（true = 这条回复是一次失败的 API 调用）
+    #[serde(rename = "isApiErrorMessage", default, deserialize_with = "lenient_value")]
+    is_api_error_message_json: Option<serde_json::Value>,
+    /// 失败回复的 HTTP 状态码（如 429）
+    #[serde(rename = "apiErrorStatus", default, deserialize_with = "lenient_value")]
+    api_error_status_json: Option<serde_json::Value>,
+    /// system/api_error 行里是对象（含 status），失败回复里是字符串
+    #[serde(default, deserialize_with = "lenient_value")]
+    error: Option<serde_json::Value>,
 }
 
-/// assistant 行的 message 对象（content 不取，serde 忽略未知字段）。
+impl TranscriptLine {
+    fn request_ref(&self) -> Option<String> {
+        json_value_to_string(self.request_ref_json.as_ref())
+    }
+    fn requested_model(&self) -> Option<String> {
+        json_value_to_string(self.requested_model_json.as_ref())
+    }
+    fn thinking_duration_ms(&self) -> Option<f64> {
+        json_value_to_f64(self.thinking_duration_ms_json.as_ref())
+    }
+    fn tool_input_stream_ms(&self) -> Option<f64> {
+        json_value_to_f64(self.tool_input_stream_ms_json.as_ref())
+    }
+    fn api_block_index(&self) -> Option<i64> {
+        json_value_to_i64(self.api_block_index_json.as_ref())
+    }
+    fn is_api_error_message(&self) -> bool {
+        self.is_api_error_message_json
+            .as_ref()
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+    }
+    fn api_error_status(&self) -> Option<i64> {
+        json_value_to_i64(self.api_error_status_json.as_ref())
+    }
+}
+
+/// Value → 字符串（数字 / 布尔等标量原样转文本，复合结构忽略）
+fn json_value_to_string(value: Option<&serde_json::Value>) -> Option<String> {
+    match value? {
+        serde_json::Value::String(s) => Some(s.clone()),
+        serde_json::Value::Number(n) => Some(n.to_string()),
+        _ => None,
+    }
+}
+
+/// Value → f64（数值直取；数字字符串防御性解析）
+fn json_value_to_f64(value: Option<&serde_json::Value>) -> Option<f64> {
+    match value? {
+        serde_json::Value::Number(n) => n.as_f64(),
+        serde_json::Value::String(s) => s.trim().parse::<f64>().ok(),
+        _ => None,
+    }
+}
+
+/// Value → i64（浮点防御性取整）
+fn json_value_to_i64(value: Option<&serde_json::Value>) -> Option<i64> {
+    match value? {
+        serde_json::Value::Number(n) => n.as_i64().or_else(|| n.as_f64().map(|f| f.round() as i64)),
+        serde_json::Value::String(s) => s.trim().parse::<i64>().ok(),
+        _ => None,
+    }
+}
+
+/// assistant 行的 message 对象（content 只取首块 type，serde 忽略其余字段）。
 /// durationMs 为该次调用的总耗时（毫秒），旧版本 CLI 的行无此字段 → None。
 #[derive(Debug, Deserialize)]
 struct AssistantMessage {
@@ -216,11 +395,28 @@ struct AssistantMessage {
     duration_ms: Option<f64>,
     #[serde(default)]
     usage: Option<UsagePayload>,
+    /// 末块的结束原因（end_turn / tool_use / stop_sequence…），中间块为 null
+    #[serde(rename = "stop_reason", default, deserialize_with = "lenient_value")]
+    stop_reason_json: Option<serde_json::Value>,
+    /// 首个 content 块的类型（thinking / text / tool_use / *_tool_use），
+    /// content 为字符串（user 行）或缺失时为 None
+    #[serde(
+        rename = "content",
+        default,
+        deserialize_with = "lenient_content_first_block_type"
+    )]
+    first_block_type: Option<String>,
+}
+
+impl AssistantMessage {
+    fn stop_reason(&self) -> Option<String> {
+        json_value_to_string(self.stop_reason_json.as_ref())
+    }
 }
 
 /// 单次 API 调用的 token 用量。Claude 无 total 字段，四项之和即总量；
 /// 也无独立 reasoning 字段（thinking 计入 output）。
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Clone, Deserialize)]
 struct UsagePayload {
     #[serde(default)]
     input_tokens: i64,
@@ -252,6 +448,751 @@ fn session_id_from_filename(path: &Path) -> String {
     path.file_stem()
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_default()
+}
+
+// ===== 按回复取证（解析核心：输入行 → 产出回复记录，无 IO，方便单测与审计复用）=====
+//
+// 一条回复（一次 API 响应）= 同一个 message.id 的全部 assistant 块行。新版
+// 每个块行都带最终用量，块之间会夹着 user 工具结果行（客户端一边收流一边
+// 执行工具，模型继续输出下一个工具调用块；本机最近 7 天 5366 条多块响应里
+// 有 1316 个块前面夹着工具结果行，夹行之后的块计时仍可信）——所以工具结果
+// 行、attachment、system 等行**不结束**当前回复，一条响应的所有块进同一条
+// 记录。只有四种情况结束当前回复：message.id 不同（或没有 id）的 assistant
+// 行、api-request 行（新请求开始）、真正的用户输入行（user 且 content 不是
+// 工具结果）、文件读尽。
+
+/// 续读回看窗口大小：重建父链 / api-request 索引 / 未归属 api_error 所需
+/// 的游标前字节数（只读不写库）。取 1MB 的依据：本机 90 天内 5583 条回复
+/// 的起点证据离首块全部在 1MB 以内，其中超过 256KB 的有 14 条（单条回复
+/// 的流式块可能很长，256KB 会漏掉跨长块的起点证据）。
+const LOOKBACK_BYTES: u64 = 1024 * 1024;
+/// 父链索引保留的最近行数（超过淘汰最老，防止长会话内存无限增长）
+const PARENT_CHAIN_KEEP: usize = 4096;
+/// api-request 索引保留的最近条数
+const API_REQUEST_KEEP: usize = 256;
+/// 父链向上查找的最大跳数（防御数据里的 uuid 环）
+const PARENT_CHAIN_MAX_HOPS: usize = 64;
+/// 计时回填的 PRAGMA user_version 标记值（1 留给历史迁移语义，本轮写 2）
+const TIMING_BACKFILL_VERSION: i64 = 2;
+/// 计时回填只重放最近修改过的文件（90 天；更早的保持现状）
+const TIMING_BACKFILL_WINDOW_MS: i64 = 90 * 24 * 3_600_000;
+
+/// 窗口内一条回复的最终取证记录（写库层与解析层的唯一交接物）。
+/// 各字段语义见 SCHEMA_SQL 的列注释；has_new_block 供增量续读判定
+/// 「至少有一个块落在新增字节里」，false 时调用方不写库。
+#[derive(Debug, Clone, PartialEq)]
+struct ReplyRecord {
+    message_id: String,
+    started_at: i64,
+    model_id: String,
+    input_tokens: i64,
+    output_tokens: i64,
+    cache_read_tokens: i64,
+    cache_creation_tokens: i64,
+    computed_total: i64,
+    /// 行内真实 durationMs（有则原样落库，不做窗口校验——与历史口径一致）
+    real_duration_ms: Option<f64>,
+    /// completed_at − request_started_at（派生值，窗口校验通过才给）
+    derived_duration_ms: Option<f64>,
+    request_started_at: Option<i64>,
+    first_token_at: Option<i64>,
+    completed_at: Option<i64>,
+    time_to_first_token_ms: Option<f64>,
+    /// Some(0) = 起点来自 api-request 行；Some(1) = 父链推断；None = 无起点
+    timing_estimated: Option<i64>,
+    /// "completed" / "error"；None = 文件停在流式回复中间（未知 / 进行中）
+    status: Option<&'static str>,
+    error_code: Option<String>,
+    retry_count: i64,
+    has_new_block: bool,
+    cwd: Option<String>,
+    project_key: Option<String>,
+    /// 回复首块的 CLI 版本（仅审计测试分桶用，不落库）
+    version: Option<String>,
+    /// 多块回复的块之间夹有 user 工具结果行（仅审计统计用，不落库）
+    tool_result_between: bool,
+}
+
+impl ReplyRecord {
+    /// 落库口径的耗时：真实值优先，否则派生值（各自已按规则校验 / 原样）
+    fn duration_ms(&self) -> Option<f64> {
+        self.real_duration_ms.or(self.derived_duration_ms)
+    }
+}
+
+/// 写库 / 合并层的行快照（ReplyRecord 与库内已存行的统一形态，便于纯函数合并）。
+/// 不含 session_id / cwd / project_key / updated_at（合并永不触碰它们）。
+#[derive(Debug, Clone, PartialEq)]
+struct StoredReply {
+    started_at: i64,
+    model_id: String,
+    input_tokens: i64,
+    output_tokens: i64,
+    cache_read_tokens: i64,
+    cache_creation_tokens: i64,
+    computed_total: i64,
+    duration_ms: Option<f64>,
+    request_started_at: Option<i64>,
+    first_token_at: Option<i64>,
+    completed_at: Option<i64>,
+    time_to_first_token_ms: Option<f64>,
+    timing_estimated: Option<i64>,
+    status: Option<String>,
+    error_code: Option<String>,
+    retry_count: i64,
+}
+
+impl ReplyRecord {
+    fn as_stored(&self) -> StoredReply {
+        StoredReply {
+            started_at: self.started_at,
+            model_id: self.model_id.clone(),
+            input_tokens: self.input_tokens,
+            output_tokens: self.output_tokens,
+            cache_read_tokens: self.cache_read_tokens,
+            cache_creation_tokens: self.cache_creation_tokens,
+            computed_total: self.computed_total,
+            duration_ms: self.duration_ms(),
+            request_started_at: self.request_started_at,
+            first_token_at: self.first_token_at,
+            completed_at: self.completed_at,
+            time_to_first_token_ms: self.time_to_first_token_ms,
+            timing_estimated: self.timing_estimated,
+            status: self.status.map(str::to_string),
+            error_code: self.error_code.clone(),
+            retry_count: self.retry_count,
+        }
+    }
+}
+
+/// 已入库行与新回复的合并（纯函数，可单测）。规则：
+/// - token 各列 / started_at / model_id 仍然是「总量更大者覆盖」，不变；
+/// - 新总量 **更大**：计时与状态 9 列（request_started_at / first_token_at /
+///   completed_at / duration_ms / time_to_first_token_ms / timing_estimated /
+///   status / error_code）新值非空就用新值；retry_count 权威重放取新值
+///   （取证完整可纠正错归属），续读取较大者；
+/// - 新总量 **相等**：同一条响应分趟落盘（新版每块都带最终用量），读到了
+///   更多块。续读与权威重放同规则，仅起点四列不同：
+///   1. completed_at：取两者最大值（两个都有取大的，只有一个用那个）；
+///   2. duration_ms：completed_at 或 request_started_at 发生变化（合并后
+///      的值与已入库的不同）时用新值（新值为空才保留旧值）——起点被纠正
+///      成精确值后耗时必须跟着重算；两者都没变化时保留已入库值（旧值为
+///      空才补新值）；
+///   3. request_started_at / first_token_at / time_to_first_token_ms /
+///      timing_estimated：续读旧值为空才补；权威重放时新记录**有请求起点**
+///      则四列整体用新值（新值为空就写空——整文件重算判定证据无效后置空，
+///      必须能清掉此前续读写入的错值），新记录没有起点才按「旧值为空才补」；
+///   4. status / error_code 新值非空就用新值；retry_count 权威重放取新值，
+///      续读取较大者；
+/// - 新总量 **更小**（权威重放），或续读且新总量 < 旧总量（上面相等分支
+///   之外）：计时与状态列只在旧值为空时补新值；completed_at 一律不改；
+///   retry_count 取两者较大者；
+/// - 调用方比较合并结果与旧值，完全相同则不写、不动 updated_at。
+fn merge_reply(stored: &StoredReply, fresh: &StoredReply, authoritative: bool) -> StoredReply {
+    let mut out = stored.clone();
+    let tokens_win = fresh.computed_total > stored.computed_total;
+    if tokens_win {
+        out.started_at = fresh.started_at;
+        // model_id 空串不覆盖非空旧值（失败回复的模型名回退全部失败时
+        // fresh 仍为空，不能把已入库的真实模型名抹掉）
+        if !fresh.model_id.is_empty() {
+            out.model_id = fresh.model_id.clone();
+        }
+        out.input_tokens = fresh.input_tokens;
+        out.output_tokens = fresh.output_tokens;
+        out.cache_read_tokens = fresh.cache_read_tokens;
+        out.cache_creation_tokens = fresh.cache_creation_tokens;
+        out.computed_total = fresh.computed_total;
+    }
+    // 分支键：新总量更大（两种模式同规则）→ 权威重放且总量相等 → 其余
+    //（权威重放且总量更小、续读且不大于旧总量，同一套「旧值非空不动」规则）
+    let equal = fresh.computed_total == stored.computed_total;
+    if tokens_win {
+        // 新总量更大（两种模式同规则）
+        out.duration_ms = fresh.duration_ms.or(stored.duration_ms);
+        out.request_started_at = fresh.request_started_at.or(stored.request_started_at);
+        out.first_token_at = fresh.first_token_at.or(stored.first_token_at);
+        out.completed_at = fresh.completed_at.or(stored.completed_at);
+        out.time_to_first_token_ms = fresh
+            .time_to_first_token_ms
+            .or(stored.time_to_first_token_ms);
+        out.timing_estimated = fresh.timing_estimated.or(stored.timing_estimated);
+        out.status = fresh.status.clone().or(stored.status.clone());
+        out.error_code = fresh.error_code.clone().or(stored.error_code.clone());
+        // 权威重放的取证是完整的（所有 api_error 行都读到过），retry_count
+        // 以新值为准——纠正被旧版代码写错的归属；续读取较大者兜底
+        out.retry_count = if authoritative {
+            fresh.retry_count
+        } else {
+            stored.retry_count.max(fresh.retry_count)
+        };
+    } else if equal {
+        // 总量相等：同一条响应分趟落盘（新版每块都带最终用量），读到了
+        // 更多块 → completed_at 取两者的最大值（两个都有取大的，只有一个
+        // 用那个）
+        out.completed_at = match (stored.completed_at, fresh.completed_at) {
+            (Some(old), Some(new)) => Some(old.max(new)),
+            (old, None) => old,
+            (None, new) => new,
+        };
+        // 起点 / 首字 / 估算标记（先合并，duration 的更新条件依赖合并后的起点）
+        if authoritative && fresh.request_started_at.is_some() {
+            // 整文件重算判定某项证据无效后置空，必须能清掉此前续读时写入
+            // 的错值（例如「首字早于起点」）：四列整体跟随新记录
+            out.request_started_at = fresh.request_started_at;
+            out.first_token_at = fresh.first_token_at;
+            out.time_to_first_token_ms = fresh.time_to_first_token_ms;
+            out.timing_estimated = fresh.timing_estimated;
+        } else {
+            // 续读，或权威重放但新记录没有起点（旧版本文件）：旧值非空不动
+            out.request_started_at = stored.request_started_at.or(fresh.request_started_at);
+            out.first_token_at = stored.first_token_at.or(fresh.first_token_at);
+            out.time_to_first_token_ms = stored
+                .time_to_first_token_ms
+                .or(fresh.time_to_first_token_ms);
+            out.timing_estimated = stored.timing_estimated.or(fresh.timing_estimated);
+        }
+        out.status = fresh.status.clone().or(stored.status.clone());
+        out.error_code = fresh.error_code.clone().or(stored.error_code.clone());
+        // duration 随 completed_at 或起点的变化重算：任一变化用新值（新值
+        // 为空才保留旧值）——否则起点被纠正成精确值后，耗时还是按旧起点算
+        // 的，两者对不上；都没变化保留已入库值（旧值为空才补新值）
+        let timing_changed = out.completed_at != stored.completed_at
+            || out.request_started_at != stored.request_started_at;
+        out.duration_ms = if timing_changed {
+            fresh.duration_ms.or(stored.duration_ms)
+        } else {
+            stored.duration_ms.or(fresh.duration_ms)
+        };
+        out.retry_count = if authoritative {
+            fresh.retry_count
+        } else {
+            stored.retry_count.max(fresh.retry_count)
+        };
+        // 已入库的 model_id 为空（模型名回退修正生效前的失败行）而新记录
+        // 非空时补上；非空旧值不动
+        if out.model_id.is_empty() && !fresh.model_id.is_empty() {
+            out.model_id = fresh.model_id.clone();
+        }
+    } else {
+        // 新总量更小（权威），或续读且不大于旧总量：旧值非空不动
+        out.duration_ms = stored.duration_ms.or(fresh.duration_ms);
+        out.request_started_at = stored.request_started_at.or(fresh.request_started_at);
+        out.first_token_at = stored.first_token_at.or(fresh.first_token_at);
+        out.time_to_first_token_ms = stored
+            .time_to_first_token_ms
+            .or(fresh.time_to_first_token_ms);
+        out.timing_estimated = stored.timing_estimated.or(fresh.timing_estimated);
+        out.status = stored.status.clone().or(fresh.status.clone());
+        out.error_code = stored.error_code.clone().or(fresh.error_code.clone());
+        // completed_at 不改（防止推后）
+        out.retry_count = stored.retry_count.max(fresh.retry_count);
+        // 已入库的 model_id 为空时用新值补上（同上，续读也补，无害）
+        if out.model_id.is_empty() && !fresh.model_id.is_empty() {
+            out.model_id = fresh.model_id.clone();
+        }
+    }
+    out
+}
+
+/// 累积中的一条回复（同一 message.id 的全部块行，可跨工具结果行）
+#[derive(Debug)]
+struct ReplyAcc {
+    message_id: String,
+    blocks: Vec<ReplyBlock>,
+    /// 是否已有块落在本次导入的新增字节里（增量续读的写库门槛）
+    has_new_block: bool,
+    version: Option<String>,
+    /// 回复开始时挂接的未归属 api_error 行（上一条回复之后、本条之前的
+    /// 重试，归给本条回复）
+    pending_errors: Vec<ApiErrorHit>,
+    /// 块之间夹有 user 工具结果行（审计统计用）
+    tool_result_between: bool,
+}
+
+/// 回复内的一个块行（一行 = 一个 content 块）
+#[derive(Debug, Clone)]
+struct ReplyBlock {
+    timestamp: Option<i64>,
+    parent_uuid: Option<String>,
+    model: Option<String>,
+    requested_model: Option<String>,
+    real_duration_ms: Option<f64>,
+    stop_reason: Option<String>,
+    usage: UsagePayload,
+    api_block_index: Option<i64>,
+    request_ref: Option<String>,
+    thinking_duration_ms: Option<f64>,
+    tool_input_stream_ms: Option<f64>,
+    first_block_type: Option<String>,
+    is_api_error: bool,
+    api_error_status: Option<i64>,
+}
+
+impl ReplyBlock {
+    fn computed_total(&self) -> i64 {
+        self.usage.computed_total()
+    }
+    fn from_line(line: &TranscriptLine, msg: &AssistantMessage) -> ReplyBlock {
+        ReplyBlock {
+            timestamp: line.timestamp.as_deref().and_then(parse_ts_ms),
+            parent_uuid: line.parent_uuid.clone(),
+            model: msg.model.clone(),
+            requested_model: line.requested_model(),
+            real_duration_ms: msg.duration_ms.filter(|d| d.is_finite() && *d > 0.0),
+            stop_reason: msg.stop_reason(),
+            usage: msg.usage.clone().unwrap_or_default(),
+            api_block_index: line.api_block_index(),
+            request_ref: line.request_ref(),
+            thinking_duration_ms: line.thinking_duration_ms(),
+            tool_input_stream_ms: line.tool_input_stream_ms(),
+            first_block_type: msg.first_block_type.clone(),
+            is_api_error: line.is_api_error_message(),
+            api_error_status: line.api_error_status(),
+        }
+    }
+}
+
+/// 父链节点：沿 uuid 向上找请求起点时的行证据
+#[derive(Debug, Clone)]
+struct ChainEntry {
+    parent_uuid: Option<String>,
+    timestamp: Option<i64>,
+    line_type: Option<String>,
+}
+
+/// 未归属的 system/api_error 重试行（归给下一条回复）
+#[derive(Debug, Clone)]
+struct ApiErrorHit {
+    status: Option<String>,
+}
+
+/// error.value → 错误码字符串（整数 429 → "429"；字符串原样；缺失 None）
+fn api_error_status_string(error: Option<&serde_json::Value>) -> Option<String> {
+    let status = error?.get("status")?;
+    if let Some(code) = status.as_i64() {
+        return Some(code.to_string());
+    }
+    status.as_str().map(str::to_string)
+}
+
+/// 首块的首个输出时刻证据：思考块用 thinkingDurationMs、工具调用或文字块
+/// 用 toolInputStreamMs，均为「块落盘时刻 − 产出耗时」（毫秒），有则给出
+/// 绝对时刻，否则 None（不做任何估算）。
+fn first_output_evidence(block: &ReplyBlock) -> Option<i64> {
+    let ts = block.timestamp?;
+    let evidence_ms = match block.first_block_type.as_deref() {
+        Some("thinking") => block.thinking_duration_ms,
+        Some("text") => block.tool_input_stream_ms,
+        Some(t) if t == "tool_use" || t.ends_with("_tool_use") => block.tool_input_stream_ms,
+        _ => None,
+    }?;
+    if !evidence_ms.is_finite() || evidence_ms <= 0.0 {
+        return None;
+    }
+    // 畸形超大值（毫秒数超出 i64 时间戳范围）不做回绕，按没有证据处理；
+    // 首个输出时刻必须落在纪元之后且早于块落盘时刻
+    ts.checked_sub(evidence_ms.round() as i64)
+        .filter(|first| *first > 0 && *first < ts)
+}
+
+/// 请求起点解析（对整条回复）：
+/// 1. 任一块的 requestRef 命中 api-request 索引 → 用那一行的时间戳，精确；
+/// 2. 否则从首块 parentUuid 沿父链向上，跳过 attachment 行，取第一条其它行
+///    的时间戳，标记为推断（timing_estimated = 1）；
+/// 3. 都找不到 → 起点 / 估算标记均为空（派生计时一并置空，见 finalize）。
+fn resolve_request_start(
+    acc: &[ReplyBlock],
+    first_block: &ReplyBlock,
+    scanner: &ReplyScanner,
+) -> (Option<i64>, Option<i64>) {
+    for block in acc {
+        if let Some(request_ref) = block.request_ref.as_deref().filter(|r| !r.is_empty()) {
+            if let Some(&ts) = scanner.api_requests.get(request_ref) {
+                return (Some(ts), Some(0));
+            }
+        }
+    }
+    let mut uuid = first_block.parent_uuid.clone();
+    for _ in 0..PARENT_CHAIN_MAX_HOPS {
+        let Some(current) = uuid.clone() else { break };
+        let Some(entry) = scanner.parent_chain.get(&current) else { break };
+        if entry.line_type.as_deref() == Some("attachment") {
+            uuid = entry.parent_uuid.clone();
+            continue;
+        }
+        // 第一条非 attachment 行的时间戳即请求起点（缺时间戳视为找不到）
+        return (entry.timestamp, Some(1));
+    }
+    (None, None)
+}
+
+/// 行级扫描器：顺序喂入会话行，产出「回复级」取证记录。
+/// 纯内存状态（父链 / api-request 索引 / 未归属 api_error / 最近真实模型名 /
+/// cwd），无任何 IO；审计测试与本机回放共用同一套判定。
+#[derive(Debug, Default)]
+struct ReplyScanner {
+    current: Option<ReplyAcc>,
+    pending_api_errors: Vec<ApiErrorHit>,
+    parent_chain: HashMap<String, ChainEntry>,
+    parent_order: std::collections::VecDeque<String>,
+    api_requests: HashMap<String, i64>,
+    api_request_order: std::collections::VecDeque<String>,
+    /// 最近一条 api-request 行的时间戳（重试时每次尝试写一行）。最终失败的
+    /// 回复行上没有 requestRef（是另一格式的 requestId），起点取它——耗时
+    /// 只描述产生这条回复的那一次请求，不含此前的重试等待
+    last_api_request_at: Option<i64>,
+    last_real_model: Option<String>,
+    current_cwd: Option<String>,
+    current_project: Option<String>,
+}
+
+impl ReplyScanner {
+    fn new() -> ReplyScanner {
+        ReplyScanner::default()
+    }
+
+    /// 从已入库行恢复 cwd / project（续读窗口内可能没有 cwd 行）
+    fn restore_project(&mut self, cwd: Option<String>, project: Option<String>) {
+        if self.current_cwd.is_none() {
+            self.current_cwd = cwd;
+        }
+        if self.current_project.is_none() {
+            self.current_project = project;
+        }
+    }
+
+    /// 喂入一行。行导致当前回复结束时返回该回复的取证记录（fresh = 行来自
+    /// 本次导入的新增字节；回看区的行传 false，产出的记录由调用方丢弃）。
+    fn feed(&mut self, line: &TranscriptLine, fresh: bool) -> Option<ReplyRecord> {
+        let line_type = line.line_type.as_deref();
+        let is_assistant = line_type == Some("assistant");
+        let message_id = if is_assistant {
+            line.message
+                .as_ref()
+                .and_then(|m| m.id.as_deref())
+                .filter(|id| !id.is_empty() && !id.contains('|'))
+                .map(str::to_string)
+        } else {
+            None
+        };
+        // user 行的 content[0].type == tool_result = 工具结果行（客户端一边
+        // 收流一边执行工具产生，不结束当前回复）；content 是字符串 / 缺失 /
+        // 首块类型是别的 = 真正的用户输入，结束当前回复
+        let is_user_tool_result = line_type == Some("user")
+            && line.message.as_ref().and_then(|m| m.first_block_type.as_deref())
+                == Some("tool_result");
+
+        // 结束当前回复的四种情况（见模块级注释）：id 不同 / 无 id 的 assistant
+        // 行、api-request 行（新请求开始）、真用户输入行、文件读尽（finish）。
+        // 其它行（工具结果、attachment、system 等）不结束，上下文照常更新
+        let mut finished = None;
+        let ends_current = (is_assistant
+            && self
+                .current
+                .as_ref()
+                .is_some_and(|acc| message_id.as_deref() != Some(acc.message_id.as_str())))
+            || line_type == Some("api-request")
+            || (line_type == Some("user") && !is_user_tool_result);
+        if ends_current {
+            // 结束原因是「后面还有别的行」（feed 内恒 true；finish 内为 false）
+            finished = self.finalize_current(true);
+        }
+
+        // 上下文刷新：cwd（任何行）、父链（有 uuid 的行）、api-request 索引、
+        // 未归属 api_error、最近真实模型名
+        if let Some(cwd) = line
+            .cwd
+            .as_deref()
+            .map(str::trim)
+            .filter(|c| !c.is_empty())
+        {
+            let cwd = cwd.to_string();
+            if let Some(project) = crate::projects::normalize_cwd(&cwd) {
+                self.current_project = Some(project);
+            }
+            self.current_cwd = Some(cwd);
+        }
+        if let Some(uuid) = line.uuid.as_deref().filter(|u| !u.is_empty()) {
+            if !self.parent_chain.contains_key(uuid) {
+                self.parent_order.push_back(uuid.to_string());
+                if self.parent_order.len() > PARENT_CHAIN_KEEP {
+                    if let Some(oldest) = self.parent_order.pop_front() {
+                        self.parent_chain.remove(&oldest);
+                    }
+                }
+            }
+            self.parent_chain.insert(
+                uuid.to_string(),
+                ChainEntry {
+                    parent_uuid: line.parent_uuid.clone(),
+                    timestamp: line.timestamp.as_deref().and_then(parse_ts_ms),
+                    line_type: line.line_type.clone(),
+                },
+            );
+        }
+        match line_type {
+            Some("api-request") => {
+                if let (Some(id), Some(ts)) = (
+                    line.id.as_deref().filter(|id| !id.is_empty()),
+                    line.timestamp.as_deref().and_then(parse_ts_ms),
+                ) {
+                    // 重试时同一 id 可能写多行：覆盖为最近一条的时间戳
+                    if !self.api_requests.contains_key(id) {
+                        self.api_request_order.push_back(id.to_string());
+                        if self.api_request_order.len() > API_REQUEST_KEEP {
+                            if let Some(oldest) = self.api_request_order.pop_front() {
+                                self.api_requests.remove(&oldest);
+                            }
+                        }
+                    }
+                    self.api_requests.insert(id.to_string(), ts);
+                    // 错误回复的起点证据（最近一次尝试的发起时刻）
+                    self.last_api_request_at = Some(ts);
+                }
+            }
+            Some("system") if line.subtype.as_deref() == Some("api_error") => {
+                self.pending_api_errors.push(ApiErrorHit {
+                    status: api_error_status_string(line.error.as_ref()),
+                });
+            }
+            _ => {}
+        }
+        // 工具结果行夹在当前回复的块之间：标记（审计统计用），不结束回复
+        if is_user_tool_result {
+            if let Some(acc) = self.current.as_mut() {
+                acc.tool_result_between = true;
+            }
+        }
+        // 真正的用户输入（非工具结果）：旧版本日志没有失败块，最终失败的
+        // 请求只留下 api_error 行，用户重新输入后下一条回复与那次失败无关
+        // ——未归属的重试行到此为止，不再归给后面的回复；带失败块的新版本
+        // 日志不受影响（失败块在开始时照常消耗挂接）
+        if line_type == Some("user") && !is_user_tool_result {
+            self.pending_api_errors.clear();
+        }
+
+        if is_assistant {
+            if let Some(msg) = line.message.as_ref() {
+                if let Some(model) = msg.model.as_deref() {
+                    if !model.is_empty() && model != "<synthetic>" {
+                        self.last_real_model = Some(model.to_string());
+                    }
+                }
+                // 无 message.id 的旧格式行不进回复分组（保持逐行写入路径）
+                if let Some(message_id) = message_id {
+                    let block = ReplyBlock::from_line(line, msg);
+                    match self.current.as_mut() {
+                        Some(acc) if acc.message_id == message_id => {
+                            if fresh {
+                                acc.has_new_block = true;
+                            }
+                            acc.blocks.push(block);
+                        }
+                        _ => {
+                            // 新回复开始：把未归属的 api_error 挂接到它
+                            //（上一条回复之后、本条之前的重试归给本条）
+                            self.current = Some(ReplyAcc {
+                                message_id,
+                                blocks: vec![block],
+                                has_new_block: fresh,
+                                version: line.version.clone(),
+                                pending_errors: std::mem::take(&mut self.pending_api_errors),
+                                tool_result_between: false,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        finished
+    }
+
+    /// 文件读尽：把仍在累积的回复落成记录（之后没有别的行 → 结束原因里
+    /// 「本趟还读到了别的行」不成立，status 只看末块 stop_reason）。
+    fn finish(&mut self) -> Option<ReplyRecord> {
+        self.finalize_current(false)
+    }
+
+    /// 结束当前累积中的回复并产出取证记录（挂接在该回复上的 api_error 归入
+    /// 重试）。没有任何块用量大于 0、也不是错误回复的回复（流式占位）整体
+    /// 跳过，其挂接的 api_error 还回暂存，仍归给下一条真回复。
+    fn finalize_current(&mut self, saw_other_line: bool) -> Option<ReplyRecord> {
+        let mut acc = self.current.take()?;
+        let cwd = self.current_cwd.clone();
+        let project_key = self.current_project.clone();
+        let record = self.finalize_acc(&mut acc, cwd, project_key, saw_other_line);
+        if record.is_none() {
+            // 占位回复被跳过：挂接的重试行还回暂存，归给下一条真回复
+            self.pending_api_errors = std::mem::take(&mut acc.pending_errors);
+        }
+        record
+    }
+
+    /// 取证本体（纯计算）：用量块 / 首块 / 结束与首个输出时刻 / 请求起点 /
+    /// 状态 / 重试 → 派生值与窗口校验。
+    fn finalize_acc(
+        &self,
+        acc: &mut ReplyAcc,
+        cwd: Option<String>,
+        project_key: Option<String>,
+        saw_other_line: bool,
+    ) -> Option<ReplyRecord> {
+        // 用量块：computed_total 最大的那个（并列取先出现——与旧逐行路径
+        // 「总量更大者胜」的结果一致）
+        let mut usage_index: Option<usize> = None;
+        for (index, block) in acc.blocks.iter().enumerate() {
+            if block.computed_total() <= 0 {
+                continue;
+            }
+            let better = match usage_index {
+                None => true,
+                Some(best) => block.computed_total() > acc.blocks[best].computed_total(),
+            };
+            if better {
+                usage_index = Some(index);
+            }
+        }
+        let error_block = acc.blocks.iter().find(|b| b.is_api_error);
+        let usage_block = usage_index.map(|index| &acc.blocks[index]);
+        if usage_block.is_none() && error_block.is_none() {
+            return None; // 流式占位
+        }
+        let is_error = error_block.is_some();
+        let anchor = usage_block.or(error_block)?;
+        // 没有时间戳无法归入统计区间，跳过（与旧逐行路径一致）
+        let started_at = anchor.timestamp?;
+        let completed_at = acc.blocks.iter().filter_map(|b| b.timestamp).max();
+
+        // 重试行在本回复开始时挂接（上一条回复之后、本条之前出现的
+        // api_error），条数进 retry_count、最后一条的状态码进 error_code
+        let retry_count = acc.pending_errors.len() as i64;
+        let retry_error_code = acc.pending_errors.last().and_then(|hit| hit.status.clone());
+
+        // 分支取证：错误回复（token 全 0，错误码 / 模型名按失败块）与成功回复
+        //（用量块取值；重试码取最近一次 api_error 的 status——自己的
+        // apiErrorStatus 只属于失败回复）
+        let (model_id, status, error_code, usage, real_duration_ms) = if is_error {
+            let error_block = error_block?;
+            let model = error_block
+                .requested_model
+                .clone()
+                .filter(|m| !m.is_empty())
+                .or_else(|| self.last_real_model.clone())
+                .unwrap_or_default();
+            let error_code = Some(
+                error_block
+                    .api_error_status
+                    .map(|code| code.to_string())
+                    .unwrap_or_else(|| "error".to_string()),
+            );
+            (model, Some("error"), error_code, UsagePayload::default(), error_block.real_duration_ms)
+        } else {
+            let usage_block = usage_block?;
+            let model = usage_block
+                .model
+                .as_deref()
+                .filter(|m| !m.is_empty() && *m != "<synthetic>")
+                .map(str::to_string)
+                .or_else(|| self.last_real_model.clone())
+                .unwrap_or_default();
+            // 末块有 stop_reason，或本趟在回复之后还读到了别的行 → completed；
+            // 文件恰好停在流式回复中间 → NULL（下次续读补全）
+            let last_block = acc.blocks.last()?;
+            let status = if last_block.stop_reason.is_some() || saw_other_line {
+                Some("completed")
+            } else {
+                None
+            };
+            (model, status, retry_error_code, usage_block.usage.clone(), usage_block.real_duration_ms)
+        };
+
+        // 首块：apiBlockIndex == 0 的块；没有该字段取最先出现的块
+        let first_block = match acc
+            .blocks
+            .iter()
+            .find(|b| b.api_block_index == Some(0))
+            .or_else(|| acc.blocks.first())
+        {
+            Some(block) => block,
+            None => return None,
+        };
+
+        // 请求起点：成功回复按 requestRef / 父链解析；最终失败的回复行上没有
+        // requestRef（是另一格式的 requestId），起点取最近一条 api-request 行
+        //（重试时是最后一次尝试的发起时刻，耗时不含此前的重试等待）；旧版本
+        // 没有 api-request 行则起点为空，错误回复不走父链回退
+        let (mut request_started_at, mut timing_estimated) =
+            resolve_request_start(&acc.blocks, first_block, self);
+        if is_error {
+            (request_started_at, timing_estimated) = match self.last_api_request_at {
+                Some(ts) => (Some(ts), Some(0)),
+                None => (None, None),
+            };
+        }
+
+        // 首个输出时刻照常取证；流式速度只需要它与 completed_at，不依赖请求
+        // 起点，起点缺失不丢它。与起点的时序校验只在起点存在时做（不满足的
+        // 那一项置空，不做钳制）
+        let mut first_token_at = first_output_evidence(first_block);
+        if let Some(start) = request_started_at {
+            if first_token_at.is_some_and(|ft| ft <= start) {
+                first_token_at = None;
+            }
+            if let Some(done) = completed_at {
+                if first_token_at.is_some_and(|ft| ft > done) {
+                    first_token_at = None;
+                }
+            }
+        }
+        // ttft = first_token_at − request_started_at（首字必须落在起点与结束之间；
+        // completed_at 缺失时只要求大于起点；起点缺失时不给）
+        let time_to_first_token_ms = match (request_started_at, first_token_at) {
+            (Some(start), Some(first))
+                if start < first && completed_at.map_or(true, |c| first <= c) =>
+            {
+                Some((first - start) as f64)
+            }
+            _ => None,
+        };
+        // 耗时派生：无真实 durationMs 时 = completed_at − request_started_at，
+        // 两者都有且差值在合法窗口内才写
+        let derived_duration_ms = match (request_started_at, completed_at) {
+            (Some(start), Some(done)) => {
+                let span = done - start;
+                let valid = span >= crate::token_speed::MIN_GEN_MS
+                    && span <= crate::token_speed::MAX_GEN_MS;
+                valid.then_some(span as f64)
+            }
+            _ => None,
+        };
+
+        Some(ReplyRecord {
+            message_id: acc.message_id.clone(),
+            started_at,
+            model_id,
+            input_tokens: usage.input_tokens,
+            output_tokens: usage.output_tokens,
+            cache_read_tokens: usage.cache_read_input_tokens,
+            cache_creation_tokens: usage.cache_creation_input_tokens,
+            computed_total: usage.computed_total(),
+            real_duration_ms,
+            derived_duration_ms,
+            request_started_at,
+            first_token_at,
+            completed_at,
+            time_to_first_token_ms,
+            timing_estimated: if request_started_at.is_some() { timing_estimated } else { None },
+            status,
+            error_code,
+            retry_count,
+            has_new_block: acc.has_new_block,
+            cwd,
+            project_key,
+            version: acc.version.clone(),
+            tool_result_between: acc.tool_result_between,
+        })
+    }
 }
 
 // ===== 增量导入 =====
@@ -388,17 +1329,67 @@ pub fn import_incremental_force() -> Result<(), String> {
     collect_session_files(&dir, 5, &mut files);
     files.sort();
 
+    // 计时 / 状态一次性回填（PRAGMA user_version 标记）：标记 < 2 时，对
+    // 最近 90 天修改过的文件无视已有偏移从头重放（已存在的行原地补计时，
+    // 重放幂等）。跑完才写标记：个别文件失败照常记日志跳过、标记照写；
+    // 中途退出则标记没写、下次重来。**不删 file_progress 行**——正在运行的
+    // 旧版实例会抢先重建进度，导致回填漏文件。
+    let backfill_needed = timing_backfill_pending(&conn);
+    let backfill_cutoff = now_ms_epoch() - TIMING_BACKFILL_WINDOW_MS;
+
     run_import_files(&mut conn, &files, "导入", |tx, path| {
         let key = path.to_string_lossy().to_string();
-        let known = progress.get(&key).copied();
+        let known = if backfill_needed && file_modified_after(path, backfill_cutoff) {
+            None
+        } else {
+            progress.get(&key).copied()
+        };
         import_one_file(tx, path, known)
     })?;
+
+    if backfill_needed {
+        mark_timing_backfill_done(&mut conn);
+    }
 
     // 存量行项目维度回填（节流 + 每批限量，幂等说明见函数注释）
     if let Err(e) = backfill_project_keys_locked(&mut conn) {
         eprintln!("[agenthud-claude] 项目维度回填失败（下次重试）: {e}");
     }
     Ok(())
+}
+
+/// 当前毫秒时间戳（回填窗口判定用；导入锁内调用，无并发问题）
+fn now_ms_epoch() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+/// 计时回填标记判定：PRAGMA user_version < 2 时需要重放（读取失败视为需要，
+/// 失败仅影响本轮多做一次幂等重放，不丢数据）
+fn timing_backfill_pending(conn: &Connection) -> bool {
+    conn.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
+        .map(|version| version < TIMING_BACKFILL_VERSION)
+        .unwrap_or(true)
+}
+
+/// 写入计时回填完成标记（失败只记日志：下轮导入多做一次幂等重放）
+fn mark_timing_backfill_done(conn: &mut Connection) {
+    let result = conn.execute_batch(&format!("PRAGMA user_version = {TIMING_BACKFILL_VERSION};"));
+    if let Err(e) = result {
+        eprintln!("[agenthud-claude] 写入回填标记失败（下次导入会重放一遍）: {e}");
+    }
+}
+
+/// 文件修改时间是否在 cutoff 之后（读不到元信息按否处理，保持原偏移续读）
+fn file_modified_after(path: &Path, cutoff_ms: i64) -> bool {
+    std::fs::metadata(path)
+        .and_then(|meta| meta.modified())
+        .ok()
+        .and_then(|mtime| mtime.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|age| age.as_millis() as i64 >= cutoff_ms)
+        .unwrap_or(false)
 }
 
 /// 上次项目维度回填时间（节流用）。
@@ -522,6 +1513,12 @@ pub fn backfill_project_keys() -> Result<usize, String> {
 /// 事务由调用方的 run_import_files 按文件提供（每文件一个，失败整体
 /// 回滚，见 import_incremental_force）；行级 INSERT 在循环前 prepare 一次
 /// 复用，避免每行重复解析 SQL。
+///
+/// 有 message.id 的行按「回复」取证写入（ReplyScanner：计时 / 状态 / 失败行 /
+/// 重试）；无 message.id 的旧格式行保持原逐行写入路径（序号键、无计时）。
+/// 续读（start_offset > 0）时先回看游标前最多 LOOKBACK_BYTES 字节重建上下文
+///（父链 / api-request 索引 / 未归属 api_error / 跨游标的未结束回复），
+/// 这段不写库；只有至少有一个块落在新增字节里的回复才落库。
 fn import_one_file(
     tx: &Transaction<'_>,
     path: &Path,
@@ -544,23 +1541,15 @@ fn import_one_file(
 
     let mut file = std::fs::File::open(path).map_err(|e| format!("打开会话文件失败: {e}"))?;
     let mut reader = std::io::BufReader::new(&mut file);
-    reader
-        .seek(SeekFrom::Start(start_offset))
-        .map_err(|e| format!("定位读取偏移失败: {e}"))?;
 
-    let mut pos = start_offset;
-    let mut last_complete_end = start_offset;
     // 无 message.id 的行（旧版本 CLI）退回"会话内行序号"做去重键：
     // - 续读（文件增长）：从该会话已用的最大序号继续，避免 seq:N 与历史行
     //   撞键错乱合并（撞键后"总量更大者胜"会把两条不同请求折叠成一条）；
     // - 重解析（文件变短被重写）：从 0 重计，重放行与旧行撞相同键，
     //   靠"总量更大者胜"幂等去重（与 codex.rs 的 seq 语义一致）。
     let mut line_seq: i64 = 0;
-    // 项目维度：行内顶层 cwd（user/assistant 行均携带），任一行出现即刷新，
-    // 后续 token 用量行继承当前值（同文件 cwd 一致）；解析到则归一化落库，
-    // 整个文件都无 cwd 时保持 NULL（存量回填/查询侧归未知项目）。
-    let mut current_cwd: Option<String> = None;
-    let mut current_project: Option<String> = None;
+    // 回复级取证的行级扫描器（cwd / 父链 / api-request 索引都在其内部）
+    let mut scanner = ReplyScanner::new();
     if !reparse {
         let prefix = format!("{session_id}|");
         let keys: Vec<String> = {
@@ -586,19 +1575,16 @@ fn import_one_file(
             .filter_map(|s| s.parse::<i64>().ok())
             .max()
             .unwrap_or(0);
-    }
-    // 项目上下文恢复：续读窗口内可能没有 cwd 行（在上次已读部分），从该会话
-    // 已入库行恢复，避免新增行 project_key 退化为 NULL；重解析路径从文件头
-    // 重读，cwd 行自然重建上下文。
-    if !reparse {
+        // 项目上下文恢复：续读窗口内可能没有 cwd 行（在上次已读部分），从该会话
+        // 已入库行恢复，避免新增行 project_key 退化为 NULL；重解析路径从文件头
+        // 重读，cwd 行自然重建上下文。
         let _ = tx.query_row(
             "SELECT cwd, project_key FROM model_usage
              WHERE session_id = ?1 AND project_key IS NOT NULL
              LIMIT 1",
             rusqlite::params![session_id],
             |row| {
-                current_cwd = row.get(0)?;
-                current_project = row.get(1)?;
+                scanner.restore_project(row.get(0)?, row.get(1)?);
                 Ok(())
             },
         );
@@ -608,7 +1594,8 @@ fn import_one_file(
     let now_ms = chrono::Local::now().timestamp_millis();
 
     // 行级 upsert 预编译一次，循环内仅绑定执行（prepare 保留不可变借用，
-    // commit 由调用方在语句析构后进行）
+    // commit 由调用方在语句析构后进行）。仅服务无 message.id 的旧格式行，
+    // 新格式回复由 write_reply_record 按回复合并写入。
     let mut upsert_usage = tx
         .prepare(
             "INSERT INTO model_usage
@@ -631,6 +1618,17 @@ fn import_one_file(
         )
         .map_err(|e| format!("预编译用量写入语句失败: {e}"))?;
 
+    // 回看区（续读才有）：只重建上下文（父链 / api-request 索引 / 未归属
+    // api_error / 跨游标的未结束回复 / 最近真实模型名），不写库
+    if !reparse && start_offset > 0 {
+        feed_lookback(&mut reader, start_offset, &mut scanner)?;
+    }
+    reader
+        .seek(SeekFrom::Start(start_offset))
+        .map_err(|e| format!("定位读取偏移失败: {e}"))?;
+
+    let mut pos = start_offset;
+    let mut last_complete_end = start_offset;
     let mut buf: Vec<u8> = Vec::with_capacity(4096);
     loop {
         buf.clear();
@@ -651,75 +1649,76 @@ fn import_one_file(
         let Ok(line) = serde_json::from_slice::<TranscriptLine>(&buf) else {
             continue;
         };
-        // 任何携带 cwd 的行都刷新项目上下文（不限于 assistant 行）
-        if let Some(cwd) = line
-            .cwd
-            .as_deref()
-            .map(str::trim)
-            .filter(|c| !c.is_empty())
-        {
-            let cwd = cwd.to_string();
-            if let Some(project) = crate::projects::normalize_cwd(&cwd) {
-                current_project = Some(project);
+        // 回复级处理：本行结束当前回复时立即落库（记录里的 cwd / 重试等
+        // 快照都取自本行之前的状态）
+        if let Some(record) = scanner.feed(&line, true) {
+            if record.has_new_block {
+                write_reply_record(tx, &session_id, &record, now_ms, reparse)?;
             }
-            current_cwd = Some(cwd);
         }
-        if line.line_type.as_deref() != Some("assistant") {
-            continue;
-        }
-        let Some(msg) = line.message.as_ref() else {
-            continue;
-        };
-        // CLI 内部占位行（如中断提示）模型名为 <synthetic>，跳过
-        let model = match msg.model.as_deref() {
-            Some(m) if !m.is_empty() && m != "<synthetic>" => m.to_string(),
-            _ => continue,
-        };
-        let Some(usage) = msg.usage.as_ref() else {
-            continue;
-        };
-        let total = usage.computed_total();
-        if total <= 0 {
-            // 流式过程中的 0 值占位行 / 空调用，跳过（真正终值由后续行携带）
-            continue;
-        }
-        // 没有时间戳无法归入统计区间，跳过（偏移仍推进）
-        let Some(started_at) = line.timestamp.as_deref().and_then(parse_ts_ms) else {
-            continue;
-        };
+        // 无 message.id 的 assistant 行保持原逐行写入路径（序号键、无计时）
+        if line.line_type.as_deref() == Some("assistant") {
+            let Some(msg) = line.message.as_ref() else {
+                continue;
+            };
+            let has_dedupe_id = msg
+                .id
+                .as_deref()
+                .is_some_and(|id| !id.is_empty() && !id.contains('|'));
+            if has_dedupe_id {
+                continue; // 新格式行已进回复分组
+            }
+            // CLI 内部占位行（如中断提示）模型名为 <synthetic>，跳过
+            let model = match msg.model.as_deref() {
+                Some(m) if !m.is_empty() && m != "<synthetic>" => m.to_string(),
+                _ => continue,
+            };
+            let Some(usage) = msg.usage.as_ref() else {
+                continue;
+            };
+            let total = usage.computed_total();
+            if total <= 0 {
+                // 流式过程中的 0 值占位行 / 空调用，跳过（真正终值由后续行携带）
+                continue;
+            }
+            // 没有时间戳无法归入统计区间，跳过（偏移仍推进）
+            let Some(started_at) = line.timestamp.as_deref().and_then(parse_ts_ms) else {
+                continue;
+            };
 
-        line_seq += 1;
-        // 有 id 的行全局去重（防 fork 复制历史导致跨文件双计）；
-        // 无 id 行仅会话内去重（序号键带 session 前缀，message.id 形如
-        // msg_<hex>，不含 "|"，两类键天然不冲突）
-        let dedupe_key = msg
-            .id
-            .as_deref()
-            .filter(|id| !id.is_empty() && !id.contains('|'))
-            .map(|id| id.to_string())
-            .unwrap_or_else(|| format!("{session_id}|{line_seq}"));
+            line_seq += 1;
+            // 无 id 行仅会话内去重（序号键带 session 前缀，message.id 形如
+            // msg_<hex>，不含 "|"，两类键天然不冲突）
+            let dedupe_key = format!("{session_id}|{line_seq}");
 
-        // 同一 message.id 的多行 usage 为累计口径（末行即终值）：后写覆盖先写；
-        // 仅当新行总量更大时覆盖，防御末行意外回退为小值的脏数据。
-        // 覆盖不改变自增 id（上传 rowid 稳定），但打上 updated_at 修订标记。
-        // 项目维度列不参与覆盖更新（fork 复制历史时行归属首个项目，保持稳定）。
-        upsert_usage
-            .execute(rusqlite::params![
-                session_id,
-                dedupe_key,
-                started_at,
-                model,
-                usage.input_tokens,
-                usage.output_tokens,
-                usage.cache_read_input_tokens,
-                usage.cache_creation_input_tokens,
-                total,
-                msg.duration_ms,
-                now_ms,
-                current_cwd,
-                current_project,
-            ])
-            .map_err(|e| format!("写入用量记录失败: {e}"))?;
+            // 同一序号键的多行 usage 为累计口径（末行即终值）：后写覆盖先写；
+            // 仅当新行总量更大时覆盖，防御末行意外回退为小值的脏数据。
+            // 覆盖不改变自增 id（上传 rowid 稳定），但打上 updated_at 修订标记。
+            // 项目维度列不参与覆盖更新（fork 复制历史时行归属首个项目，保持稳定）。
+            upsert_usage
+                .execute(rusqlite::params![
+                    session_id,
+                    dedupe_key,
+                    started_at,
+                    model,
+                    usage.input_tokens,
+                    usage.output_tokens,
+                    usage.cache_read_input_tokens,
+                    usage.cache_creation_input_tokens,
+                    total,
+                    msg.duration_ms,
+                    now_ms,
+                    &scanner.current_cwd,
+                    &scanner.current_project,
+                ])
+                .map_err(|e| format!("写入用量记录失败: {e}"))?;
+        }
+    }
+    // EOF：仍在累积的回复（文件停在流式回复中间）也落库（status 按 NULL）
+    if let Some(record) = scanner.finish() {
+        if record.has_new_block {
+            write_reply_record(tx, &session_id, &record, now_ms, reparse)?;
+        }
     }
     drop(upsert_usage);
 
@@ -736,16 +1735,269 @@ fn import_one_file(
     Ok(())
 }
 
+/// 续读回看：从游标前最多 LOOKBACK_BYTES 字节读到游标，只喂行重建 scanner
+/// 上下文（起点在行中间时丢掉开头那条不完整的行；跨越游标的行防御性整行
+/// 丢弃）。产出的回复记录一律丢弃——回看区不写库，写库只认新增字节里的块。
+fn feed_lookback(
+    reader: &mut std::io::BufReader<&mut std::fs::File>,
+    start_offset: u64,
+    scanner: &mut ReplyScanner,
+) -> Result<(), String> {
+    let begin = start_offset.saturating_sub(LOOKBACK_BYTES);
+    // 对齐判定：begin == 0 必在行边界；否则看前一字节是否换行（是 → 第一行
+    // 完整可直接喂，否 → 第一行是被截断的半行，整行丢弃）
+    let mut aligned = true;
+    if begin > 0 {
+        reader
+            .seek(SeekFrom::Start(begin - 1))
+            .map_err(|e| format!("定位回看偏移失败: {e}"))?;
+        let mut probe = [0u8; 1];
+        let n = std::io::Read::read(reader, &mut probe)
+            .map_err(|e| format!("读取回看对齐字节失败: {e}"))?;
+        aligned = n == 1 && probe[0] == b'\n';
+    }
+    reader
+        .seek(SeekFrom::Start(begin))
+        .map_err(|e| format!("定位回看偏移失败: {e}"))?;
+    let limit = start_offset - begin;
+    let mut consumed: u64 = 0;
+    let mut buf: Vec<u8> = Vec::with_capacity(4096);
+    loop {
+        if consumed >= limit {
+            break;
+        }
+        buf.clear();
+        let n = reader
+            .read_until(b'\n', &mut buf)
+            .map_err(|e| format!("读取回看区失败: {e}"))?;
+        if n == 0 {
+            break; // EOF（游标之后没有更多内容，异常情况，防御）
+        }
+        consumed += n as u64;
+        if !aligned {
+            // 开头不完整的行：等下一个换行符之后才算对齐
+            if buf.last() == Some(&b'\n') {
+                aligned = true;
+            }
+            continue;
+        }
+        if consumed > limit {
+            break; // 游标非行边界（防御）：跨过去的行不喂，避免与新增区重复
+        }
+        if let Ok(line) = serde_json::from_slice::<TranscriptLine>(&buf) {
+            scanner.feed(&line, false);
+        }
+    }
+    Ok(())
+}
+
+/// 按回复落库：新回复直接 INSERT；已存在（dedupe_key 相同）的回复由纯函数
+/// merge_reply 合并，内容确实变了才 UPDATE（updated_at 置为本趟时间），
+/// 重放无变化时不写——否则同步的修订通道会反复补传。id / cwd / project_key
+/// 永不因合并而改变（fork 复制历史时行归属首个项目，保持稳定）。
+/// `authoritative` = 从头解析（新文件 / 文件被重写 / 90 天回填重放），整文件
+/// 证据完整，计时状态列新值非空即覆盖（可纠正被更早版本代码写错的值）。
+fn write_reply_record(
+    tx: &Transaction<'_>,
+    session_id: &str,
+    record: &ReplyRecord,
+    now_ms: i64,
+    authoritative: bool,
+) -> Result<(), String> {
+    // 失败回复取不到模型名（行上没有 requestedModel、本文件也没有真实模型
+    // 名可回退）时，按项目 → 全库的顺序取最近一条真实模型名，避免空名条目
+    // 进清单 / 用量分组 / 同步
+    let mut record = record.clone();
+    if record.model_id.is_empty() {
+        if let Some(model) = resolve_fallback_model(tx, record.project_key.as_deref()) {
+            record.model_id = model;
+        }
+    }
+    let fresh = record.as_stored();
+    match load_stored_reply(tx, &record.message_id)? {
+        None => insert_reply(tx, session_id, &record, &fresh, now_ms),
+        Some(stored) => {
+            let merged = merge_reply(&stored, &fresh, authoritative);
+            if merged == stored {
+                return Ok(());
+            }
+            update_reply(tx, &record.message_id, &merged, now_ms)
+        }
+    }
+}
+
+/// 失败回复的模型名库内回退：依次取本项目（project_key 相同）、全库的最近
+/// 一条真实模型名（非空且非 `<synthetic>`；入库的 model_id 已在解析层过滤
+/// `<synthetic>`，这里防御性再过滤一次）。都取不到返回 None，保留空串。
+fn resolve_fallback_model(
+    tx: &Transaction<'_>,
+    project_key: Option<&str>,
+) -> Option<String> {
+    if let Some(project) = project_key {
+        let project_model: Option<String> = tx
+            .query_row(
+                "SELECT model_id FROM model_usage
+                 WHERE project_key = ?1 AND model_id != '' AND model_id != '<synthetic>'
+                 ORDER BY started_at DESC, id DESC LIMIT 1",
+                [project],
+                |row| row.get(0),
+            )
+            .ok();
+        if project_model.is_some() {
+            return project_model;
+        }
+    }
+    tx.query_row(
+        "SELECT model_id FROM model_usage
+         WHERE model_id != '' AND model_id != '<synthetic>'
+         ORDER BY started_at DESC, id DESC LIMIT 1",
+        [],
+        |row| row.get(0),
+    )
+    .ok()
+}
+
+/// 已入库回复的行快照（SELECT 列序与读取下标严格一致）
+fn load_stored_reply(
+    tx: &Transaction<'_>,
+    dedupe_key: &str,
+) -> Result<Option<StoredReply>, String> {
+    let mut stmt = tx
+        .prepare(
+            "SELECT started_at, model_id, input_tokens, output_tokens,
+                    cache_read_input_tokens, cache_creation_input_tokens,
+                    computed_total_tokens, duration_ms,
+                    request_started_at, first_token_at, completed_at,
+                    time_to_first_token_ms, timing_estimated, status, error_code, retry_count
+             FROM model_usage WHERE dedupe_key = ?1",
+        )
+        .map_err(|e| format!("准备回复查询语句失败: {e}"))?;
+    let mut rows = stmt
+        .query_map([dedupe_key], |row| {
+            Ok(StoredReply {
+                started_at: row.get(0)?,
+                model_id: row.get(1)?,
+                input_tokens: row.get(2)?,
+                output_tokens: row.get(3)?,
+                cache_read_tokens: row.get(4)?,
+                cache_creation_tokens: row.get(5)?,
+                computed_total: row.get(6)?,
+                duration_ms: row.get(7)?,
+                request_started_at: row.get(8)?,
+                first_token_at: row.get(9)?,
+                completed_at: row.get(10)?,
+                time_to_first_token_ms: row.get(11)?,
+                timing_estimated: row.get(12)?,
+                status: row.get(13)?,
+                error_code: row.get(14)?,
+                retry_count: row.get(15)?,
+            })
+        })
+        .map_err(|e| format!("查询已入库回复失败: {e}"))?;
+    rows.next()
+        .transpose()
+        .map_err(|e| format!("读取已入库回复失败: {e}"))
+}
+
+/// 新回复 INSERT（自增 id 分配一次后永不改变——上传 rowid 稳定的前提）
+fn insert_reply(
+    tx: &Transaction<'_>,
+    session_id: &str,
+    record: &ReplyRecord,
+    fresh: &StoredReply,
+    now_ms: i64,
+) -> Result<(), String> {
+    tx.execute(
+        "INSERT INTO model_usage
+            (session_id, dedupe_key, started_at, model_id, provider_id,
+             input_tokens, output_tokens, cache_read_input_tokens,
+             cache_creation_input_tokens, reasoning_tokens, computed_total_tokens,
+             duration_ms, updated_at, cwd, project_key,
+             request_started_at, first_token_at, completed_at,
+             time_to_first_token_ms, timing_estimated, status, error_code, retry_count)
+         VALUES (?1, ?2, ?3, ?4, 'claude', ?5, ?6, ?7, ?8, 0, ?9, ?10, ?11, ?12, ?13,
+                 ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)",
+        rusqlite::params![
+            session_id,
+            record.message_id,
+            fresh.started_at,
+            fresh.model_id,
+            fresh.input_tokens,
+            fresh.output_tokens,
+            fresh.cache_read_tokens,
+            fresh.cache_creation_tokens,
+            fresh.computed_total,
+            fresh.duration_ms,
+            now_ms,
+            record.cwd,
+            record.project_key,
+            fresh.request_started_at,
+            fresh.first_token_at,
+            fresh.completed_at,
+            fresh.time_to_first_token_ms,
+            fresh.timing_estimated,
+            fresh.status,
+            fresh.error_code,
+            fresh.retry_count,
+        ],
+    )
+    .map_err(|e| format!("写入回复用量记录失败: {e}"))?;
+    Ok(())
+}
+
+/// 已存在回复的合并 UPDATE（dedupe_key 定位，id / session / cwd / project_key 不动）
+fn update_reply(
+    tx: &Transaction<'_>,
+    dedupe_key: &str,
+    merged: &StoredReply,
+    now_ms: i64,
+) -> Result<(), String> {
+    tx.execute(
+        "UPDATE model_usage SET
+            started_at = ?1, model_id = ?2,
+            input_tokens = ?3, output_tokens = ?4,
+            cache_read_input_tokens = ?5, cache_creation_input_tokens = ?6,
+            computed_total_tokens = ?7, duration_ms = ?8,
+            request_started_at = ?9, first_token_at = ?10, completed_at = ?11,
+            time_to_first_token_ms = ?12, timing_estimated = ?13,
+            status = ?14, error_code = ?15, retry_count = ?16,
+            updated_at = ?17
+         WHERE dedupe_key = ?18",
+        rusqlite::params![
+            merged.started_at,
+            merged.model_id,
+            merged.input_tokens,
+            merged.output_tokens,
+            merged.cache_read_tokens,
+            merged.cache_creation_tokens,
+            merged.computed_total,
+            merged.duration_ms,
+            merged.request_started_at,
+            merged.first_token_at,
+            merged.completed_at,
+            merged.time_to_first_token_ms,
+            merged.timing_estimated,
+            merged.status,
+            merged.error_code,
+            merged.retry_count,
+            now_ms,
+            dedupe_key,
+        ],
+    )
+    .map_err(|e| format!("合并更新回复用量记录失败: {e}"))?;
+    Ok(())
+}
+
 // ===== 查询函数（与 codex.rs 同名同构，查 claude.sqlite；查询前先增量导入）=====
 
 /// 查询 [from_ms, to_ms) 内的统计（口径与 db::query_stats 完全一致）。
-/// Claude 会话无 TTFT 数据（jsonl 只有总耗时 durationMs），首字延迟恒为 None。
+/// 新版导入已按回复取证 time_to_first_token_ms（老库无该列时按 NULL 聚合）。
 pub fn query_stats(from_ms: i64, to_ms: i64) -> Result<db::Stats, String> {
     import_incremental()?;
     let conn = open_claude_db()?;
     let speed = db::speed_agg_columns(
         db::has_column(&conn, "model_usage", "duration_ms"),
-        false,
+        db::has_column(&conn, "model_usage", "time_to_first_token_ms"),
     );
 
     let mut overall: db::OverallStat = conn
@@ -828,10 +2080,10 @@ pub fn query_stats(from_ms: i64, to_ms: i64) -> Result<db::Stats, String> {
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| format!("读取 Claude 模型分组失败: {e}"))?;
 
-    // B3 速度质量标记：Claude 导入库只有请求总耗时（jsonl 的 durationMs），
-    // 速度是包含首字等待的**请求平均**近似——显式标 request_average（TS 侧
-    // 以 ≈ 前缀区分），不与 ZCode 的可信生成速度混为同一种 t/s；无速度
-    // 时不标（None）。
+    // B3 速度质量标记：Claude 行的速度按行内真实 durationMs（新版 jsonl）
+    // 或派生耗时（结束 − 起点）计算，包含首字等待，口径仍是**请求平均**
+    // 近似——显式标 request_average（TS 侧以 ≈ 前缀区分），不与 ZCode 的
+    // 可信生成速度混为同一种 t/s；无速度时不标（None）。
     if overall.speed.avg_tps.is_some() {
         overall.speed.speed_quality = Some(crate::token_speed::SpeedQuality::RequestAverage);
     }
@@ -1032,51 +2284,110 @@ pub fn query_trend(
 /// 未回填的旧行两字段为 None，服务端落 NULL）。
 /// proto 8：附带耗时（本库 duration_ms 为 jsonl 的 durationMs 真实总耗时，
 /// 无 TTFT 列 → 首字恒 None）。
+/// proto 9：附带流式速度证据 speed_evidence（事件时刻齐全时）。
+/// proto 10：附带状态扩展列（status / error_code / retry_count /
+/// timing_estimated，按列存在性带出）。实现见 query_rows_since。
 pub fn query_since(since: i64, limit: usize) -> Result<Vec<db::UsageRow>, String> {
     import_incremental()?;
     let conn = open_claude_db()?;
-    // proto 8：耗时/首字按列存在性带出（真实值 > 0 才给，无列恒 None，
-    // 不做时间戳差估算；口径与 db::query_since 一致）
-    let (duration, ttft) = db::speed_columns(&conn);
+    query_rows_since(&conn, "id > ?1", &[since], 2, limit, "增量")
+}
+
+/// query_since / query_revised_since 共用的行查询内核（WHERE/占位符由调用方
+/// 给：limit_idx = WHERE 参数个数 + 1）。proto 10 起状态扩展列追加在 SELECT
+/// 末尾（下标 15~18），事件时刻两列（下标 19~20）仅供流式速度证据判定、不进
+/// UsageRow——有事件证据的行同时携带 speed_evidence（proto 9 通道，见
+/// token_speed::import_evidence），禁止用这两列反推相对量。
+fn query_rows_since(
+    conn: &Connection,
+    where_clause: &str,
+    params: &[i64],
+    limit_idx: usize,
+    limit: usize,
+    kind: &str,
+) -> Result<Vec<db::UsageRow>, String> {
+    // proto 8：耗时/首字按列存在性带出（真实值 > 0 才给，无列恒 None；
+    // 查询/同步层不做时间戳差相减，只转发导入时按事件时刻算好并带
+    // timing_estimated 标记落库的列；口径与 db::query_since 一致）
+    let (duration, ttft) = db::speed_columns(conn);
+    // proto 10：状态扩展列同款按列存在性带出
+    let (status, error_code, retry_count, timing_estimated) = db::timing_columns(conn);
+    // 事件时刻（speed_evidence 判定用；无列恒 NULL → evidence 走 None 回退）
+    let (first_col, completed_col) = event_columns(conn);
     let sql = format!(
         "SELECT id, started_at, model_id, provider_id,
                 input_tokens, output_tokens, cache_read_input_tokens,
                 cache_creation_input_tokens, reasoning_tokens, computed_total_tokens,
-                session_id, project_key, cwd, {duration}, {ttft}
+                session_id, project_key, cwd, {duration}, {ttft},
+                {status}, {error_code}, {retry_count}, {timing_estimated},
+                {first_col}, {completed_col}
          FROM model_usage
-         WHERE id > ?1
+         WHERE {where_clause}
          ORDER BY id ASC
-         LIMIT ?2"
+         LIMIT ?{limit_idx}"
     );
     let mut stmt = conn
         .prepare(&sql)
-        .map_err(|e| format!("准备 Claude 增量查询失败: {e}"))?;
+        .map_err(|e| format!("准备 Claude {kind}查询失败: {e}"))?;
     let rows = stmt
-        .query_map(rusqlite::params![since, limit as i64], |row| {
-            Ok(db::UsageRow {
-                speed_evidence: None,
-                local_rowid: row.get(0)?,
-                started_at: row.get(1)?,
-                model_id: row.get::<_, Option<String>>(2)?.unwrap_or_default(),
-                provider_id: row.get::<_, Option<String>>(3)?.unwrap_or_default(),
-                input_tokens: row.get(4)?,
-                output_tokens: row.get(5)?,
-                cache_read_input_tokens: row.get(6)?,
-                cache_creation_input_tokens: row.get(7)?,
-                reasoning_tokens: row.get(8)?,
-                computed_total_tokens: row.get(9)?,
-                source: "claude".into(),
-                session_id: row.get(10)?,
-                project_key: row.get(11)?,
-                project_display: row.get(12)?,
-                duration_ms: row.get(13)?,
-                time_to_first_token_ms: row.get(14)?,
-            })
-        })
-        .map_err(|e| format!("读取 Claude 增量记录失败: {e}"))?
+        .query_map(
+            rusqlite::params_from_iter(
+                params.iter().copied().chain(std::iter::once(limit as i64)),
+            ),
+            |row| {
+                let output_tokens: i64 = row.get(5)?;
+                let duration_ms: Option<f64> = row.get(13)?;
+                let status_raw: Option<String> = row.get(15)?;
+                let timing = crate::token_speed::ImportTiming {
+                    output_tokens,
+                    row_at: row.get(1)?,
+                    first_token_at: row.get(19)?,
+                    completed_at: row.get(20)?,
+                    duration_ms,
+                    fallback_quality: crate::token_speed::duration_quality("claude"),
+                    observed_at_ms: 0,
+                    completed: crate::token_speed::is_completed_status(status_raw.as_deref()),
+                };
+                Ok(db::UsageRow {
+                    // proto 9：流式速度证据（无事件时刻 → None，远端按耗时回退）
+                    speed_evidence: crate::token_speed::import_evidence(&timing),
+                    local_rowid: row.get(0)?,
+                    started_at: row.get(1)?,
+                    model_id: row.get::<_, Option<String>>(2)?.unwrap_or_default(),
+                    provider_id: row.get::<_, Option<String>>(3)?.unwrap_or_default(),
+                    input_tokens: row.get(4)?,
+                    output_tokens,
+                    cache_read_input_tokens: row.get(6)?,
+                    cache_creation_input_tokens: row.get(7)?,
+                    reasoning_tokens: row.get(8)?,
+                    computed_total_tokens: row.get(9)?,
+                    source: "claude".into(),
+                    session_id: row.get(10)?,
+                    project_key: row.get(11)?,
+                    project_display: row.get(12)?,
+                    duration_ms,
+                    time_to_first_token_ms: row.get(14)?,
+                    // proto 10 状态扩展列（下标 15~18，与 SELECT 末尾严格对应）
+                    status: row.get(15)?,
+                    error_code: row.get::<_, Option<String>>(16)?.filter(|c| !c.is_empty()),
+                    retry_count: row.get(17)?,
+                    timing_estimated: row.get::<_, Option<i64>>(18)?.map(|v| v != 0),
+                })
+            },
+        )
+        .map_err(|e| format!("读取 Claude {kind}记录失败: {e}"))?
         .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| format!("读取 Claude 增量记录失败: {e}"))?;
+        .map_err(|e| format!("读取 Claude {kind}记录失败: {e}"))?;
     Ok(rows)
+}
+
+/// 导入库的事件时刻列（first_token_at / completed_at）：无列时给 NULL 占位
+/// （列数不变）。这两列仅供 speed_evidence 判定，禁止用它们反推相对量。
+fn event_columns(conn: &Connection) -> (&'static str, &'static str) {
+    (
+        if db::has_column(conn, "model_usage", "first_token_at") { "first_token_at" } else { "NULL" },
+        if db::has_column(conn, "model_usage", "completed_at") { "completed_at" } else { "NULL" },
+    )
 }
 
 /// 导入库当前最大 rowid（供「待上传条数」显示用）。
@@ -1114,47 +2425,14 @@ pub(crate) fn query_revised_since_at(
     after_id: i64,
     limit: usize,
 ) -> Result<Vec<db::UsageRow>, String> {
-    // proto 8：与 query_since 同款耗时/首字列（口径一致）
-    let (duration, ttft) = db::speed_columns(conn);
-    let sql = format!(
-        "SELECT id, started_at, model_id, provider_id,
-                input_tokens, output_tokens, cache_read_input_tokens,
-                cache_creation_input_tokens, reasoning_tokens, computed_total_tokens,
-                session_id, project_key, cwd, {duration}, {ttft}
-         FROM model_usage
-         WHERE updated_at > ?1 AND id > ?2
-         ORDER BY id ASC
-         LIMIT ?3"
-    );
-    let mut stmt = conn
-        .prepare(&sql)
-        .map_err(|e| format!("准备 Claude 修订查询失败: {e}"))?;
-    let rows = stmt
-        .query_map(rusqlite::params![since_ts, after_id, limit as i64], |row| {
-            Ok(db::UsageRow {
-                speed_evidence: None,
-                local_rowid: row.get(0)?,
-                started_at: row.get(1)?,
-                model_id: row.get::<_, Option<String>>(2)?.unwrap_or_default(),
-                provider_id: row.get::<_, Option<String>>(3)?.unwrap_or_default(),
-                input_tokens: row.get(4)?,
-                output_tokens: row.get(5)?,
-                cache_read_input_tokens: row.get(6)?,
-                cache_creation_input_tokens: row.get(7)?,
-                reasoning_tokens: row.get(8)?,
-                computed_total_tokens: row.get(9)?,
-                source: "claude".into(),
-                session_id: row.get(10)?,
-                project_key: row.get(11)?,
-                project_display: row.get(12)?,
-                duration_ms: row.get(13)?,
-                time_to_first_token_ms: row.get(14)?,
-            })
-        })
-        .map_err(|e| format!("读取 Claude 修订记录失败: {e}"))?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| format!("读取 Claude 修订记录失败: {e}"))?;
-    Ok(rows)
+    query_rows_since(
+        conn,
+        "updated_at > ?1 AND id > ?2",
+        &[since_ts, after_id],
+        3,
+        limit,
+        "修订",
+    )
 }
 
 /// 列出导入库中出现过的所有 (provider_id, model_id) 组合，供价格配置用。
@@ -1162,10 +2440,17 @@ pub(crate) fn query_revised_since_at(
 pub fn list_models() -> Result<Vec<db::ModelInfo>, String> {
     import_incremental()?;
     let conn = open_claude_db()?;
+    list_models_at(&conn)
+}
+
+/// `list_models` 的纯查询内核（连接注入版，供单元测试）。
+/// 忽略空模型名（历史失败行在模型名三级回退全部失败时会留空串，不进清单）。
+pub(crate) fn list_models_at(conn: &Connection) -> Result<Vec<db::ModelInfo>, String> {
     let mut stmt = conn
         .prepare(
             "SELECT DISTINCT provider_id, model_id
              FROM model_usage
+             WHERE model_id != ''
              ORDER BY model_id",
         )
         .map_err(|e| format!("准备 Claude 模型列表查询失败: {e}"))?;
@@ -2096,6 +3381,7 @@ pub fn debug_info() -> Result<ClaudeDebugInfo, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
 
     /// 凭据 JSON 解析：标准结构 / 缺 accessToken 报错 / 无 claudeAiOauth 报错。
     #[test]
@@ -2658,6 +3944,1433 @@ mod tests {
         assert_eq!(rows[0].duration_ms, None, "无 duration_ms 列应恒 None");
         assert_eq!(rows[0].time_to_first_token_ms, None, "无 ttft 列应恒 None");
         assert_eq!(rows[0].session_id.as_deref(), Some("s-9"));
+    }
+
+    // ===== 按回复取证（计时 / 状态 / 失败行 / 回填）的合成数据测试 =====
+    // 按本机日志字段布局构造，不放真实对话内容。
+
+    /// RFC3339 → 毫秒（断言里与行内时间戳同源换算，避免手抄数字漂移）
+    fn ms(ts: &str) -> i64 {
+        parse_ts_ms(ts).expect("测试时间戳解析失败")
+    }
+
+    /// 临时目录 + SCHEMA_SQL 库（与 open_claude_db 同构，但不碰 ~/.agenthud）
+    fn setup_temp_db(tag: &str) -> (PathBuf, Connection) {
+        let tmp =
+            std::env::temp_dir().join(format!("zbar-claude-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).expect("创建临时目录失败");
+        let db_path = tmp.join("claude.sqlite");
+        let conn = Connection::open(&db_path).expect("打开临时库失败");
+        conn.execute_batch(SCHEMA_SQL).expect("初始化临时库失败");
+        (tmp, conn)
+    }
+
+    fn write_session_lines(tmp: &Path, name: &str, content: &str) -> PathBuf {
+        let file = tmp.join(name);
+        std::fs::write(&file, content).expect("写入测试会话文件失败");
+        file
+    }
+
+    /// 全量导入一次（known=None，与重解析路径一致）
+    fn run_import(conn: &mut Connection, file: &Path) {
+        let tx = conn.transaction().expect("开启导入事务失败");
+        import_one_file(&tx, file, None).expect("导入失败");
+        tx.commit().expect("提交导入事务失败");
+    }
+
+    /// 查一条回复的取证列（列序对齐 StoredReply）
+    fn read_reply(conn: &Connection, key: &str) -> StoredReply {
+        let mut stmt = conn
+            .prepare(
+                "SELECT started_at, model_id, input_tokens, output_tokens,
+                        cache_read_input_tokens, cache_creation_input_tokens,
+                        computed_total_tokens, duration_ms,
+                        request_started_at, first_token_at, completed_at,
+                        time_to_first_token_ms, timing_estimated, status, error_code, retry_count
+                 FROM model_usage WHERE dedupe_key = ?1",
+            )
+            .expect("准备取证列查询失败");
+        stmt.query_row([key], |row| {
+            Ok(StoredReply {
+                started_at: row.get(0)?,
+                model_id: row.get(1)?,
+                input_tokens: row.get(2)?,
+                output_tokens: row.get(3)?,
+                cache_read_tokens: row.get(4)?,
+                cache_creation_tokens: row.get(5)?,
+                computed_total: row.get(6)?,
+                duration_ms: row.get(7)?,
+                request_started_at: row.get(8)?,
+                first_token_at: row.get(9)?,
+                completed_at: row.get(10)?,
+                time_to_first_token_ms: row.get(11)?,
+                timing_estimated: row.get(12)?,
+                status: row.get(13)?,
+                error_code: row.get(14)?,
+                retry_count: row.get(15)?,
+            })
+        })
+        .expect("读取回复行失败")
+    }
+
+    fn read_updated_at(conn: &Connection, key: &str) -> i64 {
+        conn.query_row(
+            "SELECT updated_at FROM model_usage WHERE dedupe_key = ?1",
+            [key],
+            |row| row.get(0),
+        )
+        .expect("读取 updated_at 失败")
+    }
+
+    fn count_rows(conn: &Connection) -> i64 {
+        conn.query_row("SELECT COUNT(*) FROM model_usage", [], |row| row.get(0))
+            .expect("计数失败")
+    }
+
+    /// 思考开头的回复：首字来自 thinkingDurationMs、起点来自 api-request 行
+    ///（timing_estimated = 0，耗时 / 首字不带 ≈），耗时 = 结束 − 起点。
+    #[test]
+    fn thinking_first_reply_uses_thinking_duration_and_api_request_start() {
+        let (tmp, mut conn) = setup_temp_db("thinking");
+        let file = write_session_lines(
+            &tmp,
+            "sess-thinking.jsonl",
+            concat!(
+                r#"{"timestamp":"2026-06-12T10:00:00.000Z","type":"user","uuid":"u0","cwd":"/tmp/proj-a","message":{"role":"user"}}"#,
+                "\n",
+                r#"{"timestamp":"2026-06-12T10:00:00.500Z","type":"api-request","id":"req-1"}"#,
+                "\n",
+                r#"{"timestamp":"2026-06-12T10:00:03.000Z","type":"assistant","uuid":"a1","parentUuid":"u0","requestRef":"req-1","apiBlockIndex":0,"thinkingDurationMs":2000,"message":{"id":"msg_t","model":"glm-5.3","content":[{"type":"thinking","thinking":"……"}],"usage":{"input_tokens":100,"output_tokens":2}}}"#,
+                "\n",
+                r#"{"timestamp":"2026-06-12T10:00:05.000Z","type":"assistant","uuid":"a2","parentUuid":"a1","requestRef":"req-1","apiBlockIndex":1,"message":{"id":"msg_t","model":"glm-5.3","stop_reason":"end_turn","content":[{"type":"text","text":"回答"}],"usage":{"input_tokens":100,"output_tokens":20}}}"#,
+                "\n",
+            ),
+        );
+        run_import(&mut conn, &file);
+
+        let row = read_reply(&conn, "msg_t");
+        // 用量取 computed_total 最大的末块；起点 = api-request 行时间戳（精确）
+        assert_eq!(row.started_at, ms("2026-06-12T10:00:05.000Z"));
+        assert_eq!(row.computed_total, 120);
+        assert_eq!(row.output_tokens, 20);
+        assert_eq!(row.request_started_at, Some(ms("2026-06-12T10:00:00.500Z")));
+        assert_eq!(row.timing_estimated, Some(0), "api-request 关联的起点是精确值");
+        // 首字 = 首块时间戳 − thinkingDurationMs
+        assert_eq!(
+            row.first_token_at,
+            Some(ms("2026-06-12T10:00:03.000Z") - 2_000),
+            "思考块的首字来自 thinkingDurationMs"
+        );
+        assert_eq!(row.completed_at, Some(ms("2026-06-12T10:00:05.000Z")));
+        assert_eq!(row.duration_ms, Some(4_500.0), "耗时 = 结束 − 起点");
+        assert_eq!(row.time_to_first_token_ms, Some(500.0));
+        assert_eq!(row.status.as_deref(), Some("completed"));
+        assert_eq!(row.error_code, None);
+        assert_eq!(row.retry_count, 0);
+        // 流式速度口径的生成窗口 = 结束 − 首字 = 4 秒，可换算出可信速度
+        let window = row.completed_at.unwrap() - row.first_token_at.unwrap();
+        assert_eq!(window, 4_000);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// 工具调用开头的回复：首字来自首块 tool_use 的 toolInputStreamMs。
+    #[test]
+    fn tool_first_reply_uses_tool_input_stream_duration() {
+        let (tmp, mut conn) = setup_temp_db("tool");
+        let file = write_session_lines(
+            &tmp,
+            "sess-tool.jsonl",
+            concat!(
+                r#"{"timestamp":"2026-06-12T11:00:00.000Z","type":"api-request","id":"req-2"}"#,
+                "\n",
+                r#"{"timestamp":"2026-06-12T11:00:02.000Z","type":"assistant","requestRef":"req-2","apiBlockIndex":0,"toolInputStreamMs":800,"message":{"id":"msg_tool","model":"glm-5.3","content":[{"type":"tool_use","name":"Bash"}],"usage":{"input_tokens":10,"output_tokens":3}}}"#,
+                "\n",
+                r#"{"timestamp":"2026-06-12T11:00:04.000Z","type":"assistant","requestRef":"req-2","apiBlockIndex":1,"message":{"id":"msg_tool","model":"glm-5.3","stop_reason":"tool_use","content":[{"type":"text"}],"usage":{"input_tokens":10,"output_tokens":8}}}"#,
+                "\n",
+            ),
+        );
+        run_import(&mut conn, &file);
+        let row = read_reply(&conn, "msg_tool");
+        assert_eq!(row.request_started_at, Some(ms("2026-06-12T11:00:00.000Z")));
+        assert_eq!(row.timing_estimated, Some(0));
+        assert_eq!(
+            row.first_token_at,
+            Some(ms("2026-06-12T11:00:02.000Z") - 800),
+            "工具调用首字来自 toolInputStreamMs"
+        );
+        assert_eq!(row.time_to_first_token_ms, Some(1_200.0));
+        assert_eq!(row.status.as_deref(), Some("completed"));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// 文字开头的回复：首字来自首块 text 的 toolInputStreamMs。
+    #[test]
+    fn text_first_reply_uses_tool_input_stream_duration() {
+        let (tmp, mut conn) = setup_temp_db("text");
+        let file = write_session_lines(
+            &tmp,
+            "sess-text.jsonl",
+            concat!(
+                r#"{"timestamp":"2026-06-12T12:00:01.000Z","type":"api-request","id":"req-3"}"#,
+                "\n",
+                r#"{"timestamp":"2026-06-12T12:00:03.000Z","type":"assistant","requestRef":"req-3","apiBlockIndex":0,"toolInputStreamMs":500,"message":{"id":"msg_x","model":"glm-5.3","stop_reason":"end_turn","content":[{"type":"text","text":"你好"}],"usage":{"input_tokens":10,"output_tokens":30}}}"#,
+                "\n",
+            ),
+        );
+        run_import(&mut conn, &file);
+        let row = read_reply(&conn, "msg_x");
+        assert_eq!(
+            row.first_token_at,
+            Some(ms("2026-06-12T12:00:03.000Z") - 500),
+            "文字首字来自 toolInputStreamMs"
+        );
+        assert_eq!(row.time_to_first_token_ms, Some(1_500.0));
+        assert_eq!(row.completed_at, Some(ms("2026-06-12T12:00:03.000Z")));
+        assert_eq!(row.status.as_deref(), Some("completed"));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// 父链回退（无 api-request 行 / 无新版计时字段的旧版本）：起点沿
+    /// parentUuid 向上、跳过 attachment 行取第一条其它行的时间戳，
+    /// timing_estimated = 1（界面带 ≈）；无首个输出证据 → first_token_at 为空。
+    #[test]
+    fn parent_chain_fallback_skips_attachment_and_marks_estimated() {
+        let (tmp, mut conn) = setup_temp_db("parent");
+        let file = write_session_lines(
+            &tmp,
+            "sess-parent.jsonl",
+            concat!(
+                r#"{"timestamp":"2026-06-12T13:00:00.000Z","type":"user","uuid":"u1","cwd":"/tmp/proj-b","message":{"role":"user"}}"#,
+                "\n",
+                r#"{"timestamp":"2026-06-12T13:00:00.300Z","type":"attachment","uuid":"att1","parentUuid":"u1"}"#,
+                "\n",
+                r#"{"timestamp":"2026-06-12T13:00:02.000Z","type":"assistant","uuid":"a1","parentUuid":"att1","message":{"id":"msg_p","model":"glm-5.3","stop_reason":"end_turn","content":[{"type":"text"}],"usage":{"input_tokens":50,"output_tokens":10}}}"#,
+                "\n",
+            ),
+        );
+        run_import(&mut conn, &file);
+        let row = read_reply(&conn, "msg_p");
+        assert_eq!(
+            row.request_started_at,
+            Some(ms("2026-06-12T13:00:00.000Z")),
+            "起点跳过 attachment 取 user 行时间戳"
+        );
+        assert_eq!(row.timing_estimated, Some(1), "父链起点是推断值");
+        assert_eq!(row.first_token_at, None, "无首个输出证据不落首字");
+        assert_eq!(row.time_to_first_token_ms, None);
+        assert_eq!(row.duration_ms, Some(2_000.0), "耗时 = 结束 − 推断起点");
+        assert_eq!(row.status.as_deref(), Some("completed"));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// 流式回复跨两次导入：第一次文件停在流中（status NULL）；第二次追加
+    /// 末块（总量更大、带 stop_reason）后重放，状态由空补成 completed，
+    /// token / completed_at 更新，updated_at 打修订标记。
+    #[test]
+    fn streaming_reply_completed_across_two_imports() {
+        let (tmp, mut conn) = setup_temp_db("stream");
+        let head = concat!(
+            r#"{"timestamp":"2026-06-12T14:00:02.000Z","type":"assistant","apiBlockIndex":0,"message":{"id":"msg_s","model":"glm-5.3","content":[{"type":"text"}],"usage":{"input_tokens":10,"output_tokens":1}}}"#,
+            "\n",
+        );
+        let tail = concat!(
+            r#"{"timestamp":"2026-06-12T14:00:05.000Z","type":"assistant","apiBlockIndex":1,"message":{"id":"msg_s","model":"glm-5.3","stop_reason":"end_turn","content":[{"type":"text"}],"usage":{"input_tokens":10,"output_tokens":40}}}"#,
+            "\n",
+        );
+        let file = write_session_lines(&tmp, "sess-stream.jsonl", head);
+        run_import(&mut conn, &file);
+        let first = read_reply(&conn, "msg_s");
+        assert_eq!(first.status, None, "文件停在流式中间 → 状态未知");
+        assert_eq!(first.computed_total, 11);
+        assert_eq!(first.completed_at, Some(ms("2026-06-12T14:00:02.000Z")));
+        let updated_first = read_updated_at(&conn, "msg_s");
+
+        // 追加末块后重放（updated_at 毫秒粒度，稍等保证可观测变化）
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        std::fs::write(&file, format!("{head}{tail}")).expect("追加末块失败");
+        run_import(&mut conn, &file);
+
+        let second = read_reply(&conn, "msg_s");
+        assert_eq!(second.computed_total, 50, "总量更大者覆盖");
+        assert_eq!(second.status.as_deref(), Some("completed"), "状态由空补全");
+        assert_eq!(second.completed_at, Some(ms("2026-06-12T14:00:05.000Z")));
+        assert_ne!(
+            read_updated_at(&conn, "msg_s"),
+            updated_first,
+            "内容变化必须打修订标记（同步补传）"
+        );
+        assert_eq!(count_rows(&conn), 1);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// 最终失败的回复入库为 0 token 行：status=error、error_code 取
+    /// apiErrorStatus（缺失降级 "error"）、模型名取 requestedModel（缺失回退
+    /// 本文件最近一次真实模型名）、<synthetic> 不再被跳过。
+    #[test]
+    fn error_reply_persists_as_zero_token_row() {
+        let (tmp, mut conn) = setup_temp_db("error");
+        let file = write_session_lines(
+            &tmp,
+            "sess-error.jsonl",
+            concat!(
+                // 前一条真实回复：让本文件有「最近真实模型名」可用
+                r#"{"timestamp":"2026-06-12T15:00:00.000Z","type":"assistant","message":{"id":"msg_ok","model":"glm-5.3","stop_reason":"end_turn","content":[{"type":"text"}],"usage":{"input_tokens":5,"output_tokens":5}}}"#,
+                "\n",
+                // 一次失败尝试（重试行）
+                r#"{"timestamp":"2026-06-12T15:01:00.000Z","type":"system","subtype":"api_error","error":{"status":429,"retryAttempt":1,"maxRetries":3,"source":"api"}}"#,
+                "\n",
+                // 最终失败的回复：<synthetic> 模型、用量全 0
+                r#"{"timestamp":"2026-06-12T15:01:01.000Z","type":"assistant","uuid":"e1","isApiErrorMessage":true,"apiErrorStatus":429,"requestedModel":"glm-9","error":"API Error: 429","message":{"id":"msg_err","model":"<synthetic>","usage":{"input_tokens":0,"output_tokens":0}}}"#,
+                "\n",
+                // 带错误码的失败回复之后再来一条无 apiErrorStatus 的（降级 "error"）
+                r#"{"timestamp":"2026-06-12T15:02:01.000Z","type":"assistant","uuid":"e2","isApiErrorMessage":true,"error":"API Error: overloaded","message":{"id":"msg_err2","model":"<synthetic>","usage":{"input_tokens":0,"output_tokens":0}}}"#,
+                "\n",
+            ),
+        );
+        run_import(&mut conn, &file);
+
+        let row = read_reply(&conn, "msg_err");
+        assert_eq!(row.computed_total, 0, "失败回复入库为 0 token 行");
+        assert_eq!(row.input_tokens, 0);
+        assert_eq!(row.output_tokens, 0);
+        assert_eq!(row.status.as_deref(), Some("error"));
+        assert_eq!(row.error_code.as_deref(), Some("429"));
+        assert_eq!(row.model_id, "glm-9", "模型名取 requestedModel");
+        assert_eq!(row.started_at, ms("2026-06-12T15:01:01.000Z"));
+        assert_eq!(row.retry_count, 1, "错误回复之前的 api_error 记入重试");
+        // 成功回复的重试码优先级不受影响（自己的 apiErrorStatus 只属于失败回复）
+
+        let row2 = read_reply(&conn, "msg_err2");
+        assert_eq!(row2.error_code.as_deref(), Some("error"), "无状态码降级为 error");
+        assert_eq!(row2.model_id, "glm-5.3", "模型名回退最近一次真实模型名");
+        assert_eq!(row2.retry_count, 0);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// 带重试的成功回复：两条回复之间的 api_error 归给后一条回复
+    ///（retry_count 计数、error_code 取最后一条的状态码，status 仍 completed）。
+    #[test]
+    fn retried_reply_counts_attempts_and_keeps_last_error_code() {
+        let (tmp, mut conn) = setup_temp_db("retry");
+        let file = write_session_lines(
+            &tmp,
+            "sess-retry.jsonl",
+            concat!(
+                r#"{"timestamp":"2026-06-12T16:00:00.000Z","type":"assistant","message":{"id":"msg_prev","model":"glm-5.3","stop_reason":"end_turn","content":[{"type":"text"}],"usage":{"input_tokens":5,"output_tokens":5}}}"#,
+                "\n",
+                r#"{"timestamp":"2026-06-12T16:01:00.000Z","type":"system","subtype":"api_error","error":{"status":429,"retryAttempt":1,"maxRetries":3}}"#,
+                "\n",
+                r#"{"timestamp":"2026-06-12T16:01:02.000Z","type":"system","subtype":"api_error","error":{"status":500,"retryAttempt":2,"maxRetries":3}}"#,
+                "\n",
+                r#"{"timestamp":"2026-06-12T16:01:04.000Z","type":"assistant","message":{"id":"msg_r","model":"glm-5.3","stop_reason":"end_turn","content":[{"type":"text"}],"usage":{"input_tokens":20,"output_tokens":30}}}"#,
+                "\n",
+            ),
+        );
+        run_import(&mut conn, &file);
+        let row = read_reply(&conn, "msg_r");
+        assert_eq!(row.retry_count, 2, "两条 api_error 归给本条回复");
+        assert_eq!(row.error_code.as_deref(), Some("500"), "取最后一条的状态码");
+        assert_eq!(row.status.as_deref(), Some("completed"), "重试后成功仍是 completed");
+        // 前一条回复不受影响
+        let prev = read_reply(&conn, "msg_prev");
+        assert_eq!(prev.retry_count, 0);
+        assert_eq!(prev.error_code, None);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+
+    /// 全量重放完全相同的文件：不产生任何写入（幂等，行数与 updated_at 不变）。
+    #[test]
+    fn replay_without_change_skips_write() {
+        let (tmp, mut conn) = setup_temp_db("replay");
+        let file = write_session_lines(
+            &tmp,
+            "sess-replay.jsonl",
+            concat!(
+                r#"{"timestamp":"2026-06-12T18:00:00.000Z","type":"api-request","id":"req-9"}"#,
+                "\n",
+                r#"{"timestamp":"2026-06-12T18:00:03.000Z","type":"assistant","requestRef":"req-9","apiBlockIndex":0,"toolInputStreamMs":700,"message":{"id":"msg_re","model":"glm-5.3","stop_reason":"end_turn","content":[{"type":"text"}],"usage":{"input_tokens":10,"output_tokens":30}}}"#,
+                "\n",
+            ),
+        );
+        run_import(&mut conn, &file);
+        let first = read_reply(&conn, "msg_re");
+        let updated_first = read_updated_at(&conn, "msg_re");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        run_import(&mut conn, &file);
+        assert_eq!(read_reply(&conn, "msg_re"), first, "重放不改变任何取证值");
+        assert_eq!(read_updated_at(&conn, "msg_re"), updated_first);
+        assert_eq!(count_rows(&conn), 1);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// 计时回填标记只触发一次：新库 / 旧库 user_version=0 时判定需要，
+    /// 写入标记后不再触发（重放幂等的前提下避免每轮全量扫描）。
+    #[test]
+    fn timing_backfill_runs_once() {
+        let (_tmp, mut conn) = setup_temp_db("backfill");
+        // SCHEMA_SQL 建的新库 user_version 仍为 0（标记语义与表结构无关）
+        assert!(
+            timing_backfill_pending(&conn),
+            "升级前 user_version < 2 应判定需要回填"
+        );
+        mark_timing_backfill_done(&mut conn);
+        assert!(
+            !timing_backfill_pending(&conn),
+            "写入标记后不再触发"
+        );
+        // 幂等：重复写标记无害
+        mark_timing_backfill_done(&mut conn);
+        assert!(!timing_backfill_pending(&conn));
+    }
+
+    /// 旧结构库经 ensure_timing_columns 补列后，与新库（SCHEMA_SQL）的列集合
+    /// 完全一致（顺序无关），retry_count 带 NOT NULL DEFAULT 0 兜底。
+    #[test]
+    fn ensure_timing_columns_matches_new_schema() {
+        let legacy = Connection::open_in_memory().expect("打开内存库失败");
+        // 升级前的旧结构：无 8 个计时状态列
+        legacy
+            .execute_batch(
+                "CREATE TABLE model_usage (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT NOT NULL,
+                    dedupe_key TEXT NOT NULL,
+                    started_at INTEGER NOT NULL,
+                    model_id TEXT NOT NULL DEFAULT '',
+                    provider_id TEXT NOT NULL DEFAULT 'claude',
+                    input_tokens INTEGER NOT NULL DEFAULT 0,
+                    output_tokens INTEGER NOT NULL DEFAULT 0,
+                    cache_read_input_tokens INTEGER NOT NULL DEFAULT 0,
+                    cache_creation_input_tokens INTEGER NOT NULL DEFAULT 0,
+                    reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+                    computed_total_tokens INTEGER NOT NULL DEFAULT 0,
+                    duration_ms REAL,
+                    updated_at INTEGER NOT NULL DEFAULT 0,
+                    cwd TEXT,
+                    project_key TEXT,
+                    UNIQUE(dedupe_key)
+                 );
+                 INSERT INTO model_usage (session_id, dedupe_key, started_at, model_id)
+                 VALUES ('s-old', 'd-old', 1000, 'glm-5.3');",
+            )
+            .expect("建旧结构表失败");
+
+        ensure_timing_columns(&legacy).expect("补列迁移失败");
+        // 幂等：重复执行不报错
+        ensure_timing_columns(&legacy).expect("重复补列应幂等");
+
+        let columns = |conn: &Connection| -> Vec<String> {
+            let mut stmt = conn.prepare("SELECT name FROM pragma_table_info('model_usage')").unwrap();
+            let mut names: Vec<String> = stmt
+                .query_map([], |row| row.get(0))
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap();
+            names.sort();
+            names
+        };
+        let (_tmp, fresh_conn) = setup_temp_db("schema");
+        assert_eq!(columns(&legacy), columns(&fresh_conn), "补列后列集合应与新库一致");
+        // 旧行的 retry_count 有默认值兜底、其余列为 NULL
+        let row = read_reply(&legacy, "d-old");
+        assert_eq!(row.retry_count, 0);
+        assert_eq!(row.request_started_at, None);
+        assert_eq!(row.status, None);
+    }
+
+    /// 续读（start_offset > 0）：跨游标的回复由回看区重建父链后正确合并，
+    /// 只有落在新增字节里的块才触发写库；回看区不产生额外行。
+    #[test]
+    fn resume_merges_reply_across_cursor() {
+        let (tmp, mut conn) = setup_temp_db("resume");
+        let head = concat!(
+            r#"{"timestamp":"2026-06-12T19:00:00.000Z","type":"user","uuid":"u1","cwd":"/tmp/proj-c","message":{"role":"user"}}"#,
+            "\n",
+            r#"{"timestamp":"2026-06-12T19:00:02.000Z","type":"assistant","uuid":"a1","parentUuid":"u1","apiBlockIndex":0,"message":{"id":"msg_c","model":"glm-5.3","content":[{"type":"text"}],"usage":{"input_tokens":10,"output_tokens":2}}}"#,
+            "\n",
+        );
+        let tail = concat!(
+            r#"{"timestamp":"2026-06-12T19:00:06.000Z","type":"assistant","uuid":"a2","message":{"id":"msg_c","model":"glm-5.3","stop_reason":"end_turn","content":[{"type":"text"}],"usage":{"input_tokens":10,"output_tokens":40}}}"#,
+            "\n",
+        );
+        let file = write_session_lines(&tmp, "sess-resume.jsonl", head);
+        let offset = head.len() as u64; // 游标 = 前半部分末尾（行边界）
+        run_import(&mut conn, &file);
+        let first = read_reply(&conn, "msg_c");
+        assert_eq!(first.status, None);
+        assert_eq!(
+            first.request_started_at,
+            Some(ms("2026-06-12T19:00:00.000Z")),
+            "首帧父链起点已可推导"
+        );
+
+        // 追加末块后按游标续读：块 1 在回看区、块 2 在新增区
+        std::fs::write(&file, format!("{head}{tail}")).expect("追加末块失败");
+        let tx = conn.transaction().expect("开启续读事务失败");
+        import_one_file(&tx, &file, Some((offset, offset))).expect("续读失败");
+        tx.commit().expect("提交续读事务失败");
+
+        let second = read_reply(&conn, "msg_c");
+        assert_eq!(second.computed_total, 50, "跨游标回复正确合并");
+        assert_eq!(second.status.as_deref(), Some("completed"));
+        assert_eq!(second.completed_at, Some(ms("2026-06-12T19:00:06.000Z")));
+        assert_eq!(
+            second.request_started_at,
+            Some(ms("2026-06-12T19:00:00.000Z")),
+            "回看区重建的父链仍能推导起点"
+        );
+        assert_eq!(second.timing_estimated, Some(1));
+        assert_eq!(count_rows(&conn), 1, "回看区不产生额外行");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// merge_reply 的合并契约（纯函数）。总量相等时（同一条响应分趟落盘，
+    /// 读到了更多块）completed_at 一律取两者最大值；duration 随 completed_at
+    /// 或起点的变化用新值（都没变才保留已入库值）。权威重放且新记录有起点：
+    /// 起点四列整体用新值（可清掉旧值）；续读、或新记录无起点：旧值为空才
+    /// 补。总量更大 / 更小的分支不变。
+    #[test]
+    fn merge_reply_authoritative_and_incremental_contract() {
+        // 库里旧值：估算起点、错误状态、错误归属的 retry_count
+        let stored = StoredReply {
+            started_at: 1000,
+            model_id: "glm-5.3".into(),
+            input_tokens: 30,
+            output_tokens: 30,
+            cache_read_tokens: 0,
+            cache_creation_tokens: 0,
+            computed_total: 30,
+            duration_ms: Some(5_000.0),
+            request_started_at: Some(900),
+            first_token_at: None,
+            completed_at: Some(2000),
+            time_to_first_token_ms: None,
+            timing_estimated: Some(1),
+            status: Some("error".into()),
+            error_code: Some("429".into()),
+            retry_count: 5,
+        };
+        // 整文件重放的新证据：精确起点、正确状态与 retry、更晚的结束时刻
+        //（总量相同 = 同一条响应读到了更多块）
+        let fresh = StoredReply {
+            started_at: stored.started_at,
+            model_id: stored.model_id.clone(),
+            input_tokens: stored.input_tokens,
+            output_tokens: stored.output_tokens,
+            cache_read_tokens: 0,
+            cache_creation_tokens: 0,
+            computed_total: 30,
+            duration_ms: Some(1_000.0),
+            request_started_at: Some(800),
+            first_token_at: None,
+            completed_at: Some(3000),
+            time_to_first_token_ms: None,
+            timing_estimated: Some(0),
+            status: Some("completed".into()),
+            error_code: None,
+            retry_count: 1,
+        };
+
+        // 权威重放 + 总量相等（更多块）：completed_at 取最大值，duration 随
+        // 变化用新值；新记录有起点 → 起点四列整体用新值（可清旧值，这里旧
+        // 值本就为空）
+        let merged = merge_reply(&stored, &fresh, true);
+        assert_eq!(merged.request_started_at, Some(800), "精确起点覆盖估算起点");
+        assert_eq!(merged.timing_estimated, Some(0));
+        assert_eq!(merged.retry_count, 1, "错误的 retry_count 被纠正");
+        assert_eq!(merged.status.as_deref(), Some("completed"));
+        assert_eq!(
+            merged.duration_ms,
+            Some(1_000.0),
+            "completed_at 与起点都变化时 duration 用新值"
+        );
+        assert_eq!(
+            merged.completed_at,
+            Some(3000),
+            "总量相等时 completed_at 取两者最大值"
+        );
+        // token 各列仍按「总量更大者覆盖」：总量相同 → 不动
+        assert_eq!(merged.input_tokens, stored.input_tokens);
+        assert_eq!(merged.started_at, stored.started_at);
+        // 新值为空的列保留旧值
+        assert_eq!(merged.error_code.as_deref(), Some("429"), "新值为空保留旧值");
+
+        // 总量相等 + 只有起点被纠正（completed 没变）→ duration 仍用新值
+        //（与精确起点对上）
+        let mut corrected_start_only = fresh.clone();
+        corrected_start_only.completed_at = stored.completed_at;
+        let merged = merge_reply(&stored, &corrected_start_only, true);
+        assert_eq!(merged.request_started_at, Some(800), "起点被纠正");
+        assert_eq!(
+            merged.duration_ms,
+            Some(1_000.0),
+            "只有起点变化时 duration 也用新值"
+        );
+        // completed 与起点都没变 → duration 保留已入库值
+        let mut identical = fresh.clone();
+        identical.completed_at = stored.completed_at;
+        identical.request_started_at = stored.request_started_at;
+        let merged = merge_reply(&stored, &identical, true);
+        assert_eq!(
+            merged.duration_ms,
+            Some(5_000.0),
+            "completed 与起点都没变时 duration 保留已入库值"
+        );
+        assert_eq!(merged.completed_at, Some(2000));
+        assert_eq!(merged.request_started_at, Some(900));
+
+        // 权威重放 + 总量相等 + 新记录无起点（旧版本文件）：起点四列只在
+        // 旧值为空时补（不因无起点清掉旧值）
+        let mut no_start = fresh.clone();
+        no_start.request_started_at = None;
+        no_start.timing_estimated = None;
+        let merged = merge_reply(&stored, &no_start, true);
+        assert_eq!(merged.request_started_at, Some(900), "新记录无起点 → 旧值非空不动");
+        assert_eq!(merged.timing_estimated, Some(1));
+        // 总量相等 → completed 仍取最大
+        assert_eq!(merged.completed_at, Some(3000));
+
+        // 权威重放 + 总量相等 + 新记录有起点但首字证据被判定无效（置空）：
+        // 能清掉此前续读写入的非空 first_token_at
+        let mut stored_with_bad_ttft = stored.clone();
+        stored_with_bad_ttft.first_token_at = Some(500);
+        stored_with_bad_ttft.time_to_first_token_ms = Some(400.0);
+        let merged = merge_reply(&stored_with_bad_ttft, &fresh, true);
+        assert_eq!(
+            merged.first_token_at, None,
+            "新证据判定首字无效时清掉旧值"
+        );
+        assert_eq!(merged.time_to_first_token_ms, None);
+
+        // 权威重放 + 总量更小：9 列只在旧值为空时补、completed_at 不改
+        let smaller = StoredReply {
+            computed_total: 10,
+            status: Some("completed".into()),
+            ..fresh.clone()
+        };
+        let merged = merge_reply(&stored, &smaller, true);
+        assert_eq!(merged.request_started_at, Some(900), "旧值非空不动");
+        assert_eq!(merged.status.as_deref(), Some("error"), "旧值非空不动");
+        assert_eq!(merged.completed_at, Some(2000), "completed_at 不改");
+        assert_eq!(merged.retry_count, 5, "retry 取较大者");
+        // token 各列不动（新总量更小）
+        assert_eq!(merged.computed_total, 30);
+
+        // 已入库的 model_id 为空（模型名回退修正生效前的失败行）而新记录
+        // 非空：等总量与总量更小两种情况下都补上
+        let mut no_model = stored.clone();
+        no_model.model_id = String::new();
+        let merged = merge_reply(&no_model, &fresh, true);
+        assert_eq!(
+            merged.model_id, "glm-5.3",
+            "等总量时空模型名用新值补上"
+        );
+        let merged = merge_reply(&no_model, &smaller, true);
+        assert_eq!(
+            merged.model_id, "glm-5.3",
+            "总量更小时空模型名用新值补上"
+        );
+        // 非空旧值保持不变（前面各段已断言 merged.model_id == "glm-5.3"）
+
+        // 权威重放 + 总量更大：9 列新值非空即覆盖（含 duration）
+        let bigger = StoredReply {
+            computed_total: 60,
+            duration_ms: Some(1_000.0),
+            completed_at: Some(3000),
+            ..fresh.clone()
+        };
+        let merged = merge_reply(&stored, &bigger, true);
+        assert_eq!(merged.duration_ms, Some(1_000.0), "总量更大时新证据覆盖");
+        assert_eq!(merged.completed_at, Some(3000));
+        assert_eq!(merged.retry_count, 1);
+
+        // 非权威续读 + 总量相等（更多块）：completed_at 取最大值、duration
+        // 用新值；起点四列旧值非空不动、retry 取较大者
+        let merged = merge_reply(&stored, &fresh, false);
+        assert_eq!(
+            merged.completed_at,
+            Some(3000),
+            "续读同样把 completed_at 推进到最大值"
+        );
+        assert_eq!(merged.duration_ms, Some(1_000.0));
+        assert_eq!(merged.request_started_at, Some(900), "续读不动旧起点");
+        assert_eq!(merged.timing_estimated, Some(1));
+        assert_eq!(merged.retry_count, 5, "续读取较大者");
+        assert_eq!(merged.status.as_deref(), Some("completed"));
+
+        // 非权威续读 + 总量相等 + completed 与起点都没变：duration 保留
+        let merged = merge_reply(&stored, &identical, false);
+        assert_eq!(merged.completed_at, Some(2000));
+        assert_eq!(merged.duration_ms, Some(5_000.0));
+
+        // model_id 空串不覆盖非空旧值（失败回复三级回退全部失败时 fresh
+        // 仍为空串，不能把已入库的真实模型名抹掉）
+        let mut empty_model = fresh.clone();
+        empty_model.model_id = String::new();
+        let merged = merge_reply(&stored, &empty_model, true);
+        assert_eq!(merged.model_id, "glm-5.3", "空模型名不覆盖非空旧值");
+        let merged = merge_reply(&stored, &empty_model, false);
+        assert_eq!(merged.model_id, "glm-5.3");
+    }
+
+    /// 权威重放（回填 / 文件重写）纠正早先入库的错误证据：第一次导入没有
+    /// api-request 行（父链估算起点 + 误归属的 retry_count），文件被改写后
+    /// 从头重放，精确起点与正确 retry 覆盖旧值。
+    #[test]
+    fn authoritative_replay_overrides_stale_evidence() {
+        let (tmp, mut conn) = setup_temp_db("authoritative");
+        let stale = concat!(
+            r#"{"timestamp":"2026-06-12T10:00:00.000Z","type":"user","uuid":"u1","cwd":"/tmp/proj-x","message":{"role":"user"}}"#,
+            "\n",
+            r#"{"timestamp":"2026-06-12T10:00:01.000Z","type":"system","subtype":"api_error","error":{"status":429,"retryAttempt":1,"maxRetries":2}}"#,
+            "\n",
+            r#"{"timestamp":"2026-06-12T10:00:02.000Z","type":"system","subtype":"api_error","error":{"status":429,"retryAttempt":2,"maxRetries":2}}"#,
+            "\n",
+            r#"{"timestamp":"2026-06-12T10:00:05.000Z","type":"assistant","uuid":"a1","parentUuid":"u1","message":{"id":"msg_a","model":"glm-5.3","stop_reason":"end_turn","content":[{"type":"text"}],"usage":{"input_tokens":20,"output_tokens":10}}}"#,
+            "\n",
+        );
+        let file = write_session_lines(&tmp, "sess-auth.jsonl", stale);
+        run_import(&mut conn, &file);
+        let stale_row = read_reply(&conn, "msg_a");
+        assert_eq!(stale_row.timing_estimated, Some(1), "旧证据只能父链估算");
+        assert_eq!(stale_row.retry_count, 2);
+        assert_eq!(stale_row.duration_ms, Some(5_000.0));
+
+        // 文件被改写（更早版本代码写不了 api-request 行的取证）：插入精确
+        // 起点行、去掉一条误归属的 api_error，从头重放（known=None → 权威）
+        let corrected = concat!(
+            r#"{"timestamp":"2026-06-12T10:00:00.000Z","type":"user","uuid":"u1","cwd":"/tmp/proj-x","message":{"role":"user"}}"#,
+            "\n",
+            r#"{"timestamp":"2026-06-12T10:00:04.000Z","type":"api-request","id":"req-x"}"#,
+            "\n",
+            r#"{"timestamp":"2026-06-12T10:00:01.000Z","type":"system","subtype":"api_error","error":{"status":429,"retryAttempt":1,"maxRetries":2}}"#,
+            "\n",
+            r#"{"timestamp":"2026-06-12T10:00:05.000Z","type":"assistant","uuid":"a1","parentUuid":"u1","requestRef":"req-x","message":{"id":"msg_a","model":"glm-5.3","stop_reason":"end_turn","content":[{"type":"text"}],"usage":{"input_tokens":20,"output_tokens":10}}}"#,
+            "\n",
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        std::fs::write(&file, corrected).expect("改写文件失败");
+        run_import(&mut conn, &file);
+
+        let row = read_reply(&conn, "msg_a");
+        assert_eq!(row.request_started_at, Some(ms("2026-06-12T10:00:04.000Z")), "精确起点覆盖估算起点");
+        assert_eq!(row.timing_estimated, Some(0));
+        assert_eq!(row.retry_count, 1, "误归属的 retry_count 被纠正");
+        // 总量相等但起点被纠正（估算 → 精确）：duration 的更新条件包含起点
+        // 变化 → 改用按精确起点算出的新值（不再包含重试等待）
+        assert_eq!(row.duration_ms, Some(1_000.0));
+        assert_eq!(count_rows(&conn), 1);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// 请求起点缺失时首个输出时刻不丢（流式速度只依赖首字与结束两个证据）：
+    /// 无 requestRef、父链也查不到 → 起点 / ttft / 估算标记为空，
+    /// first_token_at 照常落库。
+    #[test]
+    fn first_output_evidence_kept_without_request_start() {
+        let (tmp, mut conn) = setup_temp_db("orphan-ft");
+        let file = write_session_lines(
+            &tmp,
+            "sess-orphan.jsonl",
+            concat!(
+                r#"{"timestamp":"2026-06-12T20:00:03.000Z","type":"assistant","apiBlockIndex":0,"toolInputStreamMs":800,"message":{"id":"msg_o","model":"glm-5.3","stop_reason":"end_turn","content":[{"type":"text"}],"usage":{"input_tokens":10,"output_tokens":30}}}"#,
+                "\n",
+            ),
+        );
+        run_import(&mut conn, &file);
+        let row = read_reply(&conn, "msg_o");
+        assert_eq!(row.request_started_at, None, "无 requestRef、无父链 → 起点为空");
+        assert_eq!(row.timing_estimated, None);
+        assert_eq!(
+            row.first_token_at,
+            Some(ms("2026-06-12T20:00:03.000Z") - 800),
+            "起点缺失不丢首个输出时刻"
+        );
+        assert_eq!(row.time_to_first_token_ms, None, "无起点不给 ttft");
+        assert_eq!(row.duration_ms, None, "无起点不给派生耗时");
+        assert_eq!(row.completed_at, Some(ms("2026-06-12T20:00:03.000Z")));
+        assert_eq!(row.status.as_deref(), Some("completed"));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// 失败回复的请求起点取最近一条 api-request 行（重试时是最后一次尝试
+    /// 的发起时刻，耗时不含重试等待）；即使父链可达也不走父链回退。
+    #[test]
+    fn error_reply_uses_latest_api_request_as_start() {
+        let (tmp, mut conn) = setup_temp_db("error-start");
+        let file = write_session_lines(
+            &tmp,
+            "sess-error-start.jsonl",
+            concat!(
+                // 父链可达的 user 行（更早的时间戳）：若误走父链起点会是它
+                r#"{"timestamp":"2026-06-12T15:00:00.000Z","type":"user","uuid":"u1","cwd":"/tmp/proj-e","message":{"role":"user"}}"#,
+                "\n",
+                // 第一次尝试（失败）
+                r#"{"timestamp":"2026-06-12T16:00:00.000Z","type":"api-request","id":"req-e1"}"#,
+                "\n",
+                r#"{"timestamp":"2026-06-12T16:00:01.000Z","type":"system","subtype":"api_error","error":{"status":429,"retryAttempt":1,"maxRetries":2}}"#,
+                "\n",
+                // 第二次尝试（也失败，最终写出错误回复）
+                r#"{"timestamp":"2026-06-12T16:00:10.000Z","type":"api-request","id":"req-e2"}"#,
+                "\n",
+                r#"{"timestamp":"2026-06-12T16:00:12.000Z","type":"assistant","uuid":"e1","parentUuid":"u1","isApiErrorMessage":true,"apiErrorStatus":429,"requestedModel":"glm-5.3","error":"API Error: 429","message":{"id":"msg_e","model":"<synthetic>","usage":{"input_tokens":0,"output_tokens":0}}}"#,
+                "\n",
+            ),
+        );
+        run_import(&mut conn, &file);
+        let row = read_reply(&conn, "msg_e");
+        assert_eq!(
+            row.request_started_at,
+            Some(ms("2026-06-12T16:00:10.000Z")),
+            "起点取最近一条 api-request 行（不走父链）"
+        );
+        assert_eq!(row.timing_estimated, Some(0));
+        assert_eq!(row.duration_ms, Some(2_000.0), "耗时不含第一次尝试的重试等待");
+        assert_eq!(row.completed_at, Some(ms("2026-06-12T16:00:12.000Z")));
+        assert_eq!(row.status.as_deref(), Some("error"));
+        assert_eq!(row.error_code.as_deref(), Some("429"));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// 旧版本没有 api-request 行：错误回复起点为空（不走父链回退，避免把
+    /// 重试等待算进耗时），token 与状态照常落库。
+    #[test]
+    fn error_reply_without_api_request_has_no_start() {
+        let (tmp, mut conn) = setup_temp_db("error-nostart");
+        let file = write_session_lines(
+            &tmp,
+            "sess-error-nostart.jsonl",
+            concat!(
+                r#"{"timestamp":"2026-06-12T15:00:00.000Z","type":"user","uuid":"u1","message":{"role":"user"}}"#,
+                "\n",
+                r#"{"timestamp":"2026-06-12T16:00:02.000Z","type":"assistant","uuid":"e1","parentUuid":"u1","isApiErrorMessage":true,"apiErrorStatus":500,"requestedModel":"glm-5.3","error":"API Error: 500","message":{"id":"msg_e2","model":"<synthetic>","usage":{"input_tokens":0,"output_tokens":0}}}"#,
+                "\n",
+            ),
+        );
+        run_import(&mut conn, &file);
+        let row = read_reply(&conn, "msg_e2");
+        assert_eq!(row.request_started_at, None, "无 api-request 行起点为空");
+        assert_eq!(row.timing_estimated, None);
+        assert_eq!(row.duration_ms, None);
+        assert_eq!(row.completed_at, Some(ms("2026-06-12T16:00:02.000Z")));
+        assert_eq!(row.status.as_deref(), Some("error"));
+        assert_eq!(row.error_code.as_deref(), Some("500"));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+
+    /// 新版每块行都带最终用量：首块先落盘入库（completed_at = 首块时间戳），
+    /// 后续块追加后续读（总量相同、首块时间戳不变 = 同一条回复读到了更多
+    /// 块）→ completed_at 推进到末块、duration 随之更新、updated_at 变化；
+    /// 第三次全量重放无变化不写。
+    #[test]
+    fn more_blocks_resume_advances_completed_at() {
+        let (tmp, mut conn) = setup_temp_db("more-blocks");
+        let head = concat!(
+            r#"{"timestamp":"2026-06-12T21:00:00.000Z","type":"api-request","id":"req-m"}"#,
+            "\n",
+            r#"{"timestamp":"2026-06-12T21:00:03.000Z","type":"assistant","requestRef":"req-m","apiBlockIndex":0,"message":{"id":"msg_m","model":"glm-5.3","content":[{"type":"text"}],"usage":{"input_tokens":10,"output_tokens":20}}}"#,
+            "\n",
+        );
+        let tail = r#"{"timestamp":"2026-06-12T21:00:07.000Z","type":"assistant","requestRef":"req-m","apiBlockIndex":1,"message":{"id":"msg_m","model":"glm-5.3","stop_reason":"end_turn","content":[{"type":"text"}],"usage":{"input_tokens":10,"output_tokens":20}}}"#;
+        let file = write_session_lines(&tmp, "sess-more.jsonl", head);
+        let offset = head.len() as u64;
+        run_import(&mut conn, &file);
+        let first = read_reply(&conn, "msg_m");
+        assert_eq!(first.completed_at, Some(ms("2026-06-12T21:00:03.000Z")));
+        assert_eq!(first.duration_ms, Some(3_000.0));
+        assert_eq!(first.status, None);
+        let updated_first = read_updated_at(&conn, "msg_m");
+
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        std::fs::write(&file, format!("{head}{tail}\n")).expect("追加末块失败");
+        let tx = conn.transaction().expect("开启续读事务失败");
+        import_one_file(&tx, &file, Some((offset, offset))).expect("续读失败");
+        tx.commit().expect("提交续读事务失败");
+
+        let second = read_reply(&conn, "msg_m");
+        assert_eq!(
+            second.completed_at,
+            Some(ms("2026-06-12T21:00:07.000Z")),
+            "总量相同、首块时间戳不变 → completed_at 推进到末块"
+        );
+        assert_eq!(
+            second.duration_ms,
+            Some(7_000.0),
+            "completed_at 变化 → duration 用新值"
+        );
+        assert_eq!(second.status.as_deref(), Some("completed"), "末块带 stop_reason");
+        assert_ne!(
+            read_updated_at(&conn, "msg_m"),
+            updated_first,
+            "内容变化打修订标记"
+        );
+        assert_eq!(count_rows(&conn), 1);
+
+        // 第三次全量重放：证据完全一致 → 不写、updated_at 不变
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let updated_second = read_updated_at(&conn, "msg_m");
+        run_import(&mut conn, &file);
+        assert_eq!(
+            read_reply(&conn, "msg_m").completed_at,
+            Some(ms("2026-06-12T21:00:07.000Z"))
+        );
+        assert_eq!(
+            read_updated_at(&conn, "msg_m"),
+            updated_second,
+            "重放无变化不动 updated_at"
+        );
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// 权威重放时新记录有起点、首字被判定无效（不晚于精确起点 → 置空）：
+    /// 能清掉此前续读 / 旧代码写入的非空 first_token_at。
+    #[test]
+    fn authoritative_replay_clears_invalid_first_token() {
+        let (tmp, mut conn) = setup_temp_db("clear-ft");
+        // 第一次导入：无 api-request 行（父链起点更早），首字证据有效入库
+        let stale = concat!(
+            r#"{"timestamp":"2026-06-12T22:00:00.000Z","type":"user","uuid":"u1","cwd":"/tmp/proj-z","message":{"role":"user"}}"#,
+            "\n",
+            r#"{"timestamp":"2026-06-12T22:00:03.000Z","type":"assistant","uuid":"a1","parentUuid":"u1","toolInputStreamMs":2000,"message":{"id":"msg_z","model":"glm-5.3","stop_reason":"end_turn","content":[{"type":"text"}],"usage":{"input_tokens":10,"output_tokens":20}}}"#,
+            "\n",
+        );
+        let file = write_session_lines(&tmp, "sess-clear.jsonl", stale);
+        run_import(&mut conn, &file);
+        let first = read_reply(&conn, "msg_z");
+        assert_eq!(
+            first.first_token_at,
+            Some(ms("2026-06-12T22:00:03.000Z") - 2_000),
+            "父链起点下首字证据有效"
+        );
+        assert_eq!(first.time_to_first_token_ms, Some(1_000.0));
+
+        // 重放：出现 api-request 行，精确起点（22:00:02.500）晚于原首字
+        //（22:00:01）→ finalize 判定首字无效置空；权威重放 + 新记录有起点
+        // → 起点四列整体用新值，清掉已入库的错值
+        let corrected = concat!(
+            r#"{"timestamp":"2026-06-12T22:00:00.000Z","type":"user","uuid":"u1","cwd":"/tmp/proj-z","message":{"role":"user"}}"#,
+            "\n",
+            r#"{"timestamp":"2026-06-12T22:00:02.500Z","type":"api-request","id":"req-z"}"#,
+            "\n",
+            r#"{"timestamp":"2026-06-12T22:00:03.000Z","type":"assistant","uuid":"a1","parentUuid":"u1","requestRef":"req-z","toolInputStreamMs":2000,"message":{"id":"msg_z","model":"glm-5.3","stop_reason":"end_turn","content":[{"type":"text"}],"usage":{"input_tokens":10,"output_tokens":20}}}"#,
+            "\n",
+        );
+        std::fs::write(&file, corrected).expect("改写文件失败");
+        run_import(&mut conn, &file);
+
+        let row = read_reply(&conn, "msg_z");
+        assert_eq!(
+            row.request_started_at,
+            Some(ms("2026-06-12T22:00:02.500Z")),
+            "精确起点覆盖父链起点"
+        );
+        assert_eq!(
+            row.first_token_at, None,
+            "首字不晚于起点被判定无效，清掉已入库值"
+        );
+        assert_eq!(row.time_to_first_token_ms, None);
+        assert_eq!(count_rows(&conn), 1);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// 一次响应的块之间夹着 user 工具结果行（客户端边收流边执行工具）：
+    /// 工具结果行不结束回复，idx0 思考块 / idx1、idx2 工具块进同一条记录；
+    /// 首字来自 idx0 的 thinkingDurationMs，completed_at 是全部块时间戳的
+    /// 最大值（idx2），耗时 = 结束 − 起点（api-request 行）。
+    #[test]
+    fn tool_result_between_blocks_keeps_one_reply() {
+        let (tmp, mut conn) = setup_temp_db("tool-result");
+        let file = write_session_lines(
+            &tmp,
+            "sess-tool-result.jsonl",
+            concat!(
+                r#"{"timestamp":"2026-06-12T23:00:00.000Z","type":"api-request","id":"req-t"}"#,
+                "\n",
+                r#"{"timestamp":"2026-06-12T23:00:02.000Z","type":"assistant","requestRef":"req-t","apiBlockIndex":0,"thinkingDurationMs":1500,"message":{"id":"msg_w","model":"glm-5.3","content":[{"type":"thinking","thinking":"……"}],"usage":{"input_tokens":10,"output_tokens":20}}}"#,
+                "\n",
+                r#"{"timestamp":"2026-06-12T23:00:04.000Z","type":"assistant","requestRef":"req-t","apiBlockIndex":1,"message":{"id":"msg_w","model":"glm-5.3","content":[{"type":"tool_use","name":"Bash"}],"usage":{"input_tokens":10,"output_tokens":20}}}"#,
+                "\n",
+                r#"{"timestamp":"2026-06-12T23:00:05.000Z","type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1"}]}}"#,
+                "\n",
+                r#"{"timestamp":"2026-06-12T23:00:08.000Z","type":"assistant","requestRef":"req-t","apiBlockIndex":2,"message":{"id":"msg_w","model":"glm-5.3","stop_reason":"end_turn","content":[{"type":"tool_use","name":"Edit"}],"usage":{"input_tokens":10,"output_tokens":20}}}"#,
+                "\n",
+            ),
+        );
+        run_import(&mut conn, &file);
+        assert_eq!(count_rows(&conn), 1, "夹工具结果的全部块进同一条记录");
+        let row = read_reply(&conn, "msg_w");
+        assert_eq!(
+            row.first_token_at,
+            Some(ms("2026-06-12T23:00:02.000Z") - 1_500),
+            "首字来自 idx0 思考块"
+        );
+        assert_eq!(
+            row.completed_at,
+            Some(ms("2026-06-12T23:00:08.000Z")),
+            "结束时刻取 idx2 块的时间戳"
+        );
+        assert_eq!(row.request_started_at, Some(ms("2026-06-12T23:00:00.000Z")));
+        assert_eq!(row.timing_estimated, Some(0));
+        assert_eq!(row.duration_ms, Some(8_000.0), "耗时 = 结束 − 起点");
+        assert_eq!(row.time_to_first_token_ms, Some(500.0));
+        assert_eq!(row.computed_total, 30);
+        assert_eq!(row.status.as_deref(), Some("completed"));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// 分两趟导入夹工具结果的响应：第一趟只到工具结果行（completed 停在
+    /// 已落盘的末块）；第二趟追加 idx2 块后续读 → completed_at 推进、首字
+    /// 与起点不变、duration 更新、updated_at 变化；第三趟无新增不写。
+    #[test]
+    fn tool_result_reply_advances_across_two_imports() {
+        let (tmp, mut conn) = setup_temp_db("tool-result-resume");
+        let head = concat!(
+            r#"{"timestamp":"2026-06-13T01:00:00.000Z","type":"api-request","id":"req-u"}"#,
+            "\n",
+            r#"{"timestamp":"2026-06-13T01:00:02.000Z","type":"assistant","requestRef":"req-u","apiBlockIndex":0,"thinkingDurationMs":1500,"message":{"id":"msg_u","model":"glm-5.3","content":[{"type":"thinking"}],"usage":{"input_tokens":10,"output_tokens":20}}}"#,
+            "\n",
+            r#"{"timestamp":"2026-06-13T01:00:04.000Z","type":"user","message":{"role":"user","content":[{"type":"tool_result"}]}}"#,
+            "\n",
+        );
+        let tail = r#"{"timestamp":"2026-06-13T01:00:08.000Z","type":"assistant","requestRef":"req-u","apiBlockIndex":1,"message":{"id":"msg_u","model":"glm-5.3","stop_reason":"end_turn","content":[{"type":"tool_use"}],"usage":{"input_tokens":10,"output_tokens":20}}}"#;
+        let file = write_session_lines(&tmp, "sess-tool-resume.jsonl", head);
+        let offset = head.len() as u64;
+        run_import(&mut conn, &file);
+        let first = read_reply(&conn, "msg_u");
+        assert_eq!(first.completed_at, Some(ms("2026-06-13T01:00:02.000Z")));
+        assert_eq!(
+            first.first_token_at,
+            Some(ms("2026-06-13T01:00:02.000Z") - 1_500)
+        );
+        assert_eq!(first.request_started_at, Some(ms("2026-06-13T01:00:00.000Z")));
+        let updated_first = read_updated_at(&conn, "msg_u");
+
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        std::fs::write(&file, format!("{head}{tail}\n")).expect("追加 idx2 块失败");
+        let tx = conn.transaction().expect("开启续读事务失败");
+        import_one_file(&tx, &file, Some((offset, offset))).expect("续读失败");
+        tx.commit().expect("提交续读事务失败");
+
+        let second = read_reply(&conn, "msg_u");
+        assert_eq!(
+            second.completed_at,
+            Some(ms("2026-06-13T01:00:08.000Z")),
+            "completed_at 推进到 idx2 块的时间戳"
+        );
+        assert_eq!(
+            second.first_token_at,
+            Some(ms("2026-06-13T01:00:02.000Z") - 1_500),
+            "首字不变"
+        );
+        assert_eq!(
+            second.request_started_at,
+            Some(ms("2026-06-13T01:00:00.000Z")),
+            "起点不变"
+        );
+        assert_eq!(second.duration_ms, Some(8_000.0), "duration 随结束时刻更新");
+        assert_ne!(
+            read_updated_at(&conn, "msg_u"),
+            updated_first,
+            "内容变化打修订标记"
+        );
+        assert_eq!(count_rows(&conn), 1);
+
+        // 第三趟全量重放：证据一致 → 不写、updated_at 不变
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let updated_second = read_updated_at(&conn, "msg_u");
+        run_import(&mut conn, &file);
+        assert_eq!(read_updated_at(&conn, "msg_u"), updated_second, "重放无变化不写");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// 回复划分的结束条件回归：user 工具结果行不结束当前回复；真正的用户
+    /// 输入行（content 首块是 text）结束；api-request 行（新请求开始）结束
+    /// ——结束后的回复 status 由「读到了后续行」判定为 completed（末块无
+    /// stop_reason 也成立）。
+    #[test]
+    fn reply_split_boundaries_user_and_api_request() {
+        let (tmp, mut conn) = setup_temp_db("split");
+        let file = write_session_lines(
+            &tmp,
+            "sess-split.jsonl",
+            concat!(
+                r#"{"timestamp":"2026-06-13T02:00:01.000Z","type":"api-request","id":"req-s1"}"#,
+                "\n",
+                // msg_x：无 stop_reason 的块
+                r#"{"timestamp":"2026-06-13T02:00:02.000Z","type":"assistant","requestRef":"req-s1","apiBlockIndex":0,"message":{"id":"msg_x","model":"glm-5.3","content":[{"type":"tool_use"}],"usage":{"input_tokens":10,"output_tokens":10}}}"#,
+                "\n",
+                // 工具结果：不结束 msg_x（completed 仍是它自己的时间戳）
+                r#"{"timestamp":"2026-06-13T02:00:03.000Z","type":"user","message":{"role":"user","content":[{"type":"tool_result"}]}}"#,
+                "\n",
+                // 真正的用户输入：结束 msg_x
+                r#"{"timestamp":"2026-06-13T02:00:04.000Z","type":"user","message":{"role":"user","content":[{"type":"text","text":"继续"}]}}"#,
+                "\n",
+                // msg_y：新回复，末块无 stop_reason
+                r#"{"timestamp":"2026-06-13T02:00:05.000Z","type":"assistant","apiBlockIndex":0,"message":{"id":"msg_y","model":"glm-5.3","content":[{"type":"text"}],"usage":{"input_tokens":10,"output_tokens":20}}}"#,
+                "\n",
+                // 新请求开始：结束 msg_y（status=completed：读到了后续行）
+                r#"{"timestamp":"2026-06-13T02:00:06.000Z","type":"api-request","id":"req-s2"}"#,
+                "\n",
+                // msg_z：第三条回复
+                r#"{"timestamp":"2026-06-13T02:00:08.000Z","type":"assistant","requestRef":"req-s2","apiBlockIndex":0,"message":{"id":"msg_z","model":"glm-5.3","stop_reason":"end_turn","content":[{"type":"text"}],"usage":{"input_tokens":10,"output_tokens":30}}}"#,
+                "\n",
+            ),
+        );
+        run_import(&mut conn, &file);
+        assert_eq!(count_rows(&conn), 3, "三条回复各自独立成行");
+        let x = read_reply(&conn, "msg_x");
+        assert_eq!(
+            x.completed_at,
+            Some(ms("2026-06-13T02:00:02.000Z")),
+            "工具结果行不推进 completed_at"
+        );
+        assert_eq!(
+            x.status.as_deref(),
+            Some("completed"),
+            "真用户输入结束回复 → 读到了后续行"
+        );
+        let y = read_reply(&conn, "msg_y");
+        assert_eq!(y.completed_at, Some(ms("2026-06-13T02:00:05.000Z")));
+        assert_eq!(
+            y.status.as_deref(),
+            Some("completed"),
+            "api-request 行结束回复 → 读到了后续行"
+        );
+        let z = read_reply(&conn, "msg_z");
+        assert_eq!(z.completed_at, Some(ms("2026-06-13T02:00:08.000Z")));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// 失败回复的模型名三级回退：本文件没有真实模型名（第一条 assistant 行
+    /// 就是失败回复、行上也没有 requestedModel）时，依次取同项目、全库的
+    /// 最近一条真实模型名；都取不到留空串，且空名不进清单（list_models_at）。
+    #[test]
+    fn error_reply_model_falls_back_through_library() {
+        let (tmp, mut conn) = setup_temp_db("model-fallback");
+        // 场景 C（对照）：空库上第一条回复就失败 → 无任何回退 → 空串，
+        // 且空名不出现在清单里
+        let orphan = write_session_lines(
+            &tmp,
+            "sess-orphan-fail.jsonl",
+            concat!(
+                r#"{"timestamp":"2026-06-14T01:00:01.000Z","type":"assistant","uuid":"e0","cwd":"/tmp/proj-orphan","isApiErrorMessage":true,"error":"API Error: 429","message":{"id":"msg_orphan","model":"<synthetic>","usage":{"input_tokens":0,"output_tokens":0}}}"#,
+                "\n",
+            ),
+        );
+        run_import(&mut conn, &orphan);
+        let orphan_row = read_reply(&conn, "msg_orphan");
+        assert_eq!(orphan_row.model_id, "", "无任何回退来源时保留空串");
+        let models = list_models_at(&conn).expect("清单查询失败");
+        assert!(
+            models.iter().all(|m| !m.model_id.is_empty()),
+            "空模型名不进清单"
+        );
+
+        // 场景 A（项目回退）：另一会话（同 cwd → 同 project_key）先有真实
+        // 模型行，其后的失败回复回退到该项目最近的真实模型名
+        let seeded = write_session_lines(
+            &tmp,
+            "sess-seed.jsonl",
+            concat!(
+                r#"{"timestamp":"2026-06-14T02:00:00.000Z","type":"assistant","cwd":"/tmp/proj-a","message":{"id":"msg_seed","model":"glm-base","stop_reason":"end_turn","content":[{"type":"text"}],"usage":{"input_tokens":10,"output_tokens":10}}}"#,
+                "\n",
+            ),
+        );
+        run_import(&mut conn, &seeded);
+        let failing = write_session_lines(
+            &tmp,
+            "sess-fail-a.jsonl",
+            concat!(
+                r#"{"timestamp":"2026-06-14T02:00:05.000Z","type":"assistant","uuid":"e1","cwd":"/tmp/proj-a","isApiErrorMessage":true,"apiErrorStatus":429,"error":"API Error: 429","message":{"id":"msg_fail_a","model":"<synthetic>","usage":{"input_tokens":0,"output_tokens":0}}}"#,
+                "\n",
+            ),
+        );
+        run_import(&mut conn, &failing);
+        let row = read_reply(&conn, "msg_fail_a");
+        assert_eq!(
+            row.model_id, "glm-base",
+            "失败回复回退到同项目的最近真实模型名"
+        );
+
+        // 场景 B（全库回退）：项目里没有任何真实模型名的另一个会话失败回复
+        // → 回退到全库最近的真实模型名
+        let failing_b = write_session_lines(
+            &tmp,
+            "sess-fail-b.jsonl",
+            concat!(
+                r#"{"timestamp":"2026-06-14T03:00:05.000Z","type":"assistant","uuid":"e2","cwd":"/tmp/proj-b","isApiErrorMessage":true,"apiErrorStatus":500,"error":"API Error: 500","message":{"id":"msg_fail_b","model":"<synthetic>","usage":{"input_tokens":0,"output_tokens":0}}}"#,
+                "\n",
+            ),
+        );
+        run_import(&mut conn, &failing_b);
+        let row = read_reply(&conn, "msg_fail_b");
+        assert_eq!(
+            row.model_id, "glm-base",
+            "项目内无真实模型名时回退到全库最近一条"
+        );
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// 首字证据的畸形超大耗时（毫秒数超出 i64 时间戳范围）：不回绕、不
+    /// panic（debug 构建下普通减法会溢出崩溃、整个文件导入失败），按没有
+    /// 证据处理。
+    #[test]
+    fn first_output_evidence_rejects_absurd_durations() {
+        let base = ReplyBlock {
+            timestamp: Some(1_000_000_000_000),
+            parent_uuid: None,
+            model: Some("glm-5.3".into()),
+            requested_model: None,
+            real_duration_ms: None,
+            stop_reason: None,
+            usage: UsagePayload::default(),
+            api_block_index: Some(0),
+            request_ref: None,
+            thinking_duration_ms: None,
+            tool_input_stream_ms: None,
+            first_block_type: Some("thinking".into()),
+            is_api_error: false,
+            api_error_status: None,
+        };
+        let mut huge = base.clone();
+        huge.thinking_duration_ms = Some(9.0e18);
+        assert_eq!(
+            first_output_evidence(&huge),
+            None,
+            "超大思考耗时按没有证据处理"
+        );
+        let mut absurd = base.clone();
+        absurd.thinking_duration_ms = Some(f64::MAX);
+        assert_eq!(first_output_evidence(&absurd), None, "f64::MAX 不 panic");
+        // 正常值不受影响
+        let mut normal = base;
+        normal.thinking_duration_ms = Some(1_500.0);
+        assert_eq!(
+            first_output_evidence(&normal),
+            Some(1_000_000_000_000 - 1_500)
+        );
+    }
+
+    /// 旧版本日志没有失败块：最终失败只留下 api_error 行，用户重新输入后
+    /// 下一条回复与那次失败无关——重试行被真正的用户输入清空，不再归给
+    /// 后面的回复（带失败块的新版本日志照常消耗，见 error_reply 测试）。
+    #[test]
+    fn retry_errors_cleared_by_real_user_input() {
+        let (tmp, mut conn) = setup_temp_db("retry-clear");
+        let file = write_session_lines(
+            &tmp,
+            "sess-retry-clear.jsonl",
+            concat!(
+                r#"{"timestamp":"2026-06-14T04:00:00.000Z","type":"assistant","message":{"id":"msg_ok","model":"glm-5.3","stop_reason":"end_turn","content":[{"type":"text"}],"usage":{"input_tokens":5,"output_tokens":5}}}"#,
+                "\n",
+                r#"{"timestamp":"2026-06-14T04:01:00.000Z","type":"system","subtype":"api_error","error":{"status":429,"retryAttempt":1,"maxRetries":2}}"#,
+                "\n",
+                // 用户重新输入（真正的用户输入行）：丢弃未归属的重试行
+                r#"{"timestamp":"2026-06-14T04:02:00.000Z","type":"user","message":{"role":"user","content":[{"type":"text","text":"再试一次"}]}}"#,
+                "\n",
+                r#"{"timestamp":"2026-06-14T04:02:05.000Z","type":"assistant","message":{"id":"msg_after","model":"glm-5.3","stop_reason":"end_turn","content":[{"type":"text"}],"usage":{"input_tokens":20,"output_tokens":30}}}"#,
+                "\n",
+            ),
+        );
+        run_import(&mut conn, &file);
+        let after = read_reply(&conn, "msg_after");
+        assert_eq!(
+            after.retry_count, 0,
+            "重试行被真正的用户输入清空，不归给后面的回复"
+        );
+        assert_eq!(after.error_code, None);
+        assert_eq!(after.status.as_deref(), Some("completed"));
+        let ok = read_reply(&conn, "msg_ok");
+        assert_eq!(ok.retry_count, 0, "更早的回复也不受影响");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// 并发首启的重复列迁移容忍：两列场景中后到的 ALTER 会得到
+    /// "duplicate column name" 错误，ensure_timing_columns 把它当成功处理
+    ///（对已补列的库重复执行也必须幂等不报错）。
+    #[test]
+    fn ensure_timing_columns_tolerates_duplicate_column() {
+        let (_tmp, conn) = setup_temp_db("dup-column");
+        // 模拟并发进程已完成迁移：直接 ALTER 已存在的列 → 产生 duplicate
+        // column 错误，且错误消息与实现里的匹配串一致
+        let err = conn
+            .execute("ALTER TABLE model_usage ADD COLUMN status TEXT", [])
+            .expect_err("重复加列应报错");
+        assert!(
+            err.to_string()
+                .to_ascii_lowercase()
+                .contains("duplicate column name"),
+            "错误消息应含 duplicate column name，实际: {err}"
+        );
+        // 容忍路径：has_column 认为存在时跳过；重复调用幂等不报错
+        ensure_timing_columns(&conn).expect("重复迁移应幂等");
+        ensure_timing_columns(&conn).expect("重复迁移应幂等");
+    }
+
+    /// 本机只读审计：对真实 ~/.claude/projects 跑同一套解析（不写库），
+    /// 按 CLI version 分桶打印覆盖率与中位数，对照计划「本机数据依据」。
+    /// 仅人工核对，不计入常规测试（#[ignore]）。
+    #[test]
+    #[ignore]
+    fn local_claude_timing_audit() {
+        let Ok(dir) = projects_dir() else {
+            eprintln!("[audit] 本机无 Claude projects 目录，跳过");
+            return;
+        };
+        let mut files = Vec::new();
+        collect_session_files(&dir, 5, &mut files);
+        files.sort();
+
+        #[derive(Default)]
+        struct Bucket {
+            replies: u64,
+            with_first_output: u64,
+            with_api_request: u64,
+            with_parent_fallback: u64,
+            durations_ms: Vec<f64>,
+            ttft_ms: Vec<f64>,
+            stream_speeds: Vec<f64>,
+            /// 带重试的回复数与各自的重试次数（看最大值 / 中位数分布）
+            with_retry: u64,
+            retry_counts: Vec<i64>,
+            /// 最终失败的回复数（status = error 的 0 token 行）
+            errors: u64,
+            /// 多块且块间夹有 user 工具结果行的回复数（同一响应边收流边执行
+            /// 工具，块被工具结果行隔开）
+            with_tool_result: u64,
+        }
+        fn median(values: &mut Vec<f64>) -> Option<f64> {
+            if values.is_empty() {
+                return None;
+            }
+            values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            Some(values[values.len() / 2])
+        }
+        fn median_i64(values: &mut Vec<i64>) -> Option<i64> {
+            if values.is_empty() {
+                return None;
+            }
+            values.sort_unstable();
+            Some(values[values.len() / 2])
+        }
+
+        let mut buckets: BTreeMap<String, Bucket> = BTreeMap::new();
+        for path in &files {
+            let Ok(file) = std::fs::File::open(path) else {
+                continue;
+            };
+            let mut scanner = ReplyScanner::new();
+            let mut collect = |record: Option<ReplyRecord>,
+                               buckets: &mut BTreeMap<String, Bucket>| {
+                let Some(record) = record else { return };
+                let version = record.version.clone().unwrap_or_else(|| "unknown".into());
+                let bucket = buckets.entry(version).or_default();
+                bucket.replies += 1;
+                if record.first_token_at.is_some() {
+                    bucket.with_first_output += 1;
+                }
+                match record.timing_estimated {
+                    Some(0) => bucket.with_api_request += 1,
+                    Some(1) => bucket.with_parent_fallback += 1,
+                    _ => {}
+                }
+                if let Some(duration) = record.duration_ms() {
+                    bucket.durations_ms.push(duration);
+                }
+                if let Some(ttft) = record.time_to_first_token_ms {
+                    bucket.ttft_ms.push(ttft);
+                }
+                // 流式速度口径：首字与结束齐全且生成窗口合法
+                if let (Some(first), Some(done)) = (record.first_token_at, record.completed_at) {
+                    let span = done - first;
+                    if record.output_tokens > 0
+                        && span >= crate::token_speed::MIN_GEN_MS
+                        && span <= crate::token_speed::MAX_GEN_MS
+                    {
+                        bucket
+                            .stream_speeds
+                            .push(record.output_tokens as f64 * 1000.0 / span as f64);
+                    }
+                }
+                if record.retry_count > 0 {
+                    bucket.with_retry += 1;
+                    bucket.retry_counts.push(record.retry_count);
+                }
+                if record.status == Some("error") {
+                    bucket.errors += 1;
+                }
+                if record.tool_result_between {
+                    bucket.with_tool_result += 1;
+                }
+            };
+            use std::io::BufRead;
+            for line in std::io::BufReader::new(file).lines().flatten() {
+                if let Ok(line) = serde_json::from_str::<TranscriptLine>(&line) {
+                    let finished = scanner.feed(&line, true);
+                    collect(finished, &mut buckets);
+                }
+            }
+            collect(scanner.finish(), &mut buckets);
+        }
+
+        eprintln!(
+            "[audit] 文件数={}（目录 {}）",
+            files.len(),
+            dir.display()
+        );
+        eprintln!(
+            "[audit] {:<10} {:>8} {:>10} {:>10} {:>10} {:>10} {:>10} {:>10} {:>18} {:>8} {:>12}",
+            "version", "回复数", "首字覆盖", "req关联", "父链回退", "耗时中位", "首字中位", "流速中位", "重试回复(最大/中位)", "失败回复", "夹工具结果"
+        );
+        for (version, bucket) in &buckets {
+            let pct = |count: u64| -> String {
+                if bucket.replies == 0 {
+                    "—".to_string()
+                } else {
+                    format!("{:.1}%", count as f64 * 100.0 / bucket.replies as f64)
+                }
+            };
+            let fmt_ms = |value: Option<f64>| -> String {
+                match value {
+                    Some(v) => format!("{:.0}ms", v),
+                    None => "—".to_string(),
+                }
+            };
+            let retry_summary = if bucket.with_retry == 0 {
+                "0".to_string()
+            } else {
+                format!(
+                    "{}(最大{}/中位{})",
+                    bucket.with_retry,
+                    bucket.retry_counts.iter().max().unwrap_or(&0),
+                    median_i64(&mut bucket.retry_counts.clone()).unwrap_or(0)
+                )
+            };
+            eprintln!(
+                "[audit] {:<10} {:>8} {:>10} {:>10} {:>10} {:>10} {:>10} {:>10} {:>18} {:>8} {:>12}",
+                version,
+                bucket.replies,
+                pct(bucket.with_first_output),
+                pct(bucket.with_api_request),
+                pct(bucket.with_parent_fallback),
+                fmt_ms(median(&mut bucket.durations_ms.clone())),
+                fmt_ms(median(&mut bucket.ttft_ms.clone())),
+                bucket
+                    .stream_speeds
+                    .is_empty()
+                    .then(|| "—".to_string())
+                    .unwrap_or_else(|| format!(
+                        "{:.1}t/s",
+                        median(&mut bucket.stream_speeds.clone()).unwrap()
+                    )),
+                retry_summary,
+                bucket.errors,
+                bucket.with_tool_result,
+            );
+        }
     }
 }
 

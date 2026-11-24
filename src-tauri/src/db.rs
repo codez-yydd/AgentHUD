@@ -293,25 +293,37 @@ pub(crate) fn fill_duration_metrics(conn: &Connection, source: &str, from_ms: i6
     overall: &mut OverallStat, models: &mut [ModelStat]) -> Result<(), String> {
     if !has_column(conn, "model_usage", "duration_ms") { return Ok(()); }
     let ttft = if has_column(conn, "model_usage", "time_to_first_token_ms") { "time_to_first_token_ms" } else { "NULL" };
+    // 导入库的事件时刻列（claude 由导入器补齐）：无列的来源按 NULL 降级，
+    // import_sample 退回 duration_ms 原口径，结果与旧版一致
+    let first = if has_column(conn, "model_usage", "first_token_at") { "first_token_at" } else { "NULL" };
+    let completed_at = if has_column(conn, "model_usage", "completed_at") { "completed_at" } else { "NULL" };
     let completed = completed_speed_sql(conn);
-    let mut stmt = conn.prepare(&format!("SELECT COALESCE(provider_id,''), COALESCE(model_id,''), output_tokens, duration_ms, {ttft} FROM model_usage WHERE started_at >= ?1 AND started_at < ?2 AND {completed}")).map_err(|e| e.to_string())?;
-    let rows = stmt.query_map(rusqlite::params![from_ms,to_ms], |r| Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,i64>(2)?,r.get::<_,Option<f64>>(3)?,r.get::<_,Option<f64>>(4)?))).map_err(|e|e.to_string())?;
+    let mut stmt = conn.prepare(&format!("SELECT COALESCE(provider_id,''), COALESCE(model_id,''), output_tokens, duration_ms, {ttft}, started_at, {first}, {completed_at} FROM model_usage WHERE started_at >= ?1 AND started_at < ?2 AND {completed}")).map_err(|e| e.to_string())?;
+    let rows = stmt.query_map(rusqlite::params![from_ms,to_ms], |r| Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,i64>(2)?,r.get::<_,Option<f64>>(3)?,r.get::<_,Option<f64>>(4)?,r.get::<_,i64>(5)?,r.get::<_,Option<i64>>(6)?,r.get::<_,Option<i64>>(7)?))).map_err(|e|e.to_string())?;
     let mut total = GenerationSpeedAgg::default();
     let mut by_model: BTreeMap<(String,String), GenerationSpeedAgg> = BTreeMap::new();
     for row in rows {
-        let (provider,model,output,duration,ttft) = row.map_err(|e|e.to_string())?;
+        let (provider,model,output,duration,ttft,started_at,first,completed) = row.map_err(|e|e.to_string())?;
         let agg = by_model.entry((provider,model)).or_default();
         if let Some(ttft) = ttft.filter(|t| t.is_finite() && *t >= 0.0
             && (source == "dsh" || duration.is_some_and(|d| d.is_finite() && *t <= d))) {
             total.absorb_ttft(ttft as i64); agg.absorb_ttft(ttft as i64);
         }
-        if let Some(d) = duration {
-            let d = d.trunc();
-            if let Some(speed) = crate::token_speed::duration_speed(output, d, crate::token_speed::duration_quality(source), 0) {
-                let sample = crate::token_speed::GenerationSample { output_tokens: output,
-                    generation_ms: d as i64, tps: speed.value, quality: speed.quality };
-                total.absorb(&sample); agg.absorb(&sample);
-            }
+        // 速度样本统一走 import_sample（事件时刻齐全 → 流式窗口；缺任一
+        // 时刻退回 duration_ms 的来源口径），与 request_logs / model_speed
+        // 同口径；导入库是已落库的历史行，observed 传 0 不做未来拒绝
+        if let Some(sample) = crate::token_speed::import_sample(&crate::token_speed::ImportTiming {
+            output_tokens: output,
+            row_at: started_at,
+            first_token_at: first,
+            completed_at: completed,
+            duration_ms: duration,
+            fallback_quality: crate::token_speed::duration_quality(source),
+            observed_at_ms: 0,
+            // SQL 已按 completed_speed_sql 过滤出完成态行，速度判定传 true
+            completed: true,
+        }) {
+            total.absorb(&sample); agg.absorb(&sample);
         }
     }
     overall.speed = total.into_metrics();
@@ -638,6 +650,19 @@ pub struct UsageRow {
     /// 首字毫秒（来源库真实 time_to_first_token_ms > 0 才给；同上）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub time_to_first_token_ms: Option<f64>,
+    /// 请求状态：completed / cancelled / error；未知为 None（proto 10 起上传。
+    /// 原始值透传、白名单清洗由服务端统一做；无该列的来源构造时填 None）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    /// 最终失败的错误码，或最近一次重试的错误码（proto 10 起上传）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_code: Option<String>,
+    /// 这条请求之前失败的尝试次数（proto 10 起上传）
+    #[serde(default)]
+    pub retry_count: i64,
+    /// 请求起点是推断的（timing_estimated = 1，界面显示 ≈；proto 10 起上传）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timing_estimated: Option<bool>,
 }
 
 /// 查询 rowid > since 的明细记录（增量上传用）。
@@ -654,14 +679,17 @@ pub(crate) fn query_since_at(
     limit: usize,
 ) -> Result<Vec<UsageRow>, String> {
     // proto 8：耗时/首字按列存在性带出（口径与 request_logs 的行级查询
-    // 一致——真实值 > 0 才给，老库无列恒 None，禁止时间戳差估算）
+    // 一致——真实值 > 0 才给，老库无列恒 None；查询/同步层不做时间戳差
+    // 相减，只转发主库已有的列）
     let (duration, ttft) = speed_columns(conn);
+    // proto 10：状态扩展列同款按列存在性带出（追加在 SELECT 末尾，下标 12~15）
+    let (status, error_code, retry_count, timing_estimated) = timing_columns(conn);
     let sql = format!(
         "SELECT rowid, started_at, model_id, provider_id,
                 COALESCE(input_tokens,0), COALESCE(output_tokens,0),
                 COALESCE(cache_read_input_tokens,0), COALESCE(cache_creation_input_tokens,0),
                 COALESCE(reasoning_tokens,0), COALESCE(computed_total_tokens,0),
-                {duration}, {ttft}
+                {duration}, {ttft}, {status}, {error_code}, {retry_count}, {timing_estimated}
          FROM model_usage
          WHERE rowid > ?1
          ORDER BY rowid ASC
@@ -693,6 +721,12 @@ pub(crate) fn query_since_at(
                 project_display: None,
                 duration_ms: row.get(10)?,
                 time_to_first_token_ms: row.get(11)?,
+                // proto 10 状态扩展列（timing_columns 的 NULLIF 空串已归 NULL，
+                // 这里对 error_code 再做一次空串防御与 row_to_log 口径一致）
+                status: row.get(12)?,
+                error_code: row.get::<_, Option<String>>(13)?.filter(|c| !c.is_empty()),
+                retry_count: row.get(14)?,
+                timing_estimated: row.get::<_, Option<i64>>(15)?.map(|v| v != 0),
             })
         })
         .map_err(|e| format!("读取增量记录失败: {e}"))?
@@ -727,7 +761,9 @@ pub(crate) fn annotate_zcode_speed(conn: &Connection, rows: &mut [UsageRow]) -> 
 
 /// 耗时/首字取值表达式（proto 8 同步上传用，两列拼进增量查询 SELECT 尾部）：
 /// 只听来源库的**真实**列且值 > 0 才给，无列恒 NULL——与 request_logs 的
-/// duration_expr / select_list 同款口径，禁止任何时间戳差估算。
+/// duration_expr / select_list 同款口径：查询/同步层不做时间戳差相减，
+/// 只转发来源库已有的列（按时间戳差推出的估算值须在导入层带
+/// timing_estimated 落库）。
 pub(crate) fn speed_columns(conn: &Connection) -> (&'static str, &'static str) {
     (
         if has_column(conn, "model_usage", "duration_ms") {
@@ -740,6 +776,28 @@ pub(crate) fn speed_columns(conn: &Connection) -> (&'static str, &'static str) {
         } else {
             "NULL"
         },
+    )
+}
+
+/// 状态扩展列取值表达式（proto 10 同步上传用，四列拼进增量查询 SELECT 尾部，
+/// 仿 speed_columns）：status / error_code 空串归 NULL、retry_count 空值按
+/// 0、timing_estimated 原样。来源库无对应列时给 NULL / 0 字面量占位（列数
+/// 不变，读取下标稳定）。zcode 主库（db::query_since_at）、claude / codex
+/// 导入库三处 SELECT 复用；无这些列的来源（kimi / dsh / opencode /
+/// minimaxcode）不接入，构造 UsageRow 时填 None / 0。
+pub(crate) fn timing_columns(
+    conn: &Connection,
+) -> (
+    &'static str, // status
+    &'static str, // error_code
+    &'static str, // retry_count
+    &'static str, // timing_estimated
+) {
+    (
+        if has_column(conn, "model_usage", "status") { "NULLIF(status,'')" } else { "NULL" },
+        if has_column(conn, "model_usage", "error_code") { "NULLIF(error_code,'')" } else { "NULL" },
+        if has_column(conn, "model_usage", "retry_count") { "COALESCE(retry_count,0)" } else { "0" },
+        if has_column(conn, "model_usage", "timing_estimated") { "timing_estimated" } else { "NULL" },
     )
 }
 
@@ -1392,5 +1450,99 @@ mod tests {
         assert_eq!(rows[0].output_tokens, 300, "COALESCE 后 token 列映射不应受拼列影响");
         assert_eq!(rows[0].duration_ms, None, "无 duration_ms 列应恒 None");
         assert_eq!(rows[0].time_to_first_token_ms, None, "无 ttft 列应恒 None");
+    }
+
+    /// proto 10 状态扩展列的 SELECT 动态拼列 ↔ 数字下标映射回归测试：SELECT
+    /// 末尾由 timing_columns 动态拼入四列（下标 12~15），含列库验证全字段
+    /// 映射（空串 error_code → NULL），缺列库验证降级（NULL / 0 占位，查询
+    /// 不报错）。
+    #[test]
+    fn query_since_maps_timing_columns() {
+        // 分支一：含四列的库（Claude / Codex 导入库、新版 ZCode 主库同构）
+        let conn = zcode_like_db();
+        conn.execute_batch(
+            "ALTER TABLE model_usage ADD COLUMN status TEXT;
+             ALTER TABLE model_usage ADD COLUMN error_code TEXT;
+             ALTER TABLE model_usage ADD COLUMN retry_count INTEGER;
+             ALTER TABLE model_usage ADD COLUMN timing_estimated INTEGER;
+             INSERT INTO model_usage (started_at, model_id, provider_id, output_tokens,
+                input_tokens, computed_total_tokens, status, error_code, retry_count, timing_estimated)
+             VALUES (1000, 'm', 'p', 30, 0, 30, 'error', '', 2, 1),
+                    (2000, 'm', 'p', 8, 0, 8, 'completed', '429', NULL, NULL);",
+        )
+        .unwrap();
+        let rows = query_since_at(&conn, 0, 10).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].status.as_deref(), Some("error"));
+        assert_eq!(rows[0].error_code, None, "空串 error_code 经 NULLIF 归 None");
+        assert_eq!(rows[0].retry_count, 2);
+        assert_eq!(rows[0].timing_estimated, Some(true));
+        assert_eq!(rows[1].status.as_deref(), Some("completed"));
+        assert_eq!(rows[1].error_code.as_deref(), Some("429"));
+        assert_eq!(rows[1].retry_count, 0, "retry_count NULL 经 COALESCE 归 0");
+        assert_eq!(rows[1].timing_estimated, None, "timing_estimated NULL 保持 None");
+
+        // 分支二：缺四列的库（旧库同构）：降级 None / 0，查询不报错
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE model_usage (
+                started_at INTEGER, model_id TEXT, provider_id TEXT,
+                input_tokens INTEGER DEFAULT 0, output_tokens INTEGER DEFAULT 0,
+                cache_read_input_tokens INTEGER DEFAULT 0,
+                cache_creation_input_tokens INTEGER DEFAULT 0,
+                reasoning_tokens INTEGER DEFAULT 0,
+                computed_total_tokens INTEGER DEFAULT 0);
+             INSERT INTO model_usage VALUES (3000, 'm', 'p', 0, 300, 0, 0, 0, 300);",
+        )
+        .unwrap();
+        let rows = query_since_at(&conn, 0, 10).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].status, None, "无 status 列应恒 None");
+        assert_eq!(rows[0].error_code, None);
+        assert_eq!(rows[0].retry_count, 0);
+        assert_eq!(rows[0].timing_estimated, None);
+    }
+
+    /// UsageRow 同步契约（proto 10）：状态扩展字段序列化时非 None 输出、
+    /// None 省略（skip_serializing_if），retry_count 恒输出（serde default
+    /// 兜底旧服务端 / 旧客户端的缺键读取）。
+    #[test]
+    fn usage_row_serializes_timing_fields() {
+        let full = UsageRow {
+            speed_evidence: None,
+            local_rowid: 1,
+            started_at: 1000,
+            model_id: "m".into(),
+            provider_id: "p".into(),
+            input_tokens: 1,
+            output_tokens: 2,
+            cache_read_input_tokens: 0,
+            cache_creation_input_tokens: 0,
+            reasoning_tokens: 0,
+            computed_total_tokens: 3,
+            source: "claude".into(),
+            session_id: None,
+            project_key: None,
+            project_display: None,
+            duration_ms: None,
+            time_to_first_token_ms: None,
+            status: Some("error".into()),
+            error_code: Some("429".into()),
+            retry_count: 3,
+            timing_estimated: Some(true),
+        };
+        let json = serde_json::to_value(&full).unwrap();
+        assert_eq!(json["status"], "error");
+        assert_eq!(json["error_code"], "429");
+        assert_eq!(json["retry_count"], 3);
+        assert_eq!(json["timing_estimated"], true);
+
+        // 未知态（kimi / dsh 等来源构造形态）：三字段省略、retry_count 仍输出
+        let empty = UsageRow { status: None, error_code: None, retry_count: 0, timing_estimated: None, ..full };
+        let json = serde_json::to_value(&empty).unwrap();
+        assert!(json.get("status").is_none());
+        assert!(json.get("error_code").is_none());
+        assert!(json.get("timing_estimated").is_none());
+        assert_eq!(json["retry_count"], 0);
     }
 }

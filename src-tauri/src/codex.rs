@@ -87,6 +87,22 @@ const SCHEMA_SQL: &str = "PRAGMA journal_mode=WAL;
         reasoning_tokens INTEGER NOT NULL DEFAULT 0,
         computed_total_tokens INTEGER NOT NULL DEFAULT 0,
         model_revision_at INTEGER NOT NULL DEFAULT 0,
+        -- 计时 / 状态取证列（统一口径，与 claude.sqlite 同名同义）：
+        -- request_started_at 请求起点（按事件顺序推断）；
+        -- first_token_at 首个输出时刻（item_completed 的 started_at_ms）；
+        -- completed_at 回复结束时刻（用量记录 / token_count 行时间戳）；
+        -- timing_estimated 1 = 起点是推断的（界面带 ≈）；
+        -- status 'completed' / 'cancelled' / 'error'（NULL = 未知或进行中）；
+        -- error_code 最终失败码或最近一次重试码；retry_count 失败尝试次数。
+        duration_ms REAL,
+        request_started_at INTEGER,
+        first_token_at INTEGER,
+        completed_at INTEGER,
+        time_to_first_token_ms REAL,
+        timing_estimated INTEGER,
+        status TEXT,
+        error_code TEXT,
+        retry_count INTEGER NOT NULL DEFAULT 0,
         UNIQUE(session_id, event_seq)
      );
      CREATE INDEX IF NOT EXISTS idx_codex_model_usage_started ON model_usage(started_at);
@@ -124,6 +140,7 @@ fn open_codex_db() -> Result<Connection, String> {
     conn.execute_batch(SCHEMA_SQL)
         .map_err(|e| format!("初始化 Codex 导入库失败: {e}"))?;
     ensure_model_revision_column(&conn)?;
+    ensure_timing_columns(&conn)?;
     Ok(conn)
 }
 
@@ -169,6 +186,52 @@ fn ensure_model_revision_column(conn: &Connection) -> Result<(), String> {
     Ok(())
 }
 
+/// 为已有导入库补充计时 / 状态 9 列（与 claude.sqlite 同名同义，见
+/// SCHEMA_SQL 的列注释）。旧库升级后由 90 天回填重放补齐历史行；
+/// retry_count 带 NOT NULL DEFAULT 0 兜底。PRAGMA table_info 检查后
+/// ALTER TABLE，重复列名视为成功，幂等；新库已由建表语句直接带列。
+fn ensure_timing_columns(conn: &Connection) -> Result<(), String> {
+    let _guard = schema_migration_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut stmt = conn
+        .prepare("PRAGMA table_info(model_usage)")
+        .map_err(|e| format!("检查 Codex 导入库结构失败: {e}"))?;
+    let columns = stmt
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|e| format!("检查 Codex 导入库结构失败: {e}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("检查 Codex 导入库结构失败: {e}"))?;
+    drop(stmt);
+    const TIMING_COLUMNS: [(&str, &str); 9] = [
+        ("duration_ms", "REAL"),
+        ("request_started_at", "INTEGER"),
+        ("first_token_at", "INTEGER"),
+        ("completed_at", "INTEGER"),
+        ("time_to_first_token_ms", "REAL"),
+        ("timing_estimated", "INTEGER"),
+        ("status", "TEXT"),
+        ("error_code", "TEXT"),
+        ("retry_count", "INTEGER NOT NULL DEFAULT 0"),
+    ];
+    for (name, decl) in TIMING_COLUMNS {
+        if columns.iter().any(|c| c == name) {
+            continue;
+        }
+        let result =
+            conn.execute(&format!("ALTER TABLE model_usage ADD COLUMN {name} {decl}"), []);
+        if let Err(e) = result {
+            // 另一个进程可能在本次 PRAGMA 与 ALTER 之间完成了迁移，
+            // 此时重复列就是成功状态，后续查询可直接继续。
+            let message = e.to_string().to_ascii_lowercase();
+            if !message.contains("duplicate column name") {
+                return Err(format!("升级 Codex 导入库结构失败: {e}"));
+            }
+        }
+    }
+    Ok(())
+}
+
 // ===== jsonl 事件解析结构（全部 Option/默认值容错，坏行只跳过不中断）=====
 
 /// jsonl 单行事件。payload 类型随 type 不同，先存原始 Value 再按需二次解析。
@@ -202,7 +265,8 @@ struct TokenCountInfo {
 /// 单次 API 调用的 token 用量（last_token_usage）。
 /// 字段映射到 zcode 口径：cached_input_tokens → cache_read_input_tokens、
 /// reasoning_output_tokens → reasoning_tokens、total_tokens → computed_total_tokens。
-#[derive(Debug, Default, Deserialize)]
+/// PartialEq 供「用量记录与 token_count 结算逐项一致」的结束时刻判定。
+#[derive(Debug, Default, Deserialize, PartialEq, Clone)]
 struct TokenUsage {
     #[serde(default)]
     input_tokens: i64,
@@ -452,6 +516,445 @@ fn session_id_from_filename(path: &Path) -> String {
     stem
 }
 
+// ===== 请求计时 / 状态状态机 =====
+//
+// 从同一文件的 jsonl 事件序列里为每次 API 请求取证耗时、首字、结束时刻、
+// 状态与重试。取证思路参考 cc-switch（MIT 许可）的 RequestTimer，规则按
+// 本机 Codex CLI 日志的实际事件顺序实现（内部格式未公开，一律缺字段就
+// 降级）：
+//   task_started → turn_context → response_item(user message) →
+//   item_completed(AgentMessage，带 started_at_ms) → response_item(assistant)
+//   → token_usage_record → token_count。
+// 工具调用型的响应没有输出开始事件，而是 response_item *_call →
+// token_usage_record → *_output → token_count；同一用户任务内可连续多次
+// 这样的子请求（工具结果之后紧跟下一次模型输出，中间没有新的用户输入）。
+
+/// 同批补写窗口（毫秒）：旧版本 CLI 会把上一请求的输出项成批补写在上一次
+/// token_count 之后（不到 100 毫秒），这些项不算下一次请求的证据。
+const BATCH_REWRITE_WINDOW_MS: i64 = 100;
+
+/// 续读回看窗口（字节）：请求的边界行可能落在上次已读区域（用户输入之后
+/// 等模型输出等了很久），回看重建状态机上下文（只读不写库）。与 claude.rs
+/// 的 LOOKBACK_BYTES 同值同语义。
+const LOOKBACK_BYTES: u64 = 1024 * 1024;
+
+/// jsonl 行的事件类别（只看行头与 payload 关键字段，缺字段降级为忽略）。
+#[derive(Debug, Clone)]
+enum LineEvent {
+    /// 边界（用户 / 轮次）：turn_context、task_started、非 assistant 的 message
+    Boundary,
+    /// 工具结果：response_item 且 payload.type 以 _output 结尾
+    ToolResult,
+    /// 模型输出：assistant 的 message、reasoning、以 _call 结尾的类型
+    ModelOutput,
+    /// 用量记录：顶层 token_usage_record（payload.usage 存在才有效）
+    UsageRecord(TokenUsage),
+    /// 输出开始：item_completed 的 item.type 是 Reasoning / AgentMessage，
+    /// 携带 payload.started_at_ms
+    OutputStart(i64),
+    /// 结算：token_count 带 info.last_token_usage（现有写行位置）
+    Settle(TokenUsage),
+    /// 轮次被用户中断
+    TurnAborted,
+    /// 请求失败（错误码取 payload.code → payload.error.code → "error"）
+    StreamError(String),
+}
+
+/// 从 error / stream_error 事件的 payload 里取错误码（缺失降级 "error"）。
+fn error_code_from_payload(payload: &serde_json::Value) -> String {
+    payload
+        .get("code")
+        .and_then(|v| v.as_str())
+        .or_else(|| {
+            payload
+                .get("error")
+                .and_then(|e| e.get("code"))
+                .and_then(|v| v.as_str())
+        })
+        .unwrap_or("error")
+        .to_string()
+}
+
+/// 把一行 rollout 事件分类为状态机输入；无法识别或缺关键字段时返回 None
+/// （world_state / additional_tools / configuration_update / task_complete /
+/// UserMessage 的 item_completed 等一律忽略）。
+fn classify_line(line: &RolloutLine) -> Option<LineEvent> {
+    let payload = line.payload.as_ref()?;
+    match line.line_type.as_deref() {
+        Some("turn_context") => Some(LineEvent::Boundary),
+        Some("response_item") => {
+            let item_type = payload.get("type")?.as_str()?;
+            if item_type == "message" {
+                let role = payload.get("role").and_then(|r| r.as_str()).unwrap_or("");
+                if role == "assistant" {
+                    Some(LineEvent::ModelOutput)
+                } else {
+                    Some(LineEvent::Boundary)
+                }
+            } else if item_type == "reasoning" || item_type.ends_with("_call") {
+                Some(LineEvent::ModelOutput)
+            } else if item_type.ends_with("_output") {
+                Some(LineEvent::ToolResult)
+            } else {
+                None
+            }
+        }
+        Some("token_usage_record") => {
+            let usage = serde_json::from_value::<TokenUsage>(payload.get("usage")?.clone()).ok()?;
+            Some(LineEvent::UsageRecord(usage))
+        }
+        Some("event_msg") => {
+            let msg_type = payload.get("type")?.as_str()?;
+            match msg_type {
+                "task_started" => Some(LineEvent::Boundary),
+                "turn_aborted" => Some(LineEvent::TurnAborted),
+                "error" | "stream_error" => {
+                    Some(LineEvent::StreamError(error_code_from_payload(payload)))
+                }
+                "token_count" => {
+                    let info = payload.get("info")?;
+                    let last = info.get("last_token_usage")?;
+                    let usage = serde_json::from_value::<TokenUsage>(last.clone()).ok()?;
+                    Some(LineEvent::Settle(usage))
+                }
+                "item_completed" => {
+                    let item_type = payload.get("item")?.get("type")?.as_str()?;
+                    if item_type != "Reasoning" && item_type != "AgentMessage" {
+                        return None;
+                    }
+                    Some(LineEvent::OutputStart(payload.get("started_at_ms")?.as_i64()?))
+                }
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+/// 一次 token_count 结算的取证产物（状态机 → 写库层的交接物）。
+#[derive(Debug, Clone, PartialEq)]
+struct SettledUsage {
+    /// token_count 行时间戳（model_usage.started_at，时间键含义不变）
+    started_at: i64,
+    input_tokens: i64,
+    output_tokens: i64,
+    cache_read_tokens: i64,
+    reasoning_tokens: i64,
+    total_tokens: i64,
+    request_started_at: Option<i64>,
+    first_token_at: Option<i64>,
+    completed_at: Option<i64>,
+    duration_ms: Option<f64>,
+    time_to_first_token_ms: Option<f64>,
+    /// 起点是推断的 → 1；无起点 → NULL
+    timing_estimated: Option<i64>,
+    error_code: Option<String>,
+    retry_count: i64,
+}
+
+/// 无用量结算的 0 token 行（被中断 / 最终失败的请求）。
+#[derive(Debug, Clone, PartialEq)]
+struct ZeroTokenRow {
+    /// 事件时间戳（行的 started_at；event_seq 取它的负值，不占用正序号，
+    /// 重放时键保持稳定）
+    started_at: i64,
+    /// "cancelled" / "error"
+    status: &'static str,
+    error_code: Option<String>,
+    /// 记下待定事件时本请求内已有的失败条数
+    retry_count: i64,
+}
+
+/// 状态机单次 feed 的产物。
+#[derive(Debug, Clone, PartialEq)]
+enum TimerOutcome {
+    Usage(SettledUsage),
+    Zero(ZeroTokenRow),
+}
+
+/// 请求内一次失败 / 中断事件（重试计数与最近错误码的原料）。
+#[derive(Debug, Clone)]
+struct FailureEvent {
+    error_code: Option<String>,
+}
+
+/// 待定的中断 / 失败事件：单独出 0 token 行还是计入下一行的重试次数，
+/// 取决于之后是否出现用量。
+#[derive(Debug, Clone)]
+struct PendingAbort {
+    status: &'static str,
+    error_code: Option<String>,
+    /// 事件时间戳（0 token 行的时间键）
+    at: i64,
+    /// 记下时本请求内已有的失败条数（0 token 行的 retry_count 取它）
+    prior_failures: i64,
+}
+
+/// 单文件的请求计时状态机（纯事件归纳，不触碰 IO 与库，便于单测）。
+/// 各状态语义见 feed / settle 注释。
+#[derive(Debug, Default)]
+struct RequestTimer {
+    /// 最近一条边界（用户 / 轮次）或工具结果的时间戳
+    last_boundary_at: Option<i64>,
+    /// 本请求内最后一个工具结果的时间戳（token_count 延后写出的判定）
+    last_tool_result_at: Option<i64>,
+    /// 本请求起点：第一条模型输出出现时定格的 last_boundary_at
+    request_start: Option<i64>,
+    /// 本请求内最后一次错误事件的时刻（error / stream_error）。非空时起点
+    /// 改取它：耗时和首字描述的是产生这条回复的那一次请求，不含此前的
+    /// 失败尝试与退避等待。用户中断不算错误，不写此字段
+    last_failure_at: Option<i64>,
+    /// 本请求内最早的输出开始时刻（item_completed 的 started_at_ms 最小值）
+    first_output_at: Option<i64>,
+    /// 本请求内最后一个模型输出行的时间戳
+    last_output_at: Option<i64>,
+    /// 本请求内最近一条用量记录（时间戳与用量；结束时刻的第一证据）
+    usage_record: Option<(i64, TokenUsage)>,
+    /// 上一次结算（token_count）的时间戳（同批补写判定基准）
+    last_token_count_at: Option<i64>,
+    /// 本请求内的失败 / 中断事件（折入结算行的重试计数）
+    failures: Vec<FailureEvent>,
+    /// 尚未归属的失败 / 中断事件（之后出现用量 → 计入该行；否则 0 token 行）
+    pending: Option<PendingAbort>,
+    /// 自上一次结算（含 0 token 行结算）之后是否出现过请求活动
+    ///（边界 / 工具结果 / 模型输出任一）
+    activity_since_settle: bool,
+}
+
+impl RequestTimer {
+    /// 喂入一行事件；产生结算产物时返回（调用方负责写库与推进序号；
+    /// 回看区调用时丢弃产物即可，状态机内部状态照常推进）。
+    fn feed(&mut self, line: &RolloutLine) -> Option<TimerOutcome> {
+        let ts = line.timestamp.as_deref().and_then(parse_ts_ms);
+        match classify_line(line) {
+            Some(LineEvent::Boundary) => {
+                let ts = ts?;
+                // 边界先结算挂起的失败 / 中断事件（出行判定用结算前的
+                // 活动水位），再开启新请求现场
+                let outcome = self.finalize_pending();
+                self.reset_request();
+                self.last_boundary_at = Some(ts);
+                self.activity_since_settle = true;
+                outcome
+            }
+            Some(LineEvent::ToolResult) => {
+                let ts = ts?;
+                self.last_boundary_at = Some(ts);
+                self.last_tool_result_at = Some(ts);
+                self.activity_since_settle = true;
+                None
+            }
+            Some(LineEvent::ModelOutput) => {
+                let ts = ts?;
+                // 同批补写：距上一次结算不到 100 毫秒的输出属于上一请求，
+                // 不作为本次请求的证据
+                if self
+                    .last_token_count_at
+                    .is_some_and(|prev| ts.saturating_sub(prev) < BATCH_REWRITE_WINDOW_MS)
+                {
+                    return None;
+                }
+                // 起点：本次请求第一条模型输出出现时定格，之后不变
+                if self.request_start.is_none() {
+                    self.request_start = self.last_boundary_at;
+                }
+                self.last_output_at = Some(ts);
+                self.activity_since_settle = true;
+                None
+            }
+            Some(LineEvent::UsageRecord(usage)) => {
+                let ts = ts?;
+                self.usage_record = Some((ts, usage));
+                // 失败 / 中断之后出现了用量 → 归入该行的重试计数，不单独出行
+                self.dismiss_pending();
+                None
+            }
+            Some(LineEvent::OutputStart(started_ms)) => {
+                // 同批补写：与输出行同规则（基准是上一次结算的时刻）
+                if self
+                    .last_token_count_at
+                    .is_some_and(|prev| started_ms.saturating_sub(prev) < BATCH_REWRITE_WINDOW_MS)
+                {
+                    return None;
+                }
+                self.first_output_at =
+                    Some(self.first_output_at.map_or(started_ms, |prev| prev.min(started_ms)));
+                None
+            }
+            Some(LineEvent::Settle(usage)) => {
+                let ts = ts?;
+                self.dismiss_pending();
+                let outcome = TimerOutcome::Usage(self.settle(ts, usage));
+                // 结算后清空本请求现场；边界与补写基准对齐到本次 token_count
+                // 的时间戳（工具结果之后的下一次模型输出就是新的子请求）
+                self.reset_request();
+                self.last_boundary_at = Some(ts);
+                self.last_token_count_at = Some(ts);
+                self.activity_since_settle = false;
+                Some(outcome)
+            }
+            Some(LineEvent::TurnAborted) => {
+                let ts = ts?;
+                self.stash_pending("cancelled", None, ts);
+                None
+            }
+            Some(LineEvent::StreamError(code)) => {
+                let ts = ts?;
+                self.stash_pending("error", Some(code), ts);
+                None
+            }
+            None => None,
+        }
+    }
+
+    /// 按 token_count 结算一次请求（此刻各状态字段仍是本请求的现场）。
+    /// 结束时刻的取证优先级：用量记录一致 > 工具结果紧跟（token_count 被
+    /// 工具执行推后）> token_count 行时间戳。
+    fn settle(&mut self, ts: i64, usage: TokenUsage) -> SettledUsage {
+        let matched_at = self
+            .usage_record
+            .as_ref()
+            // 1) 本请求内最近一条用量记录与本次结算用量逐项一致 → 用它的时间戳
+            .filter(|(_, record)| *record == usage)
+            .map(|(at, _)| *at)
+            .or_else(|| {
+                // 2) 最后一个模型输出之后出现过工具结果、token_count 在工具
+                //    结果后 100 毫秒内写出 → token_count 的时间戳被工具执行
+                //    推后，取最后一个模型输出的时间戳
+                let output = self.last_output_at?;
+                let tool = self.last_tool_result_at?;
+                (tool > output && ts.saturating_sub(tool) < BATCH_REWRITE_WINDOW_MS)
+                    .then_some(output)
+            });
+        // 3) 其余 → token_count 行时间戳
+        let completed_at = matched_at.unwrap_or(ts);
+        // 起点：正常请求取第一条模型输出出现前的边界；本请求内出现过错误
+        // 事件（重试后成功）时改取最后一次错误事件的时刻——耗时和首字
+        // 描述的是「产生这条回复的那一次请求」，不含此前的失败尝试与退避
+        // 等待（错误事件出现时此前的输出证据已整体作废，见 stash_pending；
+        // 用户中断不作废证据，不影响此分支）
+        let request_started_at = self.last_failure_at.or(self.request_start);
+        // duration = completed_at − request_started_at：两者都有且差值在合法
+        // 生成窗口内才写（不满足置空，不做钳制）
+        let duration_ms = request_started_at.and_then(|start| {
+            let span = completed_at - start;
+            (span >= crate::token_speed::MIN_GEN_MS && span <= crate::token_speed::MAX_GEN_MS)
+                .then_some(span as f64)
+        });
+        // 首字：起点已知且时序不合法（first <= start 或 first > completed）
+        // 时置空；起点未知时保留时刻本身（速度由读库方按两时刻判定）
+        let mut first_token_at = self.first_output_at;
+        if let Some(start) = request_started_at {
+            if first_token_at.is_some_and(|first| first <= start) {
+                first_token_at = None;
+            }
+            if first_token_at.is_some_and(|first| first > completed_at) {
+                first_token_at = None;
+            }
+        }
+        // ttft = first_token_at − request_started_at：首字必须落在起点与结束
+        // 之间（起点未知时不给）
+        let time_to_first_token_ms = match (request_started_at, first_token_at) {
+            (Some(start), Some(first)) if start < first && first <= completed_at => {
+                Some((first - start) as f64)
+            }
+            _ => None,
+        };
+        SettledUsage {
+            started_at: ts,
+            input_tokens: usage.input_tokens,
+            output_tokens: usage.output_tokens,
+            cache_read_tokens: usage.cached_input_tokens,
+            reasoning_tokens: usage.reasoning_output_tokens,
+            total_tokens: usage.total_tokens,
+            request_started_at,
+            first_token_at,
+            completed_at: Some(completed_at),
+            duration_ms,
+            time_to_first_token_ms,
+            timing_estimated: request_started_at.map(|_| 1),
+            error_code: self.failures.last().and_then(|f| f.error_code.clone()),
+            retry_count: self.failures.len() as i64,
+        }
+    }
+
+    /// 记一个待定的失败 / 中断事件：事件条目同时进本请求的失败列表
+    ///（之后出现用量 / 结算时折入该行的 retry_count）；已有待定时先转正
+    ///（它之后又出现了新失败，说明请求在重试，不再单独出行）。
+    /// 错误类（error / stream_error）之后可能重试：作废失败前的输出证据，
+    /// 起点改取错误时刻、首个输出只取失败之后的（耗时和首字不含失败尝试
+    /// 与退避等待）。用户中断（turn_aborted）不会有重试，保留原有证据——
+    /// 中断后不经边界直接出现的用量结算仍按正常规则取证。
+    fn stash_pending(&mut self, status: &'static str, error_code: Option<String>, at: i64) {
+        self.dismiss_pending();
+        let prior_failures = self.failures.len() as i64;
+        self.failures.push(FailureEvent {
+            error_code: error_code.clone(),
+        });
+        self.pending = Some(PendingAbort {
+            status,
+            error_code,
+            at,
+            prior_failures,
+        });
+        if status == "error" {
+            self.last_failure_at = Some(at);
+            self.request_start = None;
+            self.first_output_at = None;
+            self.last_output_at = None;
+            self.last_tool_result_at = None;
+            self.usage_record = None;
+        }
+    }
+
+    /// 挂起的失败 / 中断事件之后出现了用量 / 结算：计入该行的重试计数
+    ///（事件条目在 stash 时已进 failures），不再单独出行。
+    fn dismiss_pending(&mut self) {
+        self.pending = None;
+    }
+
+    /// 结算挂起的失败 / 中断事件：自上一次结算之后出现过请求活动（边界 /
+    /// 工具结果 / 模型输出任一）→ 写一条 0 token 行；空闲时按了中断 →
+    /// 不出行。边界行与文件读尽（EOF）两处共用。
+    fn finalize_pending(&mut self) -> Option<TimerOutcome> {
+        let pending = self.pending.take()?;
+        if !self.activity_since_settle {
+            return None;
+        }
+        Some(TimerOutcome::Zero(ZeroTokenRow {
+            started_at: pending.at,
+            status: pending.status,
+            error_code: pending.error_code,
+            retry_count: pending.prior_failures,
+        }))
+    }
+
+    /// 文件读尽时的结算：只有用户中断（turn_aborted）出行。错误 /
+    /// 流错误之后可能跟着重试，立即出行会把「重试过但最终成功的请求」
+    /// 拆成两行——留给下一条边界结算（续读时回看区会重建挂起状态）。
+    /// 代价：错误之后会话再无任何新内容时这条失败不入库（本机日志尚
+    /// 未出现过 error / stream_error 事件，取舍可接受）。
+    fn finalize_pending_at_eof(&mut self) -> Option<TimerOutcome> {
+        if self.pending.as_ref()?.status != "cancelled" {
+            return None;
+        }
+        self.finalize_pending()
+    }
+
+    /// 重置本请求的现场状态（边界 / 结算时调用）。last_boundary_at、
+    /// last_token_count_at 与活动水位由调用方按需推进；pending 不在此清
+    ///（0 token 行的结算时机由 finalize_pending 负责）。
+    fn reset_request(&mut self) {
+        self.request_start = None;
+        self.first_output_at = None;
+        self.last_output_at = None;
+        self.last_tool_result_at = None;
+        self.usage_record = None;
+        self.failures.clear();
+        self.last_failure_at = None;
+    }
+}
+
 // ===== 增量导入 =====
 
 /// 导入互斥锁：面板查询 / 托盘标题刷新 / 同步上传可能并发触发导入，
@@ -593,11 +1096,29 @@ pub fn import_incremental_force() -> Result<(), String> {
     collect_session_files(&dir, 3, &mut files);
     files.sort();
 
+    // 计时 / 状态一次性回填（PRAGMA user_version 标记）：标记 < 2 时，对
+    // 最近 90 天修改过的文件无视已有偏移从头重放（已存在的行在 token 逐项
+    // 一致时原地补计时，重放幂等）。跑完才写标记：个别文件失败照常记日志
+    // 跳过、标记照写；中途退出则标记没写、下次重来。**不删 file_progress
+    // 行**——正在运行的旧版实例会抢先重建进度，导致回填漏掉文件。（与
+    // claude.rs 同款做法，两个库的 user_version 互不影响；.jsonl.zst 本来
+    // 就不导入，不处理。）
+    let backfill_needed = timing_backfill_pending(&conn);
+    let backfill_cutoff = now_ms_epoch() - TIMING_BACKFILL_WINDOW_MS;
+
     run_import_files(&mut conn, &files, "导入", |tx, path| {
         let key = path.to_string_lossy().to_string();
-        let known = progress.get(&key).copied();
+        let known = if backfill_needed && file_modified_after(path, backfill_cutoff) {
+            None
+        } else {
+            progress.get(&key).copied()
+        };
         import_one_file(tx, path, known)
     })?;
+
+    if backfill_needed {
+        mark_timing_backfill_done(&mut conn);
+    }
 
     // 历史版本可能在模型上下文尚未写入时就落了空 model_id。对这些会话重扫
     // 原始文件，借助同一套事件序号和 upsert 逻辑把模型名补回；没有模型上下文
@@ -632,6 +1153,46 @@ pub fn import_incremental_force() -> Result<(), String> {
         eprintln!("[agenthud-codex] 会话项目维度回填失败（下次重试）: {e}");
     }
     Ok(())
+}
+
+/// 计时回填的 PRAGMA user_version 标记值（1 留给历史迁移语义，本轮写 2；
+/// claude.sqlite 用同名标记但库文件独立，互不影响）
+const TIMING_BACKFILL_VERSION: i64 = 2;
+/// 计时回填只重放最近修改过的文件（90 天；更早的保持现状）
+const TIMING_BACKFILL_WINDOW_MS: i64 = 90 * 24 * 3_600_000;
+
+/// 当前毫秒时间戳（回填窗口判定用；导入锁内调用，无并发问题）
+fn now_ms_epoch() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+/// 计时回填标记判定：PRAGMA user_version < 2 时需要重放（读取失败视为需要，
+/// 失败仅影响本轮多做一次幂等重放，不丢数据）
+fn timing_backfill_pending(conn: &Connection) -> bool {
+    conn.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
+        .map(|version| version < TIMING_BACKFILL_VERSION)
+        .unwrap_or(true)
+}
+
+/// 写入计时回填完成标记（失败只记日志：下轮导入多做一次幂等重放）
+fn mark_timing_backfill_done(conn: &mut Connection) {
+    let result = conn.execute_batch(&format!("PRAGMA user_version = {TIMING_BACKFILL_VERSION};"));
+    if let Err(e) = result {
+        eprintln!("[agenthud-codex] 写入回填标记失败（下次导入会重放一遍）: {e}");
+    }
+}
+
+/// 文件修改时间是否在 cutoff 之后（读不到元信息按否处理，保持原偏移续读）
+fn file_modified_after(path: &Path, cutoff_ms: i64) -> bool {
+    std::fs::metadata(path)
+        .and_then(|meta| meta.modified())
+        .ok()
+        .and_then(|mtime| mtime.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|age| age.as_millis() as i64 >= cutoff_ms)
+        .unwrap_or(false)
 }
 
 /// 上次会话项目维度回填时间（节流用）。
@@ -833,6 +1394,9 @@ pub fn backfill_today_rate_limit_history() -> Result<usize, String> {
 /// 事务由调用方的 run_import_files 按文件提供（每文件一个，失败整体
 /// 回滚，见 import_incremental_force）；行级 INSERT 在循环前 prepare 一次
 /// 复用，避免每行重复解析 SQL。
+/// 计时 / 状态取证：逐行喂 RequestTimer 状态机，token_count 结算一行一条
+/// model_usage（契约不变），中断 / 失败在没有用量时补 0 token 行；续读时
+/// 先回看游标前最多 1MB 重建上下文（feed_lookback，产物丢弃）。
 fn import_one_file(
     tx: &Transaction<'_>,
     path: &Path,
@@ -855,18 +1419,18 @@ fn import_one_file(
 
     let mut file = std::fs::File::open(path).map_err(|e| format!("打开会话文件失败: {e}"))?;
     let mut reader = std::io::BufReader::new(&mut file);
-    reader
-        .seek(SeekFrom::Start(start_offset))
-        .map_err(|e| format!("定位读取偏移失败: {e}"))?;
 
     // 续读时 event_seq 接着该会话已入库的最大序号继续（唯一键稳定）；
+    // 0 token 行的序号是负的事件时间戳毫秒，这里只统计正序号——否则首个
+    // 请求被中断的会话续读后所有用量行都会落到负序号区间，之后从头重放
+    // （文件被重写触发 reparse，从 seq=1 重排）会因不冲突而整段重复入库。
     // 同时恢复该会话最近一次归因的模型名。若历史记录全为空，则从原始文件
     // 的 start_offset 之前恢复最近上下文，避免继续把新增 token 归到空模型。
     let mut seq: i64 = 0;
     let mut current_model = String::new();
     if !reparse {
         let _ = tx.query_row(
-            "SELECT COALESCE(MAX(event_seq), 0),
+            "SELECT COALESCE(MAX(CASE WHEN event_seq > 0 THEN event_seq END), 0),
                     COALESCE((SELECT model_id FROM model_usage
                               WHERE session_id = ?1 AND model_id != ''
                               ORDER BY event_seq DESC LIMIT 1), '')
@@ -919,21 +1483,63 @@ fn import_one_file(
     let mut pending_model_seqs: Vec<i64> = Vec::new();
 
     // 行级 INSERT 预编译一次，循环内仅绑定执行（prepare 保留不可变借用，
-    // 与循环内低频的 tx.execute 互不冲突，commit 由调用方在语句析构后进行）
+    // 与循环内低频的 tx.execute 互不冲突，commit 由调用方在语句析构后进行）。
+    // 冲突分支两种情况：
+    // - 补空模型名（原行为不变）：历史空模型行被重新归因时更新模型名并打
+    //   修订标记（?19），供同步客户端补传修订行；
+    // - token 五项逐项相等（重放命中已有行）：给值为空的计时 / 状态列补上
+    //   新值（COALESCE 已入库优先）、retry_count 取较大者。token 不相等的
+    //   行绝不动——防止文件被改写后把计时贴到别的行上。
     let mut insert_usage = tx
         .prepare(
             "INSERT INTO model_usage
                 (session_id, event_seq, started_at, model_id, provider_id,
                  input_tokens, output_tokens, cache_read_input_tokens,
                  cache_creation_input_tokens, reasoning_tokens, computed_total_tokens,
-                 model_revision_at)
-             VALUES (?1, ?2, ?3, ?4, 'codex', ?5, ?6, ?7, 0, ?8, ?9, 0)
+                 duration_ms, request_started_at, first_token_at, completed_at,
+                 time_to_first_token_ms, timing_estimated, status, error_code,
+                 retry_count, model_revision_at)
+             VALUES (?1, ?2, ?3, ?4, 'codex', ?5, ?6, ?7, 0, ?8, ?9,
+                     ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, 0)
              ON CONFLICT(session_id, event_seq) DO UPDATE SET
-                 model_id = excluded.model_id,
-                 model_revision_at = ?10
-             WHERE model_usage.model_id = '' AND excluded.model_id != ''",
+                 model_id = CASE
+                     WHEN model_usage.model_id = '' AND excluded.model_id != ''
+                     THEN excluded.model_id ELSE model_usage.model_id END,
+                 model_revision_at = CASE
+                     WHEN model_usage.model_id = '' AND excluded.model_id != ''
+                     THEN ?19 ELSE model_usage.model_revision_at END,
+                 duration_ms = COALESCE(model_usage.duration_ms, excluded.duration_ms),
+                 request_started_at = COALESCE(model_usage.request_started_at, excluded.request_started_at),
+                 first_token_at = COALESCE(model_usage.first_token_at, excluded.first_token_at),
+                 completed_at = COALESCE(model_usage.completed_at, excluded.completed_at),
+                 time_to_first_token_ms = COALESCE(model_usage.time_to_first_token_ms, excluded.time_to_first_token_ms),
+                 timing_estimated = COALESCE(model_usage.timing_estimated, excluded.timing_estimated),
+                 status = COALESCE(model_usage.status, excluded.status),
+                 error_code = COALESCE(model_usage.error_code, excluded.error_code),
+                 retry_count = MAX(model_usage.retry_count, excluded.retry_count)
+             WHERE (model_usage.model_id = '' AND excluded.model_id != '')
+                OR (model_usage.input_tokens = excluded.input_tokens
+                    AND model_usage.output_tokens = excluded.output_tokens
+                    AND model_usage.cache_read_input_tokens = excluded.cache_read_input_tokens
+                    AND model_usage.reasoning_tokens = excluded.reasoning_tokens
+                    AND model_usage.computed_total_tokens = excluded.computed_total_tokens)",
         )
         .map_err(|e| format!("预编译用量写入语句失败: {e}"))?;
+
+    // 请求计时状态机：从事件序列取证耗时 / 首字 / 状态 / 重试（结算产物
+    // 由主循环写库；回看区调用只重建上下文，产物丢弃）
+    let mut timer = RequestTimer::default();
+
+    // 续读回看（start_offset > 0）：请求的边界行可能在上次已读部分（用户
+    // 输入之后等模型输出等了很久），从游标前最多 1MB 读到游标重建上下文
+    //（last_boundary_at / 待定失败事件等）。这段的结算与 0 token 行一律
+    // 丢弃——不写库、不推进序号；进度偏移仍只按新增字节推进。
+    if !reparse && start_offset > 0 {
+        feed_lookback(&mut reader, start_offset, &mut timer)?;
+    }
+    reader
+        .seek(SeekFrom::Start(start_offset))
+        .map_err(|e| format!("定位读取偏移失败: {e}"))?;
 
     let mut buf: Vec<u8> = Vec::with_capacity(4096);
     loop {
@@ -955,6 +1561,73 @@ fn import_one_file(
         let Ok(line) = serde_json::from_slice::<RolloutLine>(&buf) else {
             continue;
         };
+        // 计时 / 状态状态机：所有类别都要喂（边界 / 工具结果 / 输出项都是
+        // 耗时证据），产生结算产物时立即写库（一个 token_count 对应一行
+        // model_usage 的契约不变）
+        if let Some(outcome) = timer.feed(&line) {
+            match outcome {
+                TimerOutcome::Usage(settled) => {
+                    seq += 1;
+                    insert_usage
+                        .execute(rusqlite::params![
+                            session_id,
+                            seq,
+                            settled.started_at,
+                            current_model,
+                            settled.input_tokens,
+                            settled.output_tokens,
+                            settled.cache_read_tokens,
+                            settled.reasoning_tokens,
+                            settled.total_tokens,
+                            settled.duration_ms,
+                            settled.request_started_at,
+                            settled.first_token_at,
+                            settled.completed_at,
+                            settled.time_to_first_token_ms,
+                            settled.timing_estimated,
+                            "completed",
+                            settled.error_code,
+                            settled.retry_count,
+                            model_revision_at,
+                        ])
+                        .map_err(|e| format!("写入用量记录失败: {e}"))?;
+                    if current_model.is_empty() {
+                        pending_model_seqs.push(seq);
+                    }
+                }
+                TimerOutcome::Zero(zero) => {
+                    // 0 token 行：event_seq 取负的事件时间戳毫秒（不占用正
+                    // 序号，续读不需要行号，重放时键不变）；冲突时 token 全
+                    // 0 逐项相等走补空分支，值全同等于不改动
+                    insert_usage
+                        .execute(rusqlite::params![
+                            session_id,
+                            -zero.started_at,
+                            zero.started_at,
+                            current_model,
+                            0i64,
+                            0i64,
+                            0i64,
+                            0i64,
+                            0i64,
+                            None::<f64>,
+                            None::<i64>,
+                            None::<i64>,
+                            None::<i64>,
+                            None::<f64>,
+                            None::<i64>,
+                            zero.status,
+                            zero.error_code,
+                            zero.retry_count,
+                            0i64,
+                        ])
+                        .map_err(|e| format!("写入中断用量记录失败: {e}"))?;
+                    if current_model.is_empty() {
+                        pending_model_seqs.push(-zero.started_at);
+                    }
+                }
+            }
+        }
         match line.line_type.as_deref() {
             // turn_context：更新当前模型（token_count 不带模型，靠它归因）
             Some("turn_context") => {
@@ -979,7 +1652,9 @@ fn import_one_file(
                     }
                 }
             }
-            // event_msg + token_count：一条 token 用量记录
+            // event_msg + token_count：用量与计时结算已由状态机处理，这里
+            // 只负责提取额度快照（条件与旧实现一致：缺 last_token_usage /
+            // 缺时间戳的行不更新快照）
             Some("event_msg") => {
                 let Some(v) = line.payload.as_ref() else { continue };
                 let Ok(p) = serde_json::from_value::<TokenCountPayload>(v.clone()) else {
@@ -988,34 +1663,18 @@ fn import_one_file(
                 if p.msg_type.as_deref() != Some("token_count") {
                     continue;
                 }
-                let Some(usage) = p.info.as_ref().and_then(|i| i.last_token_usage.as_ref())
-                else {
+                let has_usage = p
+                    .info
+                    .as_ref()
+                    .and_then(|i| i.last_token_usage.as_ref())
+                    .is_some();
+                if !has_usage {
                     continue;
-                };
+                }
                 // 没有时间戳无法归入统计区间，跳过（偏移仍推进）
                 let Some(started_at) = line.timestamp.as_deref().and_then(parse_ts_ms) else {
                     continue;
                 };
-
-                seq += 1;
-                insert_usage
-                    .execute(rusqlite::params![
-                        session_id,
-                        seq,
-                        started_at,
-                        current_model,
-                        usage.input_tokens,
-                        usage.output_tokens,
-                        usage.cached_input_tokens,
-                        usage.reasoning_output_tokens,
-                        usage.total_tokens,
-                        model_revision_at,
-                    ])
-                    .map_err(|e| format!("写入用量记录失败: {e}"))?;
-
-                if current_model.is_empty() {
-                    pending_model_seqs.push(seq);
-                }
 
                 // 仅 ChatGPT 订阅登录模式 primary 非空；custom provider 全为 null
                 if let Some(limits) = p.rate_limits.as_ref() {
@@ -1025,6 +1684,39 @@ fn import_one_file(
                 }
             }
             _ => {}
+        }
+    }
+
+    // 文件读尽：只结算仍挂起的用户中断（turn_aborted → cancelled 0 token
+    // 行，自上一次结算之后出现过请求活动才出行）。错误 / 流错误不在此
+    // 出行——之后可能跟着重试，立即结算会把重试成功的请求拆成两行，留给
+    // 下一条边界结算（续读时回看区会重建挂起状态）
+    if let Some(TimerOutcome::Zero(zero)) = timer.finalize_pending_at_eof() {
+        insert_usage
+            .execute(rusqlite::params![
+                session_id,
+                -zero.started_at,
+                zero.started_at,
+                current_model,
+                0i64,
+                0i64,
+                0i64,
+                0i64,
+                0i64,
+                None::<f64>,
+                None::<i64>,
+                None::<i64>,
+                None::<i64>,
+                None::<f64>,
+                None::<i64>,
+                zero.status,
+                zero.error_code,
+                zero.retry_count,
+                0i64,
+            ])
+            .map_err(|e| format!("写入中断用量记录失败: {e}"))?;
+        if current_model.is_empty() {
+            pending_model_seqs.push(-zero.started_at);
         }
     }
     drop(insert_usage);
@@ -1074,16 +1766,78 @@ fn import_one_file(
     Ok(())
 }
 
+/// 续读回看：从游标前最多 LOOKBACK_BYTES 字节读到游标，只喂事件重建
+/// RequestTimer 上下文（last_boundary_at / 待定失败事件等；起点在行中间
+/// 时丢掉开头那条不完整的行，跨越游标的行防御性整行丢弃）。回看区的
+/// 结算与 0 token 行一律丢弃——不写库、不推进序号（仿 claude.rs::feed_lookback）。
+fn feed_lookback(
+    reader: &mut std::io::BufReader<&mut std::fs::File>,
+    start_offset: u64,
+    timer: &mut RequestTimer,
+) -> Result<(), String> {
+    let begin = start_offset.saturating_sub(LOOKBACK_BYTES);
+    // 对齐判定：begin == 0 必在行边界；否则看前一字节是否换行（是 → 第一行
+    // 完整可直接喂，否 → 第一行是被截断的半行，整行丢弃）
+    let mut aligned = true;
+    if begin > 0 {
+        reader
+            .seek(SeekFrom::Start(begin - 1))
+            .map_err(|e| format!("定位回看偏移失败: {e}"))?;
+        let mut probe = [0u8; 1];
+        let n = std::io::Read::read(reader, &mut probe)
+            .map_err(|e| format!("读取回看对齐字节失败: {e}"))?;
+        aligned = n == 1 && probe[0] == b'\n';
+    }
+    reader
+        .seek(SeekFrom::Start(begin))
+        .map_err(|e| format!("定位回看偏移失败: {e}"))?;
+    let limit = start_offset - begin;
+    let mut consumed: u64 = 0;
+    let mut buf: Vec<u8> = Vec::with_capacity(4096);
+    loop {
+        if consumed >= limit {
+            break;
+        }
+        buf.clear();
+        let n = reader
+            .read_until(b'\n', &mut buf)
+            .map_err(|e| format!("读取回看区失败: {e}"))?;
+        if n == 0 {
+            break; // EOF（游标之后没有更多内容，异常情况，防御）
+        }
+        consumed += n as u64;
+        if !aligned {
+            // 开头不完整的行：等下一个换行符之后才算对齐
+            if buf.last() == Some(&b'\n') {
+                aligned = true;
+            }
+            continue;
+        }
+        if consumed > limit {
+            break; // 游标非行边界（防御）：跨过去的行不喂，避免与新增区重复
+        }
+        // 产物丢弃：回看区只重建上下文，写库只认新增字节里的结算
+        if let Ok(line) = serde_json::from_slice::<RolloutLine>(&buf) {
+            let _ = timer.feed(&line);
+        }
+    }
+    Ok(())
+}
+
 // ===== 查询函数（与 db.rs 同名同构，查 codex.sqlite；查询前先增量导入）=====
 
 /// 查询 [from_ms, to_ms) 内的统计（口径与 db::query_stats 完全一致）。
-/// Codex 会话文件无耗时数据，速度/TTFT 恒为 None（聚合占位 NULL）。
+/// 新版导入已按事件序列取证耗时 / 首字（老库无列时按 NULL 聚合），
+/// 速度原料由 fill_duration_metrics 统一补齐。
 pub fn query_stats(from_ms: i64, to_ms: i64) -> Result<db::Stats, String> {
     import_incremental()?;
     let conn = open_codex_db()?;
-    let speed = db::speed_agg_columns(false, false);
+    let speed = db::speed_agg_columns(
+        db::has_column(&conn, "model_usage", "duration_ms"),
+        db::has_column(&conn, "model_usage", "time_to_first_token_ms"),
+    );
 
-    let overall: db::OverallStat = conn
+    let mut overall: db::OverallStat = conn
         .query_row(
             &format!(
                 "SELECT
@@ -1139,7 +1893,7 @@ pub fn query_stats(from_ms: i64, to_ms: i64) -> Result<db::Stats, String> {
         ))
         .map_err(|e| format!("准备 Codex 模型分组查询失败: {e}"))?;
 
-    let by_model = stmt
+    let mut by_model = stmt
         .query_map(rusqlite::params![from_ms, to_ms], |row| {
             Ok(db::ModelStat {
                 model_id: row.get(0)?,
@@ -1162,6 +1916,10 @@ pub fn query_stats(from_ms: i64, to_ms: i64) -> Result<db::Stats, String> {
         .map_err(|e| format!("读取 Codex 模型分组失败: {e}"))?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| format!("读取 Codex 模型分组失败: {e}"))?;
+
+    // 事件时刻齐全的行改按流式窗口口径（写法与 claude::query_stats 一致）；
+    // 无计时列的老库内部直接按行数守恒返回，等价于旧占位结果
+    db::fill_duration_metrics(&conn, "codex", from_ms, to_ms, &mut overall, &mut by_model)?;
 
     let (earliest_ms, latest_ms): (Option<i64>, Option<i64>) = conn
         .query_row(
@@ -1343,52 +2101,212 @@ pub fn query_trend(
 /// 查询 id > since 的明细记录（同步上传用）。source 固定 "codex"，local_rowid = id。
 /// proto 5：附带会话 id 与项目维度（project_key / 原始 cwd 来自 session_meta，
 /// 未回填的会话两字段为 None，服务端落 NULL）。
-/// proto 8：耗时/首字按列存在性带出（本库 model_usage 无这两列 → 恒 None，
-/// 与 request_logs 的行级查询同款动态降级口径）。
+/// proto 8：耗时/首字按列存在性带出（与 request_logs 的行级查询同款动态降级口径）。
+/// proto 9：附带流式速度证据 speed_evidence（事件时刻齐全时）。
+/// proto 10：附带状态扩展列（status / error_code / retry_count /
+/// timing_estimated，按列存在性带出）。实现见 query_rows_since_id。
 pub fn query_since(since: i64, limit: usize) -> Result<Vec<db::UsageRow>, String> {
     import_incremental()?;
     let conn = open_codex_db()?;
-    let (duration, ttft) = db::speed_columns(&conn);
+    // 增量上传按 id 游标分页：WHERE 与 ORDER BY 都必须锚定 mu.id
+    let rows = query_rows_since_id(
+        &conn,
+        "mu.id > ?1",
+        "mu.id ASC",
+        &[since],
+        2,
+        limit,
+        "增量",
+    )?;
+    Ok(rows.into_iter().map(|row| row.usage).collect())
+}
+
+/// query_since / query_model_revised_since_at 共用的行查询内核（WHERE /
+/// ORDER BY / 占位符由调用方给：limit_idx = WHERE 参数个数 + 1）。proto 10
+/// 状态扩展列追加在 SELECT 末尾（见 row 内注释的下标表），事件时刻两列
+/// （first_token_at / completed_at）仅供流式速度证据判定、不进 UsageRow——
+/// 有事件证据的行同时携带 speed_evidence（proto 9 通道，见
+/// token_speed::import_evidence），禁止用这两列反推相对量。
+fn query_rows_since_id(
+    conn: &Connection,
+    where_clause: &str,
+    order_by: &str,
+    params: &[i64],
+    limit_idx: usize,
+    limit: usize,
+    kind: &str,
+) -> Result<Vec<ModelRevisionRow>, String> {
+    // proto 8：与 query_since 同款耗时/首字列（无列 → 恒 None；查询/同步层
+    // 不做时间戳差相减，只转发导入时按事件时刻算好并带 timing_estimated
+    // 标记落库的列）
+    let (duration, ttft) = db::speed_columns(conn);
+    // proto 10：状态扩展列同款按列存在性带出（session_meta 无同名列，
+    // JOIN 下裸列名解析无歧义）
+    let (status, error_code, retry_count, timing_estimated) = db::timing_columns(conn);
+    // 事件时刻（speed_evidence 判定用；无列恒 NULL → evidence 走 None 回退）
+    let (first_col, completed_col) = event_columns(conn);
     let sql = format!(
         "SELECT mu.id, mu.started_at, mu.model_id, mu.provider_id,
                 mu.input_tokens, mu.output_tokens, mu.cache_read_input_tokens,
                 mu.cache_creation_input_tokens, mu.reasoning_tokens, mu.computed_total_tokens,
-                mu.session_id, sm.project_key, sm.cwd, {duration}, {ttft}
+                mu.model_revision_at, mu.session_id, sm.project_key, sm.cwd,
+                {duration}, {ttft}, {status}, {error_code}, {retry_count},
+                {timing_estimated}, {first_col}, {completed_col}
          FROM model_usage mu
          LEFT JOIN session_meta sm ON sm.session_id = mu.session_id
-         WHERE mu.id > ?1
-         ORDER BY mu.id ASC
-         LIMIT ?2"
+         WHERE {where_clause}
+         ORDER BY {order_by}
+         LIMIT ?{limit_idx}"
     );
     let mut stmt = conn
         .prepare(&sql)
-        .map_err(|e| format!("准备 Codex 增量查询失败: {e}"))?;
+        .map_err(|e| format!("准备 Codex {kind}查询失败: {e}"))?;
     let rows = stmt
-        .query_map(rusqlite::params![since, limit as i64], |row| {
-            Ok(db::UsageRow {
-                speed_evidence: None,
-                local_rowid: row.get(0)?,
-                started_at: row.get(1)?,
-                model_id: row.get::<_, Option<String>>(2)?.unwrap_or_default(),
-                provider_id: row.get::<_, Option<String>>(3)?.unwrap_or_default(),
-                input_tokens: row.get(4)?,
-                output_tokens: row.get(5)?,
-                cache_read_input_tokens: row.get(6)?,
-                cache_creation_input_tokens: row.get(7)?,
-                reasoning_tokens: row.get(8)?,
-                computed_total_tokens: row.get(9)?,
-                source: "codex".into(),
-                session_id: row.get(10)?,
-                project_key: row.get(11)?,
-                project_display: row.get(12)?,
-                duration_ms: row.get(13)?,
-                time_to_first_token_ms: row.get(14)?,
-            })
-        })
-        .map_err(|e| format!("读取 Codex 增量记录失败: {e}"))?
+        .query_map(
+            rusqlite::params_from_iter(
+                params.iter().copied().chain(std::iter::once(limit as i64)),
+            ),
+            |row| {
+                let output_tokens: i64 = row.get(5)?;
+                let duration_ms: Option<f64> = row.get(14)?;
+                let status_raw: Option<String> = row.get(16)?;
+                let timing = crate::token_speed::ImportTiming {
+                    output_tokens,
+                    row_at: row.get(1)?,
+                    first_token_at: row.get(20)?,
+                    completed_at: row.get(21)?,
+                    duration_ms,
+                    fallback_quality: crate::token_speed::duration_quality("codex"),
+                    observed_at_ms: 0,
+                    completed: crate::token_speed::is_completed_status(status_raw.as_deref()),
+                };
+                Ok(ModelRevisionRow {
+                    usage: db::UsageRow {
+                    speed_evidence: crate::token_speed::import_evidence(&timing),
+                    local_rowid: row.get(0)?,
+                    started_at: row.get(1)?,
+                    model_id: row.get::<_, Option<String>>(2)?.unwrap_or_default(),
+                    provider_id: row.get::<_, Option<String>>(3)?.unwrap_or_default(),
+                    input_tokens: row.get(4)?,
+                    output_tokens,
+                    cache_read_input_tokens: row.get(6)?,
+                    cache_creation_input_tokens: row.get(7)?,
+                    reasoning_tokens: row.get(8)?,
+                    computed_total_tokens: row.get(9)?,
+                    source: "codex".into(),
+                    // 列序以 SELECT 为准：model_revision_at=10 挤占了 query_since
+                    // 里的 session_id 位，此后逐列 +1（session_id=11、project_key=12、
+                    // cwd=13、duration=14、ttft=15；speed_columns / timing_columns
+                    // / event_columns 无列时以 NULL / 0 字面量占位，列数不变）。
+                    // proto 10 状态扩展列：status=16、error_code=17、
+                    // retry_count=18、timing_estimated=19；事件时刻仅判定用：
+                    // first=20、completed=21（revision_at 读下标 10，见下方）
+                    session_id: row.get(11)?,
+                    project_key: row.get(12)?,
+                    project_display: row.get(13)?,
+                    duration_ms,
+                    time_to_first_token_ms: row.get(15)?,
+                    status: row.get(16)?,
+                    error_code: row.get::<_, Option<String>>(17)?.filter(|c| !c.is_empty()),
+                    retry_count: row.get(18)?,
+                    timing_estimated: row.get::<_, Option<i64>>(19)?.map(|v| v != 0),
+                },
+                revision_at: row.get(10)?,
+                })
+            },
+        )
+        .map_err(|e| format!("读取 Codex {kind}记录失败: {e}"))?
         .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| format!("读取 Codex 增量记录失败: {e}"))?;
+        .map_err(|e| format!("读取 Codex {kind}记录失败: {e}"))?;
     Ok(rows)
+}
+
+/// 导入库的事件时刻列（first_token_at / completed_at）：无列时给 NULL 占位
+/// （列数不变）。这两列仅供 speed_evidence 判定，禁止用它们反推相对量。
+fn event_columns(conn: &Connection) -> (&'static str, &'static str) {
+    (
+        if db::has_column(conn, "model_usage", "first_token_at") { "first_token_at" } else { "NULL" },
+        if db::has_column(conn, "model_usage", "completed_at") { "completed_at" } else { "NULL" },
+    )
+}
+
+/// proto 10 定向重传的行筛选条件（见 query_timing_backlog_at）：带任一计时 /
+/// 状态证据即入选。列存在性动态降级——缺列的维度以字面量 0 占位（恒假，
+/// 该维度不参与判定，查询不报错）。status / error_code 空串按无值处理；
+/// duration_ms 要求非空且大于 0（SQL 的 NULL > 0 为假，直接比较即可）。
+/// 当前导入器写耗时时必写 completed_at，duration_ms 条件是为了不依赖该
+/// 不变量的兜底。
+fn timing_backlog_condition(conn: &Connection) -> String {
+    let present = |name: &str| -> String {
+        if db::has_column(conn, "model_usage", name) {
+            format!("{name} IS NOT NULL")
+        } else {
+            "0".to_string()
+        }
+    };
+    let nonempty = |name: &str| -> String {
+        if db::has_column(conn, "model_usage", name) {
+            format!("NULLIF({name},'') IS NOT NULL")
+        } else {
+            "0".to_string()
+        }
+    };
+    let retry = if db::has_column(conn, "model_usage", "retry_count") {
+        "COALESCE(retry_count,0) > 0".to_string()
+    } else {
+        "0".to_string()
+    };
+    let duration = if db::has_column(conn, "model_usage", "duration_ms") {
+        "duration_ms > 0".to_string()
+    } else {
+        "0".to_string()
+    };
+    let joined = [
+        present("request_started_at"),
+        present("first_token_at"),
+        present("completed_at"),
+        present("time_to_first_token_ms"),
+        present("timing_estimated"),
+        duration,
+        retry,
+        nonempty("status"),
+        nonempty("error_code"),
+    ]
+    .join(" OR ");
+    format!("({joined})")
+}
+
+/// proto 10 一次性定向重传查询（同步上传用，入口见 query_since 的同款约定）。
+/// 只选出**带计时 / 状态证据**的行（request_started_at / first_token_at /
+/// completed_at / time_to_first_token_ms / timing_estimated / status /
+/// error_code 任一非空，或 retry_count > 0），按 id 升序分页。普通增量通道
+/// （query_since，按 id 游标）不受本查询影响——一次性通道不携带
+/// last_rowid、不推进任何游标，服务端按主键幂等去重，失败重跑无副作用。
+pub fn query_timing_backlog(
+    after_id: i64,
+    limit: usize,
+) -> Result<Vec<ModelRevisionRow>, String> {
+    import_incremental()?;
+    let conn = open_codex_db()?;
+    query_timing_backlog_at(&conn, after_id, limit)
+}
+
+/// `query_timing_backlog` 的纯查询内核（连接注入版，供单元测试）。
+pub(crate) fn query_timing_backlog_at(
+    conn: &Connection,
+    after_id: i64,
+    limit: usize,
+) -> Result<Vec<ModelRevisionRow>, String> {
+    let condition = timing_backlog_condition(conn);
+    query_rows_since_id(
+        conn,
+        &format!("mu.id > ?1 AND {condition}"),
+        "mu.id ASC",
+        &[after_id],
+        2,
+        limit,
+        "计时定向重传",
+    )
 }
 
 /// 查询模型名被历史回填过的记录（同步补传用）。
@@ -1420,58 +2338,18 @@ pub(crate) fn query_model_revised_since_at(
     after_id: i64,
     limit: usize,
 ) -> Result<Vec<ModelRevisionRow>, String> {
-    // proto 8：与 query_since 同款耗时/首字列（本库无这两列 → 恒 None）
-    let (duration, ttft) = db::speed_columns(conn);
-    let sql = format!(
-        "SELECT mu.id, mu.started_at, mu.model_id, mu.provider_id,
-                mu.input_tokens, mu.output_tokens, mu.cache_read_input_tokens,
-                mu.cache_creation_input_tokens, mu.reasoning_tokens, mu.computed_total_tokens,
-                mu.model_revision_at, mu.session_id, sm.project_key, sm.cwd,
-                {duration}, {ttft}
-         FROM model_usage mu
-         LEFT JOIN session_meta sm ON sm.session_id = mu.session_id
-         WHERE (mu.model_revision_at > ?1
-                OR (mu.model_revision_at = ?1 AND mu.id > ?2))
-           AND mu.model_id != ''
-         ORDER BY mu.model_revision_at ASC, mu.id ASC
-         LIMIT ?3"
-    );
-    let mut stmt = conn
-        .prepare(&sql)
-        .map_err(|e| format!("准备 Codex 模型修订查询失败: {e}"))?;
-    let rows = stmt
-        .query_map(rusqlite::params![since_ts, after_id, limit as i64], |row| {
-            Ok(ModelRevisionRow {
-                usage: db::UsageRow {
-                speed_evidence: None,
-                    local_rowid: row.get(0)?,
-                    started_at: row.get(1)?,
-                    model_id: row.get::<_, Option<String>>(2)?.unwrap_or_default(),
-                    provider_id: row.get::<_, Option<String>>(3)?.unwrap_or_default(),
-                    input_tokens: row.get(4)?,
-                    output_tokens: row.get(5)?,
-                    cache_read_input_tokens: row.get(6)?,
-                    cache_creation_input_tokens: row.get(7)?,
-                    reasoning_tokens: row.get(8)?,
-                    computed_total_tokens: row.get(9)?,
-                    source: "codex".into(),
-                    // 列序以 SELECT 为准：model_revision_at=10 挤占了 query_since
-                    // 里的 session_id 位，此后逐列 +1（session_id=11、project_key=12、
-                    // cwd=13、duration=14、ttft=15；speed_columns 无列时以 NULL
-                    // 字面量占位，列数不变）
-                    session_id: row.get(11)?,
-                    project_key: row.get(12)?,
-                    project_display: row.get(13)?,
-                    duration_ms: row.get(14)?,
-                    time_to_first_token_ms: row.get(15)?,
-                },
-                revision_at: row.get(10)?,
-            })
-        })
-        .map_err(|e| format!("读取 Codex 模型修订失败: {e}"))?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| format!("读取 Codex 模型修订失败: {e}"))?;
-    Ok(rows)
+    // 修订序分页：WHERE 锚定 (model_revision_at, id) 双游标，只补模型名
+    // 已知的行；排序按修订时间优先（与增量查询的 id 游标序不同）
+    query_rows_since_id(
+        conn,
+        "(mu.model_revision_at > ?1 OR (mu.model_revision_at = ?1 AND mu.id > ?2))
+            AND mu.model_id != ''",
+        "mu.model_revision_at ASC, mu.id ASC",
+        &[since_ts, after_id],
+        3,
+        limit,
+        "模型修订",
+    )
 }
 
 /// 导入库当前最大 rowid（供「待上传条数」显示用）。
@@ -1714,9 +2592,12 @@ pub fn query_project_sessions(
         )
         .map_err(|e| format!("查询 Codex 项目会话总数失败: {e}"))?;
 
-    // Codex 库 model_usage 无耗时列（DDL 固定，见建表语句），速度/TTFT 恒
-    // 占位 NULL/0 → 会话级两指标为 None（前端隐藏）；仍走统一片段保持四源同构
-    let speed = db::session_speed_agg_columns(false, false);
+    // 速度 / TTFT 聚合片段按列探测（新库有计时列，老库降级占位 NULL/0 →
+    // 会话级两指标为 None，前端隐藏）；仍走统一片段保持四源同构
+    let speed = db::session_speed_agg_columns(
+        db::has_column(&conn, "model_usage", "duration_ms"),
+        db::has_column(&conn, "model_usage", "time_to_first_token_ms"),
+    );
     let mut stmt = conn
         .prepare(&format!(
             "SELECT mu.session_id, mu.model_id,
@@ -2571,6 +3452,1137 @@ mod tests {
         assert_eq!(u.project_key.as_deref(), Some("x"));
         assert_eq!(u.project_display.as_deref(), Some("/w/x"));
         assert_eq!(u.computed_total_tokens, 30);
+    }
+
+    /// proto 10 定向重传查询（query_timing_backlog_at）：只选带计时 / 状态
+    /// 证据的行（任一字段非空或 retry_count > 0；空串 status 不算），按 id
+    /// 升序分页；缺列库各维度以 0 占位，查询不报错、返回空。
+    #[test]
+    fn timing_backlog_query_selects_rows_with_evidence_only() {
+        // 分支一：完整列库（新版导入库 schema 同构）
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE model_usage (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                event_seq INTEGER NOT NULL,
+                started_at INTEGER NOT NULL,
+                model_id TEXT NOT NULL DEFAULT '',
+                provider_id TEXT NOT NULL DEFAULT 'codex',
+                input_tokens INTEGER NOT NULL DEFAULT 0,
+                output_tokens INTEGER NOT NULL DEFAULT 0,
+                cache_read_input_tokens INTEGER NOT NULL DEFAULT 0,
+                cache_creation_input_tokens INTEGER NOT NULL DEFAULT 0,
+                reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+                computed_total_tokens INTEGER NOT NULL DEFAULT 0,
+                model_revision_at INTEGER NOT NULL DEFAULT 0,
+                duration_ms REAL,
+                time_to_first_token_ms REAL,
+                request_started_at INTEGER,
+                first_token_at INTEGER,
+                completed_at INTEGER,
+                timing_estimated INTEGER,
+                status TEXT,
+                error_code TEXT,
+                retry_count INTEGER NOT NULL DEFAULT 0
+             );
+             CREATE TABLE session_meta (
+                session_id  TEXT PRIMARY KEY,
+                cwd         TEXT,
+                project_key TEXT,
+                captured_at INTEGER
+             );
+             INSERT INTO model_usage (id, session_id, event_seq, started_at, model_id,
+                computed_total_tokens, status, error_code, duration_ms) VALUES
+                (1, 's', 1, 1000, 'm', 10, NULL, NULL, NULL),      -- 纯用量无证据：排除
+                (2, 's', 1, 2000, 'm', 10, 'error', '429', NULL),  -- 有状态：入选
+                (3, 's', 1, 3000, 'm', 10, '', NULL, NULL),        -- 空串 status：排除
+                (4, 's', 1, 4000, 'm', 10, NULL, NULL, NULL),      -- 见下方 UPDATE
+                (5, 's', 1, 5000, 'm', 10, NULL, NULL, 1500.0);    -- 只有耗时：入选
+             UPDATE model_usage SET first_token_at = 4001 WHERE id = 4;
+             UPDATE model_usage SET retry_count = 2, timing_estimated = 1
+                WHERE id IN (2, 4);",
+        )
+        .expect("建表并写入样例行失败");
+        let ids = |after_id: i64| -> Vec<i64> {
+            query_timing_backlog_at(&conn, after_id, 10)
+                .expect("定向查询失败")
+                .into_iter()
+                .map(|row| row.usage.local_rowid)
+                .collect()
+        };
+        assert_eq!(ids(0), vec![2, 4, 5], "带证据的行入选（空串 status 不算、只有耗时也算）");
+        assert_eq!(ids(2), vec![4, 5], "按 id 分页：after_id 之后的行");
+        assert_eq!(ids(4), vec![5]);
+        assert!(ids(5).is_empty(), "取空即结束");
+
+        // 分支二：缺全部计时/状态列的库（旧导入库 schema 同构）：条件全 0
+        // 占位，查询不报错、恒返回空
+        let legacy = Connection::open_in_memory().unwrap();
+        legacy
+            .execute_batch(
+                "CREATE TABLE model_usage (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT NOT NULL,
+                    event_seq INTEGER NOT NULL,
+                    started_at INTEGER NOT NULL,
+                    model_id TEXT NOT NULL DEFAULT '',
+                    provider_id TEXT NOT NULL DEFAULT 'codex',
+                    input_tokens INTEGER NOT NULL DEFAULT 0,
+                    output_tokens INTEGER NOT NULL DEFAULT 0,
+                    cache_read_input_tokens INTEGER NOT NULL DEFAULT 0,
+                    cache_creation_input_tokens INTEGER NOT NULL DEFAULT 0,
+                    reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+                    computed_total_tokens INTEGER NOT NULL DEFAULT 0,
+                    model_revision_at INTEGER NOT NULL DEFAULT 0
+                 );
+                 INSERT INTO model_usage (session_id, event_seq, started_at, model_id,
+                    computed_total_tokens) VALUES ('s', 1, 1000, 'm', 10);
+                 CREATE TABLE session_meta (
+                    session_id  TEXT PRIMARY KEY,
+                    cwd         TEXT,
+                    project_key TEXT,
+                    captured_at INTEGER
+                 );",
+            )
+            .expect("建缺列表失败");
+        let rows = query_timing_backlog_at(&legacy, 0, 10).expect("缺列库定向查询失败");
+        assert!(rows.is_empty(), "无计时列的库没有定向重传行");
+    }
+
+    // ===== 计时 / 状态取证测试（合成数据，字段布局按本机 Codex CLI 实测
+    // 构造，不含真实对话内容）=====
+
+    /// ISO8601 时间 → 毫秒时间戳（测试断言用）
+    fn ms(s: &str) -> i64 {
+        parse_ts_ms(s).unwrap_or_else(|| panic!("测试时间戳格式错误: {s}"))
+    }
+
+    fn ev(ts: &str, payload: &str) -> String {
+        format!(r#"{{"timestamp":"{ts}","type":"event_msg","payload":{payload}}}"#)
+    }
+
+    fn ri(ts: &str, payload: &str) -> String {
+        format!(r#"{{"timestamp":"{ts}","type":"response_item","payload":{payload}}}"#)
+    }
+
+    fn usage_json(input: i64, cached: i64, output: i64, reasoning: i64, total: i64) -> String {
+        format!(
+            r#"{{"input_tokens":{input},"cached_input_tokens":{cached},"output_tokens":{output},"reasoning_output_tokens":{reasoning},"total_tokens":{total}}}"#
+        )
+    }
+
+    fn token_count(ts: &str, usage: &str) -> String {
+        ev(
+            ts,
+            &format!(r#"{{"type":"token_count","info":{{"last_token_usage":{usage}}}}}"#),
+        )
+    }
+
+    fn usage_record(ts: &str, usage: &str) -> String {
+        format!(r#"{{"timestamp":"{ts}","type":"token_usage_record","payload":{{"usage":{usage}}}}}"#)
+    }
+
+    fn task_started(ts: &str) -> String {
+        ev(ts, r#"{"type":"task_started","turn_id":"t1"}"#)
+    }
+
+    fn turn_context(ts: &str) -> String {
+        format!(
+            r#"{{"timestamp":"{ts}","type":"turn_context","payload":{{"model":"gpt-5.1-codex"}}}}"#
+        )
+    }
+
+    fn user_message(ts: &str) -> String {
+        ri(ts, r#"{"type":"message","role":"user","content":[]}"#)
+    }
+
+    fn assistant_message(ts: &str) -> String {
+        ri(ts, r#"{"type":"message","role":"assistant","content":[]}"#)
+    }
+
+    fn tool_call(ts: &str) -> String {
+        ri(ts, r#"{"type":"custom_tool_call","name":"shell","input":"ls"}"#)
+    }
+
+    fn tool_output(ts: &str) -> String {
+        ri(ts, r#"{"type":"custom_tool_call_output","output":"ok"}"#)
+    }
+
+    /// AgentMessage 的输出开始事件（started_at_ms 是取证的首个输出时刻）
+    fn agent_message_done(ts: &str, started_at_ms: i64) -> String {
+        ev(
+            ts,
+            &format!(
+                r#"{{"type":"item_completed","item":{{"type":"AgentMessage","id":"it-1"}},"started_at_ms":{started_at_ms},"completed_at_ms":{}}}"#,
+                started_at_ms + 1
+            ),
+        )
+    }
+
+    fn turn_aborted(ts: &str) -> String {
+        ev(ts, r#"{"type":"turn_aborted","reason":"interrupted"}"#)
+    }
+
+    fn error_event(ts: &str, code: &str) -> String {
+        ev(ts, &format!(r#"{{"type":"error","code":"{code}"}}"#))
+    }
+
+    /// model_usage 行的计时 / 状态快照（按 started_at 时间序读取）。
+    #[derive(Debug, PartialEq)]
+    struct RowSnapshot {
+        event_seq: i64,
+        started_at: i64,
+        model_id: String,
+        input_tokens: i64,
+        output_tokens: i64,
+        reasoning_tokens: i64,
+        computed_total_tokens: i64,
+        request_started_at: Option<i64>,
+        first_token_at: Option<i64>,
+        completed_at: Option<i64>,
+        duration_ms: Option<f64>,
+        time_to_first_token_ms: Option<f64>,
+        timing_estimated: Option<i64>,
+        status: Option<String>,
+        error_code: Option<String>,
+        retry_count: i64,
+    }
+
+    fn read_rows(conn: &Connection) -> Vec<RowSnapshot> {
+        let mut stmt = conn
+            .prepare(
+                "SELECT event_seq, started_at, model_id, input_tokens, output_tokens,
+                        reasoning_tokens, computed_total_tokens,
+                        request_started_at, first_token_at, completed_at,
+                        duration_ms, time_to_first_token_ms, timing_estimated,
+                        status, error_code, retry_count
+                 FROM model_usage ORDER BY started_at, event_seq",
+            )
+            .expect("准备快照查询失败");
+        stmt.query_map([], |row| {
+            Ok(RowSnapshot {
+                event_seq: row.get(0)?,
+                started_at: row.get(1)?,
+                model_id: row.get(2)?,
+                input_tokens: row.get(3)?,
+                output_tokens: row.get(4)?,
+                reasoning_tokens: row.get(5)?,
+                computed_total_tokens: row.get(6)?,
+                request_started_at: row.get(7)?,
+                first_token_at: row.get(8)?,
+                completed_at: row.get(9)?,
+                duration_ms: row.get(10)?,
+                time_to_first_token_ms: row.get(11)?,
+                timing_estimated: row.get(12)?,
+                status: row.get(13)?,
+                error_code: row.get(14)?,
+                retry_count: row.get(15)?,
+            })
+        })
+        .expect("读取快照失败")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("快照行解析失败")
+    }
+
+    /// 临时库 + 会话文件（文件名含标准 uuid，session_id 从主干末 36 字符提取）
+    fn setup_codex_case(tag: &str) -> (PathBuf, Connection, PathBuf) {
+        let tmp = std::env::temp_dir().join(format!(
+            "zbar-codex-timing-{tag}-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).expect("创建临时目录失败");
+        let conn = Connection::open(tmp.join("codex.sqlite")).expect("打开临时库失败");
+        conn.execute_batch(SCHEMA_SQL).expect("初始化临时库失败");
+        let file = tmp.join("rollout-2026-08-16T10-00-00-01a209f0-a6bb-7c61-a631-2a69c9e0ea48.jsonl");
+        (tmp, conn, file)
+    }
+
+    fn write_session(path: &Path, lines: &[String]) {
+        std::fs::write(path, lines.join("\n") + "\n").expect("写入测试会话文件失败");
+    }
+
+    fn run_import(conn: &mut Connection, file: &Path, known: Option<(u64, u64)>) {
+        let tx = conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .expect("开启导入事务失败");
+        import_one_file(&tx, file, known).expect("导入失败");
+        tx.commit().expect("提交导入事务失败");
+    }
+
+    /// 今日（0.171 布局）的完整顺序：文字回复请求 + 纯工具调用子请求 +
+    /// 工具结果后紧跟 token_count + 后续 AgentMessage 子请求。逐项断言
+    /// 起点 / 首个输出 / 结束时刻 / 耗时 / 首字。
+    #[test]
+    fn import_codex_timing_full_sequence() {
+        let (tmp, mut conn, file) = setup_codex_case("full");
+        let u1 = usage_json(100, 10, 5, 3, 118);
+        let u2 = usage_json(50, 20, 7, 1, 78);
+        let u3 = usage_json(60, 30, 20, 5, 115);
+        let lines = [
+            task_started("2026-08-16T10:00:00.000Z"),
+            turn_context("2026-08-16T10:00:00.010Z"),
+            user_message("2026-08-16T10:00:00.020Z"),
+            ev(
+                "2026-08-16T10:00:00.030Z",
+                r#"{"type":"item_completed","item":{"type":"UserMessage","id":"um"}}"#,
+            ),
+            agent_message_done("2026-08-16T10:00:08.000Z", ms("2026-08-16T10:00:05.000Z")),
+            assistant_message("2026-08-16T10:00:08.010Z"),
+            usage_record("2026-08-16T10:00:08.020Z", &u1),
+            token_count("2026-08-16T10:00:08.030Z", &u1),
+            // 第二轮：纯工具调用子请求（无输出开始事件）→ 工具结果 → 紧跟
+            // token_count → 同轮的后续 AgentMessage 子请求
+            task_started("2026-08-16T10:01:00.000Z"),
+            turn_context("2026-08-16T10:01:00.010Z"),
+            user_message("2026-08-16T10:01:00.020Z"),
+            tool_call("2026-08-16T10:01:03.000Z"),
+            usage_record("2026-08-16T10:01:03.100Z", &u2),
+            tool_output("2026-08-16T10:01:03.500Z"),
+            token_count("2026-08-16T10:01:03.520Z", &u2),
+            agent_message_done("2026-08-16T10:01:08.000Z", ms("2026-08-16T10:01:06.000Z")),
+            assistant_message("2026-08-16T10:01:08.010Z"),
+            usage_record("2026-08-16T10:01:08.020Z", &u3),
+            token_count("2026-08-16T10:01:08.030Z", &u3),
+        ];
+        write_session(&file, &lines);
+        run_import(&mut conn, &file, None);
+
+        let rows = read_rows(&conn);
+        assert_eq!(rows.len(), 3, "三次 token_count 结算对应三行");
+        let base = "2026-08-16T10:00:00.020Z";
+        // 行 1：文字回复（起点 = 用户输入、首字 = started_at_ms、结束 = 用量记录）
+        let r1 = &rows[0];
+        assert_eq!(r1.event_seq, 1);
+        assert_eq!(r1.started_at, ms("2026-08-16T10:00:08.030Z"));
+        assert_eq!(r1.model_id, "gpt-5.1-codex");
+        assert_eq!(r1.request_started_at, Some(ms(base)));
+        assert_eq!(r1.first_token_at, Some(ms("2026-08-16T10:00:05.000Z")));
+        assert_eq!(r1.completed_at, Some(ms("2026-08-16T10:00:08.020Z")));
+        assert_eq!(r1.duration_ms, Some(8000.0));
+        assert_eq!(r1.time_to_first_token_ms, Some(4980.0));
+        assert_eq!(r1.timing_estimated, Some(1));
+        assert_eq!(r1.status.as_deref(), Some("completed"));
+        assert_eq!(r1.retry_count, 0);
+        // 行 2：纯工具调用子请求（无输出开始 → 无首字；用量记录一致 →
+        // 结束取用量记录时刻；起点 = 本轮用户输入）
+        let r2 = &rows[1];
+        assert_eq!(r2.event_seq, 2);
+        assert_eq!(r2.request_started_at, Some(ms("2026-08-16T10:01:00.020Z")));
+        assert_eq!(r2.first_token_at, None, "纯工具调用没有输出开始事件");
+        assert_eq!(r2.completed_at, Some(ms("2026-08-16T10:01:03.100Z")));
+        assert_eq!(r2.duration_ms, Some(3080.0));
+        assert_eq!(r2.time_to_first_token_ms, None);
+        assert_eq!(r2.timing_estimated, Some(1));
+        assert_eq!(r2.input_tokens, 50);
+        assert_eq!(r2.output_tokens, 7);
+        assert_eq!(r2.reasoning_tokens, 1);
+        assert_eq!(r2.computed_total_tokens, 78);
+        // 行 3：子请求 2（起点 = 上一次 token_count 的时刻，即工具结果之后
+        // 的下一个子请求开始）
+        let r3 = &rows[2];
+        assert_eq!(r3.event_seq, 3);
+        assert_eq!(r3.request_started_at, Some(ms("2026-08-16T10:01:03.520Z")));
+        assert_eq!(r3.first_token_at, Some(ms("2026-08-16T10:01:06.000Z")));
+        assert_eq!(r3.completed_at, Some(ms("2026-08-16T10:01:08.020Z")));
+        assert_eq!(r3.duration_ms, Some(4500.0));
+        assert_eq!(r3.time_to_first_token_ms, Some(2480.0));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// 生成窗口不足 200 毫秒的行：起点、首字、结束三个时刻照常落库
+    ///（流式速度由读库方判定，导入层不做速度取舍），耗时按派生窗口校验。
+    #[test]
+    fn import_codex_timing_short_generation_window() {
+        let (tmp, mut conn, file) = setup_codex_case("short");
+        let u = usage_json(10, 0, 4, 0, 14);
+        let lines = [
+            task_started("2026-08-16T10:00:00.000Z"),
+            turn_context("2026-08-16T10:00:00.005Z"),
+            user_message("2026-08-16T10:00:00.010Z"),
+            agent_message_done("2026-08-16T10:00:03.050Z", ms("2026-08-16T10:00:03.000Z")),
+            assistant_message("2026-08-16T10:00:03.060Z"),
+            usage_record("2026-08-16T10:00:03.100Z", &u),
+            token_count("2026-08-16T10:00:03.110Z", &u),
+        ];
+        write_session(&file, &lines);
+        run_import(&mut conn, &file, None);
+
+        let rows = read_rows(&conn);
+        assert_eq!(rows.len(), 1);
+        let r = &rows[0];
+        // 生成窗口 = completed − first = 100ms（< 200ms）；耗时窗口
+        // = completed − start = 3090ms（合法）。两个时刻必须都落库，
+        // 速度由读库方按窗口合法性判定
+        assert_eq!(r.first_token_at, Some(ms("2026-08-16T10:00:03.000Z")));
+        assert_eq!(r.completed_at, Some(ms("2026-08-16T10:00:03.100Z")));
+        assert_eq!(r.request_started_at, Some(ms("2026-08-16T10:00:00.010Z")));
+        assert_eq!(r.duration_ms, Some(3090.0));
+        assert_eq!(r.time_to_first_token_ms, Some(2990.0));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// token_count 延后写出（工具结果之后不到 100 毫秒、没有用量记录）→
+    /// 结束时刻取最后一个模型输出的时间戳（token_count 被 tool 执行推后）。
+    #[test]
+    fn import_codex_timing_delayed_token_count() {
+        let (tmp, mut conn, file) = setup_codex_case("delayed");
+        let u = usage_json(30, 5, 9, 2, 46);
+        let lines = [
+            task_started("2026-08-16T10:00:00.000Z"),
+            turn_context("2026-08-16T10:00:00.005Z"),
+            user_message("2026-08-16T10:00:00.010Z"),
+            agent_message_done("2026-08-16T10:00:02.000Z", ms("2026-08-16T10:00:01.000Z")),
+            assistant_message("2026-08-16T10:00:02.010Z"),
+            tool_call("2026-08-16T10:00:03.000Z"),
+            tool_output("2026-08-16T10:00:03.300Z"),
+            token_count("2026-08-16T10:00:03.350Z", &u),
+        ];
+        write_session(&file, &lines);
+        run_import(&mut conn, &file, None);
+
+        let rows = read_rows(&conn);
+        assert_eq!(rows.len(), 1);
+        let r = &rows[0];
+        assert_eq!(
+            r.completed_at,
+            Some(ms("2026-08-16T10:00:03.000Z")),
+            "工具结果后 50ms 的 token_count → 取最后一个模型输出时刻"
+        );
+        assert_eq!(r.request_started_at, Some(ms("2026-08-16T10:00:00.010Z")));
+        assert_eq!(r.first_token_at, Some(ms("2026-08-16T10:00:01.000Z")));
+        assert_eq!(r.duration_ms, Some(2990.0));
+        assert_eq!(r.time_to_first_token_ms, Some(990.0));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// 用量记录与 token_count 的用量对不上 → 结束时刻退回 token_count 行
+    /// 时间戳（不再贴给用量记录）。
+    #[test]
+    fn import_codex_timing_usage_mismatch_falls_back_to_row_ts() {
+        let (tmp, mut conn, file) = setup_codex_case("mismatch");
+        let lines = [
+            task_started("2026-08-16T10:00:00.000Z"),
+            turn_context("2026-08-16T10:00:00.005Z"),
+            user_message("2026-08-16T10:00:00.010Z"),
+            agent_message_done("2026-08-16T10:00:02.000Z", ms("2026-08-16T10:00:01.000Z")),
+            assistant_message("2026-08-16T10:00:02.010Z"),
+            usage_record(
+                "2026-08-16T10:00:02.500Z",
+                &usage_json(1, 0, 1, 0, 2),
+            ),
+            token_count(
+                "2026-08-16T10:00:02.520Z",
+                &usage_json(10, 2, 5, 1, 18),
+            ),
+        ];
+        write_session(&file, &lines);
+        run_import(&mut conn, &file, None);
+
+        let rows = read_rows(&conn);
+        assert_eq!(rows.len(), 1);
+        let r = &rows[0];
+        assert_eq!(
+            r.completed_at,
+            Some(ms("2026-08-16T10:00:02.520Z")),
+            "用量不一致 → 结束时刻取 token_count 行时间戳"
+        );
+        assert_eq!(r.duration_ms, Some(2510.0));
+        assert_eq!(r.time_to_first_token_ms, Some(990.0));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// 旧版布局：没有 item_completed 的 started_at_ms → 只有耗时没有首字；
+    /// 上一次 token_count 之后不到 100 毫秒的成批补写输出不算新请求
+    ///（补写后的第二次结算没有起点，不产生派生耗时）。
+    #[test]
+    fn import_codex_timing_legacy_layout_and_batch_rewrite() {
+        let (tmp, mut conn, file) = setup_codex_case("legacy");
+        let lines = [
+            task_started("2026-08-16T10:00:00.000Z"),
+            turn_context("2026-08-16T10:00:00.005Z"),
+            user_message("2026-08-16T10:00:00.010Z"),
+            assistant_message("2026-08-16T10:00:03.000Z"),
+            token_count("2026-08-16T10:00:03.100Z", &usage_json(20, 0, 6, 0, 26)),
+            // 旧版本成批补写：距上次结算 50ms / 40ms 的输出项
+            assistant_message("2026-08-16T10:00:03.150Z"),
+            agent_message_done("2026-08-16T10:00:03.160Z", ms("2026-08-16T10:00:03.140Z")),
+            token_count("2026-08-16T10:00:03.200Z", &usage_json(20, 0, 6, 0, 26)),
+        ];
+        write_session(&file, &lines);
+        run_import(&mut conn, &file, None);
+
+        let rows = read_rows(&conn);
+        assert_eq!(rows.len(), 2);
+        // 行 1：无输出开始事件 → 只有耗时
+        let r1 = &rows[0];
+        assert_eq!(r1.request_started_at, Some(ms("2026-08-16T10:00:00.010Z")));
+        assert_eq!(r1.first_token_at, None, "旧版无 started_at_ms");
+        assert_eq!(r1.completed_at, Some(ms("2026-08-16T10:00:03.100Z")));
+        assert_eq!(r1.duration_ms, Some(3090.0));
+        assert_eq!(r1.time_to_first_token_ms, None);
+        // 行 2：补写输出不算新请求的证据 → 无起点、无派生耗时、无首字
+        let r2 = &rows[1];
+        assert_eq!(
+            r2.request_started_at, None,
+            "补写输出被忽略 → 无模型输出 → 无起点"
+        );
+        assert_eq!(r2.duration_ms, None);
+        assert_eq!(r2.first_token_at, None);
+        assert_eq!(r2.time_to_first_token_ms, None);
+        assert_eq!(r2.timing_estimated, None);
+        assert_eq!(r2.completed_at, Some(ms("2026-08-16T10:00:03.200Z")));
+        assert_eq!(r2.status.as_deref(), Some("completed"));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// 带 turn_aborted 的轮次（其后没有用量）→ 一条 status = cancelled 的
+    /// 0 token 行：event_seq 取负的事件时间戳毫秒，token 全 0，计时列全空。
+    #[test]
+    fn import_codex_timing_turn_aborted_writes_zero_token_row() {
+        let (tmp, mut conn, file) = setup_codex_case("abort");
+        let lines = [
+            task_started("2026-08-16T10:00:00.000Z"),
+            turn_context("2026-08-16T10:00:00.005Z"),
+            user_message("2026-08-16T10:00:00.010Z"),
+            agent_message_done("2026-08-16T10:00:02.000Z", ms("2026-08-16T10:00:01.000Z")),
+            assistant_message("2026-08-16T10:00:02.010Z"),
+            turn_aborted("2026-08-16T10:00:03.500Z"),
+        ];
+        write_session(&file, &lines);
+        run_import(&mut conn, &file, None);
+
+        let rows = read_rows(&conn);
+        assert_eq!(rows.len(), 1);
+        let r = &rows[0];
+        assert_eq!(
+            r.event_seq,
+            -ms("2026-08-16T10:00:03.500Z"),
+            "0 token 行的序号是负的事件时间戳毫秒"
+        );
+        assert_eq!(r.started_at, ms("2026-08-16T10:00:03.500Z"));
+        assert_eq!(r.model_id, "gpt-5.1-codex");
+        assert_eq!(r.input_tokens, 0);
+        assert_eq!(r.output_tokens, 0);
+        assert_eq!(r.computed_total_tokens, 0);
+        assert_eq!(r.status.as_deref(), Some("cancelled"));
+        assert_eq!(r.error_code, None);
+        assert_eq!(r.retry_count, 0);
+        assert_eq!(r.request_started_at, None, "0 token 行无计时");
+        assert_eq!(r.first_token_at, None);
+        assert_eq!(r.completed_at, None);
+        assert_eq!(r.duration_ms, None);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// error 之后跟着用量 → 不单独出 0 token 行，计入正常行的重试次数并
+    /// 携带错误码（重试后成功的行 status 仍是 completed）。
+    #[test]
+    fn import_codex_timing_error_then_usage_counts_as_retry() {
+        let (tmp, mut conn, file) = setup_codex_case("retry");
+        let u = usage_json(40, 8, 12, 2, 62);
+        let lines = [
+            task_started("2026-08-16T10:00:00.000Z"),
+            turn_context("2026-08-16T10:00:00.005Z"),
+            user_message("2026-08-16T10:00:00.010Z"),
+            error_event("2026-08-16T10:00:01.000Z", "rate_limit_exhausted"),
+            agent_message_done("2026-08-16T10:00:05.000Z", ms("2026-08-16T10:00:04.000Z")),
+            assistant_message("2026-08-16T10:00:05.010Z"),
+            usage_record("2026-08-16T10:00:05.020Z", &u),
+            token_count("2026-08-16T10:00:05.030Z", &u),
+        ];
+        write_session(&file, &lines);
+        run_import(&mut conn, &file, None);
+
+        let rows = read_rows(&conn);
+        assert_eq!(rows.len(), 1, "错误后有用量 → 不单独出 0 token 行");
+        let r = &rows[0];
+        assert_eq!(r.status.as_deref(), Some("completed"));
+        assert_eq!(r.retry_count, 1, "一次失败尝试计入重试次数");
+        assert_eq!(r.error_code.as_deref(), Some("rate_limit_exhausted"));
+        // 耗时和首字描述「产生这条回复的那一次请求」：起点取最后一次失败
+        // 事件的时刻（不含失败尝试与退避等待），首字只取失败之后的输出
+        assert_eq!(
+            r.request_started_at,
+            Some(ms("2026-08-16T10:00:01.000Z")),
+            "有失败事件 → 起点改取最后一次失败时刻"
+        );
+        assert_eq!(
+            r.completed_at,
+            Some(ms("2026-08-16T10:00:05.020Z")),
+            "用量一致 → 结束取用量记录时刻"
+        );
+        assert_eq!(
+            r.duration_ms,
+            Some(4020.0),
+            "耗时不含失败前的尝试段（5010ms − 失败前的 990ms）"
+        );
+        assert_eq!(r.first_token_at, Some(ms("2026-08-16T10:00:04.000Z")));
+        assert_eq!(r.time_to_first_token_ms, Some(3000.0));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// 空闲时（自上次结算后没有任何请求活动）的 turn_aborted 不出行：
+    /// 文件头直接中断、完整结算后中断，两种都不产生 0 token 行。
+    #[test]
+    fn import_codex_timing_idle_abort_writes_nothing() {
+        let (tmp, mut conn, file) = setup_codex_case("idle");
+        let u = usage_json(10, 0, 4, 0, 14);
+        let lines = [
+            // 文件头直接中断（无任何边界 / 输出）
+            turn_aborted("2026-08-16T09:00:00.000Z"),
+            // 完整结算的请求
+            task_started("2026-08-16T10:00:00.000Z"),
+            turn_context("2026-08-16T10:00:00.005Z"),
+            user_message("2026-08-16T10:00:00.010Z"),
+            agent_message_done("2026-08-16T10:00:03.000Z", ms("2026-08-16T10:00:02.000Z")),
+            assistant_message("2026-08-16T10:00:03.010Z"),
+            token_count("2026-08-16T10:00:03.020Z", &u),
+            // 结算后空闲中断
+            turn_aborted("2026-08-16T10:05:00.000Z"),
+        ];
+        write_session(&file, &lines);
+        run_import(&mut conn, &file, None);
+
+        let rows = read_rows(&conn);
+        assert_eq!(rows.len(), 1, "空闲中断不产生 0 token 行");
+        assert_eq!(rows[0].status.as_deref(), Some("completed"));
+        assert_eq!(rows[0].event_seq, 1);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// 0 token 行的负序号不得污染续读的正序号：会话首个请求被中断（EOF
+    /// 时结算出负 event_seq 行）后追加一轮用量，续读的用量行必须接着正
+    /// 序号（seq = 1）落库；此后从头重放（文件被重写触发 reparse）因
+    /// 键相同而幂等，不重复入库、token 总量不变。
+    #[test]
+    fn import_codex_zero_token_row_does_not_break_seq() {
+        let (tmp, mut conn, file) = setup_codex_case("negseq");
+        let u = usage_json(70, 20, 30, 6, 126);
+        // 第一段：首个请求被用户中断（有边界与输出 → 出 0 token 行）
+        write_session(
+            &file,
+            &[
+                task_started("2026-08-16T10:00:00.000Z"),
+                turn_context("2026-08-16T10:00:00.005Z"),
+                user_message("2026-08-16T10:00:00.010Z"),
+                assistant_message("2026-08-16T10:00:00.050Z"),
+                turn_aborted("2026-08-16T10:00:01.000Z"),
+            ],
+        );
+        run_import(&mut conn, &file, None);
+        let rows = read_rows(&conn);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].event_seq, -ms("2026-08-16T10:00:01.000Z"));
+        assert_eq!(rows[0].status.as_deref(), Some("cancelled"));
+        let (offset, size): (i64, i64) = conn
+            .query_row(
+                "SELECT offset, size FROM file_progress WHERE path = ?1",
+                rusqlite::params![file.to_string_lossy().to_string()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("读取导入进度失败");
+
+        // 第二段：中断之后新的一轮请求正常完成
+        let mut grown = std::fs::read_to_string(&file).expect("读取会话文件失败");
+        grown.pop();
+        grown.push('\n');
+        grown.push_str(&task_started("2026-08-16T10:00:09.000Z"));
+        grown.push('\n');
+        grown.push_str(&turn_context("2026-08-16T10:00:09.005Z"));
+        grown.push('\n');
+        grown.push_str(&user_message("2026-08-16T10:00:09.010Z"));
+        grown.push('\n');
+        grown.push_str(&agent_message_done(
+            "2026-08-16T10:00:11.000Z",
+            ms("2026-08-16T10:00:10.000Z"),
+        ));
+        grown.push('\n');
+        grown.push_str(&assistant_message("2026-08-16T10:00:11.010Z"));
+        grown.push('\n');
+        grown.push_str(&usage_record("2026-08-16T10:00:11.020Z", &u));
+        grown.push('\n');
+        grown.push_str(&token_count("2026-08-16T10:00:11.030Z", &u));
+        grown.push('\n');
+        std::fs::write(&file, grown).expect("追加会话内容失败");
+
+        run_import(&mut conn, &file, Some((offset as u64, size as u64)));
+        let rows = read_rows(&conn);
+        assert_eq!(rows.len(), 2, "0 token 行 + 一次正常结算");
+        let usage = rows
+            .iter()
+            .find(|r| r.status.as_deref() == Some("completed"))
+            .expect("缺少 completed 行");
+        assert_eq!(
+            usage.event_seq, 1,
+            "续读的用量行必须接正序号（0 token 行的负序号不参与 MAX）"
+        );
+        assert_eq!(usage.computed_total_tokens, 126);
+
+        // 从头重放（reparse 路径，seq 从 1 重排）：键相同 → 不增行、token
+        // 总量不变（修复前负 seq 会让这里的重放整段重复入库）
+        run_import(&mut conn, &file, None);
+        let rows = read_rows(&conn);
+        assert_eq!(rows.len(), 2, "重放不新增行");
+        let total: i64 = rows.iter().map(|r| r.computed_total_tokens).sum();
+        assert_eq!(total, 126, "重放不重复计数（0 token 行贡献 0）");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// 错误事件在文件读尽时不出行（之后可能跟着重试，立即结算会把重试
+    /// 成功的请求拆成两行），留给下一条边界结算；turn_aborted 是用户中断、
+    /// 不会有重试，照旧在文件读尽时结算为 cancelled 行。
+    #[test]
+    fn import_codex_error_pending_not_settled_at_eof() {
+        let (tmp, mut conn, file) = setup_codex_case("erroreof");
+        let u = usage_json(50, 10, 15, 3, 78);
+        // 场景一：error 后文件读尽 → 不出行；追加用量后续读 → 只有一条
+        // completed 行（retry_count = 1），重试不拆成两行
+        write_session(
+            &file,
+            &[
+                task_started("2026-08-16T10:00:00.000Z"),
+                turn_context("2026-08-16T10:00:00.005Z"),
+                user_message("2026-08-16T10:00:00.010Z"),
+                error_event("2026-08-16T10:00:01.000Z", "rate_limit_exhausted"),
+            ],
+        );
+        run_import(&mut conn, &file, None);
+        assert!(
+            read_rows(&conn).is_empty(),
+            "error 在文件读尽时不出 0 token 行"
+        );
+        let (offset, size): (i64, i64) = conn
+            .query_row(
+                "SELECT offset, size FROM file_progress WHERE path = ?1",
+                rusqlite::params![file.to_string_lossy().to_string()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("读取导入进度失败");
+
+        let mut grown = std::fs::read_to_string(&file).expect("读取会话文件失败");
+        grown.pop();
+        grown.push('\n');
+        grown.push_str(&agent_message_done(
+            "2026-08-16T10:00:05.000Z",
+            ms("2026-08-16T10:00:04.000Z"),
+        ));
+        grown.push('\n');
+        grown.push_str(&assistant_message("2026-08-16T10:00:05.010Z"));
+        grown.push('\n');
+        grown.push_str(&usage_record("2026-08-16T10:00:05.020Z", &u));
+        grown.push('\n');
+        grown.push_str(&token_count("2026-08-16T10:00:05.030Z", &u));
+        grown.push('\n');
+        std::fs::write(&file, grown).expect("追加会话内容失败");
+        run_import(&mut conn, &file, Some((offset as u64, size as u64)));
+
+        let rows = read_rows(&conn);
+        assert_eq!(rows.len(), 1, "重试成功只有一条 completed 行");
+        assert_eq!(rows[0].status.as_deref(), Some("completed"));
+        assert_eq!(rows[0].retry_count, 1);
+        assert_eq!(rows[0].error_code.as_deref(), Some("rate_limit_exhausted"));
+
+        // 场景二：error 后文件读尽 → 不出行；追加新边界后续读 → 一条
+        // error 的 0 token 行（挂起状态经回看区重建后由边界结算）
+        let (tmp2, mut conn2, file2) = setup_codex_case("erroreof2");
+        write_session(
+            &file2,
+            &[
+                task_started("2026-08-16T10:00:00.000Z"),
+                turn_context("2026-08-16T10:00:00.005Z"),
+                user_message("2026-08-16T10:00:00.010Z"),
+                error_event("2026-08-16T10:00:01.000Z", "server_error"),
+            ],
+        );
+        run_import(&mut conn2, &file2, None);
+        assert!(read_rows(&conn2).is_empty());
+        let (offset2, size2): (i64, i64) = conn2
+            .query_row(
+                "SELECT offset, size FROM file_progress WHERE path = ?1",
+                rusqlite::params![file2.to_string_lossy().to_string()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("读取导入进度失败");
+
+        let mut grown2 = std::fs::read_to_string(&file2).expect("读取会话文件失败");
+        grown2.pop();
+        grown2.push('\n');
+        grown2.push_str(&task_started("2026-08-16T10:00:30.000Z"));
+        grown2.push('\n');
+        std::fs::write(&file2, grown2).expect("追加会话内容失败");
+        run_import(&mut conn2, &file2, Some((offset2 as u64, size2 as u64)));
+
+        let rows = read_rows(&conn2);
+        assert_eq!(rows.len(), 1, "新边界结算挂起的 error");
+        assert_eq!(rows[0].status.as_deref(), Some("error"));
+        assert_eq!(rows[0].error_code.as_deref(), Some("server_error"));
+        assert_eq!(rows[0].event_seq, -ms("2026-08-16T10:00:01.000Z"));
+        assert_eq!(rows[0].computed_total_tokens, 0);
+        let _ = std::fs::remove_dir_all(&tmp2);
+
+        // 场景三（对照组）：turn_aborted 照旧在文件读尽时出行
+        let (tmp3, mut conn3, file3) = setup_codex_case("abort3");
+        write_session(
+            &file3,
+            &[
+                task_started("2026-08-16T10:00:00.000Z"),
+                turn_context("2026-08-16T10:00:00.005Z"),
+                user_message("2026-08-16T10:00:00.010Z"),
+                turn_aborted("2026-08-16T10:00:01.000Z"),
+            ],
+        );
+        run_import(&mut conn3, &file3, None);
+        let rows = read_rows(&conn3);
+        assert_eq!(rows.len(), 1, "turn_aborted 在文件读尽时仍出行");
+        assert_eq!(rows[0].status.as_deref(), Some("cancelled"));
+        let _ = std::fs::remove_dir_all(&tmp3);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// 用户中断后不经边界直接出现带用量的 token_count（工具执行中被中断、
+    /// 用量事后补写）：中断不作废输出证据，起点仍是输出之前的边界、结束
+    /// 取用量记录时刻，耗时正常。对照 error 用例（起点取错误时刻）见
+    /// import_codex_timing_error_then_usage_counts_as_retry。
+    #[test]
+    fn import_codex_aborted_then_usage_keeps_original_evidence() {
+        let (tmp, mut conn, file) = setup_codex_case("abortusage");
+        let u = usage_json(60, 15, 18, 4, 97);
+        let lines = [
+            task_started("2026-08-16T10:00:00.000Z"),
+            turn_context("2026-08-16T10:00:00.005Z"),
+            user_message("2026-08-16T10:00:00.010Z"),
+            agent_message_done("2026-08-16T10:00:03.050Z", ms("2026-08-16T10:00:03.000Z")),
+            assistant_message("2026-08-16T10:00:03.060Z"),
+            turn_aborted("2026-08-16T10:00:03.500Z"),
+            // 中断之后没有新的边界，用量事后补写并结算
+            usage_record("2026-08-16T10:00:04.000Z", &u),
+            token_count("2026-08-16T10:00:04.010Z", &u),
+        ];
+        write_session(&file, &lines);
+        run_import(&mut conn, &file, None);
+
+        let rows = read_rows(&conn);
+        assert_eq!(rows.len(), 1, "有用量 → 不出 0 token 行");
+        let r = &rows[0];
+        assert_eq!(r.status.as_deref(), Some("completed"));
+        // retry_count 的现有行为不变：中断事件折入重试计数
+        assert_eq!(r.retry_count, 1);
+        assert_eq!(r.error_code, None);
+        // 起点与首字取中断前证据（用户中断不重试，证据不作废）
+        assert_eq!(
+            r.request_started_at,
+            Some(ms("2026-08-16T10:00:00.010Z")),
+            "cancelled 不改写起点 → 仍是输出之前的边界"
+        );
+        assert_eq!(r.first_token_at, Some(ms("2026-08-16T10:00:03.000Z")));
+        assert_eq!(
+            r.completed_at,
+            Some(ms("2026-08-16T10:00:04.000Z")),
+            "用量一致 → 结束取用量记录时刻"
+        );
+        assert_eq!(r.duration_ms, Some(3990.0), "耗时是完整的正常请求窗口");
+        assert_eq!(r.time_to_first_token_ms, Some(2990.0));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// 重放幂等：同一文件从头再导一遍 → 行数与各列不变；token 与已入库行
+    /// 不一致的行不被补计时（防止文件被改写后把计时贴到别的行上）。
+    #[test]
+    fn import_codex_replay_preserves_rows_and_skips_mismatched_tokens() {
+        let (tmp, mut conn, file) = setup_codex_case("replay");
+        let u = usage_json(100, 10, 30, 5, 145);
+        let lines = [
+            task_started("2026-08-16T10:00:00.000Z"),
+            turn_context("2026-08-16T10:00:00.005Z"),
+            user_message("2026-08-16T10:00:00.010Z"),
+            agent_message_done("2026-08-16T10:00:05.000Z", ms("2026-08-16T10:00:03.000Z")),
+            assistant_message("2026-08-16T10:00:05.010Z"),
+            usage_record("2026-08-16T10:00:05.020Z", &u),
+            token_count("2026-08-16T10:00:05.030Z", &u),
+        ];
+        write_session(&file, &lines);
+        run_import(&mut conn, &file, None);
+        let first = read_rows(&conn);
+        assert_eq!(first.len(), 1);
+
+        // 重放（known = None，与回填路径同构）：不新增行、各列不变
+        run_import(&mut conn, &file, None);
+        assert_eq!(read_rows(&conn), first, "重放不改变任何取证值");
+
+        // 模拟文件被改写：把库中行的 token 改成与文件不一致的值、计时清空，
+        // 再重放——token 不相等的行绝不补计时
+        conn.execute_batch(
+            "UPDATE model_usage SET input_tokens = 999, computed_total_tokens = 1109,
+                duration_ms = NULL, request_started_at = NULL, first_token_at = NULL,
+                completed_at = NULL, timing_estimated = NULL",
+        )
+        .expect("改写已入库行失败");
+        run_import(&mut conn, &file, None);
+        let rows = read_rows(&conn);
+        assert_eq!(rows.len(), 1, "token 不一致的重放不新增行");
+        let r = &rows[0];
+        assert_eq!(r.input_tokens, 999, "token 不一致时已入库行不被覆盖");
+        assert_eq!(r.duration_ms, None, "token 不一致时不补计时");
+        assert_eq!(r.first_token_at, None);
+        assert_eq!(r.completed_at, None);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// 计时回填标记只触发一次：新库 / 旧库 user_version = 0 时判定需要，
+    /// 写入标记后不再触发（重放幂等的前提下避免每轮全量扫描）。
+    #[test]
+    fn timing_backfill_runs_once() {
+        let (tmp, mut conn, _file) = setup_codex_case("backfill");
+        // SCHEMA_SQL 建的新库 user_version 仍为 0（标记语义与表结构无关）
+        assert!(
+            timing_backfill_pending(&conn),
+            "升级前 user_version < 2 应判定需要回填"
+        );
+        mark_timing_backfill_done(&mut conn);
+        assert!(!timing_backfill_pending(&conn), "写入标记后不再触发");
+        // 幂等：重复写标记无害
+        mark_timing_backfill_done(&mut conn);
+        assert!(!timing_backfill_pending(&conn));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// 旧结构库经 ensure_timing_columns 补列后，与新库（SCHEMA_SQL）的列
+    /// 集合完全一致（顺序无关），retry_count 带 NOT NULL DEFAULT 0 兜底。
+    #[test]
+    fn ensure_timing_columns_matches_new_schema() {
+        let legacy = Connection::open_in_memory().expect("打开内存库失败");
+        // 升级前的旧结构：无 9 个计时状态列
+        legacy
+            .execute_batch(
+                "CREATE TABLE model_usage (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT NOT NULL,
+                    event_seq INTEGER NOT NULL,
+                    started_at INTEGER NOT NULL,
+                    model_id TEXT NOT NULL DEFAULT '',
+                    provider_id TEXT NOT NULL DEFAULT 'codex',
+                    input_tokens INTEGER NOT NULL DEFAULT 0,
+                    output_tokens INTEGER NOT NULL DEFAULT 0,
+                    cache_read_input_tokens INTEGER NOT NULL DEFAULT 0,
+                    cache_creation_input_tokens INTEGER NOT NULL DEFAULT 0,
+                    reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+                    computed_total_tokens INTEGER NOT NULL DEFAULT 0,
+                    model_revision_at INTEGER NOT NULL DEFAULT 0,
+                    UNIQUE(session_id, event_seq)
+                 );
+                 INSERT INTO model_usage (session_id, event_seq, started_at, model_id)
+                 VALUES ('s-old', 1, 1000, 'gpt-5.1-codex');",
+            )
+            .expect("建旧结构表失败");
+
+        ensure_timing_columns(&legacy).expect("补列迁移失败");
+        // 幂等：重复执行不报错
+        ensure_timing_columns(&legacy).expect("重复补列应幂等");
+
+        let columns = |conn: &Connection| -> Vec<String> {
+            let mut stmt = conn
+                .prepare("SELECT name FROM pragma_table_info('model_usage')")
+                .unwrap();
+            let mut names: Vec<String> = stmt
+                .query_map([], |row| row.get(0))
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap();
+            names.sort();
+            names
+        };
+        let fresh = Connection::open_in_memory().expect("打开新库失败");
+        fresh.execute_batch(SCHEMA_SQL).expect("建新库失败");
+        assert_eq!(
+            columns(&legacy),
+            columns(&fresh),
+            "补列后的旧库与新库列集合应一致"
+        );
+        // retry_count 的 NOT NULL DEFAULT 0 兜底：旧行迁移后可读且为 0
+        let retry: (i64, Option<String>) = legacy
+            .query_row(
+                "SELECT retry_count, status FROM model_usage WHERE session_id = 's-old'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("读取迁移后的旧行失败");
+        assert_eq!(retry, (0, None));
+    }
+
+    /// 续读：边界行（用户输入）在上次已读区域、输出与结算在新增区域 →
+    /// 回看重建上下文后计时完整（起点对准旧区域的用户输入时刻）。
+    #[test]
+    fn import_codex_lookback_rebuilds_boundary_context() {
+        let (tmp, mut conn, file) = setup_codex_case("lookback");
+        let u = usage_json(80, 20, 25, 4, 129);
+        // 第一段：只有边界行（用户已输入、模型还没输出）
+        write_session(
+            &file,
+            &[
+                task_started("2026-08-16T10:00:00.000Z"),
+                turn_context("2026-08-16T10:00:00.005Z"),
+                user_message("2026-08-16T10:00:00.010Z"),
+            ],
+        );
+        run_import(&mut conn, &file, None);
+        assert!(
+            read_rows(&conn).is_empty(),
+            "没有结算不应产生数据行"
+        );
+        let (offset, size): (i64, i64) = conn
+            .query_row(
+                "SELECT offset, size FROM file_progress WHERE path = ?1",
+                rusqlite::params![file.to_string_lossy().to_string()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("读取导入进度失败");
+
+        // 第二段：等了很久之后输出与结算到达
+        let mut grown = std::fs::read_to_string(&file).expect("读取会话文件失败");
+        grown.pop(); // 去掉此前的结尾换行，追加新行
+        grown.push('\n');
+        grown.push_str(&agent_message_done(
+            "2026-08-16T10:00:12.000Z",
+            ms("2026-08-16T10:00:10.000Z"),
+        ));
+        grown.push('\n');
+        grown.push_str(&assistant_message("2026-08-16T10:00:12.010Z"));
+        grown.push('\n');
+        grown.push_str(&usage_record("2026-08-16T10:00:12.020Z", &u));
+        grown.push('\n');
+        grown.push_str(&token_count("2026-08-16T10:00:12.030Z", &u));
+        grown.push('\n');
+        std::fs::write(&file, grown).expect("追加会话内容失败");
+
+        run_import(&mut conn, &file, Some((offset as u64, size as u64)));
+        let rows = read_rows(&conn);
+        assert_eq!(rows.len(), 1);
+        let r = &rows[0];
+        assert_eq!(
+            r.request_started_at,
+            Some(ms("2026-08-16T10:00:00.010Z")),
+            "回看重建的边界（旧区域用户输入）应作为起点"
+        );
+        assert_eq!(r.first_token_at, Some(ms("2026-08-16T10:00:10.000Z")));
+        assert_eq!(r.completed_at, Some(ms("2026-08-16T10:00:12.020Z")));
+        assert_eq!(r.duration_ms, Some(12010.0));
+        assert_eq!(r.time_to_first_token_ms, Some(9990.0));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// 本机只读审计：对真实 ~/.codex/sessions 下所有 .jsonl 跑同一套状态机
+    ///（不写库），按 session_meta 的 cli_version 分桶只打印聚合数字，对照
+    /// 计划「本机数据依据」。仅人工核对，不计入常规测试（#[ignore]）。
+    #[test]
+    #[ignore]
+    fn local_codex_timing_audit() {
+        let Ok(dir) = sessions_dir() else {
+            eprintln!("[audit] 本机无 Codex sessions 目录，跳过");
+            return;
+        };
+        let mut files = Vec::new();
+        collect_session_files(&dir, 3, &mut files);
+        files.sort();
+
+        /// 读首行 session_meta 的 payload.cli_version（读不到按 unknown 分桶）
+        fn cli_version(path: &Path) -> String {
+            let Ok(file) = std::fs::File::open(path) else {
+                return "unknown".into();
+            };
+            let mut reader = std::io::BufReader::new(file);
+            let mut buf = Vec::with_capacity(4096);
+            use std::io::BufRead;
+            if reader.read_until(b'\n', &mut buf).unwrap_or(0) == 0 {
+                return "unknown".into();
+            }
+            serde_json::from_slice::<RolloutLine>(&buf)
+                .ok()
+                .and_then(|line| line.payload)
+                .and_then(|payload| payload.get("cli_version").and_then(|v| v.as_str()).map(String::from))
+                .unwrap_or_else(|| "unknown".into())
+        }
+
+        #[derive(Default)]
+        struct Bucket {
+            requests: u64,
+            with_request_start: u64,
+            with_first_output: u64,
+            with_stream_window: u64,
+            zero_token_rows: u64,
+        }
+
+        let mut buckets: std::collections::BTreeMap<String, Bucket> = std::collections::BTreeMap::new();
+        for path in &files {
+            let Ok(file) = std::fs::File::open(path) else {
+                continue;
+            };
+            let version = cli_version(path);
+            let mut timer = RequestTimer::default();
+            let collect = |outcome: Option<TimerOutcome>, bucket: &mut Bucket| {
+                match outcome {
+                    Some(TimerOutcome::Usage(s)) => {
+                        bucket.requests += 1;
+                        if s.request_started_at.is_some() {
+                            bucket.with_request_start += 1;
+                        }
+                        if s.first_token_at.is_some() {
+                            bucket.with_first_output += 1;
+                        }
+                        // 流式速度原料：首字与结束齐全且生成窗口合法
+                        if let (Some(first), Some(done)) = (s.first_token_at, s.completed_at) {
+                            let span = done - first;
+                            if s.output_tokens > 0
+                                && span >= crate::token_speed::MIN_GEN_MS
+                                && span <= crate::token_speed::MAX_GEN_MS
+                            {
+                                bucket.with_stream_window += 1;
+                            }
+                        }
+                    }
+                    Some(TimerOutcome::Zero(_)) => bucket.zero_token_rows += 1,
+                    None => {}
+                }
+            };
+            let bucket = buckets.entry(version).or_default();
+            let mut bucket = &mut *bucket;
+            use std::io::BufRead;
+            for line in std::io::BufReader::new(file).lines().flatten() {
+                if let Ok(line) = serde_json::from_str::<RolloutLine>(&line) {
+                    collect(timer.feed(&line), &mut bucket);
+                }
+            }
+            // 文件读尽：只结算仍挂起的用户中断（与生产 EOF 结算同语义）
+            collect(timer.finalize_pending_at_eof(), &mut bucket);
+        }
+        eprintln!(
+            "[audit] 文件数={}（目录 {}）",
+            files.len(),
+            dir.display()
+        );
+        eprintln!(
+            "[audit] {:<10} {:>8} {:>10} {:>12} {:>14} {:>10}",
+            "version", "请求数", "有起点", "有首个输出", "两者+窗口≥200ms", "0token行"
+        );
+        for (version, bucket) in &buckets {
+            let pct = |count: u64| -> String {
+                if bucket.requests == 0 {
+                    "—".to_string()
+                } else {
+                    format!("{:.1}%", count as f64 * 100.0 / bucket.requests as f64)
+                }
+            };
+            eprintln!(
+                "[audit] {:<10} {:>8} {:>10} {:>12} {:>14} {:>10}",
+                version,
+                bucket.requests,
+                pct(bucket.with_request_start),
+                pct(bucket.with_first_output),
+                pct(bucket.with_stream_window),
+                bucket.zero_token_rows,
+            );
+        }
     }
 }
 

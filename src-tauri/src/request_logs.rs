@@ -4,9 +4,12 @@
 //!
 //! Speed is computed by Rust only. A rejected/missing sample stays null in the
 //! UI. Completed ZCode events use token_speed::request_speed_at; uncertain
-//! reasoning timing is a request average. DSH records a stream duration, whereas
-//! Claude/Kimi/OpenCode/MiniMax durations describe requests. Duration-only paths
-//! never subtract TTFT. Remote rows use the same recorded-duration validation.
+//! reasoning timing is a request average. Import-library rows with event
+//! timestamps (Claude) go through token_speed::import_speed: a stream window
+//! from first output to completion when both events exist, otherwise the
+//! recorded duration keeps its source quality. DSH records a stream duration,
+//! whereas Kimi/OpenCode/MiniMax durations describe requests. Duration-only
+//! paths never subtract TTFT. Remote rows use the same recorded-duration validation.
 //!
 //! All speed samples require positive output and a window in [200ms, 1h].
 //! Failed/nonterminal local requests never produce speed. Tool execution
@@ -91,6 +94,23 @@ pub struct RequestLogRow {
     /// 同款 skip 风格，旧前端契约不受影响）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub device: Option<String>,
+    /// 稳定行键（前端刷新动画的行身份，React key 直接使用）：同一行刷新前后
+    /// 键不变，前端据此识别「新出现的行」与「位移的行」。本机行 =
+    /// "{source}|{来源库行 id}"（id 列缺失的旧表回退 rowid；ZCode 主库 id 为
+    /// TEXT、其余为 INTEGER，均按原值转字符串）；远端行 =
+    /// "{source}|{device_id}|{local_rowid}"
+    pub row_key: String,
+    /// 请求状态（None 或 "completed" / "cancelled" / "error"；其它值一律按
+    /// 未知归 None）；None 序列化时省略（旧前端契约不受影响）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    /// 错误码（最终失败码或最近一次重试码；来源库无该列 / NULL / 空串 → None）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_code: Option<String>,
+    /// 请求之前的失败尝试次数（无该列的来源恒 0）
+    pub retry_count: i64,
+    /// 请求起点是推断值（true 时界面耗时 / 首字带 ≈；无该列恒 false）
+    pub timing_estimated: bool,
 }
 
 impl crate::Billable for RequestLogRow {
@@ -395,20 +415,48 @@ fn select_list(conn: &Connection, source: &str) -> String {
     };
     let status = if crate::db::has_column(conn, "model_usage", "status") { "status" } else { "NULL" };
     let project = project_expr(conn, source).unwrap_or_else(|| "NULL".into());
+    // 行键原料（下标 17）：本机行的稳定键取来源库行 id。七个来源都有
+    // id 列（ZCode 主库为 TEXT、其余为 INTEGER）；个别无 id 列的旧形态（单测
+    // 内存表）按既有「按库实际结构降级」风格回退 SQLite 隐式 rowid。id 理论
+    // 上可为 NULL，COALESCE 到 rowid 兜底
+    let row_key = if crate::db::has_column(conn, "model_usage", "id") {
+        "COALESCE(id, rowid)"
+    } else {
+        "rowid"
+    };
+    // 状态扩展列（下标 18~20，按列探测）：error_code / retry_count /
+    // timing_estimated。ZCode 主库前两列本来就有；Claude / Codex 导入库由导入
+    // 器建列并回填（ensure_timing_columns）；其它来源 / 旧表降级 NULL / 0，不报错
+    let error_code = if crate::db::has_column(conn, "model_usage", "error_code") {
+        "error_code"
+    } else {
+        "NULL"
+    };
+    let retry_count = if crate::db::has_column(conn, "model_usage", "retry_count") {
+        "COALESCE(retry_count, 0)"
+    } else {
+        "0"
+    };
+    let timing_estimated = if crate::db::has_column(conn, "model_usage", "timing_estimated") {
+        "timing_estimated"
+    } else {
+        "NULL"
+    };
     format!(
         "started_at, COALESCE(model_id,''), COALESCE(provider_id,''), \
          COALESCE(input_tokens,0), COALESCE(output_tokens,0), \
          COALESCE(cache_read_input_tokens,0), COALESCE(cache_creation_input_tokens,0), \
          COALESCE(reasoning_tokens,0), COALESCE(computed_total_tokens,0), \
-         {session}, {project}, {duration}, {ttft}, {first_token}, {completed}, {status}, {raw_first_token}"
+         {session}, {project}, {duration}, {ttft}, {first_token}, {completed}, {status}, {raw_first_token}, {row_key}, \
+         {error_code}, {retry_count}, {timing_estimated}"
     )
 }
 
 /// Read one request and keep backend validation authoritative for the UI.
 fn row_to_log(row: &rusqlite::Row<'_>, source: &str) -> rusqlite::Result<RequestLogRow> {
     use crate::token_speed::{
-        duration_quality, duration_speed, is_completed_status, request_speed_at, RequestTiming,
-        SpeedQuality,
+        duration_quality, import_speed, is_completed_status, request_speed_at, ImportTiming,
+        RequestTiming, SpeedQuality,
     };
 
     let started_at: i64 = row.get(0)?;
@@ -416,20 +464,38 @@ fn row_to_log(row: &rusqlite::Row<'_>, source: &str) -> rusqlite::Result<Request
     let output_tokens: i64 = row.get(4)?;
     let reasoning_tokens: i64 = row.get(7)?;
     let duration_ms: Option<f64> = row.get(11)?;
+    // 事件时刻（下标 13 / 14，两个分支共用）：zcode 走 RequestTiming 校验，
+    // 导入库走 import_speed 流式判定；无该列的来源 SQL 侧已给 NULL → None，
+    // 行为与旧版一致
+    let first_token_at: Option<i64> = row.get(13)?;
+    let completed_at: Option<i64> = row.get(14)?;
     let status: Option<String> = row.get(15)?;
     let (speed, first_token_estimated_tps) = if !is_completed_status(status.as_deref()) {
         (None, None)
     } else if source != "zcode" {
-        let speed = duration_ms.and_then(|duration| {
-            duration_speed(output_tokens, duration, duration_quality(source), started_at)
+        // 导入库行（Claude 等由导入器取证计时的来源）：事件时刻齐全按
+        // 「首个输出 → 结束」流式窗口，缺任一时刻退回 duration_ms 的来源
+        // 口径（token_speed::import_speed 与 model_speed / db::fill_duration_
+        // metrics 三处同口径）。导入库是已落库的历史行，observed 传 0 不做
+        // 未来拒绝（与下方 zcode 分支的 now 校验不同）
+        let speed = import_speed(&ImportTiming {
+            output_tokens,
+            row_at: started_at,
+            first_token_at,
+            completed_at,
+            duration_ms,
+            fallback_quality: duration_quality(source),
+            observed_at_ms: 0,
+            // 外层 is_completed_status 已过滤完成态（速度判定入口）
+            completed: true,
         });
         (speed, None)
     } else {
         let timing = RequestTiming {
             output_tokens,
             started_at: Some(started_at),
-            first_token_at: row.get(13)?,
-            completed_at: row.get(14)?,
+            first_token_at,
+            completed_at,
             duration_ms: duration_ms.map(|value| value as i64),
             ..Default::default()
         };
@@ -451,6 +517,21 @@ fn row_to_log(row: &rusqlite::Row<'_>, source: &str) -> rusqlite::Result<Request
         };
         (speed, estimate)
     };
+    // 行键（下标 17，与 select_list 末列严格对应）：本机行 = "{source}|{行 id}"。
+    // id 在 ZCode 主库是 TEXT、其余来源是 INTEGER，按 Value 动态读再原值转字符串
+    let row_key = match row.get::<_, rusqlite::types::Value>(17)? {
+        rusqlite::types::Value::Integer(id) => format!("{source}|{id}"),
+        rusqlite::types::Value::Text(id) => format!("{source}|{id}"),
+        // COALESCE(id, rowid) 恒非空，此分支纯防御：回退 started_at 保证键非空
+        _ => format!("{source}|{started_at}"),
+    };
+    // 状态扩展列（下标 18~20）：下发时只认 completed / cancelled / error，
+    // 其它值（含 ZCode 历史上的 "success"）一律按未知归 None；速度判定仍用
+    // 上面读取的原始 status（is_completed_status 语义不变）
+    let status = normalize_status(status.as_deref());
+    let error_code: Option<String> = row.get(18)?;
+    let retry_count: i64 = row.get(19)?;
+    let timing_estimated = matches!(row.get::<_, Option<i64>>(20)?, Some(flag) if flag != 0);
     Ok(RequestLogRow {
         source: source.to_string(),
         started_at,
@@ -472,7 +553,21 @@ fn row_to_log(row: &rusqlite::Row<'_>, source: &str) -> rusqlite::Result<Request
         speed_quality: speed.map(|snapshot| snapshot.quality),
         first_token_estimated_tps,
         device: None,
+        row_key,
+        status,
+        // 空串防御性归 None（有列无值的旧行）
+        error_code: error_code.filter(|code| !code.is_empty()),
+        retry_count,
+        timing_estimated,
     })
+}
+
+/// 状态下发归一：None 或白名单 completed / cancelled / error，其余按未知 None
+fn normalize_status(status: Option<&str>) -> Option<String> {
+    match status {
+        Some("completed") | Some("cancelled") | Some("error") => status.map(str::to_string),
+        _ => None,
+    }
 }
 
 /// 时间区间 + 可选模型筛选的 WHERE（`?3` 传 NULL 表示不筛模型）
@@ -1020,13 +1115,24 @@ fn query_source_models(
     let Some(conn) = open_source(source)? else {
         return Ok(Vec::new());
     };
+    query_source_models_at(&conn, from_ms, to_ms)
+}
+
+/// `query_source_models` 的纯查询内核（连接注入版，供单元测试）。
+fn query_source_models_at(
+    conn: &Connection,
+    from_ms: i64,
+    to_ms: i64,
+) -> Result<Vec<RequestLogModelCount>, String> {
     let mut stmt = conn
         .prepare(
+            // 空模型名不进筛选清单（Claude 历史失败行的模型名三级回退全部
+            // 失败时为空串；其它来源本就没有空名行，过滤是 no-op，行为不变）
             "SELECT COALESCE(model_id,''), COUNT(*) FROM model_usage \
-             WHERE started_at >= ?1 AND started_at < ?2 \
+             WHERE started_at >= ?1 AND started_at < ?2 AND COALESCE(model_id,'') != '' \
              GROUP BY model_id ORDER BY 2 DESC",
         )
-        .map_err(|e| format!("准备 {source} 模型清单查询失败: {e}"))?;
+        .map_err(|e| format!("准备模型清单查询失败: {e}"))?;
     let rows = stmt
         .query_map(params![from_ms, to_ms], |row| {
             Ok(RequestLogModelCount {
@@ -1034,9 +1140,9 @@ fn query_source_models(
                 count: row.get(1)?,
             })
         })
-        .map_err(|e| format!("读取 {source} 模型清单失败: {e}"))?
+        .map_err(|e| format!("读取来源模型清单失败: {e}"))?
         .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| format!("读取 {source} 模型清单失败: {e}"))?;
+        .map_err(|e| format!("读取来源模型清单失败: {e}"))?;
     Ok(rows)
 }
 
@@ -1048,7 +1154,8 @@ fn query_source_models(
 /// 旧服务端不返回 → None）。速度优先使用同步证据，旧记录按来源耗时口径计算。
 /// ZCode 的数据库首字估算需要本机的绝对时刻。project 取 project_display、退回
 /// project_key；花费由调用方对当前页统一折算，此置 0；
-/// device 带回设备 id 供前端展示归属。
+/// device 带回设备 id 供前端展示归属。行键 = "{source}|{device_id}|{local_rowid}"
+///（(device_id, local_rowid) 与服务端主键同构，同一行刷新前后键不变）。
 fn remote_row_to_log(record: &crate::sync::RemoteUsageRecord) -> RequestLogRow {
     let speed = record.speed_evidence.as_ref()
         .map(|e| e.speed(record.output_tokens, record.started_at))
@@ -1079,6 +1186,17 @@ fn remote_row_to_log(record: &crate::sync::RemoteUsageRecord) -> RequestLogRow {
         speed_quality: speed.map(|s| s.quality),
         first_token_estimated_tps: None,
         device: Some(record.device_id.clone()),
+        row_key: format!("{}|{}|{}", record.source, record.device_id, record.local_rowid),
+        // 状态扩展列（proto 10 起服务端回传；旧服务端不返回 → None / 0，
+        // 远端行按未知态展示）：status 沿用 normalize_status 白名单归一，
+        // error_code 空串防御性归 None，timing_estimated None 当 false。
+        // 速度逻辑不变：优先 speed_evidence（含「明确不可用」的空 span
+        // 证据，失败行因此不再按总耗时回退出速度），其次按 duration_ms
+        // 算请求均速。
+        status: normalize_status(record.status.as_deref()),
+        error_code: record.error_code.clone().filter(|code| !code.is_empty()),
+        retry_count: record.retry_count,
+        timing_estimated: record.timing_estimated.unwrap_or(false),
     }
 }
 
@@ -2157,6 +2275,11 @@ mod tests {
             speed_quality: None,
             first_token_estimated_tps: None,
             device: None,
+            row_key: format!("{source}|{ts}"),
+            status: None,
+            error_code: None,
+            retry_count: 0,
+            timing_estimated: false,
         };
         let (totals, rows, failed) =
             collect_sources(&["codex", "kimi", "dsh"], |source| match source {
@@ -2237,6 +2360,10 @@ mod tests {
                 project_display: None,
                 duration_ms: None,
                 time_to_first_token_ms: None,
+                status: None,
+                error_code: None,
+                retry_count: 0,
+                timing_estimated: None,
             }],
             by_model: vec![crate::sync::RemoteUsageModelGroup {
                 source: "codex".into(),
@@ -2335,6 +2462,10 @@ mod tests {
                     project_display: Some("repo".into()),
                     duration_ms: Some(2500.0),
                     time_to_first_token_ms: Some(500.0),
+                    status: None,
+                    error_code: None,
+                    retry_count: 0,
+                    timing_estimated: None,
                 },
                 crate::sync::RemoteUsageRecord {
                 speed_evidence: None,
@@ -2355,6 +2486,10 @@ mod tests {
                     project_display: None,
                     duration_ms: None,
                     time_to_first_token_ms: None,
+                    status: None,
+                    error_code: None,
+                    retry_count: 0,
+                    timing_estimated: None,
                 },
             ],
             by_model: vec![
@@ -2435,6 +2570,10 @@ mod tests {
                     project_display: None,
                     duration_ms: None,
                     time_to_first_token_ms: None,
+                    status: None,
+                    error_code: None,
+                    retry_count: 0,
+                    timing_estimated: None,
                 }],
                 by_model: vec![crate::sync::RemoteUsageModelGroup {
                     source: "codex".into(),
@@ -2508,6 +2647,11 @@ mod tests {
             speed_quality: None,
             first_token_estimated_tps: None,
             device: device.map(String::from),
+            row_key: format!("{source}|{}", device.unwrap_or("local")),
+            status: None,
+            error_code: None,
+            retry_count: 0,
+            timing_estimated: false,
         };
         let mut merged = vec![
             make(1000, "codex", Some("dev-b")),
@@ -2555,6 +2699,10 @@ mod tests {
             project_display: None,
             duration_ms: Some(1200.0),
             time_to_first_token_ms: Some(300.0),
+            status: None,
+            error_code: None,
+            retry_count: 0,
+            timing_estimated: None,
         };
         local.device_id = "dev-a".into();
         let row = remote_row_to_log(&local);
@@ -2568,5 +2716,303 @@ mod tests {
         local_row.device = None;
         let json = serde_json::to_value(&local_row).unwrap();
         assert!(json.get("device").is_none(), "本机行不序列化 device 字段");
+    }
+
+    /// 稳定行键契约：本机行 = "{source}|{id}"（INTEGER / TEXT id 均按原值转
+    /// 字符串，无 id 列的旧表回退 rowid 且不报错）；远端行 =
+    /// "{source}|{device_id}|{local_rowid}"；select_list 的列数与 row_to_log
+    /// 的读取下标一致（行键在末列 17）。
+    #[test]
+    fn row_key_is_stable_for_local_legacy_and_remote_rows() {
+        // INTEGER id（claude 等导入库形态）：key = "claude|12"
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE model_usage (
+                id INTEGER PRIMARY KEY,
+                started_at INTEGER NOT NULL, model_id TEXT, provider_id TEXT,
+                input_tokens INTEGER, output_tokens INTEGER,
+                cache_read_input_tokens INTEGER, cache_creation_input_tokens INTEGER,
+                reasoning_tokens INTEGER, computed_total_tokens INTEGER);
+             INSERT INTO model_usage VALUES (12, 1000, 'm', 'p', 1, 2, 0, 0, 0, 3);",
+        )
+        .unwrap();
+        let sql = format!("SELECT {} FROM model_usage", select_list(&conn, "claude"));
+        let row = conn.query_row(&sql, [], |r| row_to_log(r, "claude")).unwrap();
+        assert_eq!(row.row_key, "claude|12");
+        // 列数 = 最大读取下标 + 1：行键在 17、状态扩展列在 18~20，select_list
+        // 增删列必须同步 row_to_log
+        let mut stmt = conn.prepare(&sql).unwrap();
+        assert_eq!(stmt.column_count(), 21);
+
+        // TEXT id（ZCode 主库形态）：key 原样带文本，不被转成数字
+        let zcode = Connection::open_in_memory().unwrap();
+        zcode.execute_batch(
+            "CREATE TABLE model_usage (
+                id TEXT PRIMARY KEY,
+                started_at INTEGER NOT NULL, model_id TEXT, provider_id TEXT,
+                input_tokens INTEGER, output_tokens INTEGER,
+                cache_read_input_tokens INTEGER, cache_creation_input_tokens INTEGER,
+                reasoning_tokens INTEGER, computed_total_tokens INTEGER, status TEXT);
+             INSERT INTO model_usage VALUES
+                ('row-abc', 1000, 'm', 'p', 1, 2, 0, 0, 0, 3, 'completed');",
+        )
+        .unwrap();
+        let sql = format!("SELECT {} FROM model_usage", select_list(&zcode, "zcode"));
+        let row = zcode.query_row(&sql, [], |r| row_to_log(r, "zcode")).unwrap();
+        assert_eq!(row.row_key, "zcode|row-abc");
+
+        // 无 id 列的旧表：回退 rowid（首行 rowid = 1），不报错
+        let legacy = Connection::open_in_memory().unwrap();
+        legacy
+            .execute_batch(
+                "CREATE TABLE model_usage (
+                    started_at INTEGER NOT NULL, model_id TEXT, provider_id TEXT,
+                    input_tokens INTEGER, output_tokens INTEGER,
+                    cache_read_input_tokens INTEGER, cache_creation_input_tokens INTEGER,
+                    reasoning_tokens INTEGER, computed_total_tokens INTEGER);
+                 INSERT INTO model_usage VALUES (1000, 'm', 'p', 1, 2, 0, 0, 0, 3);",
+            )
+            .unwrap();
+        let sql = format!("SELECT {} FROM model_usage", select_list(&legacy, "kimi"));
+        let row = legacy.query_row(&sql, [], |r| row_to_log(r, "kimi")).unwrap();
+        assert_eq!(row.row_key, "kimi|1");
+
+        // 远端行："{source}|{device_id}|{local_rowid}"
+        let remote = crate::sync::RemoteUsageRecord {
+            speed_evidence: None,
+            device_id: "dev-a".into(),
+            source: "codex".into(),
+            local_rowid: 7,
+            started_at: 1000,
+            model_id: "m".into(),
+            provider_id: "p".into(),
+            input_tokens: 1,
+            output_tokens: 1,
+            cache_read_input_tokens: 0,
+            cache_creation_input_tokens: 0,
+            reasoning_tokens: 0,
+            computed_total_tokens: 2,
+            session_id: None,
+            project_key: None,
+            project_display: None,
+            duration_ms: None,
+            time_to_first_token_ms: None,
+            status: None,
+            error_code: None,
+            retry_count: 0,
+            timing_estimated: None,
+        };
+        assert_eq!(remote_row_to_log(&remote).row_key, "codex|dev-a|7");
+    }
+
+    /// 远端行的状态扩展列（proto 10）：status 经 normalize_status 归一（只认
+    /// completed / cancelled / error，其它含空串归 None）、error_code 空串归
+    /// None、retry_count / timing_estimated 透传（None 当 false）；速度逻辑
+    /// 不变——带「明确不可用」空 span 证据时不回退总耗时，无证据时照旧按
+    /// duration_ms 算请求均速。
+    #[test]
+    fn remote_row_status_fields_flow_through_and_normalize() {
+        let make = |status: Option<&str>, error_code: Option<&str>, evidence: Option<crate::token_speed::SpeedEvidence>| {
+            crate::sync::RemoteUsageRecord {
+                speed_evidence: evidence,
+                device_id: "dev-a".into(),
+                source: "claude".into(),
+                local_rowid: 5,
+                started_at: 1000,
+                model_id: "m".into(),
+                provider_id: "p".into(),
+                input_tokens: 1,
+                output_tokens: 500,
+                cache_read_input_tokens: 0,
+                cache_creation_input_tokens: 0,
+                reasoning_tokens: 0,
+                computed_total_tokens: 501,
+                session_id: None,
+                project_key: None,
+                project_display: None,
+                duration_ms: Some(10_000.0),
+                time_to_first_token_ms: None,
+                status: status.map(str::to_string),
+                error_code: error_code.map(str::to_string),
+                retry_count: 2,
+                timing_estimated: Some(true),
+            }
+        };
+        // 白名单内状态原样下发；错误码 / 重试 / 估算标记透传（trim 由服务端
+        // 入库前做，客户端只做空串防御）
+        let row = remote_row_to_log(&make(Some("error"), Some("429"), None));
+        assert_eq!(row.status.as_deref(), Some("error"));
+        assert_eq!(row.error_code.as_deref(), Some("429"));
+        assert_eq!(row.retry_count, 2);
+        assert!(row.timing_estimated);
+        // 非白名单状态（旧 ZCode 的 "success" 等）归未知态 None
+        let row = remote_row_to_log(&make(Some("success"), None, None));
+        assert_eq!(row.status, None);
+        // 空串错误码归 None
+        let row = remote_row_to_log(&make(Some("completed"), Some(""), None));
+        assert_eq!(row.status.as_deref(), Some("completed"));
+        assert_eq!(row.error_code, None);
+        // timing_estimated 缺失（旧服务端不返回）当 false
+        let mut record = make(Some("completed"), None, None);
+        record.timing_estimated = None;
+        assert!(!remote_row_to_log(&record).timing_estimated);
+
+        // 速度逻辑不变（a）：无证据 → 按 duration_ms 回退算请求均速
+        let row = remote_row_to_log(&make(Some("completed"), None, None));
+        assert!(row.speed_tps.is_some());
+        assert_eq!(row.speed_quality, Some(crate::token_speed::SpeedQuality::RequestAverage));
+
+        // 速度逻辑不变（b）：「明确不可用」的空 span 证据（error 行随明细
+        // 上传的形态）→ 不按总耗时回退，速度恒 None
+        let unavailable = crate::token_speed::SpeedEvidence {
+            version: 1,
+            span_ms: None,
+            quality: None,
+        };
+        let row = remote_row_to_log(&make(Some("error"), Some("429"), Some(unavailable)));
+        assert_eq!(row.speed_tps, None, "显式不可用证据不得回退总耗时");
+    }
+
+    /// 状态扩展列（error_code / retry_count / timing_estimated）经
+    /// select_list → row_to_log 正确下发；失败状态不产生速度（沿用
+    /// is_completed_status 判定）；ZCode 库（有 status 列）的 completed
+    /// 原样下发。
+    #[test]
+    fn status_columns_flow_through_row_to_log() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE model_usage (
+                id INTEGER PRIMARY KEY,
+                started_at INTEGER NOT NULL, model_id TEXT, provider_id TEXT,
+                input_tokens INTEGER, output_tokens INTEGER,
+                cache_read_input_tokens INTEGER, cache_creation_input_tokens INTEGER,
+                reasoning_tokens INTEGER, computed_total_tokens INTEGER,
+                duration_ms REAL, status TEXT,
+                error_code TEXT, retry_count INTEGER, timing_estimated INTEGER);
+             INSERT INTO model_usage VALUES
+                (1, 1000, 'm', 'p', 1, 900, 0, 0, 0, 901, 8000.0, 'error', '429', 3, 1),
+                (2, 2000, 'm', 'p', 1, 900, 0, 0, 0, 901, 8000.0, 'completed', NULL, 1, 0),
+                (3, 3000, 'm', 'p', 1, 900, 0, 0, 0, 901, NULL, 'cancelled', NULL, 0, NULL);",
+        )
+        .unwrap();
+        // 错误行：状态 / 错误码 / 重试 / 估算标记原样下发，无速度
+        let sql = format!("SELECT {} FROM model_usage WHERE id = 1", select_list(&conn, "claude"));
+        let row = conn.query_row(&sql, [], |r| row_to_log(r, "claude")).unwrap();
+        assert_eq!(row.status.as_deref(), Some("error"));
+        assert_eq!(row.error_code.as_deref(), Some("429"));
+        assert_eq!(row.retry_count, 3);
+        assert!(row.timing_estimated);
+        assert_eq!(row.speed_tps, None, "error 行不产生速度");
+
+        // 完成行：completed 下发、有速度
+        let sql = format!("SELECT {} FROM model_usage WHERE id = 2", select_list(&conn, "claude"));
+        let row = conn.query_row(&sql, [], |r| row_to_log(r, "claude")).unwrap();
+        assert_eq!(row.status.as_deref(), Some("completed"));
+        assert_eq!(row.error_code, None);
+        assert_eq!(row.retry_count, 1);
+        assert!(!row.timing_estimated);
+        assert!(row.speed_tps.is_some(), "completed 行应有速度");
+        // 序列化契约：None 的字段省略、非 None 输出
+        let json = serde_json::to_value(&row).unwrap();
+        assert_eq!(json["status"], "completed");
+        assert!(json.get("error_code").is_none());
+
+        // 中断行：cancelled 下发、无速度
+        let sql = format!("SELECT {} FROM model_usage WHERE id = 3", select_list(&conn, "claude"));
+        let row = conn.query_row(&sql, [], |r| row_to_log(r, "claude")).unwrap();
+        assert_eq!(row.status.as_deref(), Some("cancelled"));
+        assert_eq!(row.speed_tps, None, "cancelled 行不产生速度");
+
+        // ZCode 库形态（status 列在 select_list 下标 15 已有）：同列同读
+        let zcode = Connection::open_in_memory().unwrap();
+        zcode.execute_batch(
+            "CREATE TABLE model_usage (
+                id TEXT PRIMARY KEY,
+                started_at INTEGER NOT NULL, model_id TEXT, provider_id TEXT,
+                input_tokens INTEGER, output_tokens INTEGER,
+                cache_read_input_tokens INTEGER, cache_creation_input_tokens INTEGER,
+                reasoning_tokens INTEGER, computed_total_tokens INTEGER,
+                status TEXT, error_code TEXT, retry_count INTEGER);
+             INSERT INTO model_usage VALUES
+                ('r1', 1000, 'm', 'p', 1, 900, 0, 0, 0, 901, 'error', 'timeout', 2);",
+        )
+        .unwrap();
+        let sql = format!("SELECT {} FROM model_usage", select_list(&zcode, "zcode"));
+        let row = zcode.query_row(&sql, [], |r| row_to_log(r, "zcode")).unwrap();
+        assert_eq!(row.status.as_deref(), Some("error"));
+        assert_eq!(row.error_code.as_deref(), Some("timeout"));
+        assert_eq!(row.retry_count, 2);
+        assert!(!row.timing_estimated, "ZCode 库无该列恒 false");
+    }
+
+    /// 无状态扩展列的旧库降级：error_code / timing_estimated 按 NULL、
+    /// retry_count 按 0 下发，不报错；status 列存在但值为白名单外的字符串
+    ///（如 "success"）时下发 None，但速度判定沿用原始值（success 视为完成）。
+    #[test]
+    fn status_columns_degrade_on_legacy_tables() {
+        // 完全没有状态扩展列的库（如 kimi 旧表）
+        let legacy = Connection::open_in_memory().unwrap();
+        legacy
+            .execute_batch(
+                "CREATE TABLE model_usage (
+                    id INTEGER PRIMARY KEY,
+                    started_at INTEGER NOT NULL, model_id TEXT, provider_id TEXT,
+                    input_tokens INTEGER, output_tokens INTEGER,
+                    cache_read_input_tokens INTEGER, cache_creation_input_tokens INTEGER,
+                    reasoning_tokens INTEGER, computed_total_tokens INTEGER);
+                 INSERT INTO model_usage VALUES (1, 1000, 'm', 'p', 1, 900, 0, 0, 0, 901);",
+            )
+            .unwrap();
+        let sql = format!("SELECT {} FROM model_usage", select_list(&legacy, "kimi"));
+        let row = legacy.query_row(&sql, [], |r| row_to_log(r, "kimi")).unwrap();
+        assert_eq!(row.status, None);
+        assert_eq!(row.error_code, None);
+        assert_eq!(row.retry_count, 0);
+        assert!(!row.timing_estimated);
+        // duration_ms 列都没有 → 无速度，但行本身可读
+        assert_eq!(row.speed_tps, None);
+
+        // 只有 status 列且值为白名单外字符串：下发 None、速度按完成算
+        let with_status = Connection::open_in_memory().unwrap();
+        with_status
+            .execute_batch(
+                "CREATE TABLE model_usage (
+                    id INTEGER PRIMARY KEY,
+                    started_at INTEGER NOT NULL, model_id TEXT, provider_id TEXT,
+                    input_tokens INTEGER, output_tokens INTEGER,
+                    cache_read_input_tokens INTEGER, cache_creation_input_tokens INTEGER,
+                    reasoning_tokens INTEGER, computed_total_tokens INTEGER,
+                    duration_ms REAL, status TEXT);
+                 INSERT INTO model_usage VALUES (1, 1000, 'm', 'p', 1, 900, 0, 0, 0, 901, 8000.0, 'success');",
+            )
+            .unwrap();
+        let sql = format!("SELECT {} FROM model_usage", select_list(&with_status, "kimi"));
+        let row = with_status.query_row(&sql, [], |r| row_to_log(r, "kimi")).unwrap();
+        assert_eq!(row.status, None, "success 不在白名单，按未知下发");
+        assert!(row.speed_tps.is_some(), "速度判定沿用原始 status（success 视为完成）");
+    }
+
+    /// 模型筛选清单忽略空模型名（Claude 历史失败行的模型名三级回退全部
+    /// 失败时为空串），正常模型计数不受影响。
+    #[test]
+    fn source_models_skip_empty_model_ids() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE model_usage (
+                started_at INTEGER NOT NULL, model_id TEXT, provider_id TEXT,
+                input_tokens INTEGER, output_tokens INTEGER,
+                cache_read_input_tokens INTEGER, cache_creation_input_tokens INTEGER,
+                reasoning_tokens INTEGER, computed_total_tokens INTEGER);
+             INSERT INTO model_usage VALUES
+                (100, 'glm-5.3', 'p', 1, 1, 0, 0, 0, 2),
+                (200, '', 'p', 1, 1, 0, 0, 0, 2),
+                (300, 'glm-5.3', 'p', 1, 1, 0, 0, 0, 2),
+                (400, NULL, 'p', 1, 1, 0, 0, 0, 2);",
+        )
+        .unwrap();
+        let models = query_source_models_at(&conn, 0, 1000).unwrap();
+        assert_eq!(models.len(), 1, "空串与 NULL 模型名不进清单");
+        assert_eq!(models[0].model_id, "glm-5.3");
+        assert_eq!(models[0].count, 2);
     }
 }
