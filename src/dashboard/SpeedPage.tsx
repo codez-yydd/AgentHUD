@@ -19,10 +19,10 @@
  * 注释先例）。
  *
  * 版面：对齐 LogsPage 的「不整页滚动」模式——布局类直接复用 db-logs-page /
- * db-logs-card / db-logs-filters / db-logs-metrics（它们只含 flex 列 + 表体
- * 内滚 + sticky 表头的通用版面规则，无日志专属样式）：表格卡 flex:1、表体
- * .db-table-wrap 滚动，900×640 最小窗口可用。**筛选行在指标行之前**（本页
- * 指标随来源筛选变化，先筛选后看数因果更清晰，日志页同款次序）。
+ * db-logs-card / db-logs-metrics（它们只含 flex 列 + 表体内滚 + sticky 表头
+ * 的通用版面规则，无日志专属样式）：表格卡 flex:1、表体 .db-table-wrap 滚动，
+ * 900×640 最小窗口可用。来源筛选在页头控件组里（排在时间范围左边，原型
+ * 同款页头顺序），指标随筛选变化，口径摘要在页头一眼可读。
  *
  * 交互：
  *  - 时间范围 = CustomRangeMenu（总览 / 日志 / 对比三页共用件）：四档预设
@@ -71,7 +71,7 @@ import {
   formatTps,
 } from "../format";
 import { RefreshIcon } from "./icons";
-import { Card, Skeleton } from "./primitives";
+import { Card, PageTitleWithDesc, Skeleton } from "./primitives";
 import {
   CustomRangeMenu,
   formatRangeSummary,
@@ -467,10 +467,11 @@ function SpeedTableRow({
         </span>
       </td>
       {/* 渠道：已知 slug 显示官方产品名（GLM Coding Plan 等，前缀匹配），
-          title 恒给原始 provider_id 全量（悬停可对回） */}
+          title 恒给原始 provider_id 全量（悬停可对回）。渠道值是标识内容，
+          沿标识等宽类 .db-mono（与路径 / 设备 id 同一处理） */}
       <td className="db-speed__col-provider">
         {row.provider ? (
-          <span className="db-speed__provider" title={row.provider}>
+          <span className="db-mono db-speed__provider" title={row.provider}>
             {providerText}
           </span>
         ) : (
@@ -480,16 +481,11 @@ function SpeedTableRow({
       <td className="db-table__num db-speed__col-p10 num" title={approxTitle}>
         {row.p10Tps != null ? tpsText(row.p10Tps) : <Dash />}
       </td>
-      {/* P50 主列：数值带小号 t/s 单位（日志页速度列同款 db-logs__speed-unit） */}
+      {/* P50 主列：12px 表格下三列速度分位统一不带 t/s 单位（「都带」会让
+          14 列预算溢出；单位语义由列头 title 与上方汇总条的 t/s 示范承担，
+          数值与 ≈ 估算标记保持原样） */}
       <td className="db-table__num db-speed__col-p50 num" title={approxTitle}>
-        {row.p50Tps != null ? (
-          <>
-            {tpsText(row.p50Tps)}
-            <span className="db-logs__speed-unit">t/s</span>
-          </>
-        ) : (
-          <Dash />
-        )}
+        {row.p50Tps != null ? tpsText(row.p50Tps) : <Dash />}
       </td>
       <td className="db-table__num db-speed__col-p90 num" title={approxTitle}>
         {row.p90Tps != null ? tpsText(row.p90Tps) : <Dash />}
@@ -833,11 +829,18 @@ export function SpeedPage() {
   return (
     <div className="db-page db-logs-page">
       <header className="db-page__header">
-        <div>
-          <h1 className="db-page__title">{t("dashboard.speed")}</h1>
-          <p className="db-page__desc">{t("dashboard.speed.desc")}</p>
-        </div>
+        <PageTitleWithDesc title={t("dashboard.speed")} desc={t("dashboard.speed.desc")} />
         <div className="db-page__actions">
+          {/* 来源筛选（纯前端过滤，不重查）：排在时间范围左边（原型同款
+              页头顺序），独立筛选行不再保留 */}
+          <DropdownMenu
+            label={t("dashboard.logs.sourceLabel")}
+            ariaLabel={t("dashboard.logs.sourceLabel")}
+            options={sourceOptions}
+            value={sourceFilter}
+            onChange={setSourceFilter}
+            active={sourceFilter !== ""}
+          />
           {/* 时间范围：CustomRangeMenu（总览 / 日志 / 对比三页共用件）——
               触发按钮显示预设名或区间摘要（自定义生效时日历图标高亮），
               面板预设快捷行 = 今日 / 近 7 天 / 近 30 天（点选立即生效并收起、
@@ -899,18 +902,8 @@ export function SpeedPage() {
         </div>
       </header>
 
-      {/* 筛选行（在指标行之前：指标随筛选变化，先筛选后看数因果更清晰）：
-          来源下拉（纯前端过滤；模型不筛——表格可排序自查） */}
-      <div className="db-logs-filters">
-        <DropdownMenu
-          label={t("dashboard.logs.sourceLabel")}
-          ariaLabel={t("dashboard.logs.sourceLabel")}
-          options={sourceOptions}
-          value={sourceFilter}
-          onChange={setSourceFilter}
-          active={sourceFilter !== ""}
-        />
-      </div>
+      {/* 来源筛选已挪进页头控件组（排在时间范围左边）；指标随筛选变化，
+          口径摘要在页头一眼可读，独立筛选行不再保留 */}
 
       {/* 汇总指标行（复用 db-logs-metrics 样式族：首载骨架 / 刷新压暗 /
           无值灰化「—」与日志页同款降级形态）；速度值带小号 t/s 单位 */}

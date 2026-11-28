@@ -111,3 +111,34 @@ export function Skeleton({
 }) {
   return <div className={`db-skeleton ${className}`} style={style} />;
 }
+
+/**
+ * 页头标题 + 说明问号：页头改为一行式后，说明文字不再占一行，收进标题旁
+ * 的问号小按钮——文案放进原生 title 与 aria-label（本仓库提示文案的通用
+ * 惯例，不新增词典键）。各页页头统一用本组件替换原来的
+ * `<h1 class="db-page__title">…</h1><p class="db-page__desc">…</p>` 结构。
+ * 卡片内部 / 空态里的 .db-page__desc 说明文字不经过本组件，不受影响。
+ */
+export function PageTitleWithDesc({
+  title,
+  desc,
+}: {
+  /** 页标题（i18n 后的文案） */
+  title: string;
+  /** 说明文字（i18n 后的文案；悬停问号时展示） */
+  desc: string;
+}) {
+  return (
+    <div className="db-page__titlerow">
+      <h1 className="db-page__title">{title}</h1>
+      <button
+        type="button"
+        className="db-page__help"
+        title={desc}
+        aria-label={desc}
+      >
+        ?
+      </button>
+    </div>
+  );
+}

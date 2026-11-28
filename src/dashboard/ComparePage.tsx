@@ -19,7 +19,7 @@ import { AlertBanner, EmptyState } from "../layout";
 // 下拉组件已提升为两窗口共用（src/DropdownMenu.tsx，Tailwind 工具类自适应亮暗）
 import { DropdownMenu } from "../DropdownMenu";
 import { RefreshIcon } from "./icons";
-import { useDarkTheme } from "./primitives";
+import { PageTitleWithDesc, useDarkTheme } from "./primitives";
 import {
   CustomRangeMenu,
   formatRangeSummary,
@@ -158,10 +158,7 @@ export function ComparePage() {
   return (
     <div className="db-page">
       <header className="db-page__header">
-        <div>
-          <h1 className="db-page__title">{t("dashboard.compare")}</h1>
-          <p className="db-page__desc">{t("dashboard.compare.desc")}</p>
-        </div>
+        <PageTitleWithDesc title={t("dashboard.compare")} desc={t("dashboard.compare.desc")} />
         <div className="db-page__actions">
           {syncEnabled && (
             <DropdownMenu

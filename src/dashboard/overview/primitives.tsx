@@ -6,7 +6,7 @@
  */
 import { Skeleton } from "../primitives";
 
-export { Card, Skeleton } from "../primitives";
+export { Card, Skeleton, PageTitleWithDesc } from "../primitives";
 
 /** 首屏骨架：指标卡 4 张 + 趋势图 + 「热力图 + 表格」行（与真实布局同构，
  *  一起包进 .db-overview-duo：默认上下堆叠，仅大窗 ≥1340px 并排两列），

@@ -29,7 +29,7 @@ import type { CSSProperties, ReactNode } from "react";
 import { open as openNativeDialog } from "@tauri-apps/plugin-dialog";
 import { useI18n, type TFn } from "../i18n";
 import { AlertBanner } from "../layout";
-import { Card, Skeleton } from "./primitives";
+import { Card, PageTitleWithDesc, Skeleton } from "./primitives";
 import { RefreshIcon } from "./icons";
 import {
   discoverAgentAssets,
@@ -1395,10 +1395,7 @@ export function AgentAssetsPage() {
   return (
     <div className="db-page">
       <header className="db-page__header">
-        <div>
-          <h1 className="db-page__title">{t("dashboard.agentAssets")}</h1>
-          <p className="db-page__desc">{t("dashboard.agentAssets.desc")}</p>
-        </div>
+        <PageTitleWithDesc title={t("dashboard.agentAssets")} desc={t("dashboard.agentAssets.desc")} />
         <div className="db-page__actions">
           <button
             type="button"
@@ -1720,7 +1717,7 @@ export function AgentAssetsPage() {
                         >
                           {asset.display_name}
                         </span>
-                        <span className="num text-[11px]" style={dimText}>
+                        <span className="num db-mono text-[11px]" style={dimText}>
                           {asset.native_id}
                         </span>
                         <span className="db-tag db-tag--configured">
@@ -1746,7 +1743,7 @@ export function AgentAssetsPage() {
                         </p>
                       )}
                       <p
-                        className="num mt-1 truncate text-[10px]"
+                        className="num db-mono mt-1 truncate text-[10px]"
                         style={dimText}
                         title={asset.source_root}
                       >
@@ -2006,7 +2003,7 @@ export function AgentAssetsPage() {
                             >
                               {asset.display_name}
                             </span>
-                            <span className="num text-[11px]" style={dimText}>
+                            <span className="num db-mono text-[11px]" style={dimText}>
                               {asset.native_id}
                             </span>
                             <span className="db-tag db-tag--manual">
@@ -2018,7 +2015,7 @@ export function AgentAssetsPage() {
                             <span className="db-tag db-tag--configured">
                               {remoteScopeLabel(t, asset.origin_scope)}
                             </span>
-                            <span className="db-tag db-tag--new num">
+                            <span className="db-tag db-tag--new num db-mono">
                               {t("dashboard.agentAssets.remote.version", {
                                 version: asset.latest_version,
                               })}
@@ -2038,7 +2035,7 @@ export function AgentAssetsPage() {
                             </p>
                           )}
                           <p
-                            className="num mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px]"
+                            className="num db-mono mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px]"
                             style={dimText}
                           >
                             <span>
@@ -2188,7 +2185,7 @@ export function AgentAssetsPage() {
                                 <tbody>
                                   {revisions.map((revision) => (
                                     <tr key={revision.version}>
-                                      <td className="num">
+                                      <td className="num db-mono">
                                         {t(
                                           "dashboard.agentAssets.remote.version",
                                           { version: revision.version }
@@ -2200,15 +2197,15 @@ export function AgentAssetsPage() {
                                       >
                                         {shortHash(revision.bundle_sha256)}
                                       </td>
-                                      <td className="num">
+                                      <td className="num db-mono">
                                         {revision.entry_count} ·{" "}
                                         {formatBytes(revision.total_size)}
                                       </td>
-                                      <td className="num">
+                                      <td className="num db-mono">
                                         {formatDateTime(revision.created_at)}
                                       </td>
                                       <td
-                                        className="num truncate"
+                                        className="num db-mono truncate"
                                         title={revision.created_by_device}
                                       >
                                         {revision.created_by_device}
@@ -2737,7 +2734,7 @@ function InspectorContent({
             <span className="font-medium">
               {t("dashboard.agentAssets.local.metaName")}:{" "}
             </span>
-            <span className="num">{meta.name ?? "—"}</span>
+            <span className="num db-mono">{meta.name ?? "—"}</span>
           </div>
           <div>
             <span className="font-medium">
@@ -2749,13 +2746,13 @@ function InspectorContent({
             <span className="font-medium">
               {t("dashboard.agentAssets.local.metaModel")}:{" "}
             </span>
-            <span className="num">{meta.model ?? "—"}</span>
+            <span className="num db-mono">{meta.model ?? "—"}</span>
           </div>
           <div>
             <span className="font-medium">
               {t("dashboard.agentAssets.local.metaTools")}:{" "}
             </span>
-            <span className="num">
+            <span className="num db-mono">
               {meta.tools.length > 0 ? meta.tools.join(", ") : "—"}
             </span>
           </div>
@@ -2781,7 +2778,7 @@ function InspectorContent({
           <ul className="mt-1 list-disc break-all pl-4">
             {report.sensitive_fields.map((item, index) => (
               <li key={`${item.file}-${item.field}-${index}`}>
-                <span className="num">{item.file}</span> · {item.field}: {item.reason}
+                <span className="num db-mono">{item.file}</span> · {item.field}: {item.reason}
               </li>
             ))}
           </ul>
@@ -2798,7 +2795,7 @@ function InspectorContent({
           </div>
           <ul className="mt-1 list-disc break-all pl-4">
             {report.external_references.map((ref, index) => (
-              <li key={`${ref}-${index}`} className="num">
+              <li key={`${ref}-${index}`} className="num db-mono">
                 {ref}
               </li>
             ))}
@@ -2839,7 +2836,7 @@ function InspectorContent({
             <tbody>
               {report.files.map((file) => (
                 <tr key={file.path}>
-                  <td className="num break-all">{file.path}</td>
+                  <td className="num db-mono break-all">{file.path}</td>
                   <td className="db-table__num num">
                     {file.binary ? "—" : formatBytes(file.size)}
                   </td>
@@ -2865,7 +2862,7 @@ function InspectorContent({
           <p className="db-empty">{t("dashboard.agentAssets.local.binary")}</p>
         ) : meta.frontmatter_raw ? (
           <pre
-            className="num max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-lg border p-2 text-[11px]"
+            className="num db-mono max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-lg border p-2 text-[11px]"
             style={{
               borderColor: "var(--db-border)",
               background: "var(--db-card-bg)",
@@ -2998,7 +2995,7 @@ function ImportResultsPanel({
                       {t("dashboard.agentAssets.import.notImportable")}
                     </span>
                     <span
-                      className="num break-all text-[11px]"
+                      className="num db-mono break-all text-[11px]"
                       style={dimText}
                     >
                       {candidate.path}
@@ -3045,7 +3042,7 @@ function ImportResultsPanel({
                       >
                         {candidateAsset.display_name}
                       </span>
-                      <span className="num text-[11px]" style={dimText}>
+                      <span className="num db-mono text-[11px]" style={dimText}>
                         {candidateAsset.native_id}
                       </span>
                       <span className="db-tag db-tag--new">
@@ -3072,14 +3069,14 @@ function ImportResultsPanel({
                       </p>
                     )}
                     <p
-                      className="num mt-1 break-all text-[10px]"
+                      className="num db-mono mt-1 break-all text-[10px]"
                       style={dimText}
                       title={candidate.path}
                     >
                       {t("dashboard.agentAssets.import.path")}: {candidate.path}
                     </p>
                     <p
-                      className="num mt-0.5 break-all text-[10px]"
+                      className="num db-mono mt-0.5 break-all text-[10px]"
                       style={dimText}
                       title={override}
                     >
@@ -3167,20 +3164,20 @@ function PlanDetails({
           <span className="font-medium">
             {t("dashboard.agentAssets.plan.entry")}:{" "}
           </span>
-          <span className="num">{plan.entry_path}</span>
+          <span className="num db-mono">{plan.entry_path}</span>
         </div>
         <div className="break-all">
           <span className="font-medium">
             {t("dashboard.agentAssets.plan.sourceRoot")}:{" "}
           </span>
-          <span className="num">{plan.source_root}</span>
+          <span className="num db-mono">{plan.source_root}</span>
         </div>
         {plan.target_versions.length > 0 && (
           <div>
             <span className="font-medium">
               {t("dashboard.agentAssets.plan.targetVersions")}:{" "}
             </span>
-            <span className="num">{plan.target_versions.join(", ")}</span>
+            <span className="num db-mono">{plan.target_versions.join(", ")}</span>
           </div>
         )}
       </div>
@@ -3195,7 +3192,7 @@ function PlanDetails({
           <ul className="mt-1 list-disc break-all pl-4">
             {plan.sensitive_fields.map((item, index) => (
               <li key={`${item.file}-${item.field}-${index}`}>
-                <span className="num">{item.file}</span> · {item.field}: {item.reason}
+                <span className="num db-mono">{item.file}</span> · {item.field}: {item.reason}
               </li>
             ))}
           </ul>
@@ -3211,7 +3208,7 @@ function PlanDetails({
           </div>
           <ul className="mt-1 list-disc break-all pl-4">
             {plan.external_references.map((ref, index) => (
-              <li key={`${ref}-${index}`} className="num">
+              <li key={`${ref}-${index}`} className="num db-mono">
                 {ref}
               </li>
             ))}
@@ -3247,7 +3244,7 @@ function PlanDetails({
             <tbody>
               {plan.files.map((file) => (
                 <tr key={file.path}>
-                  <td className="num break-all">{file.path}</td>
+                  <td className="num db-mono break-all">{file.path}</td>
                   <td>
                     <FileFlags
                       executable={file.executable}
@@ -3407,7 +3404,7 @@ function UploadDialog({
                 </span>
               )}
             </div>
-            <div className="num mt-1 break-all">
+            <div className="num db-mono mt-1 break-all">
               {t("dashboard.agentAssets.plan.assetId", {
                 id: result.asset.asset_id,
               })}
@@ -3579,7 +3576,7 @@ function ExportDialog({
               </div>
             )}
             {result.backup_dir && (
-              <div className="num mt-1 break-all">
+              <div className="num db-mono mt-1 break-all">
                 {t("dashboard.agentAssets.plan.backupDir", {
                   dir: result.backup_dir,
                 })}
@@ -3696,7 +3693,7 @@ function BundleDetails({ bundle }: { bundle: AssetBundle }) {
             <tbody>
               {bundle.manifest.files.map((file) => (
                 <tr key={file.path}>
-                  <td className="num break-all">{file.path}</td>
+                  <td className="num db-mono break-all">{file.path}</td>
                   <td className="db-table__num num">
                     {file.binary ? "—" : formatBytes(file.size)}
                   </td>
@@ -3962,7 +3959,7 @@ function ResultBlock({ state }: { state: RemoteDialogState }) {
           </div>
         )}
         {result.backup_dir && (
-          <div className="num mt-1 break-all">
+          <div className="num db-mono mt-1 break-all">
             {t("dashboard.agentAssets.transfer.backupDir", {
               dir: result.backup_dir,
             })}
@@ -3994,7 +3991,7 @@ function ResultBlock({ state }: { state: RemoteDialogState }) {
         </div>
       )}
       {result.backup_dir && (
-        <div className="num mt-1 break-all">
+        <div className="num db-mono mt-1 break-all">
           {t("dashboard.agentAssets.transfer.backupDir", {
             dir: result.backup_dir,
           })}
@@ -4012,7 +4009,7 @@ function ResultBlock({ state }: { state: RemoteDialogState }) {
           <div className="font-semibold">
             {t("dashboard.agentAssets.transfer.toolInstructions")}
           </div>
-          <pre className="num mt-1 whitespace-pre-wrap break-words">
+          <pre className="num db-mono mt-1 whitespace-pre-wrap break-words">
             {result.tool_instructions}
           </pre>
         </div>

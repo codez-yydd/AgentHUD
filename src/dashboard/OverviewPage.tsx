@@ -36,7 +36,7 @@ import { AgentTable } from "./overview/AgentTable";
 import { HeatmapCard } from "./overview/HeatmapCard";
 import { MetricCards } from "./overview/MetricCards";
 import { ModelTable } from "./overview/ModelTable";
-import { OverviewSkeleton } from "./overview/primitives";
+import { OverviewSkeleton, PageTitleWithDesc } from "./overview/primitives";
 import { OverviewSpeedCard, OverviewUsageCard } from "./overview/SimpleCards";
 import { TrendCard } from "./overview/TrendCard";
 import {
@@ -84,6 +84,28 @@ function timeText(ms: number): string {
   const d = new Date(ms);
   const p = (n: number) => String(n).padStart(2, "0");
   return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+
+/**
+ * 指标条是否并入趋势面板（纯函数，供本页渲染判定与测试）：
+ * 「调整显示」order 里 overview.metrics 紧挨在 overview.trend 之前、
+ * 两者都未被隐藏、且不在编辑态（编辑态下指标条独立成条才能被拖动）。
+ * 其余情况（不相邻 / 趋势卡隐藏 / 编辑态）指标条独立渲染。
+ */
+export function metricsInlineInTrend(
+  order: readonly string[],
+  cards: Readonly<Record<string, { hidden: boolean } | undefined>>,
+  editing: boolean
+): boolean {
+  if (editing) return false;
+  const metricsIdx = order.indexOf("overview.metrics");
+  const trendIdx = order.indexOf("overview.trend");
+  return (
+    metricsIdx >= 0 &&
+    trendIdx === metricsIdx + 1 &&
+    !cards["overview.metrics"]?.hidden &&
+    !cards["overview.trend"]?.hidden
+  );
 }
 
 export function OverviewPage() {
@@ -156,6 +178,28 @@ export function OverviewPage() {
   const rangeLabel = customRange
     ? formatRangeSummary(customRange.fromMs, customRange.toMs, locale)
     : t(RANGES.find((item) => item.range === range)!.labelKey);
+
+  // 指标条并入趋势面板的判定（纯函数见上方）：默认布局（metrics 紧挨
+  // trend）下指标条渲染进趋势卡内部；不相邻 / 隐藏 / 编辑态时独立成条
+  const inlineMetrics = metricsInlineInTrend(
+    editor.layout.order,
+    editor.layout.cards,
+    editor.editing
+  );
+
+  // 指标条内容（内联 / 独立两种挂载位共用同一份 props；view 为空时页面
+  // 走骨架 / 空态分支，不会渲染到它）
+  const metricCards = view ? (
+    <MetricCards
+      summary={view.summary}
+      currency={currency}
+      /* 自定义区间按非今日处理（范围内 ≠ 今日，第 4 卡仍展示今日 Token） */
+      range={customRange ? "custom" : range}
+      /* 自定义范围下把区间摘要标在「范围内 Token」卡上（预设档不显示，
+         卡片标题保持原有简洁） */
+      rangeLabel={customRange ? rangeLabel : undefined}
+    />
+  ) : null;
 
   // 筛选中的 Agent 品牌名（未筛选为 undefined）：只下发给跟随筛选的
   // TrendCard / ModelTable 作副标题口径标注；MetricCards / HeatmapCard 不带
@@ -231,10 +275,7 @@ export function OverviewPage() {
   return (
     <div className="db-page">
       <header className="db-page__header">
-        <div>
-          <h1 className="db-page__title">{t("dashboard.overview")}</h1>
-          <p className="db-page__desc">{t("dashboard.overview.desc")}</p>
-        </div>
+        <PageTitleWithDesc title={t("dashboard.overview")} desc={t("dashboard.overview.desc")} />
         <div className="db-page__actions">
           <div
             className="db-seg"
@@ -407,23 +448,19 @@ export function OverviewPage() {
               </div>
             </div>
           )}
-          <div
-            className="min-w-0"
-            style={{
-              order: metricsOrder >= 0 ? metricsOrder + 10 : undefined,
-              display: metricsCardState?.hidden ? "none" : undefined,
-            }}
-          >
-            <MetricCards
-              summary={view.summary}
-              currency={currency}
-              /* 自定义区间按非今日处理（范围内 ≠ 今日，第 4 卡仍展示今日 Token） */
-              range={customRange ? "custom" : range}
-              /* 自定义范围下把区间摘要标在「范围内 Token」卡上（预设档不显示，
-                 卡片标题保持原有简洁） */
-              rangeLabel={customRange ? rangeLabel : undefined}
-            />
-          </div>
+          {/* 指标条（独立形态）：并入趋势面板时不在此渲染（见下方
+              TrendCard 的 metrics 插槽）；显隐 / 顺序仍走布局配置 */}
+          {!inlineMetrics && (
+            <div
+              className="min-w-0"
+              style={{
+                order: metricsOrder >= 0 ? metricsOrder + 10 : undefined,
+                display: metricsCardState?.hidden ? "none" : undefined,
+              }}
+            >
+              {metricCards}
+            </div>
+          )}
           {!speedHidden && (
             <OverviewSpeedCard
               scope={effectiveScope === "all" ? "all" : "local"}
@@ -447,6 +484,9 @@ export function OverviewPage() {
             rangeLabel={rangeLabel}
             /* Agent 筛选生效时副标题标注数据归属（合计非跨 Agent 口径） */
             agentName={agentName}
+            /* 布局相邻（默认）时指标条并入本卡内部：卡头 → 指标条 → 图表；
+               hidden 检查在判定函数里，隐藏时走上面的独立形态（display none） */
+            metrics={inlineMetrics ? metricCards : undefined}
           />
           {/* 热力图 + Agent 表：经典方案且两张都显示时并排（≥1340px 两列），
               其余情况拆成两个独立卡片，顺序完全由自定义布局决定。 */}

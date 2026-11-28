@@ -34,116 +34,98 @@
   --panel-bg: 255 255 255;
 
   /* 主窗口页面变量（面板的 --panel-* 是玻璃面板专用，不复用）。
-     视觉语言对齐灵动岛 HUD / 托盘菜单：品牌蓝紫（periwinkle → violet）
-     环境光 + 半透明玻璃壳（标题栏 / 侧栏）+ 浮起的圆角卡片；亮色是带
-     蓝紫冷调的近白，暗色在 .dark 覆盖为深靛蓝（见文件尾部）。 */
-  --db-bg: #f4f5ff;
-  /* 环境光：body 的三层径向渐变（见下方 body 规则）。亮色用品牌蓝紫
-     淡晕，主区仍是近白底，保证正文对比度 */
-  --db-glow-cyan: rgba(76, 99, 245, 0.16);
-  --db-glow-violet: rgba(139, 92, 246, 0.15);
-  --db-glow-mint: rgba(56, 189, 248, 0.08);
-  /* 玻璃壳（标题栏 + 侧栏）：半透明白 + backdrop-filter 毛玻璃。
-     --db-shell-blur 单独抽出来，方便低性能场景统一降级（见 @supports 段） */
-  --db-shell-bg: rgba(255, 255, 255, 0.76);
-  --db-shell-border: rgba(43, 63, 180, 0.09);
-  --db-shell-blur: saturate(180%) blur(18px);
-  /* 吸顶表头 / 吸顶页头需要不透明底（内容从下面滚过）：玻璃壳的半透明
-     值在这两处会透字，故单列一档接近实底的表面色 */
-  --db-sticky-bg: rgba(255, 255, 255, 0.94);
+     视觉语言：中性灰阶 + 单一品牌色 + macOS 原生感——纯色壳（侧栏 / 标题栏）
+     + 白底细描边控件 + 1px 发丝线分层；品牌色 periwinkle 只出现在导航激活
+     图标、主按钮实心底、键盘焦点环与强调文字上，亮暗两套在下方与 .dark。 */
+  --db-bg: #ffffff;
+  /* 壳（标题栏 + 侧栏）：整块浅灰纯色，不再半透明毛玻璃 */
+  --db-shell-bg: #f6f6f8;
+  --db-shell-border: #e5e5e9;
+  --db-shell-blur: none;
+  /* 吸顶表头 / 吸顶页头的不透明底（内容从下面滚过时不透字） */
+  --db-sticky-bg: #ffffff;
   /* 侧栏底（沿用旧变量名：侧栏、价格表吸顶表头等仍引用） */
-  --db-sidebar-bg: var(--db-shell-bg);
-  --db-border: rgba(43, 63, 180, 0.1);
-  --db-text: #131a33;
-  --db-text-dim: rgba(56, 70, 120, 0.7);
-  --db-hover: rgba(43, 63, 180, 0.06);
-  --db-active-bg: rgba(76, 99, 245, 0.13);
-  --db-active-text: #2b3fc4;
+  --db-sidebar-bg: #f6f6f8;
+  /* 结构线与控件描边分档：发丝线（区块分隔）/ 行线 / 卡片描边 / 控件描边 */
+  --db-border: #e5e5e9;
+  --db-row-border: #ececef;
+  --db-text: #27272a;
+  --db-text-dim: #71717a;
+  --db-text-3: #8a8a92;
+  --db-hover: #f4f4f5;
+  --db-active-bg: #e6e6ea;
+  --db-active-text: #3446d6;
   /* 请求日志刷新行动画的高亮底色：新进入表格的行先铺满后渐隐（暗色档见 .dark） */
   --db-row-highlight: rgba(76, 99, 245, 0.16);
-  /* 品牌渐变 + 强调色：灵动岛同源的 periwinkle → violet（--db-accent-2 是
-     渐变另一端）；--db-brand-grad-text 是文字安全的加深档 */
+  /* 品牌色：单一 periwinkle；--db-accent-2 保留给图表多系列区分 */
   --db-accent: #4c63f5;
   --db-accent-2: #8b5cf6;
-  --db-brand-grad: linear-gradient(135deg, #4c63f5 0%, #8b5cf6 100%);
-  --db-brand-grad-text: linear-gradient(120deg, #2b3fc4 0%, #6d3ee0 100%);
-  /* 主按钮（实心渐变）与它的文字色 / 柔光：亮色用饱和蓝紫 + 白字；
-     暗色反过来用亮 periwinkle + 深靛蓝字（亮底白字在深色界面里发灰，
-     与 HUD 强调色的用法一致，见 .dark 段） */
-  --db-btn-primary-bg: linear-gradient(135deg, #4c63f5 0%, #8b5cf6 100%);
+  /* 主按钮（实心品牌底）与它的文字色；暗色反过来用亮 periwinkle + 深字 */
+  --db-btn-primary-bg: #4c63f5;
   --db-btn-primary-text: #ffffff;
-  --db-btn-primary-glow: rgba(76, 99, 245, 0.55);
-  /* 卡片：白面 + 一圈极淡蓝紫描边 + 两层投影（1px 贴地阴影给边缘定形，
-     大模糊长投影给浮起感）；inset 高光是玻璃质感的来源 */
-  --db-card-border: rgba(43, 63, 180, 0.1);
-  --db-card-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.92);
-  --db-card-elevation: 0 1px 2px rgba(36, 52, 130, 0.05),
-    0 18px 44px -26px rgba(43, 63, 180, 0.32);
-  /* 卡片实底色：吸顶表头 / 吸顶控件需要"盖住下方内容"的不透明底，
-     半透明的 --db-card-bg 会透出滚过去的行 */
+  /* 卡片：白面 + 一圈发丝描边，无投影无高光 */
+  --db-card-border: #e5e5e9;
+  --db-card-shadow: none;
+  /* 卡片实底色：吸顶表头 / 吸顶控件需要"盖住下方内容"的不透明底 */
   --db-card-solid: #ffffff;
-  /* 控件（按钮 / 下拉 / 分段 / 搜索框）：浅蓝灰玻璃底 + 细描边 */
-  --db-control-bg: rgba(43, 63, 180, 0.05);
-  --db-control-bg-hover: rgba(43, 63, 180, 0.085);
-  --db-control-border: rgba(43, 63, 180, 0.11);
-  /* 侧栏导航激活项：品牌双色淡底 + 内描边 + 蓝紫投影 */
-  --db-nav-active-bg: linear-gradient(
-    135deg,
-    rgba(76, 99, 245, 0.17),
-    rgba(139, 92, 246, 0.15)
-  );
-  --db-nav-active-text: #2b3fc4;
-  --db-nav-active-ring: rgba(76, 99, 245, 0.32);
-  --db-nav-active-shadow: 0 8px 20px -14px rgba(76, 99, 245, 0.65);
-  /* 表格：表头淡底 + 行悬停淡蓝紫底（比通用 hover 更有方向感） */
-  --db-table-head-bg: rgba(43, 63, 180, 0.03);
-  --db-row-hover: rgba(76, 99, 245, 0.06);
-  /* 焦点环（键盘可见性）：统一走品牌蓝紫，替代各控件零散的 outline */
-  --db-focus-ring: 0 0 0 3px rgba(76, 99, 245, 0.24);
-  /* 自绘标题栏（TitleBar.tsx）：玻璃壳底（与侧栏同源 --db-shell-bg），
-     窗口控制按钮改成 30×30 圆角块（不再整高 46px 命中区，对齐 Windows 11 /
-     macOS 的圆角控制钮），故 hover / press 底比通用 --db-hover 略重一档
-     就够；关闭按钮 hover 的 Windows 惯例红 #e81123 亮暗一致，只在 :root
-     定义一次（暗色段不重复）。
-     栏高抽成变量：抽屉遮罩 / 抽屉面板（fixed 定位）顶部让位引用同一值，
-     以后调栏高只动这一处 */
+  /* 控件（按钮 / 下拉 / 分段 / 搜索框）：白底细描边，悬停浅灰底 */
+  --db-control-bg: #f2f2f4;
+  --db-control-bg-hover: #e9e9ec;
+  --db-control-border: #d9d9de;
+  /* 侧栏导航激活项：中性选中底 + 主文字色（品牌色只落在图标上） */
+  --db-nav-active-bg: #e6e6ea;
+  --db-nav-active-text: var(--db-text);
+  --db-nav-active-ring: transparent;
+  --db-nav-active-shadow: none;
+  /* 表格：表头浅底 + 行悬停中性灰 */
+  --db-table-head-bg: #f7f7f8;
+  --db-row-hover: #f4f4f5;
+  /* 焦点环（键盘可见性）：统一走品牌色，替代各控件零散的 outline。
+     2px 低透明度——3px 高透明在暗色时间范围弹层里像一圈光，压过内容 */
+  --db-focus-ring: 0 0 0 2px rgba(76, 99, 245, 0.16);
+  /* 自绘标题栏（TitleBar.tsx / Windows 通栏）：栏高抽成变量，抽屉遮罩 /
+     抽屉面板（fixed 定位）顶部让位引用同一值；macOS 通顶侧栏壳下由
+     .db-shell--mac 覆盖为 0。关闭按钮 hover 的 Windows 惯例红亮暗一致 */
   --db-titlebar-h: 44px;
-  --db-titlebar-hover: rgba(43, 63, 180, 0.075);
-  --db-titlebar-press: rgba(43, 63, 180, 0.13);
+  --db-titlebar-hover: #ececf0;
+  --db-titlebar-press: #e2e2e7;
   --db-titlebar-close-hover: #e81123;
-  --scrollbar-thumb: rgba(43, 63, 180, 0.2);
-  --scrollbar-thumb-hover: rgba(43, 63, 180, 0.34);
+  /* 滚动条：细淡中性条（可见宽约 4px，见 ::-webkit-scrollbar 规则） */
+  --scrollbar-thumb: rgba(0, 0, 0, 0.22);
+  --scrollbar-thumb-hover: rgba(0, 0, 0, 0.34);
 
   /* 用量总览页（首页）内容面变量：卡片/分段控件/骨架/热力色阶/浮层提示 */
-  --db-card-bg: rgba(255, 255, 255, 0.92);
-  --db-card-shadow: var(--db-card-highlight), var(--db-card-elevation);
-  --db-seg-bg: rgba(43, 63, 180, 0.06);
+  --db-card-bg: #ffffff;
+  --db-seg-bg: #efeff1;
   --db-seg-active-bg: #ffffff;
-  --db-seg-active-text: #2b3fc4;
-  --db-row-border: rgba(43, 63, 180, 0.06);
-  --db-skeleton: rgba(43, 63, 180, 0.08);
-  --db-track: rgba(43, 63, 180, 0.09);
+  --db-seg-active-text: #18181b;
+  --db-skeleton: rgba(27, 27, 31, 0.08);
+  --db-track: rgba(27, 27, 31, 0.1);
   --db-chip-bg: rgba(16, 185, 129, 0.12);
   --db-chip-text: #047857;
   --db-tip-bg: rgba(15, 23, 42, 0.94);
   --db-tip-text: #ffffff;
   --db-tip-border: transparent;
-  --db-accent-sky: #3b5bdb;
+  /* 强调色统一品牌 periwinkle：--db-accent-sky 是旧的强调名（图表 / 链接 /
+     日志页焦点仍引用），DropdownMenu 等 Tailwind 组件用 sky-600/700 */
+  --db-accent-sky: #4c63f5;
+  --color-sky-600: #4c63f5;
+  --color-sky-700: #3446d6;
   --db-accent-emerald: #059669;
   --db-accent-violet: #6d3ee0;
   --db-accent-amber: #b45309;
-  /* 热力图色阶（0 = 无数据 / 空位中性底，1..4 强调色渐进）。品牌
-     periwinkle 系；暗色两套变量见文件尾部 .dark 段 */
-  --db-heat-0: #eceefa;
-  --db-heat-1: #dfe4fd;
-  --db-heat-2: #b9c4fb;
-  --db-heat-3: #7f93f8;
-  --db-heat-4: #4c63f5;
-  --db-heat-edge: rgba(76, 99, 245, 0.3);
-  --db-heat-edge-strong: rgba(76, 99, 245, 0.75);
+  /* 热力图色阶（0 = 无数据 / 空位中性底，1..4 品牌系五档渐进）。
+     暗色两套变量见 .dark 段 */
+  --db-heat-0: #f4f4f6;
+  --db-heat-1: #e6e8ff;
+  --db-heat-2: #c7ccff;
+  --db-heat-3: #98a4ff;
+  --db-heat-4: #5b6cff;
+  --db-heat-edge: rgba(91, 108, 255, 0.28);
+  --db-heat-edge-strong: rgba(91, 108, 255, 0.7);
   /* 每日模式「未来格」虚线（这一格还没到）：比数据格描边略重，保证在白卡
      底色上可辨，又不与色阶 / 无数据灰格抢眼 */
-  --db-heat-future: rgba(76, 99, 245, 0.5);
+  --db-heat-future: rgba(91, 108, 255, 0.5);
   --db-heat-gap: 2px;
   /* 星期标签列宽（底部月份标签行以同一宽度对齐网格） */
   --db-heat-label-w: 26px;
@@ -155,15 +137,14 @@
 
   /* 自定义时间范围面板（页头时间范围触发按钮展开的浮层）：浮层必须是实底，
      不能复用半透明的 --db-card-bg（下层卡片 / 表格内容会透出来）；暗色值见
-     .dark 段 */
+     .dark 段。阴影一层柔和投影（浮层脱离页面但不过分悬浮） */
   --db-pop-bg: #ffffff;
-  --db-pop-shadow: 0 2px 6px rgba(15, 23, 42, 0.06),
-    0 24px 60px -24px rgba(15, 23, 42, 0.45);
+  --db-pop-shadow: 0 12px 36px -14px rgba(0, 0, 0, 0.18);
 
   /* 时间范围控件（触发按钮 / 面板预设行 / 起止字段卡 / 自绘日历格）：主色
-     与页头强调同源（亮 = 品牌蓝紫）；暗色整体提亮一档，见 .dark 段。
-     solid = 起止日实心块与「应用」按钮底 */
-  --db-cal-accent-text: #2b3fc4;
+     与页头强调同源（亮 = 品牌色；文字档加深保证小字号对比度）；暗色整体
+     提亮一档，见 .dark 段。solid = 起止日实心块与「应用」按钮底 */
+  --db-cal-accent-text: #3446d6;
   --db-cal-accent-bg: rgba(76, 99, 245, 0.08);
   --db-cal-accent-border: rgba(76, 99, 245, 0.55);
   --db-cal-accent-border-soft: rgba(76, 99, 245, 0.32);
@@ -171,11 +152,11 @@
   --db-cal-solid: #4c63f5;
   --db-cal-solid-text: #ffffff;
   --db-cal-range-bg: rgba(76, 99, 245, 0.12);
-  --db-cal-range-text: #2b3fbc;
-  --db-cal-hover-bg: rgba(43, 63, 180, 0.07);
-  --db-cal-outside: rgba(56, 70, 120, 0.32);
+  --db-cal-range-text: #3446d6;
+  --db-cal-hover-bg: rgba(27, 27, 31, 0.06);
+  --db-cal-outside: rgba(122, 122, 133, 0.55);
   --db-cal-today-ring: rgba(76, 99, 245, 0.75);
-  --db-cal-field-bg: rgba(43, 63, 180, 0.04);
+  --db-cal-field-bg: rgba(27, 27, 31, 0.04);
 }
 
 /* 不透明普通窗：页面自己铺满，滚动交给主区（.db-main）单一容器，
@@ -199,37 +180,23 @@ body,
   overflow: hidden;
 }
 
-/* 环境光背景：主窗口整体铺一层冷色（青 / 紫）径向渐变，玻璃壳与半透明
-   卡片浮在这层光上才有层次。用 background-attachment: fixed 让光斑相对
-   窗口固定（不随主区滚动），观感接近 HUD 的桌面壁纸磨砂。
-   只画在 body 上：主区 / 侧栏都是透明或半透明，光能透出来。 */
+/* 应用底色：中性纯色（亮白 / 暗近黑），不再画环境光渐变。首帧占位样式
+   （dashboard.html 内联）按旧底色硬编码，特异性更高，这里按同形选择器
+   覆盖回令牌（html.dark body 特异性 0,1,2）。 */
 body {
   background-color: var(--db-bg);
-  background-image: radial-gradient(
-      1200px 640px at 86% -12%,
-      var(--db-glow-violet),
-      transparent 70%
-    ),
-    radial-gradient(
-      1000px 560px at 4% -8%,
-      var(--db-glow-cyan),
-      transparent 68%
-    ),
-    radial-gradient(
-      900px 520px at 50% 108%,
-      var(--db-glow-mint),
-      transparent 72%
-    );
-  background-attachment: fixed;
-  background-repeat: no-repeat;
   color: var(--db-text);
   color-scheme: light;
   overflow: hidden;
 }
 
-/* 文本选中：品牌蓝浅底（系统默认的高饱和蓝在浅色卡片上过于抢眼） */
+html.dark body {
+  background-color: var(--db-bg);
+}
+
+/* 文本选中：品牌色淡底 */
 ::selection {
-  background: rgba(14, 165, 233, 0.24);
+  background: rgba(76, 99, 245, 0.22);
   color: inherit;
 }
 
@@ -258,16 +225,25 @@ select option:disabled {
   color-scheme: dark;
 }
 
-/* 等宽数字（与 index.css 的 .num 同源） */
+/* 数字：不再切等宽字体，继承页面字体 + tabular-nums（数值列对齐仍由等宽
+   数字变体保证）；路径 / id / 哈希这类标识内容用 .db-mono 保留等宽外观 */
 .num {
+  font-variant-numeric: tabular-nums;
+}
+
+/* 标识等宽（文件路径 / 设备 id / 哈希 / 键位）：与 index.css 的等宽栈同源 */
+.db-mono {
   font-family: "SF Mono", "JetBrains Mono", ui-monospace, monospace;
   font-variant-numeric: tabular-nums;
 }
 
 /* ============================================================
- * 应用壳：顶部自绘标题栏 + （左侧固定侧栏 + 右侧主区）
+ * 应用壳：顶部自绘标题栏（Windows / Linux 通栏；macOS 隐藏）+
+ * （左侧固定侧栏 + 右侧主区）。
  * 标题栏自绘是因为窗口 decorations: false（见 src-tauri/src/main_window.rs
- * 与 src/dashboard/TitleBar.tsx）。
+ * 与 src/dashboard/TitleBar.tsx）。平台差异由 DashboardApp 挂在 .db-shell
+ * 上的 db-shell--mac / db-shell--win 修饰类用 CSS 表达：macOS 侧栏通顶并
+ * 在顶部渲染红绿灯 + 品牌行（两侧结构都在 DOM 里，见下方修饰类规则）。
  * ============================================================ */
 .db-shell {
   display: flex;
@@ -282,9 +258,8 @@ select option:disabled {
   min-height: 0;
 }
 
-/* ---- 自绘标题栏（高 44px，见 --db-titlebar-h；替代系统标题栏） ----
-   玻璃壳：半透明底 + 毛玻璃（模糊 body 的环境光），底部一条 hairline
-   与主区分层。标题栏与侧栏同色同材质，读作一块 L 形"应用壳"面。 */
+/* ---- 自绘标题栏（Windows / Linux 通栏，高 44px 见 --db-titlebar-h） ----
+   壳是一整块浅灰面：标题栏与侧栏同色、之间不画横线；macOS 下整栏隐藏。 */
 .db-titlebar {
   position: relative;
   display: flex;
@@ -294,26 +269,20 @@ select option:disabled {
   height: var(--db-titlebar-h);
   padding: 0 8px 0 14px;
   background: var(--db-shell-bg);
-  -webkit-backdrop-filter: var(--db-shell-blur);
-  backdrop-filter: var(--db-shell-blur);
-  border-bottom: 1px solid var(--db-shell-border);
   /* 整栏不可选中：拖拽 / 双击最大化时不会误选到品牌文本 */
   user-select: none;
   cursor: default;
 }
 
-/* 标题栏下缘的品牌渐变线：一条 1px 的蓝紫光带，是"这扇窗属于 AgentHUD"
-   最省地方的标记（HUD 胶囊的描边光同源） */
-.db-titlebar::after {
-  content: "";
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: -1px;
-  height: 1px;
-  background-image: var(--db-brand-grad);
-  opacity: 0.55;
-  pointer-events: none;
+/* macOS：无通栏标题栏，侧栏从窗口顶边通到底边 */
+.db-shell--mac .db-titlebar {
+  display: none;
+}
+
+/* fixed 浮层（请求详情抽屉等）顶部让位标题栏；macOS 下标题栏不存在，
+   浮层从窗口顶边开始（变量在 .db-shell--mac 覆盖为 0，后代全继承） */
+.db-shell--mac {
+  --db-titlebar-h: 0px;
 }
 
 .db-titlebar__brand {
@@ -324,8 +293,7 @@ select option:disabled {
   min-width: 0;
 }
 
-/* 软件 logo（128px 满底不透明 PNG 由 Vite 打包）：20px + 6px 圆角，
-   底部一点点投影让白底 logo 从玻璃面上"浮"起来 */
+/* 软件 logo（128px 满底不透明 PNG 由 Vite 打包）：20px + 6px 圆角 */
 .db-titlebar__logo {
   width: 20px;
   height: 20px;
@@ -333,28 +301,15 @@ select option:disabled {
   border-radius: 6px;
   object-fit: contain;
   user-select: none;
-  filter: drop-shadow(0 1px 2px rgba(2, 6, 23, 0.18));
 }
 
-/* 品牌名：取 logo 的青 → 蓝 → 紫渐变做文字（background-clip）。
-   亮色用加深档（--db-brand-grad-text），保证小字号下的对比度 */
+/* 品牌名：普通主文字色 */
 .db-titlebar__name {
   font-size: 13px;
-  font-weight: 800;
+  font-weight: 650;
   letter-spacing: 0.01em;
   white-space: nowrap;
-  background-image: var(--db-brand-grad-text);
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
-  /* 极旧内核不支持 background-clip: text 时回退为普通文字色（见下） */
-}
-
-@supports not ((background-clip: text) or (-webkit-background-clip: text)) {
-  .db-titlebar__name {
-    background-image: none;
-    color: var(--db-text);
-  }
+  color: var(--db-text);
 }
 
 /* 产品副标题（原侧栏 tagline 随品牌上移）：小号弱色，与名称同行 */
@@ -427,63 +382,127 @@ select option:disabled {
   opacity: 0.5;
 }
 
-/* ---- 侧栏：与标题栏同材质的玻璃面 ---- */
+/* ---- 侧栏：整块浅灰纯色面，右侧一条发丝线 ----
+   macOS 下从窗口顶边通到底边（标题栏隐藏后 .db-body 自然顶到 y=0），
+   顶部依次是红绿灯行与品牌行（db-shell-lights / db-shell-brand）。 */
 .db-sidebar {
   position: relative;
   display: flex;
   flex-direction: column;
   /* 固定宽侧栏：窗口拉伸时只有主区变化（对齐 1100×720 大窗的信息层级） */
-  width: 208px;
+  width: 188px;
   flex: none;
-  /* 品牌块已上移到自绘标题栏：导航顶部留一点呼吸位 */
-  padding-top: 12px;
-  background: var(--db-shell-bg);
-  -webkit-backdrop-filter: var(--db-shell-blur);
-  backdrop-filter: var(--db-shell-blur);
+  background: var(--db-sidebar-bg);
   border-right: 1px solid var(--db-shell-border);
   overflow: hidden;
 }
 
-/* 侧栏顶部的一团品牌光：让导航区上部有 HUD 那种"被光照到"的层次，
-   向下渐隐到透明，不影响文字对比 */
-.db-sidebar::before {
-  content: "";
-  position: absolute;
-  top: -70px;
-  left: -60px;
-  width: 280px;
-  height: 260px;
+/* Windows / Linux：品牌行在通栏标题栏里，侧栏顶部直接从导航开始；
+   红绿灯行 / 品牌行只属于 macOS 壳 */
+.db-shell--win .db-sidebar {
+  padding-top: 12px;
+}
+
+.db-shell--win .db-shell-top {
+  display: none;
+}
+
+/* ---- macOS 壳顶：红绿灯行 + 品牌行 ----
+   红绿灯距窗左 / 上各 14px，圆点 12px、间距 8px；品牌行高 36px、
+   左内边距 16px（上缘 = 14 + 12 = 26px，导航第一项上缘 ≈ 72px）。
+   两行整体是窗口拖拽区（行为见 SidebarShellTop 组件与 useWindowChrome）。 */
+.db-shell-top {
+  flex: none;
+  cursor: default;
+  user-select: none;
+}
+.db-shell-lights {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+  padding: 14px 0 0 14px;
+  cursor: default;
+  user-select: none;
+}
+
+.db-shell-light {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 12px;
+  height: 12px;
+  padding: 0;
+  border: none;
   border-radius: 50%;
-  background: radial-gradient(
-    circle at center,
-    color-mix(in srgb, var(--db-accent) 22%, transparent),
-    transparent 68%
-  );
-  pointer-events: none;
+  /* 颜色由组件按角色内联（#ff5f57 / #febc2e / #28c840，亮暗一致） */
+  cursor: default;
 }
 
-/* 毛玻璃降级：内核不支持 backdrop-filter 时玻璃壳退回卡片实底色，
-   避免"半透明却没有模糊"导致文字与背景糊在一起（WebView2 正常路径
-   不会走到这里，仅老内核 / 特殊环境兜底） */
-@supports not (backdrop-filter: blur(1px)) {
-  .db-titlebar,
-  .db-sidebar,
-  .db-page__header--sticky {
-    background: var(--db-card-solid);
-  }
+/* 悬停整组时露出深色符号（关闭 × / 最小化 − / 最大化，8px 左右） */
+.db-shell-light > svg {
+  opacity: 0;
+  transition: opacity 0.1s ease;
 }
 
-/* ---- 导航：36px 行高 + 双色淡底激活项 ---- */
+.db-shell-lights:hover .db-shell-light:not(:disabled) > svg {
+  opacity: 1;
+}
+
+/* 窗口失焦：三枚圆点变系统灰（组件按焦点状态挂修饰类） */
+.db-shell-lights--blur .db-shell-light {
+  background: #c8c8cd !important;
+}
+
+html.dark .db-shell-lights--blur .db-shell-light {
+  background: #57575c !important;
+}
+
+/* 品牌行：logo + AgentHUD（主文字色，不再渐变字） */
+.db-shell-brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+  height: 36px;
+  padding: 0 0 0 16px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--db-text);
+  cursor: default;
+  user-select: none;
+}
+
+.db-shell-brand__logo {
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+  object-fit: contain;
+  user-select: none;
+}
+
+.db-shell-brand__name {
+  white-space: nowrap;
+}
+
+/* ---- 导航：28px 行高 + 中性激活态 + 品牌色图标 + 分组发丝线 ---- */
 .db-nav {
   position: relative;
   z-index: 1;
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: 2px;
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  /* macOS：品牌行（上缘 26 + 高 36 = 62px）下方 8px 起导航，首项上缘 72px；
+     Windows 由 .db-sidebar 的 padding-top 提供顶部呼吸位 */
   padding: 2px 10px;
+}
+
+.db-shell--mac .db-nav {
+  margin-top: 8px;
 }
 
 .db-nav__item {
@@ -492,19 +511,18 @@ select option:disabled {
   align-items: center;
   gap: 10px;
   width: 100%;
-  height: 36px;
-  padding: 0 11px;
-  border: 1px solid transparent;
-  border-radius: 11px;
+  height: 28px;
+  padding: 0 10px;
+  border: none;
+  border-radius: 8px;
   background: transparent;
   font-family: inherit;
-  font-size: 12.5px;
+  font-size: 13px;
   font-weight: 500;
   color: var(--db-text-dim);
   text-align: left;
   cursor: pointer;
-  transition: background 0.16s ease, color 0.16s ease, box-shadow 0.16s ease,
-    border-color 0.16s ease;
+  transition: background 0.16s ease, color 0.16s ease;
 }
 
 .db-nav__item:hover {
@@ -512,37 +530,39 @@ select option:disabled {
   color: var(--db-text);
 }
 
-/* 激活项：品牌双色淡底 + 内描边 + 冷色投影；文字与图标走加深的品牌蓝 */
+/* 激活项：中性选中底 + 主文字 600；品牌色只落在图标上 */
 .db-nav__item--active,
 .db-nav__item--active:hover {
   background: var(--db-nav-active-bg);
-  border-color: var(--db-nav-active-ring);
   color: var(--db-nav-active-text);
   font-weight: 600;
-  box-shadow: var(--db-nav-active-shadow);
 }
 
-/* 激活项左侧的 3px 品牌色短条（只在激活时出现，圆角与大圆角面板贴合） */
-.db-nav__item--active::before {
+/* 导航分组起始项（第 2、3 组第一项）：上方留 12px 并画一条内缩发丝线
+   （gap 2 + margin 10 = 12，线在间隙中央） */
+.db-nav__item--group-start {
+  margin-top: 10px;
+}
+
+.db-nav__item--group-start::before {
   content: "";
   position: absolute;
-  left: 5px;
-  top: 50%;
-  width: 3px;
-  height: 16px;
-  border-radius: 999px;
-  background-image: var(--db-brand-grad);
-  transform: translateY(-50%);
+  left: 10px;
+  right: 10px;
+  top: -6.5px;
+  height: 1px;
+  background: var(--db-shell-border);
 }
 
 .db-nav__icon {
   display: flex;
   flex: none;
-  opacity: 0.9;
+  color: var(--db-text-dim);
 }
 
+/* 激活项图标：品牌色（选中态唯一的彩色） */
 .db-nav__item--active .db-nav__icon {
-  opacity: 1;
+  color: var(--db-accent);
 }
 
 .db-nav__update-dot {
@@ -564,7 +584,7 @@ select option:disabled {
 }
 
 /* 图标按钮（LanguageToggle / ThemeToggle 经 className 复用）：
-   30px 圆角块 + 透明描边，hover 时浮出一层浅玻璃底 */
+   30px 圆角块 + 透明描边，hover 时浮出一层浅灰底 */
 .db-icon-btn {
   display: flex;
   align-items: center;
@@ -572,15 +592,14 @@ select option:disabled {
   width: 30px;
   height: 30px;
   border: 1px solid transparent;
-  border-radius: 9px;
+  border-radius: 8px;
   background: transparent;
   font-family: inherit;
   font-size: 12px;
   line-height: 1;
   color: var(--db-text-dim);
   cursor: pointer;
-  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease,
-    transform 0.12s ease;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
 }
 
 .db-icon-btn:hover {
@@ -590,7 +609,7 @@ select option:disabled {
 }
 
 .db-icon-btn:active {
-  transform: scale(0.94);
+  background: var(--db-control-bg);
 }
 
 /* ============================================================
@@ -603,18 +622,19 @@ select option:disabled {
   display: flex;
   flex-direction: column;
   overflow-y: auto;
-  /* 壳面分隔线由标题栏的 border-bottom / 侧栏的 border-right 画好，
-     主区不再额外叠一条横线；主区本身透出 body 的环境光背景 */
-  background: transparent;
+  /* 主区铺内容区纯色（侧栏发丝线由 .db-sidebar 的 border-right 画） */
+  background: var(--db-bg);
 }
 
+/* 内容列左右内边距：页头发丝线用同一变量负外边距横贯，窄窗档只改这里 */
 .db-page {
+  --db-page-x: 24px;
   display: flex;
   flex-direction: column;
-  gap: 18px;
+  gap: 20px;
   flex: 1;
   min-height: 100%;
-  padding: 28px 32px 36px;
+  padding: 0 var(--db-page-x) 28px;
   /* 超宽约束：1920/2560 最大化时卡片与表格不再拉满全宽（内容列 1280 居中，
      两侧留白）；窗口较窄时 width:100% 生效，布局与原来一致 */
   width: 100%;
@@ -622,40 +642,78 @@ select option:disabled {
   margin: 0 auto;
 }
 
-/* 页标题：22px + 品牌渐变文字（蓝紫渐进）。大窗下标题是视线的第一落点，
-   渐变让每页的"页头"都有 HUD 的品牌感，而不是一行普通黑字 */
+/* 滚动版面：内容比可用高度高时交给 .db-main 整页滚动，直接子元素不允许
+   被 flex 压缩——设了 min-height 的页头会被压回下限折成两行溢出、
+   overflow:hidden 的指标条会被压成 0 高（特大字号下的总览 / 会话页）。
+   不整页滚动的 .db-logs-page / .db-report-page（子元素按 flex:1 填满高度）
+   在各自段里按同特异性覆盖回自己的 flex 值，不受本条影响 */
+.db-page > * {
+  flex-shrink: 0;
+}
+
+/* 页头：一行式（标题在左、操作区在右），滚动吸顶、底色不透明、底部一条
+   发丝线横贯内容列（负外边距抵消内容列左右内边距）。页头顶到窗口顶
+   （.db-page 不再有顶部内边距），最小高 52px，标题中心 ≈ 26px */
+.db-page__header {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  min-height: 52px;
+  margin: 0 calc(-1 * var(--db-page-x));
+  padding: 0 var(--db-page-x);
+  background: var(--db-sticky-bg);
+  border-bottom: 1px solid var(--db-border);
+}
+
+/* 标题 + 说明问号：说明文字收进问号按钮（原生 title 提示），不再占一行 */
+.db-page__titlerow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
 .db-page__title {
-  font-size: 22px;
-  font-weight: 700;
-  letter-spacing: -0.02em;
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
   line-height: 1.25;
   color: var(--db-text);
-  background-image: var(--db-brand-grad-text);
-  -webkit-background-clip: text;
-  background-clip: text;
-  width: fit-content;
+  white-space: nowrap;
 }
 
-@supports not ((background-clip: text) or (-webkit-background-clip: text)) {
-  .db-page__title {
-    background-image: none;
-    color: var(--db-text);
-  }
+/* 说明问号：16px 细边圆圈，第三档文字色，悬停加深（文案在原生 title） */
+.db-page__help {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  flex: none;
+  padding: 0;
+  border: 1px solid var(--db-control-border);
+  border-radius: 50%;
+  background: transparent;
+  font-family: inherit;
+  font-size: 10px;
+  font-weight: 500;
+  line-height: 1;
+  color: var(--db-text-3);
+  cursor: help;
+  transition: color 0.12s ease, border-color 0.12s ease;
 }
 
-/* 页标题下的品牌短条：给页头一个明确的"品牌标记"（与 HUD 卡片的强调线
-   同源）。伪元素挂在标题上，落在标题与说明之间 */
-.db-page__title::after {
-  content: "";
-  display: block;
-  width: 30px;
-  height: 3px;
-  margin-top: 9px;
-  border-radius: 999px;
-  background-image: var(--db-brand-grad);
-  opacity: 0.9;
+.db-page__help:hover {
+  color: var(--db-text-dim);
+  border-color: var(--db-text-3);
 }
 
+/* 说明文字：页头里已收进问号，规则保留给卡片内空态 / 引导文案 */
 .db-page__desc {
   margin-top: 6px;
   font-size: 12px;
@@ -664,19 +722,10 @@ select option:disabled {
 }
 
 /* ============================================================
- * 用量总览页（首页）：页头 / 卡片 / 分段控件 / 指标卡 / 趋势图 /
+ * 用量总览页（首页）：页头 / 卡片 / 分段控件 / 指标条 / 趋势图 /
  * 热力图 / Agent 表 / 骨架。样式只在主窗口生效，颜色全部走 --db-* 变量，
  * 亮暗由上面的两套变量切换，组件里不再写 .dark 分支。
  * ============================================================ */
-
-/* ---- 页头：标题 + 范围分段 + 刷新 ---- */
-.db-page__header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  flex-wrap: wrap;
-}
 
 .db-page__actions {
   display: flex;
@@ -686,14 +735,14 @@ select option:disabled {
 }
 
 .db-page__updated {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--db-text-dim);
   white-space: nowrap;
 }
 
 /* 页头「远端合并中」弱标记：本机数据已可见、其他设备仍在后台合并 */
 .db-page__merging {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--db-accent-sky);
   opacity: 0.85;
   white-space: nowrap;
@@ -701,19 +750,17 @@ select option:disabled {
 
 .db-page__footnote {
   margin-top: -4px;
-  font-size: 11px;
+  font-size: 12px;
   line-height: 1.6;
   color: var(--db-text-dim);
 }
 
-/* ---- 卡片：20px 大圆角 + 发丝描边 + 双层投影（inset 高光是玻璃质感的
-   来源，见 :root 的 --db-card-shadow） ---- */
+/* ---- 卡片：12px 圆角 + 1px 发丝描边，无投影无高光 ---- */
 .db-card {
   position: relative;
   background: var(--db-card-bg);
   border: 1px solid var(--db-card-border);
-  border-radius: 20px;
-  box-shadow: var(--db-card-shadow);
+  border-radius: 12px;
 }
 
 .db-card__head {
@@ -732,16 +779,16 @@ select option:disabled {
 }
 
 .db-card__title {
-  font-size: 13px;
-  font-weight: 650;
+  font-size: 15px;
+  font-weight: 600;
   color: var(--db-text);
-  letter-spacing: 0.01em;
+  letter-spacing: -0.01em;
   white-space: nowrap;
 }
 
 .db-card__sub {
-  font-size: 11px;
-  color: var(--db-text-dim);
+  font-size: 12px;
+  color: var(--db-text-3);
   /* 长副标题允许换行（此前 nowrap + ellipsis 会把「近 30 天 · 各系列已用
      比例随时间变化」这类文案截断；卡片头随内容自然增高） */
   min-width: 0;
@@ -755,27 +802,29 @@ select option:disabled {
 }
 
 .db-card__body {
-  padding: 15px 20px 18px;
+  padding: 16px 20px 20px;
 }
 
-/* ---- 分段控件（时间范围）：浅玻璃槽 + 白底浮起的选中块 ---- */
+/* ---- 分段控件（时间范围）：浅灰槽 + 白底细描边选中块 ---- */
 .db-seg {
   display: inline-flex;
   gap: 2px;
-  padding: 3px;
-  border-radius: 12px;
+  padding: 2px;
+  border-radius: 8px;
   background: var(--db-seg-bg);
-  /* 内阴影让"槽"有凹陷感，选中的白块才像浮在上面 */
-  box-shadow: inset 0 1px 2px rgba(15, 23, 42, 0.045);
 }
 
 .db-seg__btn {
-  padding: 5px 12px;
+  display: inline-flex;
+  align-items: center;
+  height: 24px;
+  padding: 0 12px;
   border: none;
-  border-radius: 9px;
+  border-radius: 6px;
   background: transparent;
   font-family: inherit;
   font-size: 12px;
+  font-weight: 500;
   color: var(--db-text-dim);
   cursor: pointer;
   transition: background 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
@@ -786,12 +835,13 @@ select option:disabled {
   background: var(--db-hover);
 }
 
+/* 选中项：白底 + 细描边 + 很淡的一层投影，文字主色 600 */
 .db-seg__btn--active {
   background: var(--db-seg-active-bg);
   color: var(--db-seg-active-text);
   font-weight: 600;
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.1),
-    0 4px 10px -6px rgba(15, 23, 42, 0.28);
+  box-shadow: 0 0 0 1px var(--db-control-border),
+    0 1px 2px rgba(0, 0, 0, 0.06);
 }
 
 /* 禁用态（总览页「全部设备」在未启用同步时不可选）：保留激活高亮，
@@ -817,13 +867,13 @@ select option:disabled {
 
 /* 卡片头里的紧凑分段控件（趋势图指标切换）：比页头范围分段小一档 */
 .db-seg--sm {
-  border-radius: 9px;
+  border-radius: 8px;
   padding: 2px;
 }
 
 .db-seg--sm .db-seg__btn {
-  padding: 3px 9px;
-  border-radius: 7px;
+  padding: 0 9px;
+  border-radius: 6px;
   font-size: 11px;
 }
 
@@ -840,8 +890,7 @@ select option:disabled {
 }
 
 /* 触发按钮：与 .db-btn 同档高度与圆角，单行省略，超长摘要不撑破页头.
-   观感对齐 DropdownMenu 触发器：浅玻璃底 + 发丝描边（不再白底实心，
-   页头一排控件才是同一个材质） */
+   观感对齐 DropdownMenu 触发器：白底细描边，页头一排控件同一个材质 */
 .db-range-trigger {
   display: inline-flex;
   align-items: center;
@@ -850,10 +899,11 @@ select option:disabled {
   max-width: 240px;
   padding: 0 9px 0 12px;
   border: 1px solid var(--db-control-border);
-  border-radius: 10px;
-  background: var(--db-control-bg);
+  border-radius: 8px;
+  background: var(--db-card-solid);
   font-family: inherit;
-  font-size: 12px;
+  font-size: 13px;
+  font-weight: 500;
   color: var(--db-text);
   cursor: pointer;
   transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease,
@@ -861,7 +911,7 @@ select option:disabled {
 }
 
 .db-range-trigger:hover {
-  background: var(--db-control-bg-hover);
+  background: var(--db-hover);
 }
 
 .db-range-trigger:focus-visible {
@@ -1185,8 +1235,8 @@ select option:disabled {
 }
 
 /* ---- 通用按钮（刷新 / 重新加载） ----
-   浅玻璃底 + 发丝描边（与页头下拉、时间范围触发器同一材质）；hover 加深
-   一档并带一点点上浮，press 回弹——微交互让操作有"按下去"的实感 */
+   白底 + 细描边（与页头下拉、时间范围触发器同一材质）；hover 浅灰底，
+   press 轻微缩放——微交互让操作有"按下去"的实感 */
 .db-btn {
   display: inline-flex;
   align-items: center;
@@ -1194,10 +1244,10 @@ select option:disabled {
   height: 32px;
   padding: 0 13px;
   border: 1px solid var(--db-control-border);
-  border-radius: 10px;
-  background: var(--db-control-bg);
+  border-radius: 8px;
+  background: var(--db-card-solid);
   font-family: inherit;
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 500;
   color: var(--db-text);
   cursor: pointer;
@@ -1206,8 +1256,8 @@ select option:disabled {
 }
 
 .db-btn:hover:not(:disabled) {
-  background: var(--db-control-bg-hover);
-  border-color: var(--db-border);
+  background: var(--db-hover);
+  border-color: var(--db-control-border);
 }
 
 .db-btn:active:not(:disabled) {
@@ -1236,7 +1286,7 @@ select option:disabled {
 }
 
 /* ---- 弱提示条（对比页：汇总模式远端降级）----
-   比 AlertBanner 轻一档：不抢主数据，只说明口径变化；淡青底 + 左侧
+   比 AlertBanner 轻一档：不抢主数据，只说明口径变化；淡品牌底 + 左侧
    一道品牌色短条，读作"附注"而不是"错误" */
 .db-hintbar {
   display: flex;
@@ -1245,9 +1295,9 @@ select option:disabled {
   margin-top: -6px;
   padding: 8px 12px 8px 13px;
   border: 1px solid color-mix(in srgb, var(--db-accent-sky) 20%, transparent);
-  border-radius: 12px;
+  border-radius: 8px;
   background: color-mix(in srgb, var(--db-accent-sky) 6%, transparent);
-  font-size: 11px;
+  font-size: 12px;
   line-height: 1.6;
   color: var(--db-text-dim);
 }
@@ -1273,7 +1323,7 @@ select option:disabled {
   gap: 8px;
   padding: 34px 20px;
   border: 1px solid rgba(244, 63, 94, 0.24);
-  border-radius: 18px;
+  border-radius: 12px;
   background: rgba(244, 63, 94, 0.06);
   text-align: center;
 }
@@ -1293,60 +1343,42 @@ select option:disabled {
   overflow-wrap: anywhere;
 }
 
-/* ---- 指标卡行 ---- */
+/* ---- 指标条：一条带描边的横条，格与格之间竖向发丝线 ----
+   缝隙画线：容器 gap 1px + 底色透出发丝线，格子铺卡片底色盖住缝隙。
+   窄窗折成两行 / 单列时行列缝隙同样是 1px 线，无需按列数调整边框。 */
 .db-metrics {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 14px;
+  gap: 1px;
+  border: 1px solid var(--db-card-border);
+  border-radius: 12px;
+  background: var(--db-card-border);
+  overflow: hidden;
 }
 
-/* 卡片自己就是尺寸上下文：字号与副行排布按**卡片实际宽度**自适应，而不是
-   按窗口写死断点。窗口 1100（设计基准）时四卡各 ~200px，27px 数值 + 11px
-   双列副行「输入 158.5亿 / 输出 8745.6亿」必然截成省略号；宽窗时又要撑得
-   起信息层级——用容器查询把这两档连续插值，中间任何窗口尺寸都落在一个
-   舒服的比例上（不同 DPI/缩放也不用另调）。 */
+/* 每格左对齐、内边距 14px 20px（与卡头标题 20px 同一条线）；容器仍是
+   尺寸上下文（副行排布按格宽自适应） */
 .db-metric {
-  padding: 16px 18px 17px;
+  padding: 14px 20px;
   container-type: inline-size;
-  /* 右上角一抹品牌冷光：四张指标卡不再是一排"白方块"，而是统一从
-     右上角受光；每张卡的光色不同（蓝 / 紫 / 青绿 / 琥珀），排在一起像
-     一排 HUD 仪表；hover 时描边提一档 + 微上浮，呼应 HUD 卡片的悬停反馈 */
-  --db-metric-glow: color-mix(in srgb, var(--db-accent) 12%, transparent);
-  background-image: radial-gradient(
-    130% 110% at 100% -20%,
-    var(--db-metric-glow),
-    transparent 64%
-  );
-  transition: border-color 0.18s ease, box-shadow 0.18s ease,
-    transform 0.18s ease;
+  background: var(--db-card-bg);
 }
 
-.db-metrics > .db-metric:nth-child(2) {
-  --db-metric-glow: color-mix(in srgb, var(--db-accent-violet) 12%, transparent);
-}
-
-.db-metrics > .db-metric:nth-child(3) {
-  --db-metric-glow: color-mix(in srgb, var(--db-accent-emerald) 11%, transparent);
-}
-
-.db-metrics > .db-metric:nth-child(4) {
-  --db-metric-glow: color-mix(in srgb, var(--db-accent-amber) 11%, transparent);
-}
-
-.db-metric:hover {
-  border-color: color-mix(in srgb, var(--db-accent-sky) 28%, transparent);
-  transform: translateY(-1px);
-  box-shadow: var(--db-card-highlight),
-    0 18px 40px -26px color-mix(in srgb, var(--db-accent-sky) 55%, transparent);
+/* 会话页复用 db-card + db-metric 作单格：并入横条时去掉卡片自身的
+   描边 / 圆角，缝隙线由容器统一画 */
+.db-metrics > .db-card {
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
 }
 
 .db-metric__label {
   display: flex;
   align-items: center;
   gap: 7px;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 500;
-  letter-spacing: 0.02em;
+  letter-spacing: 0.01em;
   color: var(--db-text-dim);
 }
 
@@ -1355,14 +1387,11 @@ select option:disabled {
   align-items: baseline;
   gap: 3px;
   margin-top: 11px;
-  /* 兜底（不支持容器查询的旧内核）在前，流体档在后；cqw 非法时整条忽略，
-     旧内核仍拿到 27px */
   font-size: 28px;
-  font-size: clamp(22px, 14cqw, 28px);
-  font-weight: 700;
+  font-weight: 600;
   line-height: 1;
-  letter-spacing: -0.02em;
-  /* 默认中性色：只有主指标（范围内 Token）走强调色，四卡并排时主次分明 */
+  letter-spacing: -0.01em;
+  /* 默认中性色：只有主指标（范围内 Token）走强调色，四格并排时主次分明 */
   color: var(--db-text);
   /* 极致值兜底（超长金额 + 大字号档）：单行截断不折行、不撑破卡片 */
   white-space: nowrap;
@@ -1370,36 +1399,21 @@ select option:disabled {
   text-overflow: ellipsis;
 }
 
-/* 主指标数值：品牌渐变文字（加深档，亮暗各自有定义）；旧内核回退纯色 */
-.db-metric__value--primary {
-  color: var(--db-accent-sky);
-}
-
+/* 主指标数值：主文字色（不再渐变），与整体数字层级一致 */
+.db-metric__value--primary,
 .db-metric__value--primary > .num:first-child {
-  background-image: var(--db-brand-grad-text);
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
-}
-
-@supports not ((background-clip: text) or (-webkit-background-clip: text)) {
-  .db-metric__value--primary > .num:first-child {
-    background-image: none;
-    color: var(--db-accent-sky);
-  }
+  color: var(--db-text);
 }
 
 .db-metric__unit {
   font-size: 15px;
-  font-size: clamp(12px, 7.2cqw, 15px);
   font-weight: 600;
   opacity: 0.75;
 }
 
 .db-metric__sub {
   margin-top: 8px;
-  font-size: 11px;
-  font-size: clamp(10.5px, 5.2cqw, 11px);
+  font-size: 12px;
   color: var(--db-text-dim);
 }
 
@@ -1435,6 +1449,29 @@ select option:disabled {
   text-overflow: ellipsis;
   font-size: 10px;
   color: var(--db-text-dim);
+}
+
+/* ---- 指标条并入趋势卡（OverviewPage 布局相邻时的内联形态）----
+   去自身外框与圆角，底边一条通栏发丝线与图表分隔；负左右外边距贴卡内缘
+   （抵消 body padding），格内边距 14px 20px 使标签左缘与卡头标题（20px）
+   同一条线。独立形态（非相邻 / 趋势卡隐藏 / 编辑态）仍是带外框的横条。
+   内联时趋势卡不再传副标题（范围内 Token / 花费 / 请求数本身就是合计），
+   由组件侧控制，这里不需要 :has 规则 */
+.db-card .db-metrics {
+  border: none;
+  border-radius: 0;
+  border-bottom: 1px solid var(--db-card-border);
+  background: transparent;
+  margin: 0 -20px;
+}
+
+.db-card .db-metrics > .db-metric {
+  padding: 14px 20px;
+}
+
+/* 卡体是 flex 列（图表卡 bodyClassName--chart）：指标条不参与高度压缩 */
+.db-card__body--chart > .db-metrics {
+  flex: none;
 }
 
 /* ---- 骨架（加载态） ---- */
@@ -1494,6 +1531,9 @@ select option:disabled {
      （原来固定 190px，最大化后柱图偏矮、纵向留白） */
   height: clamp(190px, 26vh, 320px);
   padding-top: 14px;
+  /* 右侧留出数值标签带：最长「92.77万」11px ≈ 55px + 衬底边距，
+     刻度不再被末柱裁切（刻度行由 .db-chart__axis 同步留白保持列对齐） */
+  padding-right: 60px;
 }
 
 /* 横向网格线 + 数值刻度（纵轴）：绝对定位铺在柱体后面（DOM 在前、无 z-index，
@@ -1508,7 +1548,12 @@ select option:disabled {
   position: absolute;
   left: 0;
   right: 0;
-  border-top: 1px dashed var(--db-row-border);
+  /* 实线浅灰（原型同款）：虚线在浅底上有颗粒感，实线更安静 */
+  border-top: 1px solid #f0f0f2;
+}
+
+.dark .db-chart__grid-line {
+  border-top-color: rgba(255, 255, 255, 0.12);
 }
 
 .db-chart__grid-label {
@@ -1517,10 +1562,12 @@ select option:disabled {
   bottom: 2px;
   padding: 0 3px;
   border-radius: 4px;
-  /* 半透明卡底上给刻度一个衬底，跨过柱体时仍可读 */
+  /* 半透明卡底上给刻度一个衬底，跨过柱体时仍可读；提到柱体上层
+     （dense 模式柱会盖住标签），11px 三级灰与轴标签同档 */
+  z-index: 1;
   background: var(--db-card-bg);
-  font-size: 9px;
-  color: var(--db-text-dim);
+  font-size: 11px;
+  color: var(--db-text-3);
 }
 
 .db-chart__col {
@@ -1560,38 +1607,51 @@ select option:disabled {
   max-width: 34px;
   /* column-reverse：输入侧在下、输出在上 */
   flex-direction: column-reverse;
-  border-radius: 5px 5px 2px 2px;
+  /* 纯色柱 + 3px 顶圆角（原型同款）：渐变柱在灰阶界面里过饰 */
+  border-radius: 3px 3px 0 0;
   overflow: hidden;
 }
 
+/* 柱色亮暗两套：亮 = 原型定值（输入侧 periwinkle / 输出浅紫），
+   暗 = 品牌浅档（--db-accent / --db-accent-2）；花费 / 请求是单一序列，
+   与输入侧同色（一次只显示一个指标，不存在混读） */
 .db-bar__input {
-  background: linear-gradient(180deg, #38bdf8 0%, #0284c7 100%);
+  background: #5b6cff;
 }
 
 .db-bar__output {
-  background: linear-gradient(180deg, #a78bfa 0%, #7c3aed 100%);
+  background: #a78bfa;
 }
 
 /* 非 Token 指标的单一序列色（花费 / 请求无输入输出拆分，整柱一段） */
-.db-bar__cost {
-  background: linear-gradient(180deg, #fbbf24 0%, #d97706 100%);
+.db-bar__cost,
+.db-bar__requests {
+  background: #5b6cff;
 }
 
-.db-bar__requests {
-  background: linear-gradient(180deg, #34d399 0%, #059669 100%);
+.dark .db-bar__input,
+.dark .db-bar__cost,
+.dark .db-bar__requests {
+  background: var(--db-accent);
+}
+
+.dark .db-bar__output {
+  background: var(--db-accent-2);
 }
 
 .db-chart__axis {
   display: flex;
   gap: 3px;
   margin-top: 6px;
+  /* 与绘图区同一标签带留白：轴标签与柱列保持对齐 */
+  padding-right: 60px;
 }
 
 .db-chart__tick {
   flex: 1 1 0;
   min-width: 0;
-  font-size: 10px;
-  color: var(--db-text-dim);
+  font-size: 11px;
+  color: var(--db-text-3);
   text-align: center;
   white-space: nowrap;
 }
@@ -1600,9 +1660,10 @@ select option:disabled {
   text-align: left;
 }
 
+/* 末位标签与首标签同一档灰（不再强调色）：日期不是强调信息 */
 .db-chart__tick--last {
   text-align: right;
-  color: var(--db-active-text);
+  color: var(--db-text-3);
 }
 
 .db-chart__tick--hidden {
@@ -1624,17 +1685,17 @@ select option:disabled {
   text-align: right;
 }
 
-/* 峰值行：图脚左侧的强调信息（TrendCard 的「峰值 X（日期）」） */
+/* 峰值行：图脚左侧的峰值信息，中性次级灰（原琥珀强调在灰阶界面里抢眼） */
 .db-chart__peak {
   font-weight: 600;
-  color: var(--db-accent-amber);
+  color: var(--db-text-dim);
 }
 
 .db-legend {
   display: flex;
   align-items: center;
   gap: 14px;
-  font-size: 10px;
+  font-size: 12px;
   color: var(--db-text-dim);
 }
 
@@ -1651,12 +1712,21 @@ select option:disabled {
   border-radius: 3px;
 }
 
+/* 图例圆点：与柱同色的纯色块（不再渐变） */
 .db-swatch--input {
-  background: linear-gradient(180deg, #38bdf8 0%, #0284c7 100%);
+  background: #5b6cff;
 }
 
 .db-swatch--output {
-  background: linear-gradient(180deg, #a78bfa 0%, #7c3aed 100%);
+  background: #a78bfa;
+}
+
+.dark .db-swatch--input {
+  background: var(--db-accent);
+}
+
+.dark .db-swatch--output {
+  background: var(--db-accent-2);
 }
 
 /* ---- 悬停浮层（趋势图 / 热力图 / 折线图共用） ----
@@ -2030,23 +2100,27 @@ select option:disabled {
 .db-table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 12px;
+  font-size: 13px;
 }
 
-/* 表头：11px 弱色 + 字距，底下一层极淡的分隔；数值列右对齐由 __num 负责。
-   表头不铺底色（卡片本身是白底，铺一层灰反而显脏），只用分隔线与字重区分 */
+/* 表头行：36px 高 + 浅底一整条，12px/500 第二档文字色（数值列右对齐由
+   __num 负责，字距不再拉开）。底色是浅灰档（--db-table-head-bg），吸顶
+   表头（日志表 / 价格表）单独覆盖为同一档不透明底 */
 .db-table th {
-  padding: 0 10px 9px;
+  height: 36px;
+  padding: 0 12px;
+  background: var(--db-table-head-bg);
   border-bottom: 1px solid var(--db-border);
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.02em;
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0;
   color: var(--db-text-dim);
   text-align: left;
 }
 
+/* 数据行：40px 高（8px 上下内边距 + 单行内容），行间发丝线，最后一行不画 */
 .db-table td {
-  padding: 10px;
+  padding: 8px 12px;
   border-bottom: 1px solid var(--db-row-border);
   vertical-align: middle;
   color: var(--db-text);
@@ -2056,8 +2130,19 @@ select option:disabled {
   border-bottom: none;
 }
 
-/* 行悬停：淡青底（--db-row-hover）——比中性灰更能提示"这一行是当前读数"，
-   与 HUD 卡片的悬停反馈同一套色感 */
+/* 卡内表格首尾列与卡头标题对齐：首格不再有左内边距、末格不再有右内边距
+   （卡体水平内边距 20px = 卡头内边距），中间格保留间距 */
+.db-card__body .db-table th:first-child,
+.db-card__body .db-table td:first-child {
+  padding-left: 0;
+}
+
+.db-card__body .db-table th:last-child,
+.db-card__body .db-table td:last-child {
+  padding-right: 0;
+}
+
+/* 行悬停：中性浅灰（--db-row-hover），提示当前读数 */
 .db-table tbody tr:hover {
   background: var(--db-row-hover);
 }
@@ -2283,7 +2368,7 @@ select option:disabled {
   min-width: 0;
   padding: 12px 13px 11px;
   border: 1px solid var(--db-card-border);
-  border-radius: 14px;
+  border-radius: 12px;
   background: var(--db-control-bg);
   transition: background 0.16s ease, border-color 0.16s ease,
     transform 0.16s ease;
@@ -2295,11 +2380,11 @@ select option:disabled {
   transform: translateY(-1px);
 }
 
-/* 额度块加载骨架：与真实额度块同轮廓（约 78px 高、14px 圆角），
+/* 额度块加载骨架：与真实额度块同轮廓（约 78px 高、12px 圆角），
    底色与脉冲沿用 .db-skeleton；容器复用 .db-matrix 同一网格模板 */
 .db-qcell--skeleton {
   height: 78px;
-  border-radius: 14px;
+  border-radius: 12px;
 }
 
 /* 块头一行放下：品牌图标 + 系列名（左）与窗口措辞 + 剩余大数（右） */
@@ -2571,24 +2656,19 @@ select option:disabled {
  * ============================================================ */
 
 /* ---- 按钮补充变体 ---- */
-/* 主操作：品牌蓝紫渐变实底 + 同色系柔光投影（页头 / 表单里一屏最多一个，
-   留给真正的"前进"动作）。文字色按主题走 --db-btn-primary-text：
-   亮色白字、暗色深靛蓝字（亮色渐变配白字在深色界面里发灰） */
+/* 主操作：品牌色纯色实底（一屏最多一个，留给真正的"前进"动作）。
+   文字色按主题走 --db-btn-primary-text：亮色白字、暗色深靛蓝字 */
 .db-btn--primary {
   border-color: transparent;
-  background-image: var(--db-btn-primary-bg);
+  background-color: var(--db-btn-primary-bg);
   color: var(--db-btn-primary-text);
-  box-shadow: 0 8px 20px -12px var(--db-btn-primary-glow),
-    inset 0 1px 0 rgba(255, 255, 255, 0.3);
 }
 
 .db-btn--primary:hover:not(:disabled) {
-  background-image: var(--db-btn-primary-bg);
+  background-color: var(--db-btn-primary-bg);
   border-color: transparent;
   color: var(--db-btn-primary-text);
-  filter: brightness(1.05) saturate(1.04);
-  box-shadow: 0 10px 24px -12px var(--db-btn-primary-glow),
-    inset 0 1px 0 rgba(255, 255, 255, 0.34);
+  filter: brightness(0.94);
 }
 
 .db-btn--badge {
@@ -2662,22 +2742,9 @@ select option:disabled {
   margin-left: auto;
 }
 
-/* 价格设置页页头吸顶：页头内含「保存」，长价格表滚动时保存动作始终可见。
-   负外边距抵消顶部内边距，静态布局与其它页头保持一致；背景用近实底的
-   --db-sticky-bg + 毛玻璃（内容从下方滚过时不透字，但仍有玻璃质感） */
-.db-page__header--sticky {
-  position: sticky;
-  top: 0;
-  z-index: 20;
-  margin-top: -10px;
-  padding-top: 10px;
-  padding-bottom: 6px;
-  margin-bottom: -6px;
-  background: var(--db-sticky-bg);
-  -webkit-backdrop-filter: var(--db-shell-blur);
-  backdrop-filter: var(--db-shell-blur);
-  border-radius: 0 0 12px 12px;
-}
+/* 页头吸顶已统一为 .db-page__header 的默认行为（sticky + 不透明底 +
+   底部发丝线），修饰类不再需要；价格设置页此前依赖它让「保存」始终可见，
+   现在与其它页头同享吸顶。 */
 
 /* 未保存改动提示（dirty 时紧贴保存按钮左侧） */
 .db-pricing__dirty {
@@ -2689,7 +2756,7 @@ select option:disabled {
 
 /* 保存按钮 dirty 视觉态：主色描边环，扫一眼即知有改动待落盘 */
 .db-btn--dirty {
-  box-shadow: 0 0 0 3px rgba(14, 165, 233, 0.28);
+  box-shadow: 0 0 0 3px rgba(76, 99, 245, 0.28);
 }
 
 /* 应用价格更新成功后的轻提示（与「未保存」互斥展示） */
@@ -2706,16 +2773,17 @@ select option:disabled {
   cursor: default;
 }
 
-/* ---- 搜索框（价格表卡片右上）：浅玻璃底，聚焦时主色描边 + 焦点环 ---- */
+/* ---- 搜索框（价格表卡片右上）：控件统一 32px 高 / 8px 圆角，
+   聚焦时主色描边 + 焦点环 ---- */
 .db-search {
   width: 220px;
-  height: 30px;
+  height: 32px;
   padding: 0 10px;
   border: 1px solid var(--db-control-border);
-  border-radius: 9px;
+  border-radius: 8px;
   background: var(--db-control-bg);
   font-family: inherit;
-  font-size: 12px;
+  font-size: 13px;
   color: var(--db-text);
   outline: none;
   transition: border-color 0.15s ease, background 0.15s ease,
@@ -2766,9 +2834,9 @@ select option:disabled {
   position: sticky;
   top: 0;
   z-index: 2;
-  /* 吸顶需要不透明底：--db-card-solid 是亮/暗两套的卡片实底色（白 / 深蓝），
-     滚过去的行不会从表头后面透出来 */
-  background: var(--db-card-solid);
+  /* 吸顶需要不透明底：表头浅灰档（--db-table-head-bg）是实色，滚过去的
+     行不会从表头后面透出来 */
+  background: var(--db-table-head-bg);
 }
 
 .db-price-name {
@@ -2947,14 +3015,14 @@ select option:disabled {
   border-color: transparent;
 }
 
-/* ---- 来源 / 差异 小标签 ---- */
+/* ---- 来源 / 差异 小标签：11px/500、小圆角，配色各变体沿用令牌 ---- */
 .db-tag {
   display: inline-flex;
   align-items: center;
-  padding: 1px 7px;
-  border-radius: 999px;
-  font-size: 10px;
-  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 5px;
+  font-size: 11px;
+  font-weight: 500;
   white-space: nowrap;
 }
 
@@ -2996,7 +3064,7 @@ select option:disabled {
   background: rgba(14, 165, 233, 0.14);
   color: var(--db-active-text);
   font-weight: 500;
-  font-size: 10px;
+  font-size: 11px;
   vertical-align: 1px;
 }
 
@@ -3244,30 +3312,39 @@ select option:disabled {
  *（.dark 会反转 slate 色板，弹层要实底）。
  * ============================================================ */
 
-/* ---- 筛选行：来源 / 模型下拉 ---- */
+/* ---- 筛选行：来源 / 模型下拉 ----
+   日志页挪进表格卡片头右侧、速度页挪进页头控件组后，本行不再作为页面
+   直接子元素出现；margin 交由所在容器（卡头 / 页头）的 gap 提供 */
 .db-logs-filters {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   flex-wrap: wrap;
-  margin-top: -6px;
 }
 
-/* ---- 明细表：10 列按 1100 默认窗口的内容区（约 840px）排布——固定列宽合计
-   = 表 min-width：171 + 72 + 75 + 64 + 64 + 100 + 68 + 66 + 64 + 72 = 816px
-   （时间列按「跨月时间 + 最宽有界徽标」取值；模型列取 min，富余归它，上限
-   仍 320；耗时 / 首字列给 ≈ 前缀留位）；更窄的窗口 / 超长数值（跨年时间、
-   十亿级 token）由 .db-table-wrap 横向滚动兜底，绝不把数值挤成两行 ---- */
+/* ---- 明细表：10 列按 1100 默认窗口的内容区（约 810px）排布——
+   时间 172 + 来源 72 + 模型(min 75) + 输入 60 + 输出 60 + 缓存 92 + 花费 66 +
+   耗时 60 + 首字 58 + 速度 66 ≈ 781px，1100 默认窗无横向滚动；单元格水平
+   内边距 8px（十列空间紧张，通用的 12px 会重新溢出）。min-width 放开靠
+   auto 布局按内容自适应；更窄的窗口 / 超长数值（跨年时间、十亿级 token）
+   由 .db-table-wrap 横向滚动兜底，绝不把数值挤成两行 ---- */
 .db-logs-table {
-  min-width: 816px;
+  min-width: 0;
+}
+
+/* 十列内边距收 8px：首尾列贴卡内边距的对齐规则（.db-card__body 内
+   first/last-child）特异性更高，仍然生效 */
+.db-logs-table th,
+.db-logs-table td {
+  padding-left: 8px;
+  padding-right: 8px;
 }
 
 /* 时间列：宽度覆盖「非今天时间（MM-DD HH:mm，79.2px）+ 最宽的有界标签
-   （英文 Retried 12，67px）+ 间距 + 内边距 = 170.2px」，固定列宽优先于按
-   内容自适应，刷新时不随行内容跳动（唯一例外：跨年时间 115.2px 的行按
-   既有模式把列自然撑宽）；更窄的窗口由 .db-table-wrap 横向滚动兜底 */
+   （英文 Retried 12，67px）+ 间距 + 内边距」，固定列宽优先于按内容自适应，
+   刷新时不随行内容跳动；更窄的窗口由 .db-table-wrap 横向滚动兜底 */
 .db-logs__col-time {
-  width: 171px;
+  width: 172px;
   white-space: nowrap;
 }
 
@@ -3276,53 +3353,55 @@ select option:disabled {
   white-space: nowrap;
 }
 
-/* 模型列：可变宽（吃掉富余），内容单行截断，完整名走 title；时间列放宽的
-   49px 由这里收窄抵消，表整体 min-width 不变 */
+/* 模型列：可变宽（吃掉富余），内容单行截断，完整名走 title */
 .db-logs__col-model {
   min-width: 75px;
   max-width: 320px;
 }
 
-/* 数值列：按列内常见最长值给固定宽（zh 紧凑 token「9999.9万」、"$0.1234"、
-   "99.9s"、"0.35s"、"≈45.2 t/s"），更长的值仍由列自适应撑开 */
+/* 数值列：按列内常见最长值给固定宽（zh 紧凑 token「9999.9万」、"$0.1234"），
+   更长的值仍由列自适应撑开 */
 .db-logs__col-input,
 .db-logs__col-output {
-  width: 64px;
+  width: 60px;
 }
 
 /* 缓存列（缓存读 / 缓存写合并）：两项并列 + 中间分隔，略宽于普通数值列 */
 .db-logs__col-cache {
-  width: 100px;
+  width: 92px;
 }
 
 .db-logs__col-cost {
-  width: 68px;
-}
-
-.db-logs__col-duration {
   width: 66px;
 }
 
+.db-logs__col-duration {
+  width: 60px;
+}
+
 .db-logs__col-ttft {
-  width: 64px;
+  width: 58px;
 }
 
+/* 速度：数值 + t/s 单位单行（计时口径完整说明在 title，第二行小字不再占
+   一行高度——十列预算下它会让整列多出一行） */
 .db-logs__col-speed {
-  width: 72px;
+  width: 66px;
+  white-space: nowrap;
 }
 
-/* 速度单位（t/s）：小一号弱色，数值仍为主信息（对齐面板「数值 + 单位」的
-   分层排版；≈ 只在按总耗时估算的近似速度前出现） */
+/* 速度单位（t/s）：小一号三档灰，数值仍为主信息（对齐面板「数值 + 单位」
+   的分层排版；≈ 只在按总耗时估算的近似速度前出现）；与数值至少 3px 间距 */
 .db-logs__speed-unit {
-  margin-left: 2px;
-  font-size: 10px;
-  color: var(--db-text-dim);
+  margin-left: 3px;
+  font-size: 11px;
+  color: var(--db-text-3);
+  white-space: nowrap;
 }
 
+/* 速度计时口径第二行小字：隐藏（完整口径在单元格 title，悬停可见） */
 .db-logs__speed-basis {
-  display: block;
-  font-size: 10px;
-  color: var(--db-text-dim);
+  display: none;
 }
 
 .db-logs__model {
@@ -3364,10 +3443,11 @@ select option:disabled {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  /* 上限 = 时间列内容宽 151 − 跨月时间 79.2 − gap 4 ≈ 67.8，取 64 留余量：
-     任何时间格式下错误码徽标都分得到 64，观感统一；常见短码（429 / 529）
-     远小于它，完整显示 */
-  max-width: 64px;
+  /* 上限盖住较长的枚举错误码（rate_limited ≈ 78px）：今天的时间（8 字符
+     ≈ 62px）+ gap 4 + 84 ≤ 时间列内容宽 156，常见长码完整显示不折省略号；
+     跨月时间（79.2px）的行徽标让位收缩（完整码仍在 title）；常见短码
+     （429 / 重试 12 / 中断）远小于它，观感不变 */
+  max-width: 84px;
 }
 
 /* 有界徽标（中断 / 重试 N）：完整显示不收缩（重试次数就是要传达的信息），
@@ -3422,7 +3502,6 @@ select option:disabled {
 }
 
 .db-logs-page > .db-page__header,
-.db-logs-page > .db-logs-filters,
 .db-logs-page > .db-hintbar,
 .db-logs-page > .db-logs-metrics {
   flex: none;
@@ -3437,11 +3516,28 @@ select option:disabled {
   overflow: hidden;
 }
 
+/* 卡头右侧筛选组（来源 / 模型下拉，LogsPage 传入 action）：
+   内联贴右不占整行，与标题之间留 12px；条件摘要副标题隐藏——筛选与范围
+   都已在卡头 / 页头可见（速度页同款，卡头只剩标题） */
+.db-logs-card .db-card__head {
+  gap: 12px;
+}
+
+.db-logs-card .db-card__sub {
+  display: none;
+}
+
+.db-logs-card .db-logs-filters {
+  margin-left: auto;
+}
+
 .db-logs-card > .db-card__body {
   flex: 1;
   min-height: 0;
   display: flex;
   flex-direction: column;
+  /* 卡头与表头之间 12px：卡头自带 padding-bottom 0，body 顶收一档 */
+  padding-top: 12px;
 }
 
 .db-logs-card .db-table-wrap {
@@ -3475,21 +3571,23 @@ select option:disabled {
   position: sticky;
   top: 0;
   z-index: 1;
-  background: var(--db-card-solid);
+  background: var(--db-table-head-bg);
   border-bottom: 1px solid var(--db-border);
 }
 
 /* ---- 汇总指标行：总请求数 / Token 总量 / 输入 / 输出 / 总成本 / 缓存命中率 ----
-   紧凑单行（六格 inline 标签 + 数值），筛选项变化即刷新；加载中压暗旧值
-   （首载给骨架），错误 / 无数据态全「—」，不占额外高度影响表格可视行数。
-   六格默认单行（1100px 默认窗口放得下）；flex-wrap: wrap 兜底极窄窗口
-   （900×640 最小窗口）折两行——本页是 overflow: hidden 的 flex 列，横向
-   溢出会直接裁掉内容，折行只会让表格卡（flex:1）少一行高度，是安全方向。 */
+   合并成一条带描边的横条（与总览页 .db-metrics 同一语言）：格间 1px 竖线
+   （缝隙画线）、格内标签 + 数值一行；筛选项变化即刷新，加载中压暗旧值
+   （首载给骨架），错误 / 无数据态全「—」。宽窗六格以内容宽为基准均摊剩余
+   空间；≤980px 窄窗改 3×2 网格均分折行（flex-wrap 会折出 5+1 的孤格），
+   行列缝隙同为 1px 线。 */
 .db-logs-metrics {
   display: flex;
-  align-items: center;
-  gap: 8px;
+  align-items: stretch;
   flex-wrap: wrap;
+  border: 1px solid var(--db-card-border);
+  border-radius: 12px;
+  overflow: hidden;
 }
 
 .db-logs-metrics--busy {
@@ -3501,21 +3599,44 @@ select option:disabled {
   align-items: baseline;
   gap: 6px;
   min-width: 0;
-  padding: 5px 10px;
-  border: 1px solid var(--db-control-border);
-  border-radius: 10px;
-  background: var(--db-control-bg);
+  padding: 7px 14px;
+  background: var(--db-card-bg);
+  /* 以内容宽为基准、均摊剩余空间 */
+  flex: 1 1 auto;
   white-space: nowrap;
   overflow: hidden;
 }
 
+.db-logs-metric + .db-logs-metric {
+  border-left: 1px solid var(--db-card-border);
+}
+
+/* 窄窗：六格 3 列网格均分（900 最小窗 3+3 两行，无孤格）；缝隙由容器
+   gap 1px + 底色透出（格子自带卡底色盖住其余缝隙） */
+@media (max-width: 980px) {
+  .db-logs-metrics {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 1px;
+    background: var(--db-card-border);
+  }
+
+  .db-logs-metric {
+    flex: none;
+  }
+
+  .db-logs-metric + .db-logs-metric {
+    border-left: none;
+  }
+}
+
 .db-logs-metric__label {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--db-text-dim);
 }
 
 .db-logs-metric__value {
-  font-size: 14px;
+  font-size: 15px;
   font-weight: 600;
   color: var(--db-text);
   overflow: hidden;
@@ -3543,18 +3664,18 @@ select option:disabled {
   margin-top: 2px;
 }
 
-/* 分页按钮比通用 .db-btn 矮一档（表格底部的次级操作） */
+/* 分页按钮统一控件尺寸（32px 高 / 8px 圆角） */
 .db-btn--sm {
-  height: 26px;
-  padding: 0 10px;
-  font-size: 11px;
+  height: 32px;
+  padding: 0 12px;
+  font-size: 12px;
   border-radius: 8px;
 }
 
 .db-pager__info,
 .db-pager__total {
-  font-size: 11px;
-  color: var(--db-text-dim);
+  font-size: 12px;
+  color: var(--db-text-3);
   white-space: nowrap;
 }
 
@@ -3732,6 +3853,65 @@ select option:disabled {
 .db-page > .flex-1 > .text-\[10px\] {
   font-size: 12px;
   max-width: 460px;
+}
+
+/* ---- DropdownMenu 触发器（悬浮面板与主窗口共用的组件，样式是内置的
+   Tailwind 工具类）----
+   组件不能改（悬浮面板共用），这里用触发器自带的 text-[11px] 任意值类做
+   属性匹配，把主窗口页头 / 筛选行里的触发器改成 .db-btn 同一材质
+   （32px 高、8px 圆角、白底细描边）；compact 触发器（面板顶栏，
+   text-[9.5px]）不受影响。属性选择器特异性 (0,1,0) 与 .db-btn 相同，
+   靠源码顺序生效；未分层样式优先于 @layer utilities。 */
+.db-page__actions button[class*="text-[11px]"],
+.db-logs-filters button[class*="text-[11px]"],
+.db-sessions__filters button[class*="text-[11px]"],
+.db-card__action button[class*="text-[11px]"] {
+  height: 32px;
+  border-radius: 8px;
+  border-color: var(--db-control-border);
+  background-color: var(--db-card-solid);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--db-text);
+}
+
+.db-page__actions button[class*="text-[11px]"]:hover:not(:disabled),
+.db-logs-filters button[class*="text-[11px]"]:hover:not(:disabled),
+.db-sessions__filters button[class*="text-[11px]"]:hover:not(:disabled),
+.db-card__action button[class*="text-[11px]"]:hover:not(:disabled) {
+  background-color: var(--db-hover);
+}
+
+/* 触发器内前缀标签（「设备」「来源」…）：12px 第二档文字色（不再小号弱蓝） */
+.db-page__actions button[class*="text-[11px]"] > span[class*="text-[10px]"],
+.db-logs-filters button[class*="text-[11px]"] > span[class*="text-[10px]"],
+.db-sessions__filters button[class*="text-[11px]"] > span[class*="text-[10px]"],
+.db-card__action button[class*="text-[11px]"] > span[class*="text-[10px]"] {
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--db-text-dim);
+}
+
+/* 触发器内当前值：主文字色（覆盖组件的 text-slate-900） */
+.db-page__actions button[class*="text-[11px]"] > span[class*="text-slate-900"],
+.db-logs-filters button[class*="text-[11px]"] > span[class*="text-slate-900"],
+.db-sessions__filters button[class*="text-[11px]"] > span[class*="text-slate-900"],
+.db-card__action button[class*="text-[11px]"] > span[class*="text-slate-900"] {
+  color: var(--db-text);
+}
+
+/* 下拉菜单项：组件用 text-[11px] 任意值类，主窗口提到 13px。只命中浮层
+   里的选项行（role="option"），不碰页面里其他 text-[11px] 说明文字；
+   面板窗口不加载本文件，不受影响 */
+.db-shell div[role="listbox"] > button[role="option"] {
+  font-size: 13px;
+}
+
+/* 下拉菜单选中行：组件是 Tailwind 工具类（选中底 bg-sky-500/15 天蓝调），
+   这里按主窗口作用域换成交互令牌的中性选中底（未分层样式优先于
+   @layer utilities；面板窗口不加载本文件，不受影响） */
+.db-shell div[role="listbox"] > button[role="option"][aria-selected="true"] {
+  background-color: var(--db-active-bg);
 }
 
 /* ---- 窄窗回退（窗口 ≤980px：侧栏 200 + 主区约 780，内容区约 720）：
@@ -4536,11 +4716,11 @@ select option:disabled {
   }
 }
 
-/* 滚动条（与 index.css 同款细条；本窗是普通窗，无热区避让需求）。
-   圆角拇指 + 2px 透明边框做内缩，滚槽不再是一根贴边的深色棍 */
+/* 滚动条：细淡中性条——轨道透明，滑块可见宽约 4px（12px 命中区两侧
+   各留 4px 透明内边），圆角满，比系统默认更安静 */
 ::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
+  width: 12px;
+  height: 12px;
 }
 ::-webkit-scrollbar-track {
   background: transparent;
@@ -4548,7 +4728,7 @@ select option:disabled {
 ::-webkit-scrollbar-thumb {
   background: var(--scrollbar-thumb);
   background-clip: padding-box;
-  border: 2px solid transparent;
+  border: 4px solid transparent;
   border-radius: 999px;
 }
 ::-webkit-scrollbar-thumb:hover {
@@ -4558,11 +4738,11 @@ select option:disabled {
 
 /* ============================================================
  * 暗色主题：与 index.css 尾部的 .dark 映射表同源（仅保留主窗口用得到的
- * 条目：slate 反转 + 品牌深档提亮 + surface/elevated），并补主窗口自身
+ * 条目：slate 反转 + 品牌浅档提亮 + surface/elevated），并补主窗口自身
  * 变量的暗色值。主窗口的 Tailwind 工具类只写亮色一套，靠这张映射整体
  * 翻转，与面板行为一致。
- * 注意暗色底是 slate-900 系（#0f172a，与面板 --panel-bg 同源），
- * 侧栏略亮一档用 slate-800（#1e293b）拉开层次。
+ * 暗色底是中性深灰阶（内容 #1b1b1e / 侧栏 #151517 / 卡片 #232327），
+ * 不再带蓝紫的夜空调；浮层取 #2e2e33 实底。
  * ============================================================ */
 .dark {
   color-scheme: dark;
@@ -4579,11 +4759,12 @@ select option:disabled {
   --color-slate-900: #e2e8f0;
   /* 玻璃表面：中灰（bg-surface/低 alpha 在深底上呈递进的亮面） */
   --color-surface: #64748b;
-  /* 浮层底：深色近实底，保证浮层内文字对比 */
-  --color-elevated: #1e293b;
-  /* 品牌深档（文字用）提亮为对应浅档；实底 -500 不动（配白字） */
-  --color-sky-600: #38bdf8;
-  --color-sky-700: #7dd3fc;
+  /* 浮层底：中性深灰实底，保证浮层内文字对比（下拉菜单 bg-elevated） */
+  --color-elevated: #2e2e33;
+  /* 品牌深档（文字用）提亮为对应浅档； DropdownMenu 等组件的强调色
+     统一为品牌浅档 */
+  --color-sky-600: #8fa4ff;
+  --color-sky-700: #b3c4ff;
   --color-violet-600: #a78bfa;
   --color-violet-700: #c4b5fd;
   --color-emerald-600: #34d399;
@@ -4604,151 +4785,138 @@ select option:disabled {
   --color-red-700: #fca5a5;
   --color-rose-600: #fb7185;
 
-  /* 主窗口页面变量（暗色）：深靛蓝底 + 玻璃壳 + 玻璃卡片（对齐灵动岛
-     的深色玻璃语言：底色不是中性 slate，而是带蓝紫的夜空） */
-  --db-bg: #080c1e;
-  --db-glow-cyan: rgba(99, 135, 255, 0.32);
-  --db-glow-violet: rgba(168, 112, 255, 0.3);
-  --db-glow-mint: rgba(80, 200, 255, 0.1);
-  --db-shell-bg: rgba(13, 18, 38, 0.68);
-  --db-shell-border: rgba(255, 255, 255, 0.1);
-  --db-sticky-bg: rgba(12, 17, 36, 0.95);
-  --db-sidebar-bg: var(--db-shell-bg);
-  --db-border: rgba(255, 255, 255, 0.11);
-  --db-text: #eef2ff;
-  --db-text-dim: rgba(200, 210, 245, 0.66);
-  --db-hover: rgba(255, 255, 255, 0.075);
-  --db-active-bg: rgba(143, 176, 255, 0.18);
-  --db-active-text: #c7d6ff;
+  /* 主窗口页面变量（暗色）：中性深灰阶 + 品牌色提亮（periwinkle 浅档）。
+     内容区 / 侧栏 / 卡片是三档深灰，线用白色低透明发丝档 */
+  --db-bg: #1b1b1e;
+  --db-shell-bg: #151517;
+  --db-shell-border: rgba(255, 255, 255, 0.09);
+  --db-sticky-bg: #232327;
+  --db-sidebar-bg: #151517;
+  --db-border: rgba(255, 255, 255, 0.09);
+  --db-text: #e6e6e9;
+  --db-text-dim: #a3a3ab;
+  --db-text-3: #7c7c85;
+  --db-hover: #262629;
+  --db-active-bg: #313136;
+  --db-active-text: #8fa4ff;
   /* 请求日志刷新行动画的高亮底色（暗色档）：新进入表格的行先铺满后渐隐 */
-  --db-row-highlight: rgba(143, 176, 255, 0.22);
-  /* 品牌渐变（暗色）：periwinkle → violet，文字档提亮一档 */
-  --db-accent: #8fb0ff;
+  --db-row-highlight: rgba(143, 164, 255, 0.22);
+  /* 品牌色（暗色）：浅 periwinkle；--db-accent-2 保留给图表多系列区分 */
+  --db-accent: #8fa4ff;
   --db-accent-2: #c6a8ff;
-  --db-brand-grad: linear-gradient(135deg, #7f9dff 0%, #c0a8ff 100%);
-  --db-brand-grad-text: linear-gradient(120deg, #dfe7ff 0%, #e9dcff 100%);
-  --db-btn-primary-bg: linear-gradient(135deg, #9db4ff 0%, #c9b0ff 100%);
+  /* 主按钮（暗色）：品牌浅档实底 + 深字 */
+  --db-btn-primary-bg: #8fa4ff;
   --db-btn-primary-text: #0b1128;
-  --db-btn-primary-glow: rgba(157, 180, 255, 0.4);
-  /* 卡片（暗色）：白色低透明玻璃面（透出环境光）+ 浅色发丝边 + 上缘反光 */
-  --db-card-border: rgba(255, 255, 255, 0.1);
-  --db-card-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.09);
-  --db-card-elevation: 0 24px 60px -30px rgba(0, 0, 0, 0.9);
-  --db-card-solid: #131a33;
-  --db-control-bg: rgba(255, 255, 255, 0.07);
-  --db-control-bg-hover: rgba(255, 255, 255, 0.12);
-  --db-control-border: rgba(255, 255, 255, 0.14);
-  --db-nav-active-bg: linear-gradient(
-    135deg,
-    rgba(126, 166, 255, 0.34),
-    rgba(192, 168, 255, 0.28)
-  );
-  --db-nav-active-text: #ffffff;
-  --db-nav-active-ring: rgba(255, 255, 255, 0.18);
-  --db-nav-active-shadow: 0 10px 24px -14px rgba(126, 166, 255, 0.9);
-  --db-table-head-bg: rgba(255, 255, 255, 0.045);
-  --db-row-hover: rgba(126, 166, 255, 0.1);
-  --db-focus-ring: 0 0 0 3px rgba(126, 166, 255, 0.3);
-  /* 自绘标题栏（暗色）：hover 提为亮色低透明（略重于 --db-hover），press
-     再重一档；--db-titlebar-close-hover（Windows 惯例红）亮暗一致，只在
-     :root 定义 */
-  --db-titlebar-hover: rgba(255, 255, 255, 0.12);
-  --db-titlebar-press: rgba(255, 255, 255, 0.17);
-  --scrollbar-thumb: rgba(190, 205, 255, 0.22);
-  --scrollbar-thumb-hover: rgba(190, 205, 255, 0.34);
+  /* 卡片（暗色）：实底深灰面 + 白色发丝边，无投影无高光 */
+  --db-card-border: rgba(255, 255, 255, 0.09);
+  --db-card-solid: #232327;
+  --db-control-bg: #262629;
+  --db-control-bg-hover: #313136;
+  --db-control-border: rgba(255, 255, 255, 0.16);
+  --db-nav-active-bg: #313136;
+  --db-nav-active-text: var(--db-text);
+  --db-nav-active-ring: transparent;
+  --db-nav-active-shadow: none;
+  --db-table-head-bg: #262629;
+  --db-row-hover: #262629;
+  --db-focus-ring: 0 0 0 2px rgba(143, 164, 255, 0.2);
+  /* 自绘标题栏（Windows 通栏，暗色）：hover 提为亮色低透明，press 再重一档；
+     --db-titlebar-close-hover（Windows 惯例红）亮暗一致，只在 :root 定义 */
+  --db-titlebar-hover: rgba(255, 255, 255, 0.08);
+  --db-titlebar-press: rgba(255, 255, 255, 0.13);
+  --scrollbar-thumb: rgba(255, 255, 255, 0.22);
+  --scrollbar-thumb-hover: rgba(255, 255, 255, 0.34);
 
-  /* 用量总览页内容面：玻璃卡片（透出环境光），浮层提示加一圈浅边 */
-  --db-card-bg: rgba(255, 255, 255, 0.055);
-  --db-card-shadow: var(--db-card-highlight), var(--db-card-elevation);
-  --db-seg-bg: rgba(255, 255, 255, 0.075);
-  --db-seg-active-bg: rgba(255, 255, 255, 0.15);
-  --db-seg-active-text: #ffffff;
-  --db-row-border: rgba(255, 255, 255, 0.07);
+  /* 用量总览页内容面：实底卡片 + 分段控件浅底档 */
+  --db-card-bg: #232327;
+  --db-seg-bg: #262629;
+  --db-seg-active-bg: #313136;
+  --db-seg-active-text: #e6e6e9;
+  --db-row-border: rgba(255, 255, 255, 0.09);
   --db-skeleton: rgba(255, 255, 255, 0.09);
   --db-track: rgba(255, 255, 255, 0.12);
   --db-chip-bg: rgba(52, 211, 153, 0.16);
   --db-chip-text: #34d399;
-  --db-tip-bg: rgba(10, 14, 30, 0.96);
+  --db-tip-bg: rgba(10, 10, 12, 0.96);
   --db-tip-text: #f1f5f9;
   --db-tip-border: rgba(255, 255, 255, 0.14);
   /* 下拉弹层（暗色）：见 src/DropdownMenu.tsx —— 组件已提升为两窗口共用并
-     改用 Tailwind 工具类（弹层底走 bg-elevated，暗色自动翻到 slate-800 档） */
-  --db-accent-sky: #8fb0ff;
+     改用 Tailwind 工具类（弹层底走 bg-elevated，取上方 --color-elevated） */
+  --db-accent-sky: #8fa4ff;
   --db-accent-emerald: #34d399;
   --db-accent-violet: #c0a8ff;
   --db-accent-amber: #fbbf24;
-  /* 热力色阶（暗色）：periwinkle 系四档渐进，4 档为实底亮蓝紫 */
-  --db-heat-0: rgba(148, 163, 184, 0.14);
-  --db-heat-1: rgba(126, 166, 255, 0.22);
-  --db-heat-2: rgba(126, 166, 255, 0.44);
-  --db-heat-3: rgba(126, 166, 255, 0.68);
-  --db-heat-4: #8fb0ff;
-  --db-heat-edge: rgba(126, 166, 255, 0.34);
+  /* 热力色阶（暗色）：五档渐进（0 实底深灰、1..4 品牌系由暗到亮），4 档最亮 */
+  --db-heat-0: #26262b;
+  --db-heat-1: #3a3f66;
+  --db-heat-2: #4d55a6;
+  --db-heat-3: #7d88f2;
+  --db-heat-4: #94a0ff;
+  --db-heat-edge: rgba(148, 160, 255, 0.3);
   --db-heat-edge-strong: #c7d6ff;
   /* 未来格虚线（暗色）：比数据格描边略亮，保持可辨 */
-  --db-heat-future: rgba(126, 166, 255, 0.45);
+  --db-heat-future: rgba(148, 160, 255, 0.45);
 
-  /* 请求日志页（详情抽屉）：暗色实底（与卡片同色系再亮一档）+ 更重的遮罩 */
-  --db-drawer-bg: #141a33;
+  /* 请求日志页（详情抽屉）：暗色实底（与卡片同档）+ 更重的遮罩 */
+  --db-drawer-bg: #232327;
   --db-mask: rgba(2, 6, 23, 0.64);
 
-  /* 自定义时间范围面板：暗色实底（与抽屉同档）+ 更重的投影 */
-  --db-pop-bg: #171e3b;
-  --db-pop-shadow: 0 2px 8px rgba(2, 6, 23, 0.5),
-    0 28px 70px -28px rgba(0, 0, 0, 0.85);
+  /* 自定义时间范围面板：暗色实底（比卡片再亮一档）+ 一层柔和投影 */
+  --db-pop-bg: #2e2e33;
+  --db-pop-shadow: 0 14px 40px -16px rgba(0, 0, 0, 0.6);
 
   /* 时间范围控件（暗色）：主色提亮为浅蓝紫；起止实心块配深字保证对比
      （亮底 + 白字在深色界面里反而发灰），范围浅底 / 描边 / 环同步提亮 */
   --db-cal-accent-text: #c7d6ff;
-  --db-cal-accent-bg: rgba(126, 166, 255, 0.12);
-  --db-cal-accent-border: rgba(126, 166, 255, 0.55);
-  --db-cal-accent-border-soft: rgba(126, 166, 255, 0.3);
-  --db-cal-accent-ring: rgba(126, 166, 255, 0.22);
-  --db-cal-solid: #8fb0ff;
+  --db-cal-accent-bg: rgba(126, 146, 255, 0.12);
+  --db-cal-accent-border: rgba(126, 146, 255, 0.55);
+  --db-cal-accent-border-soft: rgba(126, 146, 255, 0.3);
+  --db-cal-accent-ring: rgba(126, 146, 255, 0.22);
+  --db-cal-solid: #8fa4ff;
   --db-cal-solid-text: #0b1128;
-  --db-cal-range-bg: rgba(126, 166, 255, 0.18);
-  --db-cal-range-text: #dfe7ff;
+  --db-cal-range-bg: rgba(126, 146, 255, 0.18);
+  --db-cal-range-text: #dfe4ff;
   --db-cal-hover-bg: rgba(255, 255, 255, 0.1);
-  --db-cal-outside: rgba(200, 210, 245, 0.25);
-  --db-cal-today-ring: rgba(126, 166, 255, 0.8);
+  --db-cal-outside: rgba(163, 163, 171, 0.4);
+  --db-cal-today-ring: rgba(126, 146, 255, 0.8);
   --db-cal-field-bg: rgba(255, 255, 255, 0.05);
 }
 
 /* ---- 模型速度页（SpeedPage）：列宽 / 排序表头 / 第一名标识 ----
-   版面复用 db-logs-page / db-logs-card / db-logs-filters / db-logs-metrics
+   版面复用 db-logs-page / db-logs-card / db-logs-metrics
    （只含 flex 列 + 表体内滚 + sticky 表头的通用规则）。
 
-   布局纪律：**auto 布局 + border-box 宽度 + 关键文本列内容自适应**。
+   布局纪律：**auto 布局 + border-box 宽度 + 关键文本列内容自适应**，
+   表格 12px 数据字号（13px 会让 14 列预算溢出）+ 3px 水平内边距。
    沿革：最初 auto + content-box 预算漏算 padding（td 10px×2 × 14 列 =
    280px）被撑出横滚；改 fixed 后渠道列被硬截断成 "GLM Codin…"。现方案
-   回到 auto（列宽随内容计算），但保留 border-box（width 即真实列宽）与
-   4px×2 的水平 padding 压缩：**渠道列不声明宽度**（内容全显：
-   "GLM Coding Plan" ≈ 99 / "deepseek-account" ≈ 112 / 极端
-   "opencode-go-messages" 类压到 max-width 140 兜底），**模型列是唯一弹性
-   列**（min-width 90 保底短名完整 "GLM-5.3"，max-width 280 上限 + 既有
-   ellipsis/title，渠道变宽时它让位）。
+   回到 auto（列宽随内容计算），但保留 border-box（width 即真实列宽）：
+   **渠道列不声明宽度**（内容全显：12px 下 "GLM Coding Plan" ≈ 93px），
+   **模型列是唯一弹性列**（min-width 90 保底短名完整，max-width 280 上限 +
+   既有 ellipsis/title，渠道变宽时它让位）；min-width 放开，更窄的窗口由
+   .db-table-wrap 横向滚动兜底。
 
-   列宽预算（可用表宽 = 窗口 − 298；1100 默认窗 802px）。固定 12 列：
-   34(排名) + 72(来源) + 44(慢) + 56(平均) + 44(快) + 48(首字) + 50(耗时) +
-   54(输入) + 54(输出) + 54(请求) + 54(样本) + 48(成功率) = **612**；
-   - 渠道 "GLM Coding Plan" 档（≈99）：612 + 99 + 模型 90 = **801 ≤ 802**，
-     默认窗零横滚 ✓（数字内容最宽 "20.96亿" 53 ≤ 54 均已验证）；
-   - 渠道 "deepseek-account" 档（≈112）：814，约 12px 横滚；
-   - 渠道极端档（max-width 140 兜底）：842，约 40px 横滚——由
-     .db-table-wrap 横向滚动兜底，总好过硬截断渠道名；
-   - 模型列 min 90 / max 280 之间随剩余空间弹性，宽窗时吸收富余。
-   900×640 最小窗（可用 602）约 200px 横向滚动（日志页同款先例）。 */
+   列宽预算（可用表宽 = 窗口 − 侧栏 188 − 页内边距 48 − 卡体内边距 40；
+   1100 默认窗约 810px）。固定 12 列：34(排名) + 72(来源) + 44(慢) +
+   64(平均) + 44(快) + 48(首字) + 50(耗时) + ~59(输入) + ~59(输出) +
+   50(请求) + 50(样本) + 48(成功率) ≈ 613；+ 模型 90 min + 渠道 93 ≈
+   796 ≤ 810，1100 默认窗零横滚、成功率列完整 ✓（数字内容最宽
+   「3120.98万」12px ≈ 59 已按内容计入输入 / 输出列）。三列速度分位统一
+   不带 t/s 单位（单位语义在列头 title 与上方汇总条的 t/s 示范），统一
+   「都带」的写法会让 14 列预算重新溢出。900×640 最小窗（可用 ≈ 602）
+   横向滚动兜底。 */
 .db-speed-table {
-  min-width: 796px;
+  min-width: 0;
+  font-size: 12px;
 }
 
 /* border-box：width 含 padding（列宽声明即真实列宽）；水平 padding 压到
-   4px×2，垂直 padding 沿用基础规则（沿革见上方注释块） */
+   3px×2（14 列预算），垂直 padding 沿用基础规则（沿革见上方注释块） */
 .db-speed-table th,
 .db-speed-table td {
   box-sizing: border-box;
-  padding-left: 4px;
-  padding-right: 4px;
+  padding-left: 3px;
+  padding-right: 3px;
 }
 
 /* 全列单行（auto 布局下列宽随内容计算的前提；模型 / 渠道列 span 另有
@@ -4768,12 +4936,12 @@ select option:disabled {
    渠道列变宽时由它让位 */
 .db-speed__col-model { min-width: 90px; max-width: 280px; }
 .db-speed__col-p10, .db-speed__col-p90 { width: 44px; }
-.db-speed__col-p50 { width: 56px; }
+.db-speed__col-p50 { width: 64px; }
 .db-speed__col-ttft { width: 48px; }
 .db-speed__col-dur { width: 50px; }
-.db-speed__col-in, .db-speed__col-out { width: 54px; }
-.db-speed__col-requests { width: 54px; }
-.db-speed__col-samples { width: 54px; }
+.db-speed__col-in, .db-speed__col-out { width: 50px; }
+.db-speed__col-requests { width: 50px; }
+.db-speed__col-samples { width: 50px; }
 .db-speed__col-success { width: 48px; }
 
 /* 可排序表头：按钮占满 th（继承 th 的对齐与字号——button 默认居中对齐会
@@ -4867,8 +5035,8 @@ select option:disabled {
   --qc-ok-bg: rgba(4, 120, 87, 0.1);
   --qc-warn-bg: rgba(180, 83, 9, 0.1);
   --qc-danger-bg: rgba(190, 18, 60, 0.1);
+  /* 页面骨架（内边距 / 页头贴顶）沿用 .db-page 默认，不再单独收紧 */
   gap: 16px;
-  padding: 20px 24px 24px;
 }
 
 .dark .db-qc-page {
@@ -4880,13 +5048,7 @@ select option:disabled {
   --qc-danger-bg: rgba(251, 113, 133, 0.12);
 }
 
-/* 页头吸顶沿用全站样式，只微调本页更紧的内边距 */
-.db-qc-page .db-page__header--sticky {
-  margin-top: -6px;
-  padding-top: 6px;
-  padding-bottom: 5px;
-  margin-bottom: -3px;
-}
+/* 页头吸顶已由 .db-page__header 统一承担，本页不再做间距微调。 */
 
 /* 页头：宽窗内标题/说明占弹性列、操作区固定贴右，说明过长时只在左列
    换行而不是把操作区整体挤到第二行；≤1080px 恢复换行，避免左列过窄 */
@@ -4937,7 +5099,7 @@ select option:disabled {
 /* ---- 首屏骨架：控制台一条 + 仪表阵列四张 ---- */
 .db-qc-skeleton-hero {
   flex: none;
-  border-radius: 18px;
+  border-radius: 12px;
 }
 
 .db-qc-skeleton-workspace {
@@ -4970,7 +5132,7 @@ select option:disabled {
   flex: none;
   overflow: hidden;
   border: 1px solid rgba(56, 189, 248, 0.18);
-  border-radius: 18px;
+  border-radius: 12px;
   color: #e2e8f0;
   background:
     radial-gradient(620px 240px at 10% -30%, rgba(14, 165, 233, 0.24), transparent 66%),
@@ -5402,7 +5564,7 @@ select option:disabled {
   padding: 13px 13px 11px 15px;
   overflow: hidden;
   border: 1px solid var(--db-border);
-  border-radius: 14px;
+  border-radius: 12px;
   background-color: var(--db-card-bg);
   background-image: radial-gradient(
     150px 92px at 95% 0%,
@@ -6937,7 +7099,7 @@ body.card-resizing * {
   gap: 8px;
   padding: 12px 14px;
   border: 1px solid var(--db-cal-accent-border-soft);
-  border-radius: 14px;
+  border-radius: 12px;
   background: var(--db-pop-bg);
   box-shadow: var(--db-pop-shadow);
 }
@@ -7166,7 +7328,8 @@ body.card-resizing * {
     width: 168px;
   }
   .db-page {
-    padding: 20px 22px 26px;
+    --db-page-x: 20px;
+    padding-bottom: 24px;
   }
   .db-page__title {
     font-size: 16px;
@@ -7185,23 +7348,35 @@ body.card-resizing * {
   }
   .db-nav__item {
     gap: 7px;
-    padding: 5px 8px;
+    height: 30px;
+    padding: 0 8px;
     font-size: 11px;
     line-height: 1.25;
   }
   .db-page {
-    padding: 16px 16px 22px;
-    gap: 14px;
+    --db-page-x: 16px;
+    padding-bottom: 20px;
+    gap: 16px;
   }
   .db-metrics {
     grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 10px;
+  }
+  .db-metric {
+    padding: 12px 14px;
   }
   .db-card__head {
     flex-wrap: wrap;
     padding: 12px 14px 0;
   }
   .db-card__body {
+    padding: 12px 14px;
+  }
+  /* 内联进趋势卡的指标条：负外边距跟随卡体内边距（20 → 14），格内边距
+     同步收窄，标签仍与卡头标题同一条线 */
+  .db-card .db-metrics {
+    margin: 0 -14px;
+  }
+  .db-card .db-metrics > .db-metric {
     padding: 12px 14px;
   }
   .db-card__action {
@@ -7266,40 +7441,71 @@ body.card-resizing * {
   gap: 10px;
 }
 
+/* ---- 实时会话表：fixed 布局显式列宽 ----
+   根因（沿革）：.db-sessions__state 是 inline-flex，CJK 文本 min-content
+   逐字断行，auto 布局据此把状态列压成一字一行；且 WebKit 的 auto 表格布局
+   不因 td overflow hidden 收缩列，九列内容总宽超出容器导致最后一列被截。
+   改 fixed 布局显式列宽（项目 / 会话列不设宽、吃剩余空间，单元格
+   ellipsis + title 收尾）；内边距 8px（与日志表同档）；1100 默认窗零横滚
+   （固定列合计 ≈ 675 + 项目列 ≈ 145 = 820），900 最小窗与特大字号档由
+   min-width 横向滚动兜底（fixed 布局首列不变形）。min-width 760 = 固定
+   列合计 682 + 项目列的最小内容宽（表头「项目 / 会话」单行 ≈ 78）——
+   fixed 布局里列的 min-content 不撑大表格，min-width 低于合计会把项目
+   列压成 0 宽、表头文字溢出到相邻列头上 */
 .db-sessions-table {
-  min-width: 780px;
+  table-layout: fixed;
+  min-width: 760px;
+}
+
+/* fixed 布局的列宽由 th 决定；单元格水平内边距 8px（首尾列贴卡内边距的
+   对齐规则特异性更高，仍生效）；数据格单行、溢出截断（长项目名由
+   .db-sessions__name / __model 的 ellipsis + title 收尾）。表头同样单行：
+   特大字号档下剩余宽度吃紧时，「项目 / 会话」列头会逐字断行成一竖条 */
+.db-sessions-table th,
+.db-sessions-table td {
+  padding-left: 8px;
+  padding-right: 8px;
+}
+
+.db-sessions-table th {
+  white-space: nowrap;
+}
+
+.db-sessions-table td {
+  white-space: nowrap;
+  overflow: hidden;
 }
 
 .db-sessions-table .db-sessions__col-state {
-  width: 86px;
+  width: 68px;
 }
 
 .db-sessions-table .db-sessions__col-source {
-  width: 74px;
+  width: 81px;
 }
 
 .db-sessions-table .db-sessions__col-model {
-  width: 140px;
+  width: 96px;
 }
 
 .db-sessions-table .db-sessions__col-requests {
-  width: 54px;
+  width: 40px;
 }
 
 .db-sessions-table .db-sessions__col-tokens {
-  width: 132px;
+  width: 118px;
 }
 
 .db-sessions-table .db-sessions__col-context {
-  width: 152px;
+  width: 144px;
 }
 
 .db-sessions-table .db-sessions__col-cost {
-  width: 84px;
+  width: 60px;
 }
 
 .db-sessions-table .db-sessions__col-activity {
-  width: 88px;
+  width: 75px;
 }
 
 .db-sessions__row {
@@ -7320,6 +7526,9 @@ body.card-resizing * {
   align-items: center;
   gap: 6px;
   color: var(--db-text-dim);
+  /* 状态词（运行中 / 空闲）整体单行：inline-flex 的 CJK min-content 会逐字
+     断行，auto 表格布局据此把状态列压成一字一行 */
+  white-space: nowrap;
 }
 
 .db-sessions__dot {
@@ -7363,8 +7572,8 @@ body.card-resizing * {
 }
 
 .db-sessions__model {
-  font-size: 11px;
-  color: var(--db-text-dim);
+  font-size: 12px;
+  color: var(--db-text-3);
 }
 
 .db-sessions__tokens,
@@ -7691,7 +7900,7 @@ body.card-resizing * {
   max-height: 62vh;
   overflow: hidden;
   border: 1px solid var(--db-border);
-  border-radius: 14px;
+  border-radius: 12px;
   background: var(--db-pop-bg);
   box-shadow: var(--db-pop-shadow);
 }
@@ -8520,8 +8729,7 @@ body.card-resizing * {
   cursor: pointer;
   background: var(--db-card-bg);
   border: 1px solid var(--db-card-border);
-  border-radius: 20px;
-  box-shadow: var(--db-card-shadow);
+  border-radius: 12px;
   transition: border-color 0.15s ease, transform 0.15s ease;
 }
 

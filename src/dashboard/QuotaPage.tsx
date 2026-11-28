@@ -28,7 +28,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useI18n } from "../i18n";
 import { AlertBanner, EmptyState } from "../layout";
 import { DropdownMenu } from "../DropdownMenu";
-import { Card, Skeleton, useDarkTheme } from "./primitives";
+import { Card, PageTitleWithDesc, Skeleton, useDarkTheme } from "./primitives";
 import { RefreshIcon } from "./icons";
 import { RemainingTrendCard } from "./quota/RemainingTrendCard";
 import { CockpitDeck } from "./quota/CockpitDeck";
@@ -132,11 +132,8 @@ export function QuotaPage() {
 
   return (
     <div className="db-page db-qc-page">
-      <header className="db-page__header db-page__header--sticky db-qc-header">
-        <div>
-          <h1 className="db-page__title">{t("dashboard.quota")}</h1>
-          <p className="db-page__desc">{t("dashboard.quota.desc")}</p>
-        </div>
+      <header className="db-page__header db-qc-header">
+        <PageTitleWithDesc title={t("dashboard.quota")} desc={t("dashboard.quota.desc")} />
         <div className="db-page__actions">
           {/* 全局新鲜度：全部采样里最近的一次（live 刷新后自然前移） */}
           {data?.latestSampleAt != null && (

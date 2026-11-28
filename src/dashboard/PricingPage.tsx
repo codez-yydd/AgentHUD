@@ -53,7 +53,7 @@ import {
 import { canonicalModelId, lookupPrice } from "../modelName";
 import { AlertBanner } from "../layout";
 import { useI18n } from "../i18n";
-import { Card, Skeleton } from "./primitives";
+import { Card, PageTitleWithDesc, Skeleton } from "./primitives";
 import { useCurrencyPref } from "./settings/currencyPref";
 import { DiffPanel } from "./pricing/DiffPanel";
 import { PriceTable } from "./pricing/PriceTable";
@@ -579,8 +579,10 @@ export function PricingPage() {
     return (
       <div className="db-page">
         <header>
-          <h1 className="db-page__title">{t("dashboard.pricing")}</h1>
-          <p className="db-page__desc">{t("dashboard.pricing.desc")}</p>
+          <PageTitleWithDesc
+            title={t("dashboard.pricing")}
+            desc={t("dashboard.pricing.desc")}
+          />
         </header>
         <PricingSkeleton />
       </div>
@@ -592,13 +594,10 @@ export function PricingPage() {
 
   return (
     <div className="db-page">
-      {/* 吸顶页头：长价格表滚动时「保存」始终可见（见 dashboard.css 的
-          .db-page__header--sticky） */}
-      <header className="db-page__header db-page__header--sticky">
-        <div>
-          <h1 className="db-page__title">{t("dashboard.pricing")}</h1>
-          <p className="db-page__desc">{t("dashboard.pricing.desc")}</p>
-        </div>
+      {/* 吸顶页头：长价格表滚动时「保存」始终可见（页头吸顶是
+          .db-page__header 的默认行为） */}
+      <header className="db-page__header">
+        <PageTitleWithDesc title={t("dashboard.pricing")} desc={t("dashboard.pricing.desc")} />
         <div className="db-page__actions">
           <div
             className="db-seg"
@@ -817,7 +816,7 @@ export function PricingPage() {
             <ul className="db-hiddenlist">
               {hiddenList.map((hidden) => (
                 <li key={hidden} className="db-hiddenlist__item">
-                  <span className="num db-hiddenlist__name">{hidden}</span>
+                  <span className="num db-mono db-hiddenlist__name">{hidden}</span>
                   <button
                     type="button"
                     className="db-linkbtn"

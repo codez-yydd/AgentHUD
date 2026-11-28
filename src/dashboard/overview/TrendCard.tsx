@@ -15,7 +15,8 @@
  * 刻度、峰值与 tooltip 都跟随当前指标格式化（token 走 万/亿 · K/M/B，
  * 金额走 formatCost，请求数走 locale 千分位）。
  */
-import { useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
+import type { ReactNode } from "react";
 import { formatCost, formatTokensLocale } from "../../format";
 import { useI18n } from "../../i18n";
 import { dateLocale } from "../../i18n/locale";
@@ -29,6 +30,11 @@ const METRICS: TrendMetric[] = ["cost", "token", "requests"];
 
 /** 纵轴刻度比例：柱高百分比与刻度值一一对应（1 = 当日峰值） */
 const GRID_LEVELS = [1, 0.75, 0.5, 0.25];
+
+/** 横轴标签取样的舒适间距与绘图区右侧标签带宽度（与 dashboard.css 的
+ *  padding-right 保持一致）：间距预算决定可容纳的标签数 */
+const TICK_GAP_PX = 70;
+const PLOT_LABEL_BAND_PX = 60;
 
 /** 当日某指标的数值（花费按当前币种选列） */
 function metricValueOf(day: TrendDay, metric: TrendMetric, currency: Currency): number {
@@ -44,6 +50,7 @@ export function TrendCard({
   currency,
   rangeLabel,
   agentName,
+  metrics,
 }: {
   series: TrendDay[];
   currency: Currency;
@@ -53,6 +60,10 @@ export function TrendCard({
    *  筛选后合计已不是跨 Agent 口径，须标注数据归属；Agent 名插在范围与
    *  合计之间（语序由词条控制，中英各自组织） */
   agentName?: string;
+  /** 并入卡内的指标条（OverviewPage 在布局相邻时传入）：渲染在图表上方、
+   *  以一条通栏发丝线分隔；传入时本卡不再渲染副标题（指标四格本身就是
+   *  范围合计，副标题会重复同一信息） */
+  metrics?: ReactNode;
 }) {
   const { locale, t } = useI18n();
   const [hover, setHover] = useState<number | null>(null);
@@ -61,8 +72,38 @@ export function TrendCard({
 
   const n = series.length;
   const hasUnsplit = series.some((d) => d.unsplit > 0);
-  // 标签抽稀：约 8 个刻度，首尾必显（与 TrendChart 同思路）
-  const labelStep = n <= 8 ? 1 : Math.max(2, Math.ceil(n / 8));
+
+  // ===== 横轴标签稀疏取样（组件内计算，不靠 CSS 藏固定位置的标签）=====
+  // 测量绘图区实际宽度（首帧 layout 后同步测一次，之后跟随窗口变化），
+  // 去掉右侧数值标签带后按舒适间距预算可容纳的标签数：n 更大时按步长取样
+  const plotRef = useRef<HTMLDivElement | null>(null);
+  const [plotWidth, setPlotWidth] = useState(0);
+  useLayoutEffect(() => {
+    const el = plotRef.current;
+    if (!el) return;
+    const measure = () => setPlotWidth(el.clientWidth);
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+  const labelSlots = Math.max(
+    1,
+    Math.min(
+      12,
+      Math.floor((plotWidth - PLOT_LABEL_BAND_PX) / TICK_GAP_PX)
+    )
+  );
+  // 步长取样 + 尾端修正：首项恒显示；末位若不在采样点上，隐藏最后一个
+  // 采样点、显示末位（它与前一采样点的间隔仍 ≥ 步长，首尾标签都保留）
+  const labelStep = n <= labelSlots ? 1 : Math.ceil(n / labelSlots);
+  const isTickShown = (i: number): boolean => {
+    if (labelStep === 1 || n <= 1) return true;
+    if (i === 0 || i === n - 1) return true;
+    const lastAnchor = Math.floor((n - 1) / labelStep) * labelStep;
+    if (i === lastAnchor) return false;
+    return i % labelStep === 0;
+  };
   // 柱间距/柱宽随天数自适应（与面板 TrendChart 的 barGap 同思路，大窗放宽）
   const plotMod = n > 30 ? "db-chart__plot--dense" : n <= 7 ? "db-chart__plot--sparse" : "";
 
@@ -94,19 +135,22 @@ export function TrendCard({
       frame={{ window: "dashboard", page: "overview", id: "overview.trend" }}
       summary={t("customize.summaryTotal", { value: formatMetric(rangeTotal) })}
       bodyClassName="db-card__body--chart"
-      // 副标题 = 范围口径说明位：Agent 筛选生效时换带 {agent} 的词条
+      // 副标题 = 范围口径说明位：指标条并入卡内时不再显示（信息重复）；
+      // Agent 筛选生效时换带 {agent} 的词条
       //（「近 30 天 · Claude Code · 合计 …」），未筛选维持原词条
       sub={
-        agentName != null
-          ? t("dashboard.overview.trendSubAgent", {
-              range: rangeLabel,
-              agent: agentName,
-              total: formatMetric(rangeTotal),
-            })
-          : t("dashboard.overview.trendSub", {
-              range: rangeLabel,
-              total: formatMetric(rangeTotal),
-            })
+        metrics != null
+          ? undefined
+          : agentName != null
+            ? t("dashboard.overview.trendSubAgent", {
+                range: rangeLabel,
+                agent: agentName,
+                total: formatMetric(rangeTotal),
+              })
+            : t("dashboard.overview.trendSub", {
+                range: rangeLabel,
+                total: formatMetric(rangeTotal),
+              })
       }
       action={
         <>
@@ -144,8 +188,11 @@ export function TrendCard({
         </>
       }
     >
+      {/* 并入的指标条（可选）：卡头之下、图表之上，底边通栏发丝线分隔
+          （样式见 dashboard.css 的 .db-card .db-metrics 内联形态） */}
+      {metrics}
       <div className="db-chart">
-        <div className={`db-chart__plot ${plotMod}`}>
+        <div ref={plotRef} className={`db-chart__plot ${plotMod}`}>
           {/* 纵轴：4 条横向网格线 + 数值刻度（绝对定位铺在柱体后，
               刻度格式随当前指标与单位体系） */}
           {metricMax > 0 && (
@@ -251,7 +298,7 @@ export function TrendCard({
           {series.map((day, i) => {
             const isFirst = i === 0;
             const isLast = i === n - 1;
-            const show = isLast || isFirst || i % labelStep === 0;
+            const show = isTickShown(i);
             // 单日范围（今日）只有一个刻度，居中即可，不做首/尾贴边
             const edge =
               n === 1

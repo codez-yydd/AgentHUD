@@ -26,7 +26,7 @@ import { useEffect, useRef, useState } from "react";
 import { useI18n, type TFn } from "../i18n";
 import { AlertBanner } from "../layout";
 import { DropdownMenu } from "../DropdownMenu";
-import { Card, Skeleton } from "./primitives";
+import { Card, PageTitleWithDesc, Skeleton } from "./primitives";
 import { RefreshIcon } from "./icons";
 import type {
   CleanupResult,
@@ -481,11 +481,8 @@ export function SyncPage() {
 
   return (
     <div className="db-page db-sync-page">
-      <header className="db-page__header db-page__header--sticky">
-        <div>
-          <h1 className="db-page__title">{t("dashboard.sync")}</h1>
-          <p className="db-page__desc">{t("dashboard.sync.desc")}</p>
-        </div>
+      <header className="db-page__header">
+        <PageTitleWithDesc title={t("dashboard.sync")} desc={t("dashboard.sync.desc")} />
         <div className="db-page__actions">
           {/* 操作反馈锚点（吸顶，弹层关闭后仍可见）：错误优先于成功提示；
               长错误文案截断、title 悬停看全文 */}
@@ -644,7 +641,7 @@ export function SyncPage() {
                   {t("dashboard.sync.fieldServer")}
                 </span>
                 <span
-                  className="db-sync-grid__value num"
+                  className="db-sync-grid__value num db-mono"
                   title={config!.server_url}
                 >
                   {config!.server_url}
@@ -863,7 +860,7 @@ export function SyncPage() {
                               </button>
                             </span>
                           </td>
-                          <td className="num" title={d.device_id}>
+                          <td className="num db-mono" title={d.device_id}>
                             {d.device_id.slice(0, 6)}
                           </td>
                           <td className="num" title={formatDateTime(d.created_at)}>

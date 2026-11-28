@@ -63,6 +63,7 @@ import { SourcesSettings } from "./settings/SourcesSettings";
 import type { AgentId, AgentVisibility } from "../agentVisibility";
 import type { CurrencyMode } from "../types";
 import type { Locale } from "../i18n/locale";
+import { PageTitleWithDesc } from "./primitives";
 
 /** 分段选项的通用描述（labelKey 全部是本页 dashboard.settings.* 词条） */
 interface SegOption<T extends string> {
@@ -250,10 +251,7 @@ export function SettingsPage({
   return (
     <div className="db-page db-set-page">
       <header className="db-page__header">
-        <div>
-          <h1 className="db-page__title">{t("dashboard.settings")}</h1>
-          <p className="db-page__desc">{t("dashboard.settings.desc")}</p>
-        </div>
+        <PageTitleWithDesc title={t("dashboard.settings")} desc={t("dashboard.settings.desc")} />
       </header>
 
       {settingsError && <AlertBanner type="error">{settingsError}</AlertBanner>}

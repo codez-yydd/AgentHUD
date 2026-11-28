@@ -3,10 +3,10 @@
  * 数据范围「全部设备」时后端再并入同步服务端上其他设备的明细（远端行带
  * device 字段，耗时 / 首字 / 速度恒为「—」）。
  *
- * 结构：页头（设备下拉 + 时间范围触发按钮 + 自动刷新间隔 + 刷新）→ 筛选行
- * （来源 / 模型下拉，模型选项带请求条数）→ 汇总指标行（总请求数 / Token 总量 /
- * 输入 / 输出 / 总成本 / 缓存命中率，当前筛选条件下的**全范围**聚合）→
- * 明细表（10 列）→ 分页条 → 详情抽屉。
+ * 结构：页头（设备下拉 + 时间范围触发按钮 + 自动刷新间隔 + 刷新）→ 汇总
+ * 指标行（总请求数 / Token 总量 / 输入 / 输出 / 总成本 / 缓存命中率，当前
+ * 筛选条件下的**全范围**聚合）→ 明细表卡（卡头右侧挂来源 / 模型筛选组；
+ * 表体 10 列）→ 分页条 → 详情抽屉。
  *
  * 版面：本页是唯一「不整页滚动」的页（.db-logs-page：flex 列 + 内部滚动），
  * 表格卡 flex:1、表体 .db-table-wrap 纵向滚动 + sticky 表头，分页条固定卡底
@@ -60,7 +60,7 @@ import {
   formatTokensLocale,
 } from "../../format";
 import { RefreshIcon } from "../icons";
-import { Card, Skeleton } from "../primitives";
+import { Card, PageTitleWithDesc, Skeleton } from "../primitives";
 import {
   CustomRangeMenu,
   formatRangeSummary,
@@ -792,6 +792,27 @@ export function LogsPage() {
     t("dashboard.logs.rowHint"),
   ].join(" · ");
 
+  // 来源 / 模型筛选组：挪进表格卡片头右侧（Card 的 action）。骨架、翻页
+  // 越界提示、正常内容三种表格卡共用同一份，切换形态时筛选不跳动
+  const filters = (
+    <div className="db-logs-filters">
+      <DropdownMenu
+        label={t("dashboard.logs.sourceLabel")}
+        ariaLabel={t("dashboard.logs.sourceLabel")}
+        options={sourceOptions}
+        value={source}
+        onChange={changeSource}
+      />
+      <DropdownMenu
+        label={t("dashboard.logs.modelLabel")}
+        ariaLabel={t("dashboard.logs.modelLabel")}
+        options={modelOptions}
+        value={model}
+        onChange={changeModel}
+      />
+    </div>
+  );
+
   const isEmpty = !loading && error == null && total === 0;
   const filteredByModel = model !== "";
   // 远端一路失败（不可达 / 未启用同步 / 旧服务端 404）从来源名清单里拆出，
@@ -838,10 +859,7 @@ export function LogsPage() {
   return (
     <div className="db-page db-logs-page">
       <header className="db-page__header">
-        <div>
-          <h1 className="db-page__title">{t("dashboard.logs")}</h1>
-          <p className="db-page__desc">{t("dashboard.logs.desc")}</p>
-        </div>
+        <PageTitleWithDesc title={t("dashboard.logs")} desc={t("dashboard.logs.desc")} />
         <div className="db-page__actions">
           {/* 设备筛选：全部设备 / 本机 / 各远端设备（对比页同款下拉；偏好独立
               存 zbar-logs-device，不影响总览页口径）。未启用多设备同步时禁用
@@ -933,23 +951,8 @@ export function LogsPage() {
         </div>
       )}
 
-      {/* 筛选行：来源 + 模型（模型选项带条数，随来源 / 范围刷新） */}
-      <div className="db-logs-filters">
-        <DropdownMenu
-          label={t("dashboard.logs.sourceLabel")}
-          ariaLabel={t("dashboard.logs.sourceLabel")}
-          options={sourceOptions}
-          value={source}
-          onChange={changeSource}
-        />
-        <DropdownMenu
-          label={t("dashboard.logs.modelLabel")}
-          ariaLabel={t("dashboard.logs.modelLabel")}
-          options={modelOptions}
-          value={model}
-          onChange={changeModel}
-        />
-      </div>
+      {/* 来源 / 模型筛选已挪进下方表格卡片头右侧（骨架 / 越界 / 正常内容
+          三种卡片共用同一份筛选组），页面顺序：页头 → 指标条 → 表格卡 */}
 
       {/* 汇总指标行：当前筛选条件下的全范围聚合（与表格同一次请求返回） */}
       <LogsMetrics summary={summary} loading={loading} currency={currency} />
@@ -1002,11 +1005,13 @@ export function LogsPage() {
           </button>
         </div>
       ) : loading && rows.length === 0 ? (
-        /* 首载 / 筛选切换后无旧数据：表格骨架（行数与每页条数一致） */
+        /* 首载 / 筛选切换后无旧数据：表格骨架（行数与每页条数一致）；
+           卡头同样挂筛选组，数据到达前后筛选位置不跳 */
         <Card
           title={t("dashboard.logs.tableTitle")}
           sub={cardSub}
           className="db-logs-card"
+          action={filters}
         >
           <LogTableSkeleton />
         </Card>
@@ -1064,6 +1069,7 @@ export function LogsPage() {
           title={t("dashboard.logs.tableTitle")}
           sub={cardSub}
           className="db-logs-card"
+          action={filters}
         >
           <div className="db-empty">{t("dashboard.logs.pageEmptyHint")}</div>
           {pager}
@@ -1073,6 +1079,7 @@ export function LogsPage() {
           title={t("dashboard.logs.tableTitle")}
           sub={cardSub}
           className="db-logs-card"
+          action={filters}
         >
           <LogTable
             rows={rows}

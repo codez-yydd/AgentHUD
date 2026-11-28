@@ -21,7 +21,7 @@ import { useCurrencyPref } from "../settings/currencyPref";
 import { costOf } from "../overview/derive";
 import { sourceLabel, sourceShortLabel } from "../logs/model";
 import { RefreshIcon } from "../icons";
-import { Card, Skeleton } from "../primitives";
+import { Card, PageTitleWithDesc, Skeleton } from "../primitives";
 import type {
   Currency,
   LiveSession,
@@ -718,10 +718,7 @@ export function SessionsPage() {
   return (
     <div className="db-page">
       <header className="db-page__header">
-        <div>
-          <h1 className="db-page__title">{t("dashboard.sessions")}</h1>
-          <p className="db-page__desc">{t("dashboard.sessions.desc")}</p>
-        </div>
+        <PageTitleWithDesc title={t("dashboard.sessions")} desc={t("dashboard.sessions.desc")} />
         <div className="db-page__actions">
           <DropdownMenu
             label={t("dashboard.sessions.window")}

@@ -28,7 +28,7 @@ import { useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { useI18n, type TFn } from "../i18n";
 import { AlertBanner } from "../layout";
-import { Card, Skeleton } from "./primitives";
+import { Card, PageTitleWithDesc, Skeleton } from "./primitives";
 import { RefreshIcon } from "./icons";
 import { ToggleSwitch } from "./settings/controls";
 import type {
@@ -413,11 +413,8 @@ export function AccountsPage() {
 
   return (
     <div className="db-page db-acc-page">
-      <header className="db-page__header db-page__header--sticky">
-        <div>
-          <h1 className="db-page__title">{t("dashboard.accounts")}</h1>
-          <p className="db-page__desc">{t("dashboard.accounts.desc")}</p>
-        </div>
+      <header className="db-page__header">
+        <PageTitleWithDesc title={t("dashboard.accounts")} desc={t("dashboard.accounts.desc")} />
         <div className="db-page__actions">
           {/* 操作反馈锚点（吸顶）：错误优先于成功提示；长错误截断、title 看全文 */}
           {actionError ? (
@@ -747,7 +744,7 @@ export function AccountsPage() {
                               </span>
                             )}
                           </td>
-                          <td className="num db-acc-path" title={o.path}>
+                          <td className="num db-mono db-acc-path" title={o.path}>
                             {o.path}
                           </td>
                           <td

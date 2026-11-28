@@ -1,15 +1,20 @@
 /**
- * 主窗口（Dashboard）应用壳：顶部自绘标题栏（品牌标识 + 窗口控制，替代
- * decorations: false 后的系统标题栏）+ 左侧固定侧栏（导航 + 底部
- * 语言/主题快捷切换）+ 右侧主区。
+ * 主窗口（Dashboard）应用壳：平台差异由 db-shell--mac / db-shell--win
+ * 修饰类表达（两侧结构都渲染在 DOM 里，CSS 决定显示哪一套）——
+ * - macOS：无通栏标题栏，侧栏从窗口顶边通到底边，顶部是红绿灯行 + 品牌行
+ *   （SidebarShellTop，兼作窗口拖拽区）；
+ * - Windows / Linux：顶部自绘标题栏（品牌标识 + 窗口控制，替代
+ *   decorations: false 后的系统标题栏）+ 其下的左侧固定侧栏（导航 + 底部
+ *   语言/主题快捷切换）+ 右侧主区。
  *
  * 视图切换用组件内 state（对齐面板 App.tsx 的 view 模式，不引路由库）：
- * 用量总览 / 请求日志 / 模型速度 / 周额度对比 / 额度驾驶舱 / 用量报告 /
+ * 用量总览 / 请求日志 / 会话 / 模型速度 / 周额度对比 / 额度驾驶舱 / 用量报告 /
  * 同步与设备 / 凭证与账号 / 价格设置 / Agent 与 Skill / 皮肤中心 / 设置 /
- * 关于 十三个页面各自独立取数渲染。
+ * 关于 十四个页面各自独立取数渲染。
  */
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ComponentType } from "react";
+import type { MouseEvent as ReactMouseEvent } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { LanguageToggle, ThemeToggle } from "../layout";
@@ -34,6 +39,16 @@ import {
 } from "./icons";
 import { TitleBar } from "./TitleBar";
 import { CommandPalette, type CommandPaletteItem } from "./CommandPalette";
+import {
+  IS_MAC,
+  useMaximized,
+  useTauriWindow,
+  useWindowDrag,
+  useWindowFocused,
+} from "./useWindowChrome";
+import { CloseIcon, MaximizeIcon, MinimizeIcon, RestoreIcon } from "./icons";
+// 软件 logo：与 TitleBar / dashboard.html 的窗口图标同源
+import logo from "../assets/logo.png";
 import { OverviewPage } from "./OverviewPage";
 import { LogsPage } from "./logs/LogsPage";
 import { SpeedPage } from "./SpeedPage";
@@ -116,6 +131,12 @@ const NAV_ITEMS: {
   { view: "about", labelKey: "dashboard.about", Icon: AboutIcon },
 ];
 
+/** 导航三组的分隔位置（NAV_ITEMS 下标）：〔用量总览、请求日志、会话、
+ *  模型速度〕〔周额度对比、额度驾驶舱、用量报告〕〔同步与设备…关于〕。
+ *  分隔项上方留 12px 并画一条内缩发丝线（样式见 db-nav__item--group-start）；
+ *  调整 NAV_ITEMS 顺序时同步维护 */
+const NAV_GROUP_STARTS: ReadonlySet<number> = new Set([4, 7]);
+
 /**
  * 把主题应用到本窗 <html>（appearance.ts loadTheme 同语义：仅 "dark" 视为
  * 暗色，其余一律亮色）。刻意不调 applyTheme：那是"写入方"语义（会再次
@@ -136,7 +157,7 @@ function DashboardNavigation({ view, onNavigate }: {
 
   return (
     <nav className="db-nav">
-      {NAV_ITEMS.map(({ view: itemView, labelKey, Icon }) => {
+      {NAV_ITEMS.map(({ view: itemView, labelKey, Icon }, index) => {
         const label = t(labelKey);
         const hint = itemView === "about" && readyVersion
           ? t("dashboard.about.updateReady", { v: readyVersion })
@@ -146,7 +167,9 @@ function DashboardNavigation({ view, onNavigate }: {
             key={itemView}
             type="button"
             onClick={() => onNavigate(itemView)}
-            className={`db-nav__item ${view === itemView ? "db-nav__item--active" : ""}`}
+            className={`db-nav__item ${
+              NAV_GROUP_STARTS.has(index) ? "db-nav__item--group-start" : ""
+            } ${view === itemView ? "db-nav__item--active" : ""}`}
             aria-current={view === itemView ? "page" : undefined}
             aria-label={hint ? `${label} · ${hint}` : undefined}
             title={hint}
@@ -160,6 +183,97 @@ function DashboardNavigation({ view, onNavigate }: {
         );
       })}
     </nav>
+  );
+}
+
+/** 红绿灯符号统一深色（macOS 原生语义：悬停彩色圆点露出深色符号），
+ *  8px 左右；最大化 / 还原复用标题栏图标 */
+function LightGlyphClose() {
+  return <CloseIcon className="h-2 w-2 text-black/55" />;
+}
+
+function LightGlyphMinimize() {
+  return <MinimizeIcon className="h-2 w-2 text-black/55" />;
+}
+
+/**
+ * macOS 侧栏顶部：红绿灯行（关闭 / 最小化 / 最大化↔还原）+ 品牌行。
+ * 两行合起来是窗口拖拽区（双击空白处切换最大化，行为见 useWindowChrome）；
+ * 窗口失焦时三枚圆点变系统灰（db-shell-lights--blur）。Windows / Linux 下
+ * 整块由 CSS 隐藏（结构常驻 DOM，平台差异全部由 db-shell--mac/--win 表达）；
+ * 非 Tauri 宿主（浏览器直接开 dev server）下按钮禁用、圆点保持彩色。
+ */
+function SidebarShellTop() {
+  const { t } = useI18n();
+  const win = useTauriWindow();
+  const maximized = useMaximized(win);
+  const focused = useWindowFocused(win);
+  const { onMouseDown, onMouseUp } = useWindowDrag(win);
+  // 红绿灯按钮上吞掉 mousedown：拖拽 / 双击最大化不误触（标题栏同款）
+  const swallowMouseDown = (e: ReactMouseEvent<HTMLElement>) => {
+    e.stopPropagation();
+  };
+
+  return (
+    <div
+      className="db-shell-top"
+      onMouseDown={onMouseDown}
+      onMouseUp={onMouseUp}
+    >
+      <div
+        className={`db-shell-lights ${focused ? "" : "db-shell-lights--blur"}`}
+      >
+        <button
+          type="button"
+          className="db-shell-light"
+          style={{ background: "#ff5f57" }}
+          disabled={!win}
+          onMouseDown={swallowMouseDown}
+          onClick={() => void win?.close()}
+          /* 不给原生 title：系统红绿灯悬停不出提示，自绘的也不出
+             （文案保留在 aria-label 供读屏） */
+          aria-label={t("dashboard.titlebar.close")}
+        >
+          <LightGlyphClose />
+        </button>
+        <button
+          type="button"
+          className="db-shell-light"
+          style={{ background: "#febc2e" }}
+          disabled={!win}
+          onMouseDown={swallowMouseDown}
+          onClick={() => void win?.minimize()}
+          aria-label={t("dashboard.titlebar.minimize")}
+        >
+          <LightGlyphMinimize />
+        </button>
+        <button
+          type="button"
+          className="db-shell-light"
+          style={{ background: "#28c840" }}
+          disabled={!win}
+          onMouseDown={swallowMouseDown}
+          onClick={() => void win?.toggleMaximize()}
+          aria-label={
+            maximized
+              ? t("dashboard.titlebar.restore")
+              : t("dashboard.titlebar.maximize")
+          }
+        >
+          {maximized ? (
+            <RestoreIcon className="h-2 w-2 text-black/55" />
+          ) : (
+            <MaximizeIcon className="h-2 w-2 text-black/55" />
+          )}
+        </button>
+      </div>
+      {/* 品牌行：logo + AgentHUD（与通栏标题栏同一品牌语义；logo alt 留空，
+          品牌名已是可见文本，避免读屏重复播报） */}
+      <div className="db-shell-brand">
+        <img src={logo} alt="" className="db-shell-brand__logo" draggable={false} />
+        <span className="db-shell-brand__name">AgentHUD</span>
+      </div>
+    </div>
   );
 }
 
@@ -288,7 +402,9 @@ export function DashboardApp() {
   );
 
   return (
-    <div className="db-shell">
+    <div className={`db-shell ${IS_MAC ? "db-shell--mac" : "db-shell--win"}`}>
+      {/* Windows / Linux 通栏标题栏（macOS 下由 CSS 隐藏，窗口控制移到
+          侧栏顶部红绿灯）；两平台结构都渲染，由修饰类决定显示哪一套 */}
       <TitleBar />
 
       <CommandPalette
@@ -303,6 +419,8 @@ export function DashboardApp() {
       {/* 标题栏之下的主体行：左侧固定侧栏 + 右侧主区 */}
       <div className="db-body">
         <aside className="db-sidebar">
+          {/* macOS 壳顶：红绿灯行 + 品牌行（win 下 CSS 隐藏） */}
+          <SidebarShellTop />
           <DashboardNavigation view={view} onNavigate={setView} />
 
           {/* 底部：复用面板的语言/主题快捷切换（只换按钮样式类，读写同一套

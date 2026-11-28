@@ -26,6 +26,7 @@ import type { PricingConfig } from "../types";
 import type { AgentVisibility } from "../agentVisibility";
 import { ReportContent } from "../ReportPanel";
 import { useCurrencyPref } from "./settings/currencyPref";
+import { PageTitleWithDesc } from "./primitives";
 
 export function ReportPage({
   agentVisibility,
@@ -57,10 +58,7 @@ export function ReportPage({
   return (
     <div className="db-page db-report-page">
       <header className="db-page__header">
-        <div>
-          <h1 className="db-page__title">{t("dashboard.report")}</h1>
-          <p className="db-page__desc">{t("dashboard.report.desc")}</p>
-        </div>
+        <PageTitleWithDesc title={t("dashboard.report")} desc={t("dashboard.report.desc")} />
       </header>
       {/* ReportContent 根节点自带 report-scope + flex-1 min-h-0 flex-col
           （工具行 / 告警条 shrink + PageBody 内滚），由 .db-report-embed

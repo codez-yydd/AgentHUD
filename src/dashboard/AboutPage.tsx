@@ -18,6 +18,7 @@ import logo from "../assets/logo.png";
 import { useI18n, type MessageKey } from "../i18n";
 import { ExternalLinkIcon } from "./icons";
 import { UpdateSection } from "./settings/UpdateSection";
+import { PageTitleWithDesc } from "./primitives";
 
 /** 链接行：副文本用去掉协议的路径（同域名行可区分，且无 i18n 负担） */
 const LINKS: { titleKey: MessageKey; url: string; sub: string }[] = [
@@ -62,10 +63,7 @@ export function AboutPage() {
   return (
     <div className="db-page db-about-page">
       <header className="db-page__header">
-        <div>
-          <h1 className="db-page__title">{t("dashboard.about")}</h1>
-          <p className="db-page__desc">{t("dashboard.about.desc")}</p>
-        </div>
+        <PageTitleWithDesc title={t("dashboard.about")} desc={t("dashboard.about.desc")} />
       </header>
 
       {/* 品牌区：左对齐单行元信息（logo + 品牌名 + 版本胶囊）。标题栏已有
@@ -136,7 +134,7 @@ export function AboutPage() {
                 {t("dashboard.about.infoDataDirHint")}
               </span>
             </span>
-            <span className="db-about-info__value num">~/.agenthud</span>
+            <span className="db-about-info__value num db-mono">~/.agenthud</span>
           </div>
         </div>
       </section>

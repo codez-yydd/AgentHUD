@@ -27,6 +27,7 @@ import type { ReactNode } from "react";
 import { useI18n } from "../i18n";
 import { SkinStandalonePanel } from "../SkinStandalonePanel";
 import { ThemePanel } from "../ThemePanel";
+import { PageTitleWithDesc } from "./primitives";
 
 /** 皮肤域子页：hub 分类页 / 免注入子页 / 需注入子页（与悬浮窗 View 同义） */
 type SkinSub = "hub" | "standalone" | "injected";
@@ -67,10 +68,7 @@ export function SkinPage() {
   return (
     <div className="db-page db-skin-hub-page">
       <header className="db-page__header">
-        <div>
-          <h1 className="db-page__title">{t("dashboard.skin")}</h1>
-          <p className="db-page__desc">{t("dashboard.skin.desc")}</p>
-        </div>
+        <PageTitleWithDesc title={t("dashboard.skin")} desc={t("dashboard.skin.desc")} />
       </header>
 
       <div className="db-skin-hub">
