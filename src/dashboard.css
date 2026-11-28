@@ -9304,6 +9304,12 @@ body.card-resizing * {
   font-size: 13px;
 }
 
+/* 壁纸卡上的 8px 微字（「预览不可用」占位、「切换中」角标）同理提一档到
+   10px，与 9→11、10→12 的档距一致 */
+.db-skin-embed .text-\[8px\] {
+  font-size: 10px;
+}
+
 /* 面板公共类在皮肤子页的同步提档：SettingsCard 标题（section-title）提到
    主窗口小标题档（14px / 600 主文字色）；按钮 / 输入框 / 工具按钮按同一
    思路提一档。全局定义未动，面板作用域不受影响 */
