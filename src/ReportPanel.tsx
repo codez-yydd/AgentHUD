@@ -250,6 +250,15 @@ function startOfLocalDay(ms: number): number {
   return d.getTime();
 }
 
+/** 日均请求的展示：四舍五入到一位小数以内（本身是整数不带小数位），
+ *  千分位 / 数量级跟随语言，与 KPI 的请求数同口径。 */
+function formatDailyRequests(value: number, locale: "zh" | "en"): string {
+  const rounded = Math.round(value * 10) / 10;
+  return Number.isInteger(rounded)
+    ? formatCountLocale(rounded, locale)
+    : rounded.toFixed(1);
+}
+
 /** 解析 YYYY-MM-DD 为本地当天 0 点，格式非法时返回 NaN。 */
 function parseLocalDate(date: string): number {
   const [y, m, d] = date.split("-").map(Number);
@@ -1488,23 +1497,32 @@ export function ReportContent({
     return { tokens, costCny, costUsd, requests, activeDays };
   }, [dailyMap]);
 
-  // ===== 活跃度汇总（累计 / 峰值 / 日均 / 连续天数） =====
+  // ===== 活跃度汇总（日均请求 / 峰值 / 日均 Token / 连续天数） =====
   const activity = useMemo(() => {
     const startDay = report ? startOfLocalDay(report.from_ms) : 0;
     const endDay = report ? startOfLocalDay(report.to_ms) : 0;
     let total = 0;
+    let requests = 0;
     let activeDays = 0;
     let peak: { key: string; tokens: number } | null = null;
     for (const [key, totals] of dailyMap) {
       total += totals.tokens;
+      requests += totals.requests;
       if (totals.tokens > 0) activeDays += 1;
       if (!peak || totals.tokens > peak.tokens) peak = { key, tokens: totals.tokens };
     }
+    // 日均请求的分母是范围日历天数（首尾都算，没有数据的日子也在内），
+    // 总请求数与 KPI 同一份 dailyMap 求和（替代与 KPI 重复的累计 Token）
+    const rangeDays =
+      startDay > 0 && endDay >= startDay
+        ? Math.round((endDay - startDay) / 86_400_000) + 1
+        : 0;
     const streaks = computeStreaks(dailyMap, startDay, endDay);
     return {
       total,
       peak,
       dailyAvg: activeDays > 0 ? total / activeDays : 0,
+      dailyRequests: rangeDays > 0 ? requests / rangeDays : 0,
       current: streaks.current,
       longest: streaks.longest,
     };
@@ -2039,14 +2057,14 @@ export function ReportContent({
             </div>
 
             {/* 活跃度汇总条：五项布局，1px 竖分隔线
-                （累计使用时长无会话数据，以日均 Token 替代） */}
+                （首项为日均请求：累计 Token 与上方 KPI 的总消耗重复） */}
             <SectionCard className="report-card" title={t("report.activity")}>
               <div className="flex items-stretch">
                 {[
                   {
-                    label: t("report.act.total"),
-                    num: formatTokensParts(activity.total, locale).num,
-                    unit: formatTokensParts(activity.total, locale).unit,
+                    label: t("report.act.dailyRequests"),
+                    num: formatDailyRequests(activity.dailyRequests, locale),
+                    unit: undefined,
                     tip: undefined,
                     info: false,
                   },

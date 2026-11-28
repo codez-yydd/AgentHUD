@@ -65,6 +65,7 @@ import { SettingsPage } from "./SettingsPage";
 import { AboutPage } from "./AboutPage";
 import { useRemoteUpdateState } from "./settings/UpdateSection";
 import { useAgentVisibilitySync } from "./agentVisibilitySync";
+import { useTableScrollFade } from "./useTableScrollFade";
 
 /** 主区视图（新增页面时在此扩展） */
 type View =
@@ -280,6 +281,8 @@ function SidebarShellTop() {
 export function DashboardApp() {
   const { locale, setLocale, t } = useI18n();
   const [view, setView] = useState<View>("overview");
+  // 表格横滚右缘渐隐的开关维护（全程持有，不随页面切换销毁）
+  useTableScrollFade();
   // Agent 展示可见性联动（自悬浮窗 App.tsx 迁移）：主窗口在场的全程持有
   // （presence 探测 / 有凭证自动显示 / 远端来源轮询 / Rust 镜像 + 设置页
   // 写路径），不随设置页切换销毁；写入经跨窗事件同步悬浮窗 tab 显隐

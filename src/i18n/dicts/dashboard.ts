@@ -92,6 +92,11 @@ export const dashboard = {
   "dashboard.overview.remoteIncluded": "含远端",
   "dashboard.overview.remoteIncludedHint": "该值包含其他设备同步上传的用量",
   "dashboard.overview.lastUpdated": "上次刷新 {time}",
+  // 页头刷新按钮的原生提示（「上次刷新 …」不再常驻页头，收进 title 与
+  // aria-label）；还没有成功取过数时只显示「刷新」，不带时间
+  "dashboard.refreshLastAt": "刷新 · 上次 {time}",
+  // 页头最右「⋯」更多操作菜单（无边框图标按钮）的 title 与 aria-label
+  "dashboard.moreActions": "更多操作",
   "dashboard.overview.errorBanner": "数据加载失败：{error}",
   "dashboard.overview.partialFailures": "部分 Agent 取数失败，已跳过：{names}",
   "dashboard.overview.emptyTitle": "暂无用量数据",
@@ -291,7 +296,10 @@ export const dashboard = {
   "dashboard.quota.deckSub": "全部 {count} 个额度窗口的平均剩余",
   "dashboard.quota.deckStatusHealthy": "余量充足",
   "dashboard.quota.deckStatusWarningCount": "{count} 个窗口偏低",
+  // 数量 = 1 时的单数键（英文复数形态不同；中文文案与原键一致）
+  "dashboard.quota.deckStatusWarningCountOne": "{count} 个窗口偏低",
   "dashboard.quota.deckStatusCriticalCount": "{count} 个窗口告急",
+  "dashboard.quota.deckStatusCriticalCountOne": "{count} 个窗口告急",
   "dashboard.quota.riskHealthy": "正常",
   "dashboard.quota.riskWarning": "偏低",
   "dashboard.quota.riskCritical": "告急",
@@ -306,10 +314,15 @@ export const dashboard = {
   // ---- 仪表阵列：每个账号 / 凭证一张卡 ----
   "dashboard.quota.fleetTitle": "额度仪表",
   "dashboard.quota.fleetSub": "{count} 个账号 / 凭证 · 按最紧余量排序",
+  "dashboard.quota.fleetSubOne": "{count} 个账号 / 凭证 · 按最紧余量排序",
   "dashboard.quota.windowUnit": "个窗口",
   "dashboard.quota.windowNoReset": "无重置",
   "dashboard.quota.updatedAgo": "更新 {time}",
   "dashboard.quota.staleData": "数据较旧",
+  // 卡底 90 天迷你剩余曲线：标题行文案 + 折线容器的悬停说明
+  "dashboard.quota.sparkLabel": "{window} · 近 90 天剩余走势",
+  "dashboard.quota.sparkHint":
+    "每次额度采样连成的剩余比例走势，只表达趋势；当前值见上方仪表",
 
   // 窗口档位标签（已知键；credits 为常见的 provider 特有键，其余未知键原样展示）
   "dashboard.quota.win.hour5": "5 小时窗",
@@ -648,6 +661,7 @@ export const dashboard = {
     "该模型已在列表中（大小写 / 隐藏字符变体视为同一模型）",
   "dashboard.pricing.hiddenTitle": "已隐藏模型",
   "dashboard.pricing.hiddenCount": "已隐藏 {count} 个模型",
+  "dashboard.pricing.hiddenCountOne": "已隐藏 {count} 个模型",
   "dashboard.pricing.restore": "恢复",
   "dashboard.pricing.noModels":
     "暂无模型数据。请确认已产生使用记录，或手动新增模型定价。",
@@ -766,10 +780,12 @@ export const dashboard = {
   // ===== 请求日志页（大窗）：筛选行 / 明细表 / 分页条 / 详情抽屉 =====
   // 时间范围四档与其他主窗口页统一，全部复用 dashboard.overview.range.*
   "dashboard.logs.rangeLabel": "时间范围",
-  // 页头自动刷新间隔（关闭 / 5 / 10 / 30 / 60 秒，默认 30 秒）：触发按钮显示
-  // 「自动刷新 + 当前档」，完整语义放 title 与 aria-label，页头保持紧凑
+  // 页头自动刷新间隔（关闭 / 实时 / 5 / 10 / 30 / 60 秒，默认 30 秒）：触发
+  // 按钮只显示当前档位（带时钟图标），完整语义放 title 与 aria-label，
+  // 页头保持紧凑
   "dashboard.logs.autoRefresh": "自动刷新",
   "dashboard.logs.autoRefreshOff": "关闭",
+  "dashboard.logs.autoRefreshRealtime": "实时",
   "dashboard.logs.autoRefreshSec": "{n} 秒",
   "dashboard.logs.autoRefreshHint": "自动刷新间隔：{value}",
   "dashboard.logs.sourceLabel": "来源",
@@ -877,10 +893,15 @@ export const dashboard = {
   "dashboard.logs.statusErrorTitle": "请求失败，错误码 {code}",
   "dashboard.logs.statusErrorNoCodeTitle": "请求失败",
   "dashboard.logs.statusErrorRetryTitle": "请求失败，错误码 {code}；此前已重试 {n} 次",
+  "dashboard.logs.statusErrorRetryTitleOne":
+    "请求失败，错误码 {code}；此前已重试 {n} 次",
   "dashboard.logs.statusErrorRetryNoCodeTitle": "请求失败；此前已重试 {n} 次",
+  "dashboard.logs.statusErrorRetryNoCodeTitleOne": "请求失败；此前已重试 {n} 次",
   "dashboard.logs.statusCancelledTitle": "请求被中断",
   "dashboard.logs.statusRetryTitle": "重试 {n} 次后成功，最近一次错误码 {code}",
+  "dashboard.logs.statusRetryTitleOne": "重试 {n} 次后成功，最近一次错误码 {code}",
   "dashboard.logs.statusRetryNoCodeTitle": "重试 {n} 次后成功",
+  "dashboard.logs.statusRetryNoCodeTitleOne": "重试 {n} 次后成功",
   // ≈ 估算标记（timing_estimated）：请求起点是从会话日志推断的
   "dashboard.logs.timingEstimatedHint":
     "≈ 表示请求起点是从会话日志推断的，不是精确记录；耗时和首字为近似值",

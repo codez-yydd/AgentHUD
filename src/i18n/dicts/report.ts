@@ -29,6 +29,8 @@ export const report = {
   // ===== 活跃度汇总条（五项；英文用短文案避免窄窗截断） =====
   "report.activity": "活跃度",
   "report.act.total": "累计 Token",
+  // 活跃度首项（替代与 KPI 总消耗 Token 重复的累计 Token）：范围内总请求数 ÷ 范围日历天数
+  "report.act.dailyRequests": "日均请求",
   "report.act.peakDay": "峰值 Token",
   // ⓘ 悬浮说明：峰值口径
   "report.act.peakTip": "范围内单日 Token 最高的一天",

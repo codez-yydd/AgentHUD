@@ -883,22 +883,28 @@ export function SpeedPage() {
               </button>
             ))}
           </div>
-          {/* 手动刷新；title 顺带告知自动刷新节奏（speed.autoRefresh 词条） */}
+          {/* 手动刷新：「上次刷新 …」不再常驻页头，时间收进原生提示并保留
+              原有的「每 30 秒自动更新」说明（speed.autoRefresh）；还没有
+              成功取过数时只显示自动更新说明 */}
           <button
             type="button"
             className="db-btn"
             onClick={() => load(true)}
             disabled={loading}
-            title={t("speed.autoRefresh")}
+            title={
+              updatedAt != null
+                ? `${t("dashboard.refreshLastAt", { time: timeText(updatedAt) })} · ${t("speed.autoRefresh")}`
+                : t("speed.autoRefresh")
+            }
+            aria-label={
+              updatedAt != null
+                ? `${t("dashboard.refreshLastAt", { time: timeText(updatedAt) })} · ${t("speed.autoRefresh")}`
+                : t("speed.autoRefresh")
+            }
           >
             <RefreshIcon className={`h-3.5 w-3.5 ${loading ? "db-spin" : ""}`} />
             {t("common.refresh")}
           </button>
-          <span className="db-page__updated num">
-            {updatedAt != null
-              ? t("dashboard.overview.lastUpdated", { time: timeText(updatedAt) })
-              : ""}
-          </span>
         </div>
       </header>
 

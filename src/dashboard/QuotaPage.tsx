@@ -250,9 +250,14 @@ export function QuotaPage() {
                     {t("dashboard.quota.fleetTitle")}
                   </h2>
                   <p className="db-qc-section-sub">
-                    {t("dashboard.quota.fleetSub", {
-                      count: summary.seriesCount,
-                    })}
+                    {t(
+                      summary.seriesCount === 1
+                        ? "dashboard.quota.fleetSubOne"
+                        : "dashboard.quota.fleetSub",
+                      {
+                        count: summary.seriesCount,
+                      }
+                    )}
                   </p>
                 </div>
                 <span className="db-qc-section-meta num">

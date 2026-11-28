@@ -209,16 +209,21 @@ export function InstrumentCard({
       <footer className="db-qc-instrument__foot">
         <div className="db-qc-instrument__spark-head">
           <span className="db-qc-instrument__spark-label">
-            {windowLabel(t, primaryKey)} · {t("dashboard.overview.range.90d")}
+            {t("dashboard.quota.sparkLabel", {
+              window: windowLabel(t, primaryKey),
+            })}
           </span>
           <span className={`db-qc-risk db-qc-risk--${risk}`}>
             {riskLabel(t, risk)}
           </span>
         </div>
-        <Sparkline
-          points={sparkPoints}
-          tone={quotaTone(primaryLatest ?? 100)}
-        />
+        {/* 折线的悬停说明包一层普通 div（svg 自身 aria-hidden 无语义） */}
+        <div title={t("dashboard.quota.sparkHint")}>
+          <Sparkline
+            points={sparkPoints}
+            tone={quotaTone(primaryLatest ?? 100)}
+          />
+        </div>
       </footer>
     </article>
   );

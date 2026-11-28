@@ -781,6 +781,111 @@ html.dark .db-shell-lights--blur .db-shell-light {
   white-space: nowrap;
 }
 
+/* ---- 页头「⋯」更多操作（无边框图标按钮 + 右对齐弹层）----
+   视觉第三级：无描边无底色，悬停浅底色；弹层白底（暗色卡片底令牌）、
+   发丝描边、12px 圆角，右对齐在触发器下方，层级与现有下拉弹层一致
+   （z-30，吸顶页头 z-20 不裁剪）。组件在 src/dashboard/MoreActionsMenu.tsx，
+   类名沿用已认可原型（页头精简） */
+.hdr-more-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.hdr-more {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--db-text-dim);
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.hdr-more:hover {
+  background: var(--db-hover);
+  color: var(--db-text);
+}
+
+.hdr-more:focus-visible {
+  outline: 2px solid var(--db-active-text);
+  outline-offset: 1px;
+}
+
+/* 红色数字角标（价格页差异红点 .db-dot）：落在 ⋯ 右上角，外圈用页头
+   不透明底色挖空（原型同款锚点微调） */
+.hdr-more .db-dot {
+  top: -4px;
+  right: -5px;
+  box-shadow: 0 0 0 2px var(--db-sticky-bg);
+}
+
+/* 弹层：组件按 open 条件渲染，这里只管形态 */
+.hdr-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  min-width: 196px;
+  padding: 4px;
+  background: var(--db-card-solid);
+  border: 1px solid var(--db-card-border);
+  border-radius: 12px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.14), 0 2px 8px rgba(0, 0, 0, 0.08);
+  z-index: 30;
+}
+
+.hdr-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  height: 32px;
+  padding: 0 10px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  font-family: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--db-text);
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+
+.hdr-menu-item:hover:not(:disabled) {
+  background: var(--db-hover);
+}
+
+.hdr-menu-item:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.hdr-menu-item:focus-visible {
+  outline: 2px solid var(--db-active-text);
+  outline-offset: -1px;
+}
+
+.hdr-menu-item svg {
+  flex: none;
+  color: var(--db-text-3);
+}
+
+/* 刷新 + 自动刷新档位相邻成组（两控件间 4px，看上去是一组） */
+.hdr-grp {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
 .db-page__footnote {
   margin-top: -4px;
   font-size: 12px;
@@ -809,6 +914,12 @@ html.dark .db-shell-lights--blur .db-shell-light {
   align-items: baseline;
   gap: 8px;
   min-width: 0;
+}
+
+/* 卡片标题旁的说明问号（复用页头 .db-page__help 样式）：标题行是
+   baseline 对齐，16px 按钮自身改居中，与标题视觉中线一致 */
+.db-card__headline .db-page__help {
+  align-self: center;
 }
 
 .db-card__title {
@@ -2131,6 +2242,30 @@ html.dark .db-shell-lights--blur .db-shell-light {
   border-radius: 8px;
 }
 
+/* 右缘渐隐（窄窗横滚提示，900 最小窗下多列超宽时）：最后一列被容器
+   裁切时看不出还能向右滚，给内容右缘 36px 一层 alpha 渐隐。mask 画在
+   表格上而不是滚动容器上——主窗口滚动条是 ::-webkit-scrollbar 自绘、
+   画在容器自身里，容器级 mask 会把滚动条一起罩淡（返工修正）。mask 相
+   对表格 border box 定位、随内容滚动，透明终点用 --fade-x（钩子维护 =
+   视口右缘在表格坐标系里的 x）钉在可视区右缘：横滚时钩子逐帧更新它，
+   纵滚时 x 不变、竖带自然贴边；吸顶表头是表格的子元素，与各行一起渐隐。
+   开关由 useTableScrollFade 维护 data-scroll-right（scrollWidth -
+   clientWidth - scrollLeft > 1）：滚到最右或本来就不溢出时整体不生效。
+   渐变走纯 alpha 通道，亮暗主题下都与所在底色自然衔接；mask-image 无法
+   插值，开关为瞬切，与「减少动态效果」下的表现一致。 */
+.db-table-wrap[data-scroll-right="true"] > table {
+  mask-image: linear-gradient(
+    to right,
+    #000 calc(var(--fade-x, 100%) - 36px),
+    transparent var(--fade-x, 100%)
+  );
+  -webkit-mask-image: linear-gradient(
+    to right,
+    #000 calc(var(--fade-x, 100%) - 36px),
+    transparent var(--fade-x, 100%)
+  );
+}
+
 .db-table {
   width: 100%;
   border-collapse: collapse;
@@ -2846,15 +2981,34 @@ html.dark .db-shell-lights--blur .db-shell-light {
   margin-left: auto;
 }
 
+/* 说明行右侧的币种口径控件（¥/$ 分段 + 「仅本页」，从页头挪来）：与
+   「N 个模型」的两个 auto 外边距把行分成 左说明 / 模型数 / 口径 三段
+   （已认可原型同款布局） */
+.hdr-meta-right {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* 24px 档紧凑分段：说明行是 11px 小字，原 28px 档压不住行距——按钮
+   20px 高 / 11px 字，与说明行同一视觉密度 */
+.hdr-meta-right .db-seg__btn {
+  height: 20px;
+  padding: 0 10px;
+  font-size: 11px;
+}
+
 /* 页头吸顶已统一为 .db-page__header 的默认行为（sticky + 不透明底 +
    底部发丝线），修饰类不再需要；价格设置页此前依赖它让「保存」始终可见，
    现在与其它页头同享吸顶。 */
 
-/* 未保存改动提示（dirty 时紧贴保存按钮左侧） */
+/* 未保存改动提示（dirty 时在「保存」左侧）：页头精简后只剩「⋯ + 保存」，
+   琥珀色会抢过主按钮，弱化成灰字（有改动时仍一眼可见） */
 .db-pricing__dirty {
   font-size: 11px;
-  font-weight: 600;
-  color: var(--db-accent-amber);
+  font-weight: 500;
+  color: var(--db-text-dim);
   white-space: nowrap;
 }
 
@@ -3416,7 +3570,7 @@ html.dark .db-shell-lights--blur .db-shell-light {
  *（.dark 会反转 slate 色板，弹层要实底）。
  * ============================================================ */
 
-/* ---- 筛选行：来源 / 模型下拉 ----
+/* ---- 筛选行：设备 / 来源 / 模型下拉 ----
    日志页挪进表格卡片头右侧、速度页挪进页头控件组后，本行不再作为页面
    直接子元素出现；margin 交由所在容器（卡头 / 页头）的 gap 提供 */
 .db-logs-filters {
@@ -3424,6 +3578,35 @@ html.dark .db-shell-lights--blur .db-shell-light {
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
+}
+
+/* ---- 自动刷新窄下拉（页头精简）：触发器只显示当前档位，宽度随文字 ----
+   共用 DropdownMenu 不能往触发器内部插时钟图标，由外层容器 .hdr-autoref
+   绝对定位叠加（图标 13px + 两侧留白），触发器左内边距让出图标位
+   （10 定位 + 13 图标 + 5 间隙 = 28px）；__dd 挂在 DropdownMenu 根元素上，
+   未分层样式优先于触发器内置的 Tailwind 内边距 */
+.hdr-autoref {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.hdr-autoref > .hdr-refresh-ico {
+  position: absolute;
+  left: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 1;
+  display: inline-flex;
+  flex: none;
+  pointer-events: none;
+  color: var(--db-text-3);
+}
+
+.hdr-autoref__dd > button {
+  padding-left: 28px;
+  padding-right: 8px;
+  gap: 5px;
 }
 
 /* ---- 明细表：10 列按 1100 默认窗口的内容区（约 810px）排布——
@@ -6306,6 +6489,19 @@ html.dark .db-shell-lights--blur .db-shell-light {
   max-width: 100%;
   flex: none;
 }
+/* 主窗口隐藏 FontSizeControl 底部的说明行（可调范围 + 逻辑像素解释，
+   占两三行导致本行比同页其它行重）：说明收进行标题旁的问号提示
+   （见 SettingsPage），预设分段、步进器、「恢复默认」与输入出错的
+   红字提示（role="alert"）照常显示。悬浮面板共用组件不改，仅主窗口生效 */
+.db-set-row--font .font-size-control > p:not([role="alert"]) {
+  display: none;
+}
+/* 行标题「主窗口字号」旁的问号（复用页头 .db-page__help）：跟在标题
+   文字后，与文字中线对齐 */
+.db-set-row__title .db-page__help {
+  margin-left: 6px;
+  vertical-align: middle;
+}
 
 /* ---- 设置页窄窗回退（≤980px，放在本段基础规则之后）：行改纵向堆叠，
    控件落到文案下方（右侧不再挤压说明文字） ---- */
@@ -7285,6 +7481,14 @@ body.card-resizing * {
 .layout-editor__row.is-hidden .layout-editor__name {
   opacity: 0.5;
   text-decoration: line-through;
+}
+/* 主窗口编辑态：被隐藏的行整排右侧控件（级别 / 高度 / 折叠 / 上下移）
+   一并隐藏，只留拖拽把手、名称与勾选框——上下移与拖拽把手功能重复，
+   隐藏行排序仍可拖拽完成（悬浮面板共用组件不改，这里仅主窗口生效）。
+   用 visibility 而不是 display:none：占位不变，隐藏行与普通行的左缘、
+   行高完全一致，重新勾选时布局零跳动 */
+.db-main .layout-editor__row.is-hidden .layout-editor__row-actions {
+  visibility: hidden;
 }
 .layout-editor__grip {
   flex: none;
@@ -9371,6 +9575,43 @@ body.card-resizing * {
 .dark .report-scope .toolbar-btn:hover {
   color: rgba(255, 255, 255, 0.92);
   background: rgba(255, 255, 255, 0.08);
+}
+
+/* 主窗口报告页的工具行图标按钮（分享 / 刷新，ReportPanel 共用组件）：
+   原样式只有 16px 无边框，与主窗口页头图标按钮不成套。对齐 .db-icon-btn
+   同款令牌（28px、8px 圆角、发丝描边、悬停浅底），图标放大到 16px；
+   置于 toolbar-btn 系列规则之后，压过上方 .report-scope 的旧配色 */
+.db-report-page .toolbar-btn {
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--db-control-border);
+  border-radius: 8px;
+  color: var(--db-text-dim);
+}
+
+.db-report-page .toolbar-btn:hover {
+  color: var(--db-text);
+  background: var(--db-control-bg-hover);
+  border-color: var(--db-control-border);
+}
+
+.db-report-page .toolbar-btn:active {
+  background: var(--db-control-bg);
+}
+
+.db-report-page .toolbar-btn svg {
+  width: 16px;
+  height: 16px;
+}
+
+.dark .db-report-page .toolbar-btn {
+  color: var(--db-text-dim);
+}
+
+.dark .db-report-page .toolbar-btn:hover {
+  color: var(--db-text);
+  background: var(--db-control-bg-hover);
+  border-color: var(--db-control-border);
 }
 
 /* ---- 按钮系统（主 / 次 / 幽灵）----

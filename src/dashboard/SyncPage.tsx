@@ -768,8 +768,13 @@ export function SyncPage() {
             </div>
           </Card>
 
-          {/* ---- 区块②：服务端设备表 ---- */}
-          <Card title={t("dashboard.sync.devicesTitle")} sub={devicesSub}>
+          {/* ---- 区块②：服务端设备表（改名 / 合并 / 删数据的说明收进
+              标题旁问号，操作按钮各自 title 与确认弹层保持原样） ---- */}
+          <Card
+            title={t("dashboard.sync.devicesTitle")}
+            sub={devicesSub}
+            hint={t("dashboard.sync.devicesOpsHint")}
+          >
             {/* master token 解锁管理操作：仅本页内存，离开本页即失效 */}
             <div className="db-sync-master">
               <label className="db-sync-field">
@@ -806,11 +811,6 @@ export function SyncPage() {
               </p>
             ) : (
               <>
-                {/* 操作说明（信息性弱提示，照卡③ dataHint 先例）：
-                    操作列三个按钮裸文案语义不明，合并尤其易误解为「合并视图」 */}
-                <p className="db-sync-scopehint">
-                  {t("dashboard.sync.devicesOpsHint")}
-                </p>
                 <div className="db-table-wrap">
                 <table className="db-table db-sync-devices">
                   <thead>

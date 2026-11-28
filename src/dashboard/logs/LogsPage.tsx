@@ -3,10 +3,10 @@
  * 数据范围「全部设备」时后端再并入同步服务端上其他设备的明细（远端行带
  * device 字段，耗时 / 首字 / 速度恒为「—」）。
  *
- * 结构：页头（设备下拉 + 时间范围触发按钮 + 自动刷新间隔 + 刷新）→ 汇总
+ * 结构：页头（时间范围触发按钮 + 刷新 + 自动刷新档位窄下拉成组 + 导出）→ 汇总
  * 指标行（总请求数 / Token 总量 / 输入 / 输出 / 总成本 / 缓存命中率，当前
- * 筛选条件下的**全范围**聚合）→ 明细表卡（卡头右侧挂来源 / 模型筛选组；
- * 表体 10 列）→ 分页条 → 详情抽屉。
+ * 筛选条件下的**全范围**聚合）→ 明细表卡（卡头右侧挂设备 / 来源 / 模型筛选
+ * 组；表体 10 列）→ 分页条 → 详情抽屉。
  *
  * 版面：本页是唯一「不整页滚动」的页（.db-logs-page：flex 列 + 内部滚动），
  * 表格卡 flex:1、表体 .db-table-wrap 纵向滚动 + sticky 表头，分页条固定卡底
@@ -35,10 +35,12 @@
  *  - 页码文案与分页按钮基于「已生效页码」（rowsPage，即当前表格里那批数据所属
  *    的页），翻页等待期不会出现「第 3 页」配第 2 页数据的错位；
  *  - 「刷新」按钮重取明细 + 清单（不做模块级缓存，见 useLogsData）；
- *  - 页头「自动刷新」下拉选间隔（关闭 / 5 / 10 / 30 / 60 秒，默认 30 秒，
- *    localStorage 键 zbar-logs-refresh-ms 持久化）：间隔 > 0 时定时走
+ *  - 页头「自动刷新」下拉选间隔（关闭 / 实时 / 5 / 10 / 30 / 60 秒，默认
+ *    30 秒，localStorage 键 zbar-logs-refresh-ms 持久化）：间隔 > 0 时定时走
  *    useLogsData 的**静默**刷新（不置 loading——刷新按钮不转圈、表格与指标
- *    不压暗、不闪骨架），保持当前筛选与页码；document.hidden 时跳过本次，
+ *    不压暗、不闪骨架），保持当前筛选与页码；「实时」档静默刷新只重取明细
+ *    （清单不陪跑），静默轮在上一笔明细还在途中时跳过（不叠加请求，见
+ *    useLogsData）；document.hidden 时跳过本次，
  *    避免后台空转查询——macOS WKWebView 里窗口被其它窗口完全遮住 / 窗口
  *    被 hide 同样置 hidden，隐藏期间整页不刷新，恢复可见时补刷一次（见
  *    下方 visibilitychange effect），否则切回窗口看到的旧表最长要再等一个
@@ -223,11 +225,15 @@ let deviceListCache: { list: DeviceInfo[]; at: number } | null = null;
 const DEVICE_LIST_FRESH_MS = 60_000;
 
 /**
- * 自动刷新间隔档位（页头下拉）：关闭 / 5 / 10 / 30 / 60 秒。取值即毫秒数
- * （0 = 关闭），数组顺序即下拉展示顺序；默认 30 秒。
+ * 自动刷新间隔档位（页头下拉）：关闭 / 实时（1 秒）/ 5 / 10 / 30 / 60 秒。
+ * 取值即毫秒数（0 = 关闭，1000 = 实时档），数组顺序即下拉展示顺序；默认
+ * 30 秒。实时档的静默刷新只重取明细、不重取模型清单（见 useLogsData 的
+ * rowsOnly），且在途不叠加请求。
  */
-const REFRESH_MS_OPTIONS = [0, 5000, 10000, 30000, 60000];
+const REFRESH_MS_OPTIONS = [0, 1000, 5000, 10000, 30000, 60000];
 const REFRESH_MS_DEFAULT = 30000;
+/** 实时档（1 秒一轮）：文案独立（「实时」而非「1 秒」），静默刷新不带清单 */
+const REFRESH_MS_REALTIME = 1000;
 
 /** 恢复可见补刷的最小间隔（毫秒）：距上次成功取数不足该值时不补刷——
  *  刚刷过的数据没必要因一次窗口切换再取一轮 */
@@ -646,6 +652,9 @@ export function LogsPage() {
   // 自动刷新：间隔 > 0 时定时重取「当前筛选 + 当前页码」的明细。
   //  - 走静默刷新（reload({silent:true})）：不置 loading——刷新按钮不转圈、
   //    表格与指标不压暗，也不会闪骨架；
+  //  - 「实时」档（1 秒）只重取明细（rowsOnly）：模型清单很少变，每秒重取
+  //    纯属浪费——手动刷新与其它档位照旧带清单；叠加守卫在 reload 内部
+  //    （silent 轮在途时跳过，见 useLogsData）；
   //  - document.hidden 时跳过本次，避免后台空转查询——macOS WKWebView 里
   //    窗口被其它窗口完全遮住 / 窗口被 hide 同样置 hidden，隐藏期间整页
   //    不刷新，恢复可见由下方 visibilitychange 补刷 effect 立即补一次；
@@ -655,7 +664,10 @@ export function LogsPage() {
     if (refreshMs <= 0) return;
     const timer = window.setInterval(() => {
       if (document.hidden) return;
-      reload({ silent: true });
+      reload({
+        silent: true,
+        rowsOnly: refreshMs === REFRESH_MS_REALTIME,
+      });
     }, refreshMs);
     return () => window.clearInterval(timer);
   }, [refreshMs, reload]);
@@ -680,8 +692,8 @@ export function LogsPage() {
     return () => document.removeEventListener("visibilitychange", onVisible);
   }, [refreshMs, reload, lastUpdatedAt]);
 
-  // 间隔下拉选项：关闭 / 5 / 10 / 30 / 60 秒（选项顺序即 REFRESH_MS_OPTIONS；
-  // 选中项由 value 匹配，组件自动带 ✓）
+  // 间隔下拉选项：关闭 / 实时 / 5 / 10 / 30 / 60 秒（选项顺序即
+  // REFRESH_MS_OPTIONS；选中项由 value 匹配，组件自动带 ✓）
   const refreshOptions: DropdownOption[] = useMemo(
     () =>
       REFRESH_MS_OPTIONS.map((ms) => ({
@@ -689,7 +701,9 @@ export function LogsPage() {
         label:
           ms === 0
             ? t("dashboard.logs.autoRefreshOff")
-            : t("dashboard.logs.autoRefreshSec", { n: ms / 1000 }),
+            : ms === REFRESH_MS_REALTIME
+              ? t("dashboard.logs.autoRefreshRealtime")
+              : t("dashboard.logs.autoRefreshSec", { n: ms / 1000 }),
       })),
     [t]
   );
@@ -792,10 +806,39 @@ export function LogsPage() {
     t("dashboard.logs.rowHint"),
   ].join(" · ");
 
-  // 来源 / 模型筛选组：挪进表格卡片头右侧（Card 的 action）。骨架、翻页
+  // 设备 / 来源 / 模型筛选组：挪进表格卡片头右侧（Card 的 action）。设备
+  // 下拉原在页头，按「页头精简」收进卡头（只影响这一张卡）；骨架、翻页
   // 越界提示、正常内容三种表格卡共用同一份，切换形态时筛选不跳动
   const filters = (
     <div className="db-logs-filters">
+      {/* 设备筛选：全部设备 / 本机 / 各远端设备（对比页同款下拉；偏好独立
+          存 zbar-logs-device，不影响总览页口径）。未启用多设备同步时禁用
+          并固定本机口径（触发器仍显示当前生效项） */}
+      <DropdownMenu
+        label={t("dashboard.logs.deviceLabel")}
+        ariaLabel={t("dashboard.logs.deviceLabel")}
+        options={deviceOptions}
+        value={effectiveDevice}
+        onChange={changeDevice}
+        disabled={!syncEnabled}
+        /* 筛选生效（非默认「全部设备」口径——含「本机」）时触发器带激活态：
+           主色描边 + 浅主色底，提示当前不是默认的合并口径（与总览页
+           Agent 筛选、自定义区间生效时同一先例） */
+        active={effectiveDevice !== "all"}
+        /* 启用态 title 给当前选中项的完整设备名（触发器可能截断，
+           与自动刷新下拉「完整语义放 title」同一先例）；禁用态说明
+           为何固定本机口径 */
+        title={
+          syncEnabled
+            ? t("dashboard.logs.deviceHint", {
+                value:
+                  deviceOptions.find(
+                    (option) => option.value === effectiveDevice
+                  )?.label ?? "",
+              })
+            : t("dashboard.overview.syncDisabledHint")
+        }
+      />
       <DropdownMenu
         label={t("dashboard.logs.sourceLabel")}
         ariaLabel={t("dashboard.logs.sourceLabel")}
@@ -861,37 +904,9 @@ export function LogsPage() {
       <header className="db-page__header">
         <PageTitleWithDesc title={t("dashboard.logs")} desc={t("dashboard.logs.desc")} />
         <div className="db-page__actions">
-          {/* 设备筛选：全部设备 / 本机 / 各远端设备（对比页同款下拉；偏好独立
-              存 zbar-logs-device，不影响总览页口径）。未启用多设备同步时禁用
-              并固定本机口径（触发器仍显示当前生效项） */}
-          <DropdownMenu
-            label={t("dashboard.logs.deviceLabel")}
-            ariaLabel={t("dashboard.logs.deviceLabel")}
-            options={deviceOptions}
-            value={effectiveDevice}
-            onChange={changeDevice}
-            disabled={!syncEnabled}
-            /* 筛选生效（非默认「全部设备」口径——含「本机」）时触发器带激活态：
-               主色描边 + 浅主色底，提示当前不是默认的合并口径（与总览页
-               Agent 筛选、自定义区间生效时同一先例） */
-            active={effectiveDevice !== "all"}
-            /* 启用态 title 给当前选中项的完整设备名（触发器可能截断，
-               与自动刷新下拉「完整语义放 title」同一先例）；禁用态说明
-               为何固定本机口径 */
-            title={
-              syncEnabled
-                ? t("dashboard.logs.deviceHint", {
-                    value:
-                      deviceOptions.find(
-                        (option) => option.value === effectiveDevice
-                      )?.label ?? "",
-                  })
-                : t("dashboard.overview.syncDisabledHint")
-            }
-          />
           {/* 时间范围：单个触发按钮 + 弹出面板（四档预设收进面板顶部快捷行；
               本页不限制最早日期——后端存有全部历史请求记录，长历史由自定义
-              区间覆盖） */}
+              区间覆盖）。设备下拉已挪进下方「请求明细」卡头（见 filters） */}
           <CustomRangeMenu
             value={customRange}
             onChange={changeCustom}
@@ -903,25 +918,67 @@ export function LogsPage() {
               onClick: () => changeRange(presetRange),
             }))}
           />
-          {/* 自动刷新间隔：触发按钮显示「自动刷新 + 当前档」，选择即生效并持久化
-              （长文案 / 完整语义放 title 与 aria-label，页头保持紧凑） */}
-          <DropdownMenu
-            label={t("dashboard.logs.autoRefresh")}
-            ariaLabel={t("dashboard.logs.autoRefreshHint", { value: refreshLabel })}
-            title={t("dashboard.logs.autoRefreshHint", { value: refreshLabel })}
-            options={refreshOptions}
-            value={String(refreshMs)}
-            onChange={(next) => changeRefreshMs(Number(next))}
-          />
-          <button
-            type="button"
-            className="db-btn"
-            onClick={() => reload()}
-            disabled={loading}
-          >
-            <RefreshIcon className={`h-3.5 w-3.5 ${loading ? "db-spin" : ""}`} />
-            {t("common.refresh")}
-          </button>
+          {/* 刷新 + 自动刷新档位成组（4px，一组）：
+              - 刷新按钮：「上次刷新 …」不再常驻页头，时间收进原生提示
+                （title 与 aria-label 同值）；还没有成功取过数时只显示「刷新」；
+              - 自动刷新窄下拉：触发器只显示当前档位（关闭 / 实时 / 5 / 10 /
+                30 / 60 秒），时钟图标由外层容器 .hdr-autoref 定位叠加（不碰
+                共用 DropdownMenu 的触发器内部结构），完整语义在
+                title / aria-label（dashboard.logs.autoRefreshHint）；
+                选择即生效并持久化（「实时」档静默刷新只重取明细） */}
+          <span className="hdr-grp">
+            <button
+              type="button"
+              className="db-btn"
+              onClick={() => reload()}
+              disabled={loading}
+              title={
+                lastUpdatedAt != null
+                  ? t("dashboard.refreshLastAt", {
+                      time: timeText(lastUpdatedAt),
+                    })
+                  : t("common.refresh")
+              }
+              aria-label={
+                lastUpdatedAt != null
+                  ? t("dashboard.refreshLastAt", {
+                      time: timeText(lastUpdatedAt),
+                    })
+                  : t("common.refresh")
+              }
+            >
+              <RefreshIcon className={`h-3.5 w-3.5 ${loading ? "db-spin" : ""}`} />
+              {t("common.refresh")}
+            </button>
+            <span className="hdr-autoref">
+              <span className="hdr-refresh-ico" aria-hidden="true">
+                <svg
+                  viewBox="0 0 16 16"
+                  width="13"
+                  height="13"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.4"
+                  strokeLinecap="round"
+                >
+                  <circle cx="8" cy="8" r="5.7" />
+                  <path d="M8 5.1V8l2.1 1.5" />
+                </svg>
+              </span>
+              <DropdownMenu
+                className="hdr-autoref__dd"
+                options={refreshOptions}
+                value={String(refreshMs)}
+                onChange={(next) => changeRefreshMs(Number(next))}
+                ariaLabel={t("dashboard.logs.autoRefreshHint", {
+                  value: refreshLabel,
+                })}
+                title={t("dashboard.logs.autoRefreshHint", {
+                  value: refreshLabel,
+                })}
+              />
+            </span>
+          </span>
           {/* 明细导出：CSV / JSON 两种格式，口径与当前筛选完全一致 */}
           <DropdownMenu
             label={
@@ -936,11 +993,6 @@ export function LogsPage() {
             onChange={(next) => void handleExport(next === "json" ? "json" : "csv")}
             disabled={exporting != null}
           />
-          <span className="db-page__updated num">
-            {lastUpdatedAt != null
-              ? t("dashboard.overview.lastUpdated", { time: timeText(lastUpdatedAt) })
-              : ""}
-          </span>
         </div>
       </header>
 
@@ -951,8 +1003,9 @@ export function LogsPage() {
         </div>
       )}
 
-      {/* 来源 / 模型筛选已挪进下方表格卡片头右侧（骨架 / 越界 / 正常内容
-          三种卡片共用同一份筛选组），页面顺序：页头 → 指标条 → 表格卡 */}
+      {/* 设备 / 来源 / 模型筛选已挪进下方表格卡片头右侧（骨架 / 越界 /
+          正常内容三种卡片共用同一份筛选组），页面顺序：页头 → 指标条 →
+          表格卡 */}
 
       {/* 汇总指标行：当前筛选条件下的全范围聚合（与表格同一次请求返回） */}
       <LogsMetrics summary={summary} loading={loading} currency={currency} />

@@ -148,15 +148,26 @@ export function CockpitDeck({
       : summary.riskCounts.warning > 0
         ? "warning"
         : "healthy";
+  // 数量 = 1 走 …One 单数键（英文形态不同；t() 只有 {name} 插值，没有复数）
   const statusText =
     statusKey === "critical"
-      ? t("dashboard.quota.deckStatusCriticalCount", {
-          count: summary.riskCounts.critical,
-        })
+      ? t(
+          summary.riskCounts.critical === 1
+            ? "dashboard.quota.deckStatusCriticalCountOne"
+            : "dashboard.quota.deckStatusCriticalCount",
+          {
+            count: summary.riskCounts.critical,
+          }
+        )
       : statusKey === "warning"
-        ? t("dashboard.quota.deckStatusWarningCount", {
-            count: summary.riskCounts.warning,
-          })
+        ? t(
+            summary.riskCounts.warning === 1
+              ? "dashboard.quota.deckStatusWarningCountOne"
+              : "dashboard.quota.deckStatusWarningCount",
+            {
+              count: summary.riskCounts.warning,
+            }
+          )
         : t("dashboard.quota.deckStatusHealthy");
 
   const worst = summary.worstRow;

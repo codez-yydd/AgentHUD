@@ -91,10 +91,14 @@ function StatusBadge({ row }: { row: RequestLogRow }) {
         title={
           code
             ? n > 0
-              ? t("dashboard.logs.statusErrorRetryTitle", { code, n })
+              ? n === 1
+                ? t("dashboard.logs.statusErrorRetryTitleOne", { code, n })
+                : t("dashboard.logs.statusErrorRetryTitle", { code, n })
               : t("dashboard.logs.statusErrorTitle", { code })
             : n > 0
-              ? t("dashboard.logs.statusErrorRetryNoCodeTitle", { n })
+              ? n === 1
+                ? t("dashboard.logs.statusErrorRetryNoCodeTitleOne", { n })
+                : t("dashboard.logs.statusErrorRetryNoCodeTitle", { n })
               : t("dashboard.logs.statusErrorNoCodeTitle")
         }
       >
@@ -120,8 +124,12 @@ function StatusBadge({ row }: { row: RequestLogRow }) {
         className="db-tag db-logs__status db-logs__status--fit db-tag--retry"
         title={
           code
-            ? t("dashboard.logs.statusRetryTitle", { n, code })
-            : t("dashboard.logs.statusRetryNoCodeTitle", { n })
+            ? n === 1
+              ? t("dashboard.logs.statusRetryTitleOne", { n, code })
+              : t("dashboard.logs.statusRetryTitle", { n, code })
+            : n === 1
+              ? t("dashboard.logs.statusRetryNoCodeTitleOne", { n })
+              : t("dashboard.logs.statusRetryNoCodeTitle", { n })
         }
       >
         {t("dashboard.logs.statusRetry", { n })}

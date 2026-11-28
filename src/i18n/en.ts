@@ -488,6 +488,7 @@ export const en: typeof zh = {
     // Activity summary strip (short labels to avoid truncation in the narrow panel)
     "report.activity": "Activity",
     "report.act.total": "Tokens",
+    "report.act.dailyRequests": "Avg requests/day",
     "report.act.peakDay": "Peak",
     // ⓘ tooltip: peak metric definition
     "report.act.peakTip": "Highest single-day token day in range",
@@ -1375,6 +1376,11 @@ export const en: typeof zh = {
     "dashboard.overview.remoteIncludedHint":
       "Includes usage uploaded from other devices",
     "dashboard.overview.lastUpdated": "Updated {time}",
+    // Header refresh button tooltip ("last updated" no longer sits in the
+    // header); plain "Refresh" until the first successful load
+    "dashboard.refreshLastAt": "Refresh · last {time}",
+    // Header rightmost "⋯" more-actions menu (borderless icon button)
+    "dashboard.moreActions": "More actions",
     "dashboard.overview.errorBanner": "Failed to load data: {error}",
     "dashboard.overview.partialFailures":
       "Some agents failed to load and were skipped: {names}",
@@ -1577,8 +1583,10 @@ export const en: typeof zh = {
     "dashboard.quota.deckEyebrow": "Overall reserve",
     "dashboard.quota.deckSub": "Mean remaining across {count} quota windows",
     "dashboard.quota.deckStatusHealthy": "Reserve healthy",
-    "dashboard.quota.deckStatusWarningCount": "{count} window(s) low",
-    "dashboard.quota.deckStatusCriticalCount": "{count} window(s) critical",
+    "dashboard.quota.deckStatusWarningCount": "{count} windows low",
+    "dashboard.quota.deckStatusWarningCountOne": "1 window low",
+    "dashboard.quota.deckStatusCriticalCount": "{count} windows critical",
+    "dashboard.quota.deckStatusCriticalCountOne": "1 window critical",
     "dashboard.quota.riskHealthy": "OK",
     "dashboard.quota.riskWarning": "Low",
     "dashboard.quota.riskCritical": "Critical",
@@ -1592,7 +1600,12 @@ export const en: typeof zh = {
 
     // ---- Instrument grid: one card per account / credential ----
     "dashboard.quota.fleetTitle": "Quota instruments",
-    "dashboard.quota.fleetSub": "{count} account(s) / credential(s) · tightest first",
+    "dashboard.quota.fleetSub": "{count} accounts / credentials · tightest first",
+    "dashboard.quota.fleetSubOne": "1 account / credential · tightest first",
+    // Instrument-card footer: sparkline caption + hover hint on the line itself
+    "dashboard.quota.sparkLabel": "{window} · remaining, last 90 days",
+    "dashboard.quota.sparkHint":
+      "Remaining-ratio trend across quota samples, for direction only; current values are the gauges above.",
     "dashboard.quota.windowUnit": "windows",
     "dashboard.quota.windowNoReset": "No reset",
     "dashboard.quota.updatedAgo": "Updated {time}",
@@ -1958,6 +1971,7 @@ export const en: typeof zh = {
       "This model is already listed (case / invisible-character variants count as the same model)",
     "dashboard.pricing.hiddenTitle": "Hidden models",
     "dashboard.pricing.hiddenCount": "{count} models hidden",
+    "dashboard.pricing.hiddenCountOne": "1 model hidden",
     "dashboard.pricing.restore": "Restore",
     "dashboard.pricing.noModels":
       "No model data yet. Make sure some usage has been recorded, or add a model price manually.",
@@ -2081,11 +2095,12 @@ export const en: typeof zh = {
       "Data stays on this machine in this folder by default; it is only uploaded after multi-device sync is enabled.",
 
     "dashboard.logs.rangeLabel": "Time range",
-    // Header auto-refresh interval (Off / 5s / 10s / 30s / 60s, default 30s):
-    // the trigger shows "Auto-refresh" + the active option, the full sentence
-    // lives in title/aria-label to keep the header compact
+    // Header auto-refresh interval (Off / Real-time / 5s / 10s / 30s / 60s,
+    // default 30s): the compact trigger shows only the active option (+ a
+    // clock icon), the full sentence lives in title/aria-label
     "dashboard.logs.autoRefresh": "Auto-refresh",
     "dashboard.logs.autoRefreshOff": "Off",
+    "dashboard.logs.autoRefreshRealtime": "Real-time",
     "dashboard.logs.autoRefreshSec": "{n}s",
     "dashboard.logs.autoRefreshHint": "Auto-refresh interval: {value}",
     "dashboard.logs.sourceLabel": "Source",
@@ -2199,13 +2214,20 @@ export const en: typeof zh = {
     "dashboard.logs.statusErrorTitle": "Request failed with error code {code}",
     "dashboard.logs.statusErrorNoCodeTitle": "Request failed",
     "dashboard.logs.statusErrorRetryTitle":
-      "Request failed with error code {code}; retried {n} time(s) before that",
+      "Request failed with error code {code}; retried {n} times before that",
+    "dashboard.logs.statusErrorRetryTitleOne":
+      "Request failed with error code {code}; retried 1 time before that",
     "dashboard.logs.statusErrorRetryNoCodeTitle":
-      "Request failed; retried {n} time(s) before that",
+      "Request failed; retried {n} times before that",
+    "dashboard.logs.statusErrorRetryNoCodeTitleOne":
+      "Request failed; retried 1 time before that",
     "dashboard.logs.statusCancelledTitle": "Request was cancelled",
     "dashboard.logs.statusRetryTitle":
       "Succeeded after {n} retries, last error code {code}",
+    "dashboard.logs.statusRetryTitleOne":
+      "Succeeded after 1 retry, last error code {code}",
     "dashboard.logs.statusRetryNoCodeTitle": "Succeeded after {n} retries",
+    "dashboard.logs.statusRetryNoCodeTitleOne": "Succeeded after 1 retry",
     // ≈ marker (timing_estimated): the request start was inferred from session logs
     "dashboard.logs.timingEstimatedHint":
       "≈ means the request start was inferred from session logs rather than precisely recorded; duration and TTFT are approximations",

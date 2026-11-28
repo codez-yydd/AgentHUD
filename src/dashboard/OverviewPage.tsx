@@ -1,7 +1,7 @@
 /**
  * 用量总览页（主窗口首页）：跨 Agent 的用量 / 花费 / 趋势汇总。
  *
- * 结构：页头（数据范围 + 时间范围触发按钮 + 刷新）→ 指标卡行 → 趋势图 →
+ * 结构：页头（数据范围 + 时间范围触发按钮 + 刷新 + 「⋯」更多操作）→ 指标卡行 → 趋势图 →
  * 「热力图 + Agent 统计表」行（默认上下堆叠，仅大窗 ≥1340px 并排两列利用
  * 横向空间，见 .db-overview-duo）→ 模型用量表。范围与数据范围切换只重新聚合（本地来源
  * 一次取满 365 天，指标卡 / 趋势 / 两张表按 90 天切片、热力图铺 52 周），
@@ -19,10 +19,10 @@ import { useI18n, type MessageKey } from "../i18n";
 import { AlertBanner, EmptyState } from "../layout";
 import {
   LayoutEditorBar,
-  LayoutEntryButton,
   PageLayoutEditProvider,
   usePageLayoutEditor,
 } from "../layoutEditor";
+import { MoreActionsMenu } from "./MoreActionsMenu";
 import { ModelUsageExportModal } from "../ModelUsageExport";
 import { displayModelName } from "../modelName";
 import { RefreshIcon } from "./icons";
@@ -84,6 +84,28 @@ function timeText(ms: number): string {
   const d = new Date(ms);
   const p = (n: number) => String(n).padStart(2, "0");
   return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+
+/** 「调整显示」菜单项图标：与 LayoutEntryButton 同一款调音台图形
+ *  （入口收进页头「⋯」菜单后沿用，尺寸对齐菜单行 13px） */
+function AdjustDisplayIcon() {
+  return (
+    <svg
+      viewBox="0 0 16 16"
+      width="13"
+      height="13"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.4"
+      strokeLinecap="round"
+      aria-hidden="true"
+    >
+      <path d="M2 4h7M12 4h2M2 8h2M7 8h7M2 12h9M14 12h0" />
+      <circle cx="10.5" cy="4" r="1.3" />
+      <circle cx="5.5" cy="8" r="1.3" />
+      <circle cx="12.2" cy="12" r="1.3" />
+    </svg>
+  );
 }
 
 /**
@@ -331,16 +353,41 @@ export function OverviewPage() {
               },
             }))}
           />
+          {/* 刷新：「上次刷新 …」不再常驻页头，时间收进原生提示（title 与
+              aria-label 同值）；还没有成功取过数时只显示「刷新」 */}
           <button
             type="button"
             className="db-btn"
             onClick={reload}
             disabled={loading}
+            title={
+              lastUpdatedAt != null
+                ? t("dashboard.refreshLastAt", { time: timeText(lastUpdatedAt) })
+                : t("common.refresh")
+            }
+            aria-label={
+              lastUpdatedAt != null
+                ? t("dashboard.refreshLastAt", { time: timeText(lastUpdatedAt) })
+                : t("common.refresh")
+            }
           >
             <RefreshIcon className={`h-3.5 w-3.5 ${loading ? "db-spin" : ""}`} />
             {t("common.refresh")}
           </button>
-          <LayoutEntryButton onClick={editor.openEditor} />
+          {/* 低频操作收进页头最右「⋯」菜单（无边框图标按钮）：本页目前
+              只有「调整显示」一项，处理函数原样调 editor.openEditor；
+              命令面板里的同名入口不动 */}
+          <MoreActionsMenu
+            label={t("dashboard.moreActions")}
+            items={[
+              {
+                key: "adjust-display",
+                label: t("customize.entry"),
+                icon: <AdjustDisplayIcon />,
+                onSelect: editor.openEditor,
+              },
+            ]}
+          />
           {/* 远端合并中：本机数据已可见，其他设备贡献仍在后台合并（弱标记，
               不阻塞界面；仅「全部设备」范围可能出现） */}
           {effectiveScope === "all" && remotePending && (
@@ -348,11 +395,6 @@ export function OverviewPage() {
               {t("dashboard.overview.remoteMerging")}
             </span>
           )}
-          <span className="db-page__updated num">
-            {lastUpdatedAt != null
-              ? t("dashboard.overview.lastUpdated", { time: timeText(lastUpdatedAt) })
-              : ""}
-          </span>
         </div>
       </header>
 

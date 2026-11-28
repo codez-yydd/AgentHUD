@@ -731,24 +731,29 @@ export function SessionsPage() {
             value={String(windowHours)}
             onChange={(value) => setWindowHours(Number(value))}
           />
+          {/* 刷新：「刷新于 …」不再常驻页头，时间收进原生提示（title 与
+              aria-label 同值）；还没有成功取过数时只显示「刷新」 */}
           <button
             type="button"
             className="db-btn"
             onClick={reload}
             disabled={loading}
+            title={
+              lastUpdatedAt != null
+                ? t("dashboard.refreshLastAt", { time: timeText(lastUpdatedAt) })
+                : t("dashboard.sessions.refresh")
+            }
+            aria-label={
+              lastUpdatedAt != null
+                ? t("dashboard.refreshLastAt", { time: timeText(lastUpdatedAt) })
+                : t("dashboard.sessions.refresh")
+            }
           >
             <RefreshIcon
               className={`h-3.5 w-3.5 ${loading || refreshing ? "db-spin" : ""}`}
             />
             {t("dashboard.sessions.refresh")}
           </button>
-          <span className="db-page__updated num">
-            {lastUpdatedAt != null
-              ? t("dashboard.sessions.lastUpdated", {
-                  time: timeText(lastUpdatedAt),
-                })
-              : ""}
-          </span>
         </div>
       </header>
 

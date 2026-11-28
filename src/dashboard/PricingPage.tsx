@@ -54,6 +54,7 @@ import { canonicalModelId, lookupPrice } from "../modelName";
 import { AlertBanner } from "../layout";
 import { useI18n } from "../i18n";
 import { Card, PageTitleWithDesc, Skeleton } from "./primitives";
+import { MoreActionsMenu } from "./MoreActionsMenu";
 import { useCurrencyPref } from "./settings/currencyPref";
 import { DiffPanel } from "./pricing/DiffPanel";
 import { PriceTable } from "./pricing/PriceTable";
@@ -70,6 +71,46 @@ import {
  * 提到模块级（同一窗口会话内存活），组件挂载时从这里初始化、每次变更写回。
  */
 let pricingDraftStore: Record<string, string> = {};
+
+/** 「检查价格更新」菜单项图标（放大镜，对齐已认可原型） */
+function CheckUpdatesIcon() {
+  return (
+    <svg
+      viewBox="0 0 16 16"
+      width="13"
+      height="13"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.4"
+      strokeLinecap="round"
+      aria-hidden="true"
+    >
+      <circle cx="7.2" cy="7.2" r="4.3" />
+      <path d="M10.5 10.5L13.5 13.5" />
+    </svg>
+  );
+}
+
+/** 「从 models.dev 同步」菜单项图标（双向循环箭头，对齐已认可原型） */
+function ModelsdevSyncIcon() {
+  return (
+    <svg
+      viewBox="0 0 16 16"
+      width="13"
+      height="13"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.4"
+      strokeLinecap="round"
+      aria-hidden="true"
+    >
+      <path d="M3 6.4a5.3 5.3 0 0 1 9.2-1.6" />
+      <path d="M12.6 2.2v2.9h-2.9" />
+      <path d="M13 9.6a5.3 5.3 0 0 1-9.2 1.6" />
+      <path d="M3.4 13.8v-2.9h2.9" />
+    </svg>
+  );
+}
 
 export function PricingPage() {
   const { t } = useI18n();
@@ -599,60 +640,43 @@ export function PricingPage() {
       <header className="db-page__header">
         <PageTitleWithDesc title={t("dashboard.pricing")} desc={t("dashboard.pricing.desc")} />
         <div className="db-page__actions">
-          <div
-            className="db-seg"
-            role="group"
-            aria-label={t("dashboard.pricing.currencyLabel")}
-          >
-            {(["cny", "usd"] as Currency[]).map((code) => (
-              <button
-                key={code}
-                type="button"
-                onClick={() => handleCurrencyChange(code)}
-                className={`db-seg__btn ${
-                  currency === code ? "db-seg__btn--active" : ""
-                }`}
-                aria-pressed={currency === code}
-              >
-                {code === "cny"
-                  ? t("dashboard.pricing.cny")
-                  : t("dashboard.pricing.usd")}
-              </button>
-            ))}
-          </div>
-          {/* 临时口径标注：本页的 ¥/$ 切换不回写全局币种（全局币种从属语言） */}
-          <span
-            className="db-pricing__viewonly"
-            title={t("dashboard.pricing.currencyViewOnlyHint")}
-          >
-            {t("dashboard.pricing.currencyViewOnly")}
-          </span>
-          <button
-            type="button"
-            className="db-btn db-btn--badge"
-            onClick={runDiff}
-          >
-            {t("dashboard.pricing.checkUpdates")}
-            {/* 红点只对内置表来源展示：models.dev 的差异数在差异卡内呈现 */}
-            {diffSource === "builtin" && updateCount > 0 && (
-              <span className="db-dot">{updateCount}</span>
-            )}
-          </button>
-          <button
-            type="button"
-            className="db-btn"
-            onClick={runModelsdevSync}
-            disabled={syncing}
-          >
-            {syncing
-              ? t("dashboard.pricing.syncing")
-              : t("dashboard.pricing.syncModelsdev")}
-          </button>
+          {/* 低频操作收进页头最右「⋯」菜单：检查价格更新 / models.dev 同步
+              （处理函数原样调 runDiff / runModelsdevSync，同步中置灰）。
+              差异红点（.db-dot，含数字）挪到 ⋯ 右上角，展示条件不变
+              （只对内置表来源展示；models.dev 的差异数在差异卡内呈现） */}
+          <MoreActionsMenu
+            label={t("dashboard.moreActions")}
+            items={[
+              {
+                key: "check-updates",
+                label: t("dashboard.pricing.checkUpdates"),
+                icon: <CheckUpdatesIcon />,
+                onSelect: runDiff,
+              },
+              {
+                key: "sync-modelsdev",
+                label: syncing
+                  ? t("dashboard.pricing.syncing")
+                  : t("dashboard.pricing.syncModelsdev"),
+                icon: <ModelsdevSyncIcon />,
+                onSelect: runModelsdevSync,
+                disabled: syncing,
+              },
+            ]}
+            badge={
+              diffSource === "builtin" && updateCount > 0 ? (
+                <span className="db-dot">{updateCount}</span>
+              ) : null
+            }
+          />
+          {/* 未保存改动提示（有未保存改动时才出现）：弱化成灰字，位置在
+              「保存」左侧——页头只剩「⋯ + 保存」后仍要一眼可见 */}
           {dirty && (
             <span className="db-pricing__dirty">
               {t("dashboard.pricing.dirtyHint", { count: dirtyCount })}
             </span>
           )}
+          {/* 页头里唯一的实心主按钮（视觉第一级） */}
           <button
             type="button"
             className={`db-btn db-btn--primary ${dirty ? "db-btn--dirty" : ""}`}
@@ -670,7 +694,8 @@ export function PricingPage() {
         </div>
       </header>
 
-      {/* 口径行：单位与汇率（可手动刷新）+ 差异检查结论 + 当前模型数 */}
+      {/* 口径行：单位与汇率（可手动刷新）+ 差异检查结论 + 当前模型数；
+          右侧是币种口径控件（¥/$ 分段 + 「仅本页」，从页头挪来） */}
       <div className="db-pricing__meta">
         <span>{t("dashboard.pricing.unitHint", { rate: fxRate })}</span>
         <button
@@ -706,6 +731,38 @@ export function PricingPage() {
         )}
         <span className="db-pricing__count num">
           {t("dashboard.pricing.count", { n: rows.length })}
+        </span>
+        {/* 币种口径控件：¥/$ 分段（24px 紧凑档）+ 「仅本页」标注，按已认可
+            原型挪到说明行右侧（页头只留 ⋯ + 保存）；本页切换不回写全局币种 */}
+        <span className="hdr-meta-right">
+          <div
+            className="db-seg"
+            role="group"
+            aria-label={t("dashboard.pricing.currencyLabel")}
+          >
+            {(["cny", "usd"] as Currency[]).map((code) => (
+              <button
+                key={code}
+                type="button"
+                onClick={() => handleCurrencyChange(code)}
+                className={`db-seg__btn ${
+                  currency === code ? "db-seg__btn--active" : ""
+                }`}
+                aria-pressed={currency === code}
+              >
+                {code === "cny"
+                  ? t("dashboard.pricing.cny")
+                  : t("dashboard.pricing.usd")}
+              </button>
+            ))}
+          </div>
+          {/* 临时口径标注：本页的 ¥/$ 切换不回写全局币种（全局币种从属语言） */}
+          <span
+            className="db-pricing__viewonly"
+            title={t("dashboard.pricing.currencyViewOnlyHint")}
+          >
+            {t("dashboard.pricing.currencyViewOnly")}
+          </span>
         </span>
       </div>
 
@@ -810,7 +867,12 @@ export function PricingPage() {
             aria-expanded={hiddenOpen}
           >
             {hiddenOpen ? "▾" : "▸"}{" "}
-            {t("dashboard.pricing.hiddenCount", { count: hiddenList.length })}
+            {t(
+              hiddenList.length === 1
+                ? "dashboard.pricing.hiddenCountOne"
+                : "dashboard.pricing.hiddenCount",
+              { count: hiddenList.length }
+            )}
           </button>
           {hiddenOpen && (
             <ul className="db-hiddenlist">

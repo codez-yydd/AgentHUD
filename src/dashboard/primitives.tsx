@@ -40,6 +40,7 @@ export function useDarkTheme(): boolean {
 export function Card({
   title,
   sub,
+  hint,
   action,
   children,
   className = "",
@@ -50,6 +51,8 @@ export function Card({
 }: {
   title?: string;
   sub?: string;
+  /** 标题旁说明问号的文案（原生 title + aria-label；复用页头问号样式） */
+  hint?: string;
   action?: ReactNode;
   children: ReactNode | ((ctx: CardBodyContext) => ReactNode);
   className?: string;
@@ -65,6 +68,16 @@ export function Card({
       <header className="db-card__head">
         <div className="db-card__headline">
           {title && <h2 className="db-card__title">{title}</h2>}
+          {hint && (
+            <button
+              type="button"
+              className="db-page__help"
+              title={hint}
+              aria-label={hint}
+            >
+              ?
+            </button>
+          )}
           {sub && <span className="db-card__sub">{sub}</span>}
         </div>
         <div className="db-card__action">

@@ -48,6 +48,8 @@ import { AlertBanner } from "../layout";
 import { FontSizeControl } from "../FontSizeControl";
 import {
   FONT_CHANGED_EVENT,
+  FONT_MAX_PX,
+  FONT_MIN_PX,
   commitDashboardFontLink,
   commitDashboardFontPx,
   loadDashboardFontLink,
@@ -248,6 +250,13 @@ export function SettingsPage({
     });
   }
 
+  // 字号行标题问号的提示：可调范围 + 逻辑像素解释（控件底部的说明行
+  // 在主窗口隐藏，见 dashboard.css 的 .db-set-row--font 段）
+  const fontRangeHint = `${t("font.range", {
+    min: FONT_MIN_PX,
+    max: FONT_MAX_PX,
+  })} · ${t("font.logicalPxHint")}`;
+
   return (
     <div className="db-page db-set-page">
       <header className="db-page__header">
@@ -286,10 +295,21 @@ export function SettingsPage({
         </section>
 
         {/* ③ 字号：主窗口独立基准字号（默认 13px），可切换为跟随悬浮面板。
-            旧版面板的整体缩放档位只迁移到面板，不改变主窗口既有观感 */}
+            旧版面板的整体缩放档位只迁移到面板，不改变主窗口既有观感；
+            可调范围与逻辑像素说明收进标题旁问号（Font 底部说明行主窗口隐藏） */}
         <section className="db-set-row db-set-row--font">
           <div className="db-set-row__text">
-            <h2 className="db-set-row__title">{t("font.dashboardTitle")}</h2>
+            <h2 className="db-set-row__title">
+              {t("font.dashboardTitle")}
+              <button
+                type="button"
+                className="db-page__help"
+                title={fontRangeHint}
+                aria-label={fontRangeHint}
+              >
+                ?
+              </button>
+            </h2>
             <p className="db-set-row__desc">{t("font.dashboardHint")}</p>
           </div>
           <div className="db-set-font">

@@ -12,6 +12,14 @@
  *    不置 loading——刷新按钮不转圈、表格与指标不压暗、不闪骨架；失败也不
  *    改写当前视图（保留上次成功的数据与「上次刷新」时刻），避免后台的偶发
  *    失败把用户正在看的表格清空成错误态（手动刷新仍是完整语义）；
+ *  - 静默刷新**不叠加请求**：上一笔明细还在途中时，到点的静默轮直接跳过
+ *    （rowsInFlightRef 守卫）——「实时」档 1 秒一轮，查询一旦慢过 1 秒，
+ *    叠加发射会让每轮结果都被下一轮取代，表格反而不更新；跳过只作用于
+ *    silent 轮（手动刷新永远照发，reqId 守卫保证只认最新结果），且守卫在
+ *    成功 / 失败两条路径都会复位，失败后下一轮照常发起，不会卡死；
+ *  - reload 还支持 rowsOnly（true = 只重取明细、不重取模型清单）：「实时」
+ *    档每秒一轮静默刷新时清单不再陪跑（清单很少变，每秒查一次纯属浪费），
+ *    手动刷新与其它档位不带该标记，行为不变；
  *  - 未安装 / 未用过来源由后端按 0 条返回，这里静默（total 0 → 页面空态），
  *    只有真正的错误才进 error；
  *  - 模型清单与明细分成两个请求：清单只依赖「来源 + 时间范围」，翻页不重取；
@@ -94,8 +102,10 @@ export interface LogsDataState {
   /** 当前「来源 + 范围」的模型清单；尚未取到 / 出错时为 null */
   models: RequestLogModelCount[] | null;
   /** 重取明细 + 清单（不做模块级缓存）。silent = true 走静默刷新：不置
-   *  loading、失败不改写当前视图，供页面的自动刷新定时器使用 */
-  reload: (options?: { silent?: boolean }) => void;
+   *  loading、失败不改写当前视图，供页面的自动刷新定时器使用；静默轮在
+   *  上一笔明细还在途中时跳过（不叠加请求）；rowsOnly = true 只重取明细、
+   *  不重取清单（「实时」档专用，手动刷新与其它档位不带该标记） */
+  reload: (options?: { silent?: boolean; rowsOnly?: boolean }) => void;
 }
 
 /** 错误信息截断（与 useOverviewData.shortError 同款：后端错误可能是长中文串） */
@@ -129,9 +139,16 @@ export function useLogsData({
     list: RequestLogModelCount[];
   } | null>(null);
   const [nonce, setNonce] = useState(0);
+  /** 清单独立的触发计数：reload 带 rowsOnly 时不递增（清单不陪跑实时轮），
+   *  筛选变化仍直接命中下方 modelsKey 依赖照常重取 */
+  const [modelsNonce, setModelsNonce] = useState(0);
   // 明细 / 清单各自的请求序号（互不干扰：清单慢于明细时不该丢弃清单结果）
   const rowsReqRef = useRef(0);
   const modelsReqRef = useRef(0);
+  /** 明细请求是否在途（不叠加请求守卫）：发射前置位，只有「仍是最新请求」
+   *  的成功 / 失败回调复位——被更新的请求取代时不复位，由最新请求收尾；
+   *  失败同样复位，下一轮静默刷新照常发起，不会卡死 */
+  const rowsInFlightRef = useRef(false);
   // 下一次请求是否静默（reload({silent:true}) 置位）：由明细 effect 开头消费并
   // 复位；清单 effect 没有 loading 语义，不受该标记影响
   const silentRef = useRef(false);
@@ -148,6 +165,7 @@ export function useLogsData({
     if (!ready) return;
     const reqId = ++rowsReqRef.current;
     const isCurrent = () => reqId === rowsReqRef.current;
+    rowsInFlightRef.current = true;
     const { fromMs, toMs } = custom ?? rangeWindow(range, Date.now());
     // 本次请求对应的视图键（表里这批行生效时的筛选 + 页码）：只在请求成功、
     // 结果未被更新的请求取代时随 rows 一起发布；失败 / 被取代不改写，保持
@@ -172,6 +190,7 @@ export function useLogsData({
     })
       .then((result) => {
         if (!isCurrent()) return;
+        rowsInFlightRef.current = false;
         setRows(result.rows);
         setRowsViewKey(key);
         setRowsPage(page);
@@ -186,6 +205,7 @@ export function useLogsData({
         if (!isCurrent()) return;
         // 本次已是最新请求：先把 loading 收掉（静默刷新未置位，这里幂等；
         // 若上一笔被本笔取代且仍挂着 loading，也不会把转圈态留在界面上）
+        rowsInFlightRef.current = false;
         setLoading(false);
         // 静默刷新失败：保留当前视图（上次成功的数据），由下一次定时或用户
         // 手动刷新再试，不因后台偶发失败清空表格 / 闪错误态
@@ -221,11 +241,16 @@ export function useLogsData({
       .catch(() => {
         /* 静默：清单失败不影响明细展示 */
       });
-  }, [range, source, scope, ready, modelsKey, nonce]);
+  }, [range, source, scope, ready, modelsKey, modelsNonce]);
 
-  const reload = useCallback((options?: { silent?: boolean }) => {
+  const reload = useCallback((options?: { silent?: boolean; rowsOnly?: boolean }) => {
+    // 静默轮不叠加：上一笔明细还在途中时直接跳过本轮（定时器下一秒再试；
+    // 手动刷新不受该守卫限制，永远照发）。守卫在成功 / 失败回调里都会复位
+    if (options?.silent === true && rowsInFlightRef.current) return;
     silentRef.current = options?.silent === true;
     setNonce((n) => n + 1);
+    // rowsOnly：清单不陪跑（「实时」档每秒一轮，清单很少变，每秒重取纯浪费）
+    if (options?.rowsOnly !== true) setModelsNonce((n) => n + 1);
   }, []);
 
   return {
