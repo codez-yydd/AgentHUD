@@ -1778,7 +1778,7 @@ export function AgentAssetsPage() {
                       </button>
                       <button
                         type="button"
-                        className="db-btn db-btn--sm db-btn--primary"
+                        className="db-btn db-btn--sm db-btn--accent"
                         disabled={!canArchive || anyBusy || !serverSupported}
                         title={uploadBlockedReason ?? undefined}
                         onClick={() =>

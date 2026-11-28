@@ -114,6 +114,23 @@
   --db-accent-emerald: #059669;
   --db-accent-violet: #6d3ee0;
   --db-accent-amber: #b45309;
+  /* 额度状态三档语义色（额度驾驶舱 / 周额度对比共用）：正常 = 品牌色
+     （条与弧的中性档），偏低 = 琥珀（与 --db-accent-amber 同源），告急 =
+     错误红（沿请求日志失败徽标的 rose）。风险档位由 quota/model.ts 的
+     riskOf 判定（阈值不动），颜色只在这里亮暗各一套 */
+  --db-quota-ok: var(--db-accent);
+  --db-quota-warn: #b45309;
+  --db-quota-danger: #e11d48;
+  /* 图表多系列分类色（周额度趋势折线 / 用量报告柱状图共用）：按系列顺序
+     取，冷暖交替排，饱和度比旧色阶低一档，白底上两两可分且不单靠红绿
+     区分；暗色整体提亮一档（见 .dark 段） */
+  --db-series-0: #5b6cff;
+  --db-series-1: #e0913a;
+  --db-series-2: #d9605a;
+  --db-series-3: #35a7a0;
+  --db-series-4: #4fae74;
+  --db-series-5: #b470c8;
+  --db-series-other: #8a8a92;
   /* 热力图色阶（0 = 无数据 / 空位中性底，1..4 品牌系五档渐进）。
      暗色两套变量见 .dark 段 */
   --db-heat-0: #f4f4f6;
@@ -583,6 +600,16 @@ html.dark .db-shell-lights--blur .db-shell-light {
   border-top: 1px solid var(--db-shell-border);
 }
 
+/* 两组切换之间的竖向发丝线：把主题（月亮 / 太阳）和语言（EN / 中）两个
+   按钮分开读，不再像挨在一起的一个控件 */
+.db-sidebar__divider {
+  flex: none;
+  width: 1px;
+  height: 16px;
+  margin: 0 2px;
+  background: var(--db-shell-border);
+}
+
 /* 图标按钮（LanguageToggle / ThemeToggle 经 className 复用）：
    30px 圆角块 + 透明描边，hover 时浮出一层浅灰底 */
 .db-icon-btn {
@@ -600,6 +627,12 @@ html.dark .db-shell-lights--blur .db-shell-light {
   color: var(--db-text-dim);
   cursor: pointer;
   transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+/* 侧栏底部这一组收成 28px：与 16px 发丝线相称，悬停浅底与全局图标按钮同款 */
+.db-sidebar__footer .db-icon-btn {
+  width: 28px;
+  height: 28px;
 }
 
 .db-icon-btn:hover {
@@ -1045,10 +1078,11 @@ html.dark .db-shell-lights--blur .db-shell-light {
   border-color: var(--db-cal-accent-border-soft);
 }
 
-/* 激活态：主色描边 + ring（与日历的选点目标联动） */
+/* 激活态：主色描边 + ring（与日历的选点目标联动）。底色与静默态统一为
+   同一种——原先激活时翻成弹层白底，两个字段卡在弹层里呈现两种底色；
+   现在只靠描边与光环区分选中目标 */
 .db-range-field--active {
   border-color: var(--db-cal-accent-border);
-  background: var(--db-pop-bg);
   box-shadow: 0 0 0 3px var(--db-cal-accent-ring);
 }
 
@@ -2363,21 +2397,14 @@ html.dark .db-shell-lights--blur .db-shell-light {
   max-width: 340px;
 }
 
-/* 单个额度系列块：三行紧凑结构（块头 / 进度条 / 重置与 5 小时） */
+/* 单个额度系列块：三行紧凑结构（块头 / 进度条 / 重置与 5 小时）。
+   白底发丝描边的普通卡片材质（不再灰底块、不再彩色悬停位移） */
 .db-qcell {
   min-width: 0;
-  padding: 12px 13px 11px;
+  padding: 12px 14px 11px;
   border: 1px solid var(--db-card-border);
   border-radius: 12px;
-  background: var(--db-control-bg);
-  transition: background 0.16s ease, border-color 0.16s ease,
-    transform 0.16s ease;
-}
-
-.db-qcell:hover {
-  background: var(--db-control-bg-hover);
-  border-color: color-mix(in srgb, var(--db-accent-sky) 26%, transparent);
-  transform: translateY(-1px);
+  background: var(--db-card-bg);
 }
 
 /* 额度块加载骨架：与真实额度块同轮廓（约 78px 高、12px 圆角），
@@ -2398,7 +2425,7 @@ html.dark .db-shell-lights--blur .db-shell-light {
 .db-qcell__label {
   flex: 1;
   min-width: 0;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 500;
   color: var(--db-text);
   white-space: nowrap;
@@ -2408,7 +2435,7 @@ html.dark .db-shell-lights--blur .db-shell-light {
 
 .db-qcell__kind {
   flex: none;
-  font-size: 10px;
+  font-size: 11px;
   color: var(--db-text-dim);
 }
 
@@ -2419,9 +2446,10 @@ html.dark .db-shell-lights--blur .db-shell-light {
   flex: none;
 }
 
+/* 剩余大数：22px / 600，颜色按状态档位（组件内联 quotaTone） */
 .db-qcell__pct {
-  font-size: 20px;
-  font-weight: 700;
+  font-size: 22px;
+  font-weight: 600;
   line-height: 1;
   letter-spacing: -0.02em;
 }
@@ -2440,13 +2468,15 @@ html.dark .db-shell-lights--blur .db-shell-light {
   transition: width 0.4s ease;
 }
 
+/* 底部「重置时间 / N 小时 剩 X%」：12px 第二档文字色（剩余百分数自身
+   按状态档位着色，组件内联） */
 .db-qcell__foot {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
   gap: 8px;
   margin-top: 8px;
-  font-size: 10px;
+  font-size: 12px;
   color: var(--db-text-dim);
 }
 
@@ -2479,14 +2509,20 @@ html.dark .db-shell-lights--blur .db-shell-light {
   overflow: visible;
 }
 
+/* 横向网格线：实线浅灰（与总览页 .db-chart 同一规格，亮暗两档） */
 .db-linechart__grid {
-  stroke: var(--db-row-border);
+  stroke: #f0f0f2;
   stroke-width: 1;
 }
 
+.dark .db-linechart__grid {
+  stroke: rgba(255, 255, 255, 0.12);
+}
+
+/* 轴标签：11px 第三档文字色（与总览页图表同档） */
 .db-linechart__label {
-  font-size: 10px;
-  fill: var(--db-text-dim);
+  font-size: 11px;
+  fill: var(--db-text-3);
 }
 
 .db-linechart__hover-line {
@@ -2522,7 +2558,7 @@ html.dark .db-shell-lights--blur .db-shell-light {
   font-size: 10px;
   color: var(--db-text-dim);
   cursor: pointer;
-  transition: background 0.15s ease, opacity 0.15s ease;
+  transition: background 0.15s ease, opacity 0.15s ease, color 0.15s ease;
 }
 
 .db-legend__btn:hover {
@@ -2530,8 +2566,38 @@ html.dark .db-shell-lights--blur .db-shell-light {
   color: var(--db-text);
 }
 
+/* 显隐关闭态（点击图例项隐藏系列后）：整项降到 0.38 提示「已隐藏」 */
 .db-legend__btn--off {
   opacity: 0.38;
+}
+
+/* 键盘聚焦图例项：品牌焦点环；聚焦同时临时聚焦对应系列（悬停聚焦的
+   键盘路径，见 QuotaTrendCard 的 onFocus/onBlur） */
+.db-legend__btn:focus-visible {
+  outline: none;
+  box-shadow: var(--db-focus-ring);
+}
+
+/* 周额度趋势卡（db-card--legend-row）：图例固定独占卡头第二行、左对齐
+   （900×640 窄窗档对全部卡头的 flex-wrap 排版推广到本卡的所有宽度）。
+   若图例与标题同行，隐藏系列后出现「全部显示」会把整个图例挤到下一行、
+   卡头高度跳变，刚点击的图例项从鼠标下移走；固定独占一行后隐藏 / 恢复
+   都不再改变卡头高度。放开图例容器的 520px 限宽，系列多时仍在本行内换行 */
+.db-card--legend-row .db-card__head {
+  flex-wrap: wrap;
+  row-gap: 2px;
+}
+
+.db-card--legend-row .db-card__action {
+  flex: 1 0 100%;
+  /* 窄卡断点给所有卡头 action 的 flex-end 只适用于「与标题同行」的排法；
+     本卡图例固定独占第二行，要与其他卡在窄窗下也保持左对齐 */
+  justify-content: flex-start;
+}
+
+.db-card--legend-row .db-card__action .db-legend--wrap {
+  justify-content: flex-start;
+  max-width: none;
 }
 
 .db-legend__btn-label {
@@ -2541,6 +2607,7 @@ html.dark .db-shell-lights--blur .db-shell-light {
   text-overflow: ellipsis;
 }
 
+/* 「显示全部」重置：隐藏任一系列后出现在图例尾部，一键恢复全显 */
 .db-legend__reset {
   border: none;
   background: transparent;
@@ -2551,17 +2618,25 @@ html.dark .db-shell-lights--blur .db-shell-light {
   padding: 2px 4px;
 }
 
-/* ---- Token 对比 ---- */
+/* ---- Token 对比 ----
+   行间距 / 对齐按表格规格：行间发丝线、首尾行不画、行内 40px 高；堆叠条
+   纯色（本机 = 品牌色，其他设备 = 同色系淡一档），不再用渐变 */
 .db-tokencmp {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 0;
 }
 
 .db-tokencmp__row {
   display: flex;
   align-items: center;
   gap: 14px;
+  min-height: 40px;
+  padding: 6px 0;
+}
+
+.db-tokencmp__row + .db-tokencmp__row {
+  border-top: 1px solid var(--db-row-border);
 }
 
 .db-tokencmp__agent {
@@ -2587,12 +2662,22 @@ html.dark .db-shell-lights--blur .db-shell-light {
   transition: width 0.4s ease;
 }
 
+/* 本机段：品牌色纯色；其他设备段：同色系淡一档（与卡底混合） */
 .db-tokencmp__seg--local {
-  background: linear-gradient(180deg, #38bdf8 0%, #0284c7 100%);
+  background: var(--db-accent);
 }
 
 .db-tokencmp__seg--remote {
-  background: linear-gradient(180deg, #a78bfa 0%, #7c3aed 100%);
+  background: color-mix(in srgb, var(--db-accent) 42%, var(--db-card-bg));
+}
+
+/* 图例圆点与分段条同色（专用类，不与总览页趋势图例共用） */
+.db-swatch.db-tokencmp__swatch--local {
+  background: var(--db-accent);
+}
+
+.db-swatch.db-tokencmp__swatch--remote {
+  background: color-mix(in srgb, var(--db-accent) 42%, var(--db-card-bg));
 }
 
 /* 数值区：总量/请求数一行、本机|其他设备明细独立第二行。宽上限 300px（不再
@@ -2675,10 +2760,26 @@ html.dark .db-shell-lights--blur .db-shell-light {
   position: relative;
 }
 
-/* 差异数红点（「检查价格更新」按钮右上） */
+/* 强调描边变体：与描边按钮同材质，仅文字品牌色、悬停描边随品牌色——
+   用于列表行内的主操作（Agent 与 Skill 页「上传」），一屏多行时不再
+   重复出现实心主按钮色块（实心 --primary 留给一屏唯一的前进动作） */
+.db-btn--accent:not(:disabled) {
+  color: var(--db-active-text);
+}
+
+.db-btn--accent:hover:not(:disabled) {
+  border-color: var(--db-active-text);
+}
+
+.db-btn--accent:focus-visible {
+  border-color: var(--db-cal-accent-border);
+}
+
+/* 差异数红点（「检查价格更新」按钮右上）：往按钮内侧收一档（top -4px），
+   页头里按钮垂直居中时角标顶边距页头顶边仍有 6px，不再快贴到窗顶 */
 .db-dot {
   position: absolute;
-  top: -6px;
+  top: -4px;
   right: -6px;
   min-width: 16px;
   height: 16px;
@@ -2694,11 +2795,14 @@ html.dark .db-shell-lights--blur .db-shell-light {
 }
 
 /* 文本型小按钮（刷新汇率 / 展开隐藏名单） */
+/* 行内文字按钮（切换 / 重命名 / 合并这类）：12px / 500 品牌色；
+   破坏性的（删除）默认中性色、悬停变红（.db-acc-del / .db-sync-del） */
 .db-linkbtn {
   border: none;
   background: transparent;
   font-family: inherit;
-  font-size: 11px;
+  font-size: 12px;
+  font-weight: 500;
   color: var(--db-active-text);
   cursor: pointer;
   padding: 0;
@@ -3323,21 +3427,22 @@ html.dark .db-shell-lights--blur .db-shell-light {
 }
 
 /* ---- 明细表：10 列按 1100 默认窗口的内容区（约 810px）排布——
-   时间 172 + 来源 72 + 模型(min 75) + 输入 60 + 输出 60 + 缓存 92 + 花费 66 +
-   耗时 60 + 首字 58 + 速度 66 ≈ 781px，1100 默认窗无横向滚动；单元格水平
-   内边距 8px（十列空间紧张，通用的 12px 会重新溢出）。min-width 放开靠
-   auto 布局按内容自适应；更窄的窗口 / 超长数值（跨年时间、十亿级 token）
-   由 .db-table-wrap 横向滚动兜底，绝不把数值挤成两行 ---- */
+   时间 + 来源 + 模型(min 75) + 输入 + 输出 + 缓存 + 花费 + 耗时 + 首字 +
+   速度 ≈ 781px（声明宽，实际按内容自适应），1100 默认窗无横向滚动。
+   单元格水平内边距 7px（十列空间紧张，通用的 12px 会重新溢出；英文档的
+   表头与有界标签更宽，7px 让 auto 布局的 min-content 总和也收在 810 内）。
+   min-width 放开靠 auto 布局按内容自适应；更窄的窗口 / 超长数值（跨年
+   时间、十亿级 token）由 .db-table-wrap 横向滚动兜底，绝不把数值挤成两行 */
 .db-logs-table {
   min-width: 0;
 }
 
-/* 十列内边距收 8px：首尾列贴卡内边距的对齐规则（.db-card__body 内
+/* 十列内边距收 7px：首尾列贴卡内边距的对齐规则（.db-card__body 内
    first/last-child）特异性更高，仍然生效 */
 .db-logs-table th,
 .db-logs-table td {
-  padding-left: 8px;
-  padding-right: 8px;
+  padding-left: 7px;
+  padding-right: 7px;
 }
 
 /* 时间列：宽度覆盖「非今天时间（MM-DD HH:mm，79.2px）+ 最宽的有界标签
@@ -3612,7 +3717,9 @@ html.dark .db-shell-lights--blur .db-shell-light {
 }
 
 /* 窄窗：六格 3 列网格均分（900 最小窗 3+3 两行，无孤格）；缝隙由容器
-   gap 1px + 底色透出（格子自带卡底色盖住其余缝隙） */
+   gap 1px + 底色透出（格子自带卡底色盖住其余缝隙）。
+   五格变体（--five，速度页）：折两行时 3+2 会在第二行留一个空格——改用
+   6 列基准网格，前 3 格各跨 2 列、后 2 格各跨 3 列，两行都铺满 */
 @media (max-width: 980px) {
   .db-logs-metrics {
     display: grid;
@@ -3627,6 +3734,18 @@ html.dark .db-shell-lights--blur .db-shell-light {
 
   .db-logs-metric + .db-logs-metric {
     border-left: none;
+  }
+
+  .db-logs-metrics--five {
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+  }
+
+  .db-logs-metrics--five .db-logs-metric:nth-child(-n + 3) {
+    grid-column: span 2;
+  }
+
+  .db-logs-metrics--five .db-logs-metric:nth-child(n + 4) {
+    grid-column: span 3;
   }
 }
 
@@ -3865,7 +3984,8 @@ html.dark .db-shell-lights--blur .db-shell-light {
 .db-page__actions button[class*="text-[11px]"],
 .db-logs-filters button[class*="text-[11px]"],
 .db-sessions__filters button[class*="text-[11px]"],
-.db-card__action button[class*="text-[11px]"] {
+.db-card__action button[class*="text-[11px]"],
+.db-report-embed > .flex-1 > div button[class*="text-[11px]"] {
   height: 32px;
   border-radius: 8px;
   border-color: var(--db-control-border);
@@ -3878,7 +3998,8 @@ html.dark .db-shell-lights--blur .db-shell-light {
 .db-page__actions button[class*="text-[11px]"]:hover:not(:disabled),
 .db-logs-filters button[class*="text-[11px]"]:hover:not(:disabled),
 .db-sessions__filters button[class*="text-[11px]"]:hover:not(:disabled),
-.db-card__action button[class*="text-[11px]"]:hover:not(:disabled) {
+.db-card__action button[class*="text-[11px]"]:hover:not(:disabled),
+.db-report-embed > .flex-1 > div button[class*="text-[11px]"]:hover:not(:disabled) {
   background-color: var(--db-hover);
 }
 
@@ -3886,7 +4007,8 @@ html.dark .db-shell-lights--blur .db-shell-light {
 .db-page__actions button[class*="text-[11px]"] > span[class*="text-[10px]"],
 .db-logs-filters button[class*="text-[11px]"] > span[class*="text-[10px]"],
 .db-sessions__filters button[class*="text-[11px]"] > span[class*="text-[10px]"],
-.db-card__action button[class*="text-[11px]"] > span[class*="text-[10px]"] {
+.db-card__action button[class*="text-[11px]"] > span[class*="text-[10px]"],
+.db-report-embed > .flex-1 > div button[class*="text-[11px]"] > span[class*="text-[10px]"] {
   font-size: 12px;
   font-weight: 400;
   color: var(--db-text-dim);
@@ -3896,7 +4018,8 @@ html.dark .db-shell-lights--blur .db-shell-light {
 .db-page__actions button[class*="text-[11px]"] > span[class*="text-slate-900"],
 .db-logs-filters button[class*="text-[11px]"] > span[class*="text-slate-900"],
 .db-sessions__filters button[class*="text-[11px]"] > span[class*="text-slate-900"],
-.db-card__action button[class*="text-[11px]"] > span[class*="text-slate-900"] {
+.db-card__action button[class*="text-[11px]"] > span[class*="text-slate-900"],
+.db-report-embed > .flex-1 > div button[class*="text-[11px]"] > span[class*="text-slate-900"] {
   color: var(--db-text);
 }
 
@@ -4257,7 +4380,11 @@ html.dark .db-shell-lights--blur .db-shell-light {
   white-space: nowrap;
 }
 
-/* 删数据链接键（行内危险操作，hover 泛红） */
+/* 删数据链接键（行内危险操作）：默认中性、hover 泛红 */
+.db-sync-del {
+  color: var(--db-text-dim);
+}
+
 .db-sync-del:hover:not(:disabled) {
   color: #f43f5e;
 }
@@ -4463,10 +4590,11 @@ html.dark .db-shell-lights--blur .db-shell-light {
 }
 
 /* 卡片顶部说明（自动捕获提示 / 凭证一览安全说明） */
+/* 卡内说明段（卡头下的一两句解释）：12px 第二档、行高 1.6、与卡头 8px */
 .db-acc-hint {
-  margin: 0 0 12px;
-  font-size: 11.5px;
-  line-height: 1.65;
+  margin: 0 0 8px;
+  font-size: 12px;
+  line-height: 1.6;
   color: var(--db-text-dim);
 }
 
@@ -4529,6 +4657,11 @@ html.dark .db-shell-lights--blur .db-shell-light {
 
 .db-acc-accounts__ops .db-linkbtn {
   margin-left: 10px;
+}
+
+/* 行内删除键：默认中性（继承文字按钮的 12px/500），悬停才泛红 */
+.db-acc-del {
+  color: var(--db-text-dim);
 }
 
 .db-acc-del:hover:not(:disabled) {
@@ -4746,9 +4879,11 @@ html.dark .db-shell-lights--blur .db-shell-light {
  * ============================================================ */
 .dark {
   color-scheme: dark;
-  /* 面板玻璃底暗色值（与 index.css 的 --panel-bg 暗色一致）：供复用组件
-     （用量报告页的 ReportContent 工具行）取色，见 :root 段说明 */
-  --panel-bg: 15 23 42;
+  /* 面板玻璃底暗色值：供复用组件（用量报告页的 ReportContent 工具行）
+     取色，见 :root 段说明。不再沿用 index.css 的 slate-900 蓝调
+     （15 23 42）——主窗口暗色底是中性 #1b1b1e，蓝调会在报告页工具行
+     透出一条淡蓝色带，取应用底色同值 */
+  --panel-bg: 27 27 31;
   /* slate 反转：深档文字变浅；浅档文字/图形变中灰 */
   --color-slate-300: #475569;
   --color-slate-400: #64748b;
@@ -4846,6 +4981,18 @@ html.dark .db-shell-lights--blur .db-shell-light {
   --db-accent-emerald: #34d399;
   --db-accent-violet: #c0a8ff;
   --db-accent-amber: #fbbf24;
+  /* 额度状态三档语义色（暗色）：偏低 / 告急提亮一档保证深底可读 */
+  --db-quota-ok: var(--db-accent);
+  --db-quota-warn: #fbbf24;
+  --db-quota-danger: #fb7185;
+  /* 图表多系列分类色（暗色）：亮色档在深灰底上的提亮变体 */
+  --db-series-0: #8fa4ff;
+  --db-series-1: #f0b266;
+  --db-series-2: #ec8a84;
+  --db-series-3: #5cc6bf;
+  --db-series-4: #7cc998;
+  --db-series-5: #d39ce6;
+  --db-series-other: #9a9aa2;
   /* 热力色阶（暗色）：五档渐进（0 实底深灰、1..4 品牌系由暗到亮），4 档最亮 */
   --db-heat-0: #26262b;
   --db-heat-1: #3a3f66;
@@ -5015,37 +5162,19 @@ html.dark .db-shell-lights--blur .db-shell-light {
  * 额度驾驶舱页（QuotaPage）：控制台 / 额度仪表阵列 / 90 天趋势 / 重置序列
  * 前缀 db-qc-（quota cockpit）。
  *
- * 本段自成一体的两套视觉：
- * - 控制台（db-qc-console）：固定深色仪表台，亮暗主题下都是深底亮字，
- *   靠青色/品牌色描边与点阵底纹建立“驾驶舱”观感；颜色全部作用域在
- *   控制台内部的 --qc-* 变量里，不污染全站令牌。
- * - 仪表阵列 / 趋势 / 重置序列：沿用 --db-* 变量，亮暗主题自动翻转；
- *   深色卡片里的剩余色用 remainingAccentColor（提亮），亮色卡片用
- *   remainingTextColor（压暗），由组件内联 --qc-tone 下发。
+ * 视觉统一进 --db-* 令牌体系：控制台是白底（暗色卡片底色）发丝描边的
+ * 中性面板，仪表 / 重置序列 / 趋势卡与其它页面同一材质；带状态含义的
+ * 圆环、弧线、进度条、百分数、徽标一律走 --db-quota-ok / -warn / -danger
+ * 三档语义色（亮暗各一套，风险档位由 quota/model.ts 的 riskOf 判定），
+ * 来源识别色（品牌色）只出现在品牌图标与重置序列的来源圆点上。
  *
  * 布局：控制台通栏 → 工作区 [仪表阵列 + 右栏重置序列] / 通栏趋势。
  * ≤1080px 时工作区改单列，重置序列落到仪表阵列与趋势之间。
  * ============================================================ */
 
 .db-qc-page {
-  /* 风险语义色：亮色主题取深档（白底可读），暗色由 .dark 段提亮 */
-  --qc-ok: #047857;
-  --qc-warn: #b45309;
-  --qc-danger: #be123c;
-  --qc-ok-bg: rgba(4, 120, 87, 0.1);
-  --qc-warn-bg: rgba(180, 83, 9, 0.1);
-  --qc-danger-bg: rgba(190, 18, 60, 0.1);
   /* 页面骨架（内边距 / 页头贴顶）沿用 .db-page 默认，不再单独收紧 */
   gap: 16px;
-}
-
-.dark .db-qc-page {
-  --qc-ok: #34d399;
-  --qc-warn: #fbbf24;
-  --qc-danger: #fb7185;
-  --qc-ok-bg: rgba(52, 211, 153, 0.12);
-  --qc-warn-bg: rgba(251, 191, 36, 0.12);
-  --qc-danger-bg: rgba(251, 113, 133, 0.12);
 }
 
 /* 页头吸顶已由 .db-page__header 统一承担，本页不再做间距微调。 */
@@ -5121,241 +5250,217 @@ html.dark .db-shell-lights--blur .db-shell-light {
 }
 
 /* ============================================================
- * 驾驶舱控制台
+ * 驾驶舱控制台（中性面板）
  * ============================================================ */
 
+/* 控制台：白底（暗色卡片底色）发丝描边面板，与整页卡片同一材质——
+   无投影、无渐变、无水印、无顶部亮线。左右两组排在同一行（左 = 分段
+   圆环 + 文字块，右 = 三列态势读数），行宽放不下时右组整组换到左组
+   下方（仍分三列） */
 .db-qc-console {
-  position: relative;
-  isolation: isolate;
-  /* 页面是 flex 列且内容整体溢出滚动：overflow:hidden 的项会被 flex 压缩，
-     flex:none 保住控制台的完整高度（否则只剩边框） */
   flex: none;
-  overflow: hidden;
-  border: 1px solid rgba(56, 189, 248, 0.18);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 16px 32px;
+  padding: 20px;
+  border: 1px solid var(--db-card-border);
   border-radius: 12px;
-  color: #e2e8f0;
-  background:
-    radial-gradient(620px 240px at 10% -30%, rgba(14, 165, 233, 0.24), transparent 66%),
-    radial-gradient(520px 260px at 92% 130%, rgba(99, 102, 241, 0.2), transparent 70%),
-    linear-gradient(135deg, #0b1424 0%, #0f1c30 52%, #0a1626 100%);
-  box-shadow:
-    0 18px 42px rgba(2, 6, 23, 0.22),
-    inset 0 1px 0 rgba(148, 197, 255, 0.08);
-  /* 控制台内部令牌：不与全站 --db-* 混用，深底始终亮字 */
-  --qc-cyan: #22d3ee;
-  --qc-good: #34d399;
-  --qc-warn: #fbbf24;
-  --qc-bad: #fb7185;
-  --qc-ink: #f8fafc;
-  --qc-dim: rgba(226, 232, 240, 0.62);
-  --qc-line: rgba(148, 163, 184, 0.16);
+  background: var(--db-card-bg);
 }
 
-/* 点阵底纹（左上浓、右侧淡出）：控制台质感，不参与交互 */
-.db-qc-console::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  z-index: 0;
-  pointer-events: none;
-  background-image: radial-gradient(
-    rgba(148, 180, 220, 0.18) 1px,
-    transparent 1.2px
-  );
-  background-size: 22px 22px;
-  opacity: 0.32;
-  -webkit-mask-image: linear-gradient(110deg, #000 0%, transparent 64%);
-  mask-image: linear-gradient(110deg, #000 0%, transparent 64%);
-}
-
-/* 右侧巨大 90D 水印：远景刻度感，压在所有内容之下 */
-.db-qc-console::after {
-  content: "90D";
-  position: absolute;
-  right: 22px;
-  top: 8px;
-  z-index: 0;
-  pointer-events: none;
-  font-family: "SF Mono", "JetBrains Mono", ui-monospace, monospace;
-  font-size: 98px;
-  font-weight: 700;
-  line-height: 1;
-  letter-spacing: -0.06em;
-  color: rgba(148, 197, 255, 0.05);
-}
-
+/* 左侧一组：分段圆环 + 三行文字块 */
 .db-qc-hero {
-  position: relative;
-  z-index: 1;
   display: flex;
   align-items: center;
-  gap: 24px;
-  padding: 20px 24px;
-}
-
-/* 顶部一条青色扫描线（从左侧起，向右淡出） */
-.db-qc-hero::before {
-  content: "";
-  position: absolute;
-  left: 24px;
-  right: 24px;
-  top: 0;
-  height: 1px;
-  background: linear-gradient(
-    90deg,
-    rgba(34, 211, 238, 0.55),
-    transparent 62%
-  );
+  gap: 16px;
+  min-width: 0;
 }
 
 .db-qc-hero__copy {
   flex: 1;
   min-width: 0;
+  max-width: 520px;
 }
 
-.db-qc-eyebrow {
-  font-size: 9.5px;
-  font-weight: 700;
-  letter-spacing: 0.18em;
-  text-transform: uppercase;
-  color: rgba(125, 211, 252, 0.85);
-}
-
+/* 标题（如「4 个窗口告急」）：主文字色；风险状态由计数行的圆点色表达 */
 .db-qc-hero__status {
-  margin-top: 4px;
-  font-size: 22px;
-  font-weight: 700;
-  line-height: 1.2;
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 1.25;
   letter-spacing: -0.01em;
-  color: var(--qc-ink);
-}
-
-.db-qc-hero__status--healthy {
-  color: #a7f3d0;
-}
-
-.db-qc-hero__status--warning {
-  color: #fde68a;
-}
-
-.db-qc-hero__status--critical {
-  color: #fecdd3;
+  color: var(--db-text);
 }
 
 .db-qc-hero__sub {
-  max-width: 520px;
-  margin-top: 6px;
-  font-size: 11px;
+  margin-top: 4px;
+  font-size: 13px;
   line-height: 1.55;
-  color: var(--qc-dim);
+  color: var(--db-text-dim);
 }
 
-/* 风险分布图例：色点 + 文字 + 数量 */
+/* 状态计数行（● 正常 21 ● 偏低 5 ● 告急 4）：圆点三档语义色、数字 600 */
 .db-qc-legend {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 8px 16px;
-  margin-top: 12px;
+  gap: 4px 16px;
+  margin-top: 10px;
 }
 
 .db-qc-legend__item {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  font-size: 9.5px;
-  color: var(--qc-dim);
+  font-size: 13px;
+  color: var(--db-text-dim);
   white-space: nowrap;
 }
 
 .db-qc-legend__item--healthy {
-  --qc-dot: var(--qc-good);
+  --qc-dot: var(--db-quota-ok);
 }
 
 .db-qc-legend__item--warning {
-  --qc-dot: var(--qc-warn);
+  --qc-dot: var(--db-quota-warn);
 }
 
 .db-qc-legend__item--critical {
-  --qc-dot: var(--qc-bad);
+  --qc-dot: var(--db-quota-danger);
 }
 
 .db-qc-legend__dot {
-  width: 5px;
-  height: 5px;
+  width: 6px;
+  height: 6px;
   flex: none;
   border-radius: 50%;
   background: var(--qc-dot);
-  box-shadow: 0 0 6px color-mix(in srgb, var(--qc-dot) 55%, transparent);
 }
 
 .db-qc-legend__item b {
   margin-left: 1px;
-  font-size: 11px;
   font-weight: 600;
-  color: var(--qc-ink);
+  color: var(--db-text);
 }
 
-/* 三个态势读数：最紧窗口 / 待重置 / 数据覆盖 */
-.db-qc-console__stats {
+/* 分段圆环（CockpitDeck 的 SegmentRing）：72px / 线宽 6 / 整圈，
+   按「正常 → 偏低 → 告急」的窗口数量占比分段着色、段间约 2px 缺口
+   （缺口处露出中性轨道）；正中是平均剩余百分数（22px / 600 主文字色） */
+.db-qc-ring {
   position: relative;
-  z-index: 1;
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  border-top: 1px solid var(--qc-line);
-  background: rgba(8, 15, 28, 0.26);
+  place-items: center;
+  flex: none;
+}
+
+.db-qc-ring svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.db-qc-ring__track {
+  fill: none;
+  stroke: var(--db-track);
+  stroke-width: 6;
+}
+
+.db-qc-ring__seg {
+  fill: none;
+  stroke-width: 6;
+  stroke-linecap: butt;
+}
+
+.db-qc-ring__value {
+  font-size: 22px;
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: -0.01em;
+  color: var(--db-text);
+}
+
+.db-qc-ring__value small {
+  margin-left: 1px;
+  font-size: 0.5em;
+  font-weight: 600;
+  color: var(--db-text-dim);
+}
+
+/* 右侧一组：三列态势读数。列间竖向发丝线、列内边距 0 16px（首列不留
+   左、末列不留右）。min-width 420 是同行/换行的分界：面板内容宽约 760px
+   以下时整组落到左组下方吃满整行（900 最小窗即换行），1100 默认窗
+   （面板内容约 810px）左右两组同行。三列不再等宽：第三列副值最长
+   （「17 series · last 90 days」这类覆盖说明，英文下比第一二列宽一截），
+   1fr / 1fr / 1.35fr 让它在 1100×720 的中英文下都不出省略号 */
+.db-qc-console__stats {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1.35fr);
+  flex: 1 1 420px;
+  min-width: 420px;
 }
 
 .db-qc-stat {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  padding: 12px 20px 14px;
+  gap: 8px;
+  padding: 0 16px;
 }
 
 .db-qc-stat + .db-qc-stat {
-  border-left: 1px solid var(--qc-line);
+  border-left: 1px solid var(--db-border);
+}
+
+.db-qc-stat:first-child {
+  padding-left: 0;
+}
+
+.db-qc-stat:last-child {
+  padding-right: 0;
 }
 
 .db-qc-stat__label {
-  font-size: 9.5px;
-  font-weight: 600;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: rgba(148, 163, 184, 0.8);
+  font-size: 12px;
+  color: var(--db-text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
+/* 数值 24px / 600 主文字色；状态色只落在带状态含义的数值上（最紧张
+   窗口的剩余，内联色），其余列不上色 */
 .db-qc-stat__value {
-  font-size: 26px;
-  font-weight: 700;
-  line-height: 1.05;
-  letter-spacing: -0.02em;
-  color: var(--qc-ink);
+  font-size: 24px;
+  font-weight: 600;
+  line-height: 1.15;
+  letter-spacing: -0.01em;
+  color: var(--db-text);
   white-space: nowrap;
 }
 
 .db-qc-stat__value small {
   margin-left: 2px;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 500;
   letter-spacing: 0;
-  color: rgba(226, 232, 240, 0.48);
+  color: var(--db-text-dim);
 }
 
 .db-qc-stat__meta {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 9.5px;
-  color: var(--qc-dim);
+  font-size: 12px;
+  color: var(--db-text-dim);
 }
 
+/* 底部小图：进度条（轨道 --db-track；条色内联 = 状态色 / 品牌色） */
 .db-qc-stat__bar {
-  height: 3px;
+  height: 4px;
   margin-top: 2px;
   border-radius: 999px;
-  background: rgba(148, 163, 184, 0.16);
+  background: var(--db-track);
   overflow: hidden;
 }
 
@@ -5365,7 +5470,7 @@ html.dark .db-shell-lights--blur .db-shell-light {
   border-radius: inherit;
 }
 
-/* 待重置数量的点阵：最近 5 个待重置窗口每项一枚小点 */
+/* 待重置数量的点阵：最近的待重置窗口每项一枚小点（无状态含义，中性） */
 .db-qc-stat__pips {
   display: flex;
   align-items: center;
@@ -5378,18 +5483,21 @@ html.dark .db-shell-lights--blur .db-shell-light {
   width: 4px;
   height: 4px;
   border-radius: 50%;
-  background: rgba(125, 211, 252, 0.55);
+  background: var(--db-text-3);
+  opacity: 0.6;
 }
 
 .db-qc-stat__pip-more {
   margin-left: 2px;
-  font-size: 8px;
+  font-size: 9px;
   line-height: 1;
-  color: rgba(125, 211, 252, 0.65);
+  color: var(--db-text-3);
 }
 
 /* ============================================================
- * 圆形额度仪表（QuotaDial）
+ * 圆形额度仪表（QuotaDial）：270° 扫角表盘，弧线 4px 按状态档位着色
+ * （组件内联 --qc-tone 下发语义令牌），轨道 --db-track，中心百分数
+ * 主文字色（状态由弧线表达）
  * ============================================================ */
 
 .db-qc-dial {
@@ -5397,14 +5505,6 @@ html.dark .db-shell-lights--blur .db-shell-light {
   display: grid;
   place-items: center;
   flex: none;
-}
-
-.db-qc-dial::before {
-  content: "";
-  position: absolute;
-  inset: 19%;
-  border-radius: 50%;
-  background: color-mix(in srgb, var(--qc-tone) 6%, transparent);
 }
 
 .db-qc-dial__svg {
@@ -5418,32 +5518,16 @@ html.dark .db-shell-lights--blur .db-shell-light {
 .db-qc-dial__track {
   fill: none;
   stroke: var(--db-track);
-  stroke-width: 7;
+  stroke-width: 4;
   stroke-linecap: round;
 }
 
 .db-qc-dial__arc {
   fill: none;
   stroke: var(--qc-tone);
-  stroke-width: 7;
+  stroke-width: 4;
   stroke-linecap: round;
   transition: stroke 0.25s ease;
-}
-
-.db-qc-dial__tick {
-  stroke: rgba(226, 232, 240, 0.28);
-  stroke-width: 1;
-}
-
-.db-qc-dial__tick--major {
-  stroke: rgba(226, 232, 240, 0.55);
-  stroke-width: 1.4;
-}
-
-.db-qc-dial__threshold {
-  stroke: var(--qc-bad);
-  stroke-width: 1.8;
-  stroke-linecap: round;
 }
 
 .db-qc-dial__center {
@@ -5454,29 +5538,17 @@ html.dark .db-shell-lights--blur .db-shell-light {
 }
 
 .db-qc-dial__value {
-  font-weight: 700;
+  font-size: 22px;
+  font-weight: 600;
   line-height: 1;
   letter-spacing: -0.02em;
-  color: var(--qc-tone);
+  color: var(--db-text);
 }
 
 .db-qc-dial__value small {
   margin-left: 1px;
   font-size: 0.46em;
   font-weight: 600;
-}
-
-/* 控制台大表盘：深色轨道 + 刻度 + 20% 警戒刻度；中心数字更大 */
-.db-qc-dial--hero .db-qc-dial__track {
-  stroke: rgba(148, 163, 184, 0.2);
-}
-
-.db-qc-dial--hero .db-qc-dial__arc {
-  stroke-width: 7.5;
-}
-
-.db-qc-dial--hero::before {
-  inset: 17%;
 }
 
 /* ============================================================
@@ -5508,6 +5580,8 @@ html.dark .db-shell-lights--blur .db-shell-light {
   min-width: 0;
 }
 
+/* 区块标题行：两栏（额度仪表 / 重置窗口时间线）同一套——标题 15px / 600，
+   副标题 12px 第二档，右侧数量元信息（「30 个窗口」「24」这类） */
 .db-qc-section-head {
   display: flex;
   align-items: flex-end;
@@ -5518,31 +5592,38 @@ html.dark .db-shell-lights--blur .db-shell-light {
 
 .db-qc-section-title {
   margin: 0;
-  font-size: 14px;
+  font-size: 15px;
   font-weight: 600;
-  letter-spacing: 0.01em;
+  letter-spacing: -0.01em;
   color: var(--db-text);
 }
 
 .db-qc-section-sub {
   margin: 3px 0 0;
-  font-size: 10.5px;
+  font-size: 12px;
   color: var(--db-text-dim);
 }
 
-.db-qc-section-badge {
+/* 右栏副标题不折行（栏窄，超长省略号收尾，完整语义在词条本身） */
+.db-qc-section-sub--nowrap {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 区块标题行右侧的数量元信息：数字 13px / 600 主文字色 + 小号单位 */
+.db-qc-section-meta {
   display: inline-flex;
   align-items: baseline;
   gap: 3px;
   flex: none;
-  font-size: 17px;
-  font-weight: 700;
+  font-size: 13px;
+  font-weight: 600;
   color: var(--db-text);
-  letter-spacing: -0.01em;
 }
 
-.db-qc-section-badge small {
-  font-size: 9px;
+.db-qc-section-head > .db-qc-section-meta small {
+  font-size: 11px;
   font-weight: 500;
   color: var(--db-text-dim);
 }
@@ -5554,47 +5635,19 @@ html.dark .db-shell-lights--blur .db-shell-light {
   margin-top: 10px;
 }
 
-/* ---- 单张系列卡 ---- */
+/* ---- 单张系列卡：白底发丝描边的普通卡片（与其它卡片同一材质），
+   不再有粉橙渐变底、左侧品牌色条与彩色悬停；品牌识别色只留在图标上 ---- */
 .db-qc-instrument {
   position: relative;
   display: flex;
   flex-direction: column;
   gap: 12px;
   min-width: 0;
-  padding: 13px 13px 11px 15px;
+  padding: 13px 14px 11px;
   overflow: hidden;
-  border: 1px solid var(--db-border);
+  border: 1px solid var(--db-card-border);
   border-radius: 12px;
   background-color: var(--db-card-bg);
-  background-image: radial-gradient(
-    150px 92px at 95% 0%,
-    color-mix(in srgb, var(--qc-source) 9%, transparent),
-    transparent 72%
-  );
-  box-shadow: var(--db-card-shadow);
-  transition: border-color 0.15s ease, box-shadow 0.15s ease;
-}
-
-/* 左侧品牌色仪表条：颜色只作来源识别，剩余状态由仪表色表达 */
-.db-qc-instrument::before {
-  content: "";
-  position: absolute;
-  left: 0;
-  top: 12px;
-  bottom: 12px;
-  width: 2px;
-  border-radius: 0 2px 2px 0;
-  background: var(--qc-source);
-  opacity: 0.7;
-}
-
-.db-qc-instrument:hover {
-  border-color: color-mix(in srgb, var(--qc-source) 36%, var(--db-border));
-  box-shadow: 0 8px 22px rgba(15, 23, 42, 0.09);
-}
-
-.dark .db-qc-instrument:hover {
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.32);
 }
 
 .db-qc-instrument__head {
@@ -5643,7 +5696,7 @@ html.dark .db-shell-lights--blur .db-shell-light {
 }
 
 .db-qc-instrument__meta--stale {
-  color: var(--qc-warn);
+  color: var(--db-quota-warn);
   font-weight: 500;
 }
 
@@ -5758,7 +5811,7 @@ html.dark .db-shell-lights--blur .db-shell-light {
   border-bottom: 1px dashed var(--db-border);
 }
 
-/* 风险胶囊：色点 + 文字（不单靠颜色传意） */
+/* 风险胶囊：色点 + 文字（不单靠颜色传意）；底色由三档语义色按同色低透明合成 */
 .db-qc-risk {
   display: inline-flex;
   align-items: center;
@@ -5782,18 +5835,18 @@ html.dark .db-shell-lights--blur .db-shell-light {
 }
 
 .db-qc-risk--healthy {
-  color: var(--qc-ok);
-  background: var(--qc-ok-bg);
+  color: var(--db-quota-ok);
+  background: color-mix(in srgb, var(--db-quota-ok) 10%, transparent);
 }
 
 .db-qc-risk--warning {
-  color: var(--qc-warn);
-  background: var(--qc-warn-bg);
+  color: var(--db-quota-warn);
+  background: color-mix(in srgb, var(--db-quota-warn) 10%, transparent);
 }
 
 .db-qc-risk--critical {
-  color: var(--qc-danger);
-  background: var(--qc-danger-bg);
+  color: var(--db-quota-danger);
+  background: color-mix(in srgb, var(--db-quota-danger) 10%, transparent);
 }
 
 /* 无历史数据来源：标签 + 一排弱化胶囊（不逐源渲染空卡片） */
@@ -5845,51 +5898,63 @@ html.dark .db-shell-lights--blur .db-shell-light {
   white-space: nowrap;
 }
 
+/* 趋势卡内的四点摘要：指标条形态（标签在上、数值在下、左对齐、格间
+   竖向发丝线），容器只是一条浅底分栏（无外框无圆角，嵌在卡内） */
 .db-qc-trend-stats {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 8px;
   margin-bottom: 12px;
+  border-bottom: 1px solid var(--db-row-border);
 }
 
 .db-qc-trend-stat {
   min-width: 0;
-  padding: 7px 10px 8px;
-  border: 1px solid var(--db-row-border);
-  border-radius: 10px;
-  background: color-mix(in srgb, var(--db-seg-bg) 60%, transparent);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 14px 10px;
+}
+
+.db-qc-trend-stat + .db-qc-trend-stat {
+  border-left: 1px solid var(--db-row-border);
+}
+
+.db-qc-trend-stat:first-child {
+  padding-left: 0;
 }
 
 .db-qc-trend-stat__label {
   display: block;
-  font-size: 9.5px;
+  font-size: 12px;
   color: var(--db-text-dim);
-  letter-spacing: 0.02em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .db-qc-trend-stat__value {
   display: block;
-  margin-top: 2px;
-  font-size: 16px;
-  font-weight: 700;
+  font-size: 15px;
+  font-weight: 600;
   letter-spacing: -0.01em;
   color: var(--db-text);
+  white-space: nowrap;
 }
 
-/* 折线图的告急带 / 警戒线（驾驶舱红区语义） */
+/* 折线图的告急带 / 警戒线（驾驶舱红区语义）：走 --db-quota-danger 档 */
 .db-qc-linechart .db-linechart__danger {
-  fill: var(--qc-danger-bg);
+  fill: color-mix(in srgb, var(--db-quota-danger) 8%, transparent);
 }
 
 .db-qc-linechart .db-linechart__threshold {
-  stroke: var(--qc-danger);
+  stroke: var(--db-quota-danger);
   stroke-width: 1;
   stroke-dasharray: 4 4;
   opacity: 0.45;
 }
 
 .db-qc-linechart .db-linechart__threshold-label {
-  fill: var(--qc-danger);
+  fill: var(--db-quota-danger);
   /* 卡片底同色描边做出“挖空”光晕：曲线穿过标签时仍可读 */
   stroke: var(--db-card-bg);
   stroke-width: 3px;
@@ -5903,36 +5968,27 @@ html.dark .db-shell-lights--blur .db-shell-light {
  * 重置序列（右侧栏）
  * ============================================================ */
 
+/* 右栏：区块标题行（与左栏同款）+ 卡片本体，纵向排布并与左栏标题行对齐 */
+.db-qc-rail {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
 .db-qc-rail__card {
   display: flex;
   flex-direction: column;
   height: 100%;
-}
-
-.db-qc-rail__card .db-card__body {
-  flex: 1;
-  min-height: 0;
-  padding-top: 10px;
-}
-
-.db-qc-count {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 22px;
-  height: 20px;
-  padding: 0 6px;
-  border-radius: 999px;
-  background: var(--db-seg-bg);
-  font-size: 10px;
-  font-weight: 600;
-  color: var(--db-text);
+  padding: 4px 14px 10px;
 }
 
 .db-qc-timeline {
   position: relative;
   display: flex;
   flex-direction: column;
+  flex: 1;
+  min-height: 0;
   max-height: 620px;
   margin: 0;
   padding: 0 0 0 2px;
@@ -5969,6 +6025,7 @@ html.dark .db-shell-lights--blur .db-shell-light {
   background: color-mix(in srgb, var(--db-accent-sky) 7%, transparent);
 }
 
+/* 来源圆点：保留来源区分但降饱和（与中性灰混合，不再抢状态色） */
 .db-qc-reset__dot {
   position: absolute;
   left: 4px;
@@ -5977,7 +6034,7 @@ html.dark .db-shell-lights--blur .db-shell-light {
   height: 9px;
   border-radius: 50%;
   background: var(--db-card-bg);
-  border: 2px solid var(--qc-source);
+  border: 2px solid color-mix(in oklab, var(--qc-source) 62%, #8a8a92);
   box-shadow: 0 0 0 2px var(--db-card-bg);
 }
 
@@ -6128,7 +6185,7 @@ html.dark .db-shell-lights--blur .db-shell-light {
   }
 
   .db-qc-stat + .db-qc-stat {
-    border-top: 1px solid var(--qc-line);
+    border-top: 1px solid var(--db-border);
     border-left: none;
   }
 
@@ -6196,11 +6253,10 @@ html.dark .db-shell-lights--blur .db-shell-light {
   flex: none;
 }
 
-/* 胶囊滑动开关（38×22 轨道 + 16 圆钮）：
- * - 关：--db-track 轨道 + 近白圆钮（--db-tip-text，亮暗各有定义）+
- *   内阴影让轨道有凹陷感；
- * - 开：--db-accent-emerald 轨道（亮=深绿/暗=亮绿，圆钮近白，两侧都有对比）
- *   + 同色柔光，扫一眼就能看出状态。
+/* 胶囊滑动开关（38×22 轨道 + 16 圆钮），扁平无光环：
+ * - 关：--db-track 浅灰轨道 + 近白圆钮（--db-tip-text，亮暗各有定义）；
+ * - 开：--db-accent 品牌色实底轨道 + 同一近白圆钮（亮暗圆钮都对比够）。
+ * 两种状态都不加外圈光环与轨道内阴影（与整体扁平风格一致）。
  * 钮位平移 + 轨道底色 0.15s 过渡；禁用态降透明度（读取中/未知） */
 .db-set-switch {
   position: relative;
@@ -6211,9 +6267,8 @@ html.dark .db-shell-lights--blur .db-shell-light {
   border: none;
   border-radius: 999px;
   background: var(--db-track);
-  box-shadow: inset 0 1px 2px rgba(15, 23, 42, 0.12);
   cursor: pointer;
-  transition: background 0.15s ease, box-shadow 0.15s ease;
+  transition: background 0.15s ease;
 }
 
 .db-set-switch__knob {
@@ -6224,14 +6279,13 @@ html.dark .db-shell-lights--blur .db-shell-light {
   height: 16px;
   border-radius: 50%;
   background: var(--db-tip-text);
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.28);
+  /* 只留很轻的一层投影让圆钮浮在轨道上，无内阴影 */
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.16);
   transition: transform 0.15s ease;
 }
 
 .db-set-switch--on {
-  background: var(--db-accent-emerald);
-  box-shadow: inset 0 1px 2px rgba(15, 23, 42, 0.12),
-    0 0 0 3px color-mix(in srgb, var(--db-accent-emerald) 18%, transparent);
+  background: var(--db-accent);
 }
 
 .db-set-switch--on .db-set-switch__knob {
@@ -7338,6 +7392,15 @@ body.card-resizing * {
     font-size: 11px;
   }
 }
+/* 页头操作区在窄内容列（1100 默认窗即触发）收拢间距：英文档的控件文字
+   更宽，8px 间距会把「标题行 + 操作区」总宽顶破页头折成两行；收到 6px
+   后单行放得下（中文文案更短，不受影响）。容器查询按实际布局宽度判断，
+   特大字号缩小布局宽度时同样生效 */
+@container (max-width: 960px) {
+  .db-page__actions {
+    gap: 6px;
+  }
+}
 @container (max-width: 760px) {
   .db-sidebar {
     width: 150px;
@@ -7496,8 +7559,12 @@ body.card-resizing * {
   width: 118px;
 }
 
+/* 上下文列 141：内容是水位图形（ContextMeter），比文字列更适合做预算的
+   缓冲；「最近活动」列 78 吸收英文表头（Last activity ≈ 76px）——fixed
+   布局下表头溢出内容会扩大滚动区，列宽必须盖住最宽表头，1100 默认窗
+   依然零横滚（两处调整合计不变，其余列宽不动） */
 .db-sessions-table .db-sessions__col-context {
-  width: 144px;
+  width: 141px;
 }
 
 .db-sessions-table .db-sessions__col-cost {
@@ -7505,7 +7572,7 @@ body.card-resizing * {
 }
 
 .db-sessions-table .db-sessions__col-activity {
-  width: 75px;
+  width: 78px;
 }
 
 .db-sessions__row {
@@ -7616,11 +7683,14 @@ body.card-resizing * {
   background: #ef4444;
 }
 
+/* 上下文压缩次数徽标：圆角矩形小徽标（与日志页状态徽标同一形态），
+   悬停 title 给出完整含义 + 次数 */
 .db-sessions__compact-chip {
   flex: none;
-  padding: 1px 5px;
-  border-radius: 999px;
-  font-size: 9px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 500;
   line-height: 1.4;
   color: var(--db-accent-violet);
   background: color-mix(in srgb, var(--db-accent-violet) 14%, transparent);
@@ -8684,16 +8754,165 @@ body.card-resizing * {
   font-size: 15px;
 }
 
-/* KPI 四列卡：窄窗的 gap-1.5（6px）在提档字号下卡间过密，放宽到 12px */
-.db-report-embed .grid-cols-4 {
-  gap: 12px;
+/* 设备筛选下拉限宽：DropdownMenu 根（relative + flex-1 + min-w-0）随
+   工具行 flex-1 拉伸，大窗下触发器会被拉到上千像素；收成约 240px 的
+   普通控件（触发器材质已并入上方「共享组件的大窗适配」的下拉规则组，
+   与页头下拉同一套），与右侧分享 / 刷新图标按钮同一行 */
+.db-report-embed .relative.flex-1.min-w-0 {
+  max-width: 240px;
 }
 
-/* 设备筛选下拉限宽：DropdownMenu 根（relative + flex-1 + min-w-0）随
-   工具行 flex-1 拉伸，大窗下触发器会被拉到上千像素；限到常规控件宽。
-   报告内容里其他 flex-1 min-w-0 元素（活动统计格）无 relative，不误伤 */
-.db-report-embed .relative.flex-1.min-w-0 {
-  max-width: 420px;
+/* 工具行 / 告警条 / 导出栏的 slate 分隔线统一到结构线令牌（亮暗自动翻转） */
+.db-report-embed .border-slate-900\/8 {
+  border-color: var(--db-row-border);
+}
+
+/* ---- 卡片与卡头：与 .db-card 同一材质（白底发丝描边 12px 圆角），
+   卡片标题与主窗口卡头同档（15px / 600 主文字色） ---- */
+.db-report-embed .report-card {
+  background: var(--db-card-bg);
+  border: 1px solid var(--db-card-border);
+  border-radius: 12px;
+  padding: 14px 20px 16px;
+}
+
+/* 窄窗卡片的顶部高光线与毛玻璃底不再需要（实底卡片），KPI 卡除外
+   （下方单独并成指标条） */
+.db-report-embed .page-stack > .report-card::before,
+.db-report-embed .page-stack > div > .report-card::before {
+  content: none;
+}
+
+.db-report-embed .page-stack > .report-card,
+.db-report-embed .page-stack > div > .report-card {
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+.db-report-embed .section-title {
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--db-text);
+}
+
+/* 来源筛选（Agent 行）：未选中项 13px 第二档；「全部」选中的天蓝药丸与
+   Segmented 的选中档统一换成主窗口分段控件的选中材质（中性白块 + 细
+   描边）；各来源品牌小图标在选中态去色（中性，不与选中块抢眼） */
+.db-report-embed .report-pill {
+  font-size: 13px;
+  color: var(--db-text-dim);
+}
+
+.db-report-embed .report-pill:hover {
+  color: var(--db-text);
+  background: var(--db-hover);
+}
+
+/* 选中材质见文件尾的 .pill-active 全局规则；来源品牌小图标在选中态
+   去色（中性，不与选中块抢眼） */
+.db-report-embed .pill-active svg {
+  color: var(--db-text) !important;
+}
+
+/* Segmented 胶囊分段容器（热力图「每日 / 每周 / 累计」、趋势「近 7 / 30 天」）：
+   与 .db-seg 同款浅灰槽 */
+.db-report-embed .bg-slate-900\/4 {
+  background: var(--db-seg-bg);
+  border-radius: 9px;
+  padding: 2px;
+  gap: 2px;
+}
+
+/* KPI 四列卡并成一条指标条：标签在上、数值在下、左对齐、格间竖线，
+   等宽数字（对齐总览页 .db-metrics 的语言） */
+.db-report-embed .page-stack > .grid-cols-4 {
+  gap: 1px;
+  border: 1px solid var(--db-card-border);
+  border-radius: 12px;
+  background: var(--db-card-bg);
+  overflow: hidden;
+}
+
+.db-report-embed .page-stack > .grid-cols-4 > .report-card {
+  border: none;
+  border-radius: 0;
+  background: var(--db-card-bg);
+  padding: 10px 16px 12px;
+  text-align: left;
+}
+
+.db-report-embed .page-stack > .grid-cols-4 > .report-card::before {
+  content: none;
+}
+
+.db-report-embed .page-stack > .grid-cols-4 > .report-card + .report-card {
+  border-left: 1px solid var(--db-row-border);
+}
+
+/* 数值行左对齐 + 主文字色；单位小一号第二档 */
+.db-report-embed .page-stack > .grid-cols-4 .justify-center {
+  justify-content: flex-start;
+}
+
+/* KPI 数值：22px / 600 与其它页面指标条的数值层级对齐（「活跃度」五格
+   数值不在此作用域，保持小档） */
+.db-report-embed .page-stack > .grid-cols-4 .text-\[15px\] {
+  font-size: 22px;
+  font-weight: 600;
+  color: var(--db-text);
+}
+
+.db-report-embed .page-stack > .grid-cols-4 .text-\[12px\] {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--db-text-dim);
+}
+
+/* KPI 标签（12px 第二档；高于本段 text-[9px] 的通用提档） */
+.db-report-embed .page-stack > .grid-cols-4 .text-\[9px\] {
+  font-size: 12px;
+}
+
+/* 「活跃度」五项：同一指标条形态（标签在上、数值在下、左对齐） */
+.db-report-embed .page-stack .report-card .items-stretch > .flex-1 {
+  text-align: left;
+  padding: 4px 14px 6px;
+}
+
+.db-report-embed .page-stack .report-card .items-stretch .justify-center {
+  justify-content: flex-start;
+}
+
+.db-report-embed .page-stack .report-card .items-stretch .text-\[13px\] {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--db-text);
+}
+
+.db-report-embed .page-stack .report-card .items-stretch .text-\[10px\] {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--db-text-dim);
+}
+
+.db-report-embed .page-stack .report-card .items-stretch .text-\[9px\] {
+  font-size: 12px;
+}
+
+/* 用量趋势柱状图：纯色系列（--db-series-*，见文件尾 series-color-* 段）、
+   柱顶 3px 圆角；X 轴日期 11px 第三档（末位不再强调色）；底部图例 12px */
+.db-report-embed .rounded-t-\[2px\] {
+  border-radius: 3px 3px 0 0;
+}
+
+.db-report-embed .text-\[8px\] {
+  font-size: 11px;
+}
+
+.db-report-embed .text-sky-600 {
+  color: var(--db-text-3) !important;
+  font-weight: 500;
 }
 
 /* ============================================================
@@ -8800,11 +9019,18 @@ body.card-resizing * {
 }
 
 /* 窄窗版式的大窗适配（仅本嵌入容器作用域）：皮肤组件文案按 9/10/11px
-   小字排版，大窗下整体提一档（对齐上方「共享组件的大窗适配」同思路：
-   dashboard.css 未分层，优先级高于 Tailwind utilities，面板
-   .panel-shell 作用域不受影响）。只调字号不动布局，卡片流结构不变 */
+   小字排版，大窗下按主窗口层级提档——说明文字 13px 第二档、正文标签
+   12-13px、卡片标题 14px / 600（见下方 .section-title），读起来像主窗口
+   自己的页面。dashboard.css 未分层，优先级高于 Tailwind utilities，
+   面板 .panel-shell 作用域不受影响 */
 .db-skin-embed .text-\[9px\] {
   font-size: 11px;
+}
+
+/* 说明段落（p 元素的小字说明）：13px 第二档——大窗下 11px 的长说明
+   段落读起来吃力，提到主窗口说明档；行内小标签（span）保持小号 */
+.db-skin-embed p.text-\[9px\] {
+  font-size: 13px;
 }
 
 .db-skin-embed .text-\[10px\] {
@@ -8816,20 +9042,21 @@ body.card-resizing * {
 }
 
 .db-skin-embed .text-\[12px\] {
-  font-size: 13.5px;
+  font-size: 13px;
 }
 
 .db-skin-embed .text-\[13px\] {
-  font-size: 15px;
+  font-size: 13px;
 }
 
-/* 面板公共类在皮肤子页的同步提档：SettingsCard 标题（section-title 10px）、
-   按钮（btn-primary / btn-secondary 10px）、输入框（input-box 11px）同按
-   300px 窄窗排版——只提上面的 Tailwind 字号类会出现「卡片标题小于提档后
-   正文」的层级倒挂，故按同一档位补齐公共类；工具按钮（toolbar-btn，含
-   字符图标）同步提一档。全局定义未动，面板作用域不受影响 */
+/* 面板公共类在皮肤子页的同步提档：SettingsCard 标题（section-title）提到
+   主窗口小标题档（14px / 600 主文字色）；按钮 / 输入框 / 工具按钮按同一
+   思路提一档。全局定义未动，面板作用域不受影响 */
 .db-skin-embed .section-title {
-  font-size: 12px;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0;
+  color: var(--db-text);
 }
 
 .db-skin-embed .btn-primary,
@@ -8843,6 +9070,196 @@ body.card-resizing * {
 
 .db-skin-embed .toolbar-btn {
   font-size: 13px;
+}
+
+/* 嵌入页头：主窗口左对齐版式——「返回」在左、标题紧挨其后（不再居中），
+   标题 18px / 600 对齐主窗口页头标题档（!important 压过 text-[13px]
+   字号工具类——页头 h1 也带该类）；底部发丝线统一到 --db-border。
+   右侧占位组（重复的主题 / 语言切换，与侧栏底部那组重复）整体隐藏。
+   border-b + slate-900/8 组合只出现在 PageHeader 根上（两个子页共用） */
+.db-skin-embed .border-b.border-slate-900\/8 {
+  padding: 13px 16px 12px;
+  border-bottom-color: var(--db-border);
+}
+
+.db-skin-embed .border-b.border-slate-900\/8 > .flex.items-center.justify-between {
+  justify-content: flex-start;
+  gap: 10px;
+}
+
+.db-skin-embed .border-b.border-slate-900\/8 .btn-ghost {
+  font-size: 13px;
+}
+
+.db-skin-embed h1 {
+  font-size: 18px !important;
+  font-weight: 600;
+  text-align: left;
+  color: var(--db-text);
+}
+
+.db-skin-embed .min-w-\[2\.5rem\] {
+  display: none;
+}
+
+/* ---- 嵌入内容的中性化（组件是 Tailwind 硬编码色，只能在此作用域覆写）----
+   文字三档、结构线、卡片材质、选中态统一到 --db-* 令牌；天蓝强调
+   （壁纸卡选中描边 / 拖放高亮 / 进度条 / 确认按钮）换主窗口样式 */
+.db-skin-embed .text-slate-900\/90,
+.db-skin-embed .text-slate-800\/80,
+.db-skin-embed .text-slate-700 {
+  color: var(--db-text);
+}
+
+.db-skin-embed .text-slate-700\/55,
+.db-skin-embed .text-slate-600 {
+  color: var(--db-text-dim);
+}
+
+.db-skin-embed .text-slate-500,
+.db-skin-embed .text-slate-400 {
+  color: var(--db-text-3);
+}
+
+.db-skin-embed .border-slate-900\/6,
+.db-skin-embed .border-slate-900\/8 {
+  border-color: var(--db-row-border);
+}
+
+.db-skin-embed .border-slate-900\/10,
+.db-skin-embed .border-slate-900\/15 {
+  border-color: var(--db-card-border);
+}
+
+.db-skin-embed .hover\:border-slate-900\/25:hover {
+  border-color: var(--db-control-border);
+}
+
+.db-skin-embed .bg-slate-900\/5,
+.db-skin-embed .bg-slate-900\/4 {
+  background: var(--db-track);
+}
+
+.db-skin-embed .bg-slate-900\/8 {
+  background: var(--db-track);
+}
+
+/* 卡片（card-base）：与 .db-card 同一材质（实底白卡 + 发丝描边，无投影） */
+.db-skin-embed .card-base {
+  background: var(--db-card-bg);
+  border: 1px solid var(--db-card-border);
+  border-radius: 12px;
+  box-shadow: none;
+}
+
+/* 分段控件（PillGroup）：主窗口 db-seg 形态——浅灰槽 8px 圆角、按钮
+   24px 高（加槽 padding 2px 共 28px）+ 6px 圆角 + 0 12px 内边距、12px
+   字号；槽与按钮都按内容宽（不再通栏等宽），左对齐跟随行首 */
+.db-skin-embed .p-pillgroup {
+  flex: none;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 8px;
+  background: var(--db-seg-bg);
+}
+
+.db-skin-embed .p-pill {
+  flex: none;
+  height: 24px;
+  padding: 0 12px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.db-skin-embed .p-pill.is-active {
+  background: var(--db-seg-active-bg);
+  color: var(--db-seg-active-text);
+  font-weight: 600;
+  box-shadow: 0 0 0 1px var(--db-control-border),
+    0 1px 2px rgba(0, 0, 0, 0.06);
+}
+
+/* 选中态（壁纸 / 形象卡当前项、拖放高亮）：2px 品牌色描边、不铺底色
+   （border 保持 1px + inset 1px 合成 2px，避免选中项比邻项高 2px 参差），
+   拖放投放高亮同样落在品牌色描边 + 无底色 */
+.db-skin-embed .border-sky-500 {
+  border-color: var(--db-accent);
+  box-shadow: inset 0 0 0 1px var(--db-accent);
+}
+
+.db-skin-embed .bg-sky-500\/10 {
+  background: transparent;
+}
+
+/* 壁纸卡预览失败占位：隐藏系统 emoji（🖼 / 🎬，text-[14px] 那个元素），
+   只留「预览不可用」文字 */
+.db-skin-embed span.text-\[14px\] {
+  display: none;
+}
+
+/* 行级开关（皮肤子页共用组件里全部是「标题 + 说明 + 行尾开关」的
+   input[type=checkbox]，accent-sky-500 h-3 w-3）：appearance:none 自绘成
+   设置页 .db-set-switch 同款滑动开关（38×22、开 = 品牌色实底 + 近白圆钮、
+   关 = 浅灰轨道，扁平无光环）；键盘聚焦给品牌焦点环。两个子页没有方形
+   勾选形态的复选框，无需保留原生勾选样式 */
+.db-skin-embed input[type="checkbox"] {
+  appearance: none;
+  -webkit-appearance: none;
+  flex: none;
+  width: 38px;
+  height: 22px;
+  margin: 0;
+  padding: 0;
+  border: none;
+  border-radius: 999px;
+  background: var(--db-track);
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.db-skin-embed input[type="checkbox"]::before {
+  content: "";
+  display: block;
+  width: 16px;
+  height: 16px;
+  margin: 3px;
+  border-radius: 50%;
+  background: var(--db-tip-text);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.16);
+  transition: transform 0.15s ease;
+}
+
+.db-skin-embed input[type="checkbox"]:checked {
+  background: var(--db-accent);
+}
+
+.db-skin-embed input[type="checkbox"]:checked::before {
+  transform: translateX(16px);
+}
+
+.db-skin-embed input[type="checkbox"]:focus-visible {
+  outline: none;
+  box-shadow: var(--db-focus-ring);
+}
+
+.db-skin-embed input[type="checkbox"]:disabled {
+  cursor: default;
+}
+
+/* 强调元素（安装进度条、确认弹层主按钮）：品牌色。checkbox 开关已由上方
+   规则自绘，accent-color 不再参与显示，仅作兜底保留 */
+.db-skin-embed .bg-sky-500 {
+  background: var(--db-accent);
+}
+
+.db-skin-embed .hover\:bg-sky-600:hover {
+  background: var(--db-accent);
+  filter: brightness(0.94);
+}
+
+.db-skin-embed .accent-sky-500 {
+  accent-color: var(--db-accent);
 }
 
 /* 图像网格自适应列数：宠物形象卡 / 壁纸卡的 grid-cols-2 是 300px 窄窗的
@@ -8956,7 +9373,9 @@ body.card-resizing * {
   background: rgba(255, 255, 255, 0.08);
 }
 
-/* ---- 按钮系统（主 / 次 / 幽灵） ---- */
+/* ---- 按钮系统（主 / 次 / 幽灵）----
+   颜色收口到主窗口令牌：主按钮品牌实底、幽灵键品牌色悬停（原天蓝硬编码
+   删除），亮暗由 --db-* 变量各自切换，不再需要成对的 .dark 覆盖 */
 .btn-primary {
   display: inline-flex;
   align-items: center;
@@ -8965,30 +9384,20 @@ body.card-resizing * {
   border-radius: 0.5rem;
   font-size: 10px;
   font-weight: 500;
-  background: #0ea5e9;
-  color: #fff;
+  background: var(--db-btn-primary-bg);
+  color: var(--db-btn-primary-text);
   transition: all 0.15s ease;
   border: none;
   cursor: pointer;
 }
 
-.btn-primary:hover {
-  background: #0284c7;
+.btn-primary:hover:not(:disabled) {
+  filter: brightness(0.94);
 }
 
 .btn-primary:disabled {
-  background: rgba(14, 165, 233, 0.4);
-  color: rgba(255, 255, 255, 0.45);
+  opacity: 0.45;
   cursor: not-allowed;
-}
-
-.dark .btn-primary {
-  background: #7ea6ff;
-  color: #0b1220;
-}
-
-.dark .btn-primary:hover {
-  background: #9bbaff;
 }
 
 .btn-secondary {
@@ -9039,7 +9448,7 @@ body.card-resizing * {
   padding: 0.25rem 0.5rem;
   border-radius: 0.375rem;
   font-size: 11px;
-  color: rgba(51, 65, 85, 0.55);
+  color: var(--db-text-dim);
   background: transparent;
   border: none;
   cursor: pointer;
@@ -9047,17 +9456,8 @@ body.card-resizing * {
 }
 
 .btn-ghost:hover {
-  color: #0ea5e9;
-  background: rgba(14, 165, 233, 0.06);
-}
-
-.dark .btn-ghost {
-  color: rgba(226, 232, 240, 0.55);
-}
-
-.dark .btn-ghost:hover {
-  color: #9bbaff;
-  background: rgba(126, 166, 255, 0.1);
+  color: var(--db-accent);
+  background: color-mix(in srgb, var(--db-accent) 8%, transparent);
 }
 
 /* ---- 表单输入 ---- */
@@ -9066,31 +9466,20 @@ body.card-resizing * {
   padding: 0.375rem 0.5rem;
   border-radius: 0.5rem;
   font-size: 11px;
-  background: rgba(255, 255, 255, 0.5);
-  border: 1px solid rgba(15, 23, 42, 0.1);
-  color: rgba(15, 23, 42, 0.9);
+  background: var(--db-control-bg);
+  border: 1px solid var(--db-control-border);
+  color: var(--db-text);
   outline: none;
   transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
 
 .input-box:focus {
-  border-color: rgba(14, 165, 233, 0.5);
-  box-shadow: 0 0 0 2px rgba(14, 165, 233, 0.12);
+  border-color: color-mix(in srgb, var(--db-accent) 55%, transparent);
+  box-shadow: var(--db-focus-ring);
 }
 
 .input-box::placeholder {
-  color: rgba(51, 65, 85, 0.35);
-}
-
-.dark .input-box {
-  background: rgba(15, 23, 42, 0.4);
-  border-color: rgba(226, 232, 240, 0.12);
-  color: rgba(226, 232, 240, 0.9);
-}
-
-.dark .input-box:focus {
-  border-color: rgba(56, 189, 248, 0.5);
-  box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.12);
+  color: var(--db-text-3);
 }
 
 /* ---- 内容区间距（PageBody 的 page-stack）+ 轻滚动条 ---- */
@@ -9154,202 +9543,110 @@ body.card-resizing * {
   cursor: not-allowed;
 }
 
+/* 选中档（来源药丸 / Segmented）：主窗口分段控件的选中材质——中性白块
+   + 细描边（原天蓝实底删除）；亮暗由 --db-seg-active-* 切换 */
 .pill-active {
-  background: #0ea5e9;
-  color: #fff;
-  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.15);
+  background: var(--db-seg-active-bg);
+  color: var(--db-seg-active-text);
+  font-weight: 600;
+  box-shadow: 0 0 0 1px var(--db-control-border),
+    0 1px 2px rgba(0, 0, 0, 0.06);
 }
 
-.dark .pill-active {
-  background: rgba(255, 255, 255, 0.85);
-  color: #16233d;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
-}
-
-/* ---- 报告页专用（ReportContent 的卡片 / 文字 / 热力图 / 系列色） ---- */
+/* ---- 报告页专用（ReportContent 的卡片 / 文字 / 热力图 / 系列色）----
+   全部收口到主窗口令牌：卡片白底发丝描边、文字三档灰、热力图五档
+   --db-heat-*、柱状图系列 --db-series-*；亮暗由变量切换，不再有成对的
+   .dark 覆盖 */
 .report-card {
   position: relative;
   overflow: hidden;
   border-radius: 12px;
-  background: rgba(15, 23, 42, 0.03);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
-}
-
-.report-card::before {
-  content: "";
-  position: absolute;
-  inset: 0 0 auto 0;
-  height: 1px;
-  background: rgba(15, 23, 42, 0.06);
-}
-
-.dark .report-card {
-  background: rgba(255, 255, 255, 0.055);
-}
-
-.dark .report-card::before {
-  background: rgba(255, 255, 255, 0.06);
+  background: var(--db-card-bg);
+  border: 1px solid var(--db-card-border);
 }
 
 .report-sub {
-  color: rgba(51, 65, 85, 0.5);
-}
-
-.dark .report-sub {
-  color: rgba(255, 255, 255, 0.72);
+  color: var(--db-text-dim);
 }
 
 .report-dim {
-  color: rgba(51, 65, 85, 0.42);
-}
-
-.dark .report-dim {
-  color: rgba(255, 255, 255, 0.66);
+  color: var(--db-text-3);
 }
 
 .report-pill {
-  color: rgba(51, 65, 85, 0.7);
-}
-
-.dark .report-pill {
-  color: rgba(255, 255, 255, 0.72);
+  color: var(--db-text-dim);
 }
 
 .report-status {
-  color: #0369a1;
-}
-
-.dark .report-status {
-  color: #7dd3fc;
+  color: var(--db-text-dim);
 }
 
 .report-footer-text {
-  color: #64748b;
-}
-
-.dark .report-footer-text {
-  color: rgba(255, 255, 255, 0.66);
+  color: var(--db-text-3);
 }
 
 .report-tab-idle {
-  color: rgba(51, 65, 85, 0.8);
-}
-
-.dark .report-tab-idle {
-  color: rgba(255, 255, 255, 0.72);
+  color: var(--db-text-dim);
 }
 
 .heat-fade-left {
-  background: linear-gradient(to right, rgba(15, 23, 42, 0.05) 0%, transparent 70%);
-}
-
-.dark .heat-fade-left {
-  background: linear-gradient(to right, rgba(255, 255, 255, 0.055) 0%, transparent 70%);
+  background: linear-gradient(to right, var(--db-hover) 0%, transparent 70%);
 }
 
 .heat-fade-right {
-  background: linear-gradient(to left, rgba(15, 23, 42, 0.05) 0%, transparent 70%);
-}
-
-.dark .heat-fade-right {
-  background: linear-gradient(to left, rgba(255, 255, 255, 0.055) 0%, transparent 70%);
+  background: linear-gradient(to left, var(--db-hover) 0%, transparent 70%);
 }
 
 .heat-level-0 {
-  background: rgba(15, 23, 42, 0.05);
+  background: var(--db-heat-0);
 }
 
 .heat-level-1 {
-  background: color-mix(in oklab, #0ea5e9 18%, #f1f5f9);
+  background: var(--db-heat-1);
 }
 
 .heat-level-2 {
-  background: color-mix(in oklab, #0ea5e9 36%, #f1f5f9);
+  background: var(--db-heat-2);
 }
 
 .heat-level-3 {
-  background: color-mix(in oklab, #0284c7 58%, #f1f5f9);
+  background: var(--db-heat-3);
 }
 
 .heat-level-4 {
-  background: color-mix(in oklab, #0369a1 82%, #f1f5f9);
+  background: var(--db-heat-4);
 }
 
-.dark .heat-level-0 {
-  background: rgba(255, 255, 255, 0.08);
-}
-
-.dark .heat-level-1 {
-  background: color-mix(in oklab, #38bdf8 24%, #1e283c);
-}
-
-.dark .heat-level-2 {
-  background: color-mix(in oklab, #38bdf8 42%, #1e283c);
-}
-
-.dark .heat-level-3 {
-  background: color-mix(in oklab, #38bdf8 62%, #1e283c);
-}
-
-.dark .heat-level-4 {
-  background: color-mix(in oklab, #7dd3fc 78%, #1e283c);
-}
-
-.dark .heat-legend-empty {
-  background: rgba(255, 255, 255, 0.16);
+.heat-legend-empty {
+  background: var(--db-heat-0);
 }
 
 .series-color-0 {
-  background: #0284c7;
+  background: var(--db-series-0);
 }
 
 .series-color-1 {
-  background: #0d9488;
+  background: var(--db-series-1);
 }
 
 .series-color-2 {
-  background: #7c3aed;
+  background: var(--db-series-2);
 }
 
 .series-color-3 {
-  background: #f43f5e;
+  background: var(--db-series-3);
 }
 
 .series-color-4 {
-  background: #6366f1;
+  background: var(--db-series-4);
 }
 
 .series-color-5 {
-  background: #0891b2;
+  background: var(--db-series-5);
 }
 
 .series-color-other {
-  background: #94a3b8;
-}
-
-.dark .series-color-0 {
-  background: #0ea5e9;
-}
-
-.dark .series-color-1 {
-  background: #2dd4bf;
-}
-
-.dark .series-color-2 {
-  background: #a78bfa;
-}
-
-.dark .series-color-3 {
-  background: #fb7185;
-}
-
-.dark .series-color-4 {
-  background: #818cf8;
-}
-
-.dark .series-color-5 {
-  background: #22d3ee;
+  background: var(--db-series-other);
 }
 
 /* 热力图横向滚动容器：隐藏滚动条 */

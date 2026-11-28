@@ -113,6 +113,7 @@ function ContextMeter({
   session: LiveSession;
   locale: NumLocale;
 }) {
+  const { t } = useI18n();
   const limit = session.context_limit;
   const ratio =
     limit != null && limit > 0
@@ -141,7 +142,7 @@ function ContextMeter({
       {session.compactions > 0 && (
         <span
           className="db-sessions__compact-chip"
-          title={`${session.compactions}`}
+          title={`${t("dashboard.sessions.context.compactions")} ${session.compactions}`}
         >
           ↺{session.compactions}
         </span>

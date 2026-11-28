@@ -22,8 +22,8 @@ import { BrandIcon } from "../../BrandIcon";
 import type { BrandIconName } from "../../BrandIcon";
 import { formatResetStamp } from "../../format";
 import { useI18n } from "../../i18n";
-import { remainingGradient, remainingTextColor } from "../../widgets";
 import { Card, Skeleton } from "../primitives";
+import { quotaTone } from "../quota/tone";
 import type { MatrixCell, MatrixRow } from "./model";
 
 /** 网格列选择参数：块间距（与 .db-matrix 的 gap 一致）、单块最小宽
@@ -176,7 +176,7 @@ function QuotaCellView({
           )}
           <span
             className="db-qcell__pct num"
-            style={{ color: remainingTextColor(remaining) }}
+            style={{ color: quotaTone(remaining) }}
           >
             {Math.round(remaining)}%
           </span>
@@ -186,7 +186,7 @@ function QuotaCellView({
       <div className="db-qcell__track">
         <div
           className="db-qcell__fill"
-          style={{ width: `${remaining}%`, background: remainingGradient(remaining) }}
+          style={{ width: `${remaining}%`, background: quotaTone(remaining) }}
         />
       </div>
 
@@ -207,7 +207,7 @@ function QuotaCellView({
           <span className="db-qcell__hour5">
             {t("common.hour5")}{" "}
             <span
-              style={{ color: remainingTextColor(cell.hour5RemainingPct) }}
+              style={{ color: quotaTone(cell.hour5RemainingPct) }}
             >
               {t("common.remaining", {
                 pct: Math.round(cell.hour5RemainingPct),

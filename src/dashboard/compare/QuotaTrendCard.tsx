@@ -6,7 +6,10 @@
  * 脚注），但不引图表库：坐标系用固定 viewBox（960×280）手写，容器宽度变化
  * 时整体等比缩放。悬停取值为「阶梯语义」——显示该时刻之前最近一次采样值
  * （额度是采样量，两点之间沿用上一次读数才是真实含义，不做线性插值）。
- * 图例可点击开关系列显隐，系列多（Z.ai 多账号）时避免互相压线。
+ * 图例两种交互：点击开关系列显隐（aria-pressed，系列多（Z.ai 多账号）时
+ * 避免互相压线，可经「显示全部」重置）；悬停 / 键盘聚焦某图例项临时聚焦
+ * ——该系列满不透明度、其余降到 0.35，六条线挤在一起时也能读出单条。
+ * 采样点默认不画圆点，只在悬停竖线处由实心大点标出读数位置。
  */
 import { useState } from "react";
 import { formatResetStamp } from "../../format";
@@ -33,8 +36,8 @@ const PAD_B = 26;
 const PLOT_W = W - PAD_L - PAD_R;
 const PLOT_H = H - PAD_T - PAD_B;
 const GRID_PCTS = [0, 25, 50, 75, 100];
-/** 采样点数超过该值时不再逐点画圆（避免密集成团） */
-const DOT_LIMIT = 60;
+/** 图例聚焦时其余系列的折线不透明度（聚焦系列保持满值 1） */
+const DIM_OPACITY = 0.35;
 
 export function QuotaTrendCard({
   series,
@@ -55,11 +58,18 @@ export function QuotaTrendCard({
   pending?: boolean;
 }) {
   const { t } = useI18n();
+  // 图例两级交互：hidden 为点击显隐（点击切换、可重置）；hoveredId 为
+  // 悬停 / 键盘聚焦的临时聚焦（聚焦系列满不透明度、其余降 DIM_OPACITY），
+  // 被隐藏的系列不参与绘制也不受聚焦影响。聚焦只对可见系列生效：悬停 /
+  // 键盘聚焦已隐藏的图例项时不算聚焦，否则 focusId 对所有可见系列都不
+  // 成立，可见折线会被整体降到 DIM_OPACITY
   const [hidden, setHidden] = useState<Set<string>>(new Set());
+  const [hoveredId, setHoveredId] = useState<string | null>(null);
   const [hoverRatio, setHoverRatio] = useState<number | null>(null);
 
   const visible = series.filter((item) => !hidden.has(item.id));
   const hasPoints = visible.some((item) => item.points.length > 0);
+  const focusId = hoveredId != null && !hidden.has(hoveredId) ? hoveredId : null;
   const span = Math.max(1, toMs - fromMs);
   const xOf = (ts: number) => PAD_L + ((ts - fromMs) / span) * PLOT_W;
   const yOf = (pct: number) => PAD_T + (1 - Math.min(Math.max(pct, 0), 100) / 100) * PLOT_H;
@@ -87,6 +97,7 @@ export function QuotaTrendCard({
 
   return (
     <Card
+      className="db-card--legend-row"
       title={t("dashboard.compare.trendTitle")}
       sub={t("dashboard.compare.trendSub", { range: rangeLabel })}
       action={
@@ -96,6 +107,10 @@ export function QuotaTrendCard({
               key={item.id}
               type="button"
               onClick={() => toggle(item.id)}
+              onMouseEnter={() => setHoveredId(item.id)}
+              onMouseLeave={() => setHoveredId(null)}
+              onFocus={() => setHoveredId(item.id)}
+              onBlur={() => setHoveredId(null)}
               aria-pressed={!hidden.has(item.id)}
               title={t("dashboard.compare.trendLegendHint")}
               className={`db-legend__btn ${
@@ -187,7 +202,9 @@ export function QuotaTrendCard({
                 />
               )}
 
-              {/* 各系列折线 + 采样点 */}
+              {/* 各系列折线（1.5px 线；默认不画采样点圆点——六线同图时
+                  逐点圆点太花，读数位置由悬停竖线处的实心大点标出）。
+                  图例聚焦时聚焦系列满不透明度、其余降到 DIM_OPACITY */}
               {visible.map((item) => {
                 if (item.points.length === 0) return null;
                 const path = item.points
@@ -199,28 +216,44 @@ export function QuotaTrendCard({
                   )
                   .join(" ");
                 return (
-                  <g key={item.id}>
-                    <path
-                      d={path}
-                      fill="none"
-                      stroke={item.color}
-                      strokeWidth={1.8}
-                      strokeLinejoin="round"
-                      strokeLinecap="round"
-                    />
-                    {item.points.length <= DOT_LIMIT &&
-                      item.points.map((point) => (
-                        <circle
-                          key={point.ts}
-                          cx={xOf(point.ts)}
-                          cy={yOf(point.usedPct)}
-                          r={2.4}
-                          fill={item.color}
-                        />
-                      ))}
-                  </g>
+                  <path
+                    key={item.id}
+                    d={path}
+                    fill="none"
+                    stroke={item.color}
+                    strokeWidth={1.5}
+                    strokeLinejoin="round"
+                    strokeLinecap="round"
+                    strokeOpacity={
+                      focusId == null || focusId === item.id ? 1 : DIM_OPACITY
+                    }
+                  />
                 );
               })}
+
+              {/* 悬停读数层：竖线位置各系列的实心大点（阶梯取值落到
+                  最近一次采样点，读数与大点一一对应；非聚焦系列同步降
+                  不透明度，与折线保持同一层级） */}
+              {hoverRatio != null &&
+                hoverTs != null &&
+                visible.map((item) => {
+                  const snapped = lastAt(item.points, hoverTs);
+                  if (!snapped) return null;
+                  return (
+                    <circle
+                      key={`hover:${item.id}`}
+                      cx={xOf(snapped.ts)}
+                      cy={yOf(snapped.usedPct)}
+                      r={3.2}
+                      fill={item.color}
+                      stroke="var(--db-card-bg)"
+                      strokeWidth={1.2}
+                      strokeOpacity={
+                        focusId == null || focusId === item.id ? 1 : DIM_OPACITY
+                      }
+                    />
+                  );
+                })}
 
               {/* 事件层：只覆盖绘图区，换算比例即为时间比例 */}
               <rect

@@ -36,11 +36,11 @@ export function TokensCompareCard({
         hasRemote ? (
           <div className="db-legend">
             <span className="db-legend__item">
-              <i className="db-swatch db-swatch--input" />
+              <i className="db-swatch db-tokencmp__swatch--local" />
               {t("dashboard.compare.tokensLocal")}
             </span>
             <span className="db-legend__item">
-              <i className="db-swatch db-swatch--output" />
+              <i className="db-swatch db-tokencmp__swatch--remote" />
               {t("dashboard.compare.tokensRemote")}
             </span>
           </div>

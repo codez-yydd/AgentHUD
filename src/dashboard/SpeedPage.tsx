@@ -906,9 +906,13 @@ export function SpeedPage() {
           口径摘要在页头一眼可读，独立筛选行不再保留 */}
 
       {/* 汇总指标行（复用 db-logs-metrics 样式族：首载骨架 / 刷新压暗 /
-          无值灰化「—」与日志页同款降级形态）；速度值带小号 t/s 单位 */}
+          无值灰化「—」与日志页同款降级形态）；速度值带小号 t/s 单位。
+          --five：本页固定五格，≤980px 折两行时后两格各占一半（3 列网格
+          会折出 3+2 并在右下留一个空格，见 dashboard.css 的同注释） */}
       <div
-        className={`db-logs-metrics${busy ? " db-logs-metrics--busy" : ""}`}
+        className={`db-logs-metrics db-logs-metrics--five${
+          busy ? " db-logs-metrics--busy" : ""
+        }`}
         aria-busy={busy || undefined}
       >
         {metrics.map((cell) => (

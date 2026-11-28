@@ -2,8 +2,9 @@
  * 仪表阵列中的单张系列卡（一个账号 / 凭证）：品牌徽标 + 套餐 + 各额度窗口
  * 的圆形仪表 + 重置倒计时 + 主窗口 90 天迷你曲线。
  *
- * 口径：仪表与曲线都是剩余 %（= 100 − 已用）。卡片按「最紧窗口」着色，
- * 并把风险标签放在迷你曲线标题行，颜色之外还有文字兜底。
+ * 口径：仪表与曲线都是剩余 %（= 100 − 已用）。弧线 / 走势线按风险档位
+ * 着色（quota/tone.ts 三档语义色），并把风险标签放在迷你曲线标题行，
+ * 颜色之外还有文字兜底。
  */
 import { useMemo } from "react";
 import type { CSSProperties } from "react";
@@ -42,7 +43,7 @@ function dialSizeOf(windowCount: number): number {
   return 58;
 }
 
-/** 迷你剩余曲线：无坐标轴、无交互，只表达 90 天走势与当前值 */
+/** 迷你剩余曲线：无坐标轴、无交互，只表达 90 天走势与当前值（1.5px 线） */
 function Sparkline({ points, tone }: { points: RemainingPoint[]; tone: string }) {
   if (points.length < 2) {
     return <div className="db-qc-spark db-qc-spark--empty" aria-hidden />;
@@ -65,9 +66,6 @@ function Sparkline({ points, tone }: { points: RemainingPoint[]; tone: string })
         ).toFixed(2)}`
     )
     .join(" ");
-  const area = `${line} L ${xOf(to).toFixed(2)} ${H - PAD} L ${xOf(from).toFixed(
-    2
-  )} ${H - PAD} Z`;
 
   return (
     <svg
@@ -76,12 +74,11 @@ function Sparkline({ points, tone }: { points: RemainingPoint[]; tone: string })
       className="db-qc-spark"
       aria-hidden
     >
-      <path d={area} fill={tone} fillOpacity={0.12} />
       <path
         d={line}
         fill="none"
         stroke={tone}
-        strokeWidth={1.3}
+        strokeWidth={1.5}
         strokeLinecap="round"
         strokeLinejoin="round"
         vectorEffect="non-scaling-stroke"
@@ -93,12 +90,10 @@ function Sparkline({ points, tone }: { points: RemainingPoint[]; tone: string })
 export function InstrumentCard({
   series,
   nowMs,
-  dark,
   t,
 }: {
   series: CockpitSeries;
   nowMs: number;
-  dark: boolean;
   t: TFn;
 }) {
   const rows = currentRowsInOrderOf(series);
@@ -167,7 +162,7 @@ export function InstrumentCard({
         }`}
       >
         {rows.map((row) => {
-          const tone = quotaTone(row.remainingPct, dark);
+          const tone = quotaTone(row.remainingPct);
           const countdown =
             row.resetAt != null ? countdownCore(row.resetAt, nowMs) : null;
           const stamp = row.resetAt != null ? formatResetStamp(row.resetAt) : null;
@@ -222,7 +217,7 @@ export function InstrumentCard({
         </div>
         <Sparkline
           points={sparkPoints}
-          tone={quotaTone(primaryLatest ?? 100, dark)}
+          tone={quotaTone(primaryLatest ?? 100)}
         />
       </footer>
     </article>

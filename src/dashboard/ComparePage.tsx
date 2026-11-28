@@ -19,7 +19,7 @@ import { AlertBanner, EmptyState } from "../layout";
 // 下拉组件已提升为两窗口共用（src/DropdownMenu.tsx，Tailwind 工具类自适应亮暗）
 import { DropdownMenu } from "../DropdownMenu";
 import { RefreshIcon } from "./icons";
-import { PageTitleWithDesc, useDarkTheme } from "./primitives";
+import { PageTitleWithDesc } from "./primitives";
 import {
   CustomRangeMenu,
   formatRangeSummary,
@@ -33,7 +33,6 @@ import {
   buildQuotaMatrix,
   historyStartMs,
   rangeStartMs,
-  seriesColorOf,
   type ComparePresetRange,
 } from "./compare/model";
 import { useCompareData } from "./compare/useCompareData";
@@ -110,36 +109,36 @@ export function ComparePage() {
   // COMPARE_HISTORY_DAYS 天窗口）：更早的区间既没有额度采样（趋势没有数据），
   // 本机 Token 取数（Cursor events 分页）也会明显变慢，故与 90 天预设档同起点
   const minMs = useMemo(() => historyStartMs(), []);
-  // 暗色主题下系列色走提亮色阶（深档色在 slate-900 底上几乎不可见，见 model.ts）
-  const dark = useDarkTheme();
 
   // 额度矩阵：口径与窄窗一致的系列合并结果（每系列取最近一次采样）。
-  // 本机快照就绪即有值，远端快照到达后由 hook 二次发布补全。
-  const matrix = useMemo(
-    () => (data ? buildQuotaMatrix(data.timelines, dark) : []),
-    [data, dark]
-  );
+  // 本机快照就绪即有值，远端快照到达后由 hook 二次发布补全
+  const matrix = useMemo(() => (data ? buildQuotaMatrix(data.timelines) : []), [data]);
 
   // Token 对比：本机部分取数一次拿全（预设档 + 当前自定义区间），远端按窗口
   // 懒取（未取过的窗口首次切换时才请求，切回已有窗口不重取）
   const tokens =
     data?.tokensByRange[customRange ? "custom" : range] ?? [];
 
-  // 趋势序列：按页头范围切片采样点后交给折线图
+  // 趋势序列：按页头范围切片采样点后交给折线图。系列颜色不再走品牌色阶
+  // （Z.ai 多账号色板 / 暗色提亮表），统一取图表系列色令牌 --db-series-N
+  // （按系列顺序、冷暖交替；超过 6 个落到 --db-series-other）——折线 / 图例
+  // 圆点 / 用量报告柱状图共用同一套（颜色由 CSS 变量亮暗自动切换）
   const trend: TrendSeriesView[] = useMemo(() => {
     if (!data) return [];
-    const seriesList = data.timelines.map((item) => item.series);
     const nowMs = Date.now();
     const timelineTo = customRange ? customRange.toMs : nowMs;
-    return data.timelines.map((timeline) => ({
+    return data.timelines.map((timeline, index) => ({
       id: timeline.series.id,
       label: timeline.series.label,
-      color: seriesColorOf(seriesList, timeline.series.id, dark),
+      color:
+        index < 6
+          ? `var(--db-series-${index})`
+          : "var(--db-series-other)",
       points: timeline.samples.filter(
         (sample) => sample.ts >= fromMs && sample.ts <= timelineTo
       ),
     }));
-  }, [data, customRange, fromMs, dark]);
+  }, [data, customRange, fromMs]);
 
   // 时间范围展示名（三张卡副标题共用）：自定义时显示区间摘要
   const rangeLabel = customRange

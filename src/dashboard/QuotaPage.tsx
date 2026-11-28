@@ -28,7 +28,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useI18n } from "../i18n";
 import { AlertBanner, EmptyState } from "../layout";
 import { DropdownMenu } from "../DropdownMenu";
-import { Card, PageTitleWithDesc, Skeleton, useDarkTheme } from "./primitives";
+import { Card, PageTitleWithDesc, Skeleton } from "./primitives";
 import { RefreshIcon } from "./icons";
 import { RemainingTrendCard } from "./quota/RemainingTrendCard";
 import { CockpitDeck } from "./quota/CockpitDeck";
@@ -96,7 +96,6 @@ function startOfTrendWindow(nowMs: number): number {
 export function QuotaPage() {
   const { t } = useI18n();
   const state = useQuotaData();
-  const dark = useDarkTheme();
   const nowMs = useNow(30_000);
 
   // ---- 趋势选择器状态（系列 + 窗口；数据刷新后按 id 尽量保序保持选中） ----
@@ -205,7 +204,7 @@ export function QuotaPage() {
       ) : state.loading && !hasAnyData ? (
         /* 首屏骨架：控制台一条 + 仪表阵列四张 + 右栏（形状与真实布局一致） */
         <>
-          <Skeleton className="h-[296px] w-full db-qc-skeleton-hero" />
+          <Skeleton className="h-[150px] w-full db-qc-skeleton-hero" />
           <div className="db-qc-skeleton-workspace">
             <div className="db-qc-skeleton-fleet">
               {[0, 1, 2, 3].map((index) => (
@@ -256,7 +255,7 @@ export function QuotaPage() {
                     })}
                   </p>
                 </div>
-                <span className="db-qc-section-badge num">
+                <span className="db-qc-section-meta num">
                   {summary.windowCount}
                   <small>{t("dashboard.quota.windowUnit")}</small>
                 </span>
@@ -268,7 +267,6 @@ export function QuotaPage() {
                     key={item.id}
                     series={item}
                     nowMs={nowMs}
-                    dark={dark}
                     t={t}
                   />
                 ))}
@@ -338,9 +336,7 @@ export function QuotaPage() {
                           </span>
                           <span
                             className="db-qc-trend-stat__value num"
-                            style={{
-                              color: quotaTone(stats.current, dark),
-                            }}
+                            style={{ color: quotaTone(stats.current) }}
                           >
                             {Math.round(stats.current)}%
                           </span>
@@ -351,7 +347,7 @@ export function QuotaPage() {
                           </span>
                           <span
                             className="db-qc-trend-stat__value num"
-                            style={{ color: quotaTone(stats.low, dark) }}
+                            style={{ color: quotaTone(stats.low) }}
                           >
                             {Math.round(stats.low)}%
                           </span>
@@ -362,7 +358,7 @@ export function QuotaPage() {
                           </span>
                           <span
                             className="db-qc-trend-stat__value num"
-                            style={{ color: quotaTone(stats.high, dark) }}
+                            style={{ color: quotaTone(stats.high) }}
                           >
                             {Math.round(stats.high)}%
                           </span>
@@ -382,7 +378,7 @@ export function QuotaPage() {
                       points={points}
                       fromMs={startOfTrendWindow(nowMs)}
                       toMs={nowMs}
-                      color={quotaTone(stats?.current ?? 100, dark)}
+                      color={quotaTone(stats?.current ?? 100)}
                     />
                   </>
                 ) : (
@@ -398,7 +394,6 @@ export function QuotaPage() {
               <ResetRail
                 items={summary.resets}
                 nowMs={nowMs}
-                dark={dark}
                 t={t}
               />
             </aside>

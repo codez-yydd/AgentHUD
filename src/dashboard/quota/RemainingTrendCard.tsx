@@ -203,7 +203,7 @@ export function RemainingTrendCard({
               d={path}
               fill="none"
               stroke={color}
-              strokeWidth={1.8}
+              strokeWidth={1.5}
               strokeLinejoin="round"
               strokeLinecap="round"
             />

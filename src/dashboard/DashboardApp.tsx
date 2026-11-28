@@ -428,6 +428,8 @@ export function DashboardApp() {
               key 以跟随外窗切换（见上方同步流注释） */}
           <div className="db-sidebar__footer">
             <ThemeToggle key={theme} className="db-icon-btn" />
+            {/* 主题 / 语言两组切换之间的竖向发丝线（纯装饰） */}
+            <span className="db-sidebar__divider" aria-hidden />
             <LanguageToggle className="db-icon-btn" />
           </div>
         </aside>
