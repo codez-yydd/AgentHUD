@@ -66,7 +66,8 @@ export function MoreActionsMenu({ label, items, badge }: MoreActionsMenuProps) {
   }, [open]);
 
   // 展开时：点击组件外 / Esc 关闭；Esc 同时把焦点交还触发器，键盘操作不断链
-  //（与 DropdownMenu 同款监听与清理）
+  //（与 DropdownMenu 同款监听与清理）。窗口失焦（切到别的应用，如 Cmd+Tab）
+  // 也收起——对齐 macOS 原生菜单行为，避免回来后弹层还挂着
   useEffect(() => {
     if (!open) return;
     function onDown(e: MouseEvent) {
@@ -83,11 +84,16 @@ export function MoreActionsMenu({ label, items, badge }: MoreActionsMenuProps) {
       setOpen(false);
       triggerRef.current?.focus();
     }
+    function onWinBlur() {
+      setOpen(false);
+    }
     document.addEventListener("mousedown", onDown);
     document.addEventListener("keydown", onKey);
+    window.addEventListener("blur", onWinBlur);
     return () => {
       document.removeEventListener("mousedown", onDown);
       document.removeEventListener("keydown", onKey);
+      window.removeEventListener("blur", onWinBlur);
     };
   }, [open]);
 

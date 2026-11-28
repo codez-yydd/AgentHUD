@@ -374,6 +374,14 @@ export function OverviewPage() {
             <RefreshIcon className={`h-3.5 w-3.5 ${loading ? "db-spin" : ""}`} />
             {t("common.refresh")}
           </button>
+          {/* 远端合并中：本机数据已可见，其他设备贡献仍在后台合并（弱标记，
+              不阻塞界面；仅「全部设备」范围可能出现）。排在「⋯」前面——
+              规则是「⋯ 是页头最右的控件」（同周额度对比页顺序） */}
+          {effectiveScope === "all" && remotePending && (
+            <span className="db-page__merging">
+              {t("dashboard.overview.remoteMerging")}
+            </span>
+          )}
           {/* 低频操作收进页头最右「⋯」菜单（无边框图标按钮）：本页目前
               只有「调整显示」一项，处理函数原样调 editor.openEditor；
               命令面板里的同名入口不动 */}
@@ -388,13 +396,6 @@ export function OverviewPage() {
               },
             ]}
           />
-          {/* 远端合并中：本机数据已可见，其他设备贡献仍在后台合并（弱标记，
-              不阻塞界面；仅「全部设备」范围可能出现） */}
-          {effectiveScope === "all" && remotePending && (
-            <span className="db-page__merging">
-              {t("dashboard.overview.remoteMerging")}
-            </span>
-          )}
         </div>
       </header>
 

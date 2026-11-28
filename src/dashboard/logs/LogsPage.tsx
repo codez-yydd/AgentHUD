@@ -856,6 +856,14 @@ export function LogsPage() {
     </div>
   );
 
+  /** 无卡片状态（报错态 / 空态）下的筛选行：同一组 filters 原样包一层靠右
+   *  容器（复用同一个 JSX 元素，卡片头里的那份不受影响），水平与竖直位置
+   *  对齐正常状态卡头里的筛选——数据从有到无（或反向）切换时筛选不跳位；
+   *  样式见 dashboard.css 的 .db-logs-filters-row */
+  const looseFilters = (
+    <div className="db-logs-filters-row">{filters}</div>
+  );
+
   const isEmpty = !loading && error == null && total === 0;
   const filteredByModel = model !== "";
   // 远端一路失败（不可达 / 未启用同步 / 旧服务端 404）从来源名清单里拆出，
@@ -1003,9 +1011,9 @@ export function LogsPage() {
         </div>
       )}
 
-      {/* 设备 / 来源 / 模型筛选已挪进下方表格卡片头右侧（骨架 / 越界 /
-          正常内容三种卡片共用同一份筛选组），页面顺序：页头 → 指标条 →
-          表格卡 */}
+      {/* 设备 / 来源 / 模型筛选：正常状态挪进表格卡片头右侧（骨架 / 越界 /
+          正常内容三种卡片共用同一份筛选组）；报错态 / 空态没有卡片，同一份
+          筛选包一层单独成行（looseFilters，见上方定义），随时可切设备 */}
 
       {/* 汇总指标行：当前筛选条件下的全范围聚合（与表格同一次请求返回） */}
       <LogsMetrics summary={summary} loading={loading} currency={currency} />
@@ -1039,24 +1047,29 @@ export function LogsPage() {
 
       {error != null ? (
         /* 错误态：单一提示块（原因 + 重试），不再叠加 AlertBanner 重复同一句
-           错误；形态与总览页的 .db-errorstate 一致 */
-        <div className="db-errorstate">
-          <div className="db-errorstate__title">
-            {t("dashboard.logs.errorTitle")}
+           错误；形态与总览页的 .db-errorstate 一致。提示块上方保留筛选行
+           （设备偏好持久化：选中的远端设备连不上时，仍可在此切走，不会
+           被困在该设备的报错态里） */
+        <>
+          {looseFilters}
+          <div className="db-errorstate">
+            <div className="db-errorstate__title">
+              {t("dashboard.logs.errorTitle")}
+            </div>
+            <div className="db-errorstate__reason">
+              {t("dashboard.logs.errorReason", { error })}
+            </div>
+            <button
+              type="button"
+              className="db-btn"
+              onClick={() => reload()}
+              disabled={loading}
+            >
+              <RefreshIcon className={`h-3.5 w-3.5 ${loading ? "db-spin" : ""}`} />
+              {t("dashboard.logs.retry")}
+            </button>
           </div>
-          <div className="db-errorstate__reason">
-            {t("dashboard.logs.errorReason", { error })}
-          </div>
-          <button
-            type="button"
-            className="db-btn"
-            onClick={() => reload()}
-            disabled={loading}
-          >
-            <RefreshIcon className={`h-3.5 w-3.5 ${loading ? "db-spin" : ""}`} />
-            {t("dashboard.logs.retry")}
-          </button>
-        </div>
+        </>
       ) : loading && rows.length === 0 ? (
         /* 首载 / 筛选切换后无旧数据：表格骨架（行数与每页条数一致）；
            卡头同样挂筛选组，数据到达前后筛选位置不跳 */
@@ -1073,8 +1086,12 @@ export function LogsPage() {
            .db-page 的直接子元素），不套卡片。模型 / 设备筛选各自有专属空态
            （专属标题 + 一键清除动作，照模型空态先例）；设备空态与远端不可达
            的提示条互不覆盖——不可达的后果走上方 db-hintbar，这里只说「该设备
-           在此范围内无记录」并给一键切回全部设备 */
-        filteredByModel ? (
+           在此范围内无记录」并给一键切回全部设备。提示块上方保留筛选行：
+           来源 / 模型 / 设备都能直接换（来源筛空时原先进「清除」入口都没有），
+           空态本身仍是 .db-page 直接子元素（fragment 不产生 DOM 包裹） */
+        <>
+          {looseFilters}
+          {filteredByModel ? (
           <EmptyState
             title={t("dashboard.logs.emptyModelTitle")}
             hint={t("dashboard.logs.emptyModelHint", { model })}
@@ -1115,6 +1132,8 @@ export function LogsPage() {
             }
           />
         )
+        }
+        </>
       ) : rows.length === 0 ? (
         /* total > 0 但当前页没有行：深页 / 页码越界回收帧 / 归并切片的边界，
            给一行行内提示（分页条保留，可直接退回上一页） */

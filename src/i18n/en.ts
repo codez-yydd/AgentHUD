@@ -1946,7 +1946,7 @@ export const en: typeof zh = {
     "dashboard.pricing.missingCount": "{count} models unpriced",
     "dashboard.pricing.tableTitle": "Model prices",
     "dashboard.pricing.tableSub":
-      "Input / output / cache read in $ per million tokens; click Save (top right) to persist edits",
+      "Input / output / cache read in $ per million tokens; click Save to persist edits",
     "dashboard.pricing.searchPlaceholder": "Search model ID / display name",
     "dashboard.pricing.filterEmpty": "No matching models",
     "dashboard.pricing.count": "{n} models",

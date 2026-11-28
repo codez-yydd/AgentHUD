@@ -3034,7 +3034,9 @@ html.dark .db-shell-lights--blur .db-shell-light {
 /* ---- 搜索框（价格表卡片右上）：控件统一 32px 高 / 8px 圆角，
    聚焦时主色描边 + 焦点环 ---- */
 .db-search {
-  width: 220px;
+  /* 250px：英文占位文字完整显示所需（约 218px 文字 + 左右 10px 内边距
+     + 余量），220px 时英文占位末尾会被输入框右缘截掉一小截 */
+  width: 250px;
   height: 32px;
   padding: 0 10px;
   border: 1px solid var(--db-control-border);
@@ -3580,6 +3582,22 @@ html.dark .db-shell-lights--blur .db-shell-light {
   flex-wrap: wrap;
 }
 
+/* ---- 无卡片状态的筛选行：报错态 / 空态不渲染表格卡，筛选组包一层单独
+   成行靠右（LogsPage 的 looseFilters），位置对齐正常状态卡头里的筛选
+   ——数据从有到无（或反向）切换时筛选不跳位。竖直：页面 gap 已提供
+   14px，上外边距补卡头上内边距 16px + 卡片描边 1px（卡头筛选上缘 =
+   前一元素底 + 14 + 17）；水平：右内边距 = 卡头右内边距 20px + 卡片描边 1px。
+   下外边距 0：
+   与后文的提示块/空态之间由页面 gap 提供惯用的 14px，不再叠加。窄窗
+   由内层 .db-logs-filters 的 flex-wrap 折行兜底，行本身不产生横向滚动 */
+.db-logs-filters-row {
+  display: flex;
+  justify-content: flex-end;
+  flex: none;
+  margin: 17px 0 0;
+  padding-right: 21px;
+}
+
 /* ---- 自动刷新窄下拉（页头精简）：触发器只显示当前档位，宽度随文字 ----
    共用 DropdownMenu 不能往触发器内部插时钟图标，由外层容器 .hdr-autoref
    绝对定位叠加（图标 13px + 两侧留白），触发器左内边距让出图标位
@@ -3792,6 +3810,13 @@ html.dark .db-shell-lights--blur .db-shell-light {
 .db-logs-page > .db-page__header,
 .db-logs-page > .db-hintbar,
 .db-logs-page > .db-logs-metrics {
+  flex: none;
+}
+
+/* 报错块不带 flex:1：日志页是 height:100% 的纵向弹性容器，继承
+   .db-errorstate 的 flex:1 会撑满剩余高度变成一整块粉色面板，
+   让它按内容高度显示（自带 34px 上下内边距保留），只作用本页 */
+.db-logs-page > .db-errorstate {
   flex: none;
 }
 
@@ -7634,6 +7659,12 @@ body.card-resizing * {
   .db-card__head {
     flex-wrap: wrap;
     padding: 12px 14px 0;
+  }
+  /* 空态/报错态筛选行跟随卡头内边距收窄（默认宽 17/21 按 16px 20px + 1px
+     描边定，窄容器下卡头 12px 14px 0 后差 4px/6px；13 = 12+1，15 = 14+1） */
+  .db-logs-filters-row {
+    margin-top: 13px;
+    padding-right: 15px;
   }
   .db-card__body {
     padding: 12px 14px;

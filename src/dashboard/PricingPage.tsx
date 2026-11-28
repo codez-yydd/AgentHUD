@@ -640,6 +640,15 @@ export function PricingPage() {
       <header className="db-page__header">
         <PageTitleWithDesc title={t("dashboard.pricing")} desc={t("dashboard.pricing.desc")} />
         <div className="db-page__actions">
+          {/* 未保存改动提示（有未保存改动时才出现）：弱化成灰字，位置在
+              「⋯」左侧——「⋯」右上角有差异角标时（检查价格更新有结果才有）
+              两个不相干的状态会挤在一起，灰字先于「⋯」让开角标位置；
+              「保存」仍是页头里唯一的实心主按钮，一眼可见 */}
+          {dirty && (
+            <span className="db-pricing__dirty">
+              {t("dashboard.pricing.dirtyHint", { count: dirtyCount })}
+            </span>
+          )}
           {/* 低频操作收进页头最右「⋯」菜单：检查价格更新 / models.dev 同步
               （处理函数原样调 runDiff / runModelsdevSync，同步中置灰）。
               差异红点（.db-dot，含数字）挪到 ⋯ 右上角，展示条件不变
@@ -669,13 +678,6 @@ export function PricingPage() {
               ) : null
             }
           />
-          {/* 未保存改动提示（有未保存改动时才出现）：弱化成灰字，位置在
-              「保存」左侧——页头只剩「⋯ + 保存」后仍要一眼可见 */}
-          {dirty && (
-            <span className="db-pricing__dirty">
-              {t("dashboard.pricing.dirtyHint", { count: dirtyCount })}
-            </span>
-          )}
           {/* 页头里唯一的实心主按钮（视觉第一级） */}
           <button
             type="button"
