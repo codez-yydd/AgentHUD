@@ -28,6 +28,7 @@ import { useI18n } from "../i18n";
 import { SkinStandalonePanel } from "../SkinStandalonePanel";
 import { ThemePanel } from "../ThemePanel";
 import { PageTitleWithDesc } from "./primitives";
+import { WallpaperThumbModeContext } from "./wallpaperThumb";
 
 /** 皮肤域子页：hub 分类页 / 免注入子页 / 需注入子页（与悬浮窗 View 同义） */
 type SkinSub = "hub" | "standalone" | "injected";
@@ -57,7 +58,11 @@ export function SkinPage() {
   if (sub === "injected") {
     return (
       <SkinEmbed>
-        <ThemePanel onBack={() => setSub("hub")} />
+        {/* 壁纸库缩略图模式仅主窗口生效：Provider 不渲染 DOM，
+            ThemePanel 内部按开关切换预览形态 */}
+        <WallpaperThumbModeContext.Provider value={true}>
+          <ThemePanel onBack={() => setSub("hub")} />
+        </WallpaperThumbModeContext.Provider>
       </SkinEmbed>
     );
   }

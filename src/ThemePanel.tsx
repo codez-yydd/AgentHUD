@@ -34,6 +34,8 @@ import type {
   ThemeParams,
   WallpaperEntry,
 } from "./types";
+import { useWallpaperThumbMode } from "./dashboard/wallpaperThumb";
+import { WallpaperThumbPreview } from "./dashboard/WallpaperThumbPreview";
 
 /** MVP 支持的 Agent 应用（Rust 侧按 appId 分发；后续新增应用在此登记） */
 const AGENTS: ReadonlyArray<{ appId: string; name: string }> = [
@@ -1393,6 +1395,10 @@ export function ThemePanel({ onBack }: Props) {
  *   视频源额外追加 `#t=0.1` 媒体片段指示，让 webview 在 preload="metadata"
  *   下即渲染首帧、避免初始白屏（不影响 hover 播放与 asset 请求）；
  * - 加载失败（文件缺失 / 默认壁纸未产出 / 格式不支持）退化为类型徽章占位；
+ * - 主窗口皮肤中心（SkinPage 包 Provider）进入缩略图模式：预览区改渲染
+ *   WallpaperThumbPreview（生成一次即缓存的静态缩略图，视频卡 hover 在
+ *   缩略图上叠 <video> 实时预览）；无 Provider 的默认路径 DOM、class 与
+ *   事件处理保持原样；
  * - 当前项高亮与点击切换逻辑由父组件保持（current / onSelect 透传）。
  */
 function WallpaperCard({
@@ -1413,6 +1419,11 @@ function WallpaperCard({
   const { t } = useI18n();
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const [failed, setFailed] = useState(false);
+  // 缩略图模式（主窗口皮肤中心经 SkinPage 包 Provider）：预览区交给
+  // WallpaperThumbPreview，视频卡 hover 只驱动 hovered（实时预览由预览
+  // 组件自己在缩略图上叠 <video>）；默认路径下两者不参与渲染
+  const thumbMode = useWallpaperThumbMode();
+  const [hovered, setHovered] = useState(false);
   // React 的 JSX muted 属性在部分渲染路径只设 attribute 不设 property，
   // 而自动播放要求 muted property 为 true，ref 回调里显式兜底
   const bindVideo = (el: HTMLVideoElement | null) => {
@@ -1443,8 +1454,20 @@ function WallpaperCard({
     <button
       onClick={onSelect}
       disabled={disabled}
-      onMouseEnter={entry.kind === "video" ? handleEnter : undefined}
-      onMouseLeave={entry.kind === "video" ? handleLeave : undefined}
+      onMouseEnter={
+        entry.kind === "video"
+          ? thumbMode
+            ? () => setHovered(true)
+            : handleEnter
+          : undefined
+      }
+      onMouseLeave={
+        entry.kind === "video"
+          ? thumbMode
+            ? () => setHovered(false)
+            : handleLeave
+          : undefined
+      }
       title={entry.path === "default" ? undefined : entry.path}
       className={`flex flex-col overflow-hidden rounded-md border text-left transition-colors disabled:opacity-40 ${
         current
@@ -1453,39 +1476,43 @@ function WallpaperCard({
       }`}
     >
       <div className="relative aspect-video w-full bg-slate-900/5">
-        {failed ? (
-          <div className="absolute inset-0 flex flex-col items-center justify-center gap-0.5 text-slate-400">
-            <span
-              className="text-[14px] leading-none"
-              title={t(
-                entry.kind === "image"
-                  ? "theme.libraryKindImage"
-                  : "theme.libraryKindVideo"
-              )}
-            >
-              {entry.kind === "image" ? "🖼" : "🎬"}
-            </span>
-            <span className="text-[8px]">{t("theme.previewUnavailable")}</span>
-          </div>
-        ) : entry.kind === "image" ? (
-          <img
-            src={src}
-            alt={label}
-            loading="lazy"
-            onError={() => setFailed(true)}
-            className="absolute inset-0 h-full w-full object-cover"
-          />
+        {thumbMode ? (
+          <WallpaperThumbPreview entry={entry} label={label} hovered={hovered} />
         ) : (
-          <video
-            ref={bindVideo}
-            src={videoSrc}
-            muted
-            loop
-            playsInline
-            preload="metadata"
-            onError={() => setFailed(true)}
-            className="absolute inset-0 h-full w-full object-cover"
-          />
+          failed ? (
+            <div className="absolute inset-0 flex flex-col items-center justify-center gap-0.5 text-slate-400">
+              <span
+                className="text-[14px] leading-none"
+                title={t(
+                  entry.kind === "image"
+                    ? "theme.libraryKindImage"
+                    : "theme.libraryKindVideo"
+                )}
+              >
+                {entry.kind === "image" ? "🖼" : "🎬"}
+              </span>
+              <span className="text-[8px]">{t("theme.previewUnavailable")}</span>
+            </div>
+          ) : entry.kind === "image" ? (
+            <img
+              src={src}
+              alt={label}
+              loading="lazy"
+              onError={() => setFailed(true)}
+              className="absolute inset-0 h-full w-full object-cover"
+            />
+          ) : (
+            <video
+              ref={bindVideo}
+              src={videoSrc}
+              muted
+              loop
+              playsInline
+              preload="metadata"
+              onError={() => setFailed(true)}
+              className="absolute inset-0 h-full w-full object-cover"
+            />
+          )
         )}
         {selecting && (
           <span className="absolute right-1 top-1 rounded bg-black/45 px-1 py-0.5 text-[8px] text-white">

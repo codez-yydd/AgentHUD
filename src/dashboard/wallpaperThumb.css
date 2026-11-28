@@ -1,0 +1,109 @@
+/**
+ * 壁纸缩略图（皮肤中心「需注入 ZCode」子页）样式。
+ * 只在主窗口生效：所有选择器以 .db-skin-embed 开头；ThemePanel 是共用
+ * 组件，目前只有主窗口皮肤页挂载（悬浮面板不引用也不打包它），未加载
+ * 本文件的场景预览保持原有形态。颜色只用 --db-* 令牌（亮 / 暗色跟随
+ * dashboard.css 的变量覆盖），不新增 Tailwind 工具类。
+ */
+
+/* 根容器：铺满 WallpaperCard 的 16:9 预览区 */
+.db-skin-embed .db-wpthumb {
+  position: absolute;
+  inset: 0;
+}
+
+/* 静态缩略图：铺满裁切，首次出现 160ms 淡入 */
+.db-skin-embed .db-wpthumb__img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  opacity: 0;
+  transition: opacity 0.16s ease;
+}
+
+.db-skin-embed .db-wpthumb__img.is-in {
+  opacity: 1;
+}
+
+/* 生成中的骨架：不铺底色（--db-track 是半透明色，骨架再铺一层会比
+   占位态深一层），直接露外层预览容器底色，只放居中 14px 线条图标
+   （颜色用 --db-text-dim，暗色下比 --db-text-3 清楚），并做很轻的
+   呼吸动画；系统开启「减弱动态效果」时关掉 */
+.db-skin-embed .db-wpthumb__skeleton {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--db-text-dim);
+}
+
+.db-skin-embed .db-wpthumb__skeleton svg {
+  width: 14px;
+  height: 14px;
+  animation: db-wpthumb-breathe 1.2s ease-in-out infinite;
+}
+
+@keyframes db-wpthumb-breathe {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .db-skin-embed .db-wpthumb__skeleton svg {
+    animation: none;
+  }
+}
+
+/* hover 实时预览：叠在缩略图之上，playing 后 160ms 淡入（is-playing） */
+.db-skin-embed .db-wpthumb__live {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  opacity: 0;
+  transition: opacity 0.16s ease;
+}
+
+.db-skin-embed .db-wpthumb__live.is-playing {
+  opacity: 1;
+}
+
+/*
+ * 选中态描边：dashboard.css 既有规则用「1px 边框 + inset 1px 阴影」给
+ * .border-sky-500 拼出 2px 品牌色描边；不透明的缩略图会盖住预览区上、左、
+ * 右三边的那 1px 内圈，只留下边 1px 会与 ::after、边框叠出 3px。这里把
+ * 内圈完全交给 ::after（置 none 覆盖既有 inset 阴影），四边统一 2px。
+ * ::after 铺满卡片不影响布局，pointer-events 放行交互；selecting 角标在
+ * DOM 里排在缩略图之后，仍盖在缩略图与描边线之上保持可读。
+ */
+.db-skin-embed button:has(.db-wpthumb).border-sky-500 {
+  position: relative;
+  box-shadow: none;
+}
+
+.db-skin-embed button:has(.db-wpthumb).border-sky-500::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  box-shadow: inset 0 0 0 1px var(--db-accent);
+  pointer-events: none;
+  z-index: 2;
+}
+
+/* 选中卡的文件名行补回中性灰带：dashboard.css 把 .bg-sky-500/10 置为
+   透明（选中卡整张不铺品牌底色），文件名行随之变透明，与邻卡（整卡
+   --db-track 灰带）不一致；只对缩略图模式的壁纸卡补中性底，不恢复
+   品牌色底色，描边规则不动。文件名行是按钮的第二个直接子 div */
+.db-skin-embed button:has(.db-wpthumb).border-sky-500 > div:nth-child(2) {
+  background: var(--db-track);
+}

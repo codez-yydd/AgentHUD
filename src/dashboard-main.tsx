@@ -8,6 +8,7 @@ import { applyFontSettings, watchFontChanges } from "./fontSettings";
 import { applyLocale, detectLocale, loadLocale } from "./i18n/locale";
 import { I18nProvider } from "./i18n";
 import "./dashboard.css";
+import "./dashboard/wallpaperThumb.css";
 
 /**
  * 主窗口（Dashboard）入口：与面板 main.tsx 同款引导，去掉面板专属能力
