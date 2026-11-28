@@ -23,6 +23,7 @@ import {
   usePageLayoutEditor,
 } from "../layoutEditor";
 import { MoreActionsMenu } from "./MoreActionsMenu";
+import { RefreshedAgo } from "./RefreshedAgo";
 import { ModelUsageExportModal } from "../ModelUsageExport";
 import { displayModelName } from "../modelName";
 import { RefreshIcon } from "./icons";
@@ -299,6 +300,9 @@ export function OverviewPage() {
       <header className="db-page__header">
         <PageTitleWithDesc title={t("dashboard.overview")} desc={t("dashboard.overview.desc")} />
         <div className="db-page__actions">
+          {/* 「多久没更新」灰字：本页没有自动刷新，页头常驻一个相对时间
+              （放操作区最前，文字变长只往左长，右侧控件位置不动） */}
+          <RefreshedAgo at={lastUpdatedAt} />
           <div
             className="db-seg"
             role="group"

@@ -95,6 +95,10 @@ export const dashboard = {
   // 页头刷新按钮的原生提示（「上次刷新 …」不再常驻页头，收进 title 与
   // aria-label）；还没有成功取过数时只显示「刷新」，不带时间
   "dashboard.refreshLastAt": "刷新 · 上次 {time}",
+  // 页头「多久没更新」灰字（RefreshedAgo，自动刷新关着的页面）：1 分钟内用
+  // refreshedJustNow，其余用 refreshedAgo 拼 timeAgo（dashboard.sync.*）
+  "dashboard.refreshedJustNow": "刚刚更新",
+  "dashboard.refreshedAgo": "{time}更新",
   // 页头最右「⋯」更多操作菜单（无边框图标按钮）的 title 与 aria-label
   "dashboard.moreActions": "更多操作",
   "dashboard.overview.errorBanner": "数据加载失败：{error}",

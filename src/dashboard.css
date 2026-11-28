@@ -773,6 +773,26 @@ html.dark .db-shell-lights--blur .db-shell-light {
   white-space: nowrap;
 }
 
+/* 页头操作区里的「多久没更新」灰字（RefreshedAgo，src/dashboard/RefreshedAgo.tsx）：
+   与右侧第一个控件的间距拉开到约 12px：1100 默认窗页面容器 ≤960px，操作区
+   gap 已收 6px（下方容器查询），加本条 6px 正好 12px；更宽容器 gap 8px 时
+   为 14px。仍是操作区第一个元素，文字变长只往左长，右侧控件位置不动 */
+.db-page__actions .db-page__updated {
+  margin-right: 6px;
+}
+
+/* 「多久没更新」灰字：英文文案更长（Updated just now / Updated 5 min ago），
+   窄内容列会把页头操作区顶成两行——只对英文档（<html lang="en">）在更窄的
+   容器里隐藏，绝对时间仍在刷新按钮的原生提示里。断点 840px 取在 900 窗
+   （页面容器约 718px，必折）与 1100 默认窗（容器约 892px，放得下）之间：
+   英文总览近 30 天档带这段文字实测约需 824px，840 留出余量。中文文案短，
+   任何宽度都保留 */
+@container (max-width: 840px) {
+  html[lang="en"] .db-page__updated {
+    display: none;
+  }
+}
+
 /* 页头「远端合并中」弱标记：本机数据已可见、其他设备仍在后台合并 */
 .db-page__merging {
   font-size: 12px;

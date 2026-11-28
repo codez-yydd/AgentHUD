@@ -19,6 +19,7 @@ import { AlertBanner, EmptyState } from "../layout";
 // 下拉组件已提升为两窗口共用（src/DropdownMenu.tsx，Tailwind 工具类自适应亮暗）
 import { DropdownMenu } from "../DropdownMenu";
 import { RefreshIcon } from "./icons";
+import { RefreshedAgo } from "./RefreshedAgo";
 import { PageTitleWithDesc } from "./primitives";
 import {
   CustomRangeMenu,
@@ -159,6 +160,9 @@ export function ComparePage() {
       <header className="db-page__header">
         <PageTitleWithDesc title={t("dashboard.compare")} desc={t("dashboard.compare.desc")} />
         <div className="db-page__actions">
+          {/* 「多久没更新」灰字：本页没有自动刷新，页头常驻一个相对时间
+              （放操作区最前，文字变长只往左长，右侧控件位置不动） */}
+          <RefreshedAgo at={lastUpdatedAt} />
           {syncEnabled && (
             <DropdownMenu
               label={t("dashboard.compare.device")}

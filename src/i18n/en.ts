@@ -1379,6 +1379,11 @@ export const en: typeof zh = {
     // Header refresh button tooltip ("last updated" no longer sits in the
     // header); plain "Refresh" until the first successful load
     "dashboard.refreshLastAt": "Refresh · last {time}",
+    // Header "updated N ago" dim text (RefreshedAgo, pages without auto
+    // refresh): < 1 min uses refreshedJustNow, otherwise refreshedAgo
+    // composed with timeAgo (dashboard.sync.*)
+    "dashboard.refreshedJustNow": "Updated just now",
+    "dashboard.refreshedAgo": "Updated {time}",
     // Header rightmost "⋯" more-actions menu (borderless icon button)
     "dashboard.moreActions": "More actions",
     "dashboard.overview.errorBanner": "Failed to load data: {error}",

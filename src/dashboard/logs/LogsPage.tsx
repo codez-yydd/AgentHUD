@@ -62,6 +62,7 @@ import {
   formatTokensLocale,
 } from "../../format";
 import { RefreshIcon } from "../icons";
+import { RefreshedAgo } from "../RefreshedAgo";
 import { Card, PageTitleWithDesc, Skeleton } from "../primitives";
 import {
   CustomRangeMenu,
@@ -912,6 +913,10 @@ export function LogsPage() {
       <header className="db-page__header">
         <PageTitleWithDesc title={t("dashboard.logs")} desc={t("dashboard.logs.desc")} />
         <div className="db-page__actions">
+          {/* 「多久没更新」灰字：只在自动刷新「关闭」时显示——选了任何档位
+              页面都在持续取数，无需提示陈旧度。放操作区最前：文字变长只往
+              左长，右侧控件（含最右的导出）位置不动 */}
+          <RefreshedAgo at={refreshMs === 0 ? lastUpdatedAt : null} />
           {/* 时间范围：单个触发按钮 + 弹出面板（四档预设收进面板顶部快捷行；
               本页不限制最早日期——后端存有全部历史请求记录，长历史由自定义
               区间覆盖）。设备下拉已挪进下方「请求明细」卡头（见 filters） */}
