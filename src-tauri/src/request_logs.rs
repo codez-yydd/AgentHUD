@@ -19,6 +19,15 @@
 //! reads/writes, while the other importers include cached input. Cache rates
 //! and billing therefore use the original source. Missing databases are empty;
 //! failing sources are reported without clearing the remaining results.
+//!
+//! Queries over the local lanes first trigger each source's own throttled
+//! `import_incremental` (5s throttle lives inside each importer; failures are
+//! logged and ignored). The query itself only reads the derived databases, so
+//! without this trigger a just finished request would stay invisible to the
+//! log page until the next background import round (up to ~30s later). zcode
+//! rows are read straight from the main database and have no separate import
+//! step; a query pinned to one remote device (device filter) skips the local
+//! lane entirely and triggers no import.
 
 use chrono::{Datelike, TimeZone};
 use rusqlite::{params, Connection, OpenFlags};
@@ -268,6 +277,24 @@ fn select_sources(agent: Option<&str>) -> Result<Vec<&'static str>, String> {
             .find(|s| *s == name)
             .map(|s| vec![s])
             .ok_or_else(|| format!("未知的请求日志来源: {name}")),
+    }
+}
+
+/// 来源名 → 该来源的节流增量导入函数（`collect_request_logs` 读取本机各来源
+/// 前按名分发一次）。查询本身只读派生库不触发导入，刚结束的请求要等后台
+/// 导入线程（今日用量线程等）下一轮才入库；查询前先导入一次，日志页的刷新
+/// 才能带出刚结束的请求。zcode 直接读主库、无独立导入路（返回 None）；
+/// 其余 6 个来源各返回自己的 `import_incremental`（5 秒节流在各实现内部，
+/// 失败由调用方记日志忽略，不影响查询）。
+fn import_fn_for_source(source: &str) -> Option<fn() -> Result<(), String>> {
+    match source {
+        "claude" => Some(crate::claude::import_incremental),
+        "codex" => Some(crate::codex::import_incremental),
+        "dsh" => Some(crate::dsh::import_incremental),
+        "kimi" => Some(crate::kimi::import_incremental),
+        "minimaxcode" => Some(crate::minimaxcode::import_incremental),
+        "opencode" => Some(crate::opencode::import_incremental),
+        _ => None,
     }
 }
 
@@ -1487,6 +1514,22 @@ pub fn collect_request_logs(
         .saturating_add(1)
         .saturating_mul(page_size)
         .min(MAX_FETCH_ROWS);
+
+    // 读取本机来源前触发一次节流增量导入（仅本机路参与）：查询只读派生库，
+    // 刚结束的请求要等后台导入线程下一轮才入库；查询前按名分发导入（5 秒
+    // 节流在各实现内部），日志页的刷新才能带出刚结束的请求。具体设备筛选
+    // 跳过本机路，无需导入。失败记日志后忽略，不影响本次查询。
+    if device_id.is_none() {
+        for source in &sources {
+            if let Some(import) = import_fn_for_source(source) {
+                if let Err(e) = import() {
+                    eprintln!(
+                        "[agenthud-request-logs] 来源 {source} 查询前增量导入失败，已跳过: {e}"
+                    );
+                }
+            }
+        }
+    }
 
     let (totals, mut merged, failed_sources) = collect_log_lanes(
         &sources,
@@ -3014,5 +3057,34 @@ mod tests {
         assert_eq!(models.len(), 1, "空串与 NULL 模型名不进清单");
         assert_eq!(models[0].model_id, "glm-5.3");
         assert_eq!(models[0].count, 2);
+    }
+
+    /// 查询前增量导入的分发覆盖面：恰好是 6 个带派生库导入路的来源，
+    /// zcode（直接读主库、无独立导入路）不在集合里。
+    #[test]
+    fn pre_query_import_covers_exactly_six_sources() {
+        let expected: [&str; 6] = [
+            "claude",
+            "codex",
+            "dsh",
+            "kimi",
+            "minimaxcode",
+            "opencode",
+        ];
+        for source in SOURCES {
+            assert_eq!(
+                import_fn_for_source(source).is_some(),
+                expected.contains(&source),
+                "来源 {source} 的导入分发判定与预期集合不一致"
+            );
+        }
+        assert!(import_fn_for_source("zcode").is_none());
+        assert!(import_fn_for_source("cursor").is_none());
+        for source in expected {
+            assert!(
+                import_fn_for_source(source).is_some(),
+                "来源 {source} 应有查询前导入路"
+            );
+        }
     }
 }

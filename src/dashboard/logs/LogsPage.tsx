@@ -38,8 +38,11 @@
  *  - 页头「自动刷新」下拉选间隔（关闭 / 5 / 10 / 30 / 60 秒，默认 30 秒，
  *    localStorage 键 zbar-logs-refresh-ms 持久化）：间隔 > 0 时定时走
  *    useLogsData 的**静默**刷新（不置 loading——刷新按钮不转圈、表格与指标
- *    不压暗、不闪骨架），保持当前筛选与页码；document.hidden（主窗口被关闭
- *    隐藏）时跳过本次，避免后台空转查询；
+ *    不压暗、不闪骨架），保持当前筛选与页码；document.hidden 时跳过本次，
+ *    避免后台空转查询——macOS WKWebView 里窗口被其它窗口完全遮住 / 窗口
+ *    被 hide 同样置 hidden，隐藏期间整页不刷新，恢复可见时补刷一次（见
+ *    下方 visibilitychange effect），否则切回窗口看到的旧表最长要再等一个
+ *    刷新间隔才有新数据；自动刷新关闭时不补刷（尊重手动模式）；
  *  - 远端不可达 / 未启用同步 / 旧服务端 404（scope=all 时）：后端自动降级为
  *    纯本机口径（failed_sources 里给 "remote"），有数据才用一行 .db-hintbar
  *    弱提示，不清空表格、不打断。
@@ -225,6 +228,10 @@ const DEVICE_LIST_FRESH_MS = 60_000;
  */
 const REFRESH_MS_OPTIONS = [0, 5000, 10000, 30000, 60000];
 const REFRESH_MS_DEFAULT = 30000;
+
+/** 恢复可见补刷的最小间隔（毫秒）：距上次成功取数不足该值时不补刷——
+ *  刚刷过的数据没必要因一次窗口切换再取一轮 */
+const VISIBLE_RELOAD_GAP_MS = 5_000;
 
 /** 间隔偏好持久化键（与热力图模式 zbar-heat-mode 同款：只记用户选择，不参与
  *  取数语义；重启后停留在上次选的档位，不被重置回默认） */
@@ -639,8 +646,9 @@ export function LogsPage() {
   // 自动刷新：间隔 > 0 时定时重取「当前筛选 + 当前页码」的明细。
   //  - 走静默刷新（reload({silent:true})）：不置 loading——刷新按钮不转圈、
   //    表格与指标不压暗，也不会闪骨架；
-  //  - 主窗口关闭只是 hide（WebView 仍存活），document.hidden 时跳过本次，
-  //    避免后台空转查询（重新显示后按剩余间隔继续）；
+  //  - document.hidden 时跳过本次，避免后台空转查询——macOS WKWebView 里
+  //    窗口被其它窗口完全遮住 / 窗口被 hide 同样置 hidden，隐藏期间整页
+  //    不刷新，恢复可见由下方 visibilitychange 补刷 effect 立即补一次；
   //  - 间隔变化即重建定时器（依赖 refreshMs），切「关闭」由 cleanup 清掉，
   //    页面卸载（切到其他页）时同样清理。
   useEffect(() => {
@@ -651,6 +659,26 @@ export function LogsPage() {
     }, refreshMs);
     return () => window.clearInterval(timer);
   }, [refreshMs, reload]);
+
+  // 恢复可见补刷：窗口被完全遮住 / 隐藏（macOS WKWebView 里同样置
+  // document.hidden）期间，上面的定时器一直跳过，隐藏期积压的轮次不会补跑
+  // ——切回窗口时页面重新可见，但数据还停在隐藏前，要干等下一个刷新间隔
+  // 才有新数据。监听 visibilitychange，变可见时若自动刷新未关闭、且距上次
+  // 成功取数已超过 5 秒（或从未成功取到），立即静默补刷一次，切回窗口即可
+  // 看到新行淡入；5 秒内的可见切换不重复触发。自动刷新关闭（refreshMs = 0）
+  // 时尊重手动模式，不补刷。lastUpdatedAt 进依赖：每次成功取数后监听器带
+  // 着新的基准时刻重建（与 DataCache 隐藏感知轮按 tick 重建同一思路）。
+  useEffect(() => {
+    if (refreshMs <= 0) return;
+    const onVisible = () => {
+      if (document.visibilityState !== "visible") return;
+      if (lastUpdatedAt != null && Date.now() - lastUpdatedAt < VISIBLE_RELOAD_GAP_MS)
+        return;
+      reload({ silent: true });
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
+  }, [refreshMs, reload, lastUpdatedAt]);
 
   // 间隔下拉选项：关闭 / 5 / 10 / 30 / 60 秒（选项顺序即 REFRESH_MS_OPTIONS；
   // 选中项由 value 匹配，组件自动带 ✓）
